@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const REGISTRY_BASE = "https://raw.githubusercontent.com/dylanwangeth/clumsies-registry/main";
-const API_BASE = "https://api.github.com/repos/dylanwangeth/clumsies-registry";
 const INDEX_URL = REGISTRY_BASE ++ "/index.json";
 
 pub const HttpError = error{
@@ -60,6 +59,7 @@ pub const TemplateMeta = struct {
     name: []const u8,
     task: []const u8,
     keywords: [][]const u8,
+    files: [][]const u8,
     description: []const u8,
     author: []const u8,
     version: []const u8,
@@ -73,6 +73,13 @@ pub const TemplateIndex = struct {
     parsed: std.json.Parsed(std.json.Value),
 
     pub fn deinit(self: *TemplateIndex) void {
+        // Free keywords and files slices for each template
+        for (self.templates) |tmpl| {
+            self.allocator.free(tmpl.keywords);
+            self.allocator.free(tmpl.files);
+        }
+        // Free templates slice
+        self.allocator.free(self.templates);
         self.parsed.deinit();
         self.allocator.free(self.json_str);
     }
@@ -107,10 +114,19 @@ pub fn fetchIndex(allocator: std.mem.Allocator) HttpError!TemplateIndex {
             }
         }
 
+        // Parse files array
+        var files_list: std.ArrayListUnmanaged([]const u8) = .{};
+        if (obj.get("files")) |files_val| {
+            for (files_val.array.items) |f| {
+                files_list.append(allocator, f.string) catch return HttpError.OutOfMemory;
+            }
+        }
+
         const meta = TemplateMeta{
             .name = if (obj.get("name")) |v| v.string else "",
             .task = if (obj.get("task")) |v| v.string else "",
             .keywords = keywords_list.toOwnedSlice(allocator) catch return HttpError.OutOfMemory,
+            .files = files_list.toOwnedSlice(allocator) catch return HttpError.OutOfMemory,
             .description = if (obj.get("description")) |v| v.string else "",
             .author = if (obj.get("author")) |v| v.string else "",
             .version = if (obj.get("version")) |v| v.string else "",
@@ -125,67 +141,4 @@ pub fn fetchIndex(allocator: std.mem.Allocator) HttpError!TemplateIndex {
         .json_str = body,
         .parsed = parsed,
     };
-}
-
-/// Result struct for file list
-pub const FileList = struct {
-    items: [][]const u8,
-    allocator: std.mem.Allocator,
-
-    pub fn deinit(self: *FileList) void {
-        for (self.items) |item| {
-            self.allocator.free(item);
-        }
-        self.allocator.free(self.items);
-    }
-};
-
-/// Get list of files in a template directory using GitHub API
-pub fn listTemplateFiles(allocator: std.mem.Allocator, template_name: []const u8) HttpError!FileList {
-    const url = std.fmt.allocPrint(
-        allocator,
-        "{s}/git/trees/main?recursive=1",
-        .{API_BASE},
-    ) catch return HttpError.OutOfMemory;
-    defer allocator.free(url);
-
-    const body = try fetchUrl(allocator, url);
-    defer allocator.free(body);
-
-    // Parse JSON response
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
-        return HttpError.InvalidResponse;
-    };
-    defer parsed.deinit();
-
-    const tree = parsed.value.object.get("tree") orelse return HttpError.InvalidResponse;
-
-    var files: std.ArrayListUnmanaged([]const u8) = .{};
-    errdefer {
-        for (files.items) |item| {
-            allocator.free(item);
-        }
-        files.deinit(allocator);
-    }
-
-    const prefix = std.fmt.allocPrint(allocator, "{s}/", .{template_name}) catch return HttpError.OutOfMemory;
-    defer allocator.free(prefix);
-
-    for (tree.array.items) |item| {
-        const obj = item.object;
-        const item_type = obj.get("type") orelse continue;
-        if (!std.mem.eql(u8, item_type.string, "blob")) continue;
-
-        const path = obj.get("path") orelse continue;
-        const path_str = path.string;
-
-        // Only include files from this template
-        if (std.mem.startsWith(u8, path_str, prefix)) {
-            const duped = allocator.dupe(u8, path_str) catch return HttpError.OutOfMemory;
-            files.append(allocator, duped) catch return HttpError.OutOfMemory;
-        }
-    }
-
-    const items = files.toOwnedSlice(allocator) catch return HttpError.OutOfMemory;
-    return .{ .items = items, .allocator = allocator };
 }

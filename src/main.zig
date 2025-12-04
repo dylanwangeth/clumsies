@@ -2,15 +2,19 @@ const std = @import("std");
 const fs = std.fs;
 const commands = @import("commands.zig");
 
-const version = "0.2.0";
+const version = "0.2.2";
 
 // ANSI color codes
 const Color = struct {
     const reset = "\x1b[0m";
     const bold = "\x1b[1m";
+    const orange = "\x1b[38;5;214m";
     const red = "\x1b[31m";
     const cyan = "\x1b[36m";
 };
+
+// Left padding for all output
+const P = "  ";
 
 const Command = enum {
     search,
@@ -90,7 +94,7 @@ pub fn main() !void {
                 } else if (std.mem.eql(u8, lang_arg, "en") or std.mem.eql(u8, lang_arg, "english")) {
                     lang = .en;
                 } else {
-                    try stderr.print("{s}{s}Error:{s} Unknown language: {s}. Use {s}'en'{s} or {s}'zh'{s}.\n", .{ Color.bold, Color.red, Color.reset, lang_arg, Color.cyan, Color.reset, Color.cyan, Color.reset });
+                    try stderr.print("\n{s}{s}{s}Error:{s} Unknown language: {s}. Use {s}'en'{s} or {s}'zh'{s}.\n\n", .{ P, Color.bold, Color.red, Color.reset, lang_arg, Color.cyan, Color.reset, Color.cyan, Color.reset });
                     return;
                 }
             }
@@ -117,7 +121,7 @@ pub fn main() !void {
     // Execute command
     switch (cmd) {
         .version => {
-            try stdout.print("clumsies {s}\n", .{version});
+            try stdout.print("\n{s}{s}{s}clumsies{s} {s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, version });
         },
         .help, .none => {
             try commands.printHelp(stdout);
@@ -127,14 +131,14 @@ pub fn main() !void {
         },
         .detail => {
             const name = template_name orelse {
-                try stderr.print("{s}{s}Error:{s} template name required\nUsage: {s}clumsies detail <name> [--lang en|zh]{s}\n", .{ Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
+                try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies detail <name> [--lang en|zh]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
                 return;
             };
             try commands.cmdDetail(stdout, stderr, allocator, name, lang orelse .en);
         },
         .use => {
             const name = template_name orelse {
-                try stderr.print("{s}{s}Error:{s} template name required\nUsage: {s}clumsies use <name> [--lang en|zh] [--name CURSOR.md]{s}\n", .{ Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
+                try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies use <name> [--lang en|zh] [--name CURSOR.md]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
                 return;
             };
             try commands.cmdUse(stdout, stderr, allocator, name, lang orelse .en, entry_name, force);
