@@ -14,9 +14,9 @@ GREEN='\033[32m'
 RED='\033[31m'
 CYAN='\033[36m'
 
-info() { printf "  ${ORANGE}→${RESET} %s\n" "$1"; }
-success() { printf "${BOLD}${ORANGE}✓${RESET} %s\n" "$1"; }
-error() { printf "${BOLD}${RED}Error:${RESET} %s\n" "$1" >&2; exit 1; }
+info() { printf "  %b→%b %s\n" "$ORANGE" "$RESET" "$1"; }
+success() { printf "%b%b✓%b %s\n" "$BOLD" "$ORANGE" "$RESET" "$1"; }
+error() { printf "%b%bError:%b %s\n" "$BOLD" "$RED" "$RESET" "$1" >&2; exit 1; }
 
 detect_platform() {
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -45,12 +45,12 @@ detect_shell_rc() {
 }
 
 main() {
-    printf "\n${BOLD}Installing ${ORANGE}clumsies${RESET}${BOLD}...${RESET}\n\n"
+    printf "\n%b%bInstalling %bclumsies%b%b...%b\n\n" "$BOLD" "" "$ORANGE" "$RESET" "$BOLD" "$RESET"
 
     PLATFORM=$(detect_platform)
-    info "Detected platform: ${BOLD}$PLATFORM${RESET}"
+    printf "  %b→%b Detected platform: %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$PLATFORM" "$RESET"
 
-    info "Creating ${BOLD}$INSTALL_DIR/${RESET}"
+    printf "  %b→%b Creating %b%s/%b\n" "$ORANGE" "$RESET" "$ORANGE" "$INSTALL_DIR" "$RESET"
     mkdir -p "$BIN_DIR"
     mkdir -p "$INSTALL_DIR/registry"
 
@@ -71,7 +71,7 @@ main() {
     PATH_LINE='export PATH="$HOME/.clumsies/bin:$PATH"'
 
     if ! grep -q ".clumsies/bin" "$RC_FILE" 2>/dev/null; then
-        info "Configuring PATH in ${BOLD}$RC_FILE${RESET}"
+        printf "  %b→%b Configuring PATH in %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$RC_FILE" "$RESET"
         echo "" >> "$RC_FILE"
         echo "# clumsies" >> "$RC_FILE"
         echo "$PATH_LINE" >> "$RC_FILE"
@@ -80,10 +80,10 @@ main() {
     fi
 
     printf "\n"
-    success "${BOLD}clumsies installed successfully!${RESET}"
-    printf "\nRun ${CYAN}source $RC_FILE${RESET} or restart your terminal, then try:\n\n"
-    printf "    ${CYAN}clumsies search${RESET}\n"
-    printf "    ${CYAN}clumsies use solocc${RESET}\n\n"
+    success "clumsies installed successfully!"
+    printf "\nRun %bsource $RC_FILE%b or restart your terminal, then try:\n\n" "$CYAN" "$RESET"
+    printf "    %bclumsies search%b\n" "$CYAN" "$RESET"
+    printf "    %bclumsies use solocc%b\n\n" "$CYAN" "$RESET"
 }
 
 main

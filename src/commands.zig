@@ -368,7 +368,7 @@ pub fn cmdInstall(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     }
 
     if (downloaded > 0) {
-        try stdout.print("{s}{s}✓{s} Installed {s}{d}{s} files to {s}\n", .{ Color.bold, Color.orange, Color.reset, Color.bold, downloaded, Color.reset, template_install_path });
+        try stdout.print("{s}{s}✓{s} Installed {s}{d}{s} files to {s}{s}{s}\n", .{ Color.bold, Color.orange, Color.reset, Color.bold, downloaded, Color.reset, Color.orange, template_install_path, Color.reset });
     } else {
         try stderr.print("{s}{s}Error:{s} No files were installed.\n", .{ Color.bold, Color.red, Color.reset });
     }
