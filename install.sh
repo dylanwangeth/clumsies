@@ -5,9 +5,18 @@ REPO="dylanwangeth/clumsies"
 INSTALL_DIR="$HOME/.clumsies"
 BIN_DIR="$INSTALL_DIR/bin"
 
-info() { printf "  → %s\n" "$1"; }
-success() { printf "\033[0;32m✓\033[0m %s\n" "$1"; }
-error() { printf "\033[0;31m✗\033[0m %s\n" "$1" >&2; exit 1; }
+# Colors (Zig orange theme)
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+ORANGE='\033[38;5;214m'
+GREEN='\033[32m'
+RED='\033[31m'
+CYAN='\033[36m'
+
+info() { printf "  ${ORANGE}→${RESET} %s\n" "$1"; }
+success() { printf "${BOLD}${ORANGE}✓${RESET} %s\n" "$1"; }
+error() { printf "${BOLD}${RED}Error:${RESET} %s\n" "$1" >&2; exit 1; }
 
 detect_platform() {
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -36,17 +45,16 @@ detect_shell_rc() {
 }
 
 main() {
-    echo "Installing clumsies..."
-    echo
+    printf "\n${BOLD}Installing ${ORANGE}clumsies${RESET}${BOLD}...${RESET}\n\n"
 
     PLATFORM=$(detect_platform)
-    info "Detecting platform... $PLATFORM"
+    info "Detected platform: ${BOLD}$PLATFORM${RESET}"
 
-    info "Creating $INSTALL_DIR/"
+    info "Creating ${BOLD}$INSTALL_DIR/${RESET}"
     mkdir -p "$BIN_DIR"
     mkdir -p "$INSTALL_DIR/registry"
 
-    info "Downloading clumsies..."
+    info "Downloading binary..."
     DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/clumsies-$PLATFORM"
 
     if command -v curl > /dev/null; then
@@ -63,7 +71,7 @@ main() {
     PATH_LINE='export PATH="$HOME/.clumsies/bin:$PATH"'
 
     if ! grep -q ".clumsies/bin" "$RC_FILE" 2>/dev/null; then
-        info "Configuring PATH in $RC_FILE"
+        info "Configuring PATH in ${BOLD}$RC_FILE${RESET}"
         echo "" >> "$RC_FILE"
         echo "# clumsies" >> "$RC_FILE"
         echo "$PATH_LINE" >> "$RC_FILE"
@@ -71,14 +79,11 @@ main() {
         info "PATH already configured"
     fi
 
-    echo
-    success "clumsies installed successfully!"
-    echo
-    echo "Run 'source $RC_FILE' or restart your terminal, then try:"
-    echo
-    echo "    clumsies search"
-    echo "    clumsies use solocc"
-    echo
+    printf "\n"
+    success "${BOLD}clumsies installed successfully!${RESET}"
+    printf "\nRun ${CYAN}source $RC_FILE${RESET} or restart your terminal, then try:\n\n"
+    printf "    ${CYAN}clumsies search${RESET}\n"
+    printf "    ${CYAN}clumsies use solocc${RESET}\n\n"
 }
 
 main

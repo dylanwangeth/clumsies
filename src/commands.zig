@@ -2,6 +2,18 @@ const std = @import("std");
 const fs = std.fs;
 const http = @import("http.zig");
 
+// ANSI color codes
+const Color = struct {
+    const reset = "\x1b[0m";
+    const bold = "\x1b[1m";
+    const dim = "\x1b[2m";
+    // Zig orange (256-color mode)
+    const orange = "\x1b[38;5;214m";
+    const red = "\x1b[31m";
+    const green = "\x1b[32m";
+    const cyan = "\x1b[36m";
+};
+
 pub const Language = enum { en, zh };
 
 pub fn printHelp(stdout: anytype) !void {
@@ -58,20 +70,20 @@ pub fn cmdSearch(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator,
     // Fetch remote index
     var index = http.fetchIndex(allocator) catch |err| {
         if (err == http.HttpError.RequestFailed) {
-            try stderr.writeAll("Error: Failed to connect to registry. Check your network.\n");
+            try stderr.print("{s}{s}Error:{s} Failed to connect to registry. Check your network.\n", .{ Color.bold, Color.red, Color.reset });
         } else if (err == http.HttpError.NotFound) {
-            try stderr.writeAll("Error: Registry not found. The remote registry may not be set up yet.\n");
+            try stderr.print("{s}{s}Error:{s} Registry not found. The remote registry may not be set up yet.\n", .{ Color.bold, Color.red, Color.reset });
         } else if (err == http.HttpError.InvalidResponse) {
-            try stderr.writeAll("Error: Invalid response from registry.\n");
+            try stderr.print("{s}{s}Error:{s} Invalid response from registry.\n", .{ Color.bold, Color.red, Color.reset });
         } else {
-            try stderr.print("Error: {any}\n", .{err});
+            try stderr.print("{s}{s}Error:{s} {any}\n", .{ Color.bold, Color.red, Color.reset, err });
         }
         return;
     };
     defer index.deinit();
 
-    try stdout.writeAll("NAME            TASK        DESCRIPTION\n");
-    try stdout.writeAll("──────────────────────────────────────────────────────────────────\n");
+    try stdout.print("{s}{s}NAME            TASK        DESCRIPTION{s}\n", .{ Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}──────────────────────────────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
 
     for (index.templates) |tmpl| {
         // Filter by task
@@ -111,18 +123,18 @@ pub fn cmdDetail(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator,
 
     // Build remote path: solocc/en/CLAUDE.md
     const remote_path = std.fmt.allocPrint(allocator, "{s}/{s}/CLAUDE.md", .{ name, lang_str }) catch {
-        try stderr.writeAll("Error: Out of memory.\n");
+        try stderr.print("{s}{s}Error:{s} Out of memory.\n", .{ Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(remote_path);
 
     const content = http.downloadFile(allocator, remote_path) catch |err| {
         if (err == http.HttpError.NotFound) {
-            try stderr.print("Error: Template '{s}' not found in registry.\n", .{name});
+            try stderr.print("{s}{s}Error:{s} Template '{s}{s}{s}' not found in registry.\n", .{ Color.bold, Color.red, Color.reset, Color.bold, name, Color.reset });
         } else if (err == http.HttpError.RequestFailed) {
-            try stderr.writeAll("Error: Failed to connect to registry. Check your network.\n");
+            try stderr.print("{s}{s}Error:{s} Failed to connect to registry. Check your network.\n", .{ Color.bold, Color.red, Color.reset });
         } else {
-            try stderr.print("Error: {any}\n", .{err});
+            try stderr.print("{s}{s}Error:{s} {any}\n", .{ Color.bold, Color.red, Color.reset, err });
         }
         return;
     };
@@ -134,7 +146,7 @@ pub fn cmdDetail(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator,
 /// Apply template to current directory (from installed templates)
 pub fn cmdUse(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name: []const u8, lang: Language, entry_name: []const u8, force: bool) !void {
     const registry_path = getRegistryPath(allocator) catch {
-        try stderr.writeAll("Error: Could not determine home directory.\n");
+        try stderr.print("{s}{s}Error:{s} Could not determine home directory.\n", .{ Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(registry_path);
@@ -146,17 +158,17 @@ pub fn cmdUse(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, na
     // Check if template is installed
     var template_dir = fs.openDirAbsolute(template_path, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound) {
-            try stderr.print("Error: Template '{s}' not installed.\n", .{name});
-            try stderr.print("Run: clumsies install {s}\n", .{name});
+            try stderr.print("{s}{s}Error:{s} Template '{s}{s}{s}' not installed.\n", .{ Color.bold, Color.red, Color.reset, Color.bold, name, Color.reset });
+            try stderr.print("Run: {s}clumsies install {s}{s}\n", .{ Color.cyan, name, Color.reset });
         } else {
-            try stderr.print("Error: Could not open template: {any}\n", .{err});
+            try stderr.print("{s}{s}Error:{s} Could not open template: {any}\n", .{ Color.bold, Color.red, Color.reset, err });
         }
         return;
     };
     defer template_dir.close();
 
     const lang_display = if (lang == .zh) "zh (中文)" else "en (English)";
-    try stdout.print("Applying template '{s}' [{s}]...\n\n", .{ name, lang_display });
+    try stdout.print("Applying template '{s}{s}{s}' [{s}]...\n\n", .{ Color.bold, name, Color.reset, lang_display });
 
     var cwd = fs.cwd().openDir(".", .{}) catch |err| {
         try stderr.print("Error opening current directory: {}\n", .{err});
@@ -172,13 +184,13 @@ pub fn cmdUse(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, na
     defer allocator.free(claude_path);
 
     const claude_file = fs.openFileAbsolute(claude_path, .{}) catch |err| {
-        try stderr.print("Error: Could not read CLAUDE.md: {any}\n", .{err});
+        try stderr.print("{s}{s}Error:{s} Could not read CLAUDE.md: {any}\n", .{ Color.bold, Color.red, Color.reset, err });
         return;
     };
     defer claude_file.close();
 
     const claude_content = claude_file.readToEndAlloc(allocator, 1024 * 1024) catch {
-        try stderr.writeAll("Error: Could not read CLAUDE.md.\n");
+        try stderr.print("{s}{s}Error:{s} Could not read CLAUDE.md.\n", .{ Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(claude_content);
@@ -193,7 +205,7 @@ pub fn cmdUse(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, na
 
     var prompts_dir = fs.openDirAbsolute(prompts_path, .{ .iterate = true }) catch {
         // No prompts directory, that's ok
-        try stdout.print("\nDone! Created {d} files", .{created});
+        try stdout.print("\n{s}{s}✓{s} Done! Created {s}{d}{s} files", .{ Color.bold, Color.orange, Color.reset, Color.bold, created, Color.reset });
         if (skipped > 0) try stdout.print(", skipped {d} files", .{skipped});
         try stdout.writeAll("\n");
         return;
@@ -230,7 +242,7 @@ pub fn cmdUse(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, na
         if (result.skipped) skipped += 1;
     }
 
-    try stdout.print("\nDone! Created {d} files", .{created});
+    try stdout.print("\n{s}{s}✓{s} Done! Created {s}{d}{s} files", .{ Color.bold, Color.orange, Color.reset, Color.bold, created, Color.reset });
     if (skipped > 0) try stdout.print(", skipped {d} files", .{skipped});
     try stdout.writeAll("\n");
 }
@@ -238,7 +250,7 @@ pub fn cmdUse(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, na
 /// Install a template from remote registry
 pub fn cmdInstall(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, template_name: ?[]const u8, list: bool, force: bool) !void {
     const registry_path = getRegistryPath(allocator) catch {
-        try stderr.writeAll("Error: Could not determine home directory.\n");
+        try stderr.print("{s}{s}Error:{s} Could not determine home directory.\n", .{ Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(registry_path);
@@ -249,14 +261,14 @@ pub fn cmdInstall(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     }
 
     const name = template_name orelse {
-        try stderr.writeAll("Error: template name required\nUsage: clumsies install <name>\n");
+        try stderr.print("{s}{s}Error:{s} template name required\nUsage: {s}clumsies install <name>{s}\n", .{ Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
         return;
     };
 
     const template_install_path = try std.fs.path.join(allocator, &.{ registry_path, name });
     defer allocator.free(template_install_path);
 
-    try stdout.print("Installing template '{s}'...\n\n", .{name});
+    try stdout.print("Installing template '{s}{s}{s}'...\n\n", .{ Color.bold, name, Color.reset });
 
     // Check if already exists
     const exists = blk: {
@@ -266,39 +278,39 @@ pub fn cmdInstall(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
 
     if (exists) {
         if (force) {
-            try stdout.writeAll("  → Removing existing template...\n");
+            try stdout.print("  {s}→{s} Removing existing template...\n", .{ Color.orange, Color.reset });
             fs.deleteTreeAbsolute(template_install_path) catch |err| {
-                try stderr.print("Error removing existing template: {any}\n", .{err});
+                try stderr.print("{s}{s}Error:{s} removing existing template: {any}\n", .{ Color.bold, Color.red, Color.reset, err });
                 return;
             };
         } else {
-            try stderr.print("Error: template '{s}' already installed. Use --force to overwrite.\n", .{name});
+            try stderr.print("{s}{s}Error:{s} template '{s}{s}{s}' already installed. Use {s}--force{s} to overwrite.\n", .{ Color.bold, Color.red, Color.reset, Color.bold, name, Color.reset, Color.cyan, Color.reset });
             return;
         }
     }
 
     // Create registry directory
     fs.cwd().makePath(registry_path) catch |err| {
-        try stderr.print("Error creating registry directory: {any}\n", .{err});
+        try stderr.print("{s}{s}Error:{s} creating registry directory: {any}\n", .{ Color.bold, Color.red, Color.reset, err });
         return;
     };
 
     // Get list of files from GitHub API
-    try stdout.writeAll("  → Fetching file list from registry...\n");
+    try stdout.print("  {s}→{s} Fetching file list from registry...\n", .{ Color.orange, Color.reset });
     var files = http.listTemplateFiles(allocator, name) catch |err| {
         if (err == http.HttpError.NotFound) {
-            try stderr.print("Error: template '{s}' not found in registry.\n", .{name});
+            try stderr.print("{s}{s}Error:{s} template '{s}{s}{s}' not found in registry.\n", .{ Color.bold, Color.red, Color.reset, Color.bold, name, Color.reset });
         } else if (err == http.HttpError.RateLimited) {
-            try stderr.writeAll("Error: GitHub API rate limit exceeded. Try again later.\n");
+            try stderr.print("{s}{s}Error:{s} GitHub API rate limit exceeded. Try again later.\n", .{ Color.bold, Color.red, Color.reset });
         } else {
-            try stderr.print("Error fetching template files: {any}\n", .{err});
+            try stderr.print("{s}{s}Error:{s} fetching template files: {any}\n", .{ Color.bold, Color.red, Color.reset, err });
         }
         return;
     };
     defer files.deinit();
 
     if (files.items.len == 0) {
-        try stderr.print("Error: template '{s}' not found in registry.\n", .{name});
+        try stderr.print("{s}{s}Error:{s} template '{s}{s}{s}' not found in registry.\n", .{ Color.bold, Color.red, Color.reset, Color.bold, name, Color.reset });
         return;
     }
 
@@ -322,9 +334,9 @@ pub fn cmdInstall(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
         // Download file
         const content = http.downloadFile(allocator, remote_path) catch |err| {
             if (err == http.HttpError.NotFound) {
-                try stderr.print("  ✗ Not found: {s}\n", .{local_relative});
+                try stderr.print("  {s}{s}✗{s} Not found: {s}\n", .{ Color.bold, Color.red, Color.reset, local_relative });
             } else {
-                try stderr.print("  ✗ Failed: {s}\n", .{local_relative});
+                try stderr.print("  {s}{s}✗{s} Failed: {s}\n", .{ Color.bold, Color.red, Color.reset, local_relative });
             }
             failed += 1;
             continue;
@@ -333,41 +345,41 @@ pub fn cmdInstall(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
 
         // Write file
         const file = fs.createFileAbsolute(local_path, .{}) catch {
-            try stderr.print("  ✗ Cannot write: {s}\n", .{local_relative});
+            try stderr.print("  {s}{s}✗{s} Cannot write: {s}\n", .{ Color.bold, Color.red, Color.reset, local_relative });
             failed += 1;
             continue;
         };
         defer file.close();
 
         file.writeAll(content) catch {
-            try stderr.print("  ✗ Write error: {s}\n", .{local_relative});
+            try stderr.print("  {s}{s}✗{s} Write error: {s}\n", .{ Color.bold, Color.red, Color.reset, local_relative });
             failed += 1;
             continue;
         };
 
-        try stdout.print("  → {s}\n", .{local_relative});
+        try stdout.print("  {s}→{s} {s}\n", .{ Color.orange, Color.reset, local_relative });
         downloaded += 1;
     }
 
     try stdout.writeAll("\n");
 
     if (failed > 0) {
-        try stderr.print("Warning: {d} files failed to download.\n", .{failed});
+        try stderr.print("{s}{s}Warning:{s} {d} files failed to download.\n", .{ Color.bold, Color.orange, Color.reset, failed });
     }
 
     if (downloaded > 0) {
-        try stdout.print("✓ Installed {d} files to {s}\n", .{ downloaded, template_install_path });
+        try stdout.print("{s}{s}✓{s} Installed {s}{d}{s} files to {s}\n", .{ Color.bold, Color.orange, Color.reset, Color.bold, downloaded, Color.reset, template_install_path });
     } else {
-        try stderr.writeAll("Error: No files were installed.\n");
+        try stderr.print("{s}{s}Error:{s} No files were installed.\n", .{ Color.bold, Color.red, Color.reset });
     }
 }
 
 fn listInstalledTemplates(stdout: anytype, registry_path: []const u8) !void {
-    try stdout.writeAll("Installed templates:\n");
+    try stdout.print("{s}{s}Installed templates:{s}\n", .{ Color.bold, Color.orange, Color.reset });
 
     var registry_dir = fs.openDirAbsolute(registry_path, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound) {
-            try stdout.writeAll("  (none)\n");
+            try stdout.print("  {s}(none){s}\n", .{ Color.dim, Color.reset });
             return;
         }
         return err;
@@ -378,13 +390,13 @@ fn listInstalledTemplates(stdout: anytype, registry_path: []const u8) !void {
     var count: usize = 0;
     while (try it.next()) |entry| {
         if (entry.kind == .directory) {
-            try stdout.print("  - {s}\n", .{entry.name});
+            try stdout.print("  {s}•{s} {s}{s}{s}\n", .{ Color.green, Color.reset, Color.bold, entry.name, Color.reset });
             count += 1;
         }
     }
 
     if (count == 0) {
-        try stdout.writeAll("  (none)\n");
+        try stdout.print("  {s}(none){s}\n", .{ Color.dim, Color.reset });
     }
 }
 
@@ -403,25 +415,25 @@ fn writeFile(dir: fs.Dir, path: []const u8, content: []const u8, force: bool, st
     };
 
     if (file_exists and !force) {
-        stdout.print("  skip: {s} (exists, use --force to overwrite)\n", .{path}) catch {};
+        stdout.print("  {s}skip:{s} {s} {s}(exists, use --force){s}\n", .{ Color.dim, Color.reset, path, Color.dim, Color.reset }) catch {};
         return .{ .written = false, .skipped = true };
     }
 
     const file = dir.createFile(path, .{}) catch |err| {
-        stderr.print("Error creating file '{s}': {}\n", .{ path, err }) catch {};
+        stderr.print("{s}{s}Error:{s} creating file '{s}': {}\n", .{ Color.bold, Color.red, Color.reset, path, err }) catch {};
         return .{ .written = false, .skipped = false };
     };
     defer file.close();
 
     file.writeAll(content) catch |err| {
-        stderr.print("Error writing file '{s}': {}\n", .{ path, err }) catch {};
+        stderr.print("{s}{s}Error:{s} writing file '{s}': {}\n", .{ Color.bold, Color.red, Color.reset, path, err }) catch {};
         return .{ .written = false, .skipped = false };
     };
 
     if (file_exists) {
-        stdout.print("  overwrite: {s}\n", .{path}) catch {};
+        stdout.print("  {s}{s}overwrite:{s} {s}\n", .{ Color.bold, Color.orange, Color.reset, path }) catch {};
     } else {
-        stdout.print("  create: {s}\n", .{path}) catch {};
+        stdout.print("  {s}{s}create:{s} {s}\n", .{ Color.bold, Color.orange, Color.reset, path }) catch {};
     }
 
     return .{ .written = true, .skipped = false };

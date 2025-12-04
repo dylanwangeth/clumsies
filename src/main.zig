@@ -4,6 +4,14 @@ const commands = @import("commands.zig");
 
 const version = "0.2.0";
 
+// ANSI color codes
+const Color = struct {
+    const reset = "\x1b[0m";
+    const bold = "\x1b[1m";
+    const red = "\x1b[31m";
+    const cyan = "\x1b[36m";
+};
+
 const Command = enum {
     search,
     detail,
@@ -82,7 +90,7 @@ pub fn main() !void {
                 } else if (std.mem.eql(u8, lang_arg, "en") or std.mem.eql(u8, lang_arg, "english")) {
                     lang = .en;
                 } else {
-                    try stderr.print("Unknown language: {s}. Use 'en' or 'zh'.\n", .{lang_arg});
+                    try stderr.print("{s}{s}Error:{s} Unknown language: {s}. Use {s}'en'{s} or {s}'zh'{s}.\n", .{ Color.bold, Color.red, Color.reset, lang_arg, Color.cyan, Color.reset, Color.cyan, Color.reset });
                     return;
                 }
             }
@@ -119,14 +127,14 @@ pub fn main() !void {
         },
         .detail => {
             const name = template_name orelse {
-                try stderr.writeAll("Error: template name required\nUsage: clumsies detail <name> [--lang en|zh]\n");
+                try stderr.print("{s}{s}Error:{s} template name required\nUsage: {s}clumsies detail <name> [--lang en|zh]{s}\n", .{ Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
                 return;
             };
             try commands.cmdDetail(stdout, stderr, allocator, name, lang orelse .en);
         },
         .use => {
             const name = template_name orelse {
-                try stderr.writeAll("Error: template name required\nUsage: clumsies use <name> [--lang en|zh] [--name CURSOR.md]\n");
+                try stderr.print("{s}{s}Error:{s} template name required\nUsage: {s}clumsies use <name> [--lang en|zh] [--name CURSOR.md]{s}\n", .{ Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
                 return;
             };
             try commands.cmdUse(stdout, stderr, allocator, name, lang orelse .en, entry_name, force);
