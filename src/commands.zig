@@ -1,21 +1,10 @@
 const std = @import("std");
 const fs = std.fs;
 const http = @import("http.zig");
+const styles = @import("styles.zig");
 
-// ANSI color codes
-const Color = struct {
-    const reset = "\x1b[0m";
-    const bold = "\x1b[1m";
-    const dim = "\x1b[2m";
-    // Zig orange (256-color mode)
-    const orange = "\x1b[38;5;214m";
-    const red = "\x1b[31m";
-    const green = "\x1b[32m";
-    const cyan = "\x1b[36m";
-};
-
-// Left padding for all output
-const P = "  ";
+const Color = styles.Color;
+const P = styles.P;
 
 pub const Language = enum { en, zh };
 

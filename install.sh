@@ -44,27 +44,76 @@ detect_shell_rc() {
     esac
 }
 
+# Download a file using curl or wget
+download() {
+    url="$1"
+    output="$2"
+    if command -v curl > /dev/null; then
+        curl -fsSL "$url" -o "$output"
+    elif command -v wget > /dev/null; then
+        wget -q "$url" -O "$output"
+    else
+        error "curl or wget required"
+    fi
+}
+
+# Verify SHA256 checksum
+verify_checksum() {
+    file="$1"
+    expected="$2"
+
+    if command -v sha256sum > /dev/null; then
+        actual=$(sha256sum "$file" | cut -d' ' -f1)
+    elif command -v shasum > /dev/null; then
+        actual=$(shasum -a 256 "$file" | cut -d' ' -f1)
+    else
+        printf "  %b!%b Warning: Cannot verify checksum (sha256sum/shasum not found)\n" "$ORANGE" "$RESET"
+        return 0
+    fi
+
+    if [ "$actual" != "$expected" ]; then
+        error "Checksum verification failed!\n  Expected: $expected\n  Got:      $actual\n  The binary may have been tampered with."
+    fi
+}
+
 main() {
     printf "\n%b%bInstalling %bclumsies%b%b...%b\n\n" "$BOLD" "" "$ORANGE" "$RESET" "$BOLD" "$RESET"
 
     PLATFORM=$(detect_platform)
+    BINARY_NAME="clumsies-$PLATFORM"
     printf "  %b→%b Detected platform: %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$PLATFORM" "$RESET"
 
-    printf "  %b→%b Creating %b%s/%b\n" "$ORANGE" "$RESET" "$ORANGE" "$INSTALL_DIR" "$RESET"
+    printf "  %b→%b Creating %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$INSTALL_DIR" "$RESET"
     mkdir -p "$BIN_DIR"
     mkdir -p "$INSTALL_DIR/registry"
 
-    info "Downloading binary..."
-    DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/clumsies-$PLATFORM"
+    # Download checksums file
+    info "Downloading checksums..."
+    CHECKSUMS_URL="https://github.com/$REPO/releases/latest/download/checksums.txt"
+    CHECKSUMS_FILE=$(mktemp)
+    download "$CHECKSUMS_URL" "$CHECKSUMS_FILE"
 
-    if command -v curl > /dev/null; then
-        curl -fsSL "$DOWNLOAD_URL" -o "$BIN_DIR/clumsies"
-    elif command -v wget > /dev/null; then
-        wget -q "$DOWNLOAD_URL" -O "$BIN_DIR/clumsies"
-    else
-        error "curl or wget required"
+    # Extract expected checksum for our platform
+    EXPECTED_CHECKSUM=$(grep "$BINARY_NAME" "$CHECKSUMS_FILE" | cut -d' ' -f1)
+    if [ -z "$EXPECTED_CHECKSUM" ]; then
+        rm -f "$CHECKSUMS_FILE"
+        error "Checksum not found for $BINARY_NAME"
     fi
+    rm -f "$CHECKSUMS_FILE"
 
+    # Download binary
+    info "Downloading binary..."
+    DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$BINARY_NAME"
+    TEMP_BINARY=$(mktemp)
+    download "$DOWNLOAD_URL" "$TEMP_BINARY"
+
+    # Verify checksum
+    info "Verifying checksum..."
+    verify_checksum "$TEMP_BINARY" "$EXPECTED_CHECKSUM"
+    success "Checksum verified"
+
+    # Install binary
+    mv "$TEMP_BINARY" "$BIN_DIR/clumsies"
     chmod +x "$BIN_DIR/clumsies"
 
     RC_FILE=$(detect_shell_rc)

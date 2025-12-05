@@ -1,20 +1,12 @@
 const std = @import("std");
 const fs = std.fs;
 const commands = @import("commands.zig");
+const styles = @import("styles.zig");
 
-const version = "0.2.2";
+const Color = styles.Color;
+const P = styles.P;
 
-// ANSI color codes
-const Color = struct {
-    const reset = "\x1b[0m";
-    const bold = "\x1b[1m";
-    const orange = "\x1b[38;5;214m";
-    const red = "\x1b[31m";
-    const cyan = "\x1b[36m";
-};
-
-// Left padding for all output
-const P = "  ";
+const version = "0.2.3";
 
 const Command = enum {
     search,

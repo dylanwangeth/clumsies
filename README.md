@@ -1,7 +1,5 @@
 # clumsies
 
-> Humans are so clumsy.
-
 ## What is this?
 
 A scaffolding tool for AI Agent prompts systems.
@@ -12,9 +10,30 @@ We call this complete package a **template**. Instead of copying these files eve
 
 ## Install
 
+### Quick Install (with checksum verification)
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dylanwangeth/clumsies/main/install.sh | sh
 ```
+
+The installer downloads both the binary and `checksums.txt`, verifying SHA256 before execution.
+
+### Manual Install (verify yourself)
+
+```bash
+# Download binary and checksums
+curl -LO https://github.com/dylanwangeth/clumsies/releases/latest/download/clumsies-darwin-arm64
+curl -LO https://github.com/dylanwangeth/clumsies/releases/latest/download/checksums.txt
+
+# Verify checksum
+shasum -a 256 -c checksums.txt --ignore-missing
+
+# Install
+chmod +x clumsies-darwin-arm64
+mv clumsies-darwin-arm64 ~/.clumsies/bin/clumsies
+```
+
+Replace `darwin-arm64` with your platform: `darwin-x86_64`, `linux-arm64`, or `linux-x86_64`.
 
 ## Usage
 
