@@ -1,7 +1,9 @@
 const std = @import("std");
 
-const REGISTRY_BASE = "https://raw.githubusercontent.com/dylanwangeth/clumsies-registry/main";
+const REGISTRY_BASE = "https://raw.githubusercontent.com/lilhammerfun/clumsies-registry/main";
 const INDEX_URL = REGISTRY_BASE ++ "/index.json";
+
+pub const RELEASES_BASE = "https://github.com/lilhammerfun/clumsies/releases/latest/download";
 
 pub const HttpError = error{
     RequestFailed,

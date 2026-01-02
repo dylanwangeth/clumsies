@@ -1,18 +1,19 @@
 const std = @import("std");
 const fs = std.fs;
-const commands = @import("commands.zig");
+const commands = @import("commands/commands.zig");
 const styles = @import("styles.zig");
 
 const Color = styles.Color;
 const P = styles.P;
 
-const version = "0.2.4";
+const version = "0.2.5";
 
 const Command = enum {
     search,
     detail,
     use,
     install,
+    upgrade,
     zen,
     help,
     version,
@@ -43,6 +44,7 @@ pub fn main() !void {
     var task_filter: ?[]const u8 = null;
     var keyword_filter: ?[]const u8 = null;
     var lang: ?commands.Language = null;
+    const Language = commands.Language;
     var entry_name: []const u8 = "CLAUDE.md";
     var force = false;
     var list = false;
@@ -68,6 +70,8 @@ pub fn main() !void {
             cmd = .install;
         } else if (std.mem.eql(u8, arg, "zen")) {
             cmd = .zen;
+        } else if (std.mem.eql(u8, arg, "upgrade")) {
+            cmd = .upgrade;
         }
         // Options
         else if (std.mem.eql(u8, arg, "--task") or std.mem.eql(u8, arg, "-t")) {
@@ -85,9 +89,9 @@ pub fn main() !void {
                 i += 1;
                 const lang_arg = args[i];
                 if (std.mem.eql(u8, lang_arg, "zh") or std.mem.eql(u8, lang_arg, "cn") or std.mem.eql(u8, lang_arg, "chinese")) {
-                    lang = .zh;
+                    lang = Language.zh;
                 } else if (std.mem.eql(u8, lang_arg, "en") or std.mem.eql(u8, lang_arg, "english")) {
-                    lang = .en;
+                    lang = Language.en;
                 } else {
                     try stderr.print("\n{s}{s}{s}Error:{s} Unknown language: {s}. Use {s}'en'{s} or {s}'zh'{s}.\n\n", .{ P, Color.bold, Color.red, Color.reset, lang_arg, Color.cyan, Color.reset, Color.cyan, Color.reset });
                     return;
@@ -119,30 +123,33 @@ pub fn main() !void {
             try stdout.print("\n{s}{s}{s}clumsies{s} {s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, version });
         },
         .help, .none => {
-            try commands.printHelp(stdout);
+            try commands.help.run(stdout);
         },
         .search => {
-            try commands.cmdSearch(stdout, stderr, allocator, task_filter, keyword_filter);
+            try commands.search.run(stdout, stderr, allocator, task_filter, keyword_filter);
         },
         .detail => {
             const name = template_name orelse {
                 try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies detail <name> [--lang en|zh]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
                 return;
             };
-            try commands.cmdDetail(stdout, stderr, allocator, name, lang orelse .en);
+            try commands.detail.run(stdout, stderr, allocator, name, lang orelse .en);
         },
         .use => {
             const name = template_name orelse {
                 try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies use <name> [--lang en|zh] [--name CURSOR.md]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
                 return;
             };
-            try commands.cmdUse(stdout, stderr, allocator, name, lang orelse .en, entry_name, force);
+            try commands.use.run(stdout, stderr, allocator, name, lang orelse .en, entry_name, force);
         },
         .install => {
-            try commands.cmdInstall(stdout, stderr, allocator, template_name, list, force);
+            try commands.install.run(stdout, stderr, allocator, template_name, list, force);
         },
         .zen => {
-            try commands.cmdZen(stdout);
+            try commands.zen.run(stdout);
+        },
+        .upgrade => {
+            try commands.upgrade.run(stdout, stderr, allocator);
         },
     }
 }
