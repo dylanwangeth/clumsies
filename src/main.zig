@@ -6,13 +6,14 @@ const styles = @import("styles.zig");
 const Color = styles.Color;
 const P = styles.P;
 
-const version = "0.2.3";
+const version = "0.2.4";
 
 const Command = enum {
     search,
     detail,
     use,
     install,
+    zen,
     help,
     version,
     none,
@@ -65,6 +66,8 @@ pub fn main() !void {
             cmd = .use;
         } else if (std.mem.eql(u8, arg, "install")) {
             cmd = .install;
+        } else if (std.mem.eql(u8, arg, "zen")) {
+            cmd = .zen;
         }
         // Options
         else if (std.mem.eql(u8, arg, "--task") or std.mem.eql(u8, arg, "-t")) {
@@ -137,6 +140,9 @@ pub fn main() !void {
         },
         .install => {
             try commands.cmdInstall(stdout, stderr, allocator, template_name, list, force);
+        },
+        .zen => {
+            try commands.cmdZen(stdout);
         },
     }
 }

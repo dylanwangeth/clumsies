@@ -4,7 +4,7 @@
 
 A scaffolding tool for AI Agent prompts systems.
 
-We found that a single prompts file isn't enough for complex projects. So we created a multi-file system: a **meta-prompt file** (`CLAUDE.md`, `CURSOR.md`, or `GEMINI.md`) that tells the AI how to understand and extend the prompts, plus a `prompts/` directory with all the actual rules.
+We found that a single prompts file isn't enough for complex projects. So we created a multi-file system: a **meta-prompt file** (`CLAUDE.md`, `CURSOR.md`, or `GEMINI.md`) that tells the AI how to understand and extend the prompts, plus a `.prompts/` directory with all the actual rules.
 
 We call this complete package a **template**. Instead of copying these files everywhere, use clumsies to manage them.
 
@@ -61,7 +61,7 @@ clumsies install --list                  # List installed templates
 ```
 your-project/
 ├── CLAUDE.md                    # Meta-prompt file: tells AI how to understand the system
-└── prompts/
+└── .prompts/
     ├── conduct/                 # Development standards
     │   ├── CODE_COMMENTS.md
     │   ├── GIT_COMMIT.md
@@ -75,8 +75,8 @@ your-project/
 
 After applying a template, add directories based on your needs:
 
-- `prompts/biz/` — Business context
-- `prompts/tech/` — Technical documentation
+- `.prompts/biz/` — Business context
+- `.prompts/tech/` — Technical documentation
 
 The AI will understand them automatically because the meta-prompt file defines the rules.
 
