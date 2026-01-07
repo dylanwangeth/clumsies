@@ -57,6 +57,7 @@ pub fn fetchUrl(allocator: std.mem.Allocator, url: []const u8) HttpError![]const
 
 /// Template metadata from templates/index.json
 pub const TemplateInfo = struct {
+    hash: []const u8,
     name: []const u8,
     task: []const u8,
     description: []const u8,
@@ -79,6 +80,16 @@ pub const TemplatesIndex = struct {
         self.allocator.free(self.templates);
         self.parsed.deinit();
         self.allocator.free(self.json_str);
+    }
+
+    pub fn findByHash(self: *const TemplatesIndex, hash: []const u8) ?TemplateInfo {
+        for (self.templates) |t| {
+            // Support short hash matching (prefix)
+            if (t.hash.len >= hash.len and std.mem.eql(u8, t.hash[0..hash.len], hash)) {
+                return t;
+            }
+        }
+        return null;
     }
 };
 
@@ -111,6 +122,7 @@ pub fn fetchTemplatesIndex(allocator: std.mem.Allocator) HttpError!TemplatesInde
         }
 
         const info = TemplateInfo{
+            .hash = if (obj.get("hash")) |v| v.string else "",
             .name = if (obj.get("name")) |v| v.string else "",
             .task = if (obj.get("task")) |v| v.string else "",
             .description = if (obj.get("description")) |v| v.string else "",
@@ -244,7 +256,8 @@ pub const PromptsIndex = struct {
 
     pub fn findByHash(self: *const PromptsIndex, hash: []const u8) ?PromptMeta {
         for (self.prompts) |p| {
-            if (std.mem.eql(u8, p.hash, hash)) {
+            // Support short hash matching (prefix)
+            if (p.hash.len >= hash.len and std.mem.eql(u8, p.hash[0..hash.len], hash)) {
                 return p;
             }
         }

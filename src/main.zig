@@ -6,13 +6,14 @@ const styles = @import("styles.zig");
 const Color = styles.Color;
 const P = styles.P;
 
-const version = "0.3.1";
+const version = "0.4.0";
 
 const Command = enum {
     search,
     detail,
     use,
     install,
+    add,
     upgrade,
     config,
     zen,
@@ -69,6 +70,8 @@ pub fn main() !void {
             cmd = .use;
         } else if (std.mem.eql(u8, arg, "install")) {
             cmd = .install;
+        } else if (std.mem.eql(u8, arg, "add")) {
+            cmd = .add;
         } else if (std.mem.eql(u8, arg, "zen")) {
             cmd = .zen;
         } else if (std.mem.eql(u8, arg, "upgrade")) {
@@ -104,7 +107,7 @@ pub fn main() !void {
         else if (!std.mem.startsWith(u8, arg, "-")) {
             if (cmd == .search and keyword == null) {
                 keyword = arg;
-            } else if (template_name == null and (cmd == .detail or cmd == .use or cmd == .install)) {
+            } else if (template_name == null and (cmd == .detail or cmd == .use or cmd == .install or cmd == .add)) {
                 template_name = arg;
             }
         }
@@ -131,16 +134,23 @@ pub fn main() !void {
             try commands.detail.run(stdout, stderr, allocator, name, effective_lang);
         },
         .use => {
-            const name = template_name orelse {
-                try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies use <name> [--lang <code>] [--name CURSOR.md]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
+            const hash = template_name orelse {
+                try stderr.print("\n{s}{s}{s}Error:{s} template hash required\n{s}Usage: {s}clumsies use <hash> [--lang <code>] [--name CURSOR.md]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
                 return;
             };
             const effective_lang = try commands.config.getLang(allocator, lang);
             defer allocator.free(effective_lang);
-            try commands.use.run(stdout, stderr, allocator, name, effective_lang, entry_name, force);
+            try commands.use.run(stdout, stderr, allocator, hash, effective_lang, entry_name, force);
         },
         .install => {
             try commands.install.run(stdout, stderr, allocator, template_name, list, force);
+        },
+        .add => {
+            const hash = template_name orelse {
+                try stderr.print("\n{s}{s}{s}Error:{s} prompt hash required\n{s}Usage: {s}clumsies add <hash> [--force]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
+                return;
+            };
+            try commands.add.run(stdout, stderr, allocator, hash, force);
         },
         .zen => {
             try commands.zen.run(stdout);

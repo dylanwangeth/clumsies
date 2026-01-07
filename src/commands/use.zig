@@ -5,8 +5,27 @@ const http = @import("../http.zig");
 const Color = commands.Color;
 const P = commands.P;
 
-pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name: []const u8, lang: []const u8, entry_name: []const u8, force: bool) !void {
+pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, hash: []const u8, lang: []const u8, entry_name: []const u8, force: bool) !void {
     try stdout.writeAll("\n");
+
+    // Fetch templates index to find template info by hash
+    var templates_index = http.fetchTemplatesIndex(allocator) catch |err| {
+        if (err == http.HttpError.RequestFailed) {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to connect to registry.\n", .{ P, Color.bold, Color.red, Color.reset });
+        } else {
+            try stderr.print("{s}{s}{s}Error:{s} Could not fetch templates index.\n", .{ P, Color.bold, Color.red, Color.reset });
+        }
+        return;
+    };
+    defer templates_index.deinit();
+
+    const tmpl = templates_index.findByHash(hash) orelse {
+        try stderr.print("{s}{s}{s}Error:{s} Template with hash '{s}{s}{s}' not found.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, hash, Color.reset });
+        return;
+    };
+
+    // Use first 8 chars of hash as directory name
+    const hash8 = tmpl.hash[0..@min(8, tmpl.hash.len)];
 
     const templates_path = commands.getTemplatesPath(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine home directory.\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -20,13 +39,13 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
     };
     defer allocator.free(prompts_path);
 
-    const template_path = try std.fs.path.join(allocator, &.{ templates_path, name });
+    const template_path = try std.fs.path.join(allocator, &.{ templates_path, hash8 });
     defer allocator.free(template_path);
 
     // Check if template exists
     fs.accessAbsolute(template_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Template '{s}{s}{s}' not installed.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, name, Color.reset });
-        try stderr.print("{s}Run: {s}clumsies install {s}{s}\n", .{ P, Color.cyan, name, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Template '{s}{s}{s}' ({s}) not installed.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, tmpl.name, Color.reset, hash8 });
+        try stderr.print("{s}Run: {s}clumsies install {s}{s}\n", .{ P, Color.cyan, hash8, Color.reset });
         return;
     };
 
@@ -36,7 +55,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
 
     const meta_file = fs.openFileAbsolute(meta_path, .{}) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not read template meta.json.\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Try reinstalling: {s}clumsies install {s} --force{s}\n", .{ P, Color.cyan, name, Color.reset });
+        try stderr.print("{s}Try reinstalling: {s}clumsies install {s} --force{s}\n", .{ P, Color.cyan, hash8, Color.reset });
         return;
     };
     defer meta_file.close();
@@ -53,7 +72,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
     };
     defer parsed.deinit();
 
-    try stdout.print("{s}Applying template '{s}{s}{s}' [{s}]...\n\n", .{ P, Color.bold, name, Color.reset, lang });
+    try stdout.print("{s}Applying template '{s}{s}{s}' [{s}]...\n\n", .{ P, Color.bold, tmpl.name, Color.reset, lang });
 
     var cwd = fs.cwd().openDir(".", .{}) catch |err| {
         try stderr.print("{s}{s}{s}Error:{s} opening current directory: {}\n", .{ P, Color.bold, Color.red, Color.reset, err });
@@ -97,8 +116,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
     }
 
     // Process each prompt (now from global prompts directory)
-    for (prompt_hashes.items) |hash| {
-        const prompt_filename = std.fmt.allocPrint(allocator, "{s}.md", .{hash}) catch continue;
+    for (prompt_hashes.items) |prompt_hash| {
+        const prompt_filename = std.fmt.allocPrint(allocator, "{s}.md", .{prompt_hash}) catch continue;
         defer allocator.free(prompt_filename);
 
         // Read from global prompts directory
@@ -106,7 +125,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
         defer allocator.free(prompt_path);
 
         const prompt_file = fs.openFileAbsolute(prompt_path, .{}) catch {
-            try stderr.print("{s}  {s}{s}✗{s} Missing prompt: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash[0..@min(8, hash.len)] });
+            try stderr.print("{s}  {s}{s}✗{s} Missing prompt: {s}\n", .{ P, Color.bold, Color.red, Color.reset, prompt_hash[0..@min(8, prompt_hash.len)] });
             continue;
         };
         defer prompt_file.close();
@@ -116,7 +135,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
 
         // Extract path from frontmatter
         const dest_path = extractPathFromFrontmatter(allocator, prompt_content) orelse {
-            try stderr.print("{s}  {s}{s}✗{s} No path in prompt: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash[0..@min(8, hash.len)] });
+            try stderr.print("{s}  {s}{s}✗{s} No path in prompt: {s}\n", .{ P, Color.bold, Color.red, Color.reset, prompt_hash[0..@min(8, prompt_hash.len)] });
             continue;
         };
         defer allocator.free(dest_path);

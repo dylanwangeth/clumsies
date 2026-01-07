@@ -11,6 +11,7 @@ pub const search = @import("search.zig");
 pub const detail = @import("detail.zig");
 pub const use = @import("use.zig");
 pub const install = @import("install.zig");
+pub const add = @import("add.zig");
 pub const upgrade = @import("upgrade.zig");
 pub const zen = @import("zen.zig");
 pub const config = @import("config.zig");

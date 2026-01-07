@@ -315,6 +315,7 @@ Prompts are stored by their SHA-256 hash:
   "version": "1",
   "templates": [
     {
+      "hash": "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
       "name": "solocc",
       "task": "coding",
       "description": "Solo developer workflow",
@@ -328,12 +329,26 @@ Prompts are stored by their SHA-256 hash:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Template identifier |
+| `hash` | string | yes | SHA-256 hash of template directory contents |
+| `name` | string | yes | Template display name (not required to be unique) |
 | `task` | string | yes | Task category |
 | `description` | string | yes | Human-readable description |
 | `author` | string | yes | Author identifier |
 | `version` | string | yes | Semantic version |
 | `languages` | string[] | yes | Available language codes |
+
+### 6.6 Template Hash Calculation
+
+Template hash is computed from the entire template directory contents:
+
+```
+hash = SHA-256(meta.json + files/en/CLAUDE.md + files/zh/CLAUDE.md + ...)
+```
+
+Files are concatenated in alphabetical order by path. This ensures:
+- Any change to meta.json → hash changes
+- Any change to entry files → hash changes
+- Adding/removing language files → hash changes
 
 ---
 

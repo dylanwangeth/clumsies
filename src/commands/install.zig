@@ -5,7 +5,7 @@ const commands = @import("commands.zig");
 const Color = commands.Color;
 const P = commands.P;
 
-pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, template_name: ?[]const u8, list: bool, force: bool) !void {
+pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, template_hash: ?[]const u8, list: bool, force: bool) !void {
     const templates_path = commands.getTemplatesPath(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine home directory.\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -20,17 +20,36 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, templ
 
     if (list) {
         try stdout.writeAll("\n");
-        try listInstalledTemplates(stdout, templates_path);
+        try listInstalledTemplates(stdout, stderr, allocator, templates_path);
         try stdout.writeAll("\n");
         return;
     }
 
-    const name = template_name orelse {
-        try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies install <name>{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
+    const hash = template_hash orelse {
+        try stderr.print("\n{s}{s}{s}Error:{s} template hash required\n{s}Usage: {s}clumsies install <hash>{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
         return;
     };
 
-    const template_install_path = try std.fs.path.join(allocator, &.{ templates_path, name });
+    // Fetch templates index to find template info by hash
+    var templates_index = http.fetchTemplatesIndex(allocator) catch |err| {
+        if (err == http.HttpError.RequestFailed) {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to connect to registry.\n", .{ P, Color.bold, Color.red, Color.reset });
+        } else {
+            try stderr.print("{s}{s}{s}Error:{s} Could not fetch templates index.\n", .{ P, Color.bold, Color.red, Color.reset });
+        }
+        return;
+    };
+    defer templates_index.deinit();
+
+    const tmpl = templates_index.findByHash(hash) orelse {
+        try stderr.print("\n{s}{s}{s}Error:{s} Template with hash '{s}{s}{s}' not found.\n\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, hash, Color.reset });
+        return;
+    };
+
+    // Use first 8 chars of hash as directory name
+    const hash8 = tmpl.hash[0..@min(8, tmpl.hash.len)];
+
+    const template_install_path = try std.fs.path.join(allocator, &.{ templates_path, hash8 });
     defer allocator.free(template_install_path);
 
     const exists = blk: {
@@ -39,11 +58,11 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, templ
     };
 
     if (exists and !force) {
-        try stderr.print("\n{s}{s}{s}Error:{s} template '{s}{s}{s}' already installed. Use {s}--force{s} to overwrite.\n\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, name, Color.reset, Color.cyan, Color.reset });
+        try stderr.print("\n{s}{s}{s}Error:{s} template '{s}{s}{s}' ({s}) already installed. Use {s}--force{s} to overwrite.\n\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, tmpl.name, Color.reset, hash8, Color.cyan, Color.reset });
         return;
     }
 
-    try stdout.print("\n{s}Installing template '{s}{s}{s}'...\n\n", .{ P, Color.bold, name, Color.reset });
+    try stdout.print("\n{s}Installing template '{s}{s}{s}' ({s})...\n\n", .{ P, Color.bold, tmpl.name, Color.reset, hash8 });
     stdout.flush() catch {};
 
     if (exists) {
@@ -68,9 +87,9 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, templ
     stdout.flush() catch {};
 
     // Fetch template meta.json
-    var meta_result = http.fetchTemplateMeta(allocator, name) catch |err| {
+    var meta_result = http.fetchTemplateMeta(allocator, tmpl.name) catch |err| {
         if (err == http.HttpError.NotFound) {
-            try stderr.print("{s}{s}{s}Error:{s} template '{s}{s}{s}' not found in registry.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, name, Color.reset });
+            try stderr.print("{s}{s}{s}Error:{s} template '{s}{s}{s}' not found in registry.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, tmpl.name, Color.reset });
         } else if (err == http.HttpError.RequestFailed) {
             try stderr.print("{s}{s}{s}Error:{s} Failed to connect to registry. Check your network.\n", .{ P, Color.bold, Color.red, Color.reset });
         } else {
@@ -121,7 +140,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, templ
     const languages = [_][]const u8{ "en", "zh" };
     for (languages) |lang| {
         for (meta_result.meta.files) |file| {
-            const content = http.fetchTemplateFile(allocator, name, lang, file) catch |err| {
+            const content = http.fetchTemplateFile(allocator, tmpl.name, lang, file) catch |err| {
                 if (err != http.HttpError.NotFound) {
                     try stderr.print("{s}  {s}{s}✗{s} Failed: files/{s}/{s}\n", .{ P, Color.bold, Color.red, Color.reset, lang, file });
                     failed += 1;
@@ -179,8 +198,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, templ
     defer allocator.free(all_hashes);
 
     // Download prompts to global prompts directory
-    for (all_hashes) |hash| {
-        const filename = std.fmt.allocPrint(allocator, "{s}.md", .{hash}) catch continue;
+    for (all_hashes) |prompt_hash| {
+        const filename = std.fmt.allocPrint(allocator, "{s}.md", .{prompt_hash}) catch continue;
         defer allocator.free(filename);
 
         const prompt_local_path = try std.fs.path.join(allocator, &.{ prompts_path, filename });
@@ -192,8 +211,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, templ
             break :blk true;
         };
 
-        const prompt_meta = prompts_index.findByHash(hash);
-        const display_name = if (prompt_meta) |pm| pm.path else hash[0..@min(8, hash.len)];
+        const prompt_meta = prompts_index.findByHash(prompt_hash);
+        const display_name = if (prompt_meta) |pm| pm.path else prompt_hash[0..@min(8, prompt_hash.len)];
 
         if (prompt_exists) {
             try stdout.print("{s}  {s}✓{s} {s} {s}(cached){s}\n", .{ P, Color.green, Color.reset, display_name, Color.dim, Color.reset });
@@ -201,7 +220,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, templ
             continue;
         }
 
-        const content = http.fetchPromptContent(allocator, hash) catch |err| {
+        const content = http.fetchPromptContent(allocator, prompt_hash) catch |err| {
             if (err == http.HttpError.NotFound) {
                 try stderr.print("{s}  {s}{s}✗{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, display_name });
             } else {
@@ -239,7 +258,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, templ
     }
 
     if (downloaded > 0) {
-        try stdout.print("{s}{s}{s}✓{s} Installed template '{s}{s}{s}'\n\n", .{ P, Color.bold, Color.orange, Color.reset, Color.bold, name, Color.reset });
+        try stdout.print("{s}{s}{s}✓{s} Installed template '{s}{s}{s}'\n\n", .{ P, Color.bold, Color.orange, Color.reset, Color.bold, tmpl.name, Color.reset });
     } else {
         try stderr.print("{s}{s}{s}Error:{s} No files were installed.\n\n", .{ P, Color.bold, Color.red, Color.reset });
     }
@@ -283,7 +302,9 @@ fn saveLocalPromptsIndex(allocator: std.mem.Allocator, prompts_path: []const u8,
     file.writeAll(json_buf.items) catch {};
 }
 
-fn listInstalledTemplates(stdout: anytype, templates_path: []const u8) !void {
+fn listInstalledTemplates(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, templates_path: []const u8) !void {
+    _ = stderr;
+    _ = allocator;
     try stdout.print("{s}{s}{s}Installed templates:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     var templates_dir = fs.openDirAbsolute(templates_path, .{ .iterate = true }) catch |err| {

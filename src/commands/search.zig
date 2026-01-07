@@ -19,33 +19,39 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
 
     var count: usize = 0;
 
+    // Print header
+    try stdout.print("{s}{s}{s}ID        TASK        AUTHOR      NAME                  DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}{s}───────────────────────────────────────────────────────────────────────────────────────{s}\n", .{ P, Color.dim, Color.reset });
+
     switch (mode) {
         .templates => {
             // Search templates
-            try stdout.print("{s}{s}{s}TASK        NAME                       DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-            try stdout.print("{s}{s}───────────────────────────────────────────────────────────────────────{s}\n", .{ P, Color.dim, Color.reset });
-
             var templates_index = http.fetchTemplatesIndex(allocator) catch |err| {
                 try printError(stderr, err);
                 return;
             };
             defer templates_index.deinit();
 
-            var name_buf: [25]u8 = undefined;
+            var name_buf: [20]u8 = undefined;
             for (templates_index.templates) |tmpl| {
                 if (keyword) |kw| {
                     if (!containsIgnoreCase(tmpl.name, kw) and
                         !containsIgnoreCase(tmpl.task, kw) and
+                        !containsIgnoreCase(tmpl.author, kw) and
                         !containsIgnoreCase(tmpl.description, kw)) continue;
                 }
 
-                try stdout.print("{s}{s: <10}  {s}{s: <25}{s}  {s}\n", .{
+                try stdout.print("{s}{s}{s: <8}{s}  {s: <10}  {s: <10}  {s}{s: <20}{s}  {s}\n", .{
                     P,
-                    truncate(tmpl.task, 10),
                     Color.cyan,
-                    toLowerTruncate(&name_buf, tmpl.name, 25),
+                    truncate(tmpl.hash, 8),
                     Color.reset,
-                    truncate(tmpl.description, 40),
+                    truncate(tmpl.task, 10),
+                    truncate(tmpl.author, 10),
+                    Color.cyan,
+                    toLowerTruncate(&name_buf, tmpl.name, 20),
+                    Color.reset,
+                    truncate(tmpl.description, 30),
                 });
                 count += 1;
             }
@@ -57,8 +63,6 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
         .command, .conduct => {
             // Search prompts
             const type_str = if (mode == .command) "command" else "conduct";
-            try stdout.print("{s}{s}{s}TASK        NAME                       DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-            try stdout.print("{s}{s}───────────────────────────────────────────────────────────────────────{s}\n", .{ P, Color.dim, Color.reset });
 
             var prompts_index = http.fetchPromptsIndex(allocator) catch |err| {
                 try printError(stderr, err);
@@ -66,7 +70,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
             };
             defer prompts_index.deinit();
 
-            var name_buf: [25]u8 = undefined;
+            var name_buf: [20]u8 = undefined;
             for (prompts_index.prompts) |prompt| {
                 if (!std.mem.eql(u8, prompt.lang, effective_lang)) continue;
                 if (!std.mem.eql(u8, prompt.type, type_str)) continue;
@@ -74,16 +78,21 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
                 if (keyword) |kw| {
                     if (!containsIgnoreCase(prompt.name, kw) and
                         !containsIgnoreCase(prompt.task, kw) and
+                        !containsIgnoreCase(prompt.author, kw) and
                         !containsIgnoreCase(prompt.description, kw)) continue;
                 }
 
-                try stdout.print("{s}{s: <10}  {s}{s: <25}{s}  {s}\n", .{
+                try stdout.print("{s}{s}{s: <8}{s}  {s: <10}  {s: <10}  {s}{s: <20}{s}  {s}\n", .{
                     P,
-                    truncate(prompt.task, 10),
                     Color.cyan,
-                    toLowerTruncate(&name_buf, prompt.name, 25),
+                    truncate(prompt.hash, 8),
                     Color.reset,
-                    truncate(prompt.description, 40),
+                    truncate(prompt.task, 10),
+                    truncate(prompt.author, 10),
+                    Color.cyan,
+                    toLowerTruncate(&name_buf, prompt.name, 20),
+                    Color.reset,
+                    truncate(prompt.description, 30),
                 });
                 count += 1;
             }
