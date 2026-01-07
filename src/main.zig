@@ -149,7 +149,7 @@ pub fn main() !void {
             try commands.zen.run(stdout);
         },
         .upgrade => {
-            try commands.upgrade.run(stdout, stderr, allocator);
+            try commands.upgrade.run(stdout, stderr, allocator, version);
         },
     }
 }

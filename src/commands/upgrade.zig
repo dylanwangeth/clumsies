@@ -29,21 +29,39 @@ fn bytesToHex(bytes: []const u8, out: []u8) void {
     }
 }
 
-pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
+/// Get version from installed binary by running it
+fn getInstalledVersion(allocator: std.mem.Allocator, bin_path: []const u8) ?[]const u8 {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ bin_path, "--version" },
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Parse "clumsies X.Y.Z" -> "X.Y.Z"
+    const output = std.mem.trim(u8, result.stdout, " \t\n\r");
+    if (std.mem.lastIndexOf(u8, output, " ")) |space_idx| {
+        return allocator.dupe(u8, output[space_idx + 1 ..]) catch null;
+    }
+    return null;
+}
+
+pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, current_version: []const u8) !void {
     try stdout.writeAll("\n");
 
     const platform = comptime getPlatformString();
     const binary_name = comptime "clumsies-" ++ platform;
 
-    try stdout.print("{s}Upgrading clumsies ({s}{s}{s})...\n\n", .{ P, Color.bold, platform, Color.reset });
+    try stdout.print("{s}Checking for updates ({s}{s}{s})...\n\n", .{ P, Color.bold, platform, Color.reset });
+    try stdout.print("{s}  Current version: {s}{s}{s}\n", .{ P, Color.bold, current_version, Color.reset });
 
-    try stdout.print("{s}  {s}→{s} Downloading checksums...\n", .{ P, Color.orange, Color.reset });
+    try stdout.print("{s}  {s}→{s} Fetching latest release...\n", .{ P, Color.orange, Color.reset });
     stdout.flush() catch {};
 
     const checksums_url = comptime http.RELEASES_BASE ++ "/checksums.txt";
     const checksums_content = http.fetchUrl(allocator, checksums_url) catch |err| {
         if (err == http.HttpError.NotFound) {
-            try stderr.print("{s}{s}{s}Error:{s} checksums.txt not found. No release available?\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}{s}{s}Error:{s} No release available.\n", .{ P, Color.bold, Color.red, Color.reset });
         } else if (err == http.HttpError.RequestFailed) {
             try stderr.print("{s}{s}{s}Error:{s} Failed to connect. Check your network.\n", .{ P, Color.bold, Color.red, Color.reset });
         } else {
@@ -118,16 +136,32 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
 
     try stdout.print("{s}  {s}→{s} Installing...\n", .{ P, Color.orange, Color.reset });
 
-    const file = fs.createFileAbsolute(bin_path, .{ .mode = 0o755 }) catch |err| {
-        try stderr.print("{s}{s}{s}Error:{s} Cannot write to {s}: {any}\n", .{ P, Color.bold, Color.red, Color.reset, bin_path, err });
-        return;
-    };
-    defer file.close();
+    {
+        const file = fs.createFileAbsolute(bin_path, .{ .mode = 0o755 }) catch |err| {
+            try stderr.print("{s}{s}{s}Error:{s} Cannot write to {s}: {any}\n", .{ P, Color.bold, Color.red, Color.reset, bin_path, err });
+            return;
+        };
+        defer file.close();
 
-    file.writeAll(binary_content) catch |err| {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to write binary: {any}\n", .{ P, Color.bold, Color.red, Color.reset, err });
-        return;
-    };
+        file.writeAll(binary_content) catch |err| {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to write binary: {any}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+            return;
+        };
+    }
 
-    try stdout.print("\n{s}{s}{s}✓{s} clumsies upgraded successfully!\n\n", .{ P, Color.bold, Color.orange, Color.reset });
+    // Get new version from installed binary (file must be closed first)
+    const new_version = getInstalledVersion(allocator, bin_path);
+    defer if (new_version) |v| allocator.free(v);
+
+    try stdout.writeAll("\n");
+
+    if (new_version) |nv| {
+        if (std.mem.eql(u8, nv, current_version)) {
+            try stdout.print("{s}{s}{s}✓{s} Already up to date ({s}{s}{s})\n\n", .{ P, Color.bold, Color.green, Color.reset, Color.bold, current_version, Color.reset });
+        } else {
+            try stdout.print("{s}{s}{s}✓{s} Upgraded: {s}{s}{s} → {s}{s}{s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, Color.dim, current_version, Color.reset, Color.bold, nv, Color.reset });
+        }
+    } else {
+        try stdout.print("{s}{s}{s}✓{s} Upgrade complete\n\n", .{ P, Color.bold, Color.orange, Color.reset });
+    }
 }
