@@ -20,8 +20,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
     var count: usize = 0;
 
     // Print header
-    try stdout.print("{s}{s}{s}ID        TASK        AUTHOR      NAME                  DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}{s}───────────────────────────────────────────────────────────────────────────────────────{s}\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}{s}{s}ID        TASK        AUTHOR      NAME                          DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}{s}───────────────────────────────────────────────────────────────────────────────────────────────────────{s}\n", .{ P, Color.dim, Color.reset });
 
     switch (mode) {
         .templates => {
@@ -32,7 +32,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
             };
             defer templates_index.deinit();
 
-            var name_buf: [20]u8 = undefined;
+            var name_buf: [28]u8 = undefined;
             for (templates_index.templates) |tmpl| {
                 if (keyword) |kw| {
                     if (!containsIgnoreCase(tmpl.name, kw) and
@@ -41,7 +41,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
                         !containsIgnoreCase(tmpl.description, kw)) continue;
                 }
 
-                try stdout.print("{s}{s}{s: <8}{s}  {s: <10}  {s: <10}  {s}{s: <20}{s}  {s}\n", .{
+                try stdout.print("{s}{s}{s: <8}{s}  {s: <10}  {s: <10}  {s}{s: <28}{s}  {s}\n", .{
                     P,
                     Color.cyan,
                     truncate(tmpl.hash, 8),
@@ -49,9 +49,9 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
                     truncate(tmpl.task, 10),
                     truncate(tmpl.author, 10),
                     Color.cyan,
-                    toLowerTruncate(&name_buf, tmpl.name, 20),
+                    toLowerTruncate(&name_buf, tmpl.name, 28),
                     Color.reset,
-                    truncate(tmpl.description, 30),
+                    truncate(tmpl.description, 40),
                 });
                 count += 1;
             }
@@ -70,7 +70,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
             };
             defer prompts_index.deinit();
 
-            var name_buf: [20]u8 = undefined;
+            var name_buf: [28]u8 = undefined;
             for (prompts_index.prompts) |prompt| {
                 if (!std.mem.eql(u8, prompt.lang, effective_lang)) continue;
                 if (!std.mem.eql(u8, prompt.type, type_str)) continue;
@@ -82,7 +82,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
                         !containsIgnoreCase(prompt.description, kw)) continue;
                 }
 
-                try stdout.print("{s}{s}{s: <8}{s}  {s: <10}  {s: <10}  {s}{s: <20}{s}  {s}\n", .{
+                try stdout.print("{s}{s}{s: <8}{s}  {s: <10}  {s: <10}  {s}{s: <28}{s}  {s}\n", .{
                     P,
                     Color.cyan,
                     truncate(prompt.hash, 8),
@@ -90,9 +90,9 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
                     truncate(prompt.task, 10),
                     truncate(prompt.author, 10),
                     Color.cyan,
-                    toLowerTruncate(&name_buf, prompt.name, 20),
+                    toLowerTruncate(&name_buf, prompt.name, 28),
                     Color.reset,
-                    truncate(prompt.description, 30),
+                    truncate(prompt.description, 40),
                 });
                 count += 1;
             }
