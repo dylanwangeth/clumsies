@@ -1,84 +1,85 @@
 # clumsies
 
-## What is this?
+A CLI tool for managing AI Agent prompt systems based on [Clumsies Protocol](./PROTOCOL.md).
 
-A scaffolding tool for AI Agent prompts systems.
+## Why?
 
-We found that a single prompts file isn't enough for complex projects. So we created a multi-file system: a **meta-prompt file** (`CLAUDE.md`, `CURSOR.md`, or `GEMINI.md`) that tells the AI how to understand and extend the prompts, plus a `.prompts/` directory with all the actual rules.
+A single prompt file isn't enough for complex projects. We created a multi-file system:
+- **Entry file** (`CLAUDE.md`, `CURSOR.md`, etc.) — tells the AI how to understand the prompt system
+- **`.prompts/` directory** — modular prompts organized by type (conduct, command, custom)
 
-We call this complete package a **template**. Instead of copying these files everywhere, use clumsies to manage them.
+We call this complete package a **template**. Instead of copying files everywhere, use clumsies to manage them.
 
 ## Install
-
-### Quick Install (with checksum verification)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dylanwangeth/clumsies/main/install.sh | sh
 ```
 
-The installer downloads both the binary and `checksums.txt`, verifying SHA256 before execution.
+The installer downloads the binary and verifies SHA256 checksum before execution.
 
-### Manual Install (verify yourself)
+<details>
+<summary>Manual Install</summary>
 
 ```bash
 # Download binary and checksums
 curl -LO https://github.com/dylanwangeth/clumsies/releases/latest/download/clumsies-darwin-arm64
 curl -LO https://github.com/dylanwangeth/clumsies/releases/latest/download/checksums.txt
 
-# Verify checksum
+# Verify and install
 shasum -a 256 -c checksums.txt --ignore-missing
-
-# Install
 chmod +x clumsies-darwin-arm64
+mkdir -p ~/.clumsies/bin
 mv clumsies-darwin-arm64 ~/.clumsies/bin/clumsies
 ```
 
-Replace `darwin-arm64` with your platform: `darwin-x86_64`, `linux-arm64`, or `linux-x86_64`.
+Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
+</details>
 
 ## Usage
 
 ```bash
-# Search available templates
+# Search available prompts
 clumsies search
+clumsies search --task commit      # Filter by task
+clumsies search --kw git           # Filter by keyword
 
-# Preview a template's meta-prompt file
+# Preview a template
 clumsies detail solocc
 clumsies detail solocc --lang zh
 
-# Apply a template to current directory
+# Install a template locally
+clumsies install solocc
+clumsies install --list            # List installed templates
+
+# Apply a template to current project
 clumsies use solocc
 clumsies use solocc --lang zh
-clumsies use solocc --name CURSOR.md     # Use CURSOR.md instead of CLAUDE.md
-clumsies use solocc --force              # Overwrite existing files
+clumsies use solocc --name CURSOR.md
+clumsies use solocc --force        # Overwrite existing files
 
-# Install community templates
-clumsies install react-agent
-clumsies install --list                  # List installed templates
+# Upgrade clumsies
+clumsies upgrade
 ```
 
 ## What's in a Template?
 
 ```
 your-project/
-├── CLAUDE.md                    # Meta-prompt file: tells AI how to understand the system
+├── CLAUDE.md                    # Entry file
 └── .prompts/
-    ├── conduct/                 # Development standards
+    ├── conduct/                 # Behavioral rules (always active)
     │   ├── CODE_COMMENTS.md
     │   ├── GIT_COMMIT.md
     │   └── ...
-    └── command/                 # Executable commands
+    └── command/                 # Executable commands (invoke by name)
         ├── 00_CONTEXT_REINFORCEMENT.md
         └── 01_REVIEW_COMMIT.md
 ```
 
-## Extending
-
-After applying a template, add directories based on your needs:
-
+After applying, extend with your own directories:
 - `.prompts/biz/` — Business context
 - `.prompts/tech/` — Technical documentation
-
-The AI will understand them automatically because the meta-prompt file defines the rules.
 
 ## Build from Source
 
