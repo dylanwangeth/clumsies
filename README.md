@@ -13,7 +13,7 @@ We call this complete package a **template**. Instead of copying files everywher
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dylanwangeth/clumsies/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
 ```
 
 The installer downloads the binary and verifies SHA256 checksum before execution.
@@ -23,8 +23,8 @@ The installer downloads the binary and verifies SHA256 checksum before execution
 
 ```bash
 # Download binary and checksums
-curl -LO https://github.com/dylanwangeth/clumsies/releases/latest/download/clumsies-darwin-arm64
-curl -LO https://github.com/dylanwangeth/clumsies/releases/latest/download/checksums.txt
+curl -LO https://github.com/lilhammerfun/clumsies/releases/latest/download/clumsies-darwin-arm64
+curl -LO https://github.com/lilhammerfun/clumsies/releases/latest/download/checksums.txt
 
 # Verify and install
 shasum -a 256 -c checksums.txt --ignore-missing
@@ -39,25 +39,27 @@ Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 ## Usage
 
 ```bash
-# Search (unified display for templates + prompts)
-clumsies search                    # List all
-clumsies search coding             # Filter by task
-clumsies search --conduct-only     # Only conduct prompts
-clumsies search --command-only     # Only command prompts
+# Search templates and prompts
+clumsies search                    # List all templates
+clumsies search solo               # Search by keyword
+clumsies search --conduct          # List conduct prompts
+clumsies search --command          # List command prompts
 
-# Preview a template
+# Use a template (auto-downloads if not cached)
+clumsies use 4a83ba2c              # Use template by hash
+clumsies use 4a83ba2c --lang zh    # Use in Chinese
+clumsies use 4a83ba2c --name CURSOR.md
+clumsies use 4a83ba2c --force      # Overwrite existing files
+
+# List cached templates
+clumsies list
+
+# Add a single prompt
+clumsies add 36995f0a              # Add prompt by hash
+
+# Preview template content
 clumsies detail solocc
 clumsies detail solocc --lang zh
-
-# Install a template locally
-clumsies install solocc
-clumsies install --list            # List installed templates
-
-# Apply a template to current project
-clumsies use solocc
-clumsies use solocc --lang zh
-clumsies use solocc --name CURSOR.md
-clumsies use solocc --force        # Overwrite existing files
 
 # Configure defaults
 clumsies config set lang zh        # Set default language
@@ -93,7 +95,7 @@ After applying, extend with your own directories:
 Requires [Zig](https://ziglang.org/) 0.15+:
 
 ```bash
-git clone https://github.com/dylanwangeth/clumsies.git
+git clone https://github.com/lilhammerfun/clumsies.git
 cd clumsies
 zig build -Doptimize=ReleaseFast
 ```
