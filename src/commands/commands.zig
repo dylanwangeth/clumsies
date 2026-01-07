@@ -23,10 +23,27 @@ pub const WriteResult = struct {
 };
 
 // Shared utilities
-pub fn getRegistryPath(allocator: std.mem.Allocator) ![]const u8 {
+pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
     const home_dir = try std.process.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home_dir);
-    return try std.fs.path.join(allocator, &.{ home_dir, ".clumsies", "registry" });
+    return try std.fs.path.join(allocator, &.{ home_dir, ".clumsies" });
+}
+
+pub fn getPromptsPath(allocator: std.mem.Allocator) ![]const u8 {
+    const home_dir = try std.process.getEnvVarOwned(allocator, "HOME");
+    defer allocator.free(home_dir);
+    return try std.fs.path.join(allocator, &.{ home_dir, ".clumsies", "prompts" });
+}
+
+pub fn getTemplatesPath(allocator: std.mem.Allocator) ![]const u8 {
+    const home_dir = try std.process.getEnvVarOwned(allocator, "HOME");
+    defer allocator.free(home_dir);
+    return try std.fs.path.join(allocator, &.{ home_dir, ".clumsies", "templates" });
+}
+
+// Legacy: kept for backwards compatibility, same as getTemplatesPath
+pub fn getRegistryPath(allocator: std.mem.Allocator) ![]const u8 {
+    return getTemplatesPath(allocator);
 }
 
 pub fn writeFile(dir: fs.Dir, path: []const u8, content: []const u8, force: bool, stdout: anytype, stderr: anytype) WriteResult {

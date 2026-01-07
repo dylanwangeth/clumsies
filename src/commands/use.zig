@@ -9,13 +9,19 @@ const Language = commands.Language;
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name: []const u8, lang: Language, entry_name: []const u8, force: bool) !void {
     try stdout.writeAll("\n");
 
-    const registry_path = commands.getRegistryPath(allocator) catch {
+    const templates_path = commands.getTemplatesPath(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine home directory.\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
-    defer allocator.free(registry_path);
+    defer allocator.free(templates_path);
 
-    const template_path = try std.fs.path.join(allocator, &.{ registry_path, name });
+    const prompts_path = commands.getPromptsPath(allocator) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine home directory.\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer allocator.free(prompts_path);
+
+    const template_path = try std.fs.path.join(allocator, &.{ templates_path, name });
     defer allocator.free(template_path);
 
     // Check if template exists
@@ -62,8 +68,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
     var created: usize = 0;
     var skipped: usize = 0;
 
-    // Copy CLAUDE.md as entry file
-    const claude_path = try std.fs.path.join(allocator, &.{ template_path, lang_str, "CLAUDE.md" });
+    // Copy CLAUDE.md as entry file (now in files/{lang}/)
+    const claude_path = try std.fs.path.join(allocator, &.{ template_path, "files", lang_str, "CLAUDE.md" });
     defer allocator.free(claude_path);
 
     const claude_file = fs.openFileAbsolute(claude_path, .{}) catch {
@@ -94,12 +100,13 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
         }
     }
 
-    // Process each prompt
+    // Process each prompt (now from global prompts directory)
     for (prompt_hashes.items) |hash| {
         const prompt_filename = std.fmt.allocPrint(allocator, "{s}.md", .{hash}) catch continue;
         defer allocator.free(prompt_filename);
 
-        const prompt_path = try std.fs.path.join(allocator, &.{ template_path, "prompts", prompt_filename });
+        // Read from global prompts directory
+        const prompt_path = try std.fs.path.join(allocator, &.{ prompts_path, prompt_filename });
         defer allocator.free(prompt_path);
 
         const prompt_file = fs.openFileAbsolute(prompt_path, .{}) catch {
