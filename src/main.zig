@@ -42,8 +42,8 @@ pub fn main() !void {
     // Parse command and options
     var cmd: Command = .none;
     var template_name: ?[]const u8 = null;
-    var task_filter: ?[]const u8 = null;
-    var search_filter: commands.search.SearchFilter = .{};
+    var keyword: ?[]const u8 = null;
+    var search_mode: commands.search.SearchMode = .templates;
     var lang: ?[]const u8 = null;
     var entry_name: []const u8 = "CLAUDE.md";
     var force = false;
@@ -79,10 +79,10 @@ pub fn main() !void {
             break; // Rest of args go to config command
         }
         // Options
-        else if (std.mem.eql(u8, arg, "--command-only")) {
-            search_filter.command_only = true;
-        } else if (std.mem.eql(u8, arg, "--conduct-only")) {
-            search_filter.conduct_only = true;
+        else if (std.mem.eql(u8, arg, "--command")) {
+            search_mode = .command;
+        } else if (std.mem.eql(u8, arg, "--conduct")) {
+            search_mode = .conduct;
         } else if (std.mem.eql(u8, arg, "--lang") or std.mem.eql(u8, arg, "-l")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -102,8 +102,8 @@ pub fn main() !void {
         }
         // Positional argument
         else if (!std.mem.startsWith(u8, arg, "-")) {
-            if (cmd == .search and task_filter == null) {
-                task_filter = arg;
+            if (cmd == .search and keyword == null) {
+                keyword = arg;
             } else if (template_name == null and (cmd == .detail or cmd == .use or cmd == .install)) {
                 template_name = arg;
             }
@@ -119,7 +119,7 @@ pub fn main() !void {
             try commands.help.run(stdout);
         },
         .search => {
-            try commands.search.run(stdout, stderr, allocator, task_filter, search_filter, lang);
+            try commands.search.run(stdout, stderr, allocator, keyword, search_mode, lang);
         },
         .detail => {
             const name = template_name orelse {

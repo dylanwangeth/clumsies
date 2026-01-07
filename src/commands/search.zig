@@ -5,98 +5,91 @@ const config = @import("config.zig");
 const Color = commands.Color;
 const P = commands.P;
 
-pub const SearchFilter = struct {
-    command_only: bool = false,
-    conduct_only: bool = false,
+pub const SearchMode = enum {
+    templates,
+    command,
+    conduct,
 };
 
-pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, task_filter: ?[]const u8, filter: SearchFilter, lang_override: ?[]const u8) !void {
+pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keyword: ?[]const u8, mode: SearchMode, lang_override: ?[]const u8) !void {
     try stdout.writeAll("\n");
 
     const effective_lang = try config.getLang(allocator, lang_override);
     defer allocator.free(effective_lang);
 
-    // Print header
-    try stdout.print("{s}{s}{s}TYPE      TASK        NAME                       DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}{s}─────────────────────────────────────────────────────────────────────────────────{s}\n", .{ P, Color.dim, Color.reset });
-
     var count: usize = 0;
 
-    // Fetch and display templates (unless filtering by prompt type only)
-    if (!filter.command_only and !filter.conduct_only) {
-        var templates_index = http.fetchTemplatesIndex(allocator) catch |err| {
-            try printError(stderr, err);
-            return;
-        };
-        defer templates_index.deinit();
+    switch (mode) {
+        .templates => {
+            // Search templates
+            try stdout.print("{s}{s}{s}TASK        NAME                       DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+            try stdout.print("{s}{s}───────────────────────────────────────────────────────────────────────{s}\n", .{ P, Color.dim, Color.reset });
 
-        for (templates_index.templates) |tmpl| {
-            // Filter by task if provided
-            if (task_filter) |task| {
-                if (!containsIgnoreCase(tmpl.task, task)) continue;
+            var templates_index = http.fetchTemplatesIndex(allocator) catch |err| {
+                try printError(stderr, err);
+                return;
+            };
+            defer templates_index.deinit();
+
+            for (templates_index.templates) |tmpl| {
+                if (keyword) |kw| {
+                    if (!containsIgnoreCase(tmpl.name, kw) and
+                        !containsIgnoreCase(tmpl.task, kw) and
+                        !containsIgnoreCase(tmpl.description, kw)) continue;
+                }
+
+                try stdout.print("{s}{s: <10}  {s}{s: <25}{s}  {s}\n", .{
+                    P,
+                    truncate(tmpl.task, 10),
+                    Color.cyan,
+                    truncate(tmpl.name, 25),
+                    Color.reset,
+                    truncate(tmpl.description, 40),
+                });
+                count += 1;
             }
 
-            try stdout.print("{s}{s}template{s}  {s: <10}  {s: <25}  {s}\n", .{
-                P,
-                Color.cyan,
-                Color.reset,
-                truncate(tmpl.task, 10),
-                truncate(tmpl.name, 25),
-                truncate(tmpl.description, 40),
-            });
-            count += 1;
-        }
-    }
+            if (count == 0) {
+                try stdout.print("{s}{s}No templates found.{s}\n", .{ P, Color.dim, Color.reset });
+            }
+        },
+        .command, .conduct => {
+            // Search prompts
+            const type_str = if (mode == .command) "command" else "conduct";
+            try stdout.print("{s}{s}{s}TASK        NAME                       DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+            try stdout.print("{s}{s}───────────────────────────────────────────────────────────────────────{s}\n", .{ P, Color.dim, Color.reset });
 
-    // Only show prompts if: has keyword, or filtering by type
-    const show_prompts = task_filter != null or filter.command_only or filter.conduct_only;
-    if (!show_prompts) {
-        if (count == 0) {
-            try stdout.print("{s}{s}No templates found.{s}\n", .{ P, Color.dim, Color.reset });
-        }
-        try stdout.writeAll("\n");
-        return;
-    }
+            var prompts_index = http.fetchPromptsIndex(allocator) catch |err| {
+                try printError(stderr, err);
+                return;
+            };
+            defer prompts_index.deinit();
 
-    // Fetch and display prompts
-    var prompts_index = http.fetchPromptsIndex(allocator) catch |err| {
-        // If templates were shown, don't error on prompts failure
-        if (count > 0) {
-            try stdout.writeAll("\n");
-            return;
-        }
-        try printError(stderr, err);
-        return;
-    };
-    defer prompts_index.deinit();
+            for (prompts_index.prompts) |prompt| {
+                if (!std.mem.eql(u8, prompt.lang, effective_lang)) continue;
+                if (!std.mem.eql(u8, prompt.type, type_str)) continue;
 
-    for (prompts_index.prompts) |prompt| {
-        // Filter by language
-        if (!std.mem.eql(u8, prompt.lang, effective_lang)) continue;
+                if (keyword) |kw| {
+                    if (!containsIgnoreCase(prompt.name, kw) and
+                        !containsIgnoreCase(prompt.task, kw) and
+                        !containsIgnoreCase(prompt.description, kw)) continue;
+                }
 
-        // Filter by type
-        if (filter.command_only and !std.mem.eql(u8, prompt.type, "command")) continue;
-        if (filter.conduct_only and !std.mem.eql(u8, prompt.type, "conduct")) continue;
+                try stdout.print("{s}{s: <10}  {s}{s: <25}{s}  {s}\n", .{
+                    P,
+                    truncate(prompt.task, 10),
+                    Color.cyan,
+                    truncate(prompt.name, 25),
+                    Color.reset,
+                    truncate(prompt.description, 40),
+                });
+                count += 1;
+            }
 
-        // Filter by task if provided
-        if (task_filter) |task| {
-            if (!containsIgnoreCase(prompt.task, task)) continue;
-        }
-
-        try stdout.print("{s}{s}{s: <8}{s}  {s: <10}  {s: <25}  {s}\n", .{
-            P,
-            Color.dim,
-            prompt.type,
-            Color.reset,
-            truncate(prompt.task, 10),
-            truncate(prompt.name, 25),
-            truncate(prompt.description, 40),
-        });
-        count += 1;
-    }
-
-    if (count == 0) {
-        try stdout.print("{s}{s}No results found.{s}\n", .{ P, Color.dim, Color.reset });
+            if (count == 0) {
+                try stdout.print("{s}{s}No {s} prompts found.{s}\n", .{ P, Color.dim, type_str, Color.reset });
+            }
+        },
     }
 
     try stdout.writeAll("\n");
