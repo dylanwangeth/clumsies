@@ -6,7 +6,7 @@ const styles = @import("styles.zig");
 const Color = styles.Color;
 const P = styles.P;
 
-const version = "0.2.5";
+const version = "0.3.0";
 
 const Command = enum {
     search,
