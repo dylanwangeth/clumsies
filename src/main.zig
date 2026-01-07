@@ -17,7 +17,6 @@ const Command = enum {
     add,
     upgrade,
     config,
-    zen,
     help,
     version,
     none,
@@ -73,8 +72,6 @@ pub fn main() !void {
             cmd = .install;
         } else if (std.mem.eql(u8, arg, "add")) {
             cmd = .add;
-        } else if (std.mem.eql(u8, arg, "zen")) {
-            cmd = .zen;
         } else if (std.mem.eql(u8, arg, "upgrade")) {
             cmd = .upgrade;
         } else if (std.mem.eql(u8, arg, "config")) {
@@ -152,9 +149,6 @@ pub fn main() !void {
                 return;
             };
             try commands.add.run(stdout, stderr, allocator, hash, force);
-        },
-        .zen => {
-            try commands.zen.run(stdout);
         },
         .upgrade => {
             try commands.upgrade.run(stdout, stderr, allocator, version);

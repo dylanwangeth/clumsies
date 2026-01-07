@@ -16,8 +16,7 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    {s}use{s} <hash>          Apply installed template to current directory\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}add{s} <hash>          Add a single prompt by hash\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}config{s}              Manage configuration\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}upgrade{s}             Upgrade clumsies to latest version\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}zen{s}                 Show clumsies design philosophy\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}upgrade{s}             Upgrade clumsies to latest version\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}SEARCH OPTIONS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}--command{s}           Search command prompts\n", .{ P, Color.cyan, Color.reset });
