@@ -31,6 +31,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
             };
             defer templates_index.deinit();
 
+            var name_buf: [25]u8 = undefined;
             for (templates_index.templates) |tmpl| {
                 if (keyword) |kw| {
                     if (!containsIgnoreCase(tmpl.name, kw) and
@@ -42,7 +43,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
                     P,
                     truncate(tmpl.task, 10),
                     Color.cyan,
-                    truncate(tmpl.name, 25),
+                    toLowerTruncate(&name_buf, tmpl.name, 25),
                     Color.reset,
                     truncate(tmpl.description, 40),
                 });
@@ -65,6 +66,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
             };
             defer prompts_index.deinit();
 
+            var name_buf: [25]u8 = undefined;
             for (prompts_index.prompts) |prompt| {
                 if (!std.mem.eql(u8, prompt.lang, effective_lang)) continue;
                 if (!std.mem.eql(u8, prompt.type, type_str)) continue;
@@ -79,7 +81,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
                     P,
                     truncate(prompt.task, 10),
                     Color.cyan,
-                    truncate(prompt.name, 25),
+                    toLowerTruncate(&name_buf, prompt.name, 25),
                     Color.reset,
                     truncate(prompt.description, 40),
                 });
@@ -131,4 +133,12 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 fn truncate(s: []const u8, max_len: usize) []const u8 {
     if (s.len <= max_len) return s;
     return s[0..max_len];
+}
+
+fn toLowerTruncate(buf: []u8, s: []const u8, max_len: usize) []const u8 {
+    const len = @min(s.len, max_len);
+    for (s[0..len], 0..) |c, i| {
+        buf[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    }
+    return buf[0..len];
 }
