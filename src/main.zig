@@ -1,12 +1,13 @@
 const std = @import("std");
 const fs = std.fs;
+const build_options = @import("build_options");
 const commands = @import("commands/commands.zig");
 const styles = @import("styles.zig");
 
 const Color = styles.Color;
 const P = styles.P;
 
-const version = "0.3.1";
+const version = build_options.version;
 
 const Command = enum {
     search,

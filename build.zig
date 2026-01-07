@@ -4,12 +4,22 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Read version from build.zig.zon
+    const version = @import("build.zig.zon").version;
+
+    // Create build options module to inject version
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", version);
+
     const exe = b.addExecutable(.{
         .name = "clumsies",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = options.createModule() },
+            },
         }),
     });
 

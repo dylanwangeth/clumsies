@@ -1,0 +1,11 @@
+.{
+    .name = .clumsies,
+    .version = "0.3.2",
+    .fingerprint = 0xa2173197082391c1,
+    .minimum_zig_version = "0.15.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
