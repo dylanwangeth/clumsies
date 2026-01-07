@@ -48,6 +48,16 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, task_
         }
     }
 
+    // Only show prompts if: has keyword, or filtering by type
+    const show_prompts = task_filter != null or filter.command_only or filter.conduct_only;
+    if (!show_prompts) {
+        if (count == 0) {
+            try stdout.print("{s}{s}No templates found.{s}\n", .{ P, Color.dim, Color.reset });
+        }
+        try stdout.writeAll("\n");
+        return;
+    }
+
     // Fetch and display prompts
     var prompts_index = http.fetchPromptsIndex(allocator) catch |err| {
         // If templates were shown, don't error on prompts failure
