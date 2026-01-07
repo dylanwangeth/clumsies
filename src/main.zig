@@ -42,10 +42,9 @@ pub fn main() !void {
     // Parse command and options
     var cmd: Command = .none;
     var template_name: ?[]const u8 = null;
-    var task_filter: ?[]const u8 = null;
-    var keyword_filter: ?[]const u8 = null;
-    var lang: ?commands.Language = null;
-    const Language = commands.Language;
+    var search_keyword: ?[]const u8 = null;
+    var search_type: commands.search.SearchType = .template;
+    var lang: ?[]const u8 = null;
     var entry_name: []const u8 = "CLAUDE.md";
     var force = false;
     var list = false;
@@ -80,28 +79,14 @@ pub fn main() !void {
             break; // Rest of args go to config command
         }
         // Options
-        else if (std.mem.eql(u8, arg, "--task") or std.mem.eql(u8, arg, "-t")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                task_filter = args[i];
-            }
-        } else if (std.mem.eql(u8, arg, "--kw") or std.mem.eql(u8, arg, "-k")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                keyword_filter = args[i];
-            }
+        else if (std.mem.eql(u8, arg, "--command")) {
+            search_type = .command;
+        } else if (std.mem.eql(u8, arg, "--conduct")) {
+            search_type = .conduct;
         } else if (std.mem.eql(u8, arg, "--lang") or std.mem.eql(u8, arg, "-l")) {
             if (i + 1 < args.len) {
                 i += 1;
-                const lang_arg = args[i];
-                if (std.mem.eql(u8, lang_arg, "zh") or std.mem.eql(u8, lang_arg, "cn") or std.mem.eql(u8, lang_arg, "chinese")) {
-                    lang = Language.zh;
-                } else if (std.mem.eql(u8, lang_arg, "en") or std.mem.eql(u8, lang_arg, "english")) {
-                    lang = Language.en;
-                } else {
-                    try stderr.print("\n{s}{s}{s}Error:{s} Unknown language: {s}. Use {s}'en'{s} or {s}'zh'{s}.\n\n", .{ P, Color.bold, Color.red, Color.reset, lang_arg, Color.cyan, Color.reset, Color.cyan, Color.reset });
-                    return;
-                }
+                lang = args[i];
             }
         } else if (std.mem.eql(u8, arg, "--name") or std.mem.eql(u8, arg, "-n")) {
             if (i + 1 < args.len) {
@@ -115,9 +100,11 @@ pub fn main() !void {
                 list = true;
             }
         }
-        // Positional argument (template name)
+        // Positional argument
         else if (!std.mem.startsWith(u8, arg, "-")) {
-            if (template_name == null and (cmd == .detail or cmd == .use or cmd == .install)) {
+            if (cmd == .search and search_keyword == null) {
+                search_keyword = arg;
+            } else if (template_name == null and (cmd == .detail or cmd == .use or cmd == .install)) {
                 template_name = arg;
             }
         }
@@ -132,21 +119,25 @@ pub fn main() !void {
             try commands.help.run(stdout);
         },
         .search => {
-            try commands.search.run(stdout, stderr, allocator, task_filter, keyword_filter);
+            try commands.search.run(stdout, stderr, allocator, search_type, search_keyword, lang);
         },
         .detail => {
             const name = template_name orelse {
-                try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies detail <name> [--lang en|zh]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
+                try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies detail <name> [--lang <code>]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
                 return;
             };
-            try commands.detail.run(stdout, stderr, allocator, name, lang orelse .en);
+            const effective_lang = try commands.config.getLang(allocator, lang);
+            defer allocator.free(effective_lang);
+            try commands.detail.run(stdout, stderr, allocator, name, effective_lang);
         },
         .use => {
             const name = template_name orelse {
-                try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies use <name> [--lang en|zh] [--name CURSOR.md]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
+                try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies use <name> [--lang <code>] [--name CURSOR.md]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
                 return;
             };
-            try commands.use.run(stdout, stderr, allocator, name, lang orelse .en, entry_name, force);
+            const effective_lang = try commands.config.getLang(allocator, lang);
+            defer allocator.free(effective_lang);
+            try commands.use.run(stdout, stderr, allocator, name, effective_lang, entry_name, force);
         },
         .install => {
             try commands.install.run(stdout, stderr, allocator, template_name, list, force);

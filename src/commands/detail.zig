@@ -3,12 +3,9 @@ const http = @import("../http.zig");
 const commands = @import("commands.zig");
 const Color = commands.Color;
 const P = commands.P;
-const Language = commands.Language;
 
-pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name: []const u8, lang: Language) !void {
-    const lang_str = if (lang == .zh) "zh" else "en";
-
-    const remote_path = std.fmt.allocPrint(allocator, "{s}/{s}/CLAUDE.md", .{ name, lang_str }) catch {
+pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name: []const u8, lang: []const u8) !void {
+    const remote_path = std.fmt.allocPrint(allocator, "{s}/{s}/CLAUDE.md", .{ name, lang }) catch {
         try stderr.print("{s}{s}{s}Error:{s} Out of memory.\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -26,8 +23,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
     };
     defer allocator.free(content);
 
-    const lang_display = if (lang == .zh) "zh" else "en";
-    try stdout.print("\n{s}{s}{s}Template:{s} {s} [{s}]\n", .{ P, Color.bold, Color.orange, Color.reset, name, lang_display });
+    try stdout.print("\n{s}{s}{s}Template:{s} {s} [{s}]\n", .{ P, Color.bold, Color.orange, Color.reset, name, lang });
     try stdout.print("{s}{s}────────────────────────────────────────────────────────────────{s}\n", .{ P, Color.orange, Color.reset });
 
     var line_start: usize = 0;

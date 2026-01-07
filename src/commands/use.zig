@@ -4,9 +4,8 @@ const commands = @import("commands.zig");
 const http = @import("../http.zig");
 const Color = commands.Color;
 const P = commands.P;
-const Language = commands.Language;
 
-pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name: []const u8, lang: Language, entry_name: []const u8, force: bool) !void {
+pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name: []const u8, lang: []const u8, entry_name: []const u8, force: bool) !void {
     try stdout.writeAll("\n");
 
     const templates_path = commands.getTemplatesPath(allocator) catch {
@@ -54,10 +53,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
     };
     defer parsed.deinit();
 
-    const lang_str = if (lang == .zh) "zh" else "en";
-    const lang_display = if (lang == .zh) "zh (中文)" else "en (English)";
-
-    try stdout.print("{s}Applying template '{s}{s}{s}' [{s}]...\n\n", .{ P, Color.bold, name, Color.reset, lang_display });
+    try stdout.print("{s}Applying template '{s}{s}{s}' [{s}]...\n\n", .{ P, Color.bold, name, Color.reset, lang });
 
     var cwd = fs.cwd().openDir(".", .{}) catch |err| {
         try stderr.print("{s}{s}{s}Error:{s} opening current directory: {}\n", .{ P, Color.bold, Color.red, Color.reset, err });
@@ -69,11 +65,11 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
     var skipped: usize = 0;
 
     // Copy CLAUDE.md as entry file (now in files/{lang}/)
-    const claude_path = try std.fs.path.join(allocator, &.{ template_path, "files", lang_str, "CLAUDE.md" });
+    const claude_path = try std.fs.path.join(allocator, &.{ template_path, "files", lang, "CLAUDE.md" });
     defer allocator.free(claude_path);
 
     const claude_file = fs.openFileAbsolute(claude_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not read CLAUDE.md for language '{s}'.\n", .{ P, Color.bold, Color.red, Color.reset, lang_str });
+        try stderr.print("{s}{s}{s}Error:{s} Could not read CLAUDE.md for language '{s}'.\n", .{ P, Color.bold, Color.red, Color.reset, lang });
         return;
     };
     defer claude_file.close();
@@ -93,7 +89,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, name:
     defer prompt_hashes.deinit(allocator);
 
     if (parsed.value.object.get("prompts")) |prompts_obj| {
-        if (prompts_obj.object.get(lang_str)) |lang_prompts| {
+        if (prompts_obj.object.get(lang)) |lang_prompts| {
             for (lang_prompts.array.items) |hash_val| {
                 prompt_hashes.append(allocator, hash_val.string) catch continue;
             }

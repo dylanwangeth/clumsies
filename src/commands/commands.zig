@@ -15,9 +15,6 @@ pub const upgrade = @import("upgrade.zig");
 pub const zen = @import("zen.zig");
 pub const config = @import("config.zig");
 
-// Shared types
-pub const Language = enum { en, zh };
-
 pub const WriteResult = struct {
     written: bool,
     skipped: bool,
