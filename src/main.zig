@@ -13,7 +13,7 @@ const Command = enum {
     search,
     detail,
     use,
-    install,
+    list,
     add,
     upgrade,
     config,
@@ -48,7 +48,6 @@ pub fn main() !void {
     var lang: ?[]const u8 = null;
     var entry_name: []const u8 = "CLAUDE.md";
     var force = false;
-    var list = false;
     var config_args_start: usize = 0;
 
     var i: usize = 1;
@@ -68,8 +67,8 @@ pub fn main() !void {
             cmd = .detail;
         } else if (std.mem.eql(u8, arg, "use")) {
             cmd = .use;
-        } else if (std.mem.eql(u8, arg, "install")) {
-            cmd = .install;
+        } else if (std.mem.eql(u8, arg, "list")) {
+            cmd = .list;
         } else if (std.mem.eql(u8, arg, "add")) {
             cmd = .add;
         } else if (std.mem.eql(u8, arg, "upgrade")) {
@@ -96,16 +95,12 @@ pub fn main() !void {
             }
         } else if (std.mem.eql(u8, arg, "--force") or std.mem.eql(u8, arg, "-f")) {
             force = true;
-        } else if (std.mem.eql(u8, arg, "--list")) {
-            if (cmd == .install) {
-                list = true;
-            }
         }
         // Positional argument
         else if (!std.mem.startsWith(u8, arg, "-")) {
             if (cmd == .search and keyword == null) {
                 keyword = arg;
-            } else if (template_name == null and (cmd == .detail or cmd == .use or cmd == .install or cmd == .add)) {
+            } else if (template_name == null and (cmd == .detail or cmd == .use or cmd == .add)) {
                 template_name = arg;
             }
         }
@@ -140,8 +135,8 @@ pub fn main() !void {
             defer allocator.free(effective_lang);
             try commands.use.run(stdout, stderr, allocator, hash, effective_lang, entry_name, force);
         },
-        .install => {
-            try commands.install.run(stdout, stderr, allocator, template_name, list, force);
+        .list => {
+            try commands.list.run(stdout, stderr, allocator);
         },
         .add => {
             const hash = template_name orelse {

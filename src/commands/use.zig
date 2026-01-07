@@ -42,20 +42,216 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, hash:
     const template_path = try std.fs.path.join(allocator, &.{ templates_path, hash8 });
     defer allocator.free(template_path);
 
-    // Check if template exists
-    fs.accessAbsolute(template_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Template '{s}{s}{s}' ({s}) not installed.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, tmpl.name, Color.reset, hash8 });
-        try stderr.print("{s}Run: {s}clumsies install {s}{s}\n", .{ P, Color.cyan, hash8, Color.reset });
-        return;
+    // Check if template exists locally, if not, download it
+    const template_exists = blk: {
+        fs.accessAbsolute(template_path, .{}) catch break :blk false;
+        break :blk true;
     };
 
+    if (!template_exists) {
+        try stdout.print("{s}Template not cached locally, downloading...\n\n", .{P});
+        stdout.flush() catch {};
+
+        // Download template (integrated from install logic)
+        try downloadTemplate(stdout, stderr, allocator, tmpl, templates_path, prompts_path, template_path);
+    }
+
+    // Now apply the template
+    try applyTemplate(stdout, stderr, allocator, tmpl, template_path, prompts_path, lang, entry_name, force);
+}
+
+fn downloadTemplate(
+    stdout: anytype,
+    stderr: anytype,
+    allocator: std.mem.Allocator,
+    tmpl: http.TemplateInfo,
+    templates_path: []const u8,
+    prompts_path: []const u8,
+    template_path: []const u8,
+) !void {
+    // Create directories
+    fs.cwd().makePath(templates_path) catch |err| {
+        try stderr.print("{s}{s}{s}Error:{s} creating templates directory: {any}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+        return error.DirectoryCreationFailed;
+    };
+    fs.cwd().makePath(prompts_path) catch |err| {
+        try stderr.print("{s}{s}{s}Error:{s} creating prompts directory: {any}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+        return error.DirectoryCreationFailed;
+    };
+
+    try stdout.print("{s}  {s}→{s} Fetching template info...\n", .{ P, Color.orange, Color.reset });
+    stdout.flush() catch {};
+
+    // Fetch template meta.json
+    var meta_result = http.fetchTemplateMeta(allocator, tmpl.name) catch |err| {
+        if (err == http.HttpError.NotFound) {
+            try stderr.print("{s}{s}{s}Error:{s} template '{s}{s}{s}' not found in registry.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, tmpl.name, Color.reset });
+        } else if (err == http.HttpError.RequestFailed) {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to connect to registry. Check your network.\n", .{ P, Color.bold, Color.red, Color.reset });
+        } else {
+            try stderr.print("{s}{s}{s}Error:{s} fetching template: {any}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+        }
+        return error.FetchFailed;
+    };
+    defer meta_result.deinit();
+
+    // Fetch prompts index for metadata
+    var prompts_index = http.fetchPromptsIndex(allocator) catch |err| {
+        try stderr.print("{s}{s}{s}Error:{s} fetching prompts index: {any}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+        return error.FetchFailed;
+    };
+    defer prompts_index.deinit();
+
+    // Create template directory
+    fs.cwd().makePath(template_path) catch |err| {
+        try stderr.print("{s}{s}{s}Error:{s} creating template directory: {any}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+        return error.DirectoryCreationFailed;
+    };
+
+    // Save meta.json to template directory
+    const meta_local_path = try std.fs.path.join(allocator, &.{ template_path, "meta.json" });
+    defer allocator.free(meta_local_path);
+
+    {
+        const meta_file = fs.createFileAbsolute(meta_local_path, .{}) catch {
+            try stderr.print("{s}  {s}{s}✗{s} Cannot write: meta.json\n", .{ P, Color.bold, Color.red, Color.reset });
+            return error.WriteFailed;
+        };
+        defer meta_file.close();
+
+        meta_file.writeAll(meta_result.json_str) catch {
+            try stderr.print("{s}  {s}{s}✗{s} Write error: meta.json\n", .{ P, Color.bold, Color.red, Color.reset });
+            return error.WriteFailed;
+        };
+    }
+    try stdout.print("{s}  {s}→{s} meta.json\n", .{ P, Color.orange, Color.reset });
+
+    // Download entry files (CLAUDE.md) for each language
+    const languages = [_][]const u8{ "en", "zh" };
+    for (languages) |lang| {
+        for (meta_result.meta.files) |file| {
+            const content = http.fetchTemplateFile(allocator, tmpl.name, lang, file) catch |err| {
+                if (err != http.HttpError.NotFound) {
+                    try stderr.print("{s}  {s}{s}✗{s} Failed: files/{s}/{s}\n", .{ P, Color.bold, Color.red, Color.reset, lang, file });
+                }
+                continue;
+            };
+            defer allocator.free(content);
+
+            // Store in templates/{name}/files/{lang}/{file}
+            const local_path = try std.fs.path.join(allocator, &.{ template_path, "files", lang, file });
+            defer allocator.free(local_path);
+
+            if (std.fs.path.dirname(local_path)) |parent| {
+                fs.cwd().makePath(parent) catch {};
+            }
+
+            const out_file = fs.createFileAbsolute(local_path, .{}) catch {
+                try stderr.print("{s}  {s}{s}✗{s} Cannot write: files/{s}/{s}\n", .{ P, Color.bold, Color.red, Color.reset, lang, file });
+                continue;
+            };
+            defer out_file.close();
+
+            out_file.writeAll(content) catch {
+                try stderr.print("{s}  {s}{s}✗{s} Write error: files/{s}/{s}\n", .{ P, Color.bold, Color.red, Color.reset, lang, file });
+                continue;
+            };
+
+            try stdout.print("{s}  {s}→{s} files/{s}/{s}\n", .{ P, Color.orange, Color.reset, lang, file });
+        }
+    }
+
+    // Collect all unique hashes
+    const all_hashes = blk: {
+        var hashes: std.ArrayListUnmanaged([]const u8) = .{};
+        for (meta_result.meta.prompts_en) |h| {
+            hashes.append(allocator, h) catch continue;
+        }
+        for (meta_result.meta.prompts_zh) |h| {
+            var found = false;
+            for (hashes.items) |existing| {
+                if (std.mem.eql(u8, existing, h)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                hashes.append(allocator, h) catch continue;
+            }
+        }
+        break :blk hashes.toOwnedSlice(allocator) catch return error.OutOfMemory;
+    };
+    defer allocator.free(all_hashes);
+
+    // Download prompts to global prompts directory
+    for (all_hashes) |prompt_hash| {
+        const filename = std.fmt.allocPrint(allocator, "{s}.md", .{prompt_hash}) catch continue;
+        defer allocator.free(filename);
+
+        const prompt_local_path = try std.fs.path.join(allocator, &.{ prompts_path, filename });
+        defer allocator.free(prompt_local_path);
+
+        // Check if prompt already exists locally
+        const prompt_exists = blk: {
+            fs.accessAbsolute(prompt_local_path, .{}) catch break :blk false;
+            break :blk true;
+        };
+
+        const prompt_meta = prompts_index.findByHash(prompt_hash);
+        const display_name = if (prompt_meta) |pm| pm.path else prompt_hash[0..@min(8, prompt_hash.len)];
+
+        if (prompt_exists) {
+            try stdout.print("{s}  {s}✓{s} {s} {s}(cached){s}\n", .{ P, Color.green, Color.reset, display_name, Color.dim, Color.reset });
+            continue;
+        }
+
+        const content = http.fetchPromptContent(allocator, prompt_hash) catch |err| {
+            if (err == http.HttpError.NotFound) {
+                try stderr.print("{s}  {s}{s}✗{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, display_name });
+            } else {
+                try stderr.print("{s}  {s}{s}✗{s} Failed: {s}\n", .{ P, Color.bold, Color.red, Color.reset, display_name });
+            }
+            continue;
+        };
+        defer allocator.free(content);
+
+        const prompt_file = fs.createFileAbsolute(prompt_local_path, .{}) catch {
+            try stderr.print("{s}  {s}{s}✗{s} Cannot write: {s}\n", .{ P, Color.bold, Color.red, Color.reset, display_name });
+            continue;
+        };
+        defer prompt_file.close();
+
+        prompt_file.writeAll(content) catch {
+            try stderr.print("{s}  {s}{s}✗{s} Write error: {s}\n", .{ P, Color.bold, Color.red, Color.reset, display_name });
+            continue;
+        };
+
+        try stdout.print("{s}  {s}→{s} {s}\n", .{ P, Color.orange, Color.reset, display_name });
+    }
+
+    // Save local prompts index
+    try saveLocalPromptsIndex(allocator, prompts_path, prompts_index, all_hashes);
+
+    try stdout.print("\n{s}{s}{s}✓{s} Template cached locally\n\n", .{ P, Color.bold, Color.green, Color.reset });
+}
+
+fn applyTemplate(
+    stdout: anytype,
+    stderr: anytype,
+    allocator: std.mem.Allocator,
+    tmpl: http.TemplateInfo,
+    template_path: []const u8,
+    prompts_path: []const u8,
+    lang: []const u8,
+    entry_name: []const u8,
+    force: bool,
+) !void {
     // Read meta.json
     const meta_path = try std.fs.path.join(allocator, &.{ template_path, "meta.json" });
     defer allocator.free(meta_path);
 
     const meta_file = fs.openFileAbsolute(meta_path, .{}) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not read template meta.json.\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Try reinstalling: {s}clumsies install {s} --force{s}\n", .{ P, Color.cyan, hash8, Color.reset });
         return;
     };
     defer meta_file.close();
@@ -159,6 +355,44 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, hash:
     try stdout.print("\n{s}{s}{s}✓{s} Done! Created {s}{d}{s} files", .{ P, Color.bold, Color.orange, Color.reset, Color.bold, created, Color.reset });
     if (skipped > 0) try stdout.print(", skipped {d} files", .{skipped});
     try stdout.writeAll("\n\n");
+}
+
+fn saveLocalPromptsIndex(allocator: std.mem.Allocator, prompts_path: []const u8, remote_index: http.PromptsIndex, hashes: []const []const u8) !void {
+    const index_path = try std.fs.path.join(allocator, &.{ prompts_path, "index.json" });
+    defer allocator.free(index_path);
+
+    // Build JSON manually
+    var json_buf: std.ArrayListUnmanaged(u8) = .{};
+    defer json_buf.deinit(allocator);
+
+    try json_buf.appendSlice(allocator, "{\n  \"version\": \"1\",\n  \"prompts\": [\n");
+
+    var first = true;
+    for (hashes) |hash_item| {
+        if (remote_index.findByHash(hash_item)) |meta| {
+            if (!first) {
+                try json_buf.appendSlice(allocator, ",\n");
+            }
+            first = false;
+
+            try json_buf.appendSlice(allocator, "    {\n");
+            try json_buf.writer(allocator).print("      \"hash\": \"{s}\",\n", .{meta.hash});
+            try json_buf.writer(allocator).print("      \"type\": \"{s}\",\n", .{meta.type});
+            try json_buf.writer(allocator).print("      \"lang\": \"{s}\",\n", .{meta.lang});
+            try json_buf.writer(allocator).print("      \"path\": \"{s}\",\n", .{meta.path});
+            try json_buf.writer(allocator).print("      \"author\": \"{s}\",\n", .{meta.author});
+            try json_buf.appendSlice(allocator, "      \"publication\": {\n");
+            try json_buf.writer(allocator).print("        \"name\": \"{s}\",\n", .{meta.name});
+            try json_buf.writer(allocator).print("        \"description\": \"{s}\"\n", .{meta.description});
+            try json_buf.appendSlice(allocator, "      }\n    }");
+        }
+    }
+
+    try json_buf.appendSlice(allocator, "\n  ]\n}\n");
+
+    const file = fs.createFileAbsolute(index_path, .{}) catch return;
+    defer file.close();
+    file.writeAll(json_buf.items) catch {};
 }
 
 /// Extract path from YAML frontmatter
