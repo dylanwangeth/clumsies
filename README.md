@@ -39,14 +39,11 @@ Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 ## Usage
 
 ```bash
-# Search templates
-clumsies search                    # List all templates
-clumsies search solo               # Search by keyword
-
-# Search prompts (by type)
-clumsies search --command          # List command prompts
-clumsies search --conduct          # List conduct prompts
-clumsies search --conduct --lang zh
+# Search (unified display for templates + prompts)
+clumsies search                    # List all
+clumsies search coding             # Filter by task
+clumsies search --conduct-only     # Only conduct prompts
+clumsies search --command-only     # Only command prompts
 
 # Preview a template
 clumsies detail solocc

@@ -58,6 +58,7 @@ pub fn fetchUrl(allocator: std.mem.Allocator, url: []const u8) HttpError![]const
 /// Template metadata from templates/index.json
 pub const TemplateInfo = struct {
     name: []const u8,
+    task: []const u8,
     description: []const u8,
     author: []const u8,
     version: []const u8,
@@ -111,6 +112,7 @@ pub fn fetchTemplatesIndex(allocator: std.mem.Allocator) HttpError!TemplatesInde
 
         const info = TemplateInfo{
             .name = if (obj.get("name")) |v| v.string else "",
+            .task = if (obj.get("task")) |v| v.string else "",
             .description = if (obj.get("description")) |v| v.string else "",
             .author = if (obj.get("author")) |v| v.string else "",
             .version = if (obj.get("version")) |v| v.string else "",
@@ -219,6 +221,7 @@ pub fn fetchTemplateMeta(allocator: std.mem.Allocator, template_name: []const u8
 pub const PromptMeta = struct {
     hash: []const u8,
     type: []const u8,
+    task: []const u8,
     lang: []const u8,
     path: []const u8,
     author: []const u8,
@@ -280,6 +283,7 @@ pub fn fetchPromptsIndex(allocator: std.mem.Allocator) HttpError!PromptsIndex {
         const meta = PromptMeta{
             .hash = if (obj.get("hash")) |v| v.string else "",
             .type = if (obj.get("type")) |v| v.string else "",
+            .task = if (obj.get("task")) |v| v.string else "",
             .lang = if (obj.get("lang")) |v| v.string else "",
             .path = if (obj.get("path")) |v| v.string else "",
             .author = if (obj.get("author")) |v| v.string else "",

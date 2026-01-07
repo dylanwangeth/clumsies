@@ -258,6 +258,7 @@ Prompts are stored by their SHA-256 hash:
     {
       "hash": "36995f0ae35fcafcc0c44ac1570a96708302932df0addd1dd60eecc17ea2da90",
       "type": "command",
+      "task": "coding",
       "lang": "en",
       "path": "command/00_CONTEXT_REINFORCEMENT.md",
       "author": "dylan",
@@ -270,11 +271,22 @@ Prompts are stored by their SHA-256 hash:
 }
 ```
 
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `hash` | string | yes | SHA-256 hash of the file content |
+| `type` | string | yes | `"command"` \| `"conduct"` |
+| `task` | string | yes | Task category (e.g., `coding`, `writing`, `design`) |
+| `lang` | string | yes | ISO 639-1 language code |
+| `path` | string | yes | Original path relative to `.prompts/` |
+| `author` | string | yes | Author identifier |
+| `publication` | object | yes | Display metadata |
+
 ### 6.4 Template meta.json Schema
 
 ```json
 {
   "name": "solocc",
+  "task": "coding",
   "description": "Solo developer workflow for Claude Code",
   "author": "dylan",
   "version": "1.0.0",
@@ -289,6 +301,7 @@ Prompts are stored by their SHA-256 hash:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | Template identifier (URL-safe) |
+| `task` | string | yes | Task category (e.g., `coding`, `writing`, `design`) |
 | `description` | string | yes | Human-readable description |
 | `author` | string | yes | Author identifier |
 | `version` | string | yes | Semantic version |
@@ -303,13 +316,24 @@ Prompts are stored by their SHA-256 hash:
   "templates": [
     {
       "name": "solocc",
+      "task": "coding",
       "description": "Solo developer workflow",
       "author": "dylan",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "languages": ["en", "zh"]
     }
   ]
 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Template identifier |
+| `task` | string | yes | Task category |
+| `description` | string | yes | Human-readable description |
+| `author` | string | yes | Author identifier |
+| `version` | string | yes | Semantic version |
+| `languages` | string[] | yes | Available language codes |
 
 ---
 
