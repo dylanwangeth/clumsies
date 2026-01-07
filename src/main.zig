@@ -14,6 +14,7 @@ const Command = enum {
     use,
     install,
     upgrade,
+    config,
     zen,
     help,
     version,
@@ -48,6 +49,7 @@ pub fn main() !void {
     var entry_name: []const u8 = "CLAUDE.md";
     var force = false;
     var list = false;
+    var config_args_start: usize = 0;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -72,6 +74,10 @@ pub fn main() !void {
             cmd = .zen;
         } else if (std.mem.eql(u8, arg, "upgrade")) {
             cmd = .upgrade;
+        } else if (std.mem.eql(u8, arg, "config")) {
+            cmd = .config;
+            config_args_start = i + 1;
+            break; // Rest of args go to config command
         }
         // Options
         else if (std.mem.eql(u8, arg, "--task") or std.mem.eql(u8, arg, "-t")) {
@@ -150,6 +156,10 @@ pub fn main() !void {
         },
         .upgrade => {
             try commands.upgrade.run(stdout, stderr, allocator, version);
+        },
+        .config => {
+            const config_args = args[config_args_start..];
+            try commands.config.run(stdout, stderr, allocator, config_args);
         },
     }
 }
