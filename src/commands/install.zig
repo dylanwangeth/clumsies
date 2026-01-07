@@ -265,7 +265,7 @@ fn saveLocalPromptsIndex(allocator: std.mem.Allocator, prompts_path: []const u8,
 
             try json_buf.appendSlice(allocator, "    {\n");
             try json_buf.writer(allocator).print("      \"hash\": \"{s}\",\n", .{meta.hash});
-            try json_buf.writer(allocator).print("      \"type\": \"{s}\",\n", .{meta.@"type"});
+            try json_buf.writer(allocator).print("      \"type\": \"{s}\",\n", .{meta.type});
             try json_buf.writer(allocator).print("      \"lang\": \"{s}\",\n", .{meta.lang});
             try json_buf.writer(allocator).print("      \"path\": \"{s}\",\n", .{meta.path});
             try json_buf.writer(allocator).print("      \"author\": \"{s}\",\n", .{meta.author});
