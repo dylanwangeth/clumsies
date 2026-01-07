@@ -3,7 +3,8 @@ const Color = commands.Color;
 const P = commands.P;
 
 pub fn run(stdout: anytype) !void {
-    try stdout.print("\n{s}{s}{s}clumsies{s} - AI Agent prompts scaffolding tool\n\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("\n{s}{s}{s}clumsies{s} - CLI for the Clumsies Protocol\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}{s}Open standard for reusable AI Agent prompts{s}\n\n", .{ P, Color.dim, Color.reset });
 
     try stdout.print("{s}{s}{s}USAGE:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    clumsies <command> [options]\n\n", .{P});
