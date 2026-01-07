@@ -39,10 +39,14 @@ Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 ## Usage
 
 ```bash
-# Search available prompts
-clumsies search
-clumsies search --task commit      # Filter by task
-clumsies search --kw git           # Filter by keyword
+# Search templates
+clumsies search                    # List all templates
+clumsies search solo               # Search by keyword
+
+# Search prompts (by type)
+clumsies search --command          # List command prompts
+clumsies search --conduct          # List conduct prompts
+clumsies search --conduct --lang zh
 
 # Preview a template
 clumsies detail solocc
@@ -58,9 +62,15 @@ clumsies use solocc --lang zh
 clumsies use solocc --name CURSOR.md
 clumsies use solocc --force        # Overwrite existing files
 
+# Configure defaults
+clumsies config set lang zh        # Set default language
+clumsies config list               # Show all config
+
 # Upgrade clumsies
 clumsies upgrade
 ```
+
+Language codes follow ISO 639-1 standard (e.g., `en`, `zh`, `ja`, `ko`).
 
 ## What's in a Template?
 
