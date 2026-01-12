@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const http = @import("../http.zig");
 const commands = @import("commands.zig");
 const config = @import("config.zig");
+const spinner = @import("../spinner.zig");
 const Color = commands.Color;
 const P = commands.P;
 
@@ -12,8 +13,9 @@ pub const SearchMode = enum {
     conduct,
 };
 
-// Fixed column widths: "  " + ID(8) + "  " + TASK(10) + "  " + AUTHOR(10) + "  " + NAME(20) + "  " = 58
-const FIXED_COLS_WIDTH: usize = 58;
+// Column widths (excluding P prefix): ID(8) + "  " + TASK(10) + "  " + AUTHOR(10) + "  " + NAME(20) + "  " = 56
+const COLS_WIDTH: usize = 56;
+const P_WIDTH: usize = 2; // P prefix is 2 spaces
 const MIN_DESC_WIDTH: usize = 20;
 const DEFAULT_TERM_WIDTH: usize = 100;
 
@@ -41,23 +43,13 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
     var count: usize = 0;
 
     // Calculate description column width based on terminal width
+    // Use 80% of terminal width for content (leave 20% margin for aesthetics)
     const term_width = getTerminalWidth();
-    const desc_width = if (term_width > FIXED_COLS_WIDTH + MIN_DESC_WIDTH)
-        term_width - FIXED_COLS_WIDTH
+    const content_width = (term_width * 80) / 100;
+    const desc_width = if (content_width > P_WIDTH + COLS_WIDTH + MIN_DESC_WIDTH)
+        content_width - P_WIDTH - COLS_WIDTH
     else
         MIN_DESC_WIDTH;
-
-    // Print header
-    try stdout.print("{s}{s}{s}ID        TASK        AUTHOR      NAME                  DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    // Dynamic separator line
-    try stdout.writeAll(P);
-    try stdout.writeAll(Color.dim);
-    var sep_i: usize = 0;
-    while (sep_i < FIXED_COLS_WIDTH + desc_width) : (sep_i += 1) {
-        try stdout.writeAll("─");
-    }
-    try stdout.writeAll(Color.reset);
-    try stdout.writeAll("\n");
 
     // Buffers for truncation
     var name_buf: [20]u8 = undefined;
@@ -66,11 +58,29 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
     switch (mode) {
         .templates => {
             // Search templates
+            var sp = spinner.init(stdout, "Fetching templates");
+            sp.start();
+
             var templates_index = http.fetchTemplatesIndex(allocator) catch |err| {
+                sp.fail();
                 try printError(stderr, err);
                 return;
             };
             defer templates_index.deinit();
+
+            sp.clear();
+
+            // Print header
+            try stdout.print("{s}{s}{s}ID        TASK        AUTHOR      NAME                  DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+            // Dynamic separator line (P is already written, so separator = COLS_WIDTH + desc_width)
+            try stdout.writeAll(P);
+            try stdout.writeAll(Color.dim);
+            var sep_i: usize = 0;
+            while (sep_i < COLS_WIDTH + desc_width) : (sep_i += 1) {
+                try stdout.writeAll("─");
+            }
+            try stdout.writeAll(Color.reset);
+            try stdout.writeAll("\n");
 
             for (templates_index.templates) |tmpl| {
                 if (keyword) |kw| {
@@ -103,11 +113,29 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, keywo
             // Search prompts
             const type_str = if (mode == .command) "command" else "conduct";
 
+            var sp = spinner.init(stdout, "Fetching prompts");
+            sp.start();
+
             var prompts_index = http.fetchPromptsIndex(allocator) catch |err| {
+                sp.fail();
                 try printError(stderr, err);
                 return;
             };
             defer prompts_index.deinit();
+
+            sp.clear();
+
+            // Print header
+            try stdout.print("{s}{s}{s}ID        TASK        AUTHOR      NAME                  DESCRIPTION{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+            // Dynamic separator line (P is already written, so separator = COLS_WIDTH + desc_width)
+            try stdout.writeAll(P);
+            try stdout.writeAll(Color.dim);
+            var sep_i: usize = 0;
+            while (sep_i < COLS_WIDTH + desc_width) : (sep_i += 1) {
+                try stdout.writeAll("─");
+            }
+            try stdout.writeAll(Color.reset);
+            try stdout.writeAll("\n");
 
             for (prompts_index.prompts) |prompt| {
                 if (!std.mem.eql(u8, prompt.lang, effective_lang)) continue;

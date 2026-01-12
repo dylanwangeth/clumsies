@@ -2,6 +2,7 @@ const std = @import("std");
 const fs = std.fs;
 const commands = @import("commands.zig");
 const http = @import("../http.zig");
+const spinner = @import("../spinner.zig");
 const Color = commands.Color;
 const P = commands.P;
 
@@ -9,7 +10,11 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, hash:
     try stdout.writeAll("\n");
 
     // Fetch templates index to find template info by hash
+    var sp = spinner.init(stdout, "Fetching template info");
+    sp.start();
+
     var templates_index = http.fetchTemplatesIndex(allocator) catch |err| {
+        sp.fail();
         if (err == http.HttpError.RequestFailed) {
             try stderr.print("{s}{s}{s}Error:{s} Failed to connect to registry.\n", .{ P, Color.bold, Color.red, Color.reset });
         } else {
@@ -18,6 +23,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, hash:
         return;
     };
     defer templates_index.deinit();
+
+    sp.succeed();
 
     const tmpl = templates_index.findByHash(hash) orelse {
         try stderr.print("{s}{s}{s}Error:{s} Template with hash '{s}{s}{s}' not found.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, hash, Color.reset });
@@ -79,11 +86,12 @@ fn downloadTemplate(
         return error.DirectoryCreationFailed;
     };
 
-    try stdout.print("{s}  {s}→{s} Fetching template info...\n", .{ P, Color.orange, Color.reset });
-    stdout.flush() catch {};
-
     // Fetch template meta.json
+    var sp_meta = spinner.init(stdout, "Fetching template meta");
+    sp_meta.start();
+
     var meta_result = http.fetchTemplateMeta(allocator, tmpl.name) catch |err| {
+        sp_meta.fail();
         if (err == http.HttpError.NotFound) {
             try stderr.print("{s}{s}{s}Error:{s} template '{s}{s}{s}' not found in registry.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, tmpl.name, Color.reset });
         } else if (err == http.HttpError.RequestFailed) {
@@ -94,13 +102,19 @@ fn downloadTemplate(
         return error.FetchFailed;
     };
     defer meta_result.deinit();
+    sp_meta.succeed();
 
     // Fetch prompts index for metadata
+    var sp_prompts = spinner.init(stdout, "Fetching prompts index");
+    sp_prompts.start();
+
     var prompts_index = http.fetchPromptsIndex(allocator) catch |err| {
+        sp_prompts.fail();
         try stderr.print("{s}{s}{s}Error:{s} fetching prompts index: {any}\n", .{ P, Color.bold, Color.red, Color.reset, err });
         return error.FetchFailed;
     };
     defer prompts_index.deinit();
+    sp_prompts.succeed();
 
     // Create template directory
     fs.cwd().makePath(template_path) catch |err| {
@@ -114,32 +128,37 @@ fn downloadTemplate(
 
     {
         const meta_file = fs.createFileAbsolute(meta_local_path, .{}) catch {
-            try stderr.print("{s}  {s}{s}✗{s} Cannot write: meta.json\n", .{ P, Color.bold, Color.red, Color.reset });
+            spinner.err(stderr, "Cannot write: meta.json");
             return error.WriteFailed;
         };
         defer meta_file.close();
 
         meta_file.writeAll(meta_result.json_str) catch {
-            try stderr.print("{s}  {s}{s}✗{s} Write error: meta.json\n", .{ P, Color.bold, Color.red, Color.reset });
+            spinner.err(stderr, "Write error: meta.json");
             return error.WriteFailed;
         };
     }
-    try stdout.print("{s}  {s}→{s} meta.json\n", .{ P, Color.orange, Color.reset });
+    spinner.success(stdout, "meta.json");
 
-    // Download entry files (CLAUDE.md) for each language
-    const languages = [_][]const u8{ "en", "zh" };
-    for (languages) |lang| {
+    // Download entry files (CLAUDE.md) for each supported language
+    var sp_files = spinner.init(stdout, "Downloading template files");
+    sp_files.start();
+
+    var files_downloaded: usize = 0;
+    var files_failed: usize = 0;
+
+    for (tmpl.languages) |lang| {
         for (meta_result.meta.files) |file| {
             const content = http.fetchTemplateFile(allocator, tmpl.name, lang, file) catch |err| {
                 if (err != http.HttpError.NotFound) {
-                    try stderr.print("{s}  {s}{s}✗{s} Failed: files/{s}/{s}\n", .{ P, Color.bold, Color.red, Color.reset, lang, file });
+                    files_failed += 1;
                 }
                 continue;
             };
             defer allocator.free(content);
 
             // Store in templates/{name}/files/{lang}/{file}
-            const local_path = try std.fs.path.join(allocator, &.{ template_path, "files", lang, file });
+            const local_path = std.fs.path.join(allocator, &.{ template_path, "files", lang, file }) catch continue;
             defer allocator.free(local_path);
 
             if (std.fs.path.dirname(local_path)) |parent| {
@@ -147,18 +166,24 @@ fn downloadTemplate(
             }
 
             const out_file = fs.createFileAbsolute(local_path, .{}) catch {
-                try stderr.print("{s}  {s}{s}✗{s} Cannot write: files/{s}/{s}\n", .{ P, Color.bold, Color.red, Color.reset, lang, file });
+                files_failed += 1;
                 continue;
             };
             defer out_file.close();
 
             out_file.writeAll(content) catch {
-                try stderr.print("{s}  {s}{s}✗{s} Write error: files/{s}/{s}\n", .{ P, Color.bold, Color.red, Color.reset, lang, file });
+                files_failed += 1;
                 continue;
             };
 
-            try stdout.print("{s}  {s}→{s} files/{s}/{s}\n", .{ P, Color.orange, Color.reset, lang, file });
+            files_downloaded += 1;
         }
+    }
+
+    if (files_failed > 0) {
+        sp_files.fail();
+    } else {
+        sp_files.succeed();
     }
 
     // Collect all unique hashes
@@ -184,11 +209,18 @@ fn downloadTemplate(
     defer allocator.free(all_hashes);
 
     // Download prompts to global prompts directory
+    var sp_prompts_dl = spinner.init(stdout, "Downloading prompts");
+    sp_prompts_dl.start();
+
+    var prompts_downloaded: usize = 0;
+    var prompts_cached: usize = 0;
+    var prompts_failed: usize = 0;
+
     for (all_hashes) |prompt_hash| {
         const filename = std.fmt.allocPrint(allocator, "{s}.md", .{prompt_hash}) catch continue;
         defer allocator.free(filename);
 
-        const prompt_local_path = try std.fs.path.join(allocator, &.{ prompts_path, filename });
+        const prompt_local_path = std.fs.path.join(allocator, &.{ prompts_path, filename }) catch continue;
         defer allocator.free(prompt_local_path);
 
         // Check if prompt already exists locally
@@ -197,36 +229,35 @@ fn downloadTemplate(
             break :blk true;
         };
 
-        const prompt_meta = prompts_index.findByHash(prompt_hash);
-        const display_name = if (prompt_meta) |pm| pm.path else prompt_hash[0..@min(8, prompt_hash.len)];
-
         if (prompt_exists) {
-            try stdout.print("{s}  {s}✓{s} {s} {s}(cached){s}\n", .{ P, Color.green, Color.reset, display_name, Color.dim, Color.reset });
+            prompts_cached += 1;
             continue;
         }
 
-        const content = http.fetchPromptContent(allocator, prompt_hash) catch |err| {
-            if (err == http.HttpError.NotFound) {
-                try stderr.print("{s}  {s}{s}✗{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, display_name });
-            } else {
-                try stderr.print("{s}  {s}{s}✗{s} Failed: {s}\n", .{ P, Color.bold, Color.red, Color.reset, display_name });
-            }
+        const content = http.fetchPromptContent(allocator, prompt_hash) catch {
+            prompts_failed += 1;
             continue;
         };
         defer allocator.free(content);
 
         const prompt_file = fs.createFileAbsolute(prompt_local_path, .{}) catch {
-            try stderr.print("{s}  {s}{s}✗{s} Cannot write: {s}\n", .{ P, Color.bold, Color.red, Color.reset, display_name });
+            prompts_failed += 1;
             continue;
         };
         defer prompt_file.close();
 
         prompt_file.writeAll(content) catch {
-            try stderr.print("{s}  {s}{s}✗{s} Write error: {s}\n", .{ P, Color.bold, Color.red, Color.reset, display_name });
+            prompts_failed += 1;
             continue;
         };
 
-        try stdout.print("{s}  {s}→{s} {s}\n", .{ P, Color.orange, Color.reset, display_name });
+        prompts_downloaded += 1;
+    }
+
+    if (prompts_failed > 0) {
+        sp_prompts_dl.fail();
+    } else {
+        sp_prompts_dl.succeed();
     }
 
     // Save local prompts index

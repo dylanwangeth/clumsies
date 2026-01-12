@@ -2,6 +2,7 @@ const std = @import("std");
 const fs = std.fs;
 const commands = @import("commands.zig");
 const http = @import("../http.zig");
+const spinner = @import("../spinner.zig");
 const Color = commands.Color;
 const P = commands.P;
 
@@ -9,7 +10,11 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, hash:
     try stdout.writeAll("\n");
 
     // Fetch prompts index to find prompt info by hash
+    var sp = spinner.init(stdout, "Fetching prompts index");
+    sp.start();
+
     var prompts_index = http.fetchPromptsIndex(allocator) catch |err| {
+        sp.fail();
         if (err == http.HttpError.RequestFailed) {
             try stderr.print("{s}{s}{s}Error:{s} Failed to connect to registry.\n", .{ P, Color.bold, Color.red, Color.reset });
         } else {
@@ -18,6 +23,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, hash:
         return;
     };
     defer prompts_index.deinit();
+    sp.succeed();
 
     const prompt = prompts_index.findByHash(hash) orelse {
         try stderr.print("{s}{s}{s}Error:{s} Prompt with hash '{s}{s}{s}' not found.\n", .{ P, Color.bold, Color.red, Color.reset, Color.bold, hash, Color.reset });
@@ -27,13 +33,13 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, hash:
     const hash8 = prompt.hash[0..@min(8, prompt.hash.len)];
 
     try stdout.print("{s}Adding prompt '{s}{s}{s}' ({s})...\n\n", .{ P, Color.bold, prompt.name, Color.reset, hash8 });
-    stdout.flush() catch {};
 
     // Fetch prompt content
-    try stdout.print("{s}  {s}->{s} Fetching from registry...\n", .{ P, Color.orange, Color.reset });
-    stdout.flush() catch {};
+    var sp_content = spinner.init(stdout, "Fetching prompt content");
+    sp_content.start();
 
     const content = http.fetchPromptContent(allocator, prompt.hash) catch |err| {
+        sp_content.fail();
         if (err == http.HttpError.NotFound) {
             try stderr.print("{s}{s}{s}Error:{s} Prompt content not found in registry.\n", .{ P, Color.bold, Color.red, Color.reset });
         } else if (err == http.HttpError.RequestFailed) {
@@ -44,6 +50,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, hash:
         return;
     };
     defer allocator.free(content);
+    sp_content.succeed();
 
     // Strip frontmatter from content
     const clean_content = http.stripFrontmatter(content);

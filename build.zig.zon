@@ -1,6 +1,6 @@
 .{
     .name = .clumsies,
-    .version = "0.3.3",
+    .version = "0.4.0",
     .fingerprint = 0xa2173197082391c1,
     .minimum_zig_version = "0.15.0",
     .paths = .{

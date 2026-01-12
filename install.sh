@@ -132,7 +132,7 @@ main() {
     success "clumsies installed successfully!"
     printf "\nRun %bsource $RC_FILE%b or restart your terminal, then try:\n\n" "$CYAN" "$RESET"
     printf "    %bclumsies search%b\n" "$CYAN" "$RESET"
-    printf "    %bclumsies use solocc%b\n\n" "$CYAN" "$RESET"
+    printf "    %bclumsies use <hash>%b\n\n" "$CYAN" "$RESET"
 }
 
 main

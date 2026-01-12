@@ -118,13 +118,13 @@ pub fn main() !void {
             try commands.search.run(stdout, stderr, allocator, keyword, search_mode, lang);
         },
         .detail => {
-            const name = template_name orelse {
-                try stderr.print("\n{s}{s}{s}Error:{s} template name required\n{s}Usage: {s}clumsies detail <name> [--lang <code>]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
+            const hash = template_name orelse {
+                try stderr.print("\n{s}{s}{s}Error:{s} template hash required\n{s}Usage: {s}clumsies detail <hash> [--lang <code>]{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
                 return;
             };
             const effective_lang = try commands.config.getLang(allocator, lang);
             defer allocator.free(effective_lang);
-            try commands.detail.run(stdout, stderr, allocator, name, effective_lang);
+            try commands.detail.run(stdout, stderr, allocator, hash, effective_lang);
         },
         .use => {
             const hash = template_name orelse {

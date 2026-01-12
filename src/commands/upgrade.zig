@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const fs = std.fs;
 const http = @import("../http.zig");
 const commands = @import("commands.zig");
+const spinner = @import("../spinner.zig");
 const Color = commands.Color;
 const P = commands.P;
 const Sha256 = std.crypto.hash.sha2.Sha256;
@@ -55,11 +56,12 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, curre
     try stdout.print("{s}Checking for updates ({s}{s}{s})...\n\n", .{ P, Color.bold, platform, Color.reset });
     try stdout.print("{s}  Current version: {s}{s}{s}\n", .{ P, Color.bold, current_version, Color.reset });
 
-    try stdout.print("{s}  {s}→{s} Fetching latest release...\n", .{ P, Color.orange, Color.reset });
-    stdout.flush() catch {};
+    var sp_release = spinner.init(stdout, "Fetching latest release");
+    sp_release.start();
 
     const checksums_url = comptime http.RELEASES_BASE ++ "/checksums.txt";
     const checksums_content = http.fetchUrl(allocator, checksums_url) catch |err| {
+        sp_release.fail();
         if (err == http.HttpError.NotFound) {
             try stderr.print("{s}{s}{s}Error:{s} No release available.\n", .{ P, Color.bold, Color.red, Color.reset });
         } else if (err == http.HttpError.RequestFailed) {
@@ -70,6 +72,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, curre
         return;
     };
     defer allocator.free(checksums_content);
+    sp_release.succeed();
 
     var expected_checksum: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, checksums_content, '\n');
@@ -91,11 +94,12 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, curre
         return;
     }
 
-    try stdout.print("{s}  {s}→{s} Downloading binary...\n", .{ P, Color.orange, Color.reset });
-    stdout.flush() catch {};
+    var sp_download = spinner.init(stdout, "Downloading binary");
+    sp_download.start();
 
     const binary_url = comptime http.RELEASES_BASE ++ "/" ++ binary_name;
     const binary_content = http.fetchUrl(allocator, binary_url) catch |err| {
+        sp_download.fail();
         if (err == http.HttpError.NotFound) {
             try stderr.print("{s}{s}{s}Error:{s} Binary not found for {s}\n", .{ P, Color.bold, Color.red, Color.reset, platform });
         } else {
@@ -104,8 +108,10 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, curre
         return;
     };
     defer allocator.free(binary_content);
+    sp_download.succeed();
 
-    try stdout.print("{s}  {s}→{s} Verifying checksum...\n", .{ P, Color.orange, Color.reset });
+    var sp_verify = spinner.init(stdout, "Verifying checksum");
+    sp_verify.start();
 
     var hash: [32]u8 = undefined;
     Sha256.hash(binary_content, &hash, .{});
@@ -114,13 +120,13 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, curre
     bytesToHex(&hash, &hash_hex);
 
     if (!std.mem.eql(u8, &hash_hex, checksum)) {
+        sp_verify.fail();
         try stderr.print("{s}{s}{s}Error:{s} Checksum verification failed!\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}  Expected: {s}\n", .{ P, checksum });
         try stderr.print("{s}  Got:      {s}\n", .{ P, &hash_hex });
         return;
     }
-
-    try stdout.print("{s}  {s}✓{s} Checksum verified\n", .{ P, Color.green, Color.reset });
+    sp_verify.succeed();
 
     const home_dir = std.process.getEnvVarOwned(allocator, "HOME") catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine home directory.\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -134,20 +140,24 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, curre
     };
     defer allocator.free(bin_path);
 
-    try stdout.print("{s}  {s}→{s} Installing...\n", .{ P, Color.orange, Color.reset });
+    var sp_install = spinner.init(stdout, "Installing");
+    sp_install.start();
 
     {
         const file = fs.createFileAbsolute(bin_path, .{ .mode = 0o755 }) catch |err| {
+            sp_install.fail();
             try stderr.print("{s}{s}{s}Error:{s} Cannot write to {s}: {any}\n", .{ P, Color.bold, Color.red, Color.reset, bin_path, err });
             return;
         };
         defer file.close();
 
         file.writeAll(binary_content) catch |err| {
+            sp_install.fail();
             try stderr.print("{s}{s}{s}Error:{s} Failed to write binary: {any}\n", .{ P, Color.bold, Color.red, Color.reset, err });
             return;
         };
     }
+    sp_install.succeed();
 
     // Get new version from installed binary (file must be closed first)
     const new_version = getInstalledVersion(allocator, bin_path);
