@@ -1,173 +1,175 @@
 const std = @import("std");
 const fs = std.fs;
 const commands = @import("commands.zig");
+
 const Color = commands.Color;
 const P = commands.P;
 
+pub const DEFAULT_ENTRY_FILES = [_][]const u8{ "CLAUDE.md", "CURSOR.md", "AGENTS.md", "COPILOT.md" };
+
 const Config = struct {
     lang: [2]u8 = .{ 'e', 'n' },
-
-    pub fn langStr(self: *const Config) []const u8 {
-        return &self.lang;
-    }
+    registry: ?[]const u8 = null,
+    entry_files: ?[]const u8 = null,
 };
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
-        try showHelp(stdout);
+        try stderr.print("\n{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies config <get|set|list> [key] [value]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
-    const subcommand = args[0];
+    const subcmd = args[0];
 
-    if (std.mem.eql(u8, subcommand, "set")) {
-        if (args.len < 3) {
-            try stderr.print("\n{s}{s}{s}Error:{s} Missing key or value\n{s}Usage: {s}clumsies config set <key> <value>{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
-            return;
-        }
-        try setConfig(stdout, stderr, allocator, args[1], args[2]);
-    } else if (std.mem.eql(u8, subcommand, "get")) {
-        if (args.len < 2) {
-            try stderr.print("\n{s}{s}{s}Error:{s} Missing key\n{s}Usage: {s}clumsies config get <key>{s}\n\n", .{ P, Color.bold, Color.red, Color.reset, P, Color.cyan, Color.reset });
-            return;
-        }
+    if (std.mem.eql(u8, subcmd, "list")) {
+        try listConfig(stdout, allocator);
+    } else if (std.mem.eql(u8, subcmd, "get") and args.len >= 2) {
         try getConfig(stdout, stderr, allocator, args[1]);
-    } else if (std.mem.eql(u8, subcommand, "list")) {
-        try listConfig(stdout, stderr, allocator);
+    } else if (std.mem.eql(u8, subcmd, "set") and args.len >= 3) {
+        try setConfig(stdout, stderr, allocator, args[1], args[2]);
     } else {
-        try stderr.print("\n{s}{s}{s}Error:{s} Unknown subcommand '{s}'\n", .{ P, Color.bold, Color.red, Color.reset, subcommand });
-        try showHelp(stdout);
+        try stderr.print("\n{s}{s}{s}Error:{s} Invalid config command\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies config <get|set|list> [key] [value]{s}\n\n", .{ P, Color.cyan, Color.reset });
     }
-}
-
-fn showHelp(stdout: anytype) !void {
-    try stdout.writeAll("\n");
-    try stdout.print("{s}{s}{s}clumsies config{s} - Manage configuration\n\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}{s}Usage:{s}\n", .{ P, Color.bold, Color.reset });
-    try stdout.print("{s}  clumsies config set <key> <value>   Set a config value\n", .{P});
-    try stdout.print("{s}  clumsies config get <key>           Get a config value\n", .{P});
-    try stdout.print("{s}  clumsies config list                List all config\n\n", .{P});
-    try stdout.print("{s}{s}Available keys:{s}\n", .{ P, Color.bold, Color.reset });
-    try stdout.print("{s}  lang    Default language (ISO 639-1, e.g., en, zh, ja, ko)\n\n", .{P});
 }
 
 fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
-    const base_path = try commands.getBasePath(allocator);
-    defer allocator.free(base_path);
-    return try std.fs.path.join(allocator, &.{ base_path, "config.json" });
+    const base = try commands.getBasePath(allocator);
+    defer allocator.free(base);
+    return try std.fs.path.join(allocator, &.{ base, "config.json" });
 }
 
-fn loadConfig(allocator: std.mem.Allocator) !Config {
+fn readConfig(allocator: std.mem.Allocator) !std.json.Parsed(std.json.Value) {
     const config_path = try getConfigPath(allocator);
     defer allocator.free(config_path);
 
-    const file = fs.openFileAbsolute(config_path, .{}) catch {
-        return Config{};
-    };
+    const file = fs.openFileAbsolute(config_path, .{}) catch return error.NoConfig;
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, 1024 * 1024) catch {
-        return Config{};
-    };
+    const content = try file.readToEndAlloc(allocator, 10 * 1024);
     defer allocator.free(content);
 
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        return Config{};
+    return std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+}
+
+fn listConfig(stdout: anytype, allocator: std.mem.Allocator) !void {
+    try stdout.print("\n{s}{s}Configuration:{s}\n", .{ P, Color.bold, Color.reset });
+
+    const parsed = readConfig(allocator) catch {
+        try stdout.print("{s}  {s}(no configuration){s}\n\n", .{ P, Color.dim, Color.reset });
+        return;
     };
     defer parsed.deinit();
 
-    var config = Config{};
-
-    if (parsed.value.object.get("lang")) |lang_val| {
-        if (lang_val == .string and lang_val.string.len == 2) {
-            config.lang = .{ lang_val.string[0], lang_val.string[1] };
-        }
+    var iter = parsed.value.object.iterator();
+    while (iter.next()) |entry| {
+        const value_str = switch (entry.value_ptr.*) {
+            .string => |s| s,
+            else => "-",
+        };
+        try stdout.print("{s}  {s} = {s}\n", .{ P, entry.key_ptr.*, value_str });
     }
-
-    return config;
-}
-
-fn saveConfig(allocator: std.mem.Allocator, config: Config) !void {
-    const config_path = try getConfigPath(allocator);
-    defer allocator.free(config_path);
-
-    const base_path = try commands.getBasePath(allocator);
-    defer allocator.free(base_path);
-
-    // Ensure directory exists
-    fs.cwd().makePath(base_path) catch {};
-
-    const file = fs.createFileAbsolute(config_path, .{}) catch |err| {
-        return err;
-    };
-    defer file.close();
-
-    var buf: [1024]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "{{\n  \"lang\": \"{s}\"\n}}\n", .{config.langStr()}) catch {
-        return error.BufferTooSmall;
-    };
-
-    try file.writeAll(json);
-}
-
-fn isValidLangCode(code: []const u8) bool {
-    if (code.len != 2) return false;
-    // ISO 639-1: two lowercase letters
-    for (code) |c| {
-        if (c < 'a' or c > 'z') return false;
-    }
-    return true;
-}
-
-fn setConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key: []const u8, value: []const u8) !void {
-    var config = try loadConfig(allocator);
-
-    if (std.mem.eql(u8, key, "lang")) {
-        if (!isValidLangCode(value)) {
-            try stderr.print("\n{s}{s}{s}Error:{s} Invalid language code '{s}'. Use ISO 639-1 format (e.g., en, zh, ja, ko).\n\n", .{ P, Color.bold, Color.red, Color.reset, value });
-            return;
-        }
-        config.lang = .{ value[0], value[1] };
-    } else {
-        try stderr.print("\n{s}{s}{s}Error:{s} Unknown config key '{s}'\n\n", .{ P, Color.bold, Color.red, Color.reset, key });
-        return;
-    }
-
-    try saveConfig(allocator, config);
-    try stdout.print("\n{s}{s}{s}✓{s} Set {s}{s}{s} = {s}{s}{s}\n\n", .{ P, Color.bold, Color.green, Color.reset, Color.bold, key, Color.reset, Color.cyan, value, Color.reset });
+    try stdout.writeAll("\n");
 }
 
 fn getConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key: []const u8) !void {
-    const config = try loadConfig(allocator);
+    const parsed = readConfig(allocator) catch {
+        try stderr.print("\n{s}{s}{s}Error:{s} No configuration found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer parsed.deinit();
 
-    try stdout.writeAll("\n");
-
-    if (std.mem.eql(u8, key, "lang")) {
-        try stdout.print("{s}{s}{s}{s} = {s}{s}{s}\n\n", .{ P, Color.bold, key, Color.reset, Color.cyan, config.langStr(), Color.reset });
+    if (parsed.value.object.get(key)) |value| {
+        const value_str = switch (value) {
+            .string => |s| s,
+            else => "-",
+        };
+        try stdout.print("\n{s}{s} = {s}\n\n", .{ P, key, value_str });
     } else {
-        try stderr.print("{s}{s}{s}Error:{s} Unknown config key '{s}'\n\n", .{ P, Color.bold, Color.red, Color.reset, key });
+        try stderr.print("\n{s}{s}{s}Error:{s} Key not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, key });
     }
 }
 
-fn listConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
-    _ = stderr;
-    const config = try loadConfig(allocator);
+fn setConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key: []const u8, value: []const u8) !void {
+    const base = try commands.getBasePath(allocator);
+    defer allocator.free(base);
 
-    try stdout.writeAll("\n");
-    try stdout.print("{s}{s}{s}Configuration:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}  {s}lang{s} = {s}{s}{s}\n\n", .{ P, Color.bold, Color.reset, Color.cyan, config.langStr(), Color.reset });
-}
+    // Ensure directory exists
+    fs.cwd().makePath(base) catch {};
 
-/// Get the configured language, with optional override
-/// Caller must free the returned slice
-pub fn getLang(allocator: std.mem.Allocator, override: ?[]const u8) ![]const u8 {
-    if (override) |lang| {
-        if (isValidLangCode(lang)) {
-            return try allocator.dupe(u8, lang);
+    const config_path = try getConfigPath(allocator);
+    defer allocator.free(config_path);
+
+    // Read existing config or create new
+    var config_map = std.StringArrayHashMap([]const u8).init(allocator);
+    defer config_map.deinit();
+
+    if (readConfig(allocator)) |parsed| {
+        defer parsed.deinit();
+        var iter = parsed.value.object.iterator();
+        while (iter.next()) |entry| {
+            const v = switch (entry.value_ptr.*) {
+                .string => |s| try allocator.dupe(u8, s),
+                else => continue,
+            };
+            try config_map.put(try allocator.dupe(u8, entry.key_ptr.*), v);
         }
-        return try allocator.dupe(u8, "en");
-    }
+    } else |_| {}
 
-    const config = try loadConfig(allocator);
-    return try allocator.dupe(u8, config.langStr());
+    // Set new value
+    const key_dup = try allocator.dupe(u8, key);
+    const val_dup = try allocator.dupe(u8, value);
+    try config_map.put(key_dup, val_dup);
+
+    // Write config
+    var output: std.ArrayListUnmanaged(u8) = .empty;
+    defer output.deinit(allocator);
+
+    try output.appendSlice(allocator, "{\n");
+    var first = true;
+    var map_iter = config_map.iterator();
+    while (map_iter.next()) |entry| {
+        if (!first) try output.appendSlice(allocator, ",\n");
+        first = false;
+        const line = try std.fmt.allocPrint(allocator, "  \"{s}\": \"{s}\"", .{ entry.key_ptr.*, entry.value_ptr.* });
+        defer allocator.free(line);
+        try output.appendSlice(allocator, line);
+    }
+    try output.appendSlice(allocator, "\n}\n");
+
+    const file = fs.createFileAbsolute(config_path, .{}) catch {
+        try stderr.print("\n{s}{s}{s}Error:{s} Failed to write config\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer file.close();
+    try file.writeAll(output.items);
+
+    try stdout.print("\n{s}{s}{s}✓{s} Set {s} = {s}\n\n", .{ P, Color.bold, Color.green, Color.reset, key, value });
+}
+
+pub fn getRegistry(allocator: std.mem.Allocator) ![]const u8 {
+    const parsed = try readConfig(allocator);
+    defer parsed.deinit();
+
+    if (parsed.value.object.get("registry")) |value| {
+        return switch (value) {
+            .string => |s| try allocator.dupe(u8, s),
+            else => error.NoRegistry,
+        };
+    }
+    return error.NoRegistry;
+}
+
+pub fn getEntryFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
+    const parsed = readConfig(allocator) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value.object.get("entry_files")) |value| {
+        return switch (value) {
+            .string => |s| try allocator.dupe(u8, s),
+            else => null,
+        };
+    }
+    return null;
 }

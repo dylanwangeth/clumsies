@@ -1,55 +1,70 @@
-const commands = @import("commands.zig");
-const Color = commands.Color;
-const P = commands.P;
+const std = @import("std");
+const styles = @import("../styles.zig");
+
+const Color = styles.Color;
+const P = styles.P;
 
 pub fn run(stdout: anytype) !void {
     try stdout.print("\n{s}{s}{s}clumsies{s} - CLI for the Clumsies Protocol\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}{s}Open standard for reusable AI Agent prompts{s}\n\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}{s}Manage your .prompts/ directory as an independent git repository{s}\n\n", .{ P, Color.dim, Color.reset });
+
+    try stdout.print("{s}{s}{s}BUNDLE STRUCTURE:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}    CLAUDE.md              Entry file (auto-synced with .prompts/)\n", .{P});
+    try stdout.print("{s}    .prompts/conduct/      Behavioral rules (always active)\n", .{P});
+    try stdout.print("{s}    .prompts/command/      Executable commands\n\n", .{P});
+
+    try stdout.print("{s}{s}Entry files (CLAUDE.md, CURSOR.md, AGENTS.md, COPILOT.md) are auto-synced:{s}\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}{s}  push: root -> .prompts/    pull/clone: .prompts/ -> root{s}\n\n", .{ P, Color.dim, Color.reset });
 
     try stdout.print("{s}{s}{s}USAGE:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    clumsies <command> [options]\n\n", .{P});
 
-    try stdout.print("{s}{s}{s}COMMANDS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}search{s} [keyword]    Search remote templates and prompts\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}list{s}                List locally cached templates\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}use{s} <hash>          Use a template (auto-downloads if needed)\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}add{s} <hash>          Add a single prompt by hash\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}detail{s} <hash>       Show template's CLAUDE.md content\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}config{s}              Manage configuration\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}upgrade{s}             Upgrade clumsies to latest version\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}{s}{s}MAIN COMMANDS:{s} (manage .prompts/ directory)\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}    {s}init{s} <git-url>       Initialize .prompts/ and link to remote\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}init{s} {s}-B{s} <bundle>     Initialize .prompts/ from registry bundle\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}    {s}clone{s} <git-url>      Clone remote to .prompts/\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}push{s} [-m \"msg\"]      Commit and push .prompts/ to remote\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}pull{s}                 Pull latest from remote\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}status{s}               Show .prompts/ git status\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}log{s}                  Show .prompts/ commit history\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}import{s} <hash>        Import prompt from registry to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
 
-    try stdout.print("{s}{s}{s}SEARCH OPTIONS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}--command{s}           Search command prompts\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}--conduct{s}           Search conduct prompts\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}--lang, -l{s} <code>   Language filter (ISO 639-1, default: from config)\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}{s}{s}REGISTRY COMMANDS:{s} (manage prompts/bundles in shared registry)\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}    {s}list{s} {s}-P{s}|{s}-B{s}               List prompts or bundles in registry\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}    {s}show{s} {s}-P{s}|{s}-B{s} <hash>        Show prompt or bundle content\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}    {s}create{s} {s}-P{s} <file>         Create prompt in registry\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}    {s}create{s} {s}-B{s} <name> <dirs>   Create bundle in registry\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}    {s}update{s} {s}-B{s} <name> {s}--add{s}|{s}--rm{s} <files>  Update bundle contents\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}    {s}rm{s} {s}-P{s}|{s}-B{s} <hash>          Remove prompt/bundle from registry\n\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
 
-    try stdout.print("{s}{s}{s}USE OPTIONS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}--lang, -l{s} <code>   Language (ISO 639-1, default: from config)\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}--name, -n{s} <file>   Entry file name (default: CLAUDE.md)\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}--force, -f{s}         Overwrite existing files\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}{s}{s}CONFIG:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}    {s}config set{s} <key> <value>  Set configuration value\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}config get{s} <key>          Get configuration value\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}config list{s}               List all configuration\n\n", .{ P, Color.cyan, Color.reset });
 
-    try stdout.print("{s}{s}{s}DETAIL OPTIONS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}--lang, -l{s} <code>   Language (ISO 639-1, default: from config)\n\n", .{ P, Color.cyan, Color.reset });
-
-    try stdout.print("{s}{s}{s}ADD OPTIONS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}--force, -f{s}         Overwrite existing file\n\n", .{ P, Color.cyan, Color.reset });
-
-    try stdout.print("{s}{s}{s}CONFIG OPTIONS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}set{s} <key> <value>   Set a config value\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}get{s} <key>           Get a config value\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}list{s}                List all config\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}{s}{s}OTHER:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}    {s}upgrade{s}               Upgrade clumsies to latest version\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}--version{s}             Show version\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}--help{s}                Show this help\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}EXAMPLES:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}clumsies search{s}                 {s}# List all templates{s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
-    try stdout.print("{s}    {s}clumsies search solo{s}            {s}# Search templates by keyword{s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
-    try stdout.print("{s}    {s}clumsies search --command{s}       {s}# List command prompts{s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
-    try stdout.print("{s}    {s}clumsies use 4a83ba2c{s}           {s}# Use template (auto-download){s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
-    try stdout.print("{s}    {s}clumsies use 4a83ba2c -l zh{s}     {s}# Use template in Chinese{s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
-    try stdout.print("{s}    {s}clumsies add 36995f0a{s}           {s}# Add a single prompt{s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
-    try stdout.print("{s}    {s}clumsies detail 4a83ba2c{s}        {s}# Show template CLAUDE.md{s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
-    try stdout.print("{s}    {s}clumsies list{s}                   {s}# List cached templates{s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
-    try stdout.print("{s}    {s}clumsies config set lang zh{s}     {s}# Set default language{s}\n\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
+    try stdout.print("{s}    {s}# Initialize and sync your prompts{s}\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}    clumsies init git@github.com:user/my-prompts.git\n", .{P});
+    try stdout.print("{s}    clumsies push -m \"Add review command\"\n\n", .{P});
 
-    try stdout.print("{s}{s}{s}VERSION:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}clumsies --version{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}# Clone existing prompts{s}\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}    clumsies clone git@github.com:team/shared-prompts.git\n\n", .{P});
+
+    try stdout.print("{s}    {s}# Use shared registry{s}\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}    clumsies config set registry git@github.com:org/registry.git\n", .{P});
+    try stdout.print("{s}    clumsies list -P\n", .{P});
+    try stdout.print("{s}    clumsies import a1b2c3d4\n\n", .{P});
+
+    try stdout.print("{s}    {s}# Create in registry{s}\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}    clumsies create -P my_prompt.md\n", .{P});
+    try stdout.print("{s}    clumsies create -B my-bundle conduct command\n", .{P});
+    try stdout.print("{s}    clumsies update -B my-bundle --add new_dir\n\n", .{P});
+
+    try stdout.print("{s}    {s}# Initialize from bundle{s}\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}    clumsies init -B my-bundle\n\n", .{P});
 }

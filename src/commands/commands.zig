@@ -1,79 +1,56 @@
 const std = @import("std");
-const fs = std.fs;
 const styles = @import("../styles.zig");
 
 pub const Color = styles.Color;
 pub const P = styles.P;
 
-// Re-export all commands
-pub const help = @import("help.zig");
-pub const search = @import("search.zig");
-pub const detail = @import("detail.zig");
-pub const use = @import("use.zig");
-pub const list = @import("list.zig");
-pub const add = @import("add.zig");
-pub const upgrade = @import("upgrade.zig");
-pub const config = @import("config.zig");
-
-pub const WriteResult = struct {
-    written: bool,
-    skipped: bool,
-};
-
-// Shared utilities
-pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
-    const home_dir = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home_dir);
-    return try std.fs.path.join(allocator, &.{ home_dir, ".clumsies" });
-}
-
 pub fn getPromptsPath(allocator: std.mem.Allocator) ![]const u8 {
-    const home_dir = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home_dir);
-    return try std.fs.path.join(allocator, &.{ home_dir, ".clumsies", "prompts" });
+    const cwd = try std.process.getCwdAlloc(allocator);
+    defer allocator.free(cwd);
+    return try std.fs.path.join(allocator, &.{ cwd, ".prompts" });
 }
 
-pub fn getTemplatesPath(allocator: std.mem.Allocator) ![]const u8 {
-    const home_dir = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home_dir);
-    return try std.fs.path.join(allocator, &.{ home_dir, ".clumsies", "templates" });
+pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return error.NoHome;
+    defer allocator.free(home);
+    return try std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }
 
-// Legacy: kept for backwards compatibility, same as getTemplatesPath
-pub fn getRegistryPath(allocator: std.mem.Allocator) ![]const u8 {
-    return getTemplatesPath(allocator);
+pub fn promptsExist() bool {
+    var dir = std.fs.cwd().openDir(".prompts", .{}) catch return false;
+    dir.close();
+    return true;
 }
 
-pub fn writeFile(dir: fs.Dir, path: []const u8, content: []const u8, force: bool, stdout: anytype, stderr: anytype) WriteResult {
-    const file_exists = blk: {
-        dir.access(path, .{}) catch |err| {
-            if (err == error.FileNotFound) break :blk false;
-            break :blk true;
-        };
-        break :blk true;
-    };
+/// Format timestamp to ISO date string (YYYY-MM-DD)
+pub fn formatDate(timestamp: i64, buf: *[10]u8) []const u8 {
+    const epoch_seconds: u64 = @intCast(if (timestamp < 0) 0 else timestamp);
+    const days_since_epoch = epoch_seconds / 86400;
 
-    if (file_exists and !force) {
-        stdout.print("{s}  {s}skip:{s} {s} {s}(exists, use --force){s}\n", .{ P, Color.dim, Color.reset, path, Color.dim, Color.reset }) catch {};
-        return .{ .written = false, .skipped = true };
+    // Simple date calculation
+    var year: u32 = 1970;
+    var remaining_days = days_since_epoch;
+
+    while (true) {
+        const is_leap = (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0);
+        const days_in_year: u64 = if (is_leap) 366 else 365;
+        if (remaining_days < days_in_year) break;
+        remaining_days -= days_in_year;
+        year += 1;
     }
 
-    const file = dir.createFile(path, .{}) catch |err| {
-        stderr.print("{s}{s}{s}Error:{s} creating file '{s}': {}\n", .{ P, Color.bold, Color.red, Color.reset, path, err }) catch {};
-        return .{ .written = false, .skipped = false };
-    };
-    defer file.close();
+    const is_leap = (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0);
+    const days_in_months = [_]u8{ 31, if (is_leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
 
-    file.writeAll(content) catch |err| {
-        stderr.print("{s}{s}{s}Error:{s} writing file '{s}': {}\n", .{ P, Color.bold, Color.red, Color.reset, path, err }) catch {};
-        return .{ .written = false, .skipped = false };
-    };
-
-    if (file_exists) {
-        stdout.print("{s}  {s}{s}overwrite:{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, path }) catch {};
-    } else {
-        stdout.print("{s}  {s}{s}create:{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, path }) catch {};
+    var month: u8 = 1;
+    for (days_in_months) |days| {
+        if (remaining_days < days) break;
+        remaining_days -= days;
+        month += 1;
     }
 
-    return .{ .written = true, .skipped = false };
+    const day: u8 = @intCast(remaining_days + 1);
+
+    _ = std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{ year, month, day }) catch return "0000-00-00";
+    return buf[0..10];
 }

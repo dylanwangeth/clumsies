@@ -8,7 +8,7 @@ A single prompt file isn't enough for complex projects. We created a multi-file 
 - **Entry file** (`CLAUDE.md`, `CURSOR.md`, etc.) — tells the AI how to understand the prompt system
 - **`.prompts/` directory** — modular prompts organized by type (conduct, command, custom)
 
-We call this complete package a **template**. Instead of copying files everywhere, use clumsies to manage them.
+We call this complete package a **bundle**. The `.prompts/` directory operates as an **independent git repository**, enabling version control and team collaboration.
 
 ## Install
 
@@ -38,57 +38,104 @@ Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 
 ## Usage
 
+### Main Commands (manage .prompts/)
+
 ```bash
-# Search templates and prompts
-clumsies search                    # List all templates
-clumsies search solo               # Search by keyword
-clumsies search --conduct          # List conduct prompts
-clumsies search --command          # List command prompts
+# Initialize .prompts/ and link to your remote repository
+clumsies init git@github.com:user/my-prompts.git
 
-# Use a template (auto-downloads if not cached)
-clumsies use 4a83ba2c              # Use template by hash
-clumsies use 4a83ba2c --lang zh    # Use in Chinese
-clumsies use 4a83ba2c --name CURSOR.md
-clumsies use 4a83ba2c --force      # Overwrite existing files
+# Or clone existing prompts
+clumsies clone git@github.com:team/shared-prompts.git
 
-# List cached templates
-clumsies list
+# Make changes and push
+clumsies push -m "Add review command"
 
-# Add a single prompt
-clumsies add 36995f0a              # Add prompt by hash
+# Pull latest changes
+clumsies pull
 
-# Preview template content
-clumsies detail solocc
-clumsies detail solocc --lang zh
-
-# Configure defaults
-clumsies config set lang zh        # Set default language
-clumsies config list               # Show all config
-
-# Upgrade clumsies
-clumsies upgrade
+# Check status and history
+clumsies status
+clumsies log
 ```
 
-Language codes follow ISO 639-1 standard (e.g., `en`, `zh`, `ja`, `ko`).
+### Registry Commands (shared prompts/bundles)
 
-## What's in a Template?
+```bash
+# Configure registry (one-time setup)
+clumsies config set registry git@github.com:org/prompt-registry.git
+
+# List available prompts and bundles
+clumsies list -P                   # List prompts
+clumsies list -B                   # List bundles
+
+# Preview content
+clumsies show -P a1b2c3d4          # Show prompt by hash
+clumsies show -B my-bundle         # Show bundle contents
+
+# Add to your .prompts/
+clumsies add -P a1b2c3d4           # Add prompt
+clumsies add -B my-bundle          # Add bundle
+
+# Publish to registry
+clumsies publish -P ./my_prompt.md
+clumsies publish -B my-bundle conduct command
+
+# Remove from registry
+clumsies rm -P a1b2c3d4
+clumsies rm -B my-bundle
+```
+
+### Configuration
+
+```bash
+clumsies config set registry <url>  # Set registry URL
+clumsies config get registry        # Get registry URL
+clumsies config list                # Show all config
+clumsies upgrade                    # Upgrade clumsies
+```
+
+## Architecture
 
 ```
-your-project/
-├── CLAUDE.md                    # Entry file
-└── .prompts/
+project/
+├── CLAUDE.md                    # Entry file (auto-synced with .prompts/)
+└── .prompts/                    # Independent git repository
+    ├── .git/
     ├── conduct/                 # Behavioral rules (always active)
     │   ├── CODE_COMMENTS.md
     │   ├── GIT_COMMIT.md
     │   └── ...
-    └── command/                 # Executable commands (invoke by name)
-        ├── 00_CONTEXT_REINFORCEMENT.md
-        └── 01_REVIEW_COMMIT.md
+    ├── command/                 # Executable commands (invoke by name)
+    │   ├── 00_CONTEXT_REINFORCEMENT.md
+    │   └── 01_REVIEW_COMMIT.md
+    └── CLAUDE.md                # Entry file copy
 ```
 
-After applying, extend with your own directories:
-- `.prompts/biz/` — Business context
-- `.prompts/tech/` — Technical documentation
+### Entry File Sync
+
+Entry files (`CLAUDE.md`, `CURSOR.md`, `AGENTS.md`, `COPILOT.md`) are automatically synchronized:
+
+| Operation | Direction |
+|-----------|-----------|
+| `push` | root → .prompts/ |
+| `pull` | .prompts/ → root |
+| `clone` | .prompts/ → root |
+
+This ensures entry files are version-controlled with prompts while remaining accessible at the project root.
+
+### Registry Structure
+
+```
+registry/
+├── prompts/
+│   ├── index.json
+│   └── <sha256>.md
+└── bundles/
+    ├── index.json
+    └── <bundle-name>/
+        ├── conduct/
+        └── command/
+```
 
 ## Build from Source
 
