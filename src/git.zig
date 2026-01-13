@@ -66,6 +66,7 @@ pub fn getRemoteUrl(allocator: std.mem.Allocator, path: []const u8) ![]const u8 
     var child = std.process.Child.init(&.{ "git", "remote", "get-url", "origin" }, allocator);
     child.cwd = path;
     child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
 
     _ = child.spawn() catch return GitError.CommandFailed;
 
@@ -132,6 +133,7 @@ pub fn getStatus(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     var child = std.process.Child.init(&.{ "git", "status", "-s" }, allocator);
     child.cwd = path;
     child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
 
     _ = child.spawn() catch return GitError.CommandFailed;
 

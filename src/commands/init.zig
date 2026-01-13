@@ -72,7 +72,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         }
 
         if (prompts_exists) {
-            try stderr.print("{s}{s}{s}Error:{s} .prompts/ already exists\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ already exists\n", .{ P, Color.bold, Color.red, Color.reset });
             try stderr.print("{s}Cannot initialize from bundle when .prompts/ exists\n\n", .{P});
             return;
         }
@@ -359,7 +359,7 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     };
     sp2.succeed();
 
-    try stdout.print("{s}{s}✓{s} Created .prompts/ from bundle: {s}{s}{s}\n", .{ P, Color.green, Color.reset, Color.cyan, bundle_name, Color.reset });
+    try stdout.print("\n{s}{s}✓{s} Created .prompts/ from bundle: {s}{s}{s}\n", .{ P, Color.green, Color.reset, Color.cyan, bundle_name, Color.reset });
     try stdout.print("{s}  Prompts: {d}\n", .{ P, prompt_count });
     try stdout.print("{s}  Meta-prompt: {s}\n", .{ P, meta_prompt_filename });
 

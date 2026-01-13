@@ -12,6 +12,12 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
         return;
     }
 
+    if (!commands.promptsIsGitRepo()) {
+        try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ is not a git repository\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Run {s}clumsies init <git-url>{s} to initialize\n\n", .{ P, Color.cyan, Color.reset });
+        return;
+    }
+
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);
 

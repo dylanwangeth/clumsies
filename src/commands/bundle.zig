@@ -838,16 +838,76 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         return;
     };
 
+    // Build lookup from prompts/index.json (duplicate strings to avoid use-after-free)
+    const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
+    defer allocator.free(prompts_index_path);
+
+    const PromptInfo = struct { name: []const u8, description: []const u8 };
+    var prompt_lookup = std.StringHashMap(PromptInfo).init(allocator);
+    defer {
+        var iter = prompt_lookup.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(@constCast(entry.key_ptr.*));
+            allocator.free(@constCast(entry.value_ptr.name));
+            allocator.free(@constCast(entry.value_ptr.description));
+        }
+        prompt_lookup.deinit();
+    }
+
+    if (fs.openFileAbsolute(prompts_index_path, .{})) |prompts_file| {
+        const prompts_content = prompts_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+            prompts_file.close();
+            return;
+        };
+        prompts_file.close();
+        defer allocator.free(prompts_content);
+
+        if (std.json.parseFromSlice(std.json.Value, allocator, prompts_content, .{})) |prompts_parsed| {
+            defer prompts_parsed.deinit();
+            if (prompts_parsed.value.object.get("prompts")) |prompts_list| {
+                for (prompts_list.array.items) |item| {
+                    const item_hash = if (item.object.get("hash")) |h| h.string else continue;
+                    const item_name = if (item.object.get("name")) |n| n.string else "-";
+                    const item_desc = if (item.object.get("description")) |d| d.string else "-";
+
+                    // Duplicate strings to keep them valid after JSON is freed
+                    const hash_copy = allocator.dupe(u8, item_hash) catch continue;
+                    const name_copy = allocator.dupe(u8, item_name) catch {
+                        allocator.free(hash_copy);
+                        continue;
+                    };
+                    const desc_copy = allocator.dupe(u8, item_desc) catch {
+                        allocator.free(hash_copy);
+                        allocator.free(name_copy);
+                        continue;
+                    };
+
+                    prompt_lookup.put(hash_copy, .{ .name = name_copy, .description = desc_copy }) catch {
+                        allocator.free(hash_copy);
+                        allocator.free(name_copy);
+                        allocator.free(desc_copy);
+                    };
+                }
+            }
+        } else |_| {}
+    } else |_| {}
+
     try stdout.print("{s}{s}{s}Prompts ({d}):{s}\n", .{ P, Color.bold, Color.orange, prompts_arr.array.items.len, Color.reset });
-    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}HASH{s}          {s}CATEGORY{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset });
-    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
+    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
+    try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}  {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (prompts_arr.array.items) |ref| {
         const hash = if (ref.object.get("hash")) |h| h.string else "-";
         const category = if (ref.object.get("category")) |p| p.string else "-";
         const short_hash = if (hash.len >= 8) hash[0..8] else hash;
-        try stdout.print("{s}  {s}{s}{s}      {s}\n", .{ P, Color.cyan, short_hash, Color.reset, category });
+
+        // Lookup name and description
+        const lookup_result = prompt_lookup.get(hash);
+        const p_name = if (lookup_result) |r| r.name else "-";
+        const p_desc = if (lookup_result) |r| r.description else "-";
+
+        try stdout.print("{s}  {s}{s: <8}{s}  {s: <8}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, category, p_name, p_desc });
     }
     try stdout.writeAll("\n");
 }

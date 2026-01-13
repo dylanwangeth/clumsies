@@ -22,6 +22,12 @@ pub fn promptsExist() bool {
     return true;
 }
 
+pub fn promptsIsGitRepo() bool {
+    var dir = std.fs.cwd().openDir(".prompts/.git", .{}) catch return false;
+    dir.close();
+    return true;
+}
+
 /// Format timestamp to ISO date string (YYYY-MM-DD)
 pub fn formatDate(timestamp: i64, buf: *[10]u8) []const u8 {
     const epoch_seconds: u64 = @intCast(if (timestamp < 0) 0 else timestamp);
