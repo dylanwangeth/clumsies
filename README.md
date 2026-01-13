@@ -58,31 +58,43 @@ clumsies status
 clumsies log
 ```
 
-### Registry Commands (shared prompts/bundles)
+### Bundle Commands (manage bundles in registry)
 
 ```bash
 # Configure registry (one-time setup)
 clumsies config set registry git@github.com:org/prompt-registry.git
 
-# List available prompts and bundles
-clumsies list -P                   # List prompts
-clumsies list -B                   # List bundles
+# List and show bundles
+clumsies bundle list
+clumsies bundle show <name>
 
-# Preview content
-clumsies show -P a1b2c3d4          # Show prompt by hash
-clumsies show -B my-bundle         # Show bundle contents
+# Create bundle from local directories
+clumsies bundle create <name> <dirs...> [-t <task>] [-d <desc>]
+clumsies bundle create my-bundle ./conduct ./command -t coding -d "My coding bundle"
 
-# Add to your .prompts/
-clumsies add -P a1b2c3d4           # Add prompt
-clumsies add -B my-bundle          # Add bundle
+# Update bundle contents
+clumsies bundle update <name> --add <files...>
+clumsies bundle update <name> --rm <files...>
 
-# Publish to registry
-clumsies publish -P ./my_prompt.md
-clumsies publish -B my-bundle conduct command
+# Remove bundle
+clumsies bundle rm <name>
+```
 
-# Remove from registry
-clumsies rm -P a1b2c3d4
-clumsies rm -B my-bundle
+### Prompt Commands (manage prompts in registry)
+
+```bash
+# List and show prompts
+clumsies prompt list
+clumsies prompt show <hash>
+
+# Create prompt from file
+clumsies prompt create <file>
+
+# Import prompt to local .prompts/
+clumsies prompt import <hash>
+
+# Remove prompt
+clumsies prompt rm <hash>
 ```
 
 ### Configuration
