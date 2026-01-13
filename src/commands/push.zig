@@ -3,6 +3,7 @@ const fs = std.fs;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const config = @import("config.zig");
+const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -69,11 +70,17 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         return;
     };
 
+    try stdout.writeAll("\n");
+    var sp = spinner.init(stdout, "Pushing to remote");
+    sp.start();
+
     git.push(allocator, prompts_path) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to push to remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to push to remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
+    sp.succeed();
 
-    try stdout.print("\n{s}{s}{s}✓{s} Pushed to remote\n", .{ P, Color.bold, Color.green, Color.reset });
+    try stdout.print("{s}{s}{s}✓{s} Pushed to remote\n", .{ P, Color.bold, Color.green, Color.reset });
     try stdout.print("{s}  Message: {s}\n\n", .{ P, message });
 }
