@@ -5,7 +5,7 @@ A CLI tool for managing AI Agent prompt systems based on [Clumsies Protocol](./P
 ## Why?
 
 A single prompt file isn't enough for complex projects. We created a multi-file system:
-- **Entry file** (`CLAUDE.md`, `CURSOR.md`, etc.) — tells the AI how to understand the prompt system
+- **Meta-prompt file** (`CLAUDE.md`, `CURSOR.md`, etc.) — tells the AI how to understand the prompt system
 - **`.prompts/` directory** — modular prompts organized by type (conduct, command, custom)
 
 We call this complete package a **bundle**. The `.prompts/` directory operates as an **independent git repository**, enabling version control and team collaboration.
@@ -69,8 +69,9 @@ clumsies bundle list
 clumsies bundle show <name>
 
 # Create bundle from local directories
-clumsies bundle create <name> <dirs...> [-t <task>] [-d <desc>]
+clumsies bundle create <name> <dirs...> [-t <task>] [-d <desc>] [-M <file>]
 clumsies bundle create my-bundle ./conduct ./command -t coding -d "My coding bundle"
+clumsies bundle create my-bundle ./conduct ./command -M CLAUDE.md  # Specify meta-prompt file
 
 # Update bundle contents
 clumsies bundle update <name> --add <files...>
@@ -100,17 +101,18 @@ clumsies prompt rm <hash>
 ### Configuration
 
 ```bash
-clumsies config set registry <url>  # Set registry URL
-clumsies config get registry        # Get registry URL
-clumsies config list                # Show all config
-clumsies upgrade                    # Upgrade clumsies
+clumsies config set registry <url>           # Set registry URL
+clumsies config set meta_prompt_file <file>  # Set default meta-prompt file for bundle create
+clumsies config get registry                 # Get registry URL
+clumsies config list                         # Show all config
+clumsies upgrade                             # Upgrade clumsies
 ```
 
 ## Architecture
 
 ```
 project/
-├── CLAUDE.md                    # Entry file (auto-synced with .prompts/)
+├── CLAUDE.md                    # Meta-prompt file (auto-synced with .prompts/)
 └── .prompts/                    # Independent git repository
     ├── .git/
     ├── conduct/                 # Behavioral rules (always active)
@@ -120,12 +122,12 @@ project/
     ├── command/                 # Executable commands (invoke by name)
     │   ├── 00_CONTEXT_REINFORCEMENT.md
     │   └── 01_REVIEW_COMMIT.md
-    └── CLAUDE.md                # Entry file copy
+    └── CLAUDE.md                # Meta-prompt file copy
 ```
 
-### Entry File Sync
+### Meta-Prompt File Sync
 
-Entry files (`CLAUDE.md`, `CURSOR.md`, `AGENTS.md`, `COPILOT.md`) are automatically synchronized:
+Meta-prompt files (`CLAUDE.md`, `CURSOR.md`, `AGENTS.md`, `COPILOT.md`) are automatically synchronized:
 
 | Operation | Direction |
 |-----------|-----------|
@@ -133,7 +135,7 @@ Entry files (`CLAUDE.md`, `CURSOR.md`, `AGENTS.md`, `COPILOT.md`) are automatica
 | `pull` | .prompts/ → root |
 | `clone` | .prompts/ → root |
 
-This ensures entry files are version-controlled with prompts while remaining accessible at the project root.
+This ensures meta-prompt files are version-controlled with prompts while remaining accessible at the project root.
 
 ### Registry Structure
 
@@ -142,12 +144,13 @@ registry/
 ├── prompts/
 │   ├── index.json
 │   └── <sha256>.md
+├── meta-prompts/
+│   └── <sha256>.md
 └── bundles/
-    ├── index.json
-    └── <bundle-name>/
-        ├── conduct/
-        └── command/
+    └── index.json
 ```
+
+Bundles reference prompts and meta-prompts by SHA-256 hash in `bundles/index.json`.
 
 ## Build from Source
 

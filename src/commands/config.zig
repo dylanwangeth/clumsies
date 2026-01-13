@@ -173,3 +173,16 @@ pub fn getEntryFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
     }
     return null;
 }
+
+pub fn getMetaPromptFile(allocator: std.mem.Allocator) !?[]const u8 {
+    const parsed = readConfig(allocator) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value.object.get("meta_prompt_file")) |value| {
+        return switch (value) {
+            .string => |s| try allocator.dupe(u8, s),
+            else => null,
+        };
+    }
+    return null;
+}

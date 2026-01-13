@@ -14,9 +14,6 @@ pub const Spinner = struct {
     thread: ?std.Thread = null,
 
     pub fn start(self: *Spinner) void {
-        // Print leading newline with unbuffered stdout for consistent ordering
-        const stdout = std.fs.File.stdout();
-        _ = stdout.write("\n") catch {};
         self.running = true;
         self.thread = std.Thread.spawn(.{}, spin, .{self}) catch null;
     }

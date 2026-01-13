@@ -25,7 +25,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);
 
-    // Sync entry files: .prompts/ -> root
+    // Sync meta-prompt files: .prompts/ -> root
     const entry_files_str = config.getEntryFilesStr(allocator) catch null;
     defer if (entry_files_str) |s| allocator.free(s);
 

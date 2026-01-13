@@ -17,6 +17,39 @@ const SubCommand = enum {
     none,
 };
 
+// Frontmatter metadata
+const Frontmatter = struct {
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+};
+
+fn parseFrontmatter(content: []const u8) Frontmatter {
+    var fm = Frontmatter{};
+
+    // Check for frontmatter delimiter
+    if (!std.mem.startsWith(u8, content, "---")) return fm;
+
+    // Find end delimiter
+    const rest = content[3..];
+    const end_idx = std.mem.indexOf(u8, rest, "\n---") orelse return fm;
+    const frontmatter_block = rest[0..end_idx];
+
+    // Parse line by line
+    var lines = std.mem.splitScalar(u8, frontmatter_block, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "name:")) {
+            const value = std.mem.trim(u8, trimmed[5..], " \t");
+            if (value.len > 0) fm.name = value;
+        } else if (std.mem.startsWith(u8, trimmed, "description:")) {
+            const value = std.mem.trim(u8, trimmed[12..], " \t");
+            if (value.len > 0) fm.description = value;
+        }
+    }
+
+    return fm;
+}
+
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
         try showUsage(stderr);
@@ -83,6 +116,10 @@ fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
         break :blk true;
     };
 
+    // Print leading newline for spinner output (only once per command)
+    const stdout_raw = std.fs.File.stdout();
+    _ = stdout_raw.write("\n") catch {};
+
     if (!registry_exists) {
         var sp = spinner.init(stdout, "Fetching registry");
         sp.start();
@@ -139,7 +176,7 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
         return;
     }
 
-    try stdout.print("\n{s}{s}{s}Prompts in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}{s}{s}Prompts in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
     try stdout.print("{s}  {s}HASH{s}      {s}CREATED{s}     {s}NAME{s}                 {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
@@ -206,10 +243,14 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         hash_hex[i * 2 + 1] = hex_chars[byte & 0x0f];
     }
 
-    // Extract name from filename
-    const basename = std.fs.path.basename(file_path);
-    const name_end = std.mem.lastIndexOf(u8, basename, ".") orelse basename.len;
-    const name = basename[0..name_end];
+    // Parse frontmatter for metadata
+    const fm = parseFrontmatter(content);
+    const name = fm.name orelse blk: {
+        const basename = std.fs.path.basename(file_path);
+        const name_end = std.mem.lastIndexOf(u8, basename, ".") orelse basename.len;
+        break :blk basename[0..name_end];
+    };
+    const description = fm.description orelse "-";
 
     // Create prompts directory
     const prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
@@ -280,10 +321,11 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     }
 
     const timestamp = std.time.timestamp();
-    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"-\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
+    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
         if (existing_prompts.items.len > 20) "," else "",
         hash_hex,
         name,
+        description,
         timestamp,
     });
     defer allocator.free(new_entry);
@@ -392,9 +434,7 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     defer allocator.free(prompt_content);
 
     if (found_name) |n| {
-        try stdout.print("\n{s}{s}{s}Prompt:{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, n });
-    } else {
-        try stdout.writeAll("\n");
+        try stdout.print("{s}{s}{s}Prompt:{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, n });
     }
     try stdout.print("{s}{s}Hash:{s} {s}\n", .{ P, Color.orange, Color.reset, found_hash.? });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});

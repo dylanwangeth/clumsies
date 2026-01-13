@@ -46,7 +46,7 @@ Just say:    "Generate a commit message following GIT_COMMIT rules"
 | Concept | Description |
 |---------|-------------|
 | **Prompt** | Atomic unit — a markdown file that guides AI Agent behavior |
-| **Entry File** | Entry point (CLAUDE.md, AGENTS.md, etc.) that declares the prompt system |
+| **Meta-Prompt File** | Entry point (CLAUDE.md, AGENTS.md, etc.) that declares the prompt system |
 | **Bundle** | A shareable composition of prompts for specific use cases |
 | **Registry** | A git repository that stores prompts and bundles for sharing |
 
@@ -54,7 +54,7 @@ Just say:    "Generate a commit message following GIT_COMMIT rules"
 
 ```
 workspace/
-├── CLAUDE.md              # Entry file
+├── CLAUDE.md              # Meta-prompt file
 └── .prompts/              # Independent git repository
     ├── conduct/           # Behavioral rules (always active)
     ├── command/           # Executable operations (invoke by name)
@@ -108,9 +108,9 @@ workspace/
 
 ---
 
-## 4. Entry File Specification
+## 4. Meta-Prompt File Specification
 
-The entry file (CLAUDE.md, AGENTS.md, etc.) serves as the **meta-prompt** that teaches the AI how to use the prompt system.
+The meta-prompt file (CLAUDE.md, AGENTS.md, etc.) teaches the AI how to use the prompt system.
 
 ### 4.1 Minimal Structure
 
@@ -128,7 +128,7 @@ The `@import` directive tells the AI to load all prompts from the specified dire
 ### 4.2 Why This Works
 
 The AI doesn't need special syntax or tool support. It simply:
-1. Reads the entry file
+1. Reads the meta-prompt file
 2. Understands the directory structure semantically
 3. Responds to natural language requests
 
@@ -279,7 +279,7 @@ Everything is Markdown. No compilation, no special tooling required.
 ### 8.1 With AGENTS.md
 
 Clumsies Protocol enhances AGENTS.md:
-- Use AGENTS.md as your entry file
+- Use AGENTS.md as your meta-prompt file
 - Add `.prompts/` for modular organization
 
 ### 8.2 With .claude/commands/

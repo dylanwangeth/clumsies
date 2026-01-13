@@ -30,7 +30,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);
 
-    // Sync entry files: root -> .prompts/
+    // Sync meta-prompt files: root -> .prompts/
     const entry_files_str = config.getEntryFilesStr(allocator) catch null;
     defer if (entry_files_str) |s| allocator.free(s);
 
