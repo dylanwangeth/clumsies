@@ -9,99 +9,161 @@ const Color = commands.Color;
 const P = commands.P;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    // Check if .prompts already exists
-    if (commands.promptsExist()) {
-        try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ already exists\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Use {s}clumsies status{s} to check current state\n\n", .{ P, Color.cyan, Color.reset });
-        return;
-    }
-
-    // Parse args
+    // Parse args: init [-B <bundle>] [url]
     var is_bundle = false;
-    var arg_value: ?[]const u8 = null;
+    var bundle_name: ?[]const u8 = null;
+    var remote_url: ?[]const u8 = null;
 
-    for (args) |arg| {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "-B") or std.mem.eql(u8, arg, "--bundle")) {
             is_bundle = true;
+            // Next arg is bundle name
+            if (i + 1 < args.len and args[i + 1].len > 0 and args[i + 1][0] != '-') {
+                i += 1;
+                bundle_name = args[i];
+            }
         } else if (arg.len > 0 and arg[0] != '-') {
-            arg_value = arg;
+            // Non-flag arg: could be bundle name (if -B without value) or URL
+            if (is_bundle and bundle_name == null) {
+                bundle_name = arg;
+            } else {
+                remote_url = arg;
+            }
         }
     }
 
-    if (is_bundle) {
-        try initFromBundle(stdout, stderr, allocator, arg_value);
+    // Check current state
+    const prompts_path = commands.getPromptsPath(allocator) catch {
+        try stderr.print("\n{s}{s}{s}Error:{s} Could not determine .prompts/ path\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
-    }
-
-    // Regular init with remote URL
-    if (arg_value == null) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Remote URL required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies init <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
-        try stderr.print("{s}       {s}clumsies init -B <bundle-name>{s}\n\n", .{ P, Color.cyan, Color.reset });
-        return;
-    }
-
-    const remote_url = arg_value;
-
-    // Create .prompts directory
-    const prompts_path = try commands.getPromptsPath(allocator);
+    };
     defer allocator.free(prompts_path);
 
-    fs.cwd().makeDir(".prompts") catch |err| {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n\n", .{ P, Color.bold, Color.red, Color.reset, err });
+    const prompts_exists = commands.promptsExist();
+
+    const git_path = std.fs.path.join(allocator, &.{ prompts_path, ".git" }) catch {
+        try stderr.print("\n{s}{s}{s}Error:{s} Memory allocation failed\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
+    defer allocator.free(git_path);
 
-    // Initialize git repo
-    git.init(allocator, prompts_path) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to initialize git repository\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
+    const git_exists = blk: {
+        var dir = fs.openDirAbsolute(git_path, .{}) catch break :blk false;
+        dir.close();
+        break :blk true;
     };
 
-    // Add remote
-    git.addRemote(allocator, prompts_path, remote_url.?) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to add remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
+    const has_remote = blk: {
+        if (!git_exists) break :blk false;
+        _ = git.getRemoteUrl(allocator, prompts_path) catch break :blk false;
+        break :blk true;
     };
 
-    // Create default directories
-    const conduct_path = try std.fs.path.join(allocator, &.{ prompts_path, "conduct" });
-    defer allocator.free(conduct_path);
-    const command_path = try std.fs.path.join(allocator, &.{ prompts_path, "command" });
-    defer allocator.free(command_path);
+    try stdout.writeAll("\n");
 
-    fs.cwd().makePath(conduct_path) catch {};
-    fs.cwd().makePath(command_path) catch {};
+    // Handle bundle mode
+    if (is_bundle) {
+        if (bundle_name == null) {
+            try stderr.print("{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies init -B <bundle> [git-url]{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
+        }
 
-    // Create .gitkeep files
-    const conduct_keep = try std.fs.path.join(allocator, &.{ conduct_path, ".gitkeep" });
-    defer allocator.free(conduct_keep);
-    const command_keep = try std.fs.path.join(allocator, &.{ command_path, ".gitkeep" });
-    defer allocator.free(command_keep);
+        if (prompts_exists) {
+            try stderr.print("{s}{s}{s}Error:{s} .prompts/ already exists\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}Cannot initialize from bundle when .prompts/ exists\n\n", .{P});
+            return;
+        }
 
-    if (fs.createFileAbsolute(conduct_keep, .{})) |f| f.close() else |_| {}
-    if (fs.createFileAbsolute(command_keep, .{})) |f| f.close() else |_| {}
-
-    try stdout.print("\n{s}{s}{s}✓{s} Initialized .prompts/\n", .{ P, Color.bold, Color.green, Color.reset });
-    try stdout.print("{s}  Remote: {s}{s}{s}\n\n", .{ P, Color.cyan, remote_url.?, Color.reset });
-}
-
-fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, bundle_name: ?[]const u8) !void {
-    if (bundle_name == null) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies init -B <bundle-name>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try initFromBundle(stdout, stderr, allocator, prompts_path, bundle_name.?, remote_url);
         return;
     }
 
+    // Regular init mode - need URL
+    if (remote_url == null) {
+        if (!prompts_exists) {
+            try stderr.print("{s}{s}{s}Error:{s} Remote URL required\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies init <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
+            try stderr.print("{s}       {s}clumsies init -B <bundle> [git-url]{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
+        } else if (!git_exists) {
+            try stderr.print("{s}{s}{s}Error:{s} Remote URL required to initialize git\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies init <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
+        } else if (has_remote) {
+            try stderr.print("{s}{s}{s}Error:{s} .prompts/ already has a remote configured\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}Use {s}clumsies status{s} to check current state\n\n", .{ P, Color.cyan, Color.reset });
+            return;
+        } else {
+            try stderr.print("{s}{s}{s}Error:{s} Remote URL required to add remote\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies init <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
+        }
+    }
+
+    // State machine for init
+    if (!prompts_exists) {
+        // Create .prompts/
+        fs.cwd().makeDir(".prompts") catch |err| {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n\n", .{ P, Color.bold, Color.red, Color.reset, err });
+            return;
+        };
+
+        // Create default directories
+        const conduct_path = try std.fs.path.join(allocator, &.{ prompts_path, "conduct" });
+        defer allocator.free(conduct_path);
+        const command_path = try std.fs.path.join(allocator, &.{ prompts_path, "command" });
+        defer allocator.free(command_path);
+
+        fs.cwd().makePath(conduct_path) catch {};
+        fs.cwd().makePath(command_path) catch {};
+
+        // Create .gitkeep files
+        const conduct_keep = try std.fs.path.join(allocator, &.{ conduct_path, ".gitkeep" });
+        defer allocator.free(conduct_keep);
+        const command_keep = try std.fs.path.join(allocator, &.{ command_path, ".gitkeep" });
+        defer allocator.free(command_keep);
+
+        if (fs.createFileAbsolute(conduct_keep, .{})) |f| f.close() else |_| {}
+        if (fs.createFileAbsolute(command_keep, .{})) |f| f.close() else |_| {}
+
+        try stdout.print("{s}{s}✓{s} Created .prompts/\n", .{ P, Color.green, Color.reset });
+    }
+
+    if (!git_exists) {
+        // Initialize git
+        git.init(allocator, prompts_path) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to initialize git repository\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        try stdout.print("{s}{s}✓{s} Initialized git repository\n", .{ P, Color.green, Color.reset });
+    }
+
+    if (!has_remote) {
+        // Add remote
+        git.addRemote(allocator, prompts_path, remote_url.?) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to add remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        try stdout.print("{s}{s}✓{s} Added remote: {s}{s}{s}\n", .{ P, Color.green, Color.reset, Color.cyan, remote_url.?, Color.reset });
+    } else {
+        try stderr.print("{s}{s}{s}Error:{s} Remote already configured\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    }
+
+    try stdout.writeAll("\n");
+}
+
+fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, prompts_path: []const u8, bundle_name: []const u8, remote_url: ?[]const u8) !void {
     // Get registry URL from config
     const registry_url = config.getRegistry(allocator) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     };
     defer allocator.free(registry_url);
-
-    try stdout.writeAll("\n");
 
     // Get registry path
     const base_path = commands.getBasePath(allocator) catch {
@@ -138,7 +200,7 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     }
 
     // Check if bundle exists
-    const bundle_dir = try std.fs.path.join(allocator, &.{ registry_path, "bundles", bundle_name.? });
+    const bundle_dir = try std.fs.path.join(allocator, &.{ registry_path, "bundles", bundle_name });
     defer allocator.free(bundle_dir);
 
     const bundle_exists = blk: {
@@ -148,7 +210,7 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     };
 
     if (!bundle_exists) {
-        try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name.? });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
         try stderr.print("{s}Run {s}clumsies list -B{s} to see available bundles\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
@@ -158,9 +220,6 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
         try stderr.print("{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n\n", .{ P, Color.bold, Color.red, Color.reset, err });
         return;
     };
-
-    const prompts_path = try commands.getPromptsPath(allocator);
-    defer allocator.free(prompts_path);
 
     // Copy bundle contents to .prompts/
     var sp = spinner.init(stdout, "Copying bundle");
@@ -174,9 +233,24 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     };
     sp.succeed();
 
-    try stdout.print("{s}{s}{s}✓{s} Initialized .prompts/ from bundle\n", .{ P, Color.bold, Color.green, Color.reset });
-    try stdout.print("{s}  Bundle: {s}{s}{s}\n", .{ P, Color.cyan, bundle_name.?, Color.reset });
-    try stdout.print("{s}  Note: Run {s}clumsies init <remote>{s} to set up git remote\n\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}{s}✓{s} Created .prompts/ from bundle: {s}{s}{s}\n", .{ P, Color.green, Color.reset, Color.cyan, bundle_name, Color.reset });
+
+    // If URL provided, also init git and add remote
+    if (remote_url) |url| {
+        git.init(allocator, prompts_path) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to initialize git repository\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        try stdout.print("{s}{s}✓{s} Initialized git repository\n", .{ P, Color.green, Color.reset });
+
+        git.addRemote(allocator, prompts_path, url) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to add remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        try stdout.print("{s}{s}✓{s} Added remote: {s}{s}{s}\n", .{ P, Color.green, Color.reset, Color.cyan, url, Color.reset });
+    }
+
+    try stdout.writeAll("\n");
 }
 
 fn copyDirRecursive(allocator: std.mem.Allocator, src: []const u8, dest: []const u8) !void {

@@ -20,8 +20,8 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    clumsies <command> [options]\n\n", .{P});
 
     try stdout.print("{s}{s}{s}MAIN COMMANDS:{s} (manage .prompts/ directory)\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}init{s} <git-url>       Initialize .prompts/ and link to remote\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}init{s} {s}-B{s} <bundle>     Initialize .prompts/ from registry bundle\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}    {s}init{s} <git-url>       Initialize .prompts/ with git remote\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}init{s} {s}-B{s} <bundle> [url]  Initialize from bundle (optionally with remote)\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset });
     try stdout.print("{s}    {s}clone{s} <git-url>      Clone remote to .prompts/\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}push{s} [-m \"msg\"]      Commit and push .prompts/ to remote\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}pull{s}                 Pull latest from remote\n", .{ P, Color.cyan, Color.reset });
@@ -66,5 +66,6 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    clumsies update -B my-bundle --add new_dir\n\n", .{P});
 
     try stdout.print("{s}    {s}# Initialize from bundle{s}\n", .{ P, Color.dim, Color.reset });
-    try stdout.print("{s}    clumsies init -B my-bundle\n\n", .{P});
+    try stdout.print("{s}    clumsies init -B my-bundle\n", .{P});
+    try stdout.print("{s}    clumsies init -B my-bundle git@github.com:user/prompts.git\n\n", .{P});
 }
