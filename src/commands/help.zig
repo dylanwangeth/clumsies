@@ -46,26 +46,4 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    {s}upgrade{s}               Upgrade clumsies to latest version\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}--version{s}             Show version\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}--help{s}                Show this help\n\n", .{ P, Color.cyan, Color.reset });
-
-    try stdout.print("{s}{s}{s}EXAMPLES:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}# Initialize and sync your prompts{s}\n", .{ P, Color.dim, Color.reset });
-    try stdout.print("{s}    clumsies init git@github.com:user/my-prompts.git\n", .{P});
-    try stdout.print("{s}    clumsies push -m \"Add review command\"\n\n", .{P});
-
-    try stdout.print("{s}    {s}# Clone existing prompts{s}\n", .{ P, Color.dim, Color.reset });
-    try stdout.print("{s}    clumsies clone git@github.com:team/shared-prompts.git\n\n", .{P});
-
-    try stdout.print("{s}    {s}# Use shared registry{s}\n", .{ P, Color.dim, Color.reset });
-    try stdout.print("{s}    clumsies config set registry git@github.com:org/registry.git\n", .{P});
-    try stdout.print("{s}    clumsies list -P\n", .{P});
-    try stdout.print("{s}    clumsies import a1b2c3d4\n\n", .{P});
-
-    try stdout.print("{s}    {s}# Create in registry{s}\n", .{ P, Color.dim, Color.reset });
-    try stdout.print("{s}    clumsies create -P my_prompt.md\n", .{P});
-    try stdout.print("{s}    clumsies create -B my-bundle conduct command\n", .{P});
-    try stdout.print("{s}    clumsies update -B my-bundle --add new_dir\n\n", .{P});
-
-    try stdout.print("{s}    {s}# Initialize from bundle{s}\n", .{ P, Color.dim, Color.reset });
-    try stdout.print("{s}    clumsies init -B my-bundle\n", .{P});
-    try stdout.print("{s}    clumsies init -B my-bundle git@github.com:user/prompts.git\n\n", .{P});
 }
