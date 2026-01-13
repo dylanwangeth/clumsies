@@ -68,14 +68,14 @@ clumsies config set registry git@github.com:org/prompt-registry.git
 clumsies bundle list
 clumsies bundle show <name>
 
-# Create bundle from local directories
-clumsies bundle create <name> <dirs...> [-t <task>] [-d <desc>] [-M <file>]
-clumsies bundle create my-bundle ./conduct ./command -t coding -d "My coding bundle"
-clumsies bundle create my-bundle ./conduct ./command -M CLAUDE.md  # Specify meta-prompt file
+# Register bundle from local directories
+clumsies bundle register <name> <dirs...> [-t <task>] [-d <desc>] [-M <file>]
+clumsies bundle register my-bundle ./conduct ./command -t coding -d "My coding bundle"
+clumsies bundle register my-bundle ./conduct ./command -M CLAUDE.md  # Specify meta-prompt file
 
 # Update bundle contents
 clumsies bundle update <name> --add <files...>
-clumsies bundle update <name> --rm <files...>
+clumsies bundle update <name> --rm <hash...>
 
 # Remove bundle
 clumsies bundle rm <name>
@@ -88,8 +88,8 @@ clumsies bundle rm <name>
 clumsies prompt list
 clumsies prompt show <hash>
 
-# Create prompt from file
-clumsies prompt create <file>
+# Register prompt to registry
+clumsies prompt register <file>
 
 # Import prompt to local .prompts/
 clumsies prompt import <hash>
@@ -102,7 +102,7 @@ clumsies prompt rm <hash>
 
 ```bash
 clumsies config set registry <url>           # Set registry URL
-clumsies config set meta_prompt_file <file>  # Set default meta-prompt file for bundle create
+clumsies config set meta_prompt_file <file>  # Set default meta-prompt file for bundle register
 clumsies config get registry                 # Get registry URL
 clumsies config list                         # Show all config
 clumsies upgrade                             # Upgrade clumsies
@@ -116,12 +116,12 @@ project/
 └── .prompts/                    # Independent git repository
     ├── .git/
     ├── conduct/                 # Behavioral rules (always active)
-    │   ├── CODE_COMMENTS.md
-    │   ├── GIT_COMMIT.md
+    │   ├── 00_code_comments.md
+    │   ├── 01_git_commit.md
     │   └── ...
     ├── command/                 # Executable commands (invoke by name)
-    │   ├── 00_CONTEXT_REINFORCEMENT.md
-    │   └── 01_REVIEW_COMMIT.md
+    │   ├── 00_context_reinforcement.md
+    │   └── 01_review_commit.md
     └── CLAUDE.md                # Meta-prompt file copy
 ```
 
@@ -143,9 +143,9 @@ This ensures meta-prompt files are version-controlled with prompts while remaini
 registry/
 ├── prompts/
 │   ├── index.json
-│   └── <sha256>.md
+│   └── <sha256>              # Pure hash, no extension
 ├── meta-prompts/
-│   └── <sha256>.md
+│   └── <sha256>              # Pure hash, no extension
 └── bundles/
     └── index.json
 ```

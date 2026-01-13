@@ -10,7 +10,7 @@ const P = commands.P;
 
 const SubCommand = enum {
     list,
-    create,
+    register,
     show,
     rm,
     update,
@@ -21,6 +21,7 @@ const SubCommand = enum {
 const Frontmatter = struct {
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
+    category: ?[]const u8 = null,
 };
 
 fn parseFrontmatter(content: []const u8) Frontmatter {
@@ -44,6 +45,9 @@ fn parseFrontmatter(content: []const u8) Frontmatter {
         } else if (std.mem.startsWith(u8, trimmed, "description:")) {
             const value = std.mem.trim(u8, trimmed[12..], " \t");
             if (value.len > 0) fm.description = value;
+        } else if (std.mem.startsWith(u8, trimmed, "category:")) {
+            const value = std.mem.trim(u8, trimmed[9..], " \t");
+            if (value.len > 0) fm.category = value;
         }
     }
 
@@ -61,8 +65,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     if (std.mem.eql(u8, args[0], "list")) {
         subcmd = .list;
-    } else if (std.mem.eql(u8, args[0], "create")) {
-        subcmd = .create;
+    } else if (std.mem.eql(u8, args[0], "register")) {
+        subcmd = .register;
     } else if (std.mem.eql(u8, args[0], "show")) {
         subcmd = .show;
     } else if (std.mem.eql(u8, args[0], "rm") or std.mem.eql(u8, args[0], "remove")) {
@@ -75,7 +79,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     switch (subcmd) {
         .list => try runList(stdout, stderr, allocator),
-        .create => try runCreate(stdout, stderr, allocator, subcmd_args),
+        .register => try runRegister(stdout, stderr, allocator, subcmd_args),
         .show => try runShow(stdout, stderr, allocator, subcmd_args),
         .rm => try runRm(stdout, stderr, allocator, subcmd_args),
         .update => try runUpdate(stdout, stderr, allocator, subcmd_args),
@@ -87,11 +91,11 @@ fn showUsage(stderr: anytype) !void {
     try stderr.print("\n{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
     try stderr.print("{s}Usage: {s}clumsies bundle <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Commands:\n", .{P});
-    try stderr.print("{s}  {s}list{s}                                  List bundles in registry\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}create{s} <name> <dirs> [-t] [-d] [-M]   Create bundle\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}update{s} <name> [--add|--rm] [-t] [-d]  Update bundle\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}rm{s} <name>                             Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}list{s}                                    List bundles in registry\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}register{s} <name> <dirs> [-t] [-d] [-M]   Register bundle\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}show{s} <name>                             Show bundle content\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}update{s} <name> [--add|--rm] [-t] [-d]    Update bundle\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}rm{s} <name>                               Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Options:\n", .{P});
     try stderr.print("{s}  {s}-t, --task{s} <task>              Task type (coding, research, etc.)\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}-d, --desc{s} <desc>              Description\n", .{ P, Color.cyan, Color.reset });
@@ -207,7 +211,7 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     try stdout.writeAll("\n");
 }
 
-fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Parse args: <name> <dirs...> [-d <desc>] [-t <task>] [-M <file>]
     var description: []const u8 = "-";
     var task: []const u8 = "-";
@@ -240,7 +244,7 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
     if (positional.items.len < 2) {
         try stderr.print("\n{s}{s}{s}Error:{s} Bundle requires name and at least one directory\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies bundle create <name> <dir1> [dir2...] [-d <desc>]{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies bundle register <name> <dir1> [dir2...] [-d <desc>]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
@@ -414,7 +418,7 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     };
     sp4.succeed();
 
-    try stdout.print("{s}{s}{s}✓{s} Created bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
+    try stdout.print("{s}{s}{s}✓{s} Registered bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
     try stdout.print("{s}  Prompts: {d}\n\n", .{ P, prompt_refs.items.len });
 }
 
@@ -777,7 +781,9 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
                 // Parse frontmatter
                 const fm = parseFrontmatter(prompt_content);
-                const name = try allocator.dupe(u8, fm.name orelse basename[0..name_end]);
+                const raw_name = basename[0..name_end];
+                // Strip sequence prefix (NN_) if present
+                const name = try allocator.dupe(u8, fm.name orelse stripSequencePrefix(raw_name));
                 const description = try allocator.dupe(u8, fm.description orelse "-");
 
                 // Copy to prompts/<hash> (pure hash, no extension)
@@ -785,8 +791,10 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                 defer allocator.free(dest_path);
                 fs.copyFileAbsolute(src, dest_path, .{}) catch {};
 
-                // Extract path (conduct or command) from file path
-                const prompt_path = if (std.mem.indexOf(u8, file_path, "conduct") != null)
+                // Extract path: frontmatter category > file path detection > default
+                const prompt_path = if (fm.category) |cat|
+                    cat
+                else if (std.mem.indexOf(u8, file_path, "conduct") != null)
                     "conduct"
                 else if (std.mem.indexOf(u8, file_path, "command") != null)
                     "command"
@@ -806,14 +814,15 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             var sp = spinner.init(stdout, "Removing prompts");
             sp.start();
 
-            // Remove refs matching the given paths
+            // Remove refs matching the given hash prefixes
             var new_refs: std.ArrayListUnmanaged(PromptRef) = .{};
             defer new_refs.deinit(allocator);
 
             for (current_refs.items) |ref| {
                 var should_remove = false;
-                for (files.items) |file_path| {
-                    if (std.mem.indexOf(u8, ref.path, file_path) != null) {
+                for (files.items) |hash_prefix| {
+                    // Match by hash prefix
+                    if (std.mem.startsWith(u8, ref.hash, hash_prefix)) {
                         should_remove = true;
                         break;
                     }
@@ -1004,8 +1013,12 @@ fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, ba
 
             // Parse frontmatter for metadata (only for text files)
             const fm = parseFrontmatter(content);
-            const name = try allocator.dupe(u8, fm.name orelse entry.name[0..name_end]);
+            const raw_name = entry.name[0..name_end];
+            // Strip sequence prefix (NN_) if present
+            const name = try allocator.dupe(u8, fm.name orelse stripSequencePrefix(raw_name));
             const description = try allocator.dupe(u8, fm.description orelse "-");
+            // Use frontmatter category if available, otherwise use base_name from directory
+            const prompt_path = fm.category orelse base_name;
 
             // Copy to prompts/<hash> (pure hash, no extension)
             const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
@@ -1015,7 +1028,7 @@ fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, ba
             // Add reference (path is just the directory: conduct or command)
             try refs.append(allocator, .{
                 .hash = hash,
-                .path = try allocator.dupe(u8, base_name),
+                .path = try allocator.dupe(u8, prompt_path),
                 .name = name,
                 .description = description,
                 .format = format,
@@ -1200,4 +1213,16 @@ fn findAndUploadMetaPrompt(allocator: std.mem.Allocator, cwd: []const u8, regist
     }
 
     return null;
+}
+
+/// Strip sequence prefix (NN_) from filename if present
+/// e.g., "01_review_commit" -> "review_commit"
+fn stripSequencePrefix(name: []const u8) []const u8 {
+    if (name.len >= 3 and name[2] == '_') {
+        // Check if first two chars are digits
+        if (std.ascii.isDigit(name[0]) and std.ascii.isDigit(name[1])) {
+            return name[3..];
+        }
+    }
+    return name;
 }

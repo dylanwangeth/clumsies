@@ -10,7 +10,7 @@ const P = commands.P;
 
 const SubCommand = enum {
     list,
-    create,
+    register,
     show,
     rm,
     import,
@@ -21,6 +21,7 @@ const SubCommand = enum {
 const Frontmatter = struct {
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
+    category: ?[]const u8 = null,
 };
 
 fn parseFrontmatter(content: []const u8) Frontmatter {
@@ -44,6 +45,9 @@ fn parseFrontmatter(content: []const u8) Frontmatter {
         } else if (std.mem.startsWith(u8, trimmed, "description:")) {
             const value = std.mem.trim(u8, trimmed[12..], " \t");
             if (value.len > 0) fm.description = value;
+        } else if (std.mem.startsWith(u8, trimmed, "category:")) {
+            const value = std.mem.trim(u8, trimmed[9..], " \t");
+            if (value.len > 0) fm.category = value;
         }
     }
 
@@ -61,8 +65,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     if (std.mem.eql(u8, args[0], "list")) {
         subcmd = .list;
-    } else if (std.mem.eql(u8, args[0], "create")) {
-        subcmd = .create;
+    } else if (std.mem.eql(u8, args[0], "register")) {
+        subcmd = .register;
     } else if (std.mem.eql(u8, args[0], "show")) {
         subcmd = .show;
     } else if (std.mem.eql(u8, args[0], "rm") or std.mem.eql(u8, args[0], "remove")) {
@@ -75,7 +79,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     switch (subcmd) {
         .list => try runList(stdout, stderr, allocator),
-        .create => try runCreate(stdout, stderr, allocator, subcmd_args),
+        .register => try runRegister(stdout, stderr, allocator, subcmd_args),
         .show => try runShow(stdout, stderr, allocator, subcmd_args),
         .rm => try runRm(stdout, stderr, allocator, subcmd_args),
         .import => try runImport(stdout, stderr, allocator, subcmd_args),
@@ -88,7 +92,7 @@ fn showUsage(stderr: anytype) !void {
     try stderr.print("{s}Usage: {s}clumsies prompt <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Commands:\n", .{P});
     try stderr.print("{s}  {s}list{s}              List prompts in registry\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}create{s} <file>     Create prompt in registry\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}register{s} <file>   Register prompt to registry\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}rm{s} <hash>         Remove prompt from registry\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}import{s} <hash>     Import prompt to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
@@ -197,10 +201,10 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     try stdout.writeAll("\n");
 }
 
-fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
         try stderr.print("\n{s}{s}{s}Error:{s} File required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies prompt create <file.md>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies prompt register <file>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
@@ -249,17 +253,21 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     const format = if (ext_idx) |idx| basename[idx + 1 ..] else "md";
     const name_end = ext_idx orelse basename.len;
 
-    // Extract path (conduct or command) from file path
-    const prompt_path = if (std.mem.indexOf(u8, file_path, "conduct") != null)
+    // Parse frontmatter for metadata
+    const fm = parseFrontmatter(content);
+
+    // Extract path: frontmatter category > file path detection > default
+    const prompt_path = if (fm.category) |cat|
+        cat
+    else if (std.mem.indexOf(u8, file_path, "conduct") != null)
         "conduct"
     else if (std.mem.indexOf(u8, file_path, "command") != null)
         "command"
     else
         "conduct"; // default to conduct
-
-    // Parse frontmatter for metadata
-    const fm = parseFrontmatter(content);
-    const name = fm.name orelse basename[0..name_end];
+    const raw_name = basename[0..name_end];
+    // Strip sequence prefix (NN_) if present
+    const name = fm.name orelse stripSequencePrefix(raw_name);
     const description = fm.description orelse "-";
 
     // Create prompts directory
@@ -354,7 +362,7 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     };
 
     // Commit and push
-    var sp = spinner.init(stdout, "Creating in registry");
+    var sp = spinner.init(stdout, "Registering prompt");
     sp.start();
     git.addAll(allocator, registry_path) catch {};
     git.commit(allocator, registry_path, "Add prompt") catch {};
@@ -364,7 +372,7 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     };
     sp.succeed();
 
-    try stdout.print("{s}{s}{s}✓{s} Created prompt in registry\n", .{ P, Color.bold, Color.green, Color.reset });
+    try stdout.print("{s}{s}{s}✓{s} Registered prompt in registry\n", .{ P, Color.bold, Color.green, Color.reset });
     try stdout.print("{s}  Hash: {s}{s}{s}\n", .{ P, Color.cyan, hash_hex, Color.reset });
     try stdout.print("{s}  Name: {s}\n\n", .{ P, name });
 }
@@ -697,4 +705,16 @@ fn findNextSequence(allocator: std.mem.Allocator, dir_path: []const u8) u8 {
     // No gap found, return next number
     _ = allocator;
     return max_seq;
+}
+
+/// Strip sequence prefix (NN_) from filename if present
+/// e.g., "01_review_commit" -> "review_commit"
+fn stripSequencePrefix(name: []const u8) []const u8 {
+    if (name.len >= 3 and name[2] == '_') {
+        // Check if first two chars are digits
+        if (std.ascii.isDigit(name[0]) and std.ascii.isDigit(name[1])) {
+            return name[3..];
+        }
+    }
+    return name;
 }

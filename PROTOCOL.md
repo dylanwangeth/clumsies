@@ -110,26 +110,31 @@ workspace/
 
 ## 4. Meta-Prompt File Specification
 
-The meta-prompt file (CLAUDE.md, AGENTS.md, etc.) teaches the AI how to use the prompt system.
+The meta-prompt file (CLAUDE.md, AGENTS.md, etc.) introduces the project and prompt system to the AI.
 
-### 4.1 Minimal Structure
+### 4.1 Purpose
+
+The meta-prompt file serves as:
+- Project introduction and context
+- Signal that a `.prompts/` system exists
+- Entry point for AI to discover available prompts
+
+### 4.2 Example
 
 ```markdown
 # Project Name
 
-Brief description.
+Brief project description.
 
-@import .prompts/conduct/
-@import .prompts/command/
+This project uses the Clumsies Protocol for prompt management.
+See `.prompts/` for behavioral rules (conduct/) and commands (command/).
 ```
 
-The `@import` directive tells the AI to load all prompts from the specified directory.
-
-### 4.2 Why This Works
+### 4.3 Why This Works
 
 The AI doesn't need special syntax or tool support. It simply:
 1. Reads the meta-prompt file
-2. Understands the directory structure semantically
+2. Discovers the `.prompts/` directory structure
 3. Responds to natural language requests
 
 ---
@@ -158,20 +163,22 @@ For metadata, YAML frontmatter can be added:
 
 ```markdown
 ---
-type: command
-lang: en
-author: username
+name: Git Commit
+description: Commit message format and conventions
+category: conduct
 ---
 
-# Command Name
+# Git Commit Rules
 ...
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | `"command"` \| `"conduct"` \| `"custom"` |
-| `lang` | string | ISO 639-1 language code |
-| `author` | string | Author identifier |
+| `name` | string | Prompt name (used in registry, without sequence prefix) |
+| `description` | string | Brief description of the prompt |
+| `category` | string | Target directory: `"conduct"` \| `"command"` |
+
+The `category` field determines where the prompt is placed when imported. If not specified, the CLI will attempt to detect it from the file path, defaulting to `"conduct"`.
 
 ---
 
