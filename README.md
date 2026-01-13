@@ -5,7 +5,7 @@ A CLI tool for managing AI Agent prompt systems based on [Clumsies Protocol](./P
 ## Why?
 
 A single prompt file isn't enough for complex projects. We created a multi-file system:
-- **Meta-prompt file** (`CLAUDE.md`, `CURSOR.md`, etc.) — tells the AI how to understand the prompt system
+- **Meta-prompt file** (`CLAUDE.md`, `CURSOR.md`, etc.) — a natural language index that guides AI to navigate the `.prompts/` directory. It explains what each directory contains and when to load which prompts.
 - **`.prompts/` directory** — modular prompts organized by type (conduct, command, custom)
 
 We call this complete package a **bundle**. The `.prompts/` directory operates as an **independent git repository**, enabling version control and team collaboration.
@@ -68,10 +68,10 @@ clumsies config set registry git@github.com:org/prompt-registry.git
 clumsies bundle list
 clumsies bundle show <name>
 
-# Register bundle from local directories
-clumsies bundle register <name> <dirs...> [-t <task>] [-d <desc>] [-M <file>]
-clumsies bundle register my-bundle ./conduct ./command -t coding -d "My coding bundle"
-clumsies bundle register my-bundle ./conduct ./command -M CLAUDE.md  # Specify meta-prompt file
+# Register bundle from meta-prompt file and directories
+# Bundle name comes from frontmatter in meta-prompt file
+clumsies bundle register <meta-prompt-file> <dirs...>
+clumsies bundle register CLAUDE.md ./conduct ./command
 
 # Update bundle contents
 clumsies bundle update <name> --add <files...>

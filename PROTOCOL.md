@@ -110,32 +110,94 @@ workspace/
 
 ## 4. Meta-Prompt File Specification
 
-The meta-prompt file (CLAUDE.md, AGENTS.md, etc.) introduces the project and prompt system to the AI.
+The meta-prompt file (CLAUDE.md, AGENTS.md, etc.) is a **natural language index** that helps AI agents understand and navigate the `.prompts/` directory.
 
 ### 4.1 Purpose
 
-The meta-prompt file serves as:
-- Project introduction and context
-- Signal that a `.prompts/` system exists
-- Entry point for AI to discover available prompts
+The meta-prompt file is **NOT** a project introduction. It serves as:
+- Natural language index for the `.prompts/` directory
+- Navigation guide for AI to find and use prompts
+- Explanation of directory structure and file conventions
 
-### 4.2 Example
+### 4.2 Required Content
 
-```markdown
-# Project Name
+A meta-prompt file should include:
 
-Brief project description.
+| Section | Description |
+|---------|-------------|
+| Directory structure | Tree view of `.prompts/` subdirectories |
+| Directory explanation | What each directory contains and when to load it |
+| File naming | Naming convention (`NN_UPPER_SNAKE_CASE.md`) |
+| Command invocation | How to call commands (by number or name) |
 
-This project uses the Clumsies Protocol for prompt management.
-See `.prompts/` for behavioral rules (conduct/) and commands (command/).
+### 4.3 Bundle Frontmatter
+
+When used as part of a bundle, the meta-prompt file should include YAML frontmatter:
+
+```yaml
+---
+name: bundle-name
+description: Brief description of the bundle
+task: coding
+---
 ```
 
-### 4.3 Why This Works
+| Field | Description |
+|-------|-------------|
+| `name` | Bundle identifier (used in `init -B <name>`) |
+| `description` | Brief description of the bundle |
+| `task` | Task category (e.g., `coding`, `writing`) |
+
+### 4.4 Example
+
+```markdown
+---
+name: my-coding-bundle
+description: Coding conduct and commands for AI agents
+task: coding
+---
+
+# Prompts Index
+
+> Natural language index for `.prompts/` directory.
+
+## Directory Structure
+
+\`\`\`
+workspace/
+├── CLAUDE.md
+└── .prompts/
+    ├── context/    # Project context (read before starting)
+    ├── conduct/    # Behavioral rules (always active)
+    ├── command/    # Executable commands (on demand)
+    └── journal/    # Checkpoint logs (reference when needed)
+\`\`\`
+
+## Directory Explanation
+
+| Directory | When to Load | Content |
+|-----------|--------------|---------|
+| `context/` | Before starting work | Project goals, architecture, tech stack |
+| `conduct/` | Always active | Code style, git conventions, testing |
+| `command/` | User triggers | Reusable task workflows |
+| `journal/` | When facing issues | Problem solutions, key decisions |
+
+## File Naming
+
+All files use: `NN_UPPER_SNAKE_CASE.md`
+
+## Command Invocation
+
+- By number: "Execute command 0" → `.prompts/command/00_*.md`
+- By name: "Execute REVIEW_COMMIT" → matches the file
+```
+
+### 4.5 Why This Works
 
 The AI doesn't need special syntax or tool support. It simply:
-1. Reads the meta-prompt file
-2. Discovers the `.prompts/` directory structure
-3. Responds to natural language requests
+1. Reads the meta-prompt file as a navigation guide
+2. Understands the `.prompts/` directory structure
+3. Knows when and how to load each type of prompt
 
 ---
 
