@@ -20,8 +20,7 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    clumsies <command> [options]\n\n", .{P});
 
     try stdout.print("{s}{s}{s}MAIN COMMANDS:{s} (manage .prompts/ directory)\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}init{s} <git-url>       Initialize .prompts/ with git remote\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}init -B{s} <bundle>     Initialize from registry bundle\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}init{s} <bundle> <url>  Initialize from bundle with git remote\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}clone{s} <git-url>      Clone remote to .prompts/\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}push{s} [-m \"msg\"]      Commit and push .prompts/ to remote\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}pull{s}                 Pull latest from remote\n", .{ P, Color.cyan, Color.reset });
@@ -58,5 +57,5 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}{s}{s}CONFIG KEYS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}registry{s}              Git URL for the prompt registry\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}entry_files{s}           Meta-prompt files to sync (comma-separated)\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}meta_prompt_file{s}      Target filename for init -B (default: CLAUDE.md)\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}meta_prompt_file{s}      Target filename for init (default: CLAUDE.md)\n\n", .{ P, Color.cyan, Color.reset });
 }
