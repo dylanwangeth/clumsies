@@ -107,6 +107,12 @@ fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     return registry_path;
 }
 
+// PromptRef represents a prompt reference in a bundle
+const PromptRef = struct {
+    hash: []const u8,
+    path: []const u8,
+};
+
 fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
     try stdout.writeAll("\n");
 
@@ -146,20 +152,17 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
 
     try stdout.print("{s}{s}Bundles in registry:{s}\n", .{ P, Color.bold, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}NAME{s}                 {s}TASK{s}      {s}CREATED{s}     {s}DESCRIPTION{s}\n", .{ P, Color.dim, Color.reset, Color.dim, Color.reset, Color.dim, Color.reset, Color.dim, Color.reset });
+    try stdout.print("{s}  {s}NAME{s}                 {s}TASK{s}      {s}PROMPTS{s}  {s}DESCRIPTION{s}\n", .{ P, Color.dim, Color.reset, Color.dim, Color.reset, Color.dim, Color.reset, Color.dim, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (items.array.items) |item| {
         const name = if (item.object.get("name")) |n| n.string else continue;
         const item_task = if (item.object.get("task")) |t| t.string else "-";
         const desc = if (item.object.get("description")) |d| d.string else "-";
-        const created_str = if (item.object.get("created_at")) |c| c.string else "0";
+        const prompts_arr = item.object.get("prompts");
+        const prompts_count = if (prompts_arr) |p| p.array.items.len else 0;
 
-        const created_ts = std.fmt.parseInt(i64, created_str, 10) catch 0;
-        var date_buf: [10]u8 = undefined;
-        const date_str = commands.formatDate(created_ts, &date_buf);
-
-        try stdout.print("{s}  {s}{s: <20}{s}  {s: <8}  {s}  {s}\n", .{ P, Color.cyan, name, Color.reset, item_task, date_str, desc });
+        try stdout.print("{s}  {s}{s: <20}{s}  {s: <8}  {d: <7}  {s}\n", .{ P, Color.cyan, name, Color.reset, item_task, prompts_count, desc });
     }
     try stdout.writeAll("\n");
 }
@@ -203,43 +206,41 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     const bundle_name = positional.items[0];
     const dirs = positional.items[1..];
 
+    // Check if bundle already exists
+    if (bundleExists(allocator, registry_path, bundle_name)) {
+        try stderr.print("{s}{s}{s}Error:{s} Bundle already exists: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
+        try stderr.print("{s}Use {s}clumsies bundle rm {s}{s} to remove it first\n\n", .{ P, Color.cyan, bundle_name, Color.reset });
+        return;
+    }
+
     const cwd = std.process.getCwdAlloc(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(cwd);
 
-    // Create bundles directory
+    // Ensure directories exist
+    const prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
+    defer allocator.free(prompts_dir);
+    fs.cwd().makePath(prompts_dir) catch {};
+
     const bundles_dir = try std.fs.path.join(allocator, &.{ registry_path, "bundles" });
     defer allocator.free(bundles_dir);
     fs.cwd().makePath(bundles_dir) catch {};
 
-    // Create bundle directory
-    const bundle_dir = try std.fs.path.join(allocator, &.{ bundles_dir, bundle_name });
-    defer allocator.free(bundle_dir);
-
-    // Check if exists
-    const bundle_exists = blk: {
-        var dir = fs.openDirAbsolute(bundle_dir, .{}) catch break :blk false;
-        dir.close();
-        break :blk true;
-    };
-    if (bundle_exists) {
-        try stderr.print("{s}{s}{s}Error:{s} Bundle already exists: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
-        try stderr.print("{s}Use {s}clumsies bundle rm {s}{s} to remove it first\n\n", .{ P, Color.cyan, bundle_name, Color.reset });
-        return;
-    }
-
-    fs.cwd().makePath(bundle_dir) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to create bundle directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-
-    // Copy directories
-    var sp = spinner.init(stdout, "Copying files");
+    // Collect all .md files and upload as prompts
+    var sp = spinner.init(stdout, "Uploading prompts");
     sp.start();
 
-    var copied_count: usize = 0;
+    var prompt_refs: std.ArrayListUnmanaged(PromptRef) = .{};
+    defer {
+        for (prompt_refs.items) |ref| {
+            allocator.free(ref.hash);
+            allocator.free(ref.path);
+        }
+        prompt_refs.deinit(allocator);
+    }
+
     for (dirs) |dir_name| {
         const src_path = if (std.fs.path.isAbsolute(dir_name))
             try allocator.dupe(u8, dir_name)
@@ -247,40 +248,31 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             try std.fs.path.join(allocator, &.{ cwd, dir_name });
         defer allocator.free(src_path);
 
-        const dest_subdir = try std.fs.path.join(allocator, &.{ bundle_dir, std.fs.path.basename(dir_name) });
-        defer allocator.free(dest_subdir);
-
-        if (copyDirRecursive(allocator, src_path, dest_subdir)) {
-            copied_count += 1;
-        } else |_| {
-            const dest_file = try std.fs.path.join(allocator, &.{ bundle_dir, std.fs.path.basename(dir_name) });
-            defer allocator.free(dest_file);
-            fs.copyFileAbsolute(src_path, dest_file, .{}) catch continue;
-            copied_count += 1;
-        }
+        const base_name = std.fs.path.basename(dir_name);
+        collectAndUploadPrompts(allocator, src_path, base_name, prompts_dir, &prompt_refs) catch continue;
     }
 
-    if (copied_count == 0) {
+    if (prompt_refs.items.len == 0) {
         sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} No files were copied\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        fs.deleteTreeAbsolute(bundle_dir) catch {};
+        try stderr.print("{s}{s}{s}Error:{s} No .md files found in specified directories\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
     sp.succeed();
 
-    // Compute hash
-    var hash_sp = spinner.init(stdout, "Computing hash");
-    hash_sp.start();
-    const bundle_hash = computeBundleHash(allocator, bundle_dir) catch {
-        hash_sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to compute bundle hash\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        fs.deleteTreeAbsolute(bundle_dir) catch {};
+    // Update prompts/index.json
+    var sp2 = spinner.init(stdout, "Updating prompts index");
+    sp2.start();
+    updatePromptsIndex(allocator, registry_path, prompt_refs.items) catch {
+        sp2.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
-    defer allocator.free(bundle_hash);
-    hash_sp.succeed();
+    sp2.succeed();
 
-    // Update index.json
+    // Create bundle entry with references
+    var sp3 = spinner.init(stdout, "Creating bundle");
+    sp3.start();
+
     const index_path = try std.fs.path.join(allocator, &.{ bundles_dir, "index.json" });
     defer allocator.free(index_path);
 
@@ -290,6 +282,7 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     if (fs.openFileAbsolute(index_path, .{})) |idx_file| {
         const idx_content = idx_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
             idx_file.close();
+            sp3.fail();
             try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
@@ -302,15 +295,7 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                 try existing_bundles.appendSlice(allocator, "{\n  \"bundles\": [");
                 for (bundles.array.items, 0..) |item, idx| {
                     if (idx > 0) try existing_bundles.appendSlice(allocator, ",");
-                    const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-                    const item_name = if (item.object.get("name")) |n| n.string else "-";
-                    const item_task = if (item.object.get("task")) |t| t.string else "-";
-                    const item_desc = if (item.object.get("description")) |d| d.string else "-";
-                    const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-
-                    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_task, item_desc, item_created });
-                    defer allocator.free(entry);
-                    try existing_bundles.appendSlice(allocator, entry);
+                    try appendBundleEntry(allocator, &existing_bundles, item);
                 }
             }
         } else |_| {}
@@ -318,42 +303,59 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         try existing_bundles.appendSlice(allocator, "{\n  \"bundles\": [");
     }
 
+    // Add new bundle entry
     const timestamp = std.time.timestamp();
-    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
-        if (existing_bundles.items.len > 22) "," else "",
-        bundle_hash,
+    const comma = if (existing_bundles.items.len > 22) "," else "";
+
+    const new_entry_start = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{d}\",\n      \"prompts\": [", .{
+        comma,
         bundle_name,
         task,
         description,
         timestamp,
     });
-    defer allocator.free(new_entry);
-    try existing_bundles.appendSlice(allocator, new_entry);
+    defer allocator.free(new_entry_start);
+    try existing_bundles.appendSlice(allocator, new_entry_start);
+
+    // Add prompt references
+    for (prompt_refs.items, 0..) |ref, idx| {
+        const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"path\": \"{s}\" }}", .{
+            if (idx > 0) "," else "",
+            ref.hash,
+            ref.path,
+        });
+        defer allocator.free(ref_entry);
+        try existing_bundles.appendSlice(allocator, ref_entry);
+    }
+
+    try existing_bundles.appendSlice(allocator, "\n      ]\n    }\n  ]\n}\n");
 
     const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
+        sp3.fail();
         try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer idx_out.close();
     idx_out.writeAll(existing_bundles.items) catch {
+        sp3.fail();
         try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
+    sp3.succeed();
 
     // Commit and push
-    var sp2 = spinner.init(stdout, "Creating in registry");
-    sp2.start();
+    var sp4 = spinner.init(stdout, "Pushing to registry");
+    sp4.start();
     git.addAll(allocator, registry_path) catch {};
     git.commit(allocator, registry_path, "Add bundle") catch {};
     git.push(allocator, registry_path) catch {
-        sp2.fail();
+        sp4.fail();
         try stderr.print("{s}{s}{s}Warning:{s} Saved locally but failed to push to remote\n", .{ P, Color.bold, Color.orange, Color.reset });
     };
-    sp2.succeed();
+    sp4.succeed();
 
-    try stdout.print("{s}{s}{s}✓{s} Created bundle in registry\n", .{ P, Color.bold, Color.green, Color.reset });
-    try stdout.print("{s}  Hash: {s}{s}{s}\n", .{ P, Color.cyan, bundle_hash, Color.reset });
-    try stdout.print("{s}  Name: {s}\n\n", .{ P, bundle_name });
+    try stdout.print("{s}{s}{s}✓{s} Created bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
+    try stdout.print("{s}  Prompts: {d}\n\n", .{ P, prompt_refs.items.len });
 }
 
 fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -398,34 +400,46 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     };
 
     // Find bundle by name
-    var found_name: ?[]const u8 = null;
-    var found_desc: ?[]const u8 = null;
-
+    var found_bundle: ?std.json.Value = null;
     for (bundles.array.items) |item| {
         const item_name = if (item.object.get("name")) |n| n.string else continue;
         if (std.mem.eql(u8, item_name, name)) {
-            found_name = item_name;
-            found_desc = if (item.object.get("description")) |d| d.string else null;
+            found_bundle = item;
             break;
         }
     }
 
-    if (found_name == null) {
+    if (found_bundle == null) {
         try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, name });
         return;
     }
 
-    try stdout.print("{s}{s}Bundle:{s} {s}\n", .{ P, Color.bold, Color.reset, found_name.? });
-    if (found_desc) |d| {
-        try stdout.print("{s}{s}Description:{s} {s}\n\n", .{ P, Color.dim, Color.reset, d });
+    const bundle = found_bundle.?;
+    const bundle_name = if (bundle.object.get("name")) |n| n.string else "-";
+    const bundle_task = if (bundle.object.get("task")) |t| t.string else "-";
+    const bundle_desc = if (bundle.object.get("description")) |d| d.string else "-";
+
+    try stdout.print("{s}{s}Bundle:{s} {s}\n", .{ P, Color.bold, Color.reset, bundle_name });
+    try stdout.print("{s}{s}Task:{s} {s}\n", .{ P, Color.dim, Color.reset, bundle_task });
+    try stdout.print("{s}{s}Description:{s} {s}\n\n", .{ P, Color.dim, Color.reset, bundle_desc });
+
+    // List prompt references
+    const prompts_arr = bundle.object.get("prompts") orelse {
+        try stdout.print("{s}{s}No prompts in bundle{s}\n\n", .{ P, Color.dim, Color.reset });
+        return;
+    };
+
+    try stdout.print("{s}{s}Prompts ({d}):{s}\n", .{ P, Color.bold, prompts_arr.array.items.len, Color.reset });
+    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
+    try stdout.print("{s}  {s}HASH{s}          {s}PATH{s}\n", .{ P, Color.dim, Color.reset, Color.dim, Color.reset });
+    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
+
+    for (prompts_arr.array.items) |ref| {
+        const hash = if (ref.object.get("hash")) |h| h.string else "-";
+        const path = if (ref.object.get("path")) |p| p.string else "-";
+        const short_hash = if (hash.len >= 8) hash[0..8] else hash;
+        try stdout.print("{s}  {s}{s}{s}      {s}\n", .{ P, Color.cyan, short_hash, Color.reset, path });
     }
-
-    // List bundle contents
-    const bundle_dir = try std.fs.path.join(allocator, &.{ registry_path, "bundles", found_name.? });
-    defer allocator.free(bundle_dir);
-
-    try stdout.print("{s}{s}Contents:{s}\n", .{ P, Color.bold, Color.reset });
-    try listDirRecursive(stdout, allocator, bundle_dir, 0);
     try stdout.writeAll("\n");
 }
 
@@ -471,7 +485,7 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
         return;
     };
 
-    // Find and remove bundle by name
+    // Find and remove bundle by name (only from index, keep prompts)
     var found = false;
     var new_bundles: std.ArrayListUnmanaged(u8) = .{};
     defer new_bundles.deinit(allocator);
@@ -481,23 +495,16 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
 
     for (bundles.array.items) |item| {
         const item_name = if (item.object.get("name")) |n| n.string else continue;
-        const item_hash = if (item.object.get("hash")) |h| h.string else "-";
 
         if (std.mem.eql(u8, item_name, name)) {
             found = true;
             continue;
         }
 
-        const item_task = if (item.object.get("task")) |t| t.string else "-";
-        const item_desc = if (item.object.get("description")) |d| d.string else "-";
-        const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-
         if (!first) try new_bundles.appendSlice(allocator, ",");
         first = false;
 
-        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_task, item_desc, item_created });
-        defer allocator.free(entry);
-        try new_bundles.appendSlice(allocator, entry);
+        try appendBundleEntry(allocator, &new_bundles, item);
     }
     try new_bundles.appendSlice(allocator, "\n  ]\n}\n");
 
@@ -506,12 +513,7 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
         return;
     }
 
-    // Delete bundle directory
-    const bundle_dir = try std.fs.path.join(allocator, &.{ registry_path, "bundles", name });
-    defer allocator.free(bundle_dir);
-    fs.deleteTreeAbsolute(bundle_dir) catch {};
-
-    // Write updated index
+    // Write updated index (prompts are kept in registry)
     const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -530,7 +532,8 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
     };
     sp.succeed();
 
-    try stdout.print("{s}{s}{s}✓{s} Removed bundle: {s}\n\n", .{ P, Color.bold, Color.green, Color.reset, name });
+    try stdout.print("{s}{s}{s}✓{s} Removed bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, name });
+    try stdout.print("{s}{s}Note: Prompts are kept in registry (may be used by other bundles){s}\n\n", .{ P, Color.dim, Color.reset });
 }
 
 fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -546,14 +549,14 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     var is_rm = false;
     var files_start: usize = 2;
 
-    for (args[1..], 1..) |arg, i| {
+    for (args[1..], 1..) |arg, idx| {
         if (std.mem.eql(u8, arg, "--add") or std.mem.eql(u8, arg, "-a")) {
             is_add = true;
-            files_start = i + 1;
+            files_start = idx + 1;
             break;
         } else if (std.mem.eql(u8, arg, "--rm") or std.mem.eql(u8, arg, "-r")) {
             is_rm = true;
-            files_start = i + 1;
+            files_start = idx + 1;
             break;
         }
     }
@@ -575,16 +578,47 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
 
-    const bundle_dir = try std.fs.path.join(allocator, &.{ registry_path, "bundles", bundle_name });
-    defer allocator.free(bundle_dir);
+    // Read current bundle
+    const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
+    defer allocator.free(index_path);
 
-    // Check bundle exists
-    {
-        var dir = fs.openDirAbsolute(bundle_dir, .{}) catch {
-            try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
-            return;
-        };
-        dir.close();
+    const file = fs.openFileAbsolute(index_path, .{}) catch {
+        try stderr.print("{s}{s}{s}Error:{s} No bundles found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+
+    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+        file.close();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    file.close();
+    defer allocator.free(content);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer parsed.deinit();
+
+    const bundles = parsed.value.object.get("bundles") orelse {
+        try stderr.print("{s}{s}{s}Error:{s} Bundle not found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+
+    // Find target bundle
+    var found_bundle: ?std.json.Value = null;
+    for (bundles.array.items) |item| {
+        const item_name = if (item.object.get("name")) |n| n.string else continue;
+        if (std.mem.eql(u8, item_name, bundle_name)) {
+            found_bundle = item;
+            break;
+        }
+    }
+
+    if (found_bundle == null) {
+        try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
+        return;
     }
 
     const cwd = std.process.getCwdAlloc(allocator) catch {
@@ -593,168 +627,195 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     };
     defer allocator.free(cwd);
 
+    const prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
+    defer allocator.free(prompts_dir);
+
+    // Collect current prompt refs
+    var current_refs: std.ArrayListUnmanaged(PromptRef) = .{};
+    defer {
+        for (current_refs.items) |ref| {
+            allocator.free(ref.hash);
+            allocator.free(ref.path);
+        }
+        current_refs.deinit(allocator);
+    }
+
+    if (found_bundle.?.object.get("prompts")) |prompts_arr| {
+        for (prompts_arr.array.items) |ref| {
+            const hash = if (ref.object.get("hash")) |h| h.string else continue;
+            const path = if (ref.object.get("path")) |p| p.string else continue;
+            try current_refs.append(allocator, .{
+                .hash = try allocator.dupe(u8, hash),
+                .path = try allocator.dupe(u8, path),
+            });
+        }
+    }
+
     if (is_add) {
-        var sp = spinner.init(stdout, "Adding files");
+        var sp = spinner.init(stdout, "Adding prompts");
         sp.start();
-        var added: usize = 0;
-        for (files) |file_name| {
-            const src = if (std.fs.path.isAbsolute(file_name))
-                try allocator.dupe(u8, file_name)
+
+        for (files) |file_path| {
+            const src = if (std.fs.path.isAbsolute(file_path))
+                try allocator.dupe(u8, file_path)
             else
-                try std.fs.path.join(allocator, &.{ cwd, file_name });
+                try std.fs.path.join(allocator, &.{ cwd, file_path });
             defer allocator.free(src);
 
-            const dest = try std.fs.path.join(allocator, &.{ bundle_dir, std.fs.path.basename(file_name) });
-            defer allocator.free(dest);
+            // Upload prompt and add reference
+            const hash = computeFileHash(allocator, src) catch continue;
+            defer allocator.free(hash);
 
-            if (copyDirRecursive(allocator, src, dest)) {
-                added += 1;
-            } else |_| {
-                fs.copyFileAbsolute(src, dest, .{}) catch continue;
-                added += 1;
-            }
-        }
-        if (added == 0) {
-            sp.fail();
-            try stderr.print("{s}{s}{s}Error:{s} No files were added\n\n", .{ P, Color.bold, Color.red, Color.reset });
-            return;
+            const dest = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
+            defer allocator.free(dest);
+            const dest_with_ext = try std.fmt.allocPrint(allocator, "{s}.md", .{dest});
+            defer allocator.free(dest_with_ext);
+
+            fs.copyFileAbsolute(src, dest_with_ext, .{}) catch {};
+
+            try current_refs.append(allocator, .{
+                .hash = try allocator.dupe(u8, hash),
+                .path = try allocator.dupe(u8, std.fs.path.basename(file_path)),
+            });
         }
         sp.succeed();
     } else {
-        var sp = spinner.init(stdout, "Removing files");
+        var sp = spinner.init(stdout, "Removing prompts");
         sp.start();
-        for (files) |file_name| {
-            const path = try std.fs.path.join(allocator, &.{ bundle_dir, file_name });
-            defer allocator.free(path);
-            fs.deleteTreeAbsolute(path) catch {};
+
+        // Remove refs matching the given paths
+        var new_refs: std.ArrayListUnmanaged(PromptRef) = .{};
+        defer new_refs.deinit(allocator);
+
+        for (current_refs.items) |ref| {
+            var should_remove = false;
+            for (files) |file_path| {
+                if (std.mem.indexOf(u8, ref.path, file_path) != null) {
+                    should_remove = true;
+                    break;
+                }
+            }
+            if (!should_remove) {
+                try new_refs.append(allocator, .{
+                    .hash = try allocator.dupe(u8, ref.hash),
+                    .path = try allocator.dupe(u8, ref.path),
+                });
+            }
         }
+
+        // Swap
+        for (current_refs.items) |ref| {
+            allocator.free(ref.hash);
+            allocator.free(ref.path);
+        }
+        current_refs.clearRetainingCapacity();
+        for (new_refs.items) |ref| {
+            try current_refs.append(allocator, ref);
+        }
+        new_refs.clearRetainingCapacity();
+
         sp.succeed();
     }
 
-    // Recompute hash
-    var hash_sp = spinner.init(stdout, "Computing hash");
-    hash_sp.start();
-    const new_hash = computeBundleHash(allocator, bundle_dir) catch {
-        hash_sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to compute hash\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    defer allocator.free(new_hash);
-    hash_sp.succeed();
-
-    // Update index with new hash
-    const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
-    defer allocator.free(index_path);
-
-    const idx_file = fs.openFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    const idx_content = idx_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
-        idx_file.close();
-        return;
-    };
-    idx_file.close();
-    defer allocator.free(idx_content);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, idx_content, .{}) catch return;
-    defer parsed.deinit();
+    // Rebuild index
+    var sp2 = spinner.init(stdout, "Updating bundle");
+    sp2.start();
 
     var new_index: std.ArrayListUnmanaged(u8) = .{};
     defer new_index.deinit(allocator);
     try new_index.appendSlice(allocator, "{\n  \"bundles\": [");
 
-    const bundles = parsed.value.object.get("bundles") orelse return;
     var first = true;
     for (bundles.array.items) |item| {
         const item_name = if (item.object.get("name")) |n| n.string else continue;
-        const item_task = if (item.object.get("task")) |t| t.string else "-";
-        const item_desc = if (item.object.get("description")) |d| d.string else "-";
-        const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
         if (!first) try new_index.appendSlice(allocator, ",");
         first = false;
 
-        const hash_to_use = if (std.mem.eql(u8, item_name, bundle_name)) new_hash else if (item.object.get("hash")) |h| h.string else continue;
+        if (std.mem.eql(u8, item_name, bundle_name)) {
+            // Write updated bundle
+            const item_task = if (item.object.get("task")) |t| t.string else "-";
+            const item_desc = if (item.object.get("description")) |d| d.string else "-";
+            const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
-        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ hash_to_use, item_name, item_task, item_desc, item_created });
-        defer allocator.free(entry);
-        try new_index.appendSlice(allocator, entry);
+            const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"prompts\": [", .{ item_name, item_task, item_desc, item_created });
+            defer allocator.free(entry_start);
+            try new_index.appendSlice(allocator, entry_start);
+
+            for (current_refs.items, 0..) |ref, idx| {
+                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"path\": \"{s}\" }}", .{
+                    if (idx > 0) "," else "",
+                    ref.hash,
+                    ref.path,
+                });
+                defer allocator.free(ref_entry);
+                try new_index.appendSlice(allocator, ref_entry);
+            }
+            try new_index.appendSlice(allocator, "\n      ]\n    }");
+        } else {
+            try appendBundleEntry(allocator, &new_index, item);
+        }
     }
     try new_index.appendSlice(allocator, "\n  ]\n}\n");
 
-    const idx_out = fs.createFileAbsolute(index_path, .{}) catch return;
+    const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
+        sp2.fail();
+        return;
+    };
     defer idx_out.close();
     idx_out.writeAll(new_index.items) catch {};
+    sp2.succeed();
 
     // Commit and push
-    var sp2 = spinner.init(stdout, "Updating registry");
-    sp2.start();
+    var sp3 = spinner.init(stdout, "Pushing to registry");
+    sp3.start();
     git.addAll(allocator, registry_path) catch {};
     git.commit(allocator, registry_path, "Update bundle") catch {};
     git.push(allocator, registry_path) catch {
-        sp2.fail();
+        sp3.fail();
         try stderr.print("{s}{s}{s}Warning:{s} Updated locally but failed to push\n", .{ P, Color.bold, Color.orange, Color.reset });
     };
-    sp2.succeed();
+    sp3.succeed();
 
     try stdout.print("{s}{s}{s}✓{s} Updated bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
-    try stdout.print("{s}  Hash: {s}{s}{s}\n\n", .{ P, Color.cyan, new_hash, Color.reset });
+    try stdout.print("{s}  Prompts: {d}\n\n", .{ P, current_refs.items.len });
 }
 
-fn copyDirRecursive(allocator: std.mem.Allocator, src: []const u8, dest: []const u8) !void {
-    fs.cwd().makePath(dest) catch return error.Failed;
-    var src_dir = fs.openDirAbsolute(src, .{ .iterate = true }) catch return error.Failed;
-    defer src_dir.close();
+// Helper functions
 
-    var iter = src_dir.iterate();
-    while (iter.next() catch return error.Failed) |entry| {
-        const src_path = std.fs.path.join(allocator, &.{ src, entry.name }) catch continue;
-        defer allocator.free(src_path);
-        const dest_path = std.fs.path.join(allocator, &.{ dest, entry.name }) catch continue;
-        defer allocator.free(dest_path);
+fn bundleExists(allocator: std.mem.Allocator, registry_path: []const u8, name: []const u8) bool {
+    const index_path = std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" }) catch return false;
+    defer allocator.free(index_path);
 
-        if (entry.kind == .directory) {
-            try copyDirRecursive(allocator, src_path, dest_path);
-        } else if (entry.kind == .file) {
-            fs.copyFileAbsolute(src_path, dest_path, .{}) catch continue;
-        }
+    const file = fs.openFileAbsolute(index_path, .{}) catch return false;
+    defer file.close();
+
+    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return false;
+    defer allocator.free(content);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return false;
+    defer parsed.deinit();
+
+    const bundles = parsed.value.object.get("bundles") orelse return false;
+
+    for (bundles.array.items) |item| {
+        const item_name = if (item.object.get("name")) |n| n.string else continue;
+        if (std.mem.eql(u8, item_name, name)) return true;
     }
+    return false;
 }
 
-fn computeBundleHash(allocator: std.mem.Allocator, bundle_dir: []const u8) ![]const u8 {
-    var file_paths: std.ArrayListUnmanaged([]const u8) = .{};
-    defer {
-        for (file_paths.items) |p| allocator.free(p);
-        file_paths.deinit(allocator);
-    }
-
-    try collectFilePaths(allocator, bundle_dir, bundle_dir, &file_paths);
-
-    std.mem.sort([]const u8, file_paths.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
-        }
-    }.lessThan);
+fn computeFileHash(allocator: std.mem.Allocator, file_path: []const u8) ![]const u8 {
+    const file = try fs.openFileAbsolute(file_path, .{});
+    defer file.close();
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [4096]u8 = undefined;
 
-    for (file_paths.items) |rel_path| {
-        const full_path = try std.fs.path.join(allocator, &.{ bundle_dir, rel_path });
-        defer allocator.free(full_path);
-
-        const file = fs.openFileAbsolute(full_path, .{}) catch continue;
-        defer file.close();
-
-        hasher.update(rel_path);
-        hasher.update("\x00");
-
-        var buf: [4096]u8 = undefined;
-        while (true) {
-            const n = file.read(&buf) catch break;
-            if (n == 0) break;
-            hasher.update(buf[0..n]);
-        }
+    while (true) {
+        const n = try file.read(&buf);
+        if (n == 0) break;
+        hasher.update(buf[0..n]);
     }
 
     var hash: [32]u8 = undefined;
@@ -770,41 +831,121 @@ fn computeBundleHash(allocator: std.mem.Allocator, bundle_dir: []const u8) ![]co
     return allocator.dupe(u8, &hash_hex);
 }
 
-fn collectFilePaths(allocator: std.mem.Allocator, base_dir: []const u8, current_dir: []const u8, paths: *std.ArrayListUnmanaged([]const u8)) !void {
-    var dir = fs.openDirAbsolute(current_dir, .{ .iterate = true }) catch return;
+fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, base_name: []const u8, prompts_dir: []const u8, refs: *std.ArrayListUnmanaged(PromptRef)) !void {
+    var dir = fs.openDirAbsolute(src_dir, .{ .iterate = true }) catch return error.Failed;
     defer dir.close();
 
     var iter = dir.iterate();
-    while (iter.next() catch return) |entry| {
-        const full_path = try std.fs.path.join(allocator, &.{ current_dir, entry.name });
-        defer allocator.free(full_path);
+    while (iter.next() catch return error.Failed) |entry| {
+        const src_path = try std.fs.path.join(allocator, &.{ src_dir, entry.name });
+        defer allocator.free(src_path);
 
         if (entry.kind == .directory) {
-            try collectFilePaths(allocator, base_dir, full_path, paths);
-        } else if (entry.kind == .file) {
-            const rel_path = try allocator.dupe(u8, full_path[base_dir.len + 1 ..]);
-            try paths.append(allocator, rel_path);
+            const sub_base = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_name, entry.name });
+            defer allocator.free(sub_base);
+            try collectAndUploadPrompts(allocator, src_path, sub_base, prompts_dir, refs);
+        } else if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
+            // Compute hash
+            const hash = computeFileHash(allocator, src_path) catch continue;
+
+            // Copy to prompts/<hash>.md
+            const dest_path = try std.fmt.allocPrint(allocator, "{s}/{s}.md", .{ prompts_dir, hash });
+            defer allocator.free(dest_path);
+            fs.copyFileAbsolute(src_path, dest_path, .{}) catch {};
+
+            // Add reference
+            const rel_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_name, entry.name });
+            try refs.append(allocator, .{
+                .hash = hash,
+                .path = rel_path,
+            });
         }
     }
 }
 
-fn listDirRecursive(stdout: anytype, allocator: std.mem.Allocator, dir_path: []const u8, depth: usize) !void {
-    var dir = fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
+fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u8, refs: []const PromptRef) !void {
+    const prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
+    defer allocator.free(prompts_dir);
+    fs.cwd().makePath(prompts_dir) catch {};
 
-    var iter = dir.iterate();
-    while (iter.next() catch return) |entry| {
-        var indent_buf: [64]u8 = undefined;
-        const indent_len = @min(depth * 2, 62);
-        @memset(indent_buf[0..indent_len], ' ');
+    const index_path = try std.fs.path.join(allocator, &.{ prompts_dir, "index.json" });
+    defer allocator.free(index_path);
 
-        if (entry.kind == .directory) {
-            try stdout.print("{s}  {s}{s}/{s}\n", .{ P, indent_buf[0..indent_len], entry.name, Color.reset });
-            const subdir = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
-            defer allocator.free(subdir);
-            try listDirRecursive(stdout, allocator, subdir, depth + 1);
-        } else {
-            try stdout.print("{s}  {s}{s}\n", .{ P, indent_buf[0..indent_len], entry.name });
+    // Read existing index
+    var existing_hashes = std.StringHashMap(void).init(allocator);
+    defer existing_hashes.deinit();
+
+    if (fs.openFileAbsolute(index_path, .{})) |file| {
+        const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+            file.close();
+            return;
+        };
+        file.close();
+        defer allocator.free(content);
+
+        if (std.json.parseFromSlice(std.json.Value, allocator, content, .{})) |parsed| {
+            defer parsed.deinit();
+            if (parsed.value.object.get("prompts")) |prompts| {
+                for (prompts.array.items) |item| {
+                    if (item.object.get("hash")) |h| {
+                        existing_hashes.put(h.string, {}) catch {};
+                    }
+                }
+            }
+        } else |_| {}
+    } else |_| {}
+
+    // Add new hashes
+    for (refs) |ref| {
+        existing_hashes.put(ref.hash, {}) catch {};
+    }
+
+    // Write index
+    var index_content: std.ArrayListUnmanaged(u8) = .{};
+    defer index_content.deinit(allocator);
+
+    try index_content.appendSlice(allocator, "{\n  \"prompts\": [");
+
+    var it = existing_hashes.keyIterator();
+    var first = true;
+    while (it.next()) |hash| {
+        const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{ \"hash\": \"{s}\" }}", .{
+            if (first) "" else ",",
+            hash.*,
+        });
+        defer allocator.free(entry);
+        try index_content.appendSlice(allocator, entry);
+        first = false;
+    }
+    try index_content.appendSlice(allocator, "\n  ]\n}\n");
+
+    const idx_out = try fs.createFileAbsolute(index_path, .{});
+    defer idx_out.close();
+    try idx_out.writeAll(index_content.items);
+}
+
+fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
+    const item_name = if (item.object.get("name")) |n| n.string else return;
+    const item_task = if (item.object.get("task")) |t| t.string else "-";
+    const item_desc = if (item.object.get("description")) |d| d.string else "-";
+    const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+
+    const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"prompts\": [", .{ item_name, item_task, item_desc, item_created });
+    defer allocator.free(entry_start);
+    try buf.appendSlice(allocator, entry_start);
+
+    if (item.object.get("prompts")) |prompts| {
+        for (prompts.array.items, 0..) |ref, idx| {
+            const hash = if (ref.object.get("hash")) |h| h.string else continue;
+            const path = if (ref.object.get("path")) |p| p.string else continue;
+            const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"path\": \"{s}\" }}", .{
+                if (idx > 0) "," else "",
+                hash,
+                path,
+            });
+            defer allocator.free(ref_entry);
+            try buf.appendSlice(allocator, ref_entry);
         }
     }
+    try buf.appendSlice(allocator, "\n      ]\n    }");
 }
