@@ -181,9 +181,9 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     }
 
     try stdout.print("{s}{s}{s}Prompts in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}HASH{s}      {s}CREATED{s}     {s}NAME{s}                 {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
-    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
+    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
+    try stdout.print("{s}  {s}HASH{s}      {s}CREATED{s}     {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (items.array.items) |item| {
         const hash = if (item.object.get("hash")) |h| h.string else continue;
@@ -196,7 +196,7 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
         const date_str = commands.formatDate(created_ts, &date_buf);
 
         const short_hash = if (hash.len > 8) hash[0..8] else hash;
-        try stdout.print("{s}  {s}{s}{s}  {s}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, date_str, name, desc });
+        try stdout.print("{s}  {s}{s: <8}{s}  {s: <10}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, date_str, name, desc });
     }
     try stdout.writeAll("\n");
 }

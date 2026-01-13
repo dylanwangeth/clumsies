@@ -201,9 +201,9 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     }
 
     try stdout.print("{s}{s}{s}Bundles in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}NAME{s}                 {s}TASK{s}      {s}PROMPTS{s}  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
-    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
+    try stdout.print("{s}──────────────────────────────────────────────────────────────────────────────\n", .{P});
+    try stdout.print("{s}  {s}NAME{s}                  {s}TASK{s}      {s}PROMPTS{s}  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}──────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (items.array.items) |item| {
         const name = if (item.object.get("name")) |n| n.string else continue;
@@ -1072,9 +1072,15 @@ fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u8, r
     defer index_content.deinit(allocator);
     try index_content.appendSlice(allocator, "{\n  \"prompts\": [");
 
-    // Track hashes to avoid duplicates
+    // Track hashes to avoid duplicates (keys are owned, must free)
     var seen_hashes = std.StringHashMap(void).init(allocator);
-    defer seen_hashes.deinit();
+    defer {
+        var key_iter = seen_hashes.keyIterator();
+        while (key_iter.next()) |key| {
+            allocator.free(@constCast(key.*));
+        }
+        seen_hashes.deinit();
+    }
 
     var first = true;
     const timestamp = std.time.timestamp();
@@ -1099,7 +1105,10 @@ fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u8, r
                     const item_category = if (item.object.get("category")) |p| p.string else "conduct";
                     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
-                    seen_hashes.put(item_hash, {}) catch {};
+                    const hash_copy = allocator.dupe(u8, item_hash) catch continue;
+                    seen_hashes.put(hash_copy, {}) catch {
+                        allocator.free(hash_copy);
+                    };
 
                     const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{
                         if (first) "" else ",",
