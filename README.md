@@ -1,14 +1,34 @@
 # clumsies
 
-A CLI tool for managing AI Agent prompt systems based on [Clumsies Protocol](./PROTOCOL.md).
+A semantic layer for AI agent prompts.
 
-## Why?
+## Why
 
-A single prompt file isn't enough for complex projects. We created a multi-file system:
-- **Meta-prompt file** (`CLAUDE.md`, `CURSOR.md`, etc.) — a natural language index that guides AI to navigate the `.prompts/` directory. It explains what each directory contains and when to load which prompts.
-- **`.prompts/` directory** — modular prompts organized by type (conduct, command, custom)
+Prompts break once projects grow — not because they're badly written, but because we treat them as syntax instead of semantics.
 
-We call this complete package a **bundle**. The `.prompts/` directory operates as an **independent git repository**, enabling version control and team collaboration.
+Most AI tools today assume prompts are disposable. You write them, tweak them, move on. That works — until you try to reuse them across projects, share them with a team, or migrate between tools.
+
+At some point we realized: prompts already form a semantic layer — we just never named it.
+
+In practice, some prompts behave like rules (always active), others feel more like procedures (invoke on demand). We found it useful to organize them by meaning:
+
+- **conduct/** — behavioral rules, always in effect
+- **command/** — executable procedures, invoked by name or number
+- **context/** — project-specific knowledge, loaded as needed (local only)
+
+The `.prompts/` directory operates as an independent git repository. A meta-prompt file (`CLAUDE.md`, etc.) serves as a natural language index that guides AI to navigate this structure.
+
+### A semantic system, not a prompt collection
+
+Clumsies does not treat prompts as a flat collection to be shared wholesale.
+
+In real projects, prompts are inherently role- and context-sensitive: different developers, responsibilities, and stages of work require different parts of the system — not the same monolithic prompt.
+
+This is why Clumsies focuses on semantic structure. Prompts are meant to be composed, adapted, and selectively reused, instead of copied as a single block.
+
+The registry exists to preserve structure across projects, not to define a universal set of "best prompts".
+
+For more background, see [DESIGN.md](./DESIGN.md).
 
 ## Install
 
@@ -38,11 +58,13 @@ Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 
 ## Usage
 
+The CLI exists mostly to keep us honest. If this idea can't survive real workflows, it probably isn't worth much.
+
 ### Main Commands (manage .prompts/)
 
 ```bash
-# Initialize .prompts/ and link to your remote repository
-clumsies init git@github.com:user/my-prompts.git
+# Initialize .prompts/ from bundle and link to your remote repository
+clumsies init my-bundle git@github.com:user/my-prompts.git
 
 # Or clone existing prompts
 clumsies clone git@github.com:team/shared-prompts.git

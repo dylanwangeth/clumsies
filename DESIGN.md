@@ -1,6 +1,8 @@
-# Clumsies Protocol v2
+# Design Notes
 
-> An open standard for organizing, sharing, and reusing AI Agent prompts.
+Working notes on organizing prompts as a semantic layer.
+
+This isn't a standard — just a snapshot of what currently works for us.
 
 ## 1. Problem Statement
 
@@ -27,9 +29,9 @@ Developers must learn different syntaxes for each tool, and prompt configuration
 
 ### 1.3 Our Approach
 
-Clumsies Protocol takes a **pure semantic layer** approach:
+We treat prompts as a **semantic layer**:
 
-- Organize prompts by **meaning** (conduct, command, custom)
+- Organize prompts by **meaning** (conduct, command, context, journal)
 - Let AI understand the structure through **natural language**
 - **Tool-agnostic**: Works with any AI agent that can read files
 - **Git-native**: `.prompts/` operates as an independent git repository
@@ -58,8 +60,11 @@ workspace/
 └── .prompts/              # Independent git repository
     ├── conduct/           # Behavioral rules (always active)
     ├── command/           # Executable operations (invoke by name)
-    └── {custom}/          # Project-specific context
+    ├── context/           # Project-specific context (local only)
+    └── journal/           # Checkpoint logs (local only)
 ```
+
+> **Note**: Only `conduct/` and `command/` are shareable via registry. The `context/` and `journal/` directories are project-specific and remain local.
 
 ---
 
@@ -96,32 +101,46 @@ workspace/
 
 **Naming convention**: Numeric prefixes (00_, 01_) enable quick invocation by number.
 
-### 3.3 custom — Project-Specific Context
+### 3.3 context — Project-Specific Context (Local Only)
 
 **Semantic**: Domain knowledge and project context loaded **as needed**.
 
-**When loaded**: When discussing related topics.
+**When loaded**: Before starting work, or when discussing related topics.
 
 **Examples**:
-- `biz/product_spec.md` — Product requirements
-- `tech/architecture.md` — System architecture
+- `00_OVERVIEW.md` — Project goals and architecture
+- `01_TECH_STACK.md` — Technology decisions and rationale
+
+> **Note**: Not shareable via registry. These are project-specific and remain local.
+
+### 3.4 journal — Checkpoint Logs (Local Only)
+
+**Semantic**: Problem solutions and key decisions for **reference**.
+
+**When loaded**: When facing similar issues or making related decisions.
+
+**Examples**:
+- `00_PERFORMANCE_FIX.md` — How a performance issue was solved
+- `01_MIGRATION_NOTES.md` — Important notes from a migration
+
+> **Note**: Not shareable via registry. These are project-specific and remain local.
 
 ---
 
-## 4. Meta-Prompt File Specification
+## 4. Meta-Prompt File
 
 The meta-prompt file (CLAUDE.md, AGENTS.md, etc.) is a **natural language index** that helps AI agents understand and navigate the `.prompts/` directory.
 
 ### 4.1 Purpose
 
-The meta-prompt file is **NOT** a project introduction. It serves as:
+The meta-prompt file is **not** a project introduction. It serves as:
 - Natural language index for the `.prompts/` directory
 - Navigation guide for AI to find and use prompts
 - Explanation of directory structure and file conventions
 
-### 4.2 Required Content
+### 4.2 Typical Content
 
-A meta-prompt file should include:
+A meta-prompt file usually includes:
 
 | Section | Description |
 |---------|-------------|
@@ -244,9 +263,9 @@ The `category` field determines where the prompt is placed when imported. If not
 
 ---
 
-## 6. Registry Specification
+## 6. Registry
 
-A registry is a git repository that stores prompts and bundles for sharing.
+A registry is a git repository for sharing prompts and bundles.
 
 ### 6.1 Registry Structure
 
