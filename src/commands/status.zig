@@ -21,7 +21,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);
 
-    try stdout.print("\n{s}{s}.prompts/ status:{s}\n", .{ P, Color.bold, Color.reset });
+    try stdout.print("\n{s}{s}{s}.prompts/ status:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     // Get remote URL
     const remote = git.getRemoteUrl(allocator, prompts_path) catch "-";

@@ -26,7 +26,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
         return;
     }
 
-    try stdout.print("\n{s}{s}.prompts/ log:{s}\n", .{ P, Color.bold, Color.reset });
+    try stdout.print("\n{s}{s}{s}.prompts/ log:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     var lines = std.mem.splitScalar(u8, log, '\n');
     while (lines.next()) |line| {
