@@ -163,7 +163,6 @@ For metadata, YAML frontmatter can be added:
 
 ```markdown
 ---
-name: Git Commit
 description: Commit message format and conventions
 category: conduct
 ---
@@ -174,9 +173,10 @@ category: conduct
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Prompt name (used in registry, without sequence prefix) |
 | `description` | string | Brief description of the prompt |
 | `category` | string | Target directory: `"conduct"` \| `"command"` |
+
+The prompt name is derived from the filename (without sequence prefix). For example, `03_GIT_COMMIT.md` becomes `GIT_COMMIT` in the registry.
 
 The `category` field determines where the prompt is placed when imported. If not specified, the CLI will attempt to detect it from the file path, defaulting to `"conduct"`.
 

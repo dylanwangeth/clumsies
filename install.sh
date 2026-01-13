@@ -128,6 +128,8 @@ main() {
     printf "\nRun %bsource $RC_FILE%b or restart your terminal, then try:\n\n" "$CYAN" "$RESET"
     printf "    %bclumsies --help%b\n" "$CYAN" "$RESET"
     printf "    %bclumsies init <git-url>%b\n\n" "$CYAN" "$RESET"
+    printf "To use bundle commands (init -B, bundle list, etc.), configure a registry:\n\n"
+    printf "    %bclumsies config set registry <git-url>%b\n\n" "$CYAN" "$RESET"
 }
 
 main
