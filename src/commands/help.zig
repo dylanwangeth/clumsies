@@ -55,7 +55,7 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    {s}-m, --message{s} <msg>    Commit message (for push)\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}CONFIG KEYS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}registry{s}              Git URL for the prompt registry\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}entry_files{s}           Meta-prompt files to sync (comma-separated)\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}meta_prompt_file{s}      Target filename for init (default: CLAUDE.md)\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}registry{s}              Registry URL {s}(e.g. git@github.com:org/registry.git){s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
+    try stdout.print("{s}    {s}entry_files{s}           Sync files {s}(e.g. CLAUDE.md,CURSOR.md){s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
+    try stdout.print("{s}    {s}meta_prompt_file{s}      Init target {s}(default: CLAUDE.md){s}\n\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });
 }
