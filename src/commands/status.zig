@@ -28,11 +28,6 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     defer if (!std.mem.eql(u8, remote, "-")) allocator.free(remote);
     try stdout.print("{s}  Remote: {s}{s}{s}\n", .{ P, Color.cyan, remote, Color.reset });
 
-    // Get branch
-    const branch = git.getBranch(allocator, prompts_path) catch "-";
-    defer if (!std.mem.eql(u8, branch, "-")) allocator.free(branch);
-    try stdout.print("{s}  Branch: {s}\n", .{ P, branch });
-
     // Get status
     const status = git.getStatus(allocator, prompts_path) catch "";
     defer if (status.len > 0) allocator.free(status);
@@ -40,13 +35,12 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     if (status.len == 0) {
         try stdout.print("{s}  {s}Clean{s}\n\n", .{ P, Color.green, Color.reset });
     } else {
-        try stdout.print("{s}  Changes:\n", .{P});
+        // Count changed files
+        var count: usize = 0;
         var lines = std.mem.splitScalar(u8, status, '\n');
         while (lines.next()) |line| {
-            if (line.len > 0) {
-                try stdout.print("{s}    {s}\n", .{ P, line });
-            }
+            if (line.len > 0) count += 1;
         }
-        try stdout.writeAll("\n");
+        try stdout.print("{s}  {s}{d} uncommitted changes{s}\n\n", .{ P, Color.orange, count, Color.reset });
     }
 }
