@@ -80,7 +80,5 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         return;
     };
     sp.succeed();
-
-    try stdout.print("{s}{s}{s}✓{s} Pushed to remote\n", .{ P, Color.bold, Color.green, Color.reset });
     try stdout.print("{s}  Message: {s}\n\n", .{ P, message });
 }
