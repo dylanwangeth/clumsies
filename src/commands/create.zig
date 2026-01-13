@@ -15,16 +15,24 @@ const CreateType = enum {
 };
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    // Parse -P or -B flag and file paths
+    // Parse -P or -B flag, -d/--desc, and file paths
     var create_type: CreateType = .none;
+    var description: []const u8 = "-";
     var files: std.ArrayListUnmanaged([]const u8) = .{};
     defer files.deinit(allocator);
 
-    for (args) |arg| {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "-P") or std.mem.eql(u8, arg, "--prompt")) {
             create_type = .prompt;
         } else if (std.mem.eql(u8, arg, "-B") or std.mem.eql(u8, arg, "--bundle")) {
             create_type = .bundle;
+        } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--desc")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                description = args[i];
+            }
         } else if (arg.len > 0 and arg[0] != '-') {
             try files.append(allocator, arg);
         }
@@ -95,7 +103,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     if (create_type == .prompt) {
         try createPrompt(stdout, stderr, allocator, registry_path, files.items[0]);
     } else {
-        try createBundle(stdout, stderr, allocator, registry_path, files.items);
+        try createBundle(stdout, stderr, allocator, registry_path, files.items, description);
     }
 }
 
@@ -249,7 +257,7 @@ fn createPrompt(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, 
     try stdout.print("{s}  Name: {s}\n\n", .{ P, name });
 }
 
-fn createBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, registry_path: []const u8, args: []const []const u8) !void {
+fn createBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, registry_path: []const u8, args: []const []const u8, description: []const u8) !void {
     if (args.len < 2) {
         try stderr.print("{s}{s}{s}Error:{s} Bundle requires name and at least one directory\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies create -B <name> <dir1> [dir2...]{s}\n\n", .{ P, Color.cyan, Color.reset });
@@ -365,10 +373,11 @@ fn createBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, 
 
     // Add new entry (use name as hash for bundles)
     const timestamp = std.time.timestamp();
-    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"-\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
+    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
         if (existing_bundles.items.len > 22) "," else "",
         bundle_name,
         bundle_name,
+        description,
         timestamp,
     });
     defer allocator.free(new_entry);

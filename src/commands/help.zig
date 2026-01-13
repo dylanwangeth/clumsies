@@ -33,7 +33,7 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    {s}list{s} {s}-P{s}|{s}-B{s}               List prompts or bundles in registry\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
     try stdout.print("{s}    {s}show{s} {s}-P{s}|{s}-B{s} <hash>        Show prompt or bundle content\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
     try stdout.print("{s}    {s}create{s} {s}-P{s} <file>         Create prompt in registry\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset });
-    try stdout.print("{s}    {s}create{s} {s}-B{s} <name> <dirs>   Create bundle in registry\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}    {s}create{s} {s}-B{s} <name> <dirs> [{s}-d{s} <desc>]  Create bundle\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
     try stdout.print("{s}    {s}update{s} {s}-B{s} <name> {s}--add{s}|{s}--rm{s} <files>  Update bundle contents\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
     try stdout.print("{s}    {s}rm{s} {s}-P{s}|{s}-B{s} <hash>          Remove prompt/bundle from registry\n\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
 
