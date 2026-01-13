@@ -37,11 +37,17 @@ pub const Spinner = struct {
     }
 
     fn spin(self: *Spinner) void {
+        // Use unbuffered stdout directly for immediate animation display
+        const stdout = std.fs.File.stdout();
+        var buf: [256]u8 = undefined;
         while (self.running) {
-            self.writer.print("\x1b[2K\r{s}{s}{s}{s} {s}...", .{ P, Color.orange, frames[self.frame], Color.reset, self.message }) catch {};
+            const line = std.fmt.bufPrint(&buf, "\x1b[2K\r{s}{s}{s}{s} {s}...", .{ P, Color.orange, frames[self.frame], Color.reset, self.message }) catch continue;
+            _ = stdout.write(line) catch {};
             self.frame = (self.frame + 1) % frames.len;
             std.Thread.sleep(80 * std.time.ns_per_ms);
         }
+        // Clear spinner line before final status is written
+        _ = stdout.write("\x1b[2K\r") catch {};
     }
 };
 

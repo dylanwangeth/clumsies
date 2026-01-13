@@ -10,41 +10,55 @@ pub const GitError = error{
 pub fn init(allocator: std.mem.Allocator, path: []const u8) !void {
     var child = std.process.Child.init(&.{ "git", "init" }, allocator);
     child.cwd = path;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return GitError.CommandFailed;
 }
 
 pub fn clone(allocator: std.mem.Allocator, url: []const u8, path: []const u8) !void {
     var child = std.process.Child.init(&.{ "git", "clone", url, path }, allocator);
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return GitError.CommandFailed;
 }
 
 pub fn addRemote(allocator: std.mem.Allocator, path: []const u8, url: []const u8) !void {
     var child = std.process.Child.init(&.{ "git", "remote", "add", "origin", url }, allocator);
     child.cwd = path;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return GitError.CommandFailed;
 }
 
 pub fn addAll(allocator: std.mem.Allocator, path: []const u8) !void {
     var child = std.process.Child.init(&.{ "git", "add", "-A" }, allocator);
     child.cwd = path;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return GitError.CommandFailed;
 }
 
 pub fn commit(allocator: std.mem.Allocator, path: []const u8, message: []const u8) !void {
     var child = std.process.Child.init(&.{ "git", "commit", "-m", message }, allocator);
     child.cwd = path;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return GitError.CommandFailed;
 }
 
 pub fn push(allocator: std.mem.Allocator, path: []const u8) !void {
     var child = std.process.Child.init(&.{ "git", "push", "-u", "origin", "HEAD" }, allocator);
     child.cwd = path;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return GitError.CommandFailed;
 }
 
 pub fn pull(allocator: std.mem.Allocator, path: []const u8) !void {
     var child = std.process.Child.init(&.{ "git", "pull" }, allocator);
     child.cwd = path;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return GitError.CommandFailed;
 }
 

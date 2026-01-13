@@ -21,21 +21,26 @@ pub fn run(stdout: anytype) !void {
 
     try stdout.print("{s}{s}{s}MAIN COMMANDS:{s} (manage .prompts/ directory)\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}init{s} <git-url>       Initialize .prompts/ with git remote\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}init{s} {s}-B{s} <bundle> [url]  Initialize from bundle (optionally with remote)\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}    {s}init -B{s} <bundle>     Initialize from registry bundle\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}clone{s} <git-url>      Clone remote to .prompts/\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}push{s} [-m \"msg\"]      Commit and push .prompts/ to remote\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}pull{s}                 Pull latest from remote\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}status{s}               Show .prompts/ git status\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}log{s}                  Show .prompts/ commit history\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}import{s} <hash>        Import prompt from registry to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}log{s}                  Show .prompts/ commit history\n\n", .{ P, Color.cyan, Color.reset });
 
-    try stdout.print("{s}{s}{s}REGISTRY COMMANDS:{s} (manage prompts/bundles in shared registry)\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}list{s} {s}-P{s}|{s}-B{s}               List prompts or bundles in registry\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
-    try stdout.print("{s}    {s}show{s} {s}-P{s}|{s}-B{s} <hash>        Show prompt or bundle content\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
-    try stdout.print("{s}    {s}create{s} {s}-P{s} <file>         Create prompt in registry\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset });
-    try stdout.print("{s}    {s}create{s} {s}-B{s} <name> <dirs> [{s}-d{s} <desc>]  Create bundle\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
-    try stdout.print("{s}    {s}update{s} {s}-B{s} <name> {s}--add{s}|{s}--rm{s} <files>  Update bundle contents\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
-    try stdout.print("{s}    {s}rm{s} {s}-P{s}|{s}-B{s} <hash>          Remove prompt/bundle from registry\n\n", .{ P, Color.cyan, Color.reset, Color.bold, Color.reset, Color.bold, Color.reset });
+    try stdout.print("{s}{s}{s}BUNDLE COMMANDS:{s} (manage bundles in registry)\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}    {s}bundle list{s}                             List bundles\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle create{s} <name> <dirs> [-t] [-d]   Create bundle\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle show{s} <name>                      Show bundle content\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle update{s} <name> --add|--rm         Update bundle\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle rm{s} <name>                        Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
+
+    try stdout.print("{s}{s}{s}PROMPT COMMANDS:{s} (manage prompts in registry)\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}    {s}prompt list{s}              List prompts\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}prompt create{s} <file>     Create prompt\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}prompt show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}prompt import{s} <hash>     Import to .prompts/\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}prompt rm{s} <hash>         Remove prompt\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}CONFIG:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}config set{s} <key> <value>  Set configuration value\n", .{ P, Color.cyan, Color.reset });

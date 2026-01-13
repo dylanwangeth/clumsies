@@ -8,14 +8,10 @@ const cmd_pull = @import("commands/pull.zig");
 const cmd_clone = @import("commands/clone.zig");
 const cmd_status = @import("commands/status.zig");
 const cmd_log = @import("commands/log.zig");
-const cmd_list = @import("commands/list.zig");
-const cmd_import = @import("commands/import.zig");
-const cmd_rm = @import("commands/rm.zig");
-const cmd_show = @import("commands/show.zig");
 const cmd_config = @import("commands/config.zig");
 const cmd_upgrade = @import("commands/upgrade.zig");
-const cmd_create = @import("commands/create.zig");
-const cmd_update = @import("commands/update.zig");
+const cmd_bundle = @import("commands/bundle.zig");
+const cmd_prompt = @import("commands/prompt.zig");
 const cmd_help = @import("commands/help.zig");
 
 const Color = styles.Color;
@@ -30,12 +26,8 @@ const Command = enum {
     clone,
     status,
     log,
-    list,
-    import,
-    rm,
-    show,
-    create,
-    update,
+    bundle,
+    prompt,
     config,
     upgrade,
     help,
@@ -98,28 +90,12 @@ pub fn main() !void {
             cmd = .log;
             cmd_args_start = i + 1;
             break;
-        } else if (std.mem.eql(u8, arg, "list")) {
-            cmd = .list;
+        } else if (std.mem.eql(u8, arg, "bundle")) {
+            cmd = .bundle;
             cmd_args_start = i + 1;
             break;
-        } else if (std.mem.eql(u8, arg, "import")) {
-            cmd = .import;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "rm")) {
-            cmd = .rm;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "show")) {
-            cmd = .show;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "create")) {
-            cmd = .create;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "update")) {
-            cmd = .update;
+        } else if (std.mem.eql(u8, arg, "prompt")) {
+            cmd = .prompt;
             cmd_args_start = i + 1;
             break;
         } else if (std.mem.eql(u8, arg, "config")) {
@@ -161,23 +137,11 @@ pub fn main() !void {
         .log => {
             try cmd_log.run(stdout_writer, stderr_writer, allocator);
         },
-        .list => {
-            try cmd_list.run(stdout_writer, stderr_writer, allocator, cmd_args);
+        .bundle => {
+            try cmd_bundle.run(stdout_writer, stderr_writer, allocator, cmd_args);
         },
-        .import => {
-            try cmd_import.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .rm => {
-            try cmd_rm.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .show => {
-            try cmd_show.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .create => {
-            try cmd_create.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .update => {
-            try cmd_update.run(stdout_writer, stderr_writer, allocator, cmd_args);
+        .prompt => {
+            try cmd_prompt.run(stdout_writer, stderr_writer, allocator, cmd_args);
         },
         .config => {
             try cmd_config.run(stdout_writer, stderr_writer, allocator, cmd_args);
