@@ -8,9 +8,9 @@ const P = commands.P;
 pub const DEFAULT_ENTRY_FILES = [_][]const u8{ "CLAUDE.md", "CURSOR.md", "AGENTS.md", "COPILOT.md" };
 
 const Config = struct {
-    lang: [2]u8 = .{ 'e', 'n' },
     registry: ?[]const u8 = null,
     entry_files: ?[]const u8 = null,
+    meta_prompt_file: ?[]const u8 = null,
 };
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {

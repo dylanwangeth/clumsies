@@ -13,15 +13,15 @@ const SubCommand = enum {
     register,
     show,
     rm,
-    update,
     none,
 };
 
-// Frontmatter metadata
+// Frontmatter metadata for bundle (from meta-prompt file)
 const Frontmatter = struct {
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
     category: ?[]const u8 = null,
+    task: ?[]const u8 = null,
 };
 
 fn parseFrontmatter(content: []const u8) Frontmatter {
@@ -48,6 +48,9 @@ fn parseFrontmatter(content: []const u8) Frontmatter {
         } else if (std.mem.startsWith(u8, trimmed, "category:")) {
             const value = std.mem.trim(u8, trimmed[9..], " \t");
             if (value.len > 0) fm.category = value;
+        } else if (std.mem.startsWith(u8, trimmed, "task:")) {
+            const value = std.mem.trim(u8, trimmed[5..], " \t");
+            if (value.len > 0) fm.task = value;
         }
     }
 
@@ -71,8 +74,6 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         subcmd = .show;
     } else if (std.mem.eql(u8, args[0], "rm") or std.mem.eql(u8, args[0], "remove")) {
         subcmd = .rm;
-    } else if (std.mem.eql(u8, args[0], "update")) {
-        subcmd = .update;
     }
 
     const subcmd_args = args[subcmd_args_start..];
@@ -82,7 +83,6 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         .register => try runRegister(stdout, stderr, allocator, subcmd_args),
         .show => try runShow(stdout, stderr, allocator, subcmd_args),
         .rm => try runRm(stdout, stderr, allocator, subcmd_args),
-        .update => try runUpdate(stdout, stderr, allocator, subcmd_args),
         .none => try showUsage(stderr),
     }
 }
@@ -91,15 +91,16 @@ fn showUsage(stderr: anytype) !void {
     try stderr.print("\n{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
     try stderr.print("{s}Usage: {s}clumsies bundle <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Commands:\n", .{P});
-    try stderr.print("{s}  {s}list{s}                                    List bundles in registry\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}register{s} <name> <dirs> [-t] [-d] [-M]   Register bundle\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}show{s} <name>                             Show bundle content\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}update{s} <name> [--add|--rm] [-t] [-d]    Update bundle\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}rm{s} <name>                               Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}Options:\n", .{P});
-    try stderr.print("{s}  {s}-t, --task{s} <task>              Task type (coding, research, etc.)\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}-d, --desc{s} <desc>              Description\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}-M, --meta-prompt-file{s} <file>  Meta-prompt file (default: CLAUDE.md)\n\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}list{s}                        List bundles in registry\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}register{s} <meta-prompt-file> Register bundle from workspace\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}show{s} <name>                 Show bundle content\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}rm{s} <name>                   Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}Meta-prompt file frontmatter:\n", .{P});
+    try stderr.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
+    try stderr.print("{s}  {s}name: my-bundle{s}        (required)\n", .{ P, Color.dim, Color.reset });
+    try stderr.print("{s}  {s}description: ...{s}       (optional)\n", .{ P, Color.dim, Color.reset });
+    try stderr.print("{s}  {s}task: coding{s}           (optional)\n", .{ P, Color.dim, Color.reset });
+    try stderr.print("{s}  {s}---{s}\n\n", .{ P, Color.dim, Color.reset });
 }
 
 fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) ![]const u8 {
@@ -212,47 +213,82 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
 }
 
 fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    // Parse args: <name> <dirs...> [-d <desc>] [-t <task>] [-M <file>]
-    var description: []const u8 = "-";
-    var task: []const u8 = "-";
-    var meta_prompt_file: ?[]const u8 = null;
-    var positional: std.ArrayListUnmanaged([]const u8) = .{};
-    defer positional.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--desc")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                description = args[i];
-            }
-        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--task")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                task = args[i];
-            }
-        } else if (std.mem.eql(u8, arg, "-M") or std.mem.eql(u8, arg, "--meta-prompt-file")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                meta_prompt_file = args[i];
-            }
-        } else if (arg.len > 0 and arg[0] != '-') {
-            try positional.append(allocator, arg);
-        }
-    }
-
-    if (positional.items.len < 2) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Bundle requires name and at least one directory\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies bundle register <name> <dir1> [dir2...] [-d <desc>]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    // Usage: bundle register <meta-prompt-file-path>
+    if (args.len == 0) {
+        try stderr.print("\n{s}{s}{s}Error:{s} Meta-prompt file path required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies bundle register <meta-prompt-file>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
+    const meta_prompt_path_arg = args[0];
+
+    // Resolve to absolute path
+    const cwd = std.process.getCwdAlloc(allocator) catch {
+        try stderr.print("\n{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer allocator.free(cwd);
+
+    const meta_prompt_path = if (std.fs.path.isAbsolute(meta_prompt_path_arg))
+        try allocator.dupe(u8, meta_prompt_path_arg)
+    else
+        try std.fs.path.join(allocator, &.{ cwd, meta_prompt_path_arg });
+    defer allocator.free(meta_prompt_path);
+
+    // Read meta-prompt file
+    const meta_file = fs.openFileAbsolute(meta_prompt_path, .{}) catch {
+        try stderr.print("\n{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_path_arg });
+        return;
+    };
+    const meta_content = meta_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+        meta_file.close();
+        try stderr.print("\n{s}{s}{s}Error:{s} Failed to read meta-prompt file\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    meta_file.close();
+    defer allocator.free(meta_content);
+
+    // Parse frontmatter to get bundle metadata
+    const fm = parseFrontmatter(meta_content);
+    const bundle_name = fm.name orelse {
+        try stderr.print("\n{s}{s}{s}Error:{s} Meta-prompt file must have 'name' in frontmatter\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Example:\n", .{P});
+        try stderr.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
+        try stderr.print("{s}  {s}name: my-bundle{s}\n", .{ P, Color.dim, Color.reset });
+        try stderr.print("{s}  {s}description: A starter bundle{s}\n", .{ P, Color.dim, Color.reset });
+        try stderr.print("{s}  {s}task: coding{s}\n", .{ P, Color.dim, Color.reset });
+        try stderr.print("{s}  {s}---{s}\n\n", .{ P, Color.dim, Color.reset });
+        return;
+    };
+    const description = fm.description orelse "-";
+    const task = fm.task orelse "-";
+
+    // Derive workspace root from meta-prompt file location
+    const workspace_root = std.fs.path.dirname(meta_prompt_path) orelse {
+        try stderr.print("\n{s}{s}{s}Error:{s} Could not determine workspace root\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+
+    // Find .prompts/ directory
+    const local_prompts_path = try std.fs.path.join(allocator, &.{ workspace_root, ".prompts" });
+    defer allocator.free(local_prompts_path);
+
+    const prompts_exists = blk: {
+        var dir = fs.openDirAbsolute(local_prompts_path, .{}) catch break :blk false;
+        dir.close();
+        break :blk true;
+    };
+
+    if (!prompts_exists) {
+        try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ directory not found in workspace\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Expected: {s}{s}/.prompts/{s}\n\n", .{ P, Color.cyan, workspace_root, Color.reset });
+        return;
+    }
+
+    try stdout.writeAll("\n");
+
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
-
-    const bundle_name = positional.items[0];
-    const dirs = positional.items[1..];
 
     // Check if bundle already exists
     if (bundleExists(allocator, registry_path, bundle_name)) {
@@ -261,13 +297,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
         return;
     }
 
-    const cwd = std.process.getCwdAlloc(allocator) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    defer allocator.free(cwd);
-
-    // Ensure directories exist
+    // Ensure registry directories exist
     const prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
     defer allocator.free(prompts_dir);
     fs.cwd().makePath(prompts_dir) catch {};
@@ -276,7 +306,11 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     defer allocator.free(bundles_dir);
     fs.cwd().makePath(bundles_dir) catch {};
 
-    // Collect all .md files and upload as prompts
+    const meta_prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts" });
+    defer allocator.free(meta_prompts_dir);
+    fs.cwd().makePath(meta_prompts_dir) catch {};
+
+    // Collect prompts from .prompts/conduct/ and .prompts/command/
     var sp = spinner.init(stdout, "Uploading prompts");
     sp.start();
 
@@ -292,20 +326,19 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
         prompt_refs.deinit(allocator);
     }
 
-    for (dirs) |dir_name| {
-        const src_path = if (std.fs.path.isAbsolute(dir_name))
-            try allocator.dupe(u8, dir_name)
-        else
-            try std.fs.path.join(allocator, &.{ cwd, dir_name });
-        defer allocator.free(src_path);
+    // Collect from conduct/
+    const conduct_path = try std.fs.path.join(allocator, &.{ local_prompts_path, "conduct" });
+    defer allocator.free(conduct_path);
+    collectAndUploadPrompts(allocator, conduct_path, "conduct", prompts_dir, &prompt_refs) catch {};
 
-        const base_name = std.fs.path.basename(dir_name);
-        collectAndUploadPrompts(allocator, src_path, base_name, prompts_dir, &prompt_refs) catch continue;
-    }
+    // Collect from command/
+    const command_path = try std.fs.path.join(allocator, &.{ local_prompts_path, "command" });
+    defer allocator.free(command_path);
+    collectAndUploadPrompts(allocator, command_path, "command", prompts_dir, &prompt_refs) catch {};
 
     if (prompt_refs.items.len == 0) {
         sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} No .md files found in specified directories\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No prompt files found in .prompts/conduct/ or .prompts/command/\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
     sp.succeed();
@@ -320,17 +353,39 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     };
     sp2.succeed();
 
-    // Find and upload meta-prompt file
+    // Upload meta-prompt file
     var sp_meta = spinner.init(stdout, "Uploading meta-prompt");
     sp_meta.start();
-    const meta_prompt_hash = findAndUploadMetaPrompt(allocator, cwd, registry_path, meta_prompt_file) catch null;
-    if (meta_prompt_hash) |_| {
-        sp_meta.succeed();
-    } else {
-        sp_meta.fail();
-        try stderr.print("{s}{s}Warning:{s} No meta-prompt file found (CLAUDE.md, CURSOR.md, etc.)\n", .{ P, Color.orange, Color.reset });
+
+    // Compute hash of meta-prompt content
+    var hash_bytes: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(meta_content, &hash_bytes, .{});
+    var hash_hex: [64]u8 = undefined;
+    for (hash_bytes, 0..) |byte, i| {
+        const hex_chars = "0123456789abcdef";
+        hash_hex[i * 2] = hex_chars[byte >> 4];
+        hash_hex[i * 2 + 1] = hex_chars[byte & 0x0f];
     }
-    defer if (meta_prompt_hash) |h| allocator.free(h);
+    const meta_prompt_hash = try allocator.dupe(u8, &hash_hex);
+    defer allocator.free(meta_prompt_hash);
+
+    // Write meta-prompt to registry
+    const meta_dest_path = try std.fs.path.join(allocator, &.{ meta_prompts_dir, meta_prompt_hash });
+    defer allocator.free(meta_dest_path);
+
+    const meta_dest_file = fs.createFileAbsolute(meta_dest_path, .{}) catch {
+        sp_meta.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    meta_dest_file.writeAll(meta_content) catch {
+        meta_dest_file.close();
+        sp_meta.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt content\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    meta_dest_file.close();
+    sp_meta.succeed();
 
     // Create bundle entry with references
     var sp3 = spinner.init(stdout, "Creating bundle");
@@ -376,7 +431,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
         task,
         description,
         timestamp,
-        meta_prompt_hash orelse "",
+        meta_prompt_hash,
     });
     defer allocator.free(new_entry_start);
     try existing_bundles.appendSlice(allocator, new_entry_start);
@@ -600,325 +655,6 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
 
     try stdout.print("{s}{s}{s}✓{s} Removed bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, name });
     try stdout.print("{s}{s}Note: Prompts are kept in registry (may be used by other bundles){s}\n\n", .{ P, Color.dim, Color.reset });
-}
-
-fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    // Parse: <name> [--add|--rm <files...>] [-t <task>] [-d <desc>]
-    if (args.len < 2) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies bundle update <name> [--add|--rm <files>] [-t <task>] [-d <desc>]{s}\n\n", .{ P, Color.cyan, Color.reset });
-        return;
-    }
-
-    const bundle_name = args[0];
-    var is_add = false;
-    var is_rm = false;
-    var new_task: ?[]const u8 = null;
-    var new_desc: ?[]const u8 = null;
-    var files: std.ArrayListUnmanaged([]const u8) = .{};
-    defer files.deinit(allocator);
-
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--add") or std.mem.eql(u8, arg, "-a")) {
-            is_add = true;
-        } else if (std.mem.eql(u8, arg, "--rm") or std.mem.eql(u8, arg, "-r")) {
-            is_rm = true;
-        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--task")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                new_task = args[i];
-            }
-        } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--desc")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                new_desc = args[i];
-            }
-        } else if (arg.len > 0 and arg[0] != '-') {
-            try files.append(allocator, arg);
-        }
-    }
-
-    // Must have either file operation or metadata update
-    const has_file_op = (is_add or is_rm) and files.items.len > 0;
-    const has_metadata_update = new_task != null or new_desc != null;
-
-    if (!has_file_op and !has_metadata_update) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Specify --add/--rm with files, or -t/-d to update metadata\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies bundle update <name> [--add|--rm <files>] [-t <task>] [-d <desc>]{s}\n\n", .{ P, Color.cyan, Color.reset });
-        return;
-    }
-
-    if ((is_add or is_rm) and files.items.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} --add/--rm requires at least one file\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    }
-
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
-    defer allocator.free(registry_path);
-
-    // Read current bundle
-    const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
-    defer allocator.free(index_path);
-
-    const file = fs.openFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} No bundles found\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
-        file.close();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    file.close();
-    defer allocator.free(content);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    defer parsed.deinit();
-
-    const bundles = parsed.value.object.get("bundles") orelse {
-        try stderr.print("{s}{s}{s}Error:{s} Bundle not found\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-
-    // Find target bundle
-    var found_bundle: ?std.json.Value = null;
-    for (bundles.array.items) |item| {
-        const item_name = if (item.object.get("name")) |n| n.string else continue;
-        if (std.mem.eql(u8, item_name, bundle_name)) {
-            found_bundle = item;
-            break;
-        }
-    }
-
-    if (found_bundle == null) {
-        try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
-        return;
-    }
-
-    const cwd = std.process.getCwdAlloc(allocator) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    defer allocator.free(cwd);
-
-    const prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
-    defer allocator.free(prompts_dir);
-
-    // Collect current prompt refs
-    var current_refs: std.ArrayListUnmanaged(PromptRef) = .{};
-    defer {
-        for (current_refs.items) |ref| {
-            allocator.free(ref.hash);
-            allocator.free(ref.category);
-            allocator.free(ref.name);
-            allocator.free(ref.description);
-            allocator.free(ref.format);
-        }
-        current_refs.deinit(allocator);
-    }
-
-    if (found_bundle.?.object.get("prompts")) |prompts_arr| {
-        for (prompts_arr.array.items) |ref| {
-            const hash = if (ref.object.get("hash")) |h| h.string else continue;
-            const category = if (ref.object.get("category")) |p| p.string else continue;
-            // Extract format from category extension
-            const ext_idx = std.mem.lastIndexOf(u8, category, ".");
-            const fmt = if (ext_idx) |idx| category[idx + 1 ..] else "md";
-            try current_refs.append(allocator, .{
-                .hash = try allocator.dupe(u8, hash),
-                .category = try allocator.dupe(u8, category),
-                .name = try allocator.dupe(u8, "-"),
-                .description = try allocator.dupe(u8, "-"),
-                .format = try allocator.dupe(u8, fmt),
-            });
-        }
-    }
-
-    if (has_file_op) {
-        if (is_add) {
-            var sp = spinner.init(stdout, "Adding prompts");
-            sp.start();
-
-            for (files.items) |file_path| {
-                const src = if (std.fs.path.isAbsolute(file_path))
-                    try allocator.dupe(u8, file_path)
-                else
-                    try std.fs.path.join(allocator, &.{ cwd, file_path });
-                defer allocator.free(src);
-
-                // Extract format from extension
-                const basename = std.fs.path.basename(file_path);
-                const ext_idx = std.mem.lastIndexOf(u8, basename, ".");
-                if (ext_idx == null) continue; // Skip files without extension
-                const format = try allocator.dupe(u8, basename[ext_idx.? + 1 ..]);
-                const name_end = ext_idx.?;
-
-                // Read file content for hash and frontmatter
-                const prompt_file = fs.openFileAbsolute(src, .{}) catch continue;
-                const prompt_content = prompt_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
-                    prompt_file.close();
-                    continue;
-                };
-                prompt_file.close();
-                defer allocator.free(prompt_content);
-
-                // Compute hash
-                var hash_bytes: [32]u8 = undefined;
-                std.crypto.hash.sha2.Sha256.hash(prompt_content, &hash_bytes, .{});
-                var hash_hex: [64]u8 = undefined;
-                for (hash_bytes, 0..) |byte, idx| {
-                    const hex_chars = "0123456789abcdef";
-                    hash_hex[idx * 2] = hex_chars[byte >> 4];
-                    hash_hex[idx * 2 + 1] = hex_chars[byte & 0x0f];
-                }
-                const hash = try allocator.dupe(u8, &hash_hex);
-
-                // Parse frontmatter
-                const fm = parseFrontmatter(prompt_content);
-                const raw_name = basename[0..name_end];
-                // Strip sequence prefix (NN_) if present
-                const name = try allocator.dupe(u8, fm.name orelse stripSequencePrefix(raw_name));
-                const description = try allocator.dupe(u8, fm.description orelse "-");
-
-                // Copy to prompts/<hash> (pure hash, no extension)
-                const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
-                defer allocator.free(dest_path);
-                fs.copyFileAbsolute(src, dest_path, .{}) catch {};
-
-                // Extract category: frontmatter category > file path detection > default
-                const prompt_category = if (fm.category) |cat|
-                    cat
-                else if (std.mem.indexOf(u8, file_path, "conduct") != null)
-                    "conduct"
-                else if (std.mem.indexOf(u8, file_path, "command") != null)
-                    "command"
-                else
-                    "conduct"; // default to conduct
-
-                try current_refs.append(allocator, .{
-                    .hash = hash,
-                    .category = try allocator.dupe(u8, prompt_category),
-                    .name = name,
-                    .description = description,
-                    .format = format,
-                });
-            }
-            sp.succeed();
-        } else if (is_rm) {
-            var sp = spinner.init(stdout, "Removing prompts");
-            sp.start();
-
-            // Remove refs matching the given hash prefixes
-            var new_refs: std.ArrayListUnmanaged(PromptRef) = .{};
-            defer new_refs.deinit(allocator);
-
-            for (current_refs.items) |ref| {
-                var should_remove = false;
-                for (files.items) |hash_prefix| {
-                    // Match by hash prefix
-                    if (std.mem.startsWith(u8, ref.hash, hash_prefix)) {
-                        should_remove = true;
-                        break;
-                    }
-                }
-                if (!should_remove) {
-                    try new_refs.append(allocator, .{
-                        .hash = try allocator.dupe(u8, ref.hash),
-                        .category = try allocator.dupe(u8, ref.category),
-                        .name = try allocator.dupe(u8, ref.name),
-                        .description = try allocator.dupe(u8, ref.description),
-                        .format = try allocator.dupe(u8, ref.format),
-                    });
-                }
-            }
-
-            // Swap
-            for (current_refs.items) |ref| {
-                allocator.free(ref.hash);
-                allocator.free(ref.category);
-                allocator.free(ref.name);
-                allocator.free(ref.description);
-                allocator.free(ref.format);
-            }
-            current_refs.clearRetainingCapacity();
-            for (new_refs.items) |ref| {
-                try current_refs.append(allocator, ref);
-            }
-            new_refs.clearRetainingCapacity();
-
-            sp.succeed();
-        }
-    }
-
-    // Rebuild index
-    var sp2 = spinner.init(stdout, "Updating bundle");
-    sp2.start();
-
-    var new_index: std.ArrayListUnmanaged(u8) = .{};
-    defer new_index.deinit(allocator);
-    try new_index.appendSlice(allocator, "{\n  \"bundles\": [");
-
-    var first = true;
-    for (bundles.array.items) |item| {
-        const item_name = if (item.object.get("name")) |n| n.string else continue;
-
-        if (!first) try new_index.appendSlice(allocator, ",");
-        first = false;
-
-        if (std.mem.eql(u8, item_name, bundle_name)) {
-            // Write updated bundle (use new values if provided)
-            const item_task = new_task orelse (if (item.object.get("task")) |t| t.string else "-");
-            const item_desc = new_desc orelse (if (item.object.get("description")) |d| d.string else "-");
-            const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-            const item_meta = if (item.object.get("meta_prompt")) |m| m.string else "";
-
-            const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ item_name, item_task, item_desc, item_created, item_meta });
-            defer allocator.free(entry_start);
-            try new_index.appendSlice(allocator, entry_start);
-
-            for (current_refs.items, 0..) |ref, idx| {
-                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
-                    if (idx > 0) "," else "",
-                    ref.hash,
-                    ref.category,
-                });
-                defer allocator.free(ref_entry);
-                try new_index.appendSlice(allocator, ref_entry);
-            }
-            try new_index.appendSlice(allocator, "\n      ]\n    }");
-        } else {
-            try appendBundleEntry(allocator, &new_index, item);
-        }
-    }
-    try new_index.appendSlice(allocator, "\n  ]\n}\n");
-
-    const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
-        sp2.fail();
-        return;
-    };
-    defer idx_out.close();
-    idx_out.writeAll(new_index.items) catch {};
-    sp2.succeed();
-
-    // Commit and push
-    var sp3 = spinner.init(stdout, "Pushing to registry");
-    sp3.start();
-    git.addAll(allocator, registry_path) catch {};
-    git.commit(allocator, registry_path, "Update bundle") catch {};
-    git.push(allocator, registry_path) catch {
-        sp3.fail();
-        try stderr.print("{s}{s}{s}Warning:{s} Updated locally but failed to push\n", .{ P, Color.bold, Color.orange, Color.reset });
-    };
-    sp3.succeed();
-
-    try stdout.print("{s}{s}{s}✓{s} Updated bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
-    try stdout.print("{s}  Prompts: {d}\n\n", .{ P, current_refs.items.len });
 }
 
 // Helper functions
@@ -1146,73 +882,6 @@ fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(
         }
     }
     try buf.appendSlice(allocator, "\n      ]\n    }");
-}
-
-// Find and upload meta-prompt file (CLAUDE.md, etc.) to registry
-// If explicit_file is provided, use that file directly
-// Otherwise, check config for meta_prompt_file, then fall back to default search
-// Returns the hash of the uploaded file, or null if not found
-fn findAndUploadMetaPrompt(allocator: std.mem.Allocator, cwd: []const u8, registry_path: []const u8, explicit_file: ?[]const u8) !?[]const u8 {
-    const meta_prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts" });
-    defer allocator.free(meta_prompts_dir);
-    fs.cwd().makePath(meta_prompts_dir) catch {};
-
-    // Determine which file(s) to try
-    var files_to_try: [4][]const u8 = .{ "", "", "", "" };
-    var files_count: usize = 0;
-
-    if (explicit_file) |ef| {
-        // Use explicit file from -M flag
-        files_to_try[0] = ef;
-        files_count = 1;
-    } else if (config.getMetaPromptFile(allocator) catch null) |cf| {
-        // Use config file
-        defer allocator.free(cf);
-        files_to_try[0] = cf;
-        files_count = 1;
-    } else {
-        // Fall back to default search order
-        const default_files = [_][]const u8{ "CLAUDE.md", "CURSOR.md", "AGENTS.md", "COPILOT.md" };
-        for (default_files, 0..) |f, i| {
-            files_to_try[i] = f;
-        }
-        files_count = 4;
-    }
-
-    for (files_to_try[0..files_count]) |filename| {
-        if (filename.len == 0) continue;
-
-        const file_path = try std.fs.path.join(allocator, &.{ cwd, filename });
-        defer allocator.free(file_path);
-
-        const file = fs.openFileAbsolute(file_path, .{}) catch continue;
-        const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
-            file.close();
-            continue;
-        };
-        file.close();
-        defer allocator.free(content);
-
-        // Compute hash
-        var hash_bytes: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(content, &hash_bytes, .{});
-        var hash_hex: [64]u8 = undefined;
-        for (hash_bytes, 0..) |byte, i| {
-            const hex_chars = "0123456789abcdef";
-            hash_hex[i * 2] = hex_chars[byte >> 4];
-            hash_hex[i * 2 + 1] = hex_chars[byte & 0x0f];
-        }
-        const hash = try allocator.dupe(u8, &hash_hex);
-
-        // Copy to meta-prompts/<hash> (pure hash, no extension)
-        const dest_path = try std.fs.path.join(allocator, &.{ meta_prompts_dir, hash });
-        defer allocator.free(dest_path);
-        fs.copyFileAbsolute(file_path, dest_path, .{}) catch {};
-
-        return hash;
-    }
-
-    return null;
 }
 
 /// Strip sequence prefix (NN_) from filename if present

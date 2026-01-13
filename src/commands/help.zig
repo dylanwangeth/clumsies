@@ -29,11 +29,10 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    {s}log{s}                  Show .prompts/ commit history\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}BUNDLE COMMANDS:{s} (manage bundles in registry)\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}bundle list{s}                                      List bundles\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}bundle register{s} <name> <dirs> [-t] [-d] [-M]     Register bundle\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}bundle show{s} <name>                               Show bundle content\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}bundle update{s} <name> [--add|--rm] [-t] [-d]      Update bundle\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}bundle rm{s} <name>                                 Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle list{s}                        List bundles\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle register{s} <meta-prompt-file> Register bundle from workspace\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle show{s} <name>                 Show bundle content\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle rm{s} <name>                   Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}PROMPT COMMANDS:{s} (manage prompts in registry)\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}prompt list{s}              List prompts\n", .{ P, Color.cyan, Color.reset });
@@ -53,13 +52,10 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    {s}-h, --help{s}            Show this help\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}OPTIONS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}-t, --task{s} <task>              Task type (coding, research, etc.)\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}-d, --desc{s} <desc>              Description\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}-m, --message{s} <msg>            Commit message (for push)\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}-M, --meta-prompt-file{s} <file>  Meta-prompt file for bundle\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}-m, --message{s} <msg>    Commit message (for push)\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}CONFIG KEYS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}registry{s}              Git URL for the prompt registry\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}entry_files{s}           Meta-prompt files to sync (comma-separated)\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}meta_prompt_file{s}      Default meta-prompt file for bundle create\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}meta_prompt_file{s}      Target filename for init -B (default: CLAUDE.md)\n\n", .{ P, Color.cyan, Color.reset });
 }

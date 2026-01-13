@@ -199,41 +199,169 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
         sp.succeed();
     }
 
-    // Check if bundle exists
-    const bundle_dir = try std.fs.path.join(allocator, &.{ registry_path, "bundles", bundle_name });
-    defer allocator.free(bundle_dir);
+    // Read bundles/index.json
+    const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles", "index.json" });
+    defer allocator.free(index_path);
 
-    const bundle_exists = blk: {
-        var dir = fs.openDirAbsolute(bundle_dir, .{}) catch break :blk false;
-        dir.close();
-        break :blk true;
+    const index_file = fs.openFileAbsolute(index_path, .{}) catch {
+        try stderr.print("{s}{s}{s}Error:{s} No bundles found in registry\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Run {s}clumsies bundle list{s} to see available bundles\n\n", .{ P, Color.cyan, Color.reset });
+        return;
+    };
+    const index_content = index_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+        index_file.close();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read bundles index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    index_file.close();
+    defer allocator.free(index_content);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, index_content, .{}) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse bundles index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer parsed.deinit();
+
+    // Find bundle by name
+    const bundles = parsed.value.object.get("bundles") orelse {
+        try stderr.print("{s}{s}{s}Error:{s} No bundles found in registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
     };
 
-    if (!bundle_exists) {
+    var found_bundle: ?std.json.Value = null;
+    for (bundles.array.items) |item| {
+        const item_name = if (item.object.get("name")) |n| n.string else continue;
+        if (std.mem.eql(u8, item_name, bundle_name)) {
+            found_bundle = item;
+            break;
+        }
+    }
+
+    if (found_bundle == null) {
         try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
-        try stderr.print("{s}Run {s}clumsies list -B{s} to see available bundles\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Run {s}clumsies bundle list{s} to see available bundles\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
-    // Create .prompts directory
+    // Check meta_prompt is present
+    const meta_prompt_hash = if (found_bundle.?.object.get("meta_prompt")) |m| m.string else "";
+    if (meta_prompt_hash.len == 0) {
+        try stderr.print("{s}{s}{s}Error:{s} Bundle has no meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Bundle must be registered with a meta-prompt file\n\n", .{P});
+        return;
+    }
+
+    // Get prompts index for name/format lookup
+    const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", "index.json" });
+    defer allocator.free(prompts_index_path);
+
+    var prompts_index: ?std.json.Parsed(std.json.Value) = null;
+    if (fs.openFileAbsolute(prompts_index_path, .{})) |pf| {
+        defer pf.close();
+        if (pf.readToEndAlloc(allocator, 10 * 1024 * 1024)) |content| {
+            defer allocator.free(content);
+            prompts_index = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch null;
+        } else |_| {}
+    } else |_| {}
+    defer if (prompts_index) |pi| pi.deinit();
+
+    // Create .prompts directory structure
     fs.cwd().makeDir(".prompts") catch |err| {
         try stderr.print("{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n\n", .{ P, Color.bold, Color.red, Color.reset, err });
         return;
     };
 
-    // Copy bundle contents to .prompts/
-    var sp = spinner.init(stdout, "Copying bundle");
+    const conduct_path = try std.fs.path.join(allocator, &.{ prompts_path, "conduct" });
+    defer allocator.free(conduct_path);
+    fs.cwd().makePath(conduct_path) catch {};
+
+    const command_path = try std.fs.path.join(allocator, &.{ prompts_path, "command" });
+    defer allocator.free(command_path);
+    fs.cwd().makePath(command_path) catch {};
+
+    // Copy prompts from registry
+    var sp = spinner.init(stdout, "Copying prompts");
     sp.start();
 
-    copyDirRecursive(allocator, bundle_dir, prompts_path) catch {
+    const prompts_arr = found_bundle.?.object.get("prompts") orelse {
         sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to copy bundle contents\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle has no prompts\n\n", .{ P, Color.bold, Color.red, Color.reset });
         fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
+
+    var prompt_count: usize = 0;
+    for (prompts_arr.array.items) |ref| {
+        const hash = if (ref.object.get("hash")) |h| h.string else continue;
+        const category = if (ref.object.get("category")) |c| c.string else "conduct";
+
+        // Look up prompt details in prompts/index.json
+        var prompt_name: []const u8 = "prompt";
+        var prompt_format: []const u8 = "md";
+        if (prompts_index) |pi| {
+            if (pi.value.object.get("prompts")) |prompts| {
+                for (prompts.array.items) |p| {
+                    const p_hash = if (p.object.get("hash")) |ph| ph.string else continue;
+                    if (std.mem.eql(u8, p_hash, hash)) {
+                        prompt_name = if (p.object.get("name")) |n| n.string else "prompt";
+                        prompt_format = if (p.object.get("format")) |f| f.string else "md";
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Source: registry/prompts/{hash}
+        const src_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
+        defer allocator.free(src_path);
+
+        // Determine next sequence number
+        const target_dir = if (std.mem.eql(u8, category, "command")) command_path else conduct_path;
+        const seq = findNextSequence(allocator, target_dir);
+
+        // Destination: .prompts/{category}/{seq}_{name}.{format}
+        const filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq, prompt_name, prompt_format });
+        defer allocator.free(filename);
+        const dest_path = try std.fs.path.join(allocator, &.{ target_dir, filename });
+        defer allocator.free(dest_path);
+
+        fs.copyFileAbsolute(src_path, dest_path, .{}) catch continue;
+        prompt_count += 1;
+    }
     sp.succeed();
 
+    // Copy meta-prompt file
+    var sp2 = spinner.init(stdout, "Copying meta-prompt");
+    sp2.start();
+
+    const meta_src = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts", meta_prompt_hash });
+    defer allocator.free(meta_src);
+
+    // Get target filename from config or default to CLAUDE.md
+    const meta_prompt_filename = config.getMetaPromptFile(allocator) catch null orelse "CLAUDE.md";
+    defer if (config.getMetaPromptFile(allocator) catch null) |f| allocator.free(f);
+
+    // Copy to workspace root (parent of .prompts/)
+    const cwd = std.process.getCwdAlloc(allocator) catch {
+        sp2.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer allocator.free(cwd);
+
+    const meta_dest = try std.fs.path.join(allocator, &.{ cwd, meta_prompt_filename });
+    defer allocator.free(meta_dest);
+
+    fs.copyFileAbsolute(meta_src, meta_dest, .{}) catch {
+        sp2.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to copy meta-prompt file\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    sp2.succeed();
+
     try stdout.print("{s}{s}✓{s} Created .prompts/ from bundle: {s}{s}{s}\n", .{ P, Color.green, Color.reset, Color.cyan, bundle_name, Color.reset });
+    try stdout.print("{s}  Prompts: {d}\n", .{ P, prompt_count });
+    try stdout.print("{s}  Meta-prompt: {s}\n", .{ P, meta_prompt_filename });
 
     // If URL provided, also init git and add remote
     if (remote_url) |url| {
@@ -253,23 +381,26 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     try stdout.writeAll("\n");
 }
 
-fn copyDirRecursive(allocator: std.mem.Allocator, src: []const u8, dest: []const u8) !void {
-    fs.cwd().makePath(dest) catch return error.Failed;
+fn findNextSequence(_: std.mem.Allocator, dir_path: []const u8) u8 {
+    var used: [100]bool = .{false} ** 100;
 
-    var src_dir = fs.openDirAbsolute(src, .{ .iterate = true }) catch return error.Failed;
-    defer src_dir.close();
+    var dir = fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return 0;
+    defer dir.close();
 
-    var iter = src_dir.iterate();
-    while (iter.next() catch return error.Failed) |entry| {
-        const src_path = std.fs.path.join(allocator, &.{ src, entry.name }) catch continue;
-        defer allocator.free(src_path);
-        const dest_path = std.fs.path.join(allocator, &.{ dest, entry.name }) catch continue;
-        defer allocator.free(dest_path);
-
-        if (entry.kind == .directory) {
-            try copyDirRecursive(allocator, src_path, dest_path);
-        } else if (entry.kind == .file) {
-            fs.copyFileAbsolute(src_path, dest_path, .{}) catch continue;
+    var iter = dir.iterate();
+    while (iter.next() catch return 0) |entry| {
+        if (entry.kind != .file) continue;
+        if (entry.name.len >= 3 and entry.name[2] == '_') {
+            if (std.ascii.isDigit(entry.name[0]) and std.ascii.isDigit(entry.name[1])) {
+                const seq = (entry.name[0] - '0') * 10 + (entry.name[1] - '0');
+                if (seq < 100) used[seq] = true;
+            }
         }
     }
+
+    // Find first unused
+    for (used, 0..) |is_used, i| {
+        if (!is_used) return @intCast(i);
+    }
+    return 99;
 }
