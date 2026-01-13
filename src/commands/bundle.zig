@@ -148,9 +148,9 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
         return;
     }
 
-    try stdout.print("{s}{s}Bundles in registry:{s}\n", .{ P, Color.bold, Color.reset });
+    try stdout.print("\n{s}{s}{s}Bundles in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}NAME{s}                 {s}TASK{s}      {s}PROMPTS{s}  {s}DESCRIPTION{s}\n", .{ P, Color.dim, Color.reset, Color.dim, Color.reset, Color.dim, Color.reset, Color.dim, Color.reset });
+    try stdout.print("{s}  {s}NAME{s}                 {s}TASK{s}      {s}PROMPTS{s}  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (items.array.items) |item| {
@@ -413,9 +413,9 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     const bundle_task = if (bundle.object.get("task")) |t| t.string else "-";
     const bundle_desc = if (bundle.object.get("description")) |d| d.string else "-";
 
-    try stdout.print("{s}{s}Bundle:{s} {s}\n", .{ P, Color.bold, Color.reset, bundle_name });
-    try stdout.print("{s}{s}Task:{s} {s}\n", .{ P, Color.dim, Color.reset, bundle_task });
-    try stdout.print("{s}{s}Description:{s} {s}\n\n", .{ P, Color.dim, Color.reset, bundle_desc });
+    try stdout.print("\n{s}{s}{s}Bundle:{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, bundle_name });
+    try stdout.print("{s}{s}Task:{s} {s}\n", .{ P, Color.orange, Color.reset, bundle_task });
+    try stdout.print("{s}{s}Description:{s} {s}\n\n", .{ P, Color.orange, Color.reset, bundle_desc });
 
     // List prompt references
     const prompts_arr = bundle.object.get("prompts") orelse {
@@ -423,9 +423,9 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         return;
     };
 
-    try stdout.print("{s}{s}Prompts ({d}):{s}\n", .{ P, Color.bold, prompts_arr.array.items.len, Color.reset });
+    try stdout.print("{s}{s}{s}Prompts ({d}):{s}\n", .{ P, Color.bold, Color.orange, prompts_arr.array.items.len, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}HASH{s}          {s}PATH{s}\n", .{ P, Color.dim, Color.reset, Color.dim, Color.reset });
+    try stdout.print("{s}  {s}HASH{s}          {s}PATH{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (prompts_arr.array.items) |ref| {

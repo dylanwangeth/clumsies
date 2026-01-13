@@ -139,9 +139,9 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
         return;
     }
 
-    try stdout.print("{s}{s}Prompts in registry:{s}\n", .{ P, Color.bold, Color.reset });
+    try stdout.print("\n{s}{s}{s}Prompts in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}HASH{s}      {s}CREATED{s}     {s}NAME{s}                 {s}DESCRIPTION{s}\n", .{ P, Color.dim, Color.reset, Color.dim, Color.reset, Color.dim, Color.reset, Color.dim, Color.reset });
+    try stdout.print("{s}  {s}HASH{s}      {s}CREATED{s}     {s}NAME{s}                 {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (items.array.items) |item| {
@@ -392,9 +392,11 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     defer allocator.free(prompt_content);
 
     if (found_name) |n| {
-        try stdout.print("{s}{s}Prompt:{s} {s}\n", .{ P, Color.bold, Color.reset, n });
+        try stdout.print("\n{s}{s}{s}Prompt:{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, n });
+    } else {
+        try stdout.writeAll("\n");
     }
-    try stdout.print("{s}{s}Hash:{s} {s}\n", .{ P, Color.dim, Color.reset, found_hash.? });
+    try stdout.print("{s}{s}Hash:{s} {s}\n", .{ P, Color.orange, Color.reset, found_hash.? });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
     try stdout.print("{s}\n", .{prompt_content});
 }
