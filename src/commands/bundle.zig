@@ -54,11 +54,11 @@ fn showUsage(stderr: anytype) !void {
     try stderr.print("\n{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
     try stderr.print("{s}Usage: {s}clumsies bundle <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Commands:\n", .{P});
-    try stderr.print("{s}  {s}list{s}                           List bundles in registry\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}create{s} <name> <dirs> [-t] [-d]  Create bundle\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}show{s} <name>                     Show bundle content\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}rm{s} <name>                       Remove bundle\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}update{s} <name> --add|--rm        Update bundle\n\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}list{s}                                  List bundles in registry\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}create{s} <name> <dirs> [-t] [-d]        Create bundle\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}update{s} <name> [--add|--rm] [-t] [-d]  Update bundle\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}rm{s} <name>                             Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Options:\n", .{P});
     try stderr.print("{s}  {s}-t, --task{s} <task>    Task type (coding, research, learning, etc.)\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}-d, --desc{s} <desc>    Description\n\n", .{ P, Color.cyan, Color.reset });
@@ -114,8 +114,6 @@ const PromptRef = struct {
 };
 
 fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
-    try stdout.writeAll("\n");
-
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
 
@@ -197,8 +195,6 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         try stderr.print("{s}Usage: {s}clumsies bundle create <name> <dir1> [dir2...] [-d <desc>]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
-
-    try stdout.writeAll("\n");
 
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
@@ -365,8 +361,6 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         return;
     }
 
-    try stdout.writeAll("\n");
-
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
 
@@ -449,8 +443,6 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
         try stderr.print("{s}Usage: {s}clumsies bundle rm <name>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
-
-    try stdout.writeAll("\n");
 
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
@@ -537,43 +529,57 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
 }
 
 fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    // Parse: <name> --add|--rm <files...>
-    if (args.len < 3) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Bundle name and files required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies bundle update <name> --add|--rm <files...>{s}\n\n", .{ P, Color.cyan, Color.reset });
+    // Parse: <name> [--add|--rm <files...>] [-t <task>] [-d <desc>]
+    if (args.len < 2) {
+        try stderr.print("\n{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies bundle update <name> [--add|--rm <files>] [-t <task>] [-d <desc>]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
     const bundle_name = args[0];
     var is_add = false;
     var is_rm = false;
-    var files_start: usize = 2;
+    var new_task: ?[]const u8 = null;
+    var new_desc: ?[]const u8 = null;
+    var files: std.ArrayListUnmanaged([]const u8) = .{};
+    defer files.deinit(allocator);
 
-    for (args[1..], 1..) |arg, idx| {
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--add") or std.mem.eql(u8, arg, "-a")) {
             is_add = true;
-            files_start = idx + 1;
-            break;
         } else if (std.mem.eql(u8, arg, "--rm") or std.mem.eql(u8, arg, "-r")) {
             is_rm = true;
-            files_start = idx + 1;
-            break;
+        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--task")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                new_task = args[i];
+            }
+        } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--desc")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                new_desc = args[i];
+            }
+        } else if (arg.len > 0 and arg[0] != '-') {
+            try files.append(allocator, arg);
         }
     }
 
-    if (!is_add and !is_rm) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Specify --add or --rm\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies bundle update <name> --add|--rm <files...>{s}\n\n", .{ P, Color.cyan, Color.reset });
+    // Must have either file operation or metadata update
+    const has_file_op = (is_add or is_rm) and files.items.len > 0;
+    const has_metadata_update = new_task != null or new_desc != null;
+
+    if (!has_file_op and !has_metadata_update) {
+        try stderr.print("\n{s}{s}{s}Error:{s} Specify --add/--rm with files, or -t/-d to update metadata\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies bundle update <name> [--add|--rm <files>] [-t <task>] [-d <desc>]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
-    const files = args[files_start..];
-    if (files.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} At least one file required\n", .{ P, Color.bold, Color.red, Color.reset });
+    if ((is_add or is_rm) and files.items.len == 0) {
+        try stderr.print("\n{s}{s}{s}Error:{s} --add/--rm requires at least one file\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
-
-    try stdout.writeAll("\n");
 
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
@@ -651,70 +657,72 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         }
     }
 
-    if (is_add) {
-        var sp = spinner.init(stdout, "Adding prompts");
-        sp.start();
+    if (has_file_op) {
+        if (is_add) {
+            var sp = spinner.init(stdout, "Adding prompts");
+            sp.start();
 
-        for (files) |file_path| {
-            const src = if (std.fs.path.isAbsolute(file_path))
-                try allocator.dupe(u8, file_path)
-            else
-                try std.fs.path.join(allocator, &.{ cwd, file_path });
-            defer allocator.free(src);
+            for (files.items) |file_path| {
+                const src = if (std.fs.path.isAbsolute(file_path))
+                    try allocator.dupe(u8, file_path)
+                else
+                    try std.fs.path.join(allocator, &.{ cwd, file_path });
+                defer allocator.free(src);
 
-            // Upload prompt and add reference
-            const hash = computeFileHash(allocator, src) catch continue;
-            defer allocator.free(hash);
+                // Upload prompt and add reference
+                const hash = computeFileHash(allocator, src) catch continue;
+                defer allocator.free(hash);
 
-            const dest = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
-            defer allocator.free(dest);
-            const dest_with_ext = try std.fmt.allocPrint(allocator, "{s}.md", .{dest});
-            defer allocator.free(dest_with_ext);
+                const dest = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
+                defer allocator.free(dest);
+                const dest_with_ext = try std.fmt.allocPrint(allocator, "{s}.md", .{dest});
+                defer allocator.free(dest_with_ext);
 
-            fs.copyFileAbsolute(src, dest_with_ext, .{}) catch {};
+                fs.copyFileAbsolute(src, dest_with_ext, .{}) catch {};
 
-            try current_refs.append(allocator, .{
-                .hash = try allocator.dupe(u8, hash),
-                .path = try allocator.dupe(u8, std.fs.path.basename(file_path)),
-            });
-        }
-        sp.succeed();
-    } else {
-        var sp = spinner.init(stdout, "Removing prompts");
-        sp.start();
-
-        // Remove refs matching the given paths
-        var new_refs: std.ArrayListUnmanaged(PromptRef) = .{};
-        defer new_refs.deinit(allocator);
-
-        for (current_refs.items) |ref| {
-            var should_remove = false;
-            for (files) |file_path| {
-                if (std.mem.indexOf(u8, ref.path, file_path) != null) {
-                    should_remove = true;
-                    break;
-                }
-            }
-            if (!should_remove) {
-                try new_refs.append(allocator, .{
-                    .hash = try allocator.dupe(u8, ref.hash),
-                    .path = try allocator.dupe(u8, ref.path),
+                try current_refs.append(allocator, .{
+                    .hash = try allocator.dupe(u8, hash),
+                    .path = try allocator.dupe(u8, std.fs.path.basename(file_path)),
                 });
             }
-        }
+            sp.succeed();
+        } else if (is_rm) {
+            var sp = spinner.init(stdout, "Removing prompts");
+            sp.start();
 
-        // Swap
-        for (current_refs.items) |ref| {
-            allocator.free(ref.hash);
-            allocator.free(ref.path);
-        }
-        current_refs.clearRetainingCapacity();
-        for (new_refs.items) |ref| {
-            try current_refs.append(allocator, ref);
-        }
-        new_refs.clearRetainingCapacity();
+            // Remove refs matching the given paths
+            var new_refs: std.ArrayListUnmanaged(PromptRef) = .{};
+            defer new_refs.deinit(allocator);
 
-        sp.succeed();
+            for (current_refs.items) |ref| {
+                var should_remove = false;
+                for (files.items) |file_path| {
+                    if (std.mem.indexOf(u8, ref.path, file_path) != null) {
+                        should_remove = true;
+                        break;
+                    }
+                }
+                if (!should_remove) {
+                    try new_refs.append(allocator, .{
+                        .hash = try allocator.dupe(u8, ref.hash),
+                        .path = try allocator.dupe(u8, ref.path),
+                    });
+                }
+            }
+
+            // Swap
+            for (current_refs.items) |ref| {
+                allocator.free(ref.hash);
+                allocator.free(ref.path);
+            }
+            current_refs.clearRetainingCapacity();
+            for (new_refs.items) |ref| {
+                try current_refs.append(allocator, ref);
+            }
+            new_refs.clearRetainingCapacity();
+
+            sp.succeed();
+        }
     }
 
     // Rebuild index
@@ -733,9 +741,9 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         first = false;
 
         if (std.mem.eql(u8, item_name, bundle_name)) {
-            // Write updated bundle
-            const item_task = if (item.object.get("task")) |t| t.string else "-";
-            const item_desc = if (item.object.get("description")) |d| d.string else "-";
+            // Write updated bundle (use new values if provided)
+            const item_task = new_task orelse (if (item.object.get("task")) |t| t.string else "-");
+            const item_desc = new_desc orelse (if (item.object.get("description")) |d| d.string else "-");
             const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
             const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"prompts\": [", .{ item_name, item_task, item_desc, item_created });

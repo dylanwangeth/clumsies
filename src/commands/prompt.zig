@@ -105,8 +105,6 @@ fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
 }
 
 fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
-    try stdout.writeAll("\n");
-
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
 
@@ -168,8 +166,6 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         try stderr.print("{s}Usage: {s}clumsies prompt create <file.md>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
-
-    try stdout.writeAll("\n");
 
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
@@ -326,8 +322,6 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         return;
     }
 
-    try stdout.writeAll("\n");
-
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
 
@@ -411,8 +405,6 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
         try stderr.print("{s}Usage: {s}clumsies prompt rm <hash>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
-
-    try stdout.writeAll("\n");
 
     const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
     defer allocator.free(registry_path);
@@ -518,8 +510,6 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         try stderr.print("{s}Usage: {s}clumsies prompt import <hash>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
-
-    try stdout.writeAll("\n");
 
     // Check .prompts/ exists
     const prompts_path = commands.getPromptsPath(allocator) catch {
