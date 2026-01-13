@@ -20,12 +20,20 @@ pub const Spinner = struct {
 
     pub fn succeed(self: *Spinner) void {
         self.stop();
-        self.writer.print("\x1b[2K\r{s}{s}✓{s} {s}\n", .{ P, Color.green, Color.reset, self.message }) catch {};
+        // Use unbuffered stdout for consistent output ordering
+        const stdout = std.fs.File.stdout();
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "\x1b[2K\r{s}{s}✓{s} {s}\n", .{ P, Color.green, Color.reset, self.message }) catch return;
+        _ = stdout.write(line) catch {};
     }
 
     pub fn fail(self: *Spinner) void {
         self.stop();
-        self.writer.print("\x1b[2K\r{s}{s}✗{s} {s}\n", .{ P, Color.red, Color.reset, self.message }) catch {};
+        // Use unbuffered stdout for consistent output ordering
+        const stdout = std.fs.File.stdout();
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "\x1b[2K\r{s}{s}✗{s} {s}\n", .{ P, Color.red, Color.reset, self.message }) catch return;
+        _ = stdout.write(line) catch {};
     }
 
     fn stop(self: *Spinner) void {
