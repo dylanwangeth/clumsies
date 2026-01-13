@@ -36,7 +36,7 @@ Clumsies Protocol takes a **pure semantic layer** approach:
 
 ```
 Instead of:  /project:gen-commit --scope backend
-Just say:    "Generate a commit message following GIT_COMMIT rules"
+Just say:    "Generate a commit message following git_commit rules"
 ```
 
 ---
@@ -72,9 +72,9 @@ workspace/
 **When loaded**: Injected into context at the start of every conversation.
 
 **Examples**:
-- `CODE_STYLE.md` — Coding conventions
-- `GIT_COMMIT.md` — Commit message format
-- `SECURITY.md` — Security guidelines
+- `code_style.md` — Coding conventions
+- `git_commit.md` — Commit message format
+- `security.md` — Security guidelines
 
 **How to reference**:
 - "Follow the coding standards in conduct/"
@@ -87,8 +87,8 @@ workspace/
 **When loaded**: When the user explicitly invokes by name.
 
 **Examples**:
-- `00_CONTEXT_REINFORCEMENT.md` — Re-read context and correct drift
-- `01_REVIEW_COMMIT.md` — Code review procedure
+- `00_context_reinforcement.md` — Re-read context and correct drift
+- `01_review_commit.md` — Code review procedure
 
 **How to reference**:
 - "Run command 01"
@@ -103,8 +103,8 @@ workspace/
 **When loaded**: When discussing related topics.
 
 **Examples**:
-- `biz/PRODUCT_SPEC.md` — Product requirements
-- `tech/ARCHITECTURE.md` — System architecture
+- `biz/product_spec.md` — Product requirements
+- `tech/architecture.md` — System architecture
 
 ---
 
@@ -184,13 +184,12 @@ A registry is a git repository that stores prompts and bundles for sharing.
 ```
 registry/
 ├── prompts/
-│   ├── index.json           # Prompt metadata
-│   └── {hash}.md            # Content files (SHA-256)
+│   ├── index.json           # Prompt metadata (includes format)
+│   └── {hash}               # Content files (pure SHA-256, no extension)
+├── meta-prompts/
+│   └── {hash}               # Meta-prompt files (pure SHA-256)
 └── bundles/
-    ├── index.json           # Bundle metadata
-    └── {bundle-name}/       # Bundle directory
-        ├── conduct/
-        └── command/
+    └── index.json           # Bundle metadata with prompt references
 ```
 
 ### 6.2 Content-Addressable Storage (Prompts)
@@ -198,13 +197,14 @@ registry/
 Individual prompts are stored by SHA-256 hash:
 
 1. Compute hash of the file content
-2. Store as `prompts/{hash}.md`
-3. Index in `prompts/index.json`
+2. Store as `prompts/{hash}` (pure hash, no extension)
+3. Index in `prompts/index.json` with `format` field
 
 **Benefits**:
 - Deduplication: identical prompts stored once
 - Integrity: hash verifies content
 - Immutability: content at a hash never changes
+- Format-agnostic: supports any file type
 
 ### 6.3 prompts/index.json
 
@@ -213,17 +213,30 @@ Individual prompts are stored by SHA-256 hash:
   "prompts": [
     {
       "hash": "a1b2c3...",
-      "name": "GIT_COMMIT",
+      "name": "git_commit",
       "description": "Git commit message format",
+      "format": "md",
+      "path": "conduct",
       "created_at": "1704067200"
     }
   ]
 }
 ```
 
+| Field | Description |
+|-------|-------------|
+| `hash` | SHA-256 hash of the file content |
+| `name` | Prompt name (from frontmatter or filename) |
+| `description` | Description (from frontmatter or default) |
+| `format` | Original file extension (md, txt, etc.) |
+| `path` | Target directory (conduct or command) |
+| `created_at` | Unix timestamp |
+
+When importing, the full filename is constructed as: `{path}/{sequence}_{name}.{format}`
+
 ### 6.4 Bundle Storage
 
-Bundles are stored as named directories containing conduct/ and command/ subdirectories.
+Bundles store references to prompts and meta-prompts by hash in `bundles/index.json`.
 
 ### 6.5 bundles/index.json
 
@@ -231,14 +244,33 @@ Bundles are stored as named directories containing conduct/ and command/ subdire
 {
   "bundles": [
     {
-      "hash": "my-bundle",
       "name": "my-bundle",
+      "task": "coding",
       "description": "A starter bundle",
-      "created_at": "1704067200"
+      "created_at": "1704067200",
+      "meta_prompt": "f7g8h9...",
+      "prompts": [
+        { "hash": "a1b2c3...", "path": "conduct" },
+        { "hash": "d4e5f6...", "path": "command" }
+      ]
     }
   ]
 }
 ```
+
+The `path` in bundle references is just the directory name (conduct or command).
+Full prompt details (name, format, etc.) are stored in `prompts/index.json`.
+
+### 6.6 Sequence Number Assignment
+
+When importing prompts to a local `.prompts/` directory, sequence numbers are automatically assigned:
+
+1. Scan target directory for existing files with `NN_` prefix
+2. Find first available gap (e.g., if 00, 01, 03 exist, assign 02)
+3. If no gap, use the next number after the highest
+4. Final filename: `{sequence:02d}_{name}.{format}`
+
+This allows easy reference by number: "Run command 01" or "Follow conduct 03".
 
 ---
 

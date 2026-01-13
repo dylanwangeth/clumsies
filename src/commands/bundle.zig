@@ -151,6 +151,7 @@ const PromptRef = struct {
     path: []const u8,
     name: []const u8,
     description: []const u8,
+    format: []const u8,
 };
 
 
@@ -282,6 +283,7 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             allocator.free(ref.path);
             allocator.free(ref.name);
             allocator.free(ref.description);
+            allocator.free(ref.format);
         }
         prompt_refs.deinit(allocator);
     }
@@ -712,6 +714,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             allocator.free(ref.path);
             allocator.free(ref.name);
             allocator.free(ref.description);
+            allocator.free(ref.format);
         }
         current_refs.deinit(allocator);
     }
@@ -720,11 +723,15 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         for (prompts_arr.array.items) |ref| {
             const hash = if (ref.object.get("hash")) |h| h.string else continue;
             const path = if (ref.object.get("path")) |p| p.string else continue;
+            // Extract format from path extension
+            const ext_idx = std.mem.lastIndexOf(u8, path, ".");
+            const fmt = if (ext_idx) |idx| path[idx + 1 ..] else "md";
             try current_refs.append(allocator, .{
                 .hash = try allocator.dupe(u8, hash),
                 .path = try allocator.dupe(u8, path),
                 .name = try allocator.dupe(u8, "-"),
                 .description = try allocator.dupe(u8, "-"),
+                .format = try allocator.dupe(u8, fmt),
             });
         }
     }
@@ -740,6 +747,13 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                 else
                     try std.fs.path.join(allocator, &.{ cwd, file_path });
                 defer allocator.free(src);
+
+                // Extract format from extension
+                const basename = std.fs.path.basename(file_path);
+                const ext_idx = std.mem.lastIndexOf(u8, basename, ".");
+                if (ext_idx == null) continue; // Skip files without extension
+                const format = try allocator.dupe(u8, basename[ext_idx.? + 1 ..]);
+                const name_end = ext_idx.?;
 
                 // Read file content for hash and frontmatter
                 const prompt_file = fs.openFileAbsolute(src, .{}) catch continue;
@@ -763,21 +777,28 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
                 // Parse frontmatter
                 const fm = parseFrontmatter(prompt_content);
-                const basename = std.fs.path.basename(file_path);
-                const name_end = std.mem.lastIndexOf(u8, basename, ".") orelse basename.len;
                 const name = try allocator.dupe(u8, fm.name orelse basename[0..name_end]);
                 const description = try allocator.dupe(u8, fm.description orelse "-");
 
-                // Copy to prompts/<hash>.md
-                const dest_with_ext = try std.fmt.allocPrint(allocator, "{s}/{s}.md", .{ prompts_dir, hash });
-                defer allocator.free(dest_with_ext);
-                fs.copyFileAbsolute(src, dest_with_ext, .{}) catch {};
+                // Copy to prompts/<hash> (pure hash, no extension)
+                const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
+                defer allocator.free(dest_path);
+                fs.copyFileAbsolute(src, dest_path, .{}) catch {};
+
+                // Extract path (conduct or command) from file path
+                const prompt_path = if (std.mem.indexOf(u8, file_path, "conduct") != null)
+                    "conduct"
+                else if (std.mem.indexOf(u8, file_path, "command") != null)
+                    "command"
+                else
+                    "conduct"; // default to conduct
 
                 try current_refs.append(allocator, .{
                     .hash = hash,
-                    .path = try allocator.dupe(u8, basename),
+                    .path = try allocator.dupe(u8, prompt_path),
                     .name = name,
                     .description = description,
+                    .format = format,
                 });
             }
             sp.succeed();
@@ -803,6 +824,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                         .path = try allocator.dupe(u8, ref.path),
                         .name = try allocator.dupe(u8, ref.name),
                         .description = try allocator.dupe(u8, ref.description),
+                        .format = try allocator.dupe(u8, ref.format),
                     });
                 }
             }
@@ -811,6 +833,9 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             for (current_refs.items) |ref| {
                 allocator.free(ref.hash);
                 allocator.free(ref.path);
+                allocator.free(ref.name);
+                allocator.free(ref.description);
+                allocator.free(ref.format);
             }
             current_refs.clearRetainingCapacity();
             for (new_refs.items) |ref| {
@@ -950,7 +975,13 @@ fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, ba
             const sub_base = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_name, entry.name });
             defer allocator.free(sub_base);
             try collectAndUploadPrompts(allocator, src_path, sub_base, prompts_dir, refs);
-        } else if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
+        } else if (entry.kind == .file) {
+            // Extract format from extension
+            const ext_idx = std.mem.lastIndexOf(u8, entry.name, ".");
+            if (ext_idx == null) continue; // Skip files without extension
+            const format = try allocator.dupe(u8, entry.name[ext_idx.? + 1 ..]);
+            const name_end = ext_idx.?;
+
             // Read file content for hash and frontmatter
             const file = fs.openFileAbsolute(src_path, .{}) catch continue;
             const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
@@ -971,24 +1002,23 @@ fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, ba
             }
             const hash = try allocator.dupe(u8, &hash_hex);
 
-            // Parse frontmatter for metadata
+            // Parse frontmatter for metadata (only for text files)
             const fm = parseFrontmatter(content);
-            const name_end = std.mem.lastIndexOf(u8, entry.name, ".") orelse entry.name.len;
             const name = try allocator.dupe(u8, fm.name orelse entry.name[0..name_end]);
             const description = try allocator.dupe(u8, fm.description orelse "-");
 
-            // Copy to prompts/<hash>.md
-            const dest_path = try std.fmt.allocPrint(allocator, "{s}/{s}.md", .{ prompts_dir, hash });
+            // Copy to prompts/<hash> (pure hash, no extension)
+            const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
             defer allocator.free(dest_path);
             fs.copyFileAbsolute(src_path, dest_path, .{}) catch {};
 
-            // Add reference
-            const rel_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_name, entry.name });
+            // Add reference (path is just the directory: conduct or command)
             try refs.append(allocator, .{
                 .hash = hash,
-                .path = rel_path,
+                .path = try allocator.dupe(u8, base_name),
                 .name = name,
                 .description = description,
+                .format = format,
             });
         }
     }
@@ -1030,15 +1060,19 @@ fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u8, r
                     const item_hash = if (item.object.get("hash")) |h| h.string else continue;
                     const item_name = if (item.object.get("name")) |n| n.string else "-";
                     const item_desc = if (item.object.get("description")) |d| d.string else "-";
+                    const item_format = if (item.object.get("format")) |f| f.string else "md";
+                    const item_path = if (item.object.get("path")) |p| p.string else "conduct";
                     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
                     seen_hashes.put(item_hash, {}) catch {};
 
-                    const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{
+                    const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{
                         if (first) "" else ",",
                         item_hash,
                         item_name,
                         item_desc,
+                        item_format,
+                        item_path,
                         item_created,
                     });
                     defer allocator.free(entry);
@@ -1053,11 +1087,13 @@ fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u8, r
     for (refs) |ref| {
         if (seen_hashes.contains(ref.hash)) continue;
 
-        const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}", .{
+        const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}", .{
             if (first) "" else ",",
             ref.hash,
             ref.name,
             ref.description,
+            ref.format,
+            ref.path,
             timestamp,
         });
         defer allocator.free(entry);
@@ -1155,8 +1191,8 @@ fn findAndUploadMetaPrompt(allocator: std.mem.Allocator, cwd: []const u8, regist
         }
         const hash = try allocator.dupe(u8, &hash_hex);
 
-        // Copy to meta-prompts/<hash>.md
-        const dest_path = try std.fmt.allocPrint(allocator, "{s}/{s}.md", .{ meta_prompts_dir, hash });
+        // Copy to meta-prompts/<hash> (pure hash, no extension)
+        const dest_path = try std.fs.path.join(allocator, &.{ meta_prompts_dir, hash });
         defer allocator.free(dest_path);
         fs.copyFileAbsolute(file_path, dest_path, .{}) catch {};
 

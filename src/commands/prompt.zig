@@ -243,13 +243,23 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         hash_hex[i * 2 + 1] = hex_chars[byte & 0x0f];
     }
 
+    // Extract file extension (format)
+    const basename = std.fs.path.basename(file_path);
+    const ext_idx = std.mem.lastIndexOf(u8, basename, ".");
+    const format = if (ext_idx) |idx| basename[idx + 1 ..] else "md";
+    const name_end = ext_idx orelse basename.len;
+
+    // Extract path (conduct or command) from file path
+    const prompt_path = if (std.mem.indexOf(u8, file_path, "conduct") != null)
+        "conduct"
+    else if (std.mem.indexOf(u8, file_path, "command") != null)
+        "command"
+    else
+        "conduct"; // default to conduct
+
     // Parse frontmatter for metadata
     const fm = parseFrontmatter(content);
-    const name = fm.name orelse blk: {
-        const basename = std.fs.path.basename(file_path);
-        const name_end = std.mem.lastIndexOf(u8, basename, ".") orelse basename.len;
-        break :blk basename[0..name_end];
-    };
+    const name = fm.name orelse basename[0..name_end];
     const description = fm.description orelse "-";
 
     // Create prompts directory
@@ -257,11 +267,8 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     defer allocator.free(prompts_dir);
     fs.cwd().makePath(prompts_dir) catch {};
 
-    // Copy file to registry
-    const hash_filename = try std.fmt.allocPrint(allocator, "{s}.md", .{hash_hex});
-    defer allocator.free(hash_filename);
-
-    const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, hash_filename });
+    // Copy file to registry (pure hash, no extension)
+    const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, &hash_hex });
     defer allocator.free(dest_path);
 
     // Check if already exists
@@ -308,9 +315,12 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                     const item_hash = if (item.object.get("hash")) |h| h.string else continue;
                     const item_name = if (item.object.get("name")) |n| n.string else "-";
                     const item_desc = if (item.object.get("description")) |d| d.string else "-";
+                    const item_format = if (item.object.get("format")) |f| f.string else "md";
                     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
-                    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_created });
+                    const item_path = if (item.object.get("path")) |p| p.string else "conduct";
+
+                    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_path, item_created });
                     defer allocator.free(entry);
                     try existing_prompts.appendSlice(allocator, entry);
                 }
@@ -321,11 +331,13 @@ fn runCreate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     }
 
     const timestamp = std.time.timestamp();
-    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
+    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
         if (existing_prompts.items.len > 20) "," else "",
         hash_hex,
         name,
         description,
+        format,
+        prompt_path,
         timestamp,
     });
     defer allocator.free(new_entry);
@@ -414,11 +426,8 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         return;
     }
 
-    // Read prompt file
-    const prompt_filename = try std.fmt.allocPrint(allocator, "{s}.md", .{found_hash.?});
-    defer allocator.free(prompt_filename);
-
-    const prompt_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", prompt_filename });
+    // Read prompt file (pure hash, no extension)
+    const prompt_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", found_hash.? });
     defer allocator.free(prompt_path);
 
     const prompt_file = fs.openFileAbsolute(prompt_path, .{}) catch {
@@ -501,12 +510,14 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
         }
 
         const item_desc = if (item.object.get("description")) |d| d.string else "-";
+        const item_format = if (item.object.get("format")) |f| f.string else "md";
+        const item_path = if (item.object.get("path")) |p| p.string else "conduct";
         const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
         if (!first) try new_prompts.appendSlice(allocator, ",");
         first = false;
 
-        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_created });
+        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_path, item_created });
         defer allocator.free(entry);
         try new_prompts.appendSlice(allocator, entry);
     }
@@ -517,10 +528,8 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
         return;
     }
 
-    // Delete prompt file
-    const prompt_filename = try std.fmt.allocPrint(allocator, "{s}.md", .{found_hash.?});
-    defer allocator.free(prompt_filename);
-    const prompt_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", prompt_filename });
+    // Delete prompt file (pure hash, no extension)
+    const prompt_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", found_hash.? });
     defer allocator.free(prompt_path);
     fs.deleteFileAbsolute(prompt_path) catch {};
 
@@ -601,12 +610,16 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     // Find prompt by hash prefix
     var found_hash: ?[]const u8 = null;
     var found_name: ?[]const u8 = null;
+    var found_format: []const u8 = "md";
+    var found_path: []const u8 = "conduct";
 
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
         if (std.mem.startsWith(u8, item_hash, hash)) {
             found_hash = item_hash;
             found_name = if (item.object.get("name")) |n| n.string else null;
+            found_format = if (item.object.get("format")) |f| f.string else "md";
+            found_path = if (item.object.get("path")) |p| p.string else "conduct";
             break;
         }
     }
@@ -616,37 +629,72 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         return;
     }
 
-    // Read prompt file
-    const prompt_filename = try std.fmt.allocPrint(allocator, "{s}.md", .{found_hash.?});
-    defer allocator.free(prompt_filename);
+    // Read prompt file (pure hash, no extension)
+    const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", found_hash.? });
+    defer allocator.free(prompt_file_path);
 
-    const prompt_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", prompt_filename });
-    defer allocator.free(prompt_path);
-
-    // Copy to .prompts/conduct/
+    // Copy to .prompts/{path}/
     var sp = spinner.init(stdout, "Importing prompt");
     sp.start();
 
-    const conduct_dir = try std.fs.path.join(allocator, &.{ prompts_path, "conduct" });
-    defer allocator.free(conduct_dir);
-    fs.cwd().makePath(conduct_dir) catch {};
+    const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, found_path });
+    defer allocator.free(target_dir);
+    fs.cwd().makePath(target_dir) catch {};
 
-    const dest_filename = if (found_name) |n|
-        try std.fmt.allocPrint(allocator, "{s}.md", .{n})
-    else
-        try allocator.dupe(u8, prompt_filename);
+    // Find next available sequence number with gap filling
+    const seq_num = findNextSequence(allocator, target_dir);
+
+    // Build filename: NN_name.format
+    const name_part = found_name orelse found_hash.?[0..8];
+    const dest_filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq_num, name_part, found_format });
     defer allocator.free(dest_filename);
 
-    const dest_path = try std.fs.path.join(allocator, &.{ conduct_dir, dest_filename });
+    const dest_path = try std.fs.path.join(allocator, &.{ target_dir, dest_filename });
     defer allocator.free(dest_path);
 
-    fs.copyFileAbsolute(prompt_path, dest_path, .{}) catch {
+    fs.copyFileAbsolute(prompt_file_path, dest_path, .{}) catch {
         sp.fail();
         try stderr.print("{s}{s}{s}Error:{s} Failed to copy prompt\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     sp.succeed();
 
-    try stdout.print("{s}{s}{s}✓{s} Imported prompt to .prompts/conduct/\n", .{ P, Color.bold, Color.green, Color.reset });
+    try stdout.print("{s}{s}{s}✓{s} Imported prompt to .prompts/{s}/\n", .{ P, Color.bold, Color.green, Color.reset, found_path });
     try stdout.print("{s}  File: {s}{s}{s}\n\n", .{ P, Color.cyan, dest_filename, Color.reset });
+}
+
+/// Find next available sequence number with gap filling
+/// If files 00_, 01_, 03_ exist, returns 2 (fills the gap)
+/// If files 00_, 01_, 02_ exist, returns 3 (next number)
+fn findNextSequence(allocator: std.mem.Allocator, dir_path: []const u8) u8 {
+    var used: [100]bool = [_]bool{false} ** 100;
+    var max_seq: u8 = 0;
+
+    var dir = fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return 0;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (iter.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+
+        // Parse sequence number from filename (NN_...)
+        if (entry.name.len < 3) continue;
+        if (entry.name[2] != '_') continue;
+
+        const seq = std.fmt.parseInt(u8, entry.name[0..2], 10) catch continue;
+        if (seq < 100) {
+            used[seq] = true;
+            if (seq >= max_seq) max_seq = seq + 1;
+        }
+    }
+
+    // Find first gap
+    var i: u8 = 0;
+    while (i < max_seq) : (i += 1) {
+        if (!used[i]) return i;
+    }
+
+    // No gap found, return next number
+    _ = allocator;
+    return max_seq;
 }
