@@ -54,7 +54,7 @@ fn readConfig(allocator: std.mem.Allocator) !std.json.Parsed(std.json.Value) {
 }
 
 fn listConfig(stdout: anytype, allocator: std.mem.Allocator) !void {
-    try stdout.print("\n{s}{s}Configuration:{s}\n", .{ P, Color.bold, Color.reset });
+    try stdout.print("\n{s}{s}{s}Configuration:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     const parsed = readConfig(allocator) catch {
         try stdout.print("{s}  {s}(no configuration){s}\n\n", .{ P, Color.dim, Color.reset });
