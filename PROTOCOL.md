@@ -223,7 +223,7 @@ Individual prompts are stored by SHA-256 hash:
       "name": "git_commit",
       "description": "Git commit message format",
       "format": "md",
-      "path": "conduct",
+      "category": "conduct",
       "created_at": "1704067200"
     }
   ]
@@ -236,10 +236,10 @@ Individual prompts are stored by SHA-256 hash:
 | `name` | Prompt name (from frontmatter or filename) |
 | `description` | Description (from frontmatter or default) |
 | `format` | Original file extension (md, txt, etc.) |
-| `path` | Target directory (conduct or command) |
+| `category` | Target directory (conduct or command) |
 | `created_at` | Unix timestamp |
 
-When importing, the full filename is constructed as: `{path}/{sequence}_{name}.{format}`
+When importing, the full filename is constructed as: `{category}/{sequence}_{name}.{format}`
 
 ### 6.4 Bundle Storage
 
@@ -257,15 +257,15 @@ Bundles store references to prompts and meta-prompts by hash in `bundles/index.j
       "created_at": "1704067200",
       "meta_prompt": "f7g8h9...",
       "prompts": [
-        { "hash": "a1b2c3...", "path": "conduct" },
-        { "hash": "d4e5f6...", "path": "command" }
+        { "hash": "a1b2c3...", "category": "conduct" },
+        { "hash": "d4e5f6...", "category": "command" }
       ]
     }
   ]
 }
 ```
 
-The `path` in bundle references is just the directory name (conduct or command).
+The `category` in bundle references is just the directory name (conduct or command).
 Full prompt details (name, format, etc.) are stored in `prompts/index.json`.
 
 ### 6.6 Sequence Number Assignment

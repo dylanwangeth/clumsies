@@ -152,7 +152,7 @@ fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
 // PromptRef represents a prompt reference in a bundle
 const PromptRef = struct {
     hash: []const u8,
-    path: []const u8,
+    category: []const u8,
     name: []const u8,
     description: []const u8,
     format: []const u8,
@@ -284,7 +284,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     defer {
         for (prompt_refs.items) |ref| {
             allocator.free(ref.hash);
-            allocator.free(ref.path);
+            allocator.free(ref.category);
             allocator.free(ref.name);
             allocator.free(ref.description);
             allocator.free(ref.format);
@@ -383,10 +383,10 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
 
     // Add prompt references
     for (prompt_refs.items, 0..) |ref, idx| {
-        const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"path\": \"{s}\" }}", .{
+        const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
             if (idx > 0) "," else "",
             ref.hash,
-            ref.path,
+            ref.category,
         });
         defer allocator.free(ref_entry);
         try existing_bundles.appendSlice(allocator, ref_entry);
@@ -499,14 +499,14 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     try stdout.print("{s}{s}{s}Prompts ({d}):{s}\n", .{ P, Color.bold, Color.orange, prompts_arr.array.items.len, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}HASH{s}          {s}PATH{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}  {s}HASH{s}          {s}CATEGORY{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (prompts_arr.array.items) |ref| {
         const hash = if (ref.object.get("hash")) |h| h.string else "-";
-        const path = if (ref.object.get("path")) |p| p.string else "-";
+        const category = if (ref.object.get("category")) |p| p.string else "-";
         const short_hash = if (hash.len >= 8) hash[0..8] else hash;
-        try stdout.print("{s}  {s}{s}{s}      {s}\n", .{ P, Color.cyan, short_hash, Color.reset, path });
+        try stdout.print("{s}  {s}{s}{s}      {s}\n", .{ P, Color.cyan, short_hash, Color.reset, category });
     }
     try stdout.writeAll("\n");
 }
@@ -715,7 +715,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     defer {
         for (current_refs.items) |ref| {
             allocator.free(ref.hash);
-            allocator.free(ref.path);
+            allocator.free(ref.category);
             allocator.free(ref.name);
             allocator.free(ref.description);
             allocator.free(ref.format);
@@ -726,13 +726,13 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     if (found_bundle.?.object.get("prompts")) |prompts_arr| {
         for (prompts_arr.array.items) |ref| {
             const hash = if (ref.object.get("hash")) |h| h.string else continue;
-            const path = if (ref.object.get("path")) |p| p.string else continue;
-            // Extract format from path extension
-            const ext_idx = std.mem.lastIndexOf(u8, path, ".");
-            const fmt = if (ext_idx) |idx| path[idx + 1 ..] else "md";
+            const category = if (ref.object.get("category")) |p| p.string else continue;
+            // Extract format from category extension
+            const ext_idx = std.mem.lastIndexOf(u8, category, ".");
+            const fmt = if (ext_idx) |idx| category[idx + 1 ..] else "md";
             try current_refs.append(allocator, .{
                 .hash = try allocator.dupe(u8, hash),
-                .path = try allocator.dupe(u8, path),
+                .category = try allocator.dupe(u8, category),
                 .name = try allocator.dupe(u8, "-"),
                 .description = try allocator.dupe(u8, "-"),
                 .format = try allocator.dupe(u8, fmt),
@@ -791,8 +791,8 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                 defer allocator.free(dest_path);
                 fs.copyFileAbsolute(src, dest_path, .{}) catch {};
 
-                // Extract path: frontmatter category > file path detection > default
-                const prompt_path = if (fm.category) |cat|
+                // Extract category: frontmatter category > file path detection > default
+                const prompt_category = if (fm.category) |cat|
                     cat
                 else if (std.mem.indexOf(u8, file_path, "conduct") != null)
                     "conduct"
@@ -803,7 +803,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
                 try current_refs.append(allocator, .{
                     .hash = hash,
-                    .path = try allocator.dupe(u8, prompt_path),
+                    .category = try allocator.dupe(u8, prompt_category),
                     .name = name,
                     .description = description,
                     .format = format,
@@ -830,7 +830,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                 if (!should_remove) {
                     try new_refs.append(allocator, .{
                         .hash = try allocator.dupe(u8, ref.hash),
-                        .path = try allocator.dupe(u8, ref.path),
+                        .category = try allocator.dupe(u8, ref.category),
                         .name = try allocator.dupe(u8, ref.name),
                         .description = try allocator.dupe(u8, ref.description),
                         .format = try allocator.dupe(u8, ref.format),
@@ -841,7 +841,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             // Swap
             for (current_refs.items) |ref| {
                 allocator.free(ref.hash);
-                allocator.free(ref.path);
+                allocator.free(ref.category);
                 allocator.free(ref.name);
                 allocator.free(ref.description);
                 allocator.free(ref.format);
@@ -883,10 +883,10 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             try new_index.appendSlice(allocator, entry_start);
 
             for (current_refs.items, 0..) |ref, idx| {
-                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"path\": \"{s}\" }}", .{
+                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
                     if (idx > 0) "," else "",
                     ref.hash,
-                    ref.path,
+                    ref.category,
                 });
                 defer allocator.free(ref_entry);
                 try new_index.appendSlice(allocator, ref_entry);
@@ -1018,17 +1018,17 @@ fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, ba
             const name = try allocator.dupe(u8, fm.name orelse stripSequencePrefix(raw_name));
             const description = try allocator.dupe(u8, fm.description orelse "-");
             // Use frontmatter category if available, otherwise use base_name from directory
-            const prompt_path = fm.category orelse base_name;
+            const prompt_category = fm.category orelse base_name;
 
             // Copy to prompts/<hash> (pure hash, no extension)
             const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
             defer allocator.free(dest_path);
             fs.copyFileAbsolute(src_path, dest_path, .{}) catch {};
 
-            // Add reference (path is just the directory: conduct or command)
+            // Add reference (category is just the directory: conduct or command)
             try refs.append(allocator, .{
                 .hash = hash,
-                .path = try allocator.dupe(u8, prompt_path),
+                .category = try allocator.dupe(u8, prompt_category),
                 .name = name,
                 .description = description,
                 .format = format,
@@ -1074,18 +1074,18 @@ fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u8, r
                     const item_name = if (item.object.get("name")) |n| n.string else "-";
                     const item_desc = if (item.object.get("description")) |d| d.string else "-";
                     const item_format = if (item.object.get("format")) |f| f.string else "md";
-                    const item_path = if (item.object.get("path")) |p| p.string else "conduct";
+                    const item_category = if (item.object.get("category")) |p| p.string else "conduct";
                     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
                     seen_hashes.put(item_hash, {}) catch {};
 
-                    const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{
+                    const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{
                         if (first) "" else ",",
                         item_hash,
                         item_name,
                         item_desc,
                         item_format,
-                        item_path,
+                        item_category,
                         item_created,
                     });
                     defer allocator.free(entry);
@@ -1100,13 +1100,13 @@ fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u8, r
     for (refs) |ref| {
         if (seen_hashes.contains(ref.hash)) continue;
 
-        const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}", .{
+        const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}", .{
             if (first) "" else ",",
             ref.hash,
             ref.name,
             ref.description,
             ref.format,
-            ref.path,
+            ref.category,
             timestamp,
         });
         defer allocator.free(entry);
@@ -1135,11 +1135,11 @@ fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(
     if (item.object.get("prompts")) |prompts| {
         for (prompts.array.items, 0..) |ref, idx| {
             const hash = if (ref.object.get("hash")) |h| h.string else continue;
-            const path = if (ref.object.get("path")) |p| p.string else continue;
-            const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"path\": \"{s}\" }}", .{
+            const category = if (ref.object.get("category")) |p| p.string else continue;
+            const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
                 if (idx > 0) "," else "",
                 hash,
-                path,
+                category,
             });
             defer allocator.free(ref_entry);
             try buf.appendSlice(allocator, ref_entry);

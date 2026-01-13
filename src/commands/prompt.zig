@@ -256,8 +256,8 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     // Parse frontmatter for metadata
     const fm = parseFrontmatter(content);
 
-    // Extract path: frontmatter category > file path detection > default
-    const prompt_path = if (fm.category) |cat|
+    // Extract category: frontmatter > file path detection > default
+    const prompt_category = if (fm.category) |cat|
         cat
     else if (std.mem.indexOf(u8, file_path, "conduct") != null)
         "conduct"
@@ -326,9 +326,9 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
                     const item_format = if (item.object.get("format")) |f| f.string else "md";
                     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
-                    const item_path = if (item.object.get("path")) |p| p.string else "conduct";
+                    const item_category = if (item.object.get("category")) |p| p.string else "conduct";
 
-                    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_path, item_created });
+                    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
                     defer allocator.free(entry);
                     try existing_prompts.appendSlice(allocator, entry);
                 }
@@ -339,13 +339,13 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     }
 
     const timestamp = std.time.timestamp();
-    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
+    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
         if (existing_prompts.items.len > 20) "," else "",
         hash_hex,
         name,
         description,
         format,
-        prompt_path,
+        prompt_category,
         timestamp,
     });
     defer allocator.free(new_entry);
@@ -519,13 +519,13 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
 
         const item_desc = if (item.object.get("description")) |d| d.string else "-";
         const item_format = if (item.object.get("format")) |f| f.string else "md";
-        const item_path = if (item.object.get("path")) |p| p.string else "conduct";
+        const item_category = if (item.object.get("category")) |p| p.string else "conduct";
         const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
         if (!first) try new_prompts.appendSlice(allocator, ",");
         first = false;
 
-        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"path\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_path, item_created });
+        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
         defer allocator.free(entry);
         try new_prompts.appendSlice(allocator, entry);
     }
@@ -619,7 +619,7 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     var found_hash: ?[]const u8 = null;
     var found_name: ?[]const u8 = null;
     var found_format: []const u8 = "md";
-    var found_path: []const u8 = "conduct";
+    var found_category: []const u8 = "conduct";
 
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
@@ -627,7 +627,7 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             found_hash = item_hash;
             found_name = if (item.object.get("name")) |n| n.string else null;
             found_format = if (item.object.get("format")) |f| f.string else "md";
-            found_path = if (item.object.get("path")) |p| p.string else "conduct";
+            found_category = if (item.object.get("category")) |p| p.string else "conduct";
             break;
         }
     }
@@ -641,11 +641,11 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", found_hash.? });
     defer allocator.free(prompt_file_path);
 
-    // Copy to .prompts/{path}/
+    // Copy to .prompts/{category}/
     var sp = spinner.init(stdout, "Importing prompt");
     sp.start();
 
-    const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, found_path });
+    const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, found_category });
     defer allocator.free(target_dir);
     fs.cwd().makePath(target_dir) catch {};
 
@@ -667,7 +667,7 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     };
     sp.succeed();
 
-    try stdout.print("{s}{s}{s}✓{s} Imported prompt to .prompts/{s}/\n", .{ P, Color.bold, Color.green, Color.reset, found_path });
+    try stdout.print("{s}{s}{s}✓{s} Imported prompt to .prompts/{s}/\n", .{ P, Color.bold, Color.green, Color.reset, found_category });
     try stdout.print("{s}  File: {s}{s}{s}\n\n", .{ P, Color.cyan, dest_filename, Color.reset });
 }
 
