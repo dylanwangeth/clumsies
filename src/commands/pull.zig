@@ -3,6 +3,7 @@ const fs = std.fs;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const config = @import("config.zig");
+const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -17,10 +18,16 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);
 
+    try stdout.writeAll("\n");
+    var sp = spinner.init(stdout, "Pulling from remote");
+    sp.start();
+
     git.pull(allocator, prompts_path) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to pull from remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to pull from remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
+    sp.succeed();
 
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);
