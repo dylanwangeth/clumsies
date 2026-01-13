@@ -3,6 +3,7 @@ const fs = std.fs;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const config = @import("config.zig");
+const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -32,10 +33,21 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);
 
+    // Use unbuffered stdout for consistent ordering with spinner
+    const raw_stdout = std.fs.File.stdout();
+    _ = raw_stdout.write("\n") catch {};
+
+    var sp = spinner.init(stdout, "Cloning repository");
+    sp.start();
+
     git.clone(allocator, remote_url.?, prompts_path) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to clone repository\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        sp.fail();
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "{s}{s}{s}Error:{s} Failed to clone repository\n\n", .{ P, Color.bold, Color.red, Color.reset }) catch return;
+        _ = raw_stdout.write(line) catch {};
         return;
     };
+    sp.succeed();
 
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);
@@ -68,6 +80,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         }
     }
 
-    try stdout.print("\n{s}{s}{s}✓{s} Cloned to .prompts/\n", .{ P, Color.bold, Color.green, Color.reset });
-    try stdout.print("{s}  Remote: {s}{s}{s}\n\n", .{ P, Color.cyan, remote_url.?, Color.reset });
+    // Use unbuffered stdout for consistent ordering with spinner
+    var buf: [512]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "{s}  Remote: {s}{s}{s}\n\n", .{ P, Color.cyan, remote_url.?, Color.reset }) catch return;
+    _ = std.fs.File.stdout().write(line) catch {};
 }

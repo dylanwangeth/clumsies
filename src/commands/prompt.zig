@@ -138,7 +138,8 @@ fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     } else {
         var sp = spinner.init(stdout, "Syncing registry");
         sp.start();
-        git.pull(allocator, registry_path) catch {};
+        var _err: ?[]const u8 = null;
+        git.pull(allocator, registry_path, &_err) catch {};
         sp.succeed();
     }
 
@@ -366,9 +367,17 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     sp.start();
     git.addAll(allocator, registry_path) catch {};
     git.commit(allocator, registry_path, "Add prompt") catch {};
-    git.push(allocator, registry_path) catch {
+
+    var git_err: ?[]const u8 = null;
+    defer if (git_err) |e| allocator.free(e);
+
+    git.push(allocator, registry_path, &git_err) catch {
         sp.fail();
         try stderr.print("{s}{s}{s}Warning:{s} Saved locally but failed to push to remote\n", .{ P, Color.bold, Color.orange, Color.reset });
+        if (git_err) |e| {
+            try stderr.print("{s}{s}git:\n{s}{s}\n", .{ P, Color.dim, std.mem.trim(u8, e, "\n\r "), Color.reset });
+        }
+        return;
     };
     sp.succeed();
 
@@ -554,9 +563,17 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
     sp.start();
     git.addAll(allocator, registry_path) catch {};
     git.commit(allocator, registry_path, "Remove prompt") catch {};
-    git.push(allocator, registry_path) catch {
+
+    var git_err: ?[]const u8 = null;
+    defer if (git_err) |e| allocator.free(e);
+
+    git.push(allocator, registry_path, &git_err) catch {
         sp.fail();
         try stderr.print("{s}{s}{s}Warning:{s} Removed locally but failed to push\n", .{ P, Color.bold, Color.orange, Color.reset });
+        if (git_err) |e| {
+            try stderr.print("{s}{s}git:\n{s}{s}\n", .{ P, Color.dim, std.mem.trim(u8, e, "\n\r "), Color.reset });
+        }
+        return;
     };
     sp.succeed();
 
@@ -579,7 +596,7 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
     if (!commands.promptsExist()) {
         try stderr.print("{s}{s}{s}Error:{s} .prompts/ directory not found\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run {s}clumsies init <git-url>{s} first\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Run {s}clumsies init <bundle> <url>{s} or {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
         return;
     }
 

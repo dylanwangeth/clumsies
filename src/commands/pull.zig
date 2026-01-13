@@ -11,20 +11,30 @@ const P = commands.P;
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
     if (!commands.promptsExist()) {
         try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run {s}clumsies init <git-url>{s} or {s}clumsies clone <git-url>{s} first\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
+        try stderr.print("{s}Run {s}clumsies init <bundle> <url>{s} or {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
         return;
     }
 
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);
 
-    try stdout.writeAll("\n");
+    // Use unbuffered stdout for consistent ordering with spinner
+    const raw_stdout = std.fs.File.stdout();
+    _ = raw_stdout.write("\n") catch {};
+
     var sp = spinner.init(stdout, "Pulling from remote");
     sp.start();
 
-    git.pull(allocator, prompts_path) catch {
+    var git_err: ?[]const u8 = null;
+    defer if (git_err) |e| allocator.free(e);
+
+    git.pull(allocator, prompts_path, &git_err) catch {
         sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to pull from remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        if (git_err) |e| {
+            var buf: [512]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "{s}{s}git:\n{s}{s}\n", .{ P, Color.dim, std.mem.trim(u8, e, "\n\r "), Color.reset }) catch return;
+            _ = raw_stdout.write(line) catch {};
+        }
         return;
     };
     sp.succeed();
@@ -60,5 +70,5 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
         }
     }
 
-    try stdout.print("\n{s}{s}{s}✓{s} Pulled from remote\n\n", .{ P, Color.bold, Color.green, Color.reset });
+    _ = std.fs.File.stdout().write("\n") catch {};
 }

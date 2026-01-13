@@ -148,7 +148,8 @@ fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     } else {
         var sp = spinner.init(stdout, "Syncing registry");
         sp.start();
-        git.pull(allocator, registry_path) catch {};
+        var _err: ?[]const u8 = null;
+        git.pull(allocator, registry_path, &_err) catch {};
         sp.succeed();
     }
 
@@ -454,9 +455,13 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     sp4.start();
     git.addAll(allocator, registry_path) catch {};
     git.commit(allocator, registry_path, "Add bundle") catch {};
-    git.push(allocator, registry_path) catch {
+    var push_err: ?[]const u8 = null;
+    git.push(allocator, registry_path, &push_err) catch {
         sp4.fail();
         try stderr.print("{s}{s}{s}Warning:{s} Saved locally but failed to push to remote\n", .{ P, Color.bold, Color.orange, Color.reset });
+        if (push_err) |e| {
+            allocator.free(e);
+        }
     };
     sp4.succeed();
 
@@ -747,9 +752,17 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     sp_push.start();
     git.addAll(allocator, registry_path) catch {};
     git.commit(allocator, registry_path, "Update bundle") catch {};
-    git.push(allocator, registry_path) catch {
+
+    var git_err: ?[]const u8 = null;
+    defer if (git_err) |e| allocator.free(e);
+
+    git.push(allocator, registry_path, &git_err) catch {
         sp_push.fail();
         try stderr.print("{s}{s}{s}Warning:{s} Updated locally but failed to push\n", .{ P, Color.bold, Color.orange, Color.reset });
+        if (git_err) |e| {
+            try stderr.print("{s}{s}git:\n{s}{s}\n", .{ P, Color.dim, std.mem.trim(u8, e, "\n\r "), Color.reset });
+        }
+        return;
     };
     sp_push.succeed();
 
@@ -993,9 +1006,17 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
     sp.start();
     git.addAll(allocator, registry_path) catch {};
     git.commit(allocator, registry_path, "Remove bundle") catch {};
-    git.push(allocator, registry_path) catch {
+
+    var git_err: ?[]const u8 = null;
+    defer if (git_err) |e| allocator.free(e);
+
+    git.push(allocator, registry_path, &git_err) catch {
         sp.fail();
         try stderr.print("{s}{s}{s}Warning:{s} Removed locally but failed to push\n", .{ P, Color.bold, Color.orange, Color.reset });
+        if (git_err) |e| {
+            try stderr.print("{s}{s}git:\n{s}{s}\n", .{ P, Color.dim, std.mem.trim(u8, e, "\n\r "), Color.reset });
+        }
+        return;
     };
     sp.succeed();
 

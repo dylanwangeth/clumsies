@@ -84,7 +84,8 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     } else {
         var sp = spinner.init(stdout, "Updating registry");
         sp.start();
-        git.pull(allocator, registry_path) catch {};
+        var _err: ?[]const u8 = null;
+        git.pull(allocator, registry_path, &_err) catch {};
         sp.succeed();
     }
 
