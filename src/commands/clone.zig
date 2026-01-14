@@ -51,8 +51,9 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);
 
-    // Sync meta-prompt files: .prompts/ -> root
-    syncMetaPromptFiles(allocator, prompts_path, cwd);
+    // Move meta-prompt files: .prompts/ -> root (delete from .prompts/)
+    // If root already has the file, creates .remote.md version
+    syncMetaPromptFiles(allocator, prompts_path, cwd, true);
 
     // Use unbuffered stdout for consistent ordering with spinner
     var buf: [512]u8 = undefined;

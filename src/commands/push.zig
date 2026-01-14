@@ -30,8 +30,8 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);
 
-    // Sync meta-prompt files: root -> .prompts/
-    syncMetaPromptFiles(allocator, cwd, prompts_path);
+    // Copy meta-prompt files: root -> .prompts/ (keep root copy)
+    syncMetaPromptFiles(allocator, cwd, prompts_path, false);
 
     // Git add, commit, push
     git.addAll(allocator, prompts_path) catch {

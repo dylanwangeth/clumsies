@@ -229,7 +229,9 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
 }
 
 /// Sync meta-prompt files between directories
-pub fn syncMetaPromptFiles(allocator: std.mem.Allocator, src_dir: []const u8, dest_dir: []const u8) void {
+/// If delete_source is true, removes source file after copy (move semantics)
+/// If dest exists and delete_source is true, creates .remote.md version instead
+pub fn syncMetaPromptFiles(allocator: std.mem.Allocator, src_dir: []const u8, dest_dir: []const u8, delete_source: bool) void {
     const entry_files_str = config.getEntryFilesStr(allocator) catch null;
     defer if (entry_files_str) |s| allocator.free(s);
 
@@ -238,22 +240,58 @@ pub fn syncMetaPromptFiles(allocator: std.mem.Allocator, src_dir: []const u8, de
         while (iter.next()) |entry_file| {
             const trimmed = std.mem.trim(u8, entry_file, " ");
             if (trimmed.len == 0) continue;
-
-            const src = std.fs.path.join(allocator, &.{ src_dir, trimmed }) catch continue;
-            defer allocator.free(src);
-            const dest = std.fs.path.join(allocator, &.{ dest_dir, trimmed }) catch continue;
-            defer allocator.free(dest);
-
-            fs.copyFileAbsolute(src, dest, .{}) catch continue;
+            syncSingleFile(allocator, src_dir, dest_dir, trimmed, delete_source);
         }
     } else {
         for (config.DEFAULT_ENTRY_FILES) |entry_file| {
-            const src = std.fs.path.join(allocator, &.{ src_dir, entry_file }) catch continue;
-            defer allocator.free(src);
-            const dest = std.fs.path.join(allocator, &.{ dest_dir, entry_file }) catch continue;
-            defer allocator.free(dest);
-
-            fs.copyFileAbsolute(src, dest, .{}) catch continue;
+            syncSingleFile(allocator, src_dir, dest_dir, entry_file, delete_source);
         }
     }
+}
+
+fn syncSingleFile(allocator: std.mem.Allocator, src_dir: []const u8, dest_dir: []const u8, filename: []const u8, delete_source: bool) void {
+    const src = std.fs.path.join(allocator, &.{ src_dir, filename }) catch return;
+    defer allocator.free(src);
+
+    // Check if source exists
+    fs.accessAbsolute(src, .{}) catch return;
+
+    const dest = std.fs.path.join(allocator, &.{ dest_dir, filename }) catch return;
+    defer allocator.free(dest);
+
+    // Check if dest already exists (only matters for move/pull/clone)
+    const dest_exists = blk: {
+        fs.accessAbsolute(dest, .{}) catch break :blk false;
+        break :blk true;
+    };
+
+    if (delete_source and dest_exists) {
+        // Dest exists, generate .remote.md name
+        // e.g., CLAUDE.md -> CLAUDE.remote.md
+        const remote_name = generateRemoteName(allocator, filename) catch return;
+        defer allocator.free(remote_name);
+        const remote_dest = std.fs.path.join(allocator, &.{ dest_dir, remote_name }) catch return;
+        defer allocator.free(remote_dest);
+
+        fs.copyFileAbsolute(src, remote_dest, .{}) catch return;
+    } else {
+        fs.copyFileAbsolute(src, dest, .{}) catch return;
+    }
+
+    // Delete source if requested (move semantics)
+    if (delete_source) {
+        fs.deleteFileAbsolute(src) catch {};
+    }
+}
+
+fn generateRemoteName(allocator: std.mem.Allocator, filename: []const u8) ![]const u8 {
+    // CLAUDE.md -> CLAUDE.remote.md
+    // foo.bar.md -> foo.bar.remote.md
+    if (std.mem.lastIndexOfScalar(u8, filename, '.')) |dot_idx| {
+        const name = filename[0..dot_idx];
+        const ext = filename[dot_idx..];
+        return std.fmt.allocPrint(allocator, "{s}.remote{s}", .{ name, ext });
+    }
+    // No extension, just append .remote
+    return std.fmt.allocPrint(allocator, "{s}.remote", .{filename});
 }
