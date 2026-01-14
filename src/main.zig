@@ -35,6 +35,25 @@ const Command = enum {
     none,
 };
 
+// Command lookup table for efficient parsing
+const command_map = std.StaticStringMap(Command).initComptime(.{
+    .{ "init", .init },
+    .{ "push", .push },
+    .{ "pull", .pull },
+    .{ "clone", .clone },
+    .{ "status", .status },
+    .{ "log", .log },
+    .{ "bundle", .bundle },
+    .{ "prompt", .prompt },
+    .{ "config", .config },
+    .{ "upgrade", .upgrade },
+    .{ "help", .help },
+    .{ "-h", .help },
+    .{ "--help", .help },
+    .{ "-v", .version },
+    .{ "--version", .version },
+});
+
 pub fn main() !void {
     // Setup stdout/stderr with buffers
     var stdout_buffer: [4096]u8 = undefined;
@@ -58,53 +77,14 @@ pub fn main() !void {
     var cmd: Command = .none;
     var cmd_args_start: usize = 1;
 
-    // Parse command
+    // Parse command using lookup table
     for (args[1..], 1..) |arg, i| {
-        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
-            cmd = .version;
-            break;
-        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "help")) {
-            cmd = .help;
-            break;
-        } else if (std.mem.eql(u8, arg, "init")) {
-            cmd = .init;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "push")) {
-            cmd = .push;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "pull")) {
-            cmd = .pull;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "clone")) {
-            cmd = .clone;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "status")) {
-            cmd = .status;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "log")) {
-            cmd = .log;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "bundle")) {
-            cmd = .bundle;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "prompt")) {
-            cmd = .prompt;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "config")) {
-            cmd = .config;
-            cmd_args_start = i + 1;
-            break;
-        } else if (std.mem.eql(u8, arg, "upgrade")) {
-            cmd = .upgrade;
-            cmd_args_start = i + 1;
+        if (command_map.get(arg)) |matched_cmd| {
+            cmd = matched_cmd;
+            // Version and help don't need additional args
+            if (cmd != .version and cmd != .help) {
+                cmd_args_start = i + 1;
+            }
             break;
         }
     }

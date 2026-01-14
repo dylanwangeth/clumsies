@@ -1,5 +1,9 @@
 const std = @import("std");
+const fs = std.fs;
 const styles = @import("../styles.zig");
+const git = @import("../git.zig");
+const spinner = @import("../spinner.zig");
+const config = @import("config.zig");
 
 pub const Color = styles.Color;
 pub const P = styles.P;
@@ -161,4 +165,87 @@ pub fn formatDate(timestamp: i64, buf: *[10]u8) []const u8 {
 
     _ = std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{ year, month, day }) catch return "0000-00-00";
     return buf[0..10];
+}
+
+/// Ensure registry is cloned and synced, returns registry path
+/// Caller must free the returned path
+pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) ![]const u8 {
+    const registry_url = config.getRegistry(allocator) catch {
+        try stderr.print("\n{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        return error.NoRegistry;
+    };
+    defer allocator.free(registry_url);
+
+    const base_path = getBasePath(allocator) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine config path\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return error.NoBasePath;
+    };
+    defer allocator.free(base_path);
+
+    const registry_path = try std.fs.path.join(allocator, &.{ base_path, "registry" });
+    errdefer allocator.free(registry_path);
+
+    const registry_exists = blk: {
+        var dir = fs.openDirAbsolute(registry_path, .{}) catch break :blk false;
+        dir.close();
+        break :blk true;
+    };
+
+    // Print leading newline for spinner output
+    const stdout_raw = std.fs.File.stdout();
+    _ = stdout_raw.write("\n") catch {};
+
+    if (!registry_exists) {
+        var sp = spinner.init(stdout, "Fetching registry");
+        sp.start();
+        fs.cwd().makePath(base_path) catch {};
+        git.clone(allocator, registry_url, registry_path) catch {
+            sp.fail();
+            try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            return error.CloneFailed;
+        };
+        sp.succeed();
+    } else {
+        var sp = spinner.init(stdout, "Syncing registry");
+        sp.start();
+        var git_err: ?[]const u8 = null;
+        git.pull(allocator, registry_path, &git_err) catch {
+            // Log warning but don't fail - local cache may still be usable
+            if (git_err) |e| allocator.free(e);
+        };
+        sp.succeed();
+    }
+
+    return registry_path;
+}
+
+/// Sync meta-prompt files between directories
+pub fn syncMetaPromptFiles(allocator: std.mem.Allocator, src_dir: []const u8, dest_dir: []const u8) void {
+    const entry_files_str = config.getEntryFilesStr(allocator) catch null;
+    defer if (entry_files_str) |s| allocator.free(s);
+
+    if (entry_files_str) |ef_str| {
+        var iter = std.mem.splitSequence(u8, ef_str, ",");
+        while (iter.next()) |entry_file| {
+            const trimmed = std.mem.trim(u8, entry_file, " ");
+            if (trimmed.len == 0) continue;
+
+            const src = std.fs.path.join(allocator, &.{ src_dir, trimmed }) catch continue;
+            defer allocator.free(src);
+            const dest = std.fs.path.join(allocator, &.{ dest_dir, trimmed }) catch continue;
+            defer allocator.free(dest);
+
+            fs.copyFileAbsolute(src, dest, .{}) catch continue;
+        }
+    } else {
+        for (config.DEFAULT_ENTRY_FILES) |entry_file| {
+            const src = std.fs.path.join(allocator, &.{ src_dir, entry_file }) catch continue;
+            defer allocator.free(src);
+            const dest = std.fs.path.join(allocator, &.{ dest_dir, entry_file }) catch continue;
+            defer allocator.free(dest);
+
+            fs.copyFileAbsolute(src, dest, .{}) catch continue;
+        }
+    }
 }

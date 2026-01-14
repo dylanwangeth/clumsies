@@ -13,6 +13,7 @@ const stripSequencePrefix = commands.stripSequencePrefix;
 const hexEncode = commands.hexEncode;
 const findNextSequence = commands.findNextSequence;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
+const ensureRegistry = commands.ensureRegistry;
 
 const SubCommand = enum {
     list,
@@ -65,54 +66,6 @@ fn showUsage(stderr: anytype) !void {
     try stderr.print("{s}  {s}show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}rm{s} <hash>         Remove prompt from registry\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}import{s} <hash>     Import prompt to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
-}
-
-fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) ![]const u8 {
-    const registry_url = config.getRegistry(allocator) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
-        return error.NoRegistry;
-    };
-    defer allocator.free(registry_url);
-
-    const base_path = commands.getBasePath(allocator) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not determine config path\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return error.NoBasePath;
-    };
-    defer allocator.free(base_path);
-
-    const registry_path = try std.fs.path.join(allocator, &.{ base_path, "registry" });
-
-    const registry_exists = blk: {
-        var dir = fs.openDirAbsolute(registry_path, .{}) catch break :blk false;
-        dir.close();
-        break :blk true;
-    };
-
-    // Print leading newline for spinner output (only once per command)
-    const stdout_raw = std.fs.File.stdout();
-    _ = stdout_raw.write("\n") catch {};
-
-    if (!registry_exists) {
-        var sp = spinner.init(stdout, "Fetching registry");
-        sp.start();
-        fs.cwd().makePath(base_path) catch {};
-        git.clone(allocator, registry_url, registry_path) catch {
-            sp.fail();
-            try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
-            allocator.free(registry_path);
-            return error.CloneFailed;
-        };
-        sp.succeed();
-    } else {
-        var sp = spinner.init(stdout, "Syncing registry");
-        sp.start();
-        var _err: ?[]const u8 = null;
-        git.pull(allocator, registry_path, &_err) catch {};
-        sp.succeed();
-    }
-
-    return registry_path;
 }
 
 fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {

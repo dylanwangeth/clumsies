@@ -86,8 +86,11 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     } else {
         var sp = spinner.init(stdout, "Updating registry");
         sp.start();
-        var _err: ?[]const u8 = null;
-        git.pull(allocator, registry_path, &_err) catch {};
+        var git_err: ?[]const u8 = null;
+        git.pull(allocator, registry_path, &git_err) catch {
+            // Log warning but continue - local cache may still be usable
+            if (git_err) |e| allocator.free(e);
+        };
         sp.succeed();
     }
 
