@@ -7,7 +7,6 @@ const P = styles.P;
 const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 
 pub const Spinner = struct {
-    writer: *std.Io.Writer,
     message: []const u8,
     frame: usize = 0,
     running: bool = false,
@@ -59,9 +58,8 @@ pub const Spinner = struct {
     }
 };
 
-pub fn init(writer: *std.Io.Writer, message: []const u8) Spinner {
+pub fn init(_: anytype, message: []const u8) Spinner {
     return Spinner{
-        .writer = writer,
         .message = message,
     };
 }

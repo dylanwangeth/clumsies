@@ -7,6 +7,11 @@ const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
+const Frontmatter = commands.Frontmatter;
+const parseFrontmatter = commands.parseFrontmatter;
+const stripSequencePrefix = commands.stripSequencePrefix;
+const hexEncode = commands.hexEncode;
+const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 
 const SubCommand = enum {
     list,
@@ -16,47 +21,6 @@ const SubCommand = enum {
     rm,
     none,
 };
-
-// Frontmatter metadata for bundle (from meta-prompt file)
-const Frontmatter = struct {
-    name: ?[]const u8 = null,
-    description: ?[]const u8 = null,
-    category: ?[]const u8 = null,
-    task: ?[]const u8 = null,
-};
-
-fn parseFrontmatter(content: []const u8) Frontmatter {
-    var fm = Frontmatter{};
-
-    // Check for frontmatter delimiter
-    if (!std.mem.startsWith(u8, content, "---")) return fm;
-
-    // Find end delimiter
-    const rest = content[3..];
-    const end_idx = std.mem.indexOf(u8, rest, "\n---") orelse return fm;
-    const frontmatter_block = rest[0..end_idx];
-
-    // Parse line by line
-    var lines = std.mem.splitScalar(u8, frontmatter_block, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (std.mem.startsWith(u8, trimmed, "name:")) {
-            const value = std.mem.trim(u8, trimmed[5..], " \t");
-            if (value.len > 0) fm.name = value;
-        } else if (std.mem.startsWith(u8, trimmed, "description:")) {
-            const value = std.mem.trim(u8, trimmed[12..], " \t");
-            if (value.len > 0) fm.description = value;
-        } else if (std.mem.startsWith(u8, trimmed, "category:")) {
-            const value = std.mem.trim(u8, trimmed[9..], " \t");
-            if (value.len > 0) fm.category = value;
-        } else if (std.mem.startsWith(u8, trimmed, "task:")) {
-            const value = std.mem.trim(u8, trimmed[5..], " \t");
-            if (value.len > 0) fm.task = value;
-        }
-    }
-
-    return fm;
-}
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
@@ -179,7 +143,7 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -247,7 +211,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
         try stderr.print("\n{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_path_arg });
         return;
     };
-    const meta_content = meta_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         meta_file.close();
         try stderr.print("\n{s}{s}{s}Error:{s} Failed to read meta-prompt file\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -349,11 +313,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     var hash_bytes: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(meta_content, &hash_bytes, .{});
     var hash_hex: [64]u8 = undefined;
-    for (hash_bytes, 0..) |byte, i| {
-        const hex_chars = "0123456789abcdef";
-        hash_hex[i * 2] = hex_chars[byte >> 4];
-        hash_hex[i * 2 + 1] = hex_chars[byte & 0x0f];
-    }
+    hexEncode(&hash_bytes, &hash_hex);
     const meta_prompt_hash = try allocator.dupe(u8, &hash_hex);
     defer allocator.free(meta_prompt_hash);
 
@@ -386,7 +346,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     defer existing_bundles.deinit(allocator);
 
     if (fs.openFileAbsolute(index_path, .{})) |idx_file| {
-        const idx_content = idx_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+        const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
             idx_file.close();
             sp3.fail();
             try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -562,7 +522,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                 try stderr.print("{s}{s}{s}Error:{s} Could not open file: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, file_arg });
                 return;
             };
-            const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+            const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
                 file.close();
                 sp_add.fail();
                 try stderr.print("{s}{s}{s}Error:{s} Failed to read file: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, file_arg });
@@ -575,11 +535,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             var hash_bytes: [32]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(content, &hash_bytes, .{});
             var hash_hex: [64]u8 = undefined;
-            for (hash_bytes, 0..) |byte, idx| {
-                const hex_chars = "0123456789abcdef";
-                hash_hex[idx * 2] = hex_chars[byte >> 4];
-                hash_hex[idx * 2 + 1] = hex_chars[byte & 0x0f];
-            }
+            hexEncode(&hash_bytes, &hash_hex);
             const hash = try allocator.dupe(u8, &hash_hex);
 
             // Extract metadata
@@ -633,7 +589,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         try stderr.print("{s}{s}{s}Error:{s} Failed to read bundle index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
-    const idx_content = idx_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         idx_file.close();
         sp_update.fail();
         try stderr.print("{s}{s}{s}Error:{s} Failed to read bundle index\n\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -798,7 +754,7 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -868,7 +824,7 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     }
 
     if (fs.openFileAbsolute(prompts_index_path, .{})) |prompts_file| {
-        const prompts_content = prompts_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+        const prompts_content = prompts_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
             prompts_file.close();
             return;
         };
@@ -946,7 +902,7 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
         return;
     };
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         file.close();
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -1033,7 +989,7 @@ fn bundleExists(allocator: std.mem.Allocator, registry_path: []const u8, name: [
     const file = fs.openFileAbsolute(index_path, .{}) catch return false;
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return false;
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch return false;
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return false;
@@ -1046,32 +1002,6 @@ fn bundleExists(allocator: std.mem.Allocator, registry_path: []const u8, name: [
         if (std.mem.eql(u8, item_name, name)) return true;
     }
     return false;
-}
-
-fn computeFileHash(allocator: std.mem.Allocator, file_path: []const u8) ![]const u8 {
-    const file = try fs.openFileAbsolute(file_path, .{});
-    defer file.close();
-
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    var buf: [4096]u8 = undefined;
-
-    while (true) {
-        const n = try file.read(&buf);
-        if (n == 0) break;
-        hasher.update(buf[0..n]);
-    }
-
-    var hash: [32]u8 = undefined;
-    hasher.final(&hash);
-
-    var hash_hex: [64]u8 = undefined;
-    for (hash, 0..) |byte, i| {
-        const hex_chars = "0123456789abcdef";
-        hash_hex[i * 2] = hex_chars[byte >> 4];
-        hash_hex[i * 2 + 1] = hex_chars[byte & 0x0f];
-    }
-
-    return allocator.dupe(u8, &hash_hex);
 }
 
 fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, base_name: []const u8, prompts_dir: []const u8, refs: *std.ArrayListUnmanaged(PromptRef)) !void {
@@ -1096,7 +1026,7 @@ fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, ba
 
             // Read file content for hash and frontmatter
             const file = fs.openFileAbsolute(src_path, .{}) catch continue;
-            const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+            const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
                 file.close();
                 continue;
             };
@@ -1107,11 +1037,7 @@ fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, ba
             var hash_bytes: [32]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(content, &hash_bytes, .{});
             var hash_hex: [64]u8 = undefined;
-            for (hash_bytes, 0..) |byte, i| {
-                const hex_chars = "0123456789abcdef";
-                hash_hex[i * 2] = hex_chars[byte >> 4];
-                hash_hex[i * 2 + 1] = hex_chars[byte & 0x0f];
-            }
+            hexEncode(&hash_bytes, &hash_hex);
             const hash = try allocator.dupe(u8, &hash_hex);
 
             // Parse frontmatter for metadata (only for text files)
@@ -1168,7 +1094,7 @@ fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u8, r
 
     // Read and preserve existing entries
     if (fs.openFileAbsolute(index_path, .{})) |file| {
-        const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
             file.close();
             return;
         };
@@ -1258,16 +1184,4 @@ fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(
         }
     }
     try buf.appendSlice(allocator, "\n      ]\n    }");
-}
-
-/// Strip sequence prefix (NN_) from filename if present
-/// e.g., "01_review_commit" -> "review_commit"
-fn stripSequencePrefix(name: []const u8) []const u8 {
-    if (name.len >= 3 and name[2] == '_') {
-        // Check if first two chars are digits
-        if (std.ascii.isDigit(name[0]) and std.ascii.isDigit(name[1])) {
-            return name[3..];
-        }
-    }
-    return name;
 }

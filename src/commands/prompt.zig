@@ -7,6 +7,12 @@ const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
+const Frontmatter = commands.Frontmatter;
+const parseFrontmatter = commands.parseFrontmatter;
+const stripSequencePrefix = commands.stripSequencePrefix;
+const hexEncode = commands.hexEncode;
+const findNextSequence = commands.findNextSequence;
+const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 
 const SubCommand = enum {
     list,
@@ -16,43 +22,6 @@ const SubCommand = enum {
     import,
     none,
 };
-
-// Frontmatter metadata
-const Frontmatter = struct {
-    name: ?[]const u8 = null,
-    description: ?[]const u8 = null,
-    category: ?[]const u8 = null,
-};
-
-fn parseFrontmatter(content: []const u8) Frontmatter {
-    var fm = Frontmatter{};
-
-    // Check for frontmatter delimiter
-    if (!std.mem.startsWith(u8, content, "---")) return fm;
-
-    // Find end delimiter
-    const rest = content[3..];
-    const end_idx = std.mem.indexOf(u8, rest, "\n---") orelse return fm;
-    const frontmatter_block = rest[0..end_idx];
-
-    // Parse line by line
-    var lines = std.mem.splitScalar(u8, frontmatter_block, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (std.mem.startsWith(u8, trimmed, "name:")) {
-            const value = std.mem.trim(u8, trimmed[5..], " \t");
-            if (value.len > 0) fm.name = value;
-        } else if (std.mem.startsWith(u8, trimmed, "description:")) {
-            const value = std.mem.trim(u8, trimmed[12..], " \t");
-            if (value.len > 0) fm.description = value;
-        } else if (std.mem.startsWith(u8, trimmed, "category:")) {
-            const value = std.mem.trim(u8, trimmed[9..], " \t");
-            if (value.len > 0) fm.category = value;
-        }
-    }
-
-    return fm;
-}
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
@@ -159,7 +128,7 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -232,7 +201,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read file\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -242,11 +211,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(content, &hash, .{});
     var hash_hex: [64]u8 = undefined;
-    for (hash, 0..) |byte, i| {
-        const hex_chars = "0123456789abcdef";
-        hash_hex[i * 2] = hex_chars[byte >> 4];
-        hash_hex[i * 2 + 1] = hex_chars[byte & 0x0f];
-    }
+    hexEncode(&hash, &hash_hex);
 
     // Extract file extension (format)
     const basename = std.fs.path.basename(file_path);
@@ -307,7 +272,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     defer existing_prompts.deinit(allocator);
 
     if (fs.openFileAbsolute(index_path, .{})) |idx_file| {
-        const idx_content = idx_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+        const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
             idx_file.close();
             try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
@@ -408,7 +373,7 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -453,7 +418,7 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     };
     defer prompt_file.close();
 
-    const prompt_content = prompt_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const prompt_content = prompt_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read prompt\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -488,7 +453,7 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
         return;
     };
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         file.close();
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -615,7 +580,7 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -667,7 +632,7 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     fs.cwd().makePath(target_dir) catch {};
 
     // Find next available sequence number with gap filling
-    const seq_num = findNextSequence(allocator, target_dir);
+    const seq_num = findNextSequence(target_dir);
 
     // Build filename: NN_name.format
     const name_part = found_name orelse found_hash.?[0..8];
@@ -686,52 +651,4 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
     try stdout.print("{s}{s}{s}✓{s} Imported prompt to .prompts/{s}/\n", .{ P, Color.bold, Color.green, Color.reset, found_category });
     try stdout.print("{s}  File: {s}{s}{s}\n\n", .{ P, Color.cyan, dest_filename, Color.reset });
-}
-
-/// Find next available sequence number with gap filling
-/// If files 00_, 01_, 03_ exist, returns 2 (fills the gap)
-/// If files 00_, 01_, 02_ exist, returns 3 (next number)
-fn findNextSequence(allocator: std.mem.Allocator, dir_path: []const u8) u8 {
-    var used: [100]bool = [_]bool{false} ** 100;
-    var max_seq: u8 = 0;
-
-    var dir = fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return 0;
-    defer dir.close();
-
-    var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
-        if (entry.kind != .file) continue;
-
-        // Parse sequence number from filename (NN_...)
-        if (entry.name.len < 3) continue;
-        if (entry.name[2] != '_') continue;
-
-        const seq = std.fmt.parseInt(u8, entry.name[0..2], 10) catch continue;
-        if (seq < 100) {
-            used[seq] = true;
-            if (seq >= max_seq) max_seq = seq + 1;
-        }
-    }
-
-    // Find first gap
-    var i: u8 = 0;
-    while (i < max_seq) : (i += 1) {
-        if (!used[i]) return i;
-    }
-
-    // No gap found, return next number
-    _ = allocator;
-    return max_seq;
-}
-
-/// Strip sequence prefix (NN_) from filename if present
-/// e.g., "01_review_commit" -> "review_commit"
-fn stripSequencePrefix(name: []const u8) []const u8 {
-    if (name.len >= 3 and name[2] == '_') {
-        // Check if first two chars are digits
-        if (std.ascii.isDigit(name[0]) and std.ascii.isDigit(name[1])) {
-            return name[3..];
-        }
-    }
-    return name;
 }

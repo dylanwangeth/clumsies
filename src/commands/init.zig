@@ -7,6 +7,8 @@ const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
+const findNextSequence = commands.findNextSequence;
+const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Parse args: init <bundle> <url>
@@ -98,7 +100,7 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
         try stderr.print("{s}Run {s}clumsies bundle list{s} to see available bundles\n\n", .{ P, Color.cyan, Color.reset });
         return;
     };
-    const index_content = index_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    const index_content = index_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         index_file.close();
         try stderr.print("{s}{s}{s}Error:{s} Failed to read bundles index\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -148,7 +150,7 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     var prompts_index: ?std.json.Parsed(std.json.Value) = null;
     if (fs.openFileAbsolute(prompts_index_path, .{})) |pf| {
         defer pf.close();
-        if (pf.readToEndAlloc(allocator, 10 * 1024 * 1024)) |content| {
+        if (pf.readToEndAlloc(allocator, MAX_FILE_SIZE)) |content| {
             defer allocator.free(content);
             prompts_index = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch null;
         } else |_| {}
@@ -207,7 +209,7 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
 
         // Determine next sequence number
         const target_dir = if (std.mem.eql(u8, category, "command")) command_path else conduct_path;
-        const seq = findNextSequence(allocator, target_dir);
+        const seq = findNextSequence(target_dir);
 
         // Destination: .prompts/{category}/{seq}_{name}.{format}
         const filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq, prompt_name, prompt_format });
@@ -228,8 +230,9 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     defer allocator.free(meta_src);
 
     // Get target filename from config or default to CLAUDE.md
-    const meta_prompt_filename = config.getMetaPromptFile(allocator) catch null orelse "CLAUDE.md";
-    defer if (config.getMetaPromptFile(allocator) catch null) |f| allocator.free(f);
+    const meta_prompt_file_opt = config.getMetaPromptFile(allocator) catch null;
+    defer if (meta_prompt_file_opt) |f| allocator.free(f);
+    const meta_prompt_filename = meta_prompt_file_opt orelse "CLAUDE.md";
 
     // Copy to workspace root (parent of .prompts/)
     const cwd = std.process.getCwdAlloc(allocator) catch {
@@ -265,28 +268,4 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
         return;
     };
     try stdout.print("{s}{s}✓{s} Added remote: {s}{s}{s}\n\n", .{ P, Color.green, Color.reset, Color.cyan, remote_url, Color.reset });
-}
-
-fn findNextSequence(_: std.mem.Allocator, dir_path: []const u8) u8 {
-    var used: [100]bool = .{false} ** 100;
-
-    var dir = fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return 0;
-    defer dir.close();
-
-    var iter = dir.iterate();
-    while (iter.next() catch return 0) |entry| {
-        if (entry.kind != .file) continue;
-        if (entry.name.len >= 3 and entry.name[2] == '_') {
-            if (std.ascii.isDigit(entry.name[0]) and std.ascii.isDigit(entry.name[1])) {
-                const seq = (entry.name[0] - '0') * 10 + (entry.name[1] - '0');
-                if (seq < 100) used[seq] = true;
-            }
-        }
-    }
-
-    // Find first unused
-    for (used, 0..) |is_used, i| {
-        if (!is_used) return @intCast(i);
-    }
-    return 99;
 }

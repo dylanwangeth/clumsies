@@ -4,6 +4,108 @@ const styles = @import("../styles.zig");
 pub const Color = styles.Color;
 pub const P = styles.P;
 
+// Shared constants
+pub const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+pub const MAX_SEQUENCE_NUMBER: u8 = 99;
+
+// Frontmatter metadata structure
+pub const Frontmatter = struct {
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    category: ?[]const u8 = null,
+    task: ?[]const u8 = null,
+};
+
+/// Parse YAML frontmatter from markdown content
+pub fn parseFrontmatter(content: []const u8) Frontmatter {
+    var fm = Frontmatter{};
+
+    // Check for frontmatter delimiter
+    if (!std.mem.startsWith(u8, content, "---")) return fm;
+
+    // Find end delimiter
+    const rest = content[3..];
+    const end_idx = std.mem.indexOf(u8, rest, "\n---") orelse return fm;
+    const frontmatter_block = rest[0..end_idx];
+
+    // Parse line by line
+    var lines = std.mem.splitScalar(u8, frontmatter_block, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "name:")) {
+            const value = std.mem.trim(u8, trimmed[5..], " \t");
+            if (value.len > 0) fm.name = value;
+        } else if (std.mem.startsWith(u8, trimmed, "description:")) {
+            const value = std.mem.trim(u8, trimmed[12..], " \t");
+            if (value.len > 0) fm.description = value;
+        } else if (std.mem.startsWith(u8, trimmed, "category:")) {
+            const value = std.mem.trim(u8, trimmed[9..], " \t");
+            if (value.len > 0) fm.category = value;
+        } else if (std.mem.startsWith(u8, trimmed, "task:")) {
+            const value = std.mem.trim(u8, trimmed[5..], " \t");
+            if (value.len > 0) fm.task = value;
+        }
+    }
+
+    return fm;
+}
+
+/// Strip sequence prefix (NN_) from filename if present
+/// e.g., "01_review_commit" -> "review_commit"
+pub fn stripSequencePrefix(name: []const u8) []const u8 {
+    if (name.len >= 3 and name[2] == '_') {
+        // Check if first two chars are digits
+        if (std.ascii.isDigit(name[0]) and std.ascii.isDigit(name[1])) {
+            return name[3..];
+        }
+    }
+    return name;
+}
+
+/// Encode bytes to hexadecimal string
+pub fn hexEncode(bytes: []const u8, out: []u8) void {
+    const hex_chars = "0123456789abcdef";
+    for (bytes, 0..) |byte, i| {
+        out[i * 2] = hex_chars[byte >> 4];
+        out[i * 2 + 1] = hex_chars[byte & 0x0f];
+    }
+}
+
+/// Find next available sequence number with gap filling
+/// If files 00_, 01_, 03_ exist, returns 2 (fills the gap)
+/// If files 00_, 01_, 02_ exist, returns 3 (next number)
+pub fn findNextSequence(dir_path: []const u8) u8 {
+    var used: [100]bool = [_]bool{false} ** 100;
+    var max_seq: u8 = 0;
+
+    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return 0;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (iter.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+
+        // Parse sequence number from filename (NN_...)
+        if (entry.name.len < 3) continue;
+        if (entry.name[2] != '_') continue;
+
+        const seq = std.fmt.parseInt(u8, entry.name[0..2], 10) catch continue;
+        if (seq < 100) {
+            used[seq] = true;
+            if (seq >= max_seq) max_seq = seq + 1;
+        }
+    }
+
+    // Find first gap
+    var i: u8 = 0;
+    while (i < max_seq) : (i += 1) {
+        if (!used[i]) return i;
+    }
+
+    // No gap found, return next number (capped at MAX_SEQUENCE_NUMBER)
+    return if (max_seq > MAX_SEQUENCE_NUMBER) MAX_SEQUENCE_NUMBER else max_seq;
+}
+
 pub fn getPromptsPath(allocator: std.mem.Allocator) ![]const u8 {
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);
