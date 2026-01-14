@@ -167,10 +167,11 @@ pub fn formatDate(timestamp: i64, buf: *[10]u8) []const u8 {
     return buf[0..10];
 }
 
-/// Ensure registry is cloned and synced, returns registry path
+/// Ensure registry exists, optionally sync with remote
 /// Caller must free the returned path
-/// Supports branch specification via "url#branch" format in config
-pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) ![]const u8 {
+/// If sync=false and registry exists locally, skip network operations (fast path)
+/// If registry doesn't exist, always clones regardless of sync flag
+pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync: bool) ![]const u8 {
     const registry_info = config.getRegistryInfo(allocator) catch {
         try stderr.print("\n{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
@@ -194,11 +195,11 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
         break :blk true;
     };
 
-    // Print leading newline for spinner output
-    const stdout_raw = std.fs.File.stdout();
-    _ = stdout_raw.write("\n") catch {};
-
     if (!registry_exists) {
+        // Registry doesn't exist - must clone (requires network)
+        const stdout_raw = std.fs.File.stdout();
+        _ = stdout_raw.write("\n") catch {};
+
         var sp = spinner.init(stdout, "Fetching registry");
         sp.start();
         fs.cwd().makePath(base_path) catch {};
@@ -208,22 +209,24 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
             return error.CloneFailed;
         };
         sp.succeed();
-    } else {
+    } else if (sync) {
+        // Registry exists and sync requested - pull latest
+        const stdout_raw = std.fs.File.stdout();
+        _ = stdout_raw.write("\n") catch {};
+
         var sp = spinner.init(stdout, "Syncing registry");
         sp.start();
         // If branch specified, ensure we're on correct branch
         if (registry_info.branch) |branch| {
-            git.fetchAndCheckout(allocator, registry_path, branch) catch {
-                // Ignore checkout errors - branch may already be current
-            };
+            git.fetchAndCheckout(allocator, registry_path, branch) catch {};
         }
         var git_err: ?[]const u8 = null;
         git.pull(allocator, registry_path, &git_err) catch {
-            // Log warning but don't fail - local cache may still be usable
             if (git_err) |e| allocator.free(e);
         };
         sp.succeed();
     }
+    // else: registry exists and no sync requested - use local cache (fast path)
 
     return registry_path;
 }

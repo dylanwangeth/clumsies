@@ -31,45 +31,65 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     }
 
     var subcmd: SubCommand = .none;
-    const subcmd_args_start: usize = 1;
+    var subcmd_args_start: usize = 1;
+    var sync: bool = false;
 
-    if (std.mem.eql(u8, args[0], "list")) {
-        subcmd = .list;
-    } else if (std.mem.eql(u8, args[0], "register")) {
-        subcmd = .register;
-    } else if (std.mem.eql(u8, args[0], "show")) {
-        subcmd = .show;
-    } else if (std.mem.eql(u8, args[0], "rm") or std.mem.eql(u8, args[0], "remove")) {
-        subcmd = .rm;
-    } else if (std.mem.eql(u8, args[0], "import")) {
-        subcmd = .import;
+    // Parse subcommand and options
+    for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
+            sync = true;
+        } else if (std.mem.eql(u8, arg, "list")) {
+            subcmd = .list;
+            subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "register")) {
+            subcmd = .register;
+            subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "show")) {
+            subcmd = .show;
+            subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "rm") or std.mem.eql(u8, arg, "remove")) {
+            subcmd = .rm;
+            subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "import")) {
+            subcmd = .import;
+            subcmd_args_start = i + 1;
+        }
     }
 
-    const subcmd_args = args[subcmd_args_start..];
+    // Filter out -s/--sync from subcmd_args
+    var filtered_args: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer filtered_args.deinit(allocator);
+    for (args[subcmd_args_start..]) |arg| {
+        if (!std.mem.eql(u8, arg, "-s") and !std.mem.eql(u8, arg, "--sync")) {
+            try filtered_args.append(allocator, arg);
+        }
+    }
 
     switch (subcmd) {
-        .list => try runList(stdout, stderr, allocator),
-        .register => try runRegister(stdout, stderr, allocator, subcmd_args),
-        .show => try runShow(stdout, stderr, allocator, subcmd_args),
-        .rm => try runRm(stdout, stderr, allocator, subcmd_args),
-        .import => try runImport(stdout, stderr, allocator, subcmd_args),
+        .list => try runList(stdout, stderr, allocator, sync),
+        .register => try runRegister(stdout, stderr, allocator, filtered_args.items, sync),
+        .show => try runShow(stdout, stderr, allocator, filtered_args.items, sync),
+        .rm => try runRm(stdout, stderr, allocator, filtered_args.items, sync),
+        .import => try runImport(stdout, stderr, allocator, filtered_args.items, sync),
         .none => try showUsage(stderr),
     }
 }
 
 fn showUsage(stderr: anytype) !void {
     try stderr.print("\n{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
-    try stderr.print("{s}Usage: {s}clumsies prompt <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}Usage: {s}clumsies prompt [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Commands:\n", .{P});
     try stderr.print("{s}  {s}list{s}              List prompts in registry\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}register{s} <file>   Register prompt to registry\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}rm{s} <hash>         Remove prompt from registry\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}import{s} <hash>     Import prompt to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}Options:\n", .{P});
+    try stderr.print("{s}  {s}-s, --sync{s}        Sync registry before command\n\n", .{ P, Color.cyan, Color.reset });
 }
 
-fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync: bool) !void {
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
@@ -124,14 +144,14 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     try stdout.writeAll("\n");
 }
 
-fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
         try stderr.print("\n{s}{s}{s}Error:{s} File required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies prompt register <file>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     const file_path = args[0];
@@ -304,14 +324,14 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     try stdout.print("{s}  Name: {s}\n\n", .{ P, name });
 }
 
-fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
         try stderr.print("\n{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies prompt show <hash>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     const hash = args[0];
@@ -385,14 +405,14 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     try stdout.print("{s}\n", .{prompt_content});
 }
 
-fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
         try stderr.print("\n{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies prompt rm <hash>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     const hash = args[0];
@@ -498,7 +518,7 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
     try stdout.print("{s}{s}{s}✓{s} Removed prompt: {s}\n\n", .{ P, Color.bold, Color.green, Color.reset, found_name orelse "-" });
 }
 
-fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
         try stderr.print("\n{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies prompt import <hash>{s}\n\n", .{ P, Color.cyan, Color.reset });
@@ -518,7 +538,7 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         return;
     }
 
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     const hash = args[0];

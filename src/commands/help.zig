@@ -52,7 +52,8 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    {s}-h, --help{s}            Show this help\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}OPTIONS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}-m, --message{s} <msg>    Commit message (for push)\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}-m, --message{s} <msg>    Commit message (for push)\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}-s, --sync{s}             Sync registry before command (bundle/prompt)\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}CONFIG KEYS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}registry{s}              Registry URL {s}(e.g. git@github.com:org/registry.git){s}\n", .{ P, Color.cyan, Color.reset, Color.dim, Color.reset });

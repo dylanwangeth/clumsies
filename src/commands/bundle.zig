@@ -30,41 +30,61 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     }
 
     var subcmd: SubCommand = .none;
-    const subcmd_args_start: usize = 1;
+    var subcmd_args_start: usize = 1;
+    var sync: bool = false;
 
-    if (std.mem.eql(u8, args[0], "list")) {
-        subcmd = .list;
-    } else if (std.mem.eql(u8, args[0], "register")) {
-        subcmd = .register;
-    } else if (std.mem.eql(u8, args[0], "update")) {
-        subcmd = .update;
-    } else if (std.mem.eql(u8, args[0], "show")) {
-        subcmd = .show;
-    } else if (std.mem.eql(u8, args[0], "rm") or std.mem.eql(u8, args[0], "remove")) {
-        subcmd = .rm;
+    // Parse subcommand and options
+    for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
+            sync = true;
+        } else if (std.mem.eql(u8, arg, "list")) {
+            subcmd = .list;
+            subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "register")) {
+            subcmd = .register;
+            subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "update")) {
+            subcmd = .update;
+            subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "show")) {
+            subcmd = .show;
+            subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "rm") or std.mem.eql(u8, arg, "remove")) {
+            subcmd = .rm;
+            subcmd_args_start = i + 1;
+        }
     }
 
-    const subcmd_args = args[subcmd_args_start..];
+    // Filter out -s/--sync from subcmd_args
+    var filtered_args: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer filtered_args.deinit(allocator);
+    for (args[subcmd_args_start..]) |arg| {
+        if (!std.mem.eql(u8, arg, "-s") and !std.mem.eql(u8, arg, "--sync")) {
+            try filtered_args.append(allocator, arg);
+        }
+    }
 
     switch (subcmd) {
-        .list => try runList(stdout, stderr, allocator),
-        .register => try runRegister(stdout, stderr, allocator, subcmd_args),
-        .update => try runUpdate(stdout, stderr, allocator, subcmd_args),
-        .show => try runShow(stdout, stderr, allocator, subcmd_args),
-        .rm => try runRm(stdout, stderr, allocator, subcmd_args),
+        .list => try runList(stdout, stderr, allocator, sync),
+        .register => try runRegister(stdout, stderr, allocator, filtered_args.items, sync),
+        .update => try runUpdate(stdout, stderr, allocator, filtered_args.items, sync),
+        .show => try runShow(stdout, stderr, allocator, filtered_args.items, sync),
+        .rm => try runRm(stdout, stderr, allocator, filtered_args.items, sync),
         .none => try showUsage(stderr),
     }
 }
 
 fn showUsage(stderr: anytype) !void {
     try stderr.print("\n{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
-    try stderr.print("{s}Usage: {s}clumsies bundle <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}Usage: {s}clumsies bundle [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Commands:\n", .{P});
     try stderr.print("{s}  {s}list{s}                                  List bundles in registry\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}register{s} <meta-prompt> <dirs...>      Register bundle from workspace\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}update{s} <name> --add/--rm <args...>    Add/remove prompts from bundle\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}rm{s} <name>                             Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}Options:\n", .{P});
+    try stderr.print("{s}  {s}-s, --sync{s}                            Sync registry before command\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Meta-prompt file frontmatter:\n", .{P});
     try stderr.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
     try stderr.print("{s}  {s}name: my-bundle{s}        (required)\n", .{ P, Color.dim, Color.reset });
@@ -83,8 +103,8 @@ const PromptRef = struct {
 };
 
 
-fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync: bool) !void {
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
@@ -135,7 +155,7 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     try stdout.writeAll("\n");
 }
 
-fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     // Usage: bundle register <meta-prompt-file> <dirs...>
     if (args.len < 2) {
         try stderr.print("\n{s}{s}{s}Error:{s} Meta-prompt file and at least one directory required\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -189,7 +209,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
 
     try stdout.writeAll("\n");
 
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     // Check if bundle already exists
@@ -382,7 +402,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     try stdout.print("{s}  Prompts: {d}\n\n", .{ P, prompt_refs.items.len });
 }
 
-fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     // Usage: bundle update <name> --add <files...> --rm <hashes...>
     if (args.len < 2) {
         try stderr.print("\n{s}{s}{s}Error:{s} Bundle name and --add or --rm flag required\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -425,7 +445,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         return;
     }
 
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     // Check if bundle exists
@@ -685,14 +705,14 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     try stdout.writeAll("\n");
 }
 
-fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
         try stderr.print("\n{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies bundle show <name>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     const name = args[0];
@@ -834,14 +854,14 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     try stdout.writeAll("\n");
 }
 
-fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
         try stderr.print("\n{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies bundle rm <name>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
-    const registry_path = ensureRegistry(stdout, stderr, allocator) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
     const name = args[0];
