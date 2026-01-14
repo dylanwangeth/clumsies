@@ -48,13 +48,14 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 }
 
 fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, prompts_path: []const u8, bundle_name: []const u8, remote_url: []const u8) !void {
-    // Get registry URL from config
-    const registry_url = config.getRegistry(allocator) catch {
+    // Get registry URL and branch from config
+    const registry_info = config.getRegistryInfo(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Tip: Use {s}<git-url>#<branch>{s} to specify a branch\n\n", .{ P, Color.cyan, Color.reset });
         return;
     };
-    defer allocator.free(registry_url);
+    defer registry_info.deinit(allocator);
 
     // Get registry path
     const base_path = commands.getBasePath(allocator) catch {
@@ -77,7 +78,7 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
         var sp = spinner.init(stdout, "Fetching registry");
         sp.start();
         fs.cwd().makePath(base_path) catch {};
-        git.clone(allocator, registry_url, registry_path) catch {
+        git.cloneWithBranch(allocator, registry_info.url, registry_path, registry_info.branch) catch {
             sp.fail();
             try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
@@ -86,6 +87,12 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     } else {
         var sp = spinner.init(stdout, "Updating registry");
         sp.start();
+        // If branch specified, ensure we're on correct branch
+        if (registry_info.branch) |branch| {
+            git.fetchAndCheckout(allocator, registry_path, branch) catch {
+                // Ignore checkout errors - branch may already be current
+            };
+        }
         var git_err: ?[]const u8 = null;
         git.pull(allocator, registry_path, &git_err) catch {
             // Log warning but continue - local cache may still be usable

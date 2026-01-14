@@ -169,13 +169,15 @@ pub fn formatDate(timestamp: i64, buf: *[10]u8) []const u8 {
 
 /// Ensure registry is cloned and synced, returns registry path
 /// Caller must free the returned path
+/// Supports branch specification via "url#branch" format in config
 pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) ![]const u8 {
-    const registry_url = config.getRegistry(allocator) catch {
+    const registry_info = config.getRegistryInfo(allocator) catch {
         try stderr.print("\n{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Tip: Use {s}<git-url>#<branch>{s} to specify a branch\n\n", .{ P, Color.cyan, Color.reset });
         return error.NoRegistry;
     };
-    defer allocator.free(registry_url);
+    defer registry_info.deinit(allocator);
 
     const base_path = getBasePath(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine config path\n\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -200,7 +202,7 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
         var sp = spinner.init(stdout, "Fetching registry");
         sp.start();
         fs.cwd().makePath(base_path) catch {};
-        git.clone(allocator, registry_url, registry_path) catch {
+        git.cloneWithBranch(allocator, registry_info.url, registry_path, registry_info.branch) catch {
             sp.fail();
             try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
             return error.CloneFailed;
@@ -209,6 +211,12 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
     } else {
         var sp = spinner.init(stdout, "Syncing registry");
         sp.start();
+        // If branch specified, ensure we're on correct branch
+        if (registry_info.branch) |branch| {
+            git.fetchAndCheckout(allocator, registry_path, branch) catch {
+                // Ignore checkout errors - branch may already be current
+            };
+        }
         var git_err: ?[]const u8 = null;
         git.pull(allocator, registry_path, &git_err) catch {
             // Log warning but don't fail - local cache may still be usable

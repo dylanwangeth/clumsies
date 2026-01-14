@@ -20,7 +20,14 @@ pub fn init(allocator: std.mem.Allocator, path: []const u8) !void {
 }
 
 pub fn clone(allocator: std.mem.Allocator, url: []const u8, path: []const u8) !void {
-    var child = std.process.Child.init(&.{ "git", "clone", url, path }, allocator);
+    return cloneWithBranch(allocator, url, path, null);
+}
+
+pub fn cloneWithBranch(allocator: std.mem.Allocator, url: []const u8, path: []const u8, branch: ?[]const u8) !void {
+    var child = if (branch) |b|
+        std.process.Child.init(&.{ "git", "clone", "-b", b, url, path }, allocator)
+    else
+        std.process.Child.init(&.{ "git", "clone", url, path }, allocator);
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
     const term = child.spawnAndWait() catch return GitError.CommandFailed;
@@ -28,6 +35,34 @@ pub fn clone(allocator: std.mem.Allocator, url: []const u8, path: []const u8) !v
         .Exited => |code| if (code != 0) return GitError.CommandFailed,
         else => return GitError.CommandFailed,
     }
+}
+
+pub fn checkout(allocator: std.mem.Allocator, path: []const u8, branch: []const u8) !void {
+    var child = std.process.Child.init(&.{ "git", "checkout", branch }, allocator);
+    child.cwd = path;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    const term = child.spawnAndWait() catch return GitError.CommandFailed;
+    switch (term) {
+        .Exited => |code| if (code != 0) return GitError.CommandFailed,
+        else => return GitError.CommandFailed,
+    }
+}
+
+pub fn fetchAndCheckout(allocator: std.mem.Allocator, path: []const u8, branch: []const u8) !void {
+    // First fetch
+    var fetch = std.process.Child.init(&.{ "git", "fetch", "origin", branch }, allocator);
+    fetch.cwd = path;
+    fetch.stdout_behavior = .Ignore;
+    fetch.stderr_behavior = .Ignore;
+    const fetch_term = fetch.spawnAndWait() catch return GitError.CommandFailed;
+    switch (fetch_term) {
+        .Exited => |code| if (code != 0) return GitError.CommandFailed,
+        else => return GitError.CommandFailed,
+    }
+
+    // Then checkout
+    return checkout(allocator, path, branch);
 }
 
 pub fn addRemote(allocator: std.mem.Allocator, path: []const u8, url: []const u8) !void {

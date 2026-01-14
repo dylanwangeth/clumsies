@@ -7,6 +7,17 @@ const P = commands.P;
 
 pub const DEFAULT_ENTRY_FILES = [_][]const u8{ "CLAUDE.md", "CURSOR.md", "AGENTS.md", "COPILOT.md" };
 
+/// Registry URL with optional branch (parsed from "url#branch" format)
+pub const RegistryInfo = struct {
+    url: []const u8,
+    branch: ?[]const u8,
+
+    pub fn deinit(self: RegistryInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.url);
+        if (self.branch) |b| allocator.free(b);
+    }
+};
+
 const Config = struct {
     registry: ?[]const u8 = null,
     entry_files: ?[]const u8 = null,
@@ -103,7 +114,14 @@ fn setConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key
 
     // Read existing config or create new
     var config_map = std.StringArrayHashMap([]const u8).init(allocator);
-    defer config_map.deinit();
+    defer {
+        // Free all keys and values before deinit
+        for (config_map.keys(), config_map.values()) |k, v| {
+            allocator.free(k);
+            allocator.free(v);
+        }
+        config_map.deinit();
+    }
 
     if (readConfig(allocator)) |parsed| {
         defer parsed.deinit();
@@ -117,10 +135,14 @@ fn setConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key
         }
     } else |_| {}
 
-    // Set new value
+    // Set new value (use fetchPut to handle existing key)
     const key_dup = try allocator.dupe(u8, key);
     const val_dup = try allocator.dupe(u8, value);
-    try config_map.put(key_dup, val_dup);
+    if (try config_map.fetchPut(key_dup, val_dup)) |old| {
+        // Key already existed, free the duplicated key and old value
+        allocator.free(key_dup);
+        allocator.free(old.value);
+    }
 
     // Write config
     var output: std.ArrayListUnmanaged(u8) = .empty;
@@ -159,6 +181,24 @@ pub fn getRegistry(allocator: std.mem.Allocator) ![]const u8 {
         };
     }
     return error.NoRegistry;
+}
+
+/// Get registry URL and branch, parsing "url#branch" format
+pub fn getRegistryInfo(allocator: std.mem.Allocator) !RegistryInfo {
+    const raw = try getRegistry(allocator);
+    defer allocator.free(raw);
+
+    // Find '#' separator for branch
+    if (std.mem.lastIndexOfScalar(u8, raw, '#')) |idx| {
+        const url = try allocator.dupe(u8, raw[0..idx]);
+        const branch = try allocator.dupe(u8, raw[idx + 1 ..]);
+        return .{ .url = url, .branch = branch };
+    }
+
+    return .{
+        .url = try allocator.dupe(u8, raw),
+        .branch = null,
+    };
 }
 
 pub fn getEntryFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
