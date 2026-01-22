@@ -125,21 +125,17 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync:
 
     try stdout.print("{s}{s}{s}Prompts in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}HASH{s}      {s}CREATED{s}     {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}  {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (items.array.items) |item| {
         const hash = if (item.object.get("hash")) |h| h.string else continue;
         const name = if (item.object.get("name")) |n| n.string else "-";
         const desc = if (item.object.get("description")) |d| d.string else "-";
-        const created_str = if (item.object.get("created_at")) |c| c.string else "0";
-
-        const created_ts = std.fmt.parseInt(i64, created_str, 10) catch 0;
-        var date_buf: [10]u8 = undefined;
-        const date_str = commands.formatDate(created_ts, &date_buf);
+        const category = if (item.object.get("category")) |c| c.string else "conduct";
 
         const short_hash = if (hash.len > 8) hash[0..8] else hash;
-        try stdout.print("{s}  {s}{s: <8}{s}  {s: <10}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, date_str, name, desc });
+        try stdout.print("{s}  {s}{s: <8}{s}  {s: <8}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, category, name, desc });
     }
     try stdout.writeAll("\n");
 }
