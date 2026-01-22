@@ -38,7 +38,7 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    {s}prompt list{s}              List prompts\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}prompt register{s} <file>   Register prompt\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}prompt show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}prompt import{s} <hash>     Import to .prompts/\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}prompt import{s} <hash>...  Import to .prompts/\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}prompt rm{s} <hash>         Remove prompt\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}CONFIG:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });

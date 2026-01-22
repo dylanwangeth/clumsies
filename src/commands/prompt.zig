@@ -83,7 +83,7 @@ fn showUsage(stderr: anytype) !void {
     try stderr.print("{s}  {s}register{s} <file>   Register prompt to registry\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}rm{s} <hash>         Remove prompt from registry\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}import{s} <hash>     Import prompt to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}import{s} <hash>...  Import prompt(s) to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Options:\n", .{P});
     try stderr.print("{s}  {s}-s, --sync{s}        Sync registry before command\n\n", .{ P, Color.cyan, Color.reset });
 }
@@ -521,7 +521,7 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
 fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
         try stderr.print("\n{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies prompt import <hash>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies prompt import <hash>...{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
@@ -541,9 +541,7 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
-    const hash = args[0];
-
-    // Read index to find prompt
+    // Read index once for all imports
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
     defer allocator.free(index_path);
 
@@ -566,62 +564,75 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     defer parsed.deinit();
 
     const prompts = parsed.value.object.get("prompts") orelse {
-        try stderr.print("{s}{s}{s}Error:{s} Prompt not found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No prompts in registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
-    // Find prompt by hash prefix
-    var found_hash: ?[]const u8 = null;
-    var found_name: ?[]const u8 = null;
-    var found_format: []const u8 = "md";
-    var found_category: []const u8 = "conduct";
+    // Import each hash
+    var success_count: usize = 0;
+    var fail_count: usize = 0;
 
-    for (prompts.array.items) |item| {
-        const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-        if (std.mem.startsWith(u8, item_hash, hash)) {
-            found_hash = item_hash;
-            found_name = if (item.object.get("name")) |n| n.string else null;
-            found_format = if (item.object.get("format")) |f| f.string else "md";
-            found_category = if (item.object.get("category")) |p| p.string else "conduct";
-            break;
+    for (args) |hash| {
+        // Find prompt by hash prefix
+        var found_hash: ?[]const u8 = null;
+        var found_name: ?[]const u8 = null;
+        var found_format: []const u8 = "md";
+        var found_category: []const u8 = "conduct";
+
+        for (prompts.array.items) |item| {
+            const item_hash = if (item.object.get("hash")) |h| h.string else continue;
+            if (std.mem.startsWith(u8, item_hash, hash)) {
+                found_hash = item_hash;
+                found_name = if (item.object.get("name")) |n| n.string else null;
+                found_format = if (item.object.get("format")) |f| f.string else "md";
+                found_category = if (item.object.get("category")) |p| p.string else "conduct";
+                break;
+            }
         }
+
+        if (found_hash == null) {
+            try stderr.print("{s}{s}{s}✗{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+            fail_count += 1;
+            continue;
+        }
+
+        // Read prompt file (pure hash, no extension)
+        const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", found_hash.? });
+        defer allocator.free(prompt_file_path);
+
+        // Copy to .prompts/{category}/
+        const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, found_category });
+        defer allocator.free(target_dir);
+        fs.cwd().makePath(target_dir) catch {};
+
+        // Find next available sequence number with gap filling
+        const seq_num = findNextSequence(target_dir);
+
+        // Build filename: NN_name.format
+        const name_part = found_name orelse found_hash.?[0..8];
+        const dest_filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq_num, name_part, found_format });
+        defer allocator.free(dest_filename);
+
+        const dest_path = try std.fs.path.join(allocator, &.{ target_dir, dest_filename });
+        defer allocator.free(dest_path);
+
+        fs.copyFileAbsolute(prompt_file_path, dest_path, .{}) catch {
+            try stderr.print("{s}{s}{s}✗{s} Failed to copy: {s}\n", .{ P, Color.bold, Color.red, Color.reset, name_part });
+            fail_count += 1;
+            continue;
+        };
+
+        try stdout.print("{s}{s}{s}✓{s} {s} → .prompts/{s}/{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, found_category, dest_filename });
+        success_count += 1;
     }
 
-    if (found_hash == null) {
-        try stderr.print("{s}{s}{s}Error:{s} Prompt not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, hash });
-        return;
+    // Summary
+    try stdout.writeAll("\n");
+    if (success_count > 0 and fail_count == 0) {
+        try stdout.print("{s}Imported {s}{d}{s} prompt{s}\n\n", .{ P, Color.green, success_count, Color.reset, if (success_count > 1) "s" else "" });
+    } else if (success_count > 0 and fail_count > 0) {
+        try stdout.print("{s}Imported {s}{d}{s}, failed {s}{d}{s}\n\n", .{ P, Color.green, success_count, Color.reset, Color.red, fail_count, Color.reset });
+    } else {
+        try stderr.print("{s}No prompts imported\n\n", .{P});
     }
-
-    // Read prompt file (pure hash, no extension)
-    const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", found_hash.? });
-    defer allocator.free(prompt_file_path);
-
-    // Copy to .prompts/{category}/
-    var sp = spinner.init(stdout, "Importing prompt");
-    sp.start();
-
-    const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, found_category });
-    defer allocator.free(target_dir);
-    fs.cwd().makePath(target_dir) catch {};
-
-    // Find next available sequence number with gap filling
-    const seq_num = findNextSequence(target_dir);
-
-    // Build filename: NN_name.format
-    const name_part = found_name orelse found_hash.?[0..8];
-    const dest_filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq_num, name_part, found_format });
-    defer allocator.free(dest_filename);
-
-    const dest_path = try std.fs.path.join(allocator, &.{ target_dir, dest_filename });
-    defer allocator.free(dest_path);
-
-    fs.copyFileAbsolute(prompt_file_path, dest_path, .{}) catch {
-        sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to copy prompt\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    sp.succeed();
-
-    try stdout.print("{s}{s}{s}✓{s} Imported prompt to .prompts/{s}/\n", .{ P, Color.bold, Color.green, Color.reset, found_category });
-    try stdout.print("{s}  File: {s}{s}{s}\n\n", .{ P, Color.cyan, dest_filename, Color.reset });
 }
