@@ -8,6 +8,8 @@ const spinner = @import("../spinner.zig");
 const Color = commands.Color;
 const P = commands.P;
 const Frontmatter = commands.Frontmatter;
+const GitOutput = commands.GitOutput;
+const printGitOutputRaw = commands.printGitOutputRaw;
 const parseFrontmatter = commands.parseFrontmatter;
 const stripSequencePrefix = commands.stripSequencePrefix;
 const hexEncode = commands.hexEncode;
@@ -386,17 +388,26 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     // Commit and push
     var sp4 = spinner.init(stdout, "Pushing to registry");
     sp4.start();
-    git.addAll(allocator, registry_path) catch {};
-    git.commit(allocator, registry_path, "Add bundle") catch {};
-    var push_err: ?[]const u8 = null;
-    git.push(allocator, registry_path, &push_err) catch {
+
+    var add_output: GitOutput = .{};
+    defer add_output.deinit(allocator);
+    git.addAll(allocator, registry_path, &add_output) catch {};
+
+    var commit_output: GitOutput = .{};
+    defer commit_output.deinit(allocator);
+    git.commit(allocator, registry_path, "Add bundle", &commit_output) catch {};
+
+    var git_output: GitOutput = .{};
+    defer git_output.deinit(allocator);
+
+    git.push(allocator, registry_path, &git_output) catch {
         sp4.fail();
+        printGitOutputRaw(&git_output);
         try stderr.print("{s}{s}{s}Warning:{s} Saved locally but failed to push to remote\n", .{ P, Color.bold, Color.orange, Color.reset });
-        if (push_err) |e| {
-            allocator.free(e);
-        }
+        return;
     };
     sp4.succeed();
+    printGitOutputRaw(&git_output);
 
     try stdout.print("{s}{s}{s}✓{s} Registered bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
     try stdout.print("{s}  Prompts: {d}\n\n", .{ P, prompt_refs.items.len });
@@ -679,21 +690,26 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     // Commit and push
     var sp_push = spinner.init(stdout, "Pushing to registry");
     sp_push.start();
-    git.addAll(allocator, registry_path) catch {};
-    git.commit(allocator, registry_path, "Update bundle") catch {};
 
-    var git_err: ?[]const u8 = null;
-    defer if (git_err) |e| allocator.free(e);
+    var add_output2: GitOutput = .{};
+    defer add_output2.deinit(allocator);
+    git.addAll(allocator, registry_path, &add_output2) catch {};
 
-    git.push(allocator, registry_path, &git_err) catch {
+    var commit_output2: GitOutput = .{};
+    defer commit_output2.deinit(allocator);
+    git.commit(allocator, registry_path, "Update bundle", &commit_output2) catch {};
+
+    var git_output2: GitOutput = .{};
+    defer git_output2.deinit(allocator);
+
+    git.push(allocator, registry_path, &git_output2) catch {
         sp_push.fail();
+        printGitOutputRaw(&git_output2);
         try stderr.print("{s}{s}{s}Warning:{s} Updated locally but failed to push\n", .{ P, Color.bold, Color.orange, Color.reset });
-        if (git_err) |e| {
-            try stderr.print("{s}{s}git:\n{s}{s}\n", .{ P, Color.dim, std.mem.trim(u8, e, "\n\r "), Color.reset });
-        }
         return;
     };
     sp_push.succeed();
+    printGitOutputRaw(&git_output2);
 
     try stdout.print("{s}{s}{s}✓{s} Updated bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
     if (added_count > 0) {
@@ -933,21 +949,26 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
     // Commit and push
     var sp = spinner.init(stdout, "Removing from registry");
     sp.start();
-    git.addAll(allocator, registry_path) catch {};
-    git.commit(allocator, registry_path, "Remove bundle") catch {};
 
-    var git_err: ?[]const u8 = null;
-    defer if (git_err) |e| allocator.free(e);
+    var add_output3: GitOutput = .{};
+    defer add_output3.deinit(allocator);
+    git.addAll(allocator, registry_path, &add_output3) catch {};
 
-    git.push(allocator, registry_path, &git_err) catch {
+    var commit_output3: GitOutput = .{};
+    defer commit_output3.deinit(allocator);
+    git.commit(allocator, registry_path, "Remove bundle", &commit_output3) catch {};
+
+    var git_output3: GitOutput = .{};
+    defer git_output3.deinit(allocator);
+
+    git.push(allocator, registry_path, &git_output3) catch {
         sp.fail();
+        printGitOutputRaw(&git_output3);
         try stderr.print("{s}{s}{s}Warning:{s} Removed locally but failed to push\n", .{ P, Color.bold, Color.orange, Color.reset });
-        if (git_err) |e| {
-            try stderr.print("{s}{s}git:\n{s}{s}\n", .{ P, Color.dim, std.mem.trim(u8, e, "\n\r "), Color.reset });
-        }
         return;
     };
     sp.succeed();
+    printGitOutputRaw(&git_output3);
 
     try stdout.print("{s}{s}{s}✓{s} Removed bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, name });
     try stdout.print("{s}{s}Note: Prompts are kept in registry (may be used by other bundles){s}\n\n", .{ P, Color.dim, Color.reset });

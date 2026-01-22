@@ -5,6 +5,8 @@ const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
+const GitOutput = commands.GitOutput;
+const printGitOutputRaw = commands.printGitOutputRaw;
 const syncMetaPromptFiles = commands.syncMetaPromptFiles;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -34,13 +36,23 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     syncMetaPromptFiles(allocator, cwd, prompts_path, false);
 
     // Git add, commit, push
-    git.addAll(allocator, prompts_path) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+    var add_output: GitOutput = .{};
+    defer add_output.deinit(allocator);
+
+    git.addAll(allocator, prompts_path, &add_output) catch {
+        try stderr.print("\n{s}{s}{s}Error:{s} Failed to stage changes\n", .{ P, Color.bold, Color.red, Color.reset });
+        printGitOutputRaw(&add_output);
+        try stderr.writeAll("\n");
         return;
     };
 
     // Try to commit (may fail if no changes, that's ok - we'll still try to push)
-    _ = git.commit(allocator, prompts_path, message) catch {};
+    var commit_output: GitOutput = .{};
+    defer commit_output.deinit(allocator);
+    _ = git.commit(allocator, prompts_path, message, &commit_output) catch {};
+
+    var git_output: GitOutput = .{};
+    defer git_output.deinit(allocator);
 
     // Use unbuffered stdout for consistent ordering with spinner
     const raw_stdout = std.fs.File.stdout();
@@ -49,21 +61,13 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     var sp = spinner.init(stdout, "Pushing to remote");
     sp.start();
 
-    var git_err: ?[]const u8 = null;
-    defer if (git_err) |e| allocator.free(e);
-
-    git.push(allocator, prompts_path, &git_err) catch {
+    git.push(allocator, prompts_path, &git_output) catch {
         sp.fail();
-        if (git_err) |e| {
-            var buf: [4096]u8 = undefined;
-            const line = std.fmt.bufPrint(&buf, "{s}{s}git:\n{s}{s}\n", .{ P, Color.dim, std.mem.trim(u8, e, "\n\r "), Color.reset }) catch return;
-            _ = raw_stdout.write(line) catch {};
-        }
+        printGitOutputRaw(&git_output);
         return;
     };
     sp.succeed();
+    printGitOutputRaw(&git_output);
 
-    var buf: [256]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "{s}  Message: {s}\n", .{ P, message }) catch return;
-    _ = raw_stdout.write(line) catch {};
+    try stdout.print("{s}  Message: {s}\n", .{ P, message });
 }

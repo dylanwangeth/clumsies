@@ -4,6 +4,8 @@ const commands = @import("commands.zig");
 
 const Color = commands.Color;
 const P = commands.P;
+const GitOutput = commands.GitOutput;
+const printGitOutput = commands.printGitOutput;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
     if (!commands.promptsExist()) {
@@ -15,8 +17,13 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);
 
-    const log = git.getLog(allocator, prompts_path, 10) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to get log\n\n", .{ P, Color.bold, Color.red, Color.reset });
+    var git_output: GitOutput = .{};
+    defer git_output.deinit(allocator);
+
+    const log = git.getLog(allocator, prompts_path, 10, &git_output) catch {
+        try stderr.print("\n{s}{s}{s}Error:{s} Failed to get log\n", .{ P, Color.bold, Color.red, Color.reset });
+        printGitOutput(stderr, &git_output);
+        try stderr.writeAll("\n");
         return;
     };
     defer allocator.free(log);

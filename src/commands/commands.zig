@@ -7,6 +7,7 @@ const config = @import("config.zig");
 
 pub const Color = styles.Color;
 pub const P = styles.P;
+pub const GitOutput = git.GitOutput;
 
 // Shared constants
 pub const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -167,6 +168,65 @@ pub fn formatDate(timestamp: i64, buf: *[10]u8) []const u8 {
     return buf[0..10];
 }
 
+/// Print git output in unified format
+/// Shows both stdout and stderr with dim styling
+pub fn printGitOutput(writer: anytype, output: *const GitOutput) void {
+    const has_stdout = output.stdout != null and output.stdout.?.len > 0;
+    const has_stderr = output.stderr != null and output.stderr.?.len > 0;
+
+    if (!has_stdout and !has_stderr) return;
+
+    writer.print("{s}{s}git:{s}\n", .{ P, Color.dim, Color.reset }) catch return;
+
+    if (has_stdout) {
+        const stdout_content = std.mem.trim(u8, output.stdout.?, "\n\r ");
+        var lines = std.mem.splitScalar(u8, stdout_content, '\n');
+        while (lines.next()) |line| {
+            writer.print("{s}  {s}{s}{s}\n", .{ P, Color.dim, line, Color.reset }) catch return;
+        }
+    }
+
+    if (has_stderr) {
+        const stderr_content = std.mem.trim(u8, output.stderr.?, "\n\r ");
+        var lines = std.mem.splitScalar(u8, stderr_content, '\n');
+        while (lines.next()) |line| {
+            writer.print("{s}  {s}{s}{s}\n", .{ P, Color.dim, line, Color.reset }) catch return;
+        }
+    }
+}
+
+/// Print git output using raw stdout (for use after spinner)
+pub fn printGitOutputRaw(output: *const GitOutput) void {
+    const has_stdout = output.stdout != null and output.stdout.?.len > 0;
+    const has_stderr = output.stderr != null and output.stderr.?.len > 0;
+
+    if (!has_stdout and !has_stderr) return;
+
+    const raw_stdout = std.fs.File.stdout();
+    var buf: [4096]u8 = undefined;
+
+    const header = std.fmt.bufPrint(&buf, "{s}{s}git:{s}\n", .{ P, Color.dim, Color.reset }) catch return;
+    _ = raw_stdout.write(header) catch return;
+
+    if (has_stdout) {
+        const stdout_content = std.mem.trim(u8, output.stdout.?, "\n\r ");
+        var lines = std.mem.splitScalar(u8, stdout_content, '\n');
+        while (lines.next()) |line| {
+            const formatted = std.fmt.bufPrint(&buf, "{s}  {s}{s}{s}\n", .{ P, Color.dim, line, Color.reset }) catch continue;
+            _ = raw_stdout.write(formatted) catch continue;
+        }
+    }
+
+    if (has_stderr) {
+        const stderr_content = std.mem.trim(u8, output.stderr.?, "\n\r ");
+        var lines = std.mem.splitScalar(u8, stderr_content, '\n');
+        while (lines.next()) |line| {
+            const formatted = std.fmt.bufPrint(&buf, "{s}  {s}{s}{s}\n", .{ P, Color.dim, line, Color.reset }) catch continue;
+            _ = raw_stdout.write(formatted) catch continue;
+        }
+    }
+}
+
 /// Ensure registry exists, optionally sync with remote
 /// Caller must free the returned path
 /// If sync=false and registry exists locally, skip network operations (fast path)
@@ -203,12 +263,17 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
         var sp = spinner.init(stdout, "Fetching registry");
         sp.start();
         fs.cwd().makePath(base_path) catch {};
-        git.cloneWithBranch(allocator, registry_info.url, registry_path, registry_info.branch) catch {
+        var git_output: GitOutput = .{};
+        defer git_output.deinit(allocator);
+
+        git.cloneWithBranch(allocator, registry_info.url, registry_path, registry_info.branch, &git_output) catch {
             sp.fail();
+            printGitOutputRaw(&git_output);
             try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
             return error.CloneFailed;
         };
         sp.succeed();
+        printGitOutputRaw(&git_output);
     } else if (sync) {
         // Registry exists and sync requested - pull latest
         const stdout_raw = std.fs.File.stdout();
@@ -216,15 +281,19 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
 
         var sp = spinner.init(stdout, "Syncing registry");
         sp.start();
+
+        var git_output: GitOutput = .{};
+        defer git_output.deinit(allocator);
+
         // If branch specified, ensure we're on correct branch
         if (registry_info.branch) |branch| {
-            git.fetchAndCheckout(allocator, registry_path, branch) catch {};
+            var checkout_output: GitOutput = .{};
+            defer checkout_output.deinit(allocator);
+            git.fetchAndCheckout(allocator, registry_path, branch, &checkout_output) catch {};
         }
-        var git_err: ?[]const u8 = null;
-        git.pull(allocator, registry_path, &git_err) catch {
-            if (git_err) |e| allocator.free(e);
-        };
+        git.pull(allocator, registry_path, &git_output) catch {};
         sp.succeed();
+        printGitOutputRaw(&git_output);
     }
     // else: registry exists and no sync requested - use local cache (fast path)
 
@@ -252,7 +321,7 @@ pub fn syncMetaPromptFiles(allocator: std.mem.Allocator, src_dir: []const u8, de
     }
 }
 
-fn syncSingleFile(allocator: std.mem.Allocator, src_dir: []const u8, dest_dir: []const u8, filename: []const u8, delete_source: bool) void {
+fn syncSingleFile(allocator: std.mem.Allocator, src_dir: []const u8, dest_dir: []const u8, filename: []const u8, create_remote_on_conflict: bool) void {
     const src = std.fs.path.join(allocator, &.{ src_dir, filename }) catch return;
     defer allocator.free(src);
 
@@ -262,29 +331,49 @@ fn syncSingleFile(allocator: std.mem.Allocator, src_dir: []const u8, dest_dir: [
     const dest = std.fs.path.join(allocator, &.{ dest_dir, filename }) catch return;
     defer allocator.free(dest);
 
-    // Check if dest already exists (only matters for move/pull/clone)
+    // Check if dest already exists
     const dest_exists = blk: {
         fs.accessAbsolute(dest, .{}) catch break :blk false;
         break :blk true;
     };
 
-    if (delete_source and dest_exists) {
-        // Dest exists, generate .remote.md name
-        // e.g., CLAUDE.md -> CLAUDE.remote.md
-        const remote_name = generateRemoteName(allocator, filename) catch return;
-        defer allocator.free(remote_name);
-        const remote_dest = std.fs.path.join(allocator, &.{ dest_dir, remote_name }) catch return;
-        defer allocator.free(remote_dest);
+    if (dest_exists) {
+        // Compare content - if same, do nothing
+        if (filesAreEqual(allocator, src, dest)) {
+            return;
+        }
 
-        fs.copyFileAbsolute(src, remote_dest, .{}) catch return;
+        // Content differs
+        if (create_remote_on_conflict) {
+            // Pull: create .remote.md for user to review, don't touch dest
+            const remote_name = generateRemoteName(allocator, filename) catch return;
+            defer allocator.free(remote_name);
+            const remote_dest = std.fs.path.join(allocator, &.{ dest_dir, remote_name }) catch return;
+            defer allocator.free(remote_dest);
+            fs.copyFileAbsolute(src, remote_dest, .{}) catch return;
+        } else {
+            // Push: overwrite dest with src
+            fs.copyFileAbsolute(src, dest, .{}) catch return;
+        }
     } else {
+        // Dest doesn't exist, just copy
         fs.copyFileAbsolute(src, dest, .{}) catch return;
     }
+    // Never delete source - keep .prompts/ in sync with git
+}
 
-    // Delete source if requested (move semantics)
-    if (delete_source) {
-        fs.deleteFileAbsolute(src) catch {};
-    }
+fn filesAreEqual(allocator: std.mem.Allocator, path1: []const u8, path2: []const u8) bool {
+    const file1 = fs.openFileAbsolute(path1, .{}) catch return false;
+    defer file1.close();
+    const file2 = fs.openFileAbsolute(path2, .{}) catch return false;
+    defer file2.close();
+
+    const content1 = file1.readToEndAlloc(allocator, MAX_FILE_SIZE) catch return false;
+    defer allocator.free(content1);
+    const content2 = file2.readToEndAlloc(allocator, MAX_FILE_SIZE) catch return false;
+    defer allocator.free(content2);
+
+    return std.mem.eql(u8, content1, content2);
 }
 
 fn generateRemoteName(allocator: std.mem.Allocator, filename: []const u8) ![]const u8 {

@@ -5,6 +5,8 @@ const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
+const GitOutput = commands.GitOutput;
+const printGitOutputRaw = commands.printGitOutputRaw;
 const syncMetaPromptFiles = commands.syncMetaPromptFiles;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
@@ -24,19 +26,16 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     var sp = spinner.init(stdout, "Pulling from remote");
     sp.start();
 
-    var git_err: ?[]const u8 = null;
-    defer if (git_err) |e| allocator.free(e);
+    var git_output: GitOutput = .{};
+    defer git_output.deinit(allocator);
 
-    git.pull(allocator, prompts_path, &git_err) catch {
+    git.pull(allocator, prompts_path, &git_output) catch {
         sp.fail();
-        if (git_err) |e| {
-            var buf: [512]u8 = undefined;
-            const line = std.fmt.bufPrint(&buf, "{s}{s}git:\n{s}{s}\n", .{ P, Color.dim, std.mem.trim(u8, e, "\n\r "), Color.reset }) catch return;
-            _ = raw_stdout.write(line) catch {};
-        }
+        printGitOutputRaw(&git_output);
         return;
     };
     sp.succeed();
+    printGitOutputRaw(&git_output);
 
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);

@@ -5,6 +5,8 @@ const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
+const GitOutput = commands.GitOutput;
+const printGitOutputRaw = commands.printGitOutputRaw;
 const syncMetaPromptFiles = commands.syncMetaPromptFiles;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -39,14 +41,17 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     var sp = spinner.init(stdout, "Cloning repository");
     sp.start();
 
-    git.clone(allocator, remote_url.?, prompts_path) catch {
+    var git_output: GitOutput = .{};
+    defer git_output.deinit(allocator);
+
+    git.clone(allocator, remote_url.?, prompts_path, &git_output) catch {
         sp.fail();
-        var buf: [256]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "{s}{s}{s}Error:{s} Failed to clone repository\n\n", .{ P, Color.bold, Color.red, Color.reset }) catch return;
-        _ = raw_stdout.write(line) catch {};
+        printGitOutputRaw(&git_output);
+        try stderr.print("{s}{s}{s}Error:{s} Failed to clone repository\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     sp.succeed();
+    printGitOutputRaw(&git_output);
 
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);

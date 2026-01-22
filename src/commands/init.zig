@@ -7,6 +7,8 @@ const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
+const GitOutput = commands.GitOutput;
+const printGitOutputRaw = commands.printGitOutputRaw;
 const findNextSequence = commands.findNextSequence;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 
@@ -74,31 +76,37 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
         break :blk true;
     };
 
+    var git_output: GitOutput = .{};
+    defer git_output.deinit(allocator);
+
     if (!registry_exists) {
         var sp = spinner.init(stdout, "Fetching registry");
         sp.start();
         fs.cwd().makePath(base_path) catch {};
-        git.cloneWithBranch(allocator, registry_info.url, registry_path, registry_info.branch) catch {
+        git.cloneWithBranch(allocator, registry_info.url, registry_path, registry_info.branch, &git_output) catch {
             sp.fail();
+            printGitOutputRaw(&git_output);
             try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
         sp.succeed();
+        printGitOutputRaw(&git_output);
     } else {
         var sp = spinner.init(stdout, "Updating registry");
         sp.start();
         // If branch specified, ensure we're on correct branch
         if (registry_info.branch) |branch| {
-            git.fetchAndCheckout(allocator, registry_path, branch) catch {
+            var checkout_output: GitOutput = .{};
+            defer checkout_output.deinit(allocator);
+            git.fetchAndCheckout(allocator, registry_path, branch, &checkout_output) catch {
                 // Ignore checkout errors - branch may already be current
             };
         }
-        var git_err: ?[]const u8 = null;
-        git.pull(allocator, registry_path, &git_err) catch {
+        git.pull(allocator, registry_path, &git_output) catch {
             // Log warning but continue - local cache may still be usable
-            if (git_err) |e| allocator.free(e);
         };
         sp.succeed();
+        printGitOutputRaw(&git_output);
     }
 
     // Read bundles/index.json
@@ -267,15 +275,25 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     try stdout.print("{s}  Meta-prompt: {s}\n", .{ P, meta_prompt_filename });
 
     // Init git and add remote
-    git.init(allocator, prompts_path) catch {
+    var init_output: GitOutput = .{};
+    defer init_output.deinit(allocator);
+
+    git.init(allocator, prompts_path, &init_output) catch {
+        printGitOutputRaw(&init_output);
         try stderr.print("{s}{s}{s}Error:{s} Failed to initialize git repository\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     try stdout.print("{s}{s}✓{s} Initialized git repository\n", .{ P, Color.green, Color.reset });
+    printGitOutputRaw(&init_output);
 
-    git.addRemote(allocator, prompts_path, remote_url) catch {
+    var remote_output: GitOutput = .{};
+    defer remote_output.deinit(allocator);
+
+    git.addRemote(allocator, prompts_path, remote_url, &remote_output) catch {
+        printGitOutputRaw(&remote_output);
         try stderr.print("{s}{s}{s}Error:{s} Failed to add remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     try stdout.print("{s}{s}✓{s} Added remote: {s}{s}{s}\n\n", .{ P, Color.green, Color.reset, Color.cyan, remote_url, Color.reset });
+    printGitOutputRaw(&remote_output);
 }
