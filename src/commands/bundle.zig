@@ -82,7 +82,7 @@ fn showUsage(stderr: anytype) !void {
     try stderr.print("{s}Commands:\n", .{P});
     try stderr.print("{s}  {s}list{s}                                  List bundles in registry\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}register{s} <meta-prompt> <dirs...>      Register bundle from workspace\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}update{s} <name> --add/--rm <args...>    Add/remove prompts from bundle\n", .{ P, Color.cyan, Color.reset });
+    try stderr.print("{s}  {s}update{s} <name> [--add/--rm/--meta ...]  Modify bundle content\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}  {s}rm{s} <name>                             Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Options:\n", .{P});
@@ -414,21 +414,21 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
 }
 
 fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
-    // Usage: bundle update <name> --add <files...> --rm <hashes...>
+    // Usage: bundle update <name> --add <files...> --rm <hashes...> --meta <file>
     if (args.len < 2) {
-        try stderr.print("{s}{s}{s}Error:{s} Bundle name and --add or --rm flag required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies bundle update <name> --add <files...>{s}\n", .{ P, Color.cyan, Color.reset });
-        try stderr.print("{s}       {s}clumsies bundle update <name> --rm <hashes...>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle name and at least one flag required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies bundle update <name> [--add <files...>] [--rm <hashes...>] [--meta <file>]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
     const bundle_name = args[0];
 
-    // Parse --add and --rm flags
+    // Parse --add, --rm, and --meta flags
     var add_files: std.ArrayListUnmanaged([]const u8) = .{};
     defer add_files.deinit(allocator);
     var rm_hashes: std.ArrayListUnmanaged([]const u8) = .{};
     defer rm_hashes.deinit(allocator);
+    var meta_file_arg: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -446,13 +446,17 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                 try rm_hashes.append(allocator, args[i]);
             }
             if (i < args.len) i -= 1; // Back up for outer loop
+        } else if (std.mem.eql(u8, args[i], "--meta")) {
+            i += 1;
+            if (i < args.len and !std.mem.startsWith(u8, args[i], "--")) {
+                meta_file_arg = args[i];
+            }
         }
     }
 
-    if (add_files.items.len == 0 and rm_hashes.items.len == 0) {
-        try stderr.print("{s}{s}{s}Error:{s} No files to add or hashes to remove\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies bundle update <name> --add <files...>{s}\n", .{ P, Color.cyan, Color.reset });
-        try stderr.print("{s}       {s}clumsies bundle update <name> --rm <hashes...>{s}\n\n", .{ P, Color.cyan, Color.reset });
+    if (add_files.items.len == 0 and rm_hashes.items.len == 0 and meta_file_arg == null) {
+        try stderr.print("{s}{s}{s}Error:{s} No changes specified\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies bundle update <name> [--add <files...>] [--rm <hashes...>] [--meta <file>]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
@@ -475,6 +479,56 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     const prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
     defer allocator.free(prompts_dir);
     fs.cwd().makePath(prompts_dir) catch {};
+
+    // Process --meta: upload new meta-prompt and get hash
+    var new_meta_hash: ?[]const u8 = null;
+    defer if (new_meta_hash) |h| allocator.free(h);
+
+    if (meta_file_arg) |meta_arg| {
+        const meta_path = if (std.fs.path.isAbsolute(meta_arg))
+            try allocator.dupe(u8, meta_arg)
+        else
+            try std.fs.path.join(allocator, &.{ cwd, meta_arg });
+        defer allocator.free(meta_path);
+
+        const meta_file = fs.openFileAbsolute(meta_path, .{}) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_arg });
+            return;
+        };
+        const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            meta_file.close();
+            try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        meta_file.close();
+        defer allocator.free(meta_content);
+
+        // Calculate hash
+        var hash_bytes: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(meta_content, &hash_bytes, .{});
+        var hash_hex: [64]u8 = undefined;
+        hexEncode(&hash_bytes, &hash_hex);
+        new_meta_hash = try allocator.dupe(u8, &hash_hex);
+
+        // Write to meta-prompts directory
+        const meta_prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts" });
+        defer allocator.free(meta_prompts_dir);
+        fs.cwd().makePath(meta_prompts_dir) catch {};
+
+        const meta_dest_path = try std.fs.path.join(allocator, &.{ meta_prompts_dir, new_meta_hash.? });
+        defer allocator.free(meta_dest_path);
+
+        const meta_dest_file = fs.createFileAbsolute(meta_dest_path, .{}) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        meta_dest_file.writeAll(meta_content) catch {
+            meta_dest_file.close();
+            try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        meta_dest_file.close();
+    }
 
     // Process --add: upload files and collect refs
     var new_refs: std.ArrayListUnmanaged(PromptRef) = .{};
@@ -615,7 +669,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             const item_task = if (item.object.get("task")) |t| t.string else "-";
             const item_desc = if (item.object.get("description")) |d| d.string else "-";
             const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-            const item_meta = if (item.object.get("meta_prompt")) |m| m.string else "";
+            const item_meta = new_meta_hash orelse (if (item.object.get("meta_prompt")) |m| m.string else "");
 
             const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ item_name, item_task, item_desc, item_created, item_meta });
             defer allocator.free(entry_start);
@@ -712,13 +766,15 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     printGitOutputRaw(&git_output2);
 
     try stdout.print("{s}{s}{s}✓{s} Updated bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
+    if (new_meta_hash != null) {
+        try stdout.print("{s}    Meta-prompt updated\n", .{P});
+    }
     if (added_count > 0) {
-        try stdout.print("{s}  Added: {d} prompts\n", .{ P, added_count });
+        try stdout.print("{s}    Added: {d} prompts\n", .{ P, added_count });
     }
     if (removed_count > 0) {
-        try stdout.print("{s}  Removed: {d} prompts\n", .{ P, removed_count });
+        try stdout.print("{s}    Removed: {d} prompts\n", .{ P, removed_count });
     }
-    try stdout.writeAll("\n");
 }
 
 fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {

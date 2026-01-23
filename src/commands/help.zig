@@ -31,7 +31,7 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}{s}{s}BUNDLE COMMANDS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}bundle list{s}                                  List bundles\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}bundle register{s} <meta-prompt> <dirs...>      Register bundle\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}bundle update{s} <name> --add/--rm <args...>    Add/remove prompts\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle update{s} <name> [--add/--rm/--meta ...]  Modify bundle\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}bundle show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}bundle rm{s} <name>                             Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
 
