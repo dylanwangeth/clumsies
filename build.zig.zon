@@ -1,7 +1,7 @@
 .{
     .fingerprint = 0xa21731978d142f78,
     .name = .clumsies,
-    .version = "0.6.1",
+    .version = "0.6.2",
     .paths = .{
         "build.zig",
         "build.zig.zon",
