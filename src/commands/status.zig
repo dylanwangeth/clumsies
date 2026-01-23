@@ -9,13 +9,13 @@ const printGitOutput = commands.printGitOutput;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
     if (!commands.promptsExist()) {
-        try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run {s}clumsies init <bundle> <url>{s} or {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
         return;
     }
 
     if (!commands.promptsIsGitRepo()) {
-        try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ is not a git repository\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} .prompts/ is not a git repository\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run {s}clumsies init <bundle> <url>{s} or {s}clumsies clone <url>{s} to initialize\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
         return;
     }
@@ -23,7 +23,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);
 
-    try stdout.print("\n{s}{s}{s}.prompts/ status:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}{s}{s}.prompts/ status:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     // Get remote URL
     var remote_output: GitOutput = .{};

@@ -77,7 +77,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 }
 
 fn showUsage(stderr: anytype) !void {
-    try stderr.print("\n{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
+    try stderr.print("{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
     try stderr.print("{s}Usage: {s}clumsies bundle [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Commands:\n", .{P});
     try stderr.print("{s}  {s}list{s}                                  List bundles in registry\n", .{ P, Color.cyan, Color.reset });
@@ -160,7 +160,7 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync:
 fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     // Usage: bundle register <meta-prompt-file> <dirs...>
     if (args.len < 2) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Meta-prompt file and at least one directory required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Meta-prompt file and at least one directory required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies bundle register <meta-prompt-file> <dir1> [dir2...]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
@@ -170,7 +170,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
 
     // Resolve to absolute path
     const cwd = std.process.getCwdAlloc(allocator) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(cwd);
@@ -183,12 +183,12 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
 
     // Read meta-prompt file
     const meta_file = fs.openFileAbsolute(meta_prompt_path, .{}) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_path_arg });
+        try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_path_arg });
         return;
     };
     const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         meta_file.close();
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to read meta-prompt file\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     meta_file.close();
@@ -197,7 +197,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     // Parse frontmatter to get bundle metadata
     const fm = parseFrontmatter(meta_content);
     const bundle_name = fm.name orelse {
-        try stderr.print("\n{s}{s}{s}Error:{s} Meta-prompt file must have 'name' in frontmatter\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Meta-prompt file must have 'name' in frontmatter\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Example:\n", .{P});
         try stderr.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
         try stderr.print("{s}  {s}name: my-bundle{s}\n", .{ P, Color.dim, Color.reset });
@@ -416,7 +416,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
 fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     // Usage: bundle update <name> --add <files...> --rm <hashes...>
     if (args.len < 2) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Bundle name and --add or --rm flag required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle name and --add or --rm flag required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies bundle update <name> --add <files...>{s}\n", .{ P, Color.cyan, Color.reset });
         try stderr.print("{s}       {s}clumsies bundle update <name> --rm <hashes...>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
@@ -450,7 +450,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     }
 
     if (add_files.items.len == 0 and rm_hashes.items.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} No files to add or hashes to remove\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No files to add or hashes to remove\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies bundle update <name> --add <files...>{s}\n", .{ P, Color.cyan, Color.reset });
         try stderr.print("{s}       {s}clumsies bundle update <name> --rm <hashes...>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
@@ -723,7 +723,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
 fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies bundle show <name>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
@@ -872,7 +872,7 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
 fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies bundle rm <name>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }

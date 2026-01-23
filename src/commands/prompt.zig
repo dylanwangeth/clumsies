@@ -78,7 +78,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 }
 
 fn showUsage(stderr: anytype) !void {
-    try stderr.print("\n{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
+    try stderr.print("{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
     try stderr.print("{s}Usage: {s}clumsies prompt [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try stderr.print("{s}Commands:\n", .{P});
     try stderr.print("{s}  {s}list{s}              List prompts in registry\n", .{ P, Color.cyan, Color.reset });
@@ -144,7 +144,7 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync:
 
 fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} File required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} File required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies prompt register <file>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
@@ -329,7 +329,7 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
 
 fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies prompt show <hash>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
@@ -410,7 +410,7 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
 fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies prompt rm <hash>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
@@ -528,7 +528,7 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
 
 fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies prompt import <hash>...{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }

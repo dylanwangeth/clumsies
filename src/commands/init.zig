@@ -28,40 +28,94 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     }
 
     if (bundle_name == null or remote_url == null) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Bundle name and remote URL required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies init <bundle> <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle name and remote URL required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies init <bundle> <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
     if (commands.promptsExist()) {
-        try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ already exists\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Use {s}clumsies clone{s} to clone existing prompts to a new machine\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} .prompts/ already exists\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Use {s}clumsies clone{s} to clone existing prompts to a new machine\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
     const prompts_path = commands.getPromptsPath(allocator) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Could not determine .prompts/ path\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine .prompts/ path\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(prompts_path);
 
-    try stdout.writeAll("\n");
     try initFromBundle(stdout, stderr, allocator, prompts_path, bundle_name.?, remote_url.?);
 }
 
+// Print phase header using unbuffered stdout for correct ordering with spinners
+fn printPhaseHeader(title: []const u8, first: bool) void {
+    const raw_stdout = std.fs.File.stdout();
+    var buf: [256]u8 = undefined;
+    if (first) {
+        const line = std.fmt.bufPrint(&buf, "{s}{s}{s}{s}{s}\n", .{ P, Color.bold, Color.orange, title, Color.reset }) catch return;
+        _ = raw_stdout.write(line) catch {};
+    } else {
+        const line = std.fmt.bufPrint(&buf, "\n{s}{s}{s}{s}{s}\n", .{ P, Color.bold, Color.orange, title, Color.reset }) catch return;
+        _ = raw_stdout.write(line) catch {};
+    }
+}
+
+// Print text using unbuffered stdout for correct ordering
+fn printRaw(comptime fmt: []const u8, args: anytype) void {
+    const raw_stdout = std.fs.File.stdout();
+    var buf: [512]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    _ = raw_stdout.write(line) catch {};
+}
+
 fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, prompts_path: []const u8, bundle_name: []const u8, remote_url: []const u8) !void {
+    // Phase 1: Initializing repository
+    printPhaseHeader("Initializing repository", true);
+
+    // Create .prompts directory structure
+    fs.cwd().makeDir(".prompts") catch |err| {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+        return;
+    };
+
+    const conduct_path = try std.fs.path.join(allocator, &.{ prompts_path, "conduct" });
+    defer allocator.free(conduct_path);
+    fs.cwd().makePath(conduct_path) catch {};
+
+    const command_path = try std.fs.path.join(allocator, &.{ prompts_path, "command" });
+    defer allocator.free(command_path);
+    fs.cwd().makePath(command_path) catch {};
+
+    // Git init
+    var init_output: GitOutput = .{};
+    defer init_output.deinit(allocator);
+
+    git.init(allocator, prompts_path, &init_output) catch {
+        printGitOutputRaw(&init_output);
+        try stderr.print("{s}{s}{s}Error:{s} Failed to initialize git repository\n", .{ P, Color.bold, Color.red, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
+        return;
+    };
+    printRaw("{s}{s}✓{s} Initialized git repository\n", .{ P, Color.green, Color.reset });
+    printGitOutputRaw(&init_output);
+
+    // Phase 2: Pulling bundle
+    printPhaseHeader("Pulling bundle", false);
+
     // Get registry URL and branch from config
     const registry_info = config.getRegistryInfo(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
-        try stderr.print("{s}Tip: Use {s}<git-url>#<branch>{s} to specify a branch\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
     defer registry_info.deinit(allocator);
 
     // Get registry path
     const base_path = commands.getBasePath(allocator) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not determine config path\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine config path\n", .{ P, Color.bold, Color.red, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
     defer allocator.free(base_path);
@@ -69,7 +123,7 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     const registry_path = try std.fs.path.join(allocator, &.{ base_path, "registry" });
     defer allocator.free(registry_path);
 
-    // Ensure registry is cloned or pull latest
+    // Sync registry
     const registry_exists = blk: {
         var dir = fs.openDirAbsolute(registry_path, .{}) catch break :blk false;
         dir.close();
@@ -80,19 +134,20 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     defer git_output.deinit(allocator);
 
     if (!registry_exists) {
-        var sp = spinner.init(stdout, "Fetching registry");
+        var sp = spinner.init(stdout, "Cloning registry");
         sp.start();
         fs.cwd().makePath(base_path) catch {};
         git.cloneWithBranch(allocator, registry_info.url, registry_path, registry_info.branch, &git_output) catch {
             sp.fail();
             printGitOutputRaw(&git_output);
-            try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n", .{ P, Color.bold, Color.red, Color.reset });
+            fs.deleteTreeAbsolute(prompts_path) catch {};
             return;
         };
         sp.succeed();
         printGitOutputRaw(&git_output);
     } else {
-        var sp = spinner.init(stdout, "Updating registry");
+        var sp = spinner.init(stdout, "Syncing registry");
         sp.start();
         // If branch specified, ensure we're on correct branch
         if (registry_info.branch) |branch| {
@@ -115,26 +170,30 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
 
     const index_file = fs.openFileAbsolute(index_path, .{}) catch {
         try stderr.print("{s}{s}{s}Error:{s} No bundles found in registry\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run {s}clumsies bundle list{s} to see available bundles\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Run {s}clumsies bundle list{s} to see available bundles\n", .{ P, Color.cyan, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
     const index_content = index_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         index_file.close();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read bundles index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read bundles index\n", .{ P, Color.bold, Color.red, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
     index_file.close();
     defer allocator.free(index_content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, index_content, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse bundles index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse bundles index\n", .{ P, Color.bold, Color.red, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
     defer parsed.deinit();
 
     // Find bundle by name
     const bundles = parsed.value.object.get("bundles") orelse {
-        try stderr.print("{s}{s}{s}Error:{s} No bundles found in registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No bundles found in registry\n", .{ P, Color.bold, Color.red, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
 
@@ -149,7 +208,8 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
 
     if (found_bundle == null) {
         try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
-        try stderr.print("{s}Run {s}clumsies bundle list{s} to see available bundles\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Run {s}clumsies bundle list{s} to see available bundles\n", .{ P, Color.cyan, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     }
 
@@ -157,7 +217,8 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     const meta_prompt_hash = if (found_bundle.?.object.get("meta_prompt")) |m| m.string else "";
     if (meta_prompt_hash.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} Bundle has no meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Bundle must be registered with a meta-prompt file\n\n", .{P});
+        try stderr.print("{s}Bundle must be registered with a meta-prompt file\n", .{P});
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     }
 
@@ -175,27 +236,13 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     } else |_| {}
     defer if (prompts_index) |pi| pi.deinit();
 
-    // Create .prompts directory structure
-    fs.cwd().makeDir(".prompts") catch |err| {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n\n", .{ P, Color.bold, Color.red, Color.reset, err });
-        return;
-    };
-
-    const conduct_path = try std.fs.path.join(allocator, &.{ prompts_path, "conduct" });
-    defer allocator.free(conduct_path);
-    fs.cwd().makePath(conduct_path) catch {};
-
-    const command_path = try std.fs.path.join(allocator, &.{ prompts_path, "command" });
-    defer allocator.free(command_path);
-    fs.cwd().makePath(command_path) catch {};
-
     // Copy prompts from registry
     var sp = spinner.init(stdout, "Copying prompts");
     sp.start();
 
     const prompts_arr = found_bundle.?.object.get("prompts") orelse {
         sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Bundle has no prompts\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle has no prompts\n", .{ P, Color.bold, Color.red, Color.reset });
         fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
@@ -255,7 +302,8 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
     // Copy to workspace root (parent of .prompts/)
     const cwd = std.process.getCwdAlloc(allocator) catch {
         sp2.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n", .{ P, Color.bold, Color.red, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
     defer allocator.free(cwd);
@@ -265,35 +313,26 @@ fn initFromBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator
 
     fs.copyFileAbsolute(meta_src, meta_dest, .{}) catch {
         sp2.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to copy meta-prompt file\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to copy meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
         return;
     };
     sp2.succeed();
+    printRaw("{s}{s}✓{s} Created .prompts/ from bundle: {s}{s}{s}\n", .{ P, Color.green, Color.reset, Color.cyan, bundle_name, Color.reset });
+    printRaw("{s}    Prompts: {d}\n", .{ P, prompt_count });
+    printRaw("{s}    Meta-prompt: {s}\n", .{ P, meta_prompt_filename });
 
-    try stdout.print("\n{s}{s}✓{s} Created .prompts/ from bundle: {s}{s}{s}\n", .{ P, Color.green, Color.reset, Color.cyan, bundle_name, Color.reset });
-    try stdout.print("{s}  Prompts: {d}\n", .{ P, prompt_count });
-    try stdout.print("{s}  Meta-prompt: {s}\n", .{ P, meta_prompt_filename });
-
-    // Init git and add remote
-    var init_output: GitOutput = .{};
-    defer init_output.deinit(allocator);
-
-    git.init(allocator, prompts_path, &init_output) catch {
-        printGitOutputRaw(&init_output);
-        try stderr.print("{s}{s}{s}Error:{s} Failed to initialize git repository\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    try stdout.print("{s}{s}✓{s} Initialized git repository\n", .{ P, Color.green, Color.reset });
-    printGitOutputRaw(&init_output);
+    // Phase 3: Adding remote
+    printPhaseHeader("Adding remote", false);
 
     var remote_output: GitOutput = .{};
     defer remote_output.deinit(allocator);
 
     git.addRemote(allocator, prompts_path, remote_url, &remote_output) catch {
         printGitOutputRaw(&remote_output);
-        try stderr.print("{s}{s}{s}Error:{s} Failed to add remote\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to add remote\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
-    try stdout.print("{s}{s}✓{s} Added remote: {s}{s}{s}\n\n", .{ P, Color.green, Color.reset, Color.cyan, remote_url, Color.reset });
+    printRaw("{s}{s}✓{s} Added remote: {s}{s}{s}\n", .{ P, Color.green, Color.reset, Color.cyan, remote_url, Color.reset });
     printGitOutputRaw(&remote_output);
 }

@@ -11,7 +11,7 @@ const syncMetaPromptFiles = commands.syncMetaPromptFiles;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (!commands.promptsExist()) {
-        try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run {s}clumsies init <bundle> <url>{s} or {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
         return;
     }
@@ -40,7 +40,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     defer add_output.deinit(allocator);
 
     git.addAll(allocator, prompts_path, &add_output) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to stage changes\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n", .{ P, Color.bold, Color.red, Color.reset });
         printGitOutputRaw(&add_output);
         try stderr.writeAll("\n");
         return;
@@ -56,7 +56,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     // Use unbuffered stdout for consistent ordering with spinner
     const raw_stdout = std.fs.File.stdout();
-    _ = raw_stdout.write("\n") catch {};
+    _ = raw_stdout;
 
     var sp = spinner.init(stdout, "Pushing to remote");
     sp.start();

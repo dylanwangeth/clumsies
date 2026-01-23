@@ -11,7 +11,7 @@ const syncMetaPromptFiles = commands.syncMetaPromptFiles;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (commands.promptsExist()) {
-        try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ already exists\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} .prompts/ already exists\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Use {s}clumsies pull{s} to update\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
@@ -26,7 +26,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     }
 
     if (remote_url == null) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Remote URL required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Remote URL required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies clone <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
@@ -36,7 +36,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     // Use unbuffered stdout for consistent ordering with spinner
     const raw_stdout = std.fs.File.stdout();
-    _ = raw_stdout.write("\n") catch {};
+    _ = raw_stdout;
 
     var sp = spinner.init(stdout, "Cloning repository");
     sp.start();

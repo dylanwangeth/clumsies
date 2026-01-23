@@ -94,7 +94,7 @@ pub fn main() !void {
     // Execute command
     switch (cmd) {
         .version => {
-            try stdout_writer.print("\n{s}{s}{s}clumsies{s} {s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, version });
+            try stdout_writer.print("{s}{s}{s}clumsies{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, version });
         },
         .help => {
             try cmd_help.run(stdout_writer);

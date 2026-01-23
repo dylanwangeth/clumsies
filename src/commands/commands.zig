@@ -233,7 +233,7 @@ pub fn printGitOutputRaw(output: *const GitOutput) void {
 /// If registry doesn't exist, always clones regardless of sync flag
 pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync: bool) ![]const u8 {
     const registry_info = config.getRegistryInfo(allocator) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
         try stderr.print("{s}Tip: Use {s}<git-url>#<branch>{s} to specify a branch\n\n", .{ P, Color.cyan, Color.reset });
         return error.NoRegistry;

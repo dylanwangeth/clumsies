@@ -26,7 +26,7 @@ const Config = struct {
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
-        try stderr.print("\n{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies config <get|set|list> [key] [value]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
@@ -40,7 +40,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     } else if (std.mem.eql(u8, subcmd, "set") and args.len >= 3) {
         try setConfig(stdout, stderr, allocator, args[1], args[2]);
     } else {
-        try stderr.print("\n{s}{s}{s}Error:{s} Invalid config command\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Invalid config command\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies config <get|set|list> [key] [value]{s}\n\n", .{ P, Color.cyan, Color.reset });
     }
 }
@@ -65,7 +65,7 @@ fn readConfig(allocator: std.mem.Allocator) !std.json.Parsed(std.json.Value) {
 }
 
 fn listConfig(stdout: anytype, allocator: std.mem.Allocator) !void {
-    try stdout.print("\n{s}{s}{s}Configuration:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}{s}{s}Configuration:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     const parsed = readConfig(allocator) catch {
         try stdout.print("{s}  {s}(no configuration){s}\n\n", .{ P, Color.dim, Color.reset });
@@ -86,7 +86,7 @@ fn listConfig(stdout: anytype, allocator: std.mem.Allocator) !void {
 
 fn getConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key: []const u8) !void {
     const parsed = readConfig(allocator) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} No configuration found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No configuration found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
@@ -96,9 +96,9 @@ fn getConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key
             .string => |s| s,
             else => "-",
         };
-        try stdout.print("\n{s}{s} = {s}\n\n", .{ P, key, value_str });
+        try stdout.print("{s}{s} = {s}\n", .{ P, key, value_str });
     } else {
-        try stderr.print("\n{s}{s}{s}Error:{s} Key not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, key });
+        try stderr.print("{s}{s}{s}Error:{s} Key not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, key });
     }
 }
 
@@ -161,13 +161,13 @@ fn setConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key
     try output.appendSlice(allocator, "\n}\n");
 
     const file = fs.createFileAbsolute(config_path, .{}) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to write config\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write config\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer file.close();
     try file.writeAll(output.items);
 
-    try stdout.print("\n{s}{s}{s}✓{s} Set {s} = {s}\n\n", .{ P, Color.bold, Color.green, Color.reset, key, value });
+    try stdout.print("{s}{s}{s}✓{s} Set {s} = {s}\n", .{ P, Color.bold, Color.green, Color.reset, key, value });
 }
 
 pub fn getRegistry(allocator: std.mem.Allocator) ![]const u8 {

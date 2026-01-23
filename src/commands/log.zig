@@ -9,7 +9,7 @@ const printGitOutput = commands.printGitOutput;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
     if (!commands.promptsExist()) {
-        try stderr.print("\n{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run {s}clumsies init <bundle> <url>{s} or {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
         return;
     }
@@ -21,7 +21,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     defer git_output.deinit(allocator);
 
     const log = git.getLog(allocator, prompts_path, 10, &git_output) catch {
-        try stderr.print("\n{s}{s}{s}Error:{s} Failed to get log\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to get log\n", .{ P, Color.bold, Color.red, Color.reset });
         printGitOutput(stderr, &git_output);
         try stderr.writeAll("\n");
         return;
@@ -29,11 +29,11 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     defer allocator.free(log);
 
     if (log.len == 0) {
-        try stdout.print("\n{s}{s}No commits yet{s}\n\n", .{ P, Color.dim, Color.reset });
+        try stdout.print("{s}{s}No commits yet{s}\n", .{ P, Color.dim, Color.reset });
         return;
     }
 
-    try stdout.print("\n{s}{s}{s}.prompts/ log:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}{s}{s}.prompts/ log:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     var lines = std.mem.splitScalar(u8, log, '\n');
     while (lines.next()) |line| {
