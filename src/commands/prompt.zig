@@ -95,7 +95,7 @@ fn printPromptHelp(out: anytype) !void {
     try out.print("{s}  {s}list{s}              List prompts in registry\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}register{s} <file>   Register prompt to registry\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}rm{s} <hash>         Remove prompt from registry\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}rm{s} <hash>...      Remove prompt(s) from registry\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}import{s} <hash>...  Import prompt(s) to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-h, --help{s}        Show this help\n", .{ P, Color.cyan, Color.reset });
@@ -423,14 +423,12 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     if (args.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies prompt rm <hash>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies prompt rm <hash>...{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
     const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
-
-    const hash = args[0];
 
     // Read index
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
@@ -460,9 +458,10 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
         return;
     };
 
-    // Find and remove prompt
-    var found_hash: ?[]const u8 = null;
-    var found_name: ?[]const u8 = null;
+    // Track removed prompts
+    var removed_hashes: std.ArrayListUnmanaged([]const u8) = .{};
+    defer removed_hashes.deinit(allocator);
+
     var new_prompts: std.ArrayListUnmanaged(u8) = .{};
     defer new_prompts.deinit(allocator);
 
@@ -471,14 +470,20 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
 
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-        const item_name = if (item.object.get("name")) |n| n.string else "-";
 
-        if (std.mem.startsWith(u8, item_hash, hash)) {
-            found_hash = item_hash;
-            found_name = item_name;
-            continue;
+        // Check if this hash matches any of the args
+        var should_remove = false;
+        for (args) |hash| {
+            if (std.mem.startsWith(u8, item_hash, hash)) {
+                should_remove = true;
+                try removed_hashes.append(allocator, item_hash);
+                break;
+            }
         }
 
+        if (should_remove) continue;
+
+        const item_name = if (item.object.get("name")) |n| n.string else "-";
         const item_desc = if (item.object.get("description")) |d| d.string else "-";
         const item_format = if (item.object.get("format")) |f| f.string else "md";
         const item_category = if (item.object.get("category")) |p| p.string else "conduct";
@@ -493,15 +498,17 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
     }
     try new_prompts.appendSlice(allocator, "\n  ]\n}\n");
 
-    if (found_hash == null) {
-        try stderr.print("{s}{s}{s}Error:{s} Prompt not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+    if (removed_hashes.items.len == 0) {
+        try stderr.print("{s}{s}{s}Error:{s} No matching prompts found\n\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
 
-    // Delete prompt file (pure hash, no extension)
-    const prompt_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", found_hash.? });
-    defer allocator.free(prompt_path);
-    fs.deleteFileAbsolute(prompt_path) catch {};
+    // Delete prompt files
+    for (removed_hashes.items) |hash| {
+        const prompt_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
+        defer allocator.free(prompt_path);
+        fs.deleteFileAbsolute(prompt_path) catch {};
+    }
 
     // Write updated index
     const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
@@ -519,9 +526,10 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
     defer add_output2.deinit(allocator);
     git.addAll(allocator, registry_path, &add_output2) catch {};
 
+    const commit_msg = if (removed_hashes.items.len == 1) "Remove prompt" else "Remove prompts";
     var commit_output2: GitOutput = .{};
     defer commit_output2.deinit(allocator);
-    git.commit(allocator, registry_path, "Remove prompt", &commit_output2) catch {};
+    git.commit(allocator, registry_path, commit_msg, &commit_output2) catch {};
 
     var git_output2: GitOutput = .{};
     defer git_output2.deinit(allocator);
@@ -535,7 +543,7 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
     sp.succeed();
     printGitOutputRaw(&git_output2);
 
-    try stdout.print("{s}{s}{s}✓{s} Removed prompt: {s}\n\n", .{ P, Color.bold, Color.green, Color.reset, found_name orelse "-" });
+    try stdout.print("{s}{s}{s}✓{s} Removed {d} prompt(s)\n\n", .{ P, Color.bold, Color.green, Color.reset, removed_hashes.items.len });
 }
 
 fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
