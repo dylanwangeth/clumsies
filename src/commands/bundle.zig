@@ -13,6 +13,7 @@ const printGitOutputRaw = commands.printGitOutputRaw;
 const parseFrontmatter = commands.parseFrontmatter;
 const stripSequencePrefix = commands.stripSequencePrefix;
 const hexEncode = commands.hexEncode;
+const findNextSequence = commands.findNextSequence;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
 
@@ -22,6 +23,7 @@ const SubCommand = enum {
     update,
     show,
     rm,
+    import_bundle,
     none,
 };
 
@@ -57,6 +59,9 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         } else if (std.mem.eql(u8, arg, "rm") or std.mem.eql(u8, arg, "remove")) {
             subcmd = .rm;
             subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "import")) {
+            subcmd = .import_bundle;
+            subcmd_args_start = i + 1;
         }
     }
 
@@ -75,6 +80,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         .update => try runUpdate(stdout, stderr, allocator, filtered_args.items, sync),
         .show => try runShow(stdout, stderr, allocator, filtered_args.items, sync),
         .rm => try runRm(stdout, stderr, allocator, filtered_args.items, sync),
+        .import_bundle => try runImportBundle(stdout, stderr, allocator, filtered_args.items, sync),
         .none => try showUsage(stderr),
     }
 }
@@ -92,6 +98,7 @@ fn printBundleHelp(out: anytype) !void {
     try out.print("{s}Usage: {s}clumsies bundle [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Commands:\n", .{P});
     try out.print("{s}  {s}list{s}                                  List bundles in registry\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}import{s} <name> [--remote-url <url>]     Import bundle to .prompts/\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}register{s} <meta-prompt> <dirs...>      Register bundle from workspace\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}update{s} <name> [--add/--rm/--meta ...]  Modify bundle content\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });
@@ -1171,6 +1178,246 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
 
     try stdout.print("{s}{s}{s}✓{s} Removed {d} bundle(s)\n", .{ P, Color.bold, Color.green, Color.reset, removed_count });
     try stdout.print("{s}{s}Note: Prompts are kept in registry (may be used by other bundles){s}\n\n", .{ P, Color.dim, Color.reset });
+}
+
+fn runImportBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
+    // Parse args: import <name> [--remote-url <url>]
+    var bundle_name: ?[]const u8 = null;
+    var remote_url: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--remote-url") or std.mem.eql(u8, args[i], "-r")) {
+            i += 1;
+            if (i < args.len) {
+                remote_url = args[i];
+            }
+        } else if (bundle_name == null and !std.mem.startsWith(u8, args[i], "-")) {
+            bundle_name = args[i];
+        }
+    }
+
+    if (bundle_name == null) {
+        try stderr.print("{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies bundle import <name> [--remote-url <url>]{s}\n\n", .{ P, Color.cyan, Color.reset });
+        return;
+    }
+
+    const prompts_path = commands.getPromptsPath(allocator) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine .prompts/ path\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer allocator.free(prompts_path);
+
+    // Create .prompts/ and git init if not exists
+    const need_init = !commands.promptsExist();
+    if (need_init) {
+        fs.cwd().makeDir(".prompts") catch |err| {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+            return;
+        };
+
+        const conduct_path = try std.fs.path.join(allocator, &.{ prompts_path, "conduct" });
+        defer allocator.free(conduct_path);
+        fs.cwd().makePath(conduct_path) catch {};
+
+        const command_path = try std.fs.path.join(allocator, &.{ prompts_path, "command" });
+        defer allocator.free(command_path);
+        fs.cwd().makePath(command_path) catch {};
+
+        const context_path = try std.fs.path.join(allocator, &.{ prompts_path, "context" });
+        defer allocator.free(context_path);
+        fs.cwd().makePath(context_path) catch {};
+
+        // Git init
+        var init_output: GitOutput = .{};
+        defer init_output.deinit(allocator);
+
+        git.init(allocator, prompts_path, &init_output) catch {
+            printGitOutputRaw(&init_output);
+            try stderr.print("{s}{s}{s}Error:{s} Failed to initialize git repository\n", .{ P, Color.bold, Color.red, Color.reset });
+            fs.deleteTreeAbsolute(prompts_path) catch {};
+            return;
+        };
+        try stdout.print("{s}{s}{s}✓{s} Initialized .prompts/ repository\n", .{ P, Color.bold, Color.green, Color.reset });
+        printGitOutputRaw(&init_output);
+    }
+
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
+    defer allocator.free(registry_path);
+
+    // Read bundles/index.json
+    const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles", "index.json" });
+    defer allocator.free(index_path);
+
+    const index_file = fs.openFileAbsolute(index_path, .{}) catch {
+        try stderr.print("{s}{s}{s}Error:{s} No bundles found in registry\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Run {s}clumsies bundle list{s} to see available bundles\n", .{ P, Color.cyan, Color.reset });
+        return;
+    };
+    const index_content = index_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+        index_file.close();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read bundles index\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    index_file.close();
+    defer allocator.free(index_content);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, index_content, .{}) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse bundles index\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer parsed.deinit();
+
+    // Find bundle by name
+    const bundles = parsed.value.object.get("bundles") orelse {
+        try stderr.print("{s}{s}{s}Error:{s} No bundles found in registry\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+
+    var found_bundle: ?std.json.Value = null;
+    for (bundles.array.items) |item| {
+        const item_name = if (item.object.get("name")) |n| n.string else continue;
+        if (std.mem.eql(u8, item_name, bundle_name.?)) {
+            found_bundle = item;
+            break;
+        }
+    }
+
+    if (found_bundle == null) {
+        try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name.? });
+        try stderr.print("{s}Run {s}clumsies bundle list{s} to see available bundles\n", .{ P, Color.cyan, Color.reset });
+        return;
+    }
+
+    // Check meta_prompt is present
+    const meta_prompt_hash = if (found_bundle.?.object.get("meta_prompt")) |m| m.string else "";
+    if (meta_prompt_hash.len == 0) {
+        try stderr.print("{s}{s}{s}Error:{s} Bundle has no meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Bundle must be registered with a meta-prompt file\n", .{P});
+        return;
+    }
+
+    // Get prompts index for name/format lookup
+    const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", "index.json" });
+    defer allocator.free(prompts_index_path);
+
+    var prompts_index: ?std.json.Parsed(std.json.Value) = null;
+    if (fs.openFileAbsolute(prompts_index_path, .{})) |pf| {
+        defer pf.close();
+        if (pf.readToEndAlloc(allocator, MAX_FILE_SIZE)) |content| {
+            defer allocator.free(content);
+            prompts_index = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch null;
+        } else |_| {}
+    } else |_| {}
+    defer if (prompts_index) |pi| pi.deinit();
+
+    // Ensure directories exist
+    const conduct_path = try std.fs.path.join(allocator, &.{ prompts_path, "conduct" });
+    defer allocator.free(conduct_path);
+    fs.cwd().makePath(conduct_path) catch {};
+
+    const command_path = try std.fs.path.join(allocator, &.{ prompts_path, "command" });
+    defer allocator.free(command_path);
+    fs.cwd().makePath(command_path) catch {};
+
+    // Copy prompts from registry
+    var sp = spinner.init(stdout, "Importing prompts");
+    sp.start();
+
+    const prompts_arr = found_bundle.?.object.get("prompts") orelse {
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Bundle has no prompts\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+
+    var prompt_count: usize = 0;
+    for (prompts_arr.array.items) |ref| {
+        const hash = if (ref.object.get("hash")) |h| h.string else continue;
+        const category = if (ref.object.get("category")) |c| c.string else "conduct";
+
+        // Look up prompt details in prompts/index.json
+        var prompt_name: []const u8 = "prompt";
+        var prompt_format: []const u8 = "md";
+        if (prompts_index) |pi| {
+            if (pi.value.object.get("prompts")) |prompts| {
+                for (prompts.array.items) |p| {
+                    const p_hash = if (p.object.get("hash")) |ph| ph.string else continue;
+                    if (std.mem.eql(u8, p_hash, hash)) {
+                        prompt_name = if (p.object.get("name")) |n| n.string else "prompt";
+                        prompt_format = if (p.object.get("format")) |f| f.string else "md";
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Source: registry/prompts/{hash}
+        const src_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
+        defer allocator.free(src_path);
+
+        // Determine next sequence number
+        const target_dir = if (std.mem.eql(u8, category, "command")) command_path else conduct_path;
+        const seq = findNextSequence(target_dir);
+
+        // Destination: .prompts/{category}/{seq}_{name}.{format}
+        const filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq, prompt_name, prompt_format });
+        defer allocator.free(filename);
+        const dest_path = try std.fs.path.join(allocator, &.{ target_dir, filename });
+        defer allocator.free(dest_path);
+
+        fs.copyFileAbsolute(src_path, dest_path, .{}) catch continue;
+        prompt_count += 1;
+    }
+    sp.succeed();
+
+    // Copy meta-prompt file
+    var sp2 = spinner.init(stdout, "Copying meta-prompt");
+    sp2.start();
+
+    const meta_src = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts", meta_prompt_hash });
+    defer allocator.free(meta_src);
+
+    // Get target filename from config or default to CLAUDE.md
+    const meta_prompt_file_opt = config.getMetaPromptFile(allocator) catch null;
+    defer if (meta_prompt_file_opt) |f| allocator.free(f);
+    const meta_prompt_filename = meta_prompt_file_opt orelse "CLAUDE.md";
+
+    // Copy to workspace root (parent of .prompts/)
+    const cwd = std.process.getCwdAlloc(allocator) catch {
+        sp2.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer allocator.free(cwd);
+
+    const meta_dest = try std.fs.path.join(allocator, &.{ cwd, meta_prompt_filename });
+    defer allocator.free(meta_dest);
+
+    fs.copyFileAbsolute(meta_src, meta_dest, .{}) catch {
+        sp2.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to copy meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    sp2.succeed();
+
+    try stdout.print("{s}{s}{s}✓{s} Imported bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name.? });
+    try stdout.print("{s}    Prompts: {d}\n", .{ P, prompt_count });
+    try stdout.print("{s}    Meta-prompt: {s}\n", .{ P, meta_prompt_filename });
+
+    // Add remote if specified
+    if (remote_url) |url| {
+        var remote_output: GitOutput = .{};
+        defer remote_output.deinit(allocator);
+
+        git.addRemote(allocator, prompts_path, url, &remote_output) catch {
+            printGitOutputRaw(&remote_output);
+            try stderr.print("{s}{s}{s}Error:{s} Failed to add remote\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        try stdout.print("{s}{s}{s}✓{s} Added remote: {s}\n", .{ P, Color.bold, Color.green, Color.reset, url });
+        printGitOutputRaw(&remote_output);
+    }
 }
 
 // Helper functions

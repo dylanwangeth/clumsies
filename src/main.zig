@@ -2,7 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const styles = @import("styles.zig");
 
-const cmd_init = @import("commands/init.zig");
+const cmd_remote = @import("commands/remote.zig");
 const cmd_push = @import("commands/push.zig");
 const cmd_pull = @import("commands/pull.zig");
 const cmd_clone = @import("commands/clone.zig");
@@ -20,7 +20,7 @@ const P = styles.P;
 const version = build_options.version;
 
 const Command = enum {
-    init,
+    remote,
     push,
     pull,
     clone,
@@ -37,7 +37,7 @@ const Command = enum {
 
 // Command lookup table for efficient parsing
 const command_map = std.StaticStringMap(Command).initComptime(.{
-    .{ "init", .init },
+    .{ "remote", .remote },
     .{ "push", .push },
     .{ "pull", .pull },
     .{ "clone", .clone },
@@ -99,8 +99,8 @@ pub fn main() !void {
         .help => {
             try cmd_help.run(stdout_writer);
         },
-        .init => {
-            try cmd_init.run(stdout_writer, stderr_writer, allocator, cmd_args);
+        .remote => {
+            try cmd_remote.run(stdout_writer, stderr_writer, allocator, cmd_args);
         },
         .push => {
             try cmd_push.run(stdout_writer, stderr_writer, allocator, cmd_args);

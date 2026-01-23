@@ -20,9 +20,9 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}{s}{s}USAGE:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    clumsies <command> [options]\n\n", .{P});
 
-    try stdout.print("{s}{s}{s}MAIN COMMANDS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}init{s} <bundle> <url>  Initialize from bundle with git remote\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}{s}{s}GIT COMMANDS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}clone{s} <git-url>      Clone remote to .prompts/\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}remote{s} <url>         Set/update remote origin\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}push{s} [-m \"msg\"]      Commit and push to remote\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}pull{s}                 Pull latest from remote\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}status{s}               Show git status\n", .{ P, Color.cyan, Color.reset });
@@ -30,6 +30,7 @@ pub fn run(stdout: anytype) !void {
 
     try stdout.print("{s}{s}{s}BUNDLE COMMANDS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}bundle list{s}                                  List bundles\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle import{s} <name> [--remote-url <url>]    Import bundle to .prompts/\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}bundle register{s} <meta-prompt> <dirs...>      Register bundle\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}bundle update{s} <name> [--add/--rm/--meta ...]  Modify bundle\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}bundle show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });

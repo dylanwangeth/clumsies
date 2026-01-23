@@ -98,6 +98,15 @@ pub fn addRemote(allocator: std.mem.Allocator, path: []const u8, url: []const u8
     return run(allocator, path, &.{ "git", "remote", "add", "origin", url }, output);
 }
 
+pub fn hasRemote(allocator: std.mem.Allocator, path: []const u8, output: ?*GitOutput) !bool {
+    run(allocator, path, &.{ "git", "remote", "get-url", "origin" }, output) catch return false;
+    return true;
+}
+
+pub fn setRemoteUrl(allocator: std.mem.Allocator, path: []const u8, url: []const u8, output: ?*GitOutput) !void {
+    return run(allocator, path, &.{ "git", "remote", "set-url", "origin", url }, output);
+}
+
 pub fn addAll(allocator: std.mem.Allocator, path: []const u8, output: ?*GitOutput) !void {
     return run(allocator, path, &.{ "git", "add", "-A" }, output);
 }
