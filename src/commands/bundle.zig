@@ -37,7 +37,10 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     // Parse subcommand and options
     for (args, 0..) |arg, i| {
-        if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try showHelp(stdout);
+            return;
+        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
             sync = true;
         } else if (std.mem.eql(u8, arg, "list")) {
             subcmd = .list;
@@ -78,21 +81,30 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
 fn showUsage(stderr: anytype) !void {
     try stderr.print("{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
-    try stderr.print("{s}Usage: {s}clumsies bundle [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}Commands:\n", .{P});
-    try stderr.print("{s}  {s}list{s}                                  List bundles in registry\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}register{s} <meta-prompt> <dirs...>      Register bundle from workspace\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}update{s} <name> [--add/--rm/--meta ...]  Modify bundle content\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}rm{s} <name>                             Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}Options:\n", .{P});
-    try stderr.print("{s}  {s}-s, --sync{s}                            Sync registry before command\n\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}Meta-prompt file frontmatter:\n", .{P});
-    try stderr.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
-    try stderr.print("{s}  {s}name: my-bundle{s}        (required)\n", .{ P, Color.dim, Color.reset });
-    try stderr.print("{s}  {s}description: ...{s}       (optional)\n", .{ P, Color.dim, Color.reset });
-    try stderr.print("{s}  {s}task: coding{s}           (optional)\n", .{ P, Color.dim, Color.reset });
-    try stderr.print("{s}  {s}---{s}\n\n", .{ P, Color.dim, Color.reset });
+    try printBundleHelp(stderr);
+}
+
+fn showHelp(stdout: anytype) !void {
+    try printBundleHelp(stdout);
+}
+
+fn printBundleHelp(out: anytype) !void {
+    try out.print("{s}Usage: {s}clumsies bundle [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Commands:\n", .{P});
+    try out.print("{s}  {s}list{s}                                  List bundles in registry\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}register{s} <meta-prompt> <dirs...>      Register bundle from workspace\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}update{s} <name> [--add/--rm/--meta ...]  Modify bundle content\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}rm{s} <name>                             Remove bundle\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Options:\n", .{P});
+    try out.print("{s}  {s}-h, --help{s}                            Show this help\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-s, --sync{s}                            Sync registry before command\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Meta-prompt file frontmatter:\n", .{P});
+    try out.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
+    try out.print("{s}  {s}name: my-bundle{s}        (required)\n", .{ P, Color.dim, Color.reset });
+    try out.print("{s}  {s}description: ...{s}       (optional)\n", .{ P, Color.dim, Color.reset });
+    try out.print("{s}  {s}task: coding{s}           (optional)\n", .{ P, Color.dim, Color.reset });
+    try out.print("{s}  {s}---{s}\n\n", .{ P, Color.dim, Color.reset });
 }
 
 // PromptRef represents a prompt reference in a bundle

@@ -38,7 +38,10 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     // Parse subcommand and options
     for (args, 0..) |arg, i| {
-        if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try showHelp(stdout);
+            return;
+        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
             sync = true;
         } else if (std.mem.eql(u8, arg, "list")) {
             subcmd = .list;
@@ -79,15 +82,24 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
 fn showUsage(stderr: anytype) !void {
     try stderr.print("{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
-    try stderr.print("{s}Usage: {s}clumsies prompt [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}Commands:\n", .{P});
-    try stderr.print("{s}  {s}list{s}              List prompts in registry\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}register{s} <file>   Register prompt to registry\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}rm{s} <hash>         Remove prompt from registry\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}  {s}import{s} <hash>...  Import prompt(s) to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
-    try stderr.print("{s}Options:\n", .{P});
-    try stderr.print("{s}  {s}-s, --sync{s}        Sync registry before command\n\n", .{ P, Color.cyan, Color.reset });
+    try printPromptHelp(stderr);
+}
+
+fn showHelp(stdout: anytype) !void {
+    try printPromptHelp(stdout);
+}
+
+fn printPromptHelp(out: anytype) !void {
+    try out.print("{s}Usage: {s}clumsies prompt [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Commands:\n", .{P});
+    try out.print("{s}  {s}list{s}              List prompts in registry\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}register{s} <file>   Register prompt to registry\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}rm{s} <hash>         Remove prompt from registry\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}import{s} <hash>...  Import prompt(s) to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Options:\n", .{P});
+    try out.print("{s}  {s}-h, --help{s}        Show this help\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-s, --sync{s}        Sync registry before command\n\n", .{ P, Color.cyan, Color.reset });
 }
 
 fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync: bool) !void {

@@ -27,13 +27,15 @@ const Config = struct {
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies config <get|set|list> [key] [value]{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try printConfigHelp(stderr);
         return;
     }
 
     const subcmd = args[0];
 
-    if (std.mem.eql(u8, subcmd, "list")) {
+    if (std.mem.eql(u8, subcmd, "-h") or std.mem.eql(u8, subcmd, "--help")) {
+        try printConfigHelp(stdout);
+    } else if (std.mem.eql(u8, subcmd, "list")) {
         try listConfig(stdout, allocator);
     } else if (std.mem.eql(u8, subcmd, "get") and args.len >= 2) {
         try getConfig(stdout, stderr, allocator, args[1]);
@@ -41,8 +43,22 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         try setConfig(stdout, stderr, allocator, args[1], args[2]);
     } else {
         try stderr.print("{s}{s}{s}Error:{s} Invalid config command\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies config <get|set|list> [key] [value]{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try printConfigHelp(stderr);
     }
+}
+
+fn printConfigHelp(out: anytype) !void {
+    try out.print("{s}Usage: {s}clumsies config <command> [key] [value]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Commands:\n", .{P});
+    try out.print("{s}  {s}list{s}              List all config\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}get{s} <key>         Get config value\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}set{s} <key> <value> Set config value\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Options:\n", .{P});
+    try out.print("{s}  {s}-h, --help{s}        Show this help\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Config keys:\n", .{P});
+    try out.print("{s}  {s}registry{s}          Registry URL\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}entry_files{s}       Meta-prompt files to sync\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}meta_prompt_file{s}  Default meta-prompt for init\n\n", .{ P, Color.cyan, Color.reset });
 }
 
 fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
