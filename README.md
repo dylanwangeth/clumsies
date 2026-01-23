@@ -63,11 +63,11 @@ The CLI exists mostly to keep us honest. If this idea can't survive real workflo
 ### Main Commands (manage .prompts/)
 
 ```bash
-# Initialize .prompts/ from bundle and link to your remote repository
-clumsies init my-bundle git@github.com:user/my-prompts.git
-
-# Or clone existing prompts
+# Clone existing prompts
 clumsies clone git@github.com:team/shared-prompts.git
+
+# Set/update remote origin
+clumsies remote git@github.com:user/my-prompts.git
 
 # Make changes and push
 clumsies push -m "Add review command"
@@ -90,6 +90,9 @@ clumsies config set registry git@github.com:org/prompt-registry.git
 clumsies bundle list
 clumsies bundle show <name>
 
+# Import bundle to .prompts/
+clumsies bundle import <name> [--remote-url <url>]
+
 # Register bundle from meta-prompt file and directories
 # Bundle name comes from frontmatter in meta-prompt file
 clumsies bundle register <meta-prompt-file> <dirs...>
@@ -98,9 +101,10 @@ clumsies bundle register CLAUDE.md ./conduct ./command
 # Update bundle contents
 clumsies bundle update <name> --add <files...>
 clumsies bundle update <name> --rm <hash...>
+clumsies bundle update <name> --meta <file>
 
-# Remove bundle
-clumsies bundle rm <name>
+# Remove bundle(s)
+clumsies bundle rm <name>...
 ```
 
 ### Prompt Commands (manage prompts in registry)
@@ -113,19 +117,20 @@ clumsies prompt show <hash>
 # Register prompt to registry
 clumsies prompt register <file>
 
-# Import prompt to local .prompts/
-clumsies prompt import <hash>
+# Import prompt(s) to local .prompts/
+clumsies prompt import <hash>...
 
-# Remove prompt
-clumsies prompt rm <hash>
+# Remove prompt(s)
+clumsies prompt rm <hash>...
 ```
 
 ### Configuration
 
 ```bash
 clumsies config set registry <url>           # Set registry URL
-clumsies config set meta_prompt_file <file>  # Set default meta-prompt file for bundle register
-clumsies config get registry                 # Get registry URL
+clumsies config set entry_files <files>      # Set meta-prompt files to sync
+clumsies config set meta_prompt_file <file>  # Set default meta-prompt for init
+clumsies config get registry                 # Get config value
 clumsies config list                         # Show all config
 clumsies upgrade                             # Upgrade clumsies
 ```
