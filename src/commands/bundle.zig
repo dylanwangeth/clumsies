@@ -821,6 +821,10 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
             var ref_first = true;
 
+            // Track existing hashes for deduplication
+            var existing_hashes: std.ArrayListUnmanaged([]const u8) = .{};
+            defer existing_hashes.deinit(allocator);
+
             // Keep existing prompts (excluding those in rm_hashes)
             if (item.object.get("prompts")) |prompts| {
                 for (prompts.array.items) |ref| {
@@ -846,12 +850,23 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                         defer allocator.free(ref_entry);
                         try new_index.appendSlice(allocator, ref_entry);
                         ref_first = false;
+                        try existing_hashes.append(allocator, hash);
                     }
                 }
             }
 
-            // Add new prompts
+            // Add new prompts (skip duplicates)
             for (new_refs.items) |ref| {
+                // Check if hash already exists
+                var already_exists = false;
+                for (existing_hashes.items) |existing| {
+                    if (std.mem.eql(u8, existing, ref.hash)) {
+                        already_exists = true;
+                        break;
+                    }
+                }
+                if (already_exists) continue;
+
                 const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
                     if (ref_first) "" else ",",
                     ref.hash,
@@ -861,6 +876,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
                 try new_index.appendSlice(allocator, ref_entry);
                 ref_first = false;
                 added_count += 1;
+                try existing_hashes.append(allocator, ref.hash);
             }
 
             try new_index.appendSlice(allocator, "\n      ]\n    }");
