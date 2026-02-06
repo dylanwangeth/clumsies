@@ -89,13 +89,22 @@ fn listConfig(stdout: anytype, allocator: std.mem.Allocator) !void {
     };
     defer parsed.deinit();
 
-    var iter = parsed.value.object.iterator();
-    while (iter.next()) |entry| {
-        const value_str = switch (entry.value_ptr.*) {
+    const keys = parsed.value.object.keys();
+    const sorted_keys = try allocator.alloc([]const u8, keys.len);
+    defer allocator.free(sorted_keys);
+    @memcpy(sorted_keys, keys);
+    std.mem.sort([]const u8, sorted_keys, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    for (sorted_keys) |key| {
+        const value_str = if (parsed.value.object.get(key)) |v| switch (v) {
             .string => |s| s,
             else => "-",
-        };
-        try stdout.print("{s}  {s} = {s}\n", .{ P, entry.key_ptr.*, value_str });
+        } else "-";
+        try stdout.print("{s}  {s} = {s}\n", .{ P, key, value_str });
     }
     try stdout.writeAll("\n");
 }

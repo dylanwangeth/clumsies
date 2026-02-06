@@ -276,9 +276,6 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
         printGitOutputRaw(&git_output);
     } else if (sync) {
         // Registry exists and sync requested - pull latest
-        const stdout_raw = std.fs.File.stdout();
-        _ = stdout_raw.write("\n") catch {};
-
         var sp = spinner.init(stdout, "Syncing registry");
         sp.start();
 

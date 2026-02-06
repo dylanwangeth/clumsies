@@ -142,6 +142,14 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync:
     try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}  {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
 
+    std.mem.sort(std.json.Value, items.array.items, {}, struct {
+        fn lessThan(_: void, a: std.json.Value, b: std.json.Value) bool {
+            const a_name = if (a.object.get("name")) |n| n.string else "";
+            const b_name = if (b.object.get("name")) |n| n.string else "";
+            return std.mem.order(u8, a_name, b_name) == .lt;
+        }
+    }.lessThan);
+
     for (items.array.items) |item| {
         const hash = if (item.object.get("hash")) |h| h.string else continue;
         const name = if (item.object.get("name")) |n| n.string else "-";
