@@ -41,8 +41,11 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         try getConfig(stdout, stderr, allocator, args[1]);
     } else if (std.mem.eql(u8, subcmd, "set") and args.len >= 3) {
         try setConfig(stdout, stderr, allocator, args[1], args[2]);
+    } else if (std.mem.startsWith(u8, subcmd, "-")) {
+        try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
+        try printConfigHelp(stderr);
     } else {
-        try stderr.print("{s}{s}{s}Error:{s} Invalid config command\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Unknown subcommand: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
         try printConfigHelp(stderr);
     }
 }

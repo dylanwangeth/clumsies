@@ -14,6 +14,14 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         return;
     }
 
+    for (args) |arg| {
+        if (std.mem.startsWith(u8, arg, "-")) {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+            try stderr.print("{s}Usage: {s}clumsies remote <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
+        }
+    }
+
     if (!commands.promptsExist()) {
         try stderr.print("{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run {s}clumsies init{s} first\n", .{ P, Color.cyan, Color.reset });

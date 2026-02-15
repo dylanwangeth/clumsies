@@ -21,7 +21,11 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     while (i < args.len) : (i += 1) {
         if ((std.mem.eql(u8, args[i], "-m") or std.mem.eql(u8, args[i], "--message")) and i + 1 < args.len) {
             message = args[i + 1];
-            break;
+            i += 1;
+        } else if (std.mem.startsWith(u8, args[i], "-")) {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, args[i] });
+            try stderr.print("{s}Usage: {s}clumsies push [-m <message>]{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
         }
     }
 

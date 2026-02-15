@@ -62,6 +62,10 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         } else if (std.mem.eql(u8, arg, "import")) {
             subcmd = .import_bundle;
             subcmd_args_start = i + 1;
+        } else if (subcmd == .none and std.mem.startsWith(u8, arg, "-")) {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+            try printBundleHelp(stderr);
+            return;
         }
     }
 
@@ -195,6 +199,13 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync:
 
 fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     // Usage: bundle register <meta-prompt-file> <dirs...>
+    for (args) |arg| {
+        if (std.mem.startsWith(u8, arg, "-")) {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+            try stderr.print("{s}Usage: {s}clumsies bundle register <meta-prompt-file> <dir1> [dir2...]{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
+        }
+    }
     if (args.len < 2) {
         try stderr.print("{s}{s}{s}Error:{s} Meta-prompt file and at least one directory required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies bundle register <meta-prompt-file> <dir1> [dir2...]{s}\n\n", .{ P, Color.cyan, Color.reset });
@@ -487,6 +498,10 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             if (i < args.len and !std.mem.startsWith(u8, args[i], "--")) {
                 meta_file_arg = args[i];
             }
+        } else if (std.mem.startsWith(u8, args[i], "-")) {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, args[i] });
+            try stderr.print("{s}Usage: {s}clumsies bundle update <name> [--add <files...>] [--rm <hashes...>] [--meta <file>]{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
         }
     }
 
@@ -960,6 +975,10 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
             show_meta = true;
         } else if (name == null and !std.mem.startsWith(u8, arg, "-")) {
             name = arg;
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+            try stderr.print("{s}Usage: {s}clumsies bundle show <name> [--meta]{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
         }
     }
 
@@ -1138,6 +1157,13 @@ fn runShow(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 }
 
 fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
+    for (args) |arg| {
+        if (std.mem.startsWith(u8, arg, "-")) {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+            try stderr.print("{s}Usage: {s}clumsies bundle rm <name>...{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
+        }
+    }
     if (args.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} Bundle name required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies bundle rm <name>...{s}\n\n", .{ P, Color.cyan, Color.reset });
@@ -1264,6 +1290,10 @@ fn runImportBundle(stdout: anytype, stderr: anytype, allocator: std.mem.Allocato
             update_meta_only = true;
         } else if (bundle_name == null and !std.mem.startsWith(u8, args[i], "-")) {
             bundle_name = args[i];
+        } else if (std.mem.startsWith(u8, args[i], "-")) {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, args[i] });
+            try stderr.print("{s}Usage: {s}clumsies bundle import <name> [--remote-url <url>] [--update-meta]{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
         }
     }
 
