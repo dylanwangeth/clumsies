@@ -9,13 +9,12 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}{s}Manage .prompts/ as an independent git repository{s}\n\n", .{ P, Color.dim, Color.reset });
 
     try stdout.print("{s}{s}{s}STRUCTURE:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    CLAUDE.md              Meta-prompt (auto-synced with .prompts/)\n", .{P});
+    try stdout.print("{s}    CLAUDE.md              Meta-prompt (managed via bundle import/register)\n", .{P});
     try stdout.print("{s}    .prompts/conduct/      Behavioral rules, always active\n", .{P});
     try stdout.print("{s}    .prompts/command/      Executable procedures, invoke by name\n", .{P});
     try stdout.print("{s}    .prompts/context/      Project-specific knowledge (local only)\n\n", .{P});
 
-    try stdout.print("{s}{s}Meta-prompt files (CLAUDE.md, CURSOR.md, AGENTS.md, COPILOT.md) are auto-synced:{s}\n", .{ P, Color.dim, Color.reset });
-    try stdout.print("{s}{s}  push: root -> .prompts/    pull/clone: .prompts/ -> root{s}\n\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}{s}Meta-prompt files are managed via the registry (bundle import/register){s}\n\n", .{ P, Color.dim, Color.reset });
 
     try stdout.print("{s}{s}{s}USAGE:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    clumsies <command> [options]\n\n", .{P});
@@ -30,10 +29,10 @@ pub fn run(stdout: anytype) !void {
 
     try stdout.print("{s}{s}{s}BUNDLE COMMANDS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}bundle list{s}                                  List bundles\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}bundle import{s} <name> [--remote-url <url>]    Import bundle to .prompts/\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle import{s} <name> [--remote-url <url>] [--update-meta]  Import bundle\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}bundle register{s} <meta-prompt> <dirs...>      Register bundle\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}bundle update{s} <name> [--add/--rm/--meta ...]  Modify bundle\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}bundle show{s} <name>                           Show bundle content\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}bundle show{s} <name> [--meta]                   Show bundle content\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}bundle rm{s} <name>...                          Remove bundle(s)\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}PROMPT COMMANDS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
@@ -57,6 +56,6 @@ pub fn run(stdout: anytype) !void {
 
     try stdout.print("{s}{s}{s}CONFIG KEYS:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}registry{s}              Registry URL\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}entry_files{s}           Meta-prompt files to sync\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}entry_files{s}           Meta-prompt filenames (for bundle import)\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}meta_prompt_file{s}      Default meta-prompt for init\n", .{ P, Color.cyan, Color.reset });
 }

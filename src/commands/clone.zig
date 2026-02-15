@@ -7,7 +7,6 @@ const Color = commands.Color;
 const P = commands.P;
 const GitOutput = commands.GitOutput;
 const printGitOutputRaw = commands.printGitOutputRaw;
-const syncMetaPromptFiles = commands.syncMetaPromptFiles;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (commands.promptsExist()) {
@@ -53,15 +52,10 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     sp.succeed();
     printGitOutputRaw(&git_output);
 
-    const cwd = try std.process.getCwdAlloc(allocator);
-    defer allocator.free(cwd);
-
-    // Move meta-prompt files: .prompts/ -> root (delete from .prompts/)
-    // If root already has the file, creates .remote.md version
-    syncMetaPromptFiles(allocator, prompts_path, cwd, true);
-
     // Use unbuffered stdout for consistent ordering with spinner
     var buf: [512]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "{s}  Remote: {s}{s}{s}\n\n", .{ P, Color.cyan, remote_url.?, Color.reset }) catch return;
+    const line = std.fmt.bufPrint(&buf, "{s}  Remote: {s}{s}{s}\n", .{ P, Color.cyan, remote_url.?, Color.reset }) catch return;
     _ = std.fs.File.stdout().write(line) catch {};
+    const tip = std.fmt.bufPrint(&buf, "{s}  Tip: Run '{s}clumsies bundle import <name>{s}' to get meta-prompt files\n\n", .{ P, Color.cyan, Color.reset }) catch return;
+    _ = std.fs.File.stdout().write(tip) catch {};
 }

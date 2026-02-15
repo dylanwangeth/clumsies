@@ -7,7 +7,6 @@ const Color = commands.Color;
 const P = commands.P;
 const GitOutput = commands.GitOutput;
 const printGitOutputRaw = commands.printGitOutputRaw;
-const syncMetaPromptFiles = commands.syncMetaPromptFiles;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (!commands.promptsExist()) {
@@ -28,12 +27,6 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
 
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);
-
-    const cwd = try std.process.getCwdAlloc(allocator);
-    defer allocator.free(cwd);
-
-    // Copy meta-prompt files: root -> .prompts/ (keep root copy)
-    syncMetaPromptFiles(allocator, cwd, prompts_path, false);
 
     // Git add, commit, push
     var add_output: GitOutput = .{};

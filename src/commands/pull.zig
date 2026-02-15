@@ -7,7 +7,6 @@ const Color = commands.Color;
 const P = commands.P;
 const GitOutput = commands.GitOutput;
 const printGitOutputRaw = commands.printGitOutputRaw;
-const syncMetaPromptFiles = commands.syncMetaPromptFiles;
 
 pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
     if (!commands.promptsExist()) {
@@ -36,13 +35,6 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
     };
     sp.succeed();
     printGitOutputRaw(&git_output);
-
-    const cwd = try std.process.getCwdAlloc(allocator);
-    defer allocator.free(cwd);
-
-    // Move meta-prompt files: .prompts/ -> root (delete from .prompts/)
-    // If root already has the file, creates .remote.md version
-    syncMetaPromptFiles(allocator, prompts_path, cwd, true);
 
     _ = std.fs.File.stdout().write("\n") catch {};
 }
