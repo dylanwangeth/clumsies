@@ -114,11 +114,15 @@ clumsies bundle rm <name>...
 clumsies prompt list
 clumsies prompt show <hash>
 
-# Register prompt to registry
-clumsies prompt register <file>
+# Register prompt to registry (metadata via flags, not frontmatter)
+clumsies prompt register <file> [--desc "..."] [--cat "..."]
+
+# Update prompt metadata (without changing content/hash)
+clumsies prompt update <hash> [--desc "..."] [--cat "..."]
 
 # Import prompt(s) to local .prompts/
 clumsies prompt import <hash>...
+clumsies prompt import --cat <category>...    # Import by category (prefix match)
 
 # Remove prompt(s)
 clumsies prompt rm <hash>...
@@ -143,9 +147,10 @@ project/
 └── .prompts/                    # Independent git repository
     ├── .git/
     ├── conduct/                 # Behavioral rules (always active)
-    │   ├── 00_code_comments.md
-    │   ├── 01_git_commit.md
-    │   └── ...
+    │   ├── coding/              # Code style, testing, dependencies
+    │   ├── git/                 # Git conventions
+    │   ├── writing/             # Writing standards
+    │   └── teaching/            # Teaching methodology
     ├── command/                 # Executable commands (invoke by name)
     │   ├── 00_context_reinforcement.md
     │   └── 01_review_commit.md

@@ -7,10 +7,8 @@ const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
 const P = commands.P;
-const Frontmatter = commands.Frontmatter;
 const GitOutput = commands.GitOutput;
 const printGitOutputRaw = commands.printGitOutputRaw;
-const parseFrontmatter = commands.parseFrontmatter;
 const stripSequencePrefix = commands.stripSequencePrefix;
 const hexEncode = commands.hexEncode;
 const findNextSequence = commands.findNextSequence;
@@ -23,6 +21,7 @@ const SubCommand = enum {
     show,
     rm,
     import,
+    update,
     none,
 };
 
@@ -58,6 +57,9 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         } else if (std.mem.eql(u8, arg, "import")) {
             subcmd = .import;
             subcmd_args_start = i + 1;
+        } else if (std.mem.eql(u8, arg, "update")) {
+            subcmd = .update;
+            subcmd_args_start = i + 1;
         } else if (subcmd == .none and std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
             try showUsage(stderr);
@@ -80,6 +82,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         .show => try runShow(stdout, stderr, allocator, filtered_args.items, sync),
         .rm => try runRm(stdout, stderr, allocator, filtered_args.items, sync),
         .import => try runImport(stdout, stderr, allocator, filtered_args.items, sync),
+        .update => try runUpdate(stdout, stderr, allocator, filtered_args.items, sync),
         .none => try showUsage(stderr),
     }
 }
@@ -97,10 +100,11 @@ fn printPromptHelp(out: anytype) !void {
     try out.print("{s}Usage: {s}clumsies prompt [-s] <command>{s}\n\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Commands:\n", .{P});
     try out.print("{s}  {s}list{s}              List prompts in registry\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}register{s} <file>   Register prompt to registry\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}show{s} <hash>       Show prompt content\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}rm{s} <hash>...      Remove prompt(s) from registry\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}import{s} <hash>...  Import prompt(s) to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}register{s} <file> [--desc/--cat]  Register prompt to registry\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}update{s} <hash> [--desc/--cat]    Update prompt metadata\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}show{s} <hash>                     Show prompt content\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}rm{s} <hash>...                    Remove prompt(s) from registry\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}import{s} <hash>... [--cat <cat>...]  Import prompt(s) to .prompts/\n\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-h, --help{s}        Show this help\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}        Sync registry before command\n\n", .{ P, Color.cyan, Color.reset });
@@ -143,8 +147,8 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync:
 
     try stdout.print("{s}{s}{s}Prompts in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}  {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
-    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
+    try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}          {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}──────────────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     std.mem.sort(std.json.Value, items.array.items, {}, struct {
         fn lessThan(_: void, a: std.json.Value, b: std.json.Value) bool {
@@ -161,29 +165,54 @@ fn runList(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync:
         const category = if (item.object.get("category")) |c| c.string else "conduct";
 
         const short_hash = if (hash.len > 8) hash[0..8] else hash;
-        try stdout.print("{s}  {s}{s: <8}{s}  {s: <8}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, category, name, desc });
+        try stdout.print("{s}  {s}{s: <8}{s}  {s: <16}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, category, name, desc });
     }
     try stdout.writeAll("\n");
 }
 
 fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
-    for (args) |arg| {
-        if (std.mem.startsWith(u8, arg, "-")) {
+    var file_path_arg: ?[]const u8 = null;
+    var desc_flag: ?[]const u8 = null;
+    var cat_flag: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--desc")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                desc_flag = args[i];
+            } else {
+                try stderr.print("{s}{s}{s}Error:{s} --desc requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
+                return;
+            }
+        } else if (std.mem.eql(u8, arg, "--cat")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                cat_flag = args[i];
+            } else {
+                try stderr.print("{s}{s}{s}Error:{s} --cat requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
+                return;
+            }
+        } else if (std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
-            try stderr.print("{s}Usage: {s}clumsies prompt register <file>{s}\n\n", .{ P, Color.cyan, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies prompt register <file> [--desc \"...\"] [--cat \"...\"]{s}\n\n", .{ P, Color.cyan, Color.reset });
             return;
+        } else if (file_path_arg == null) {
+            file_path_arg = arg;
         }
     }
-    if (args.len == 0) {
+
+    if (file_path_arg == null) {
         try stderr.print("{s}{s}{s}Error:{s} File required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies prompt register <file>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies prompt register <file> [--desc \"...\"] [--cat \"...\"]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
     const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
     defer allocator.free(registry_path);
 
-    const file_path = args[0];
+    const file_path = file_path_arg.?;
 
     const cwd = std.process.getCwdAlloc(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -221,22 +250,11 @@ fn runRegister(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, a
     const format = if (ext_idx) |idx| basename[idx + 1 ..] else "md";
     const name_end = ext_idx orelse basename.len;
 
-    // Parse frontmatter for metadata
-    const fm = parseFrontmatter(content);
-
-    // Extract category: frontmatter > file path detection > default
-    const prompt_category = if (fm.category) |cat|
-        cat
-    else if (std.mem.indexOf(u8, file_path, "conduct") != null)
-        "conduct"
-    else if (std.mem.indexOf(u8, file_path, "command") != null)
-        "command"
-    else
-        "conduct"; // default to conduct
+    // Metadata from flags, name always from filename
     const raw_name = basename[0..name_end];
-    // Strip sequence prefix (NN_) if present
-    const name = fm.name orelse stripSequencePrefix(raw_name);
-    const description = fm.description orelse "-";
+    const name = stripSequencePrefix(raw_name);
+    const description = desc_flag orelse "-";
+    const prompt_category = cat_flag orelse "conduct";
 
     // Create prompts directory
     const prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
@@ -579,17 +597,190 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
     try stdout.print("{s}{s}{s}✓{s} Removed {d} prompt(s)\n\n", .{ P, Color.bold, Color.green, Color.reset, removed_hashes.items.len });
 }
 
-fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
-    for (args) |arg| {
-        if (std.mem.startsWith(u8, arg, "-")) {
+fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
+    var hash_arg: ?[]const u8 = null;
+    var desc_flag: ?[]const u8 = null;
+    var cat_flag: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--desc")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                desc_flag = args[i];
+            } else {
+                try stderr.print("{s}{s}{s}Error:{s} --desc requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
+                return;
+            }
+        } else if (std.mem.eql(u8, arg, "--cat")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                cat_flag = args[i];
+            } else {
+                try stderr.print("{s}{s}{s}Error:{s} --cat requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
+                return;
+            }
+        } else if (std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
-            try stderr.print("{s}Usage: {s}clumsies prompt import <hash>...{s}\n\n", .{ P, Color.cyan, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies prompt update <hash> [--desc \"...\"] [--cat \"...\"]{s}\n\n", .{ P, Color.cyan, Color.reset });
             return;
+        } else if (hash_arg == null) {
+            hash_arg = arg;
         }
     }
-    if (args.len == 0) {
+
+    if (hash_arg == null) {
         try stderr.print("{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies prompt import <hash>...{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies prompt update <hash> [--desc \"...\"] [--cat \"...\"]{s}\n\n", .{ P, Color.cyan, Color.reset });
+        return;
+    }
+
+    if (desc_flag == null and cat_flag == null) {
+        try stderr.print("{s}{s}{s}Error:{s} At least one of --desc or --cat required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies prompt update <hash> [--desc \"...\"] [--cat \"...\"]{s}\n\n", .{ P, Color.cyan, Color.reset });
+        return;
+    }
+
+    const hash = hash_arg.?;
+
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync) catch return;
+    defer allocator.free(registry_path);
+
+    // Read index
+    const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
+    defer allocator.free(index_path);
+
+    const file = fs.openFileAbsolute(index_path, .{}) catch {
+        try stderr.print("{s}{s}{s}Error:{s} No prompts found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+        file.close();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    file.close();
+    defer allocator.free(content);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer parsed.deinit();
+
+    const prompts = parsed.value.object.get("prompts") orelse {
+        try stderr.print("{s}{s}{s}Error:{s} Prompt not found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+
+    // Rebuild index with updated fields
+    var found = false;
+    var new_index: std.ArrayListUnmanaged(u8) = .{};
+    defer new_index.deinit(allocator);
+
+    try new_index.appendSlice(allocator, "{\n  \"prompts\": [");
+    var first = true;
+
+    for (prompts.array.items) |item| {
+        const item_hash = if (item.object.get("hash")) |h| h.string else continue;
+        const item_name = if (item.object.get("name")) |n| n.string else "-";
+        var item_desc = if (item.object.get("description")) |d| d.string else "-";
+        const item_format = if (item.object.get("format")) |f| f.string else "md";
+        var item_category = if (item.object.get("category")) |p| p.string else "conduct";
+        const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+
+        // Apply updates to matching prompt
+        if (std.mem.startsWith(u8, item_hash, hash)) {
+            found = true;
+            if (desc_flag) |d| item_desc = d;
+            if (cat_flag) |c| item_category = c;
+        }
+
+        if (!first) try new_index.appendSlice(allocator, ",");
+        first = false;
+
+        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
+        defer allocator.free(entry);
+        try new_index.appendSlice(allocator, entry);
+    }
+    try new_index.appendSlice(allocator, "\n  ]\n}\n");
+
+    if (!found) {
+        try stderr.print("{s}{s}{s}Error:{s} Prompt not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+        return;
+    }
+
+    // Write updated index
+    const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer idx_out.close();
+    idx_out.writeAll(new_index.items) catch {};
+
+    // Commit and push
+    var sp = spinner.init(stdout, "Updating prompt metadata");
+    sp.start();
+
+    var add_output: GitOutput = .{};
+    defer add_output.deinit(allocator);
+    git.addAll(allocator, registry_path, &add_output) catch {};
+
+    var commit_output: GitOutput = .{};
+    defer commit_output.deinit(allocator);
+    git.commit(allocator, registry_path, "Update prompt metadata", &commit_output) catch {};
+
+    var git_output: GitOutput = .{};
+    defer git_output.deinit(allocator);
+
+    git.push(allocator, registry_path, &git_output) catch {
+        sp.fail();
+        printGitOutputRaw(&git_output);
+        try stderr.print("{s}{s}{s}Warning:{s} Updated locally but failed to push\n", .{ P, Color.bold, Color.orange, Color.reset });
+        return;
+    };
+    sp.succeed();
+    printGitOutputRaw(&git_output);
+
+    try stdout.print("{s}{s}{s}✓{s} Updated prompt metadata\n", .{ P, Color.bold, Color.green, Color.reset });
+    try stdout.print("{s}  Hash: {s}{s}{s}\n", .{ P, Color.cyan, hash, Color.reset });
+    if (desc_flag) |d| try stdout.print("{s}  Description: {s}\n", .{ P, d });
+    if (cat_flag) |c| try stdout.print("{s}  Category: {s}\n", .{ P, c });
+    try stdout.writeAll("\n");
+}
+
+fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
+    // Parse --cat flags and positional hash args
+    var hash_args: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer hash_args.deinit(allocator);
+    var cat_filters: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer cat_filters.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--cat")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                try cat_filters.append(allocator, args[i]);
+            } else {
+                try stderr.print("{s}{s}{s}Error:{s} --cat requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
+                return;
+            }
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+            try stderr.print("{s}Usage: {s}clumsies prompt import <hash>... [--cat <category>...]{s}\n\n", .{ P, Color.cyan, Color.reset });
+            return;
+        } else {
+            try hash_args.append(allocator, arg);
+        }
+    }
+
+    if (hash_args.items.len == 0 and cat_filters.items.len == 0) {
+        try stderr.print("{s}{s}{s}Error:{s} Hash or --cat required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies prompt import <hash>... [--cat <category>...]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
@@ -636,12 +827,11 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         return;
     };
 
-    // Import each hash
     var success_count: usize = 0;
     var fail_count: usize = 0;
 
-    for (args) |hash| {
-        // Find prompt by hash prefix
+    // Import by hash args
+    for (hash_args.items) |hash| {
         var found_hash: ?[]const u8 = null;
         var found_name: ?[]const u8 = null;
         var found_format: []const u8 = "md";
@@ -664,34 +854,45 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             continue;
         }
 
-        // Read prompt file (pure hash, no extension)
-        const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", found_hash.? });
-        defer allocator.free(prompt_file_path);
-
-        // Copy to .prompts/{category}/
-        const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, found_category });
-        defer allocator.free(target_dir);
-        fs.cwd().makePath(target_dir) catch {};
-
-        // Find next available sequence number with gap filling
-        const seq_num = findNextSequence(target_dir);
-
-        // Build filename: NN_name.format
-        const name_part = found_name orelse found_hash.?[0..8];
-        const dest_filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq_num, name_part, found_format });
-        defer allocator.free(dest_filename);
-
-        const dest_path = try std.fs.path.join(allocator, &.{ target_dir, dest_filename });
-        defer allocator.free(dest_path);
-
-        fs.copyFileAbsolute(prompt_file_path, dest_path, .{}) catch {
-            try stderr.print("{s}{s}{s}✗{s} Failed to copy: {s}\n", .{ P, Color.bold, Color.red, Color.reset, name_part });
+        if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, found_hash.?, found_name, found_format, found_category)) {
+            success_count += 1;
+        } else {
             fail_count += 1;
-            continue;
-        };
+        }
+    }
 
-        try stdout.print("{s}{s}{s}✓{s} {s} → .prompts/{s}/{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, found_category, dest_filename });
-        success_count += 1;
+    // Import by category (prefix match)
+    if (cat_filters.items.len > 0) {
+        var cat_match_count: usize = 0;
+        for (prompts.array.items) |item| {
+            const item_hash = if (item.object.get("hash")) |h| h.string else continue;
+            const item_name_opt: ?[]const u8 = if (item.object.get("name")) |n| n.string else null;
+            const item_format = if (item.object.get("format")) |f| f.string else "md";
+            const item_category = if (item.object.get("category")) |p| p.string else "conduct";
+
+            // Check if category matches any filter (prefix match)
+            var matches = false;
+            for (cat_filters.items) |cat| {
+                if (std.mem.eql(u8, item_category, cat) or (std.mem.startsWith(u8, item_category, cat) and (cat.len == item_category.len or item_category[cat.len] == '/'))) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (!matches) continue;
+            cat_match_count += 1;
+
+            if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, item_hash, item_name_opt, item_format, item_category)) {
+                success_count += 1;
+            } else {
+                fail_count += 1;
+            }
+        }
+
+        if (cat_match_count == 0) {
+            for (cat_filters.items) |cat| {
+                try stderr.print("{s}{s}{s}✗{s} No prompts in category: {s}\n", .{ P, Color.bold, Color.red, Color.reset, cat });
+            }
+        }
     }
 
     // Summary
@@ -703,4 +904,29 @@ fn runImport(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
     } else {
         try stderr.print("{s}No prompts imported\n\n", .{P});
     }
+}
+
+fn importPrompt(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, hash: []const u8, name_opt: ?[]const u8, format: []const u8, category: []const u8) !bool {
+    const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
+    defer allocator.free(prompt_file_path);
+
+    const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, category });
+    defer allocator.free(target_dir);
+    fs.cwd().makePath(target_dir) catch {};
+
+    const seq_num = findNextSequence(target_dir);
+    const name_part = name_opt orelse hash[0..8];
+    const dest_filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq_num, name_part, format });
+    defer allocator.free(dest_filename);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ target_dir, dest_filename });
+    defer allocator.free(dest_path);
+
+    fs.copyFileAbsolute(prompt_file_path, dest_path, .{}) catch {
+        try stderr.print("{s}{s}{s}✗{s} Failed to copy: {s}\n", .{ P, Color.bold, Color.red, Color.reset, name_part });
+        return false;
+    };
+
+    try stdout.print("{s}{s}{s}✓{s} {s} → .prompts/{s}/{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, category, dest_filename });
+    return true;
 }

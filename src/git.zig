@@ -88,9 +88,11 @@ pub fn checkout(allocator: std.mem.Allocator, path: []const u8, branch: []const 
 }
 
 pub fn fetchAndCheckout(allocator: std.mem.Allocator, path: []const u8, branch: []const u8, output: ?*GitOutput) !void {
-    // First fetch
-    try run(allocator, path, &.{ "git", "fetch", "origin", branch }, output);
-    // Then checkout
+    // First fetch (use separate output to avoid leak when checkout overwrites)
+    var fetch_output: GitOutput = .{};
+    defer fetch_output.deinit(allocator);
+    try run(allocator, path, &.{ "git", "fetch", "origin", branch }, &fetch_output);
+    // Then checkout (result goes to caller's output)
     return checkout(allocator, path, branch, output);
 }
 

@@ -238,28 +238,25 @@ What this command does.
 3. Step three
 ```
 
-### 5.2 Optional Frontmatter
+### 5.2 Metadata Management
 
-For metadata, YAML frontmatter can be added:
+Prompt files contain **pure content only** — no frontmatter or embedded metadata. All metadata is managed externally:
 
-```markdown
----
-description: Commit message format and conventions
-category: conduct
----
+| Metadata | Source |
+|----------|--------|
+| `name` | Derived from filename (strip sequence prefix). `03_GIT_COMMIT.md` → `GIT_COMMIT` |
+| `description` | Provided via `--desc` flag at registration, or `"-"` by default |
+| `category` | Provided via `--cat` flag at registration, directory structure for bulk registration, or `"conduct"` by default |
 
-# Git Commit Rules
-...
+Metadata is stored in `prompts/index.json` and can be updated after registration without changing the prompt file (and thus without changing its hash):
+
+```bash
+clumsies prompt register file.md --desc "Git conventions" --cat conduct/git
+clumsies prompt update <hash> --desc "Updated description"
+clumsies prompt update <hash> --cat conduct/writing/zh
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `description` | string | Brief description of the prompt |
-| `category` | string | Target directory: `"conduct"` \| `"command"` |
-
-The prompt name is derived from the filename (without sequence prefix). For example, `03_GIT_COMMIT.md` becomes `GIT_COMMIT` in the registry.
-
-The `category` field determines where the prompt is placed when imported. If not specified, the CLI will attempt to detect it from the file path, defaulting to `"conduct"`.
+This separation ensures prompt content hashes remain stable across protocol changes.
 
 ---
 
@@ -314,10 +311,10 @@ Individual prompts are stored by SHA-256 hash:
 | Field | Description |
 |-------|-------------|
 | `hash` | SHA-256 hash of the file content |
-| `name` | Prompt name (from frontmatter or filename) |
-| `description` | Description (from frontmatter or default) |
+| `name` | Prompt name (from filename, sequence prefix stripped) |
+| `description` | Description (from `--desc` flag or default `"-"`) |
 | `format` | Original file extension (md, txt, etc.) |
-| `category` | Target directory (conduct or command) |
+| `category` | Target directory path (e.g., `conduct/git`, `command`) |
 | `created_at` | Unix timestamp |
 
 When importing, the full filename is constructed as: `{category}/{sequence}_{name}.{format}`
@@ -346,7 +343,7 @@ Bundles store references to prompts and meta-prompts by hash in `bundles/index.j
 }
 ```
 
-The `category` in bundle references is just the directory name (conduct or command).
+The `category` in bundle references is the directory path (e.g., `conduct/git`, `command`).
 Full prompt details (name, format, etc.) are stored in `prompts/index.json`.
 
 ### 6.6 Sequence Number Assignment
