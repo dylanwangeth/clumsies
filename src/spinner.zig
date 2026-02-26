@@ -58,7 +58,7 @@ pub const Spinner = struct {
     }
 };
 
-pub fn init(_: anytype, message: []const u8) Spinner {
+pub fn init(_: *std.io.Writer, message: []const u8) Spinner {
     return Spinner{
         .message = message,
     };

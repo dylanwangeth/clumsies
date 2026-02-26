@@ -8,11 +8,18 @@ const P = commands.P;
 const GitOutput = commands.GitOutput;
 const printGitOutputRaw = commands.printGitOutputRaw;
 
-pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void {
+pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (!commands.promptsExist()) {
         try stderr.print("{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run {s}clumsies init <bundle> <url>{s} or {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
         return;
+    }
+
+    var quiet_git: bool = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
+            quiet_git = true;
+        }
     }
 
     const prompts_path = try commands.getPromptsPath(allocator);
@@ -30,11 +37,11 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator) !void
 
     git.pull(allocator, prompts_path, &git_output) catch {
         sp.fail();
-        printGitOutputRaw(&git_output);
+        printGitOutputRaw(&git_output, quiet_git);
         return;
     };
     sp.succeed();
-    printGitOutputRaw(&git_output);
+    printGitOutputRaw(&git_output, quiet_git);
 
     _ = std.fs.File.stdout().write("\n") catch {};
 }

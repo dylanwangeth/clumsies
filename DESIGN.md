@@ -251,9 +251,9 @@ Prompt files contain **pure content only** — no frontmatter or embedded metada
 Metadata is stored in `prompts/index.json` and can be updated after registration without changing the prompt file (and thus without changing its hash):
 
 ```bash
-clumsies prompt register file.md --desc "Git conventions" --cat conduct/git
-clumsies prompt update <hash> --desc "Updated description"
-clumsies prompt update <hash> --cat conduct/writing/zh
+clumsies add file.md --desc "Git conventions" --cat conduct/git
+clumsies set <hash> --desc "Updated description"
+clumsies set <hash> --cat conduct/writing/zh
 ```
 
 This separation ensures prompt content hashes remain stable across protocol changes.

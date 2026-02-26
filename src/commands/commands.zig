@@ -170,7 +170,7 @@ pub fn formatDate(timestamp: i64, buf: *[10]u8) []const u8 {
 
 /// Print git output in unified format
 /// Shows both stdout and stderr with dim styling
-pub fn printGitOutput(writer: anytype, output: *const GitOutput) void {
+pub fn printGitOutput(writer: *std.io.Writer, output: *const GitOutput) void {
     const has_stdout = output.stdout != null and output.stdout.?.len > 0;
     const has_stderr = output.stderr != null and output.stderr.?.len > 0;
 
@@ -196,7 +196,9 @@ pub fn printGitOutput(writer: anytype, output: *const GitOutput) void {
 }
 
 /// Print git output using raw stdout (for use after spinner)
-pub fn printGitOutputRaw(output: *const GitOutput) void {
+/// If quiet=true, output is suppressed.
+pub fn printGitOutputRaw(output: *const GitOutput, quiet: bool) void {
+    if (quiet) return;
     const has_stdout = output.stdout != null and output.stdout.?.len > 0;
     const has_stderr = output.stderr != null and output.stderr.?.len > 0;
 
@@ -231,7 +233,7 @@ pub fn printGitOutputRaw(output: *const GitOutput) void {
 /// Caller must free the returned path
 /// If sync=false and registry exists locally, skip network operations (fast path)
 /// If registry doesn't exist, always clones regardless of sync flag
-pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, sync: bool) ![]const u8 {
+pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool) ![]const u8 {
     const registry_info = config.getRegistryInfo(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
@@ -268,12 +270,12 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
 
         git.cloneWithBranch(allocator, registry_info.url, registry_path, registry_info.branch, &git_output) catch {
             sp.fail();
-            printGitOutputRaw(&git_output);
+            printGitOutputRaw(&git_output, quiet_git);
             try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
             return error.CloneFailed;
         };
         sp.succeed();
-        printGitOutputRaw(&git_output);
+        printGitOutputRaw(&git_output, quiet_git);
     } else if (sync) {
         // Registry exists and sync requested - pull latest
         var sp = spinner.init(stdout, "Syncing registry");
@@ -290,10 +292,383 @@ pub fn ensureRegistry(stdout: anytype, stderr: anytype, allocator: std.mem.Alloc
         }
         git.pull(allocator, registry_path, &git_output) catch {};
         sp.succeed();
-        printGitOutputRaw(&git_output);
+        printGitOutputRaw(&git_output, quiet_git);
     }
     // else: registry exists and no sync requested - use local cache (fast path)
 
     return registry_path;
+}
+
+// --- Shared types and functions for new flat commands ---
+
+pub const RefKind = enum { prompt, bundle, not_found };
+
+/// Check if a string consists entirely of hexadecimal characters
+pub fn isHexString(s: []const u8) bool {
+    if (s.len == 0) return false;
+    for (s) |c| {
+        if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Resolve a ref to either a prompt (by hash prefix) or bundle (by name).
+/// 1. If ref is hex-only → search prompts/index.json by hash prefix
+/// 2. Otherwise → search bundles/index.json by name
+/// 3. not_found if neither matches
+pub fn resolveRef(allocator: std.mem.Allocator, registry_path: []const u8, ref: []const u8) RefKind {
+    if (isHexString(ref)) {
+        // Try prompts/index.json hash prefix match
+        const index_path = std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" }) catch return .not_found;
+        defer allocator.free(index_path);
+
+        const file = fs.openFileAbsolute(index_path, .{}) catch return .not_found;
+        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            file.close();
+            return .not_found;
+        };
+        file.close();
+        defer allocator.free(content);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return .not_found;
+        defer parsed.deinit();
+
+        const prompts = parsed.value.object.get("prompts") orelse return .not_found;
+        for (prompts.array.items) |item| {
+            const item_hash = if (item.object.get("hash")) |h| h.string else continue;
+            if (std.mem.startsWith(u8, item_hash, ref)) return .prompt;
+        }
+        return .not_found;
+    } else {
+        // Try bundles/index.json name match
+        const index_path = std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" }) catch return .not_found;
+        defer allocator.free(index_path);
+
+        const file = fs.openFileAbsolute(index_path, .{}) catch return .not_found;
+        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            file.close();
+            return .not_found;
+        };
+        file.close();
+        defer allocator.free(content);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return .not_found;
+        defer parsed.deinit();
+
+        const bundles = parsed.value.object.get("bundles") orelse return .not_found;
+        for (bundles.array.items) |item| {
+            const item_name = if (item.object.get("name")) |n| n.string else continue;
+            if (std.mem.eql(u8, item_name, ref)) return .bundle;
+        }
+        return .not_found;
+    }
+}
+
+/// PromptRef represents a prompt reference in a bundle
+pub const PromptRef = struct {
+    hash: []const u8,
+    category: []const u8,
+    name: []const u8,
+    description: []const u8,
+    format: []const u8,
+};
+
+/// Free all owned fields in a PromptRef list
+pub fn freePromptRefs(allocator: std.mem.Allocator, refs: *std.ArrayListUnmanaged(PromptRef)) void {
+    for (refs.items) |ref| {
+        allocator.free(ref.hash);
+        allocator.free(ref.category);
+        allocator.free(ref.name);
+        allocator.free(ref.description);
+        allocator.free(ref.format);
+    }
+    refs.deinit(allocator);
+}
+
+/// Check if content starts with a YAML frontmatter block (---\n...\n---).
+pub fn hasFrontmatter(content: []const u8) bool {
+    if (!std.mem.startsWith(u8, content, "---\n") and !std.mem.startsWith(u8, content, "---\r\n")) return false;
+    const start = if (std.mem.startsWith(u8, content, "---\r\n")) @as(usize, 5) else @as(usize, 4);
+    if (std.mem.indexOf(u8, content[start..], "\n---\n") != null) return true;
+    if (std.mem.indexOf(u8, content[start..], "\n---\r\n") != null) return true;
+    if (std.mem.endsWith(u8, content, "\n---")) return true;
+    return false;
+}
+
+/// Strip YAML frontmatter from the beginning of content.
+pub fn stripFrontmatter(content: []const u8) []const u8 {
+    if (!std.mem.startsWith(u8, content, "---\n") and !std.mem.startsWith(u8, content, "---\r\n")) return content;
+    const start = if (std.mem.startsWith(u8, content, "---\r\n")) @as(usize, 5) else @as(usize, 4);
+
+    if (std.mem.indexOf(u8, content[start..], "\n---\n")) |idx| {
+        const after = start + idx + 5;
+        return std.mem.trimLeft(u8, content[after..], "\r\n");
+    }
+    if (std.mem.indexOf(u8, content[start..], "\n---\r\n")) |idx| {
+        const after = start + idx + 6;
+        return std.mem.trimLeft(u8, content[after..], "\r\n");
+    }
+    if (std.mem.endsWith(u8, content, "\n---")) {
+        return "";
+    }
+    return content;
+}
+
+/// Import a single prompt file from registry to .prompts/{category}/
+pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, hash: []const u8, name_opt: ?[]const u8, format: []const u8, category: []const u8) !bool {
+    const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
+    defer allocator.free(prompt_file_path);
+
+    const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, category });
+    defer allocator.free(target_dir);
+    fs.cwd().makePath(target_dir) catch {};
+
+    const seq_num = findNextSequence(target_dir);
+    const name_part = name_opt orelse hash[0..8];
+    const dest_filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq_num, name_part, format });
+    defer allocator.free(dest_filename);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ target_dir, dest_filename });
+    defer allocator.free(dest_path);
+
+    fs.copyFileAbsolute(prompt_file_path, dest_path, .{}) catch {
+        try stderr.print("{s}{s}{s}✗{s} Failed to copy: {s}\n", .{ P, Color.bold, Color.red, Color.reset, name_part });
+        return false;
+    };
+
+    try stdout.print("{s}{s}{s}✓{s} {s} → .prompts/{s}/{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, category, dest_filename });
+    return true;
+}
+
+/// Check if a bundle exists in the registry by name
+pub fn bundleExists(allocator: std.mem.Allocator, registry_path: []const u8, name: []const u8) bool {
+    const index_path = std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" }) catch return false;
+    defer allocator.free(index_path);
+
+    const file = fs.openFileAbsolute(index_path, .{}) catch return false;
+    defer file.close();
+
+    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch return false;
+    defer allocator.free(content);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return false;
+    defer parsed.deinit();
+
+    const bundles = parsed.value.object.get("bundles") orelse return false;
+
+    for (bundles.array.items) |item| {
+        const item_name = if (item.object.get("name")) |n| n.string else continue;
+        if (std.mem.eql(u8, item_name, name)) return true;
+    }
+    return false;
+}
+
+/// Recursively collect prompt files from a directory and upload to registry
+pub fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, base_name: []const u8, prompts_dir: []const u8, refs: *std.ArrayListUnmanaged(PromptRef)) !void {
+    var dir = fs.openDirAbsolute(src_dir, .{ .iterate = true }) catch return error.Failed;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (iter.next() catch return error.Failed) |entry| {
+        const src_path = try std.fs.path.join(allocator, &.{ src_dir, entry.name });
+        defer allocator.free(src_path);
+
+        if (entry.kind == .directory) {
+            const sub_base = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_name, entry.name });
+            defer allocator.free(sub_base);
+            try collectAndUploadPrompts(allocator, src_path, sub_base, prompts_dir, refs);
+        } else if (entry.kind == .file) {
+            const ext_idx = std.mem.lastIndexOf(u8, entry.name, ".");
+            if (ext_idx == null) continue;
+            const format = try allocator.dupe(u8, entry.name[ext_idx.? + 1 ..]);
+            const name_end = ext_idx.?;
+
+            const file = fs.openFileAbsolute(src_path, .{}) catch continue;
+            const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+                file.close();
+                continue;
+            };
+            file.close();
+            defer allocator.free(content);
+
+            var hash_bytes: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(content, &hash_bytes, .{});
+            var hash_hex: [64]u8 = undefined;
+            hexEncode(&hash_bytes, &hash_hex);
+            const hash = try allocator.dupe(u8, &hash_hex);
+
+            const raw_name = entry.name[0..name_end];
+            const name = try allocator.dupe(u8, stripSequencePrefix(raw_name));
+            const description = try allocator.dupe(u8, "-");
+
+            const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
+            defer allocator.free(dest_path);
+            fs.copyFileAbsolute(src_path, dest_path, .{}) catch {};
+
+            try refs.append(allocator, .{
+                .hash = hash,
+                .category = try allocator.dupe(u8, base_name),
+                .name = name,
+                .description = description,
+                .format = format,
+            });
+        }
+    }
+}
+
+/// Merge new prompt refs into prompts/index.json, skipping duplicates by hash
+pub fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u8, refs: []const PromptRef) !void {
+    const prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
+    defer allocator.free(prompts_dir);
+    fs.cwd().makePath(prompts_dir) catch {};
+
+    const index_path = try std.fs.path.join(allocator, &.{ prompts_dir, "index.json" });
+    defer allocator.free(index_path);
+
+    var index_content: std.ArrayListUnmanaged(u8) = .{};
+    defer index_content.deinit(allocator);
+    try index_content.appendSlice(allocator, "{\n  \"prompts\": [");
+
+    var seen_hashes = std.StringHashMap(void).init(allocator);
+    defer {
+        var key_iter = seen_hashes.keyIterator();
+        while (key_iter.next()) |key| {
+            allocator.free(@constCast(key.*));
+        }
+        seen_hashes.deinit();
+    }
+
+    var first = true;
+    const timestamp = std.time.timestamp();
+
+    if (fs.openFileAbsolute(index_path, .{})) |file| {
+        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            file.close();
+            return;
+        };
+        file.close();
+        defer allocator.free(content);
+
+        if (std.json.parseFromSlice(std.json.Value, allocator, content, .{})) |parsed| {
+            defer parsed.deinit();
+            if (parsed.value.object.get("prompts")) |prompts| {
+                for (prompts.array.items) |item| {
+                    const item_hash = if (item.object.get("hash")) |h| h.string else continue;
+                    const item_name = if (item.object.get("name")) |n| n.string else "-";
+                    const item_desc = if (item.object.get("description")) |d| d.string else "-";
+                    const item_format = if (item.object.get("format")) |f| f.string else "md";
+                    const item_category = if (item.object.get("category")) |p| p.string else "conduct";
+                    const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+
+                    const hash_copy = allocator.dupe(u8, item_hash) catch continue;
+                    seen_hashes.put(hash_copy, {}) catch {
+                        allocator.free(hash_copy);
+                    };
+
+                    const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{
+                        if (first) "" else ",",
+                        item_hash,
+                        item_name,
+                        item_desc,
+                        item_format,
+                        item_category,
+                        item_created,
+                    });
+                    defer allocator.free(entry);
+                    try index_content.appendSlice(allocator, entry);
+                    first = false;
+                }
+            }
+        } else |_| {}
+    } else |_| {}
+
+    for (refs) |ref| {
+        if (seen_hashes.contains(ref.hash)) continue;
+
+        const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}", .{
+            if (first) "" else ",",
+            ref.hash,
+            ref.name,
+            ref.description,
+            ref.format,
+            ref.category,
+            timestamp,
+        });
+        defer allocator.free(entry);
+        try index_content.appendSlice(allocator, entry);
+        first = false;
+    }
+
+    try index_content.appendSlice(allocator, "\n  ]\n}\n");
+
+    const idx_out = try fs.createFileAbsolute(index_path, .{});
+    defer idx_out.close();
+    try idx_out.writeAll(index_content.items);
+}
+
+/// Serialize a bundle JSON entry to a buffer (handles both new and old format)
+pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
+    const item_name = if (item.object.get("name")) |n| n.string else return;
+    const item_task = if (item.object.get("task")) |t| t.string else "-";
+    const item_desc = if (item.object.get("description")) |d| d.string else "-";
+    const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+    const item_meta = if (item.object.get("meta_prompt")) |m| m.string else "";
+
+    const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"categories\": [", .{ item_name, item_task, item_desc, item_created, item_meta });
+    defer allocator.free(entry_start);
+    try buf.appendSlice(allocator, entry_start);
+
+    if (item.object.get("categories")) |categories| {
+        for (categories.array.items, 0..) |cat, idx| {
+            const cat_entry = try std.fmt.allocPrint(allocator, "{s}\"{s}\"", .{
+                if (idx > 0) ", " else "",
+                cat.string,
+            });
+            defer allocator.free(cat_entry);
+            try buf.appendSlice(allocator, cat_entry);
+        }
+    } else if (item.object.get("prompts")) |prompts| {
+        var seen_cats = std.StringHashMap(void).init(allocator);
+        defer seen_cats.deinit();
+        var cat_list: std.ArrayListUnmanaged([]const u8) = .{};
+        defer cat_list.deinit(allocator);
+
+        for (prompts.array.items) |ref| {
+            const cat = if (ref.object.get("category")) |c| c.string else continue;
+            if (!seen_cats.contains(cat)) {
+                seen_cats.put(cat, {}) catch {};
+                cat_list.append(allocator, cat) catch {};
+            }
+        }
+        for (cat_list.items, 0..) |cat, idx| {
+            const cat_entry = try std.fmt.allocPrint(allocator, "{s}\"{s}\"", .{
+                if (idx > 0) ", " else "",
+                cat,
+            });
+            defer allocator.free(cat_entry);
+            try buf.appendSlice(allocator, cat_entry);
+        }
+    }
+
+    try buf.appendSlice(allocator, "],\n      \"prompts\": [");
+
+    if (item.object.get("prompts")) |prompts| {
+        if (item.object.get("categories") != null) {
+            for (prompts.array.items, 0..) |ref, idx| {
+                const hash = if (ref.object.get("hash")) |h| h.string else continue;
+                const category = if (ref.object.get("category")) |p| p.string else continue;
+                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
+                    if (idx > 0) "," else "",
+                    hash,
+                    category,
+                });
+                defer allocator.free(ref_entry);
+                try buf.appendSlice(allocator, ref_entry);
+            }
+        }
+    }
+    try buf.appendSlice(allocator, "]\n    }");
 }
 

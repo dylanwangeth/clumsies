@@ -10,8 +10,13 @@ const cmd_status = @import("commands/status.zig");
 const cmd_log = @import("commands/log.zig");
 const cmd_config = @import("commands/config.zig");
 const cmd_upgrade = @import("commands/upgrade.zig");
-const cmd_bundle = @import("commands/bundle.zig");
-const cmd_prompt = @import("commands/prompt.zig");
+const cmd_ls = @import("commands/ls.zig");
+const cmd_add = @import("commands/add_cmd.zig");
+const cmd_rm = @import("commands/rm_cmd.zig");
+const cmd_show = @import("commands/show_cmd.zig");
+const cmd_set = @import("commands/set_cmd.zig");
+const cmd_get = @import("commands/get_cmd.zig");
+const cmd_pub = @import("commands/pub_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const Color = styles.Color;
@@ -26,8 +31,13 @@ const Command = enum {
     clone,
     status,
     log,
-    bundle,
-    prompt,
+    ls,
+    add,
+    rm_cmd,
+    show_cmd,
+    set_cmd,
+    get,
+    pub_cmd,
     config,
     upgrade,
     help,
@@ -43,8 +53,13 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "clone", .clone },
     .{ "status", .status },
     .{ "log", .log },
-    .{ "bundle", .bundle },
-    .{ "prompt", .prompt },
+    .{ "ls", .ls },
+    .{ "add", .add },
+    .{ "rm", .rm_cmd },
+    .{ "show", .show_cmd },
+    .{ "set", .set_cmd },
+    .{ "get", .get },
+    .{ "pub", .pub_cmd },
     .{ "config", .config },
     .{ "upgrade", .upgrade },
     .{ "help", .help },
@@ -96,41 +111,22 @@ pub fn main() !void {
         .version => {
             try stdout_writer.print("{s}{s}{s}clumsies{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, version });
         },
-        .help => {
-            try cmd_help.run(stdout_writer);
-        },
-        .remote => {
-            try cmd_remote.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .push => {
-            try cmd_push.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .pull => {
-            try cmd_pull.run(stdout_writer, stderr_writer, allocator);
-        },
-        .clone => {
-            try cmd_clone.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .status => {
-            try cmd_status.run(stdout_writer, stderr_writer, allocator);
-        },
-        .log => {
-            try cmd_log.run(stdout_writer, stderr_writer, allocator);
-        },
-        .bundle => {
-            try cmd_bundle.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .prompt => {
-            try cmd_prompt.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .config => {
-            try cmd_config.run(stdout_writer, stderr_writer, allocator, cmd_args);
-        },
-        .upgrade => {
-            try cmd_upgrade.run(stdout_writer, stderr_writer, allocator, version);
-        },
-        .none => {
-            try cmd_help.run(stdout_writer);
-        },
+        .help => try cmd_help.run(stdout_writer),
+        .remote => try cmd_remote.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .push => try cmd_push.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .pull => try cmd_pull.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .clone => try cmd_clone.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .status => try cmd_status.run(stdout_writer, stderr_writer, allocator),
+        .log => try cmd_log.run(stdout_writer, stderr_writer, allocator),
+        .ls => try cmd_ls.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .add => try cmd_add.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .rm_cmd => try cmd_rm.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .show_cmd => try cmd_show.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .set_cmd => try cmd_set.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .get => try cmd_get.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .pub_cmd => try cmd_pub.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .config => try cmd_config.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .upgrade => try cmd_upgrade.run(stdout_writer, stderr_writer, allocator, version),
+        .none => try cmd_help.run(stdout_writer),
     }
 }

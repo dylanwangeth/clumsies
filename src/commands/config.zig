@@ -24,7 +24,7 @@ const Config = struct {
     meta_prompt_file: ?[]const u8 = null,
 };
 
-pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });
         try printConfigHelp(stderr);
@@ -50,7 +50,7 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
     }
 }
 
-fn printConfigHelp(out: anytype) !void {
+fn printConfigHelp(out: *std.io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies config <command> [key] [value]{s}\n\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Commands:\n", .{P});
     try out.print("{s}  {s}list{s}              List all config\n", .{ P, Color.cyan, Color.reset });
@@ -83,7 +83,7 @@ fn readConfig(allocator: std.mem.Allocator) !std.json.Parsed(std.json.Value) {
     return std.json.parseFromSlice(std.json.Value, allocator, content, .{});
 }
 
-fn listConfig(stdout: anytype, allocator: std.mem.Allocator) !void {
+fn listConfig(stdout: *std.io.Writer, allocator: std.mem.Allocator) !void {
     try stdout.print("{s}{s}{s}Configuration:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     const parsed = readConfig(allocator) catch {
@@ -112,7 +112,7 @@ fn listConfig(stdout: anytype, allocator: std.mem.Allocator) !void {
     try stdout.writeAll("\n");
 }
 
-fn getConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key: []const u8) !void {
+fn getConfig(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, key: []const u8) !void {
     const parsed = readConfig(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} No configuration found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -130,7 +130,7 @@ fn getConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key
     }
 }
 
-fn setConfig(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, key: []const u8, value: []const u8) !void {
+fn setConfig(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, key: []const u8, value: []const u8) !void {
     const base = try commands.getBasePath(allocator);
     defer allocator.free(base);
 

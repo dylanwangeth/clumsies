@@ -4,7 +4,7 @@ const commands = @import("commands.zig");
 const Color = commands.Color;
 const P = commands.P;
 
-pub fn run(stdout: anytype, stderr: anytype, _: std.mem.Allocator, current_version: []const u8) !void {
+pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, _: std.mem.Allocator, current_version: []const u8) !void {
     _ = stderr;
     try stdout.print("{s}Current version: {s}\n", .{ P, current_version });
     try stdout.print("{s}To upgrade, run:\n", .{P});

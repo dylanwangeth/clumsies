@@ -60,7 +60,50 @@ Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 
 The CLI exists mostly to keep us honest. If this idea can't survive real workflows, it probably isn't worth much.
 
-### Main Commands (manage .prompts/)
+### Registry Commands
+
+```bash
+# Configure registry (one-time setup)
+clumsies config set registry git@github.com:org/prompt-registry.git
+
+# List prompts and bundles
+clumsies ls                        # List prompts
+clumsies ls -b                     # List bundles
+clumsies ls -c conduct             # Filter by category
+
+# Register prompts
+clumsies add <file> -c conduct -d "Code style rules"
+clumsies add file1.md file2.md -c command    # Batch register
+
+# Show content (auto-detects prompt vs bundle)
+clumsies show a1b2c3               # Show prompt by hash prefix
+clumsies show my-bundle            # Show bundle by name
+clumsies show my-bundle --meta     # Show bundle meta-prompt
+
+# Update metadata or content
+clumsies set a1b2c3 -n new_name              # Rename prompt
+clumsies set a1b2c3 -c new-cat --all         # Rename category across all prompts
+clumsies set a1b2c3 -f new-file.md           # Replace prompt content
+clumsies set my-bundle --add ./conduct       # Add files to bundle
+clumsies set my-bundle --rm-prompt a1b2c3    # Remove prompt from bundle
+clumsies set my-bundle --meta CLAUDE.md      # Update bundle meta-prompt
+
+# Import to local .prompts/
+clumsies get a1b2c3                # Import prompt by hash
+clumsies get my-bundle             # Import full bundle
+clumsies get a1b2 a3c4 -c conduct # Import by hash + category
+
+# Publish bundle
+clumsies pub CLAUDE.md ./conduct ./command
+
+# Remove from registry
+clumsies rm a1b2c3                 # Remove prompt
+clumsies rm my-bundle              # Remove bundle
+```
+
+Type detection: hex-only refs → prompt hash prefix; otherwise → bundle name.
+
+### Workspace Commands (manage .prompts/)
 
 ```bash
 # Clone existing prompts
@@ -78,54 +121,6 @@ clumsies pull
 # Check status and history
 clumsies status
 clumsies log
-```
-
-### Bundle Commands (manage bundles in registry)
-
-```bash
-# Configure registry (one-time setup)
-clumsies config set registry git@github.com:org/prompt-registry.git
-
-# List and show bundles
-clumsies bundle list
-clumsies bundle show <name>
-
-# Import bundle to .prompts/
-clumsies bundle import <name> [--remote-url <url>]
-
-# Register bundle from meta-prompt file and directories
-# Bundle name comes from frontmatter in meta-prompt file
-clumsies bundle register <meta-prompt-file> <dirs...>
-clumsies bundle register CLAUDE.md ./conduct ./command
-
-# Update bundle contents
-clumsies bundle update <name> --add <files...>
-clumsies bundle update <name> --rm <hash...>
-clumsies bundle update <name> --meta <file>
-
-# Remove bundle(s)
-clumsies bundle rm <name>...
-```
-
-### Prompt Commands (manage prompts in registry)
-
-```bash
-# List and show prompts
-clumsies prompt list
-clumsies prompt show <hash>
-
-# Register prompt to registry (metadata via flags, not frontmatter)
-clumsies prompt register <file> [--desc "..."] [--cat "..."]
-
-# Update prompt metadata (without changing content/hash)
-clumsies prompt update <hash> [--desc "..."] [--cat "..."]
-
-# Import prompt(s) to local .prompts/
-clumsies prompt import <hash>...
-clumsies prompt import --cat <category>...    # Import by category (prefix match)
-
-# Remove prompt(s)
-clumsies prompt rm <hash>...
 ```
 
 ### Configuration

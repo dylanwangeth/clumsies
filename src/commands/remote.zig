@@ -7,15 +7,18 @@ const P = commands.P;
 const GitOutput = commands.GitOutput;
 const printGitOutputRaw = commands.printGitOutputRaw;
 
-pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} Remote URL required\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Usage: {s}clumsies remote <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
+    var quiet_git: bool = false;
     for (args) |arg| {
-        if (std.mem.startsWith(u8, arg, "-")) {
+        if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
+            quiet_git = true;
+        } else if (std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
             try stderr.print("{s}Usage: {s}clumsies remote <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
             return;
@@ -48,23 +51,23 @@ pub fn run(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args:
         defer set_output.deinit(allocator);
 
         git.setRemoteUrl(allocator, prompts_path, remote_url, &set_output) catch {
-            printGitOutputRaw(&set_output);
+            printGitOutputRaw(&set_output, quiet_git);
             try stderr.print("{s}{s}{s}Error:{s} Failed to update remote\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
         try stdout.print("{s}{s}{s}✓{s} Updated remote: {s}\n", .{ P, Color.bold, Color.green, Color.reset, remote_url });
-        printGitOutputRaw(&set_output);
+        printGitOutputRaw(&set_output, quiet_git);
     } else {
         // Add new remote
         var add_output: GitOutput = .{};
         defer add_output.deinit(allocator);
 
         git.addRemote(allocator, prompts_path, remote_url, &add_output) catch {
-            printGitOutputRaw(&add_output);
+            printGitOutputRaw(&add_output, quiet_git);
             try stderr.print("{s}{s}{s}Error:{s} Failed to add remote\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
         try stdout.print("{s}{s}{s}✓{s} Added remote: {s}\n", .{ P, Color.bold, Color.green, Color.reset, remote_url });
-        printGitOutputRaw(&add_output);
+        printGitOutputRaw(&add_output, quiet_git);
     }
 }
