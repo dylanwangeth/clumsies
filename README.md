@@ -143,7 +143,7 @@ clumsies upgrade                             # Upgrade clumsies
 
 ```
 project/
-├── CLAUDE.md                    # Meta-prompt file (auto-synced with .prompts/)
+├── CLAUDE.md                    # Meta-prompt file (managed via bundle import/register)
 └── .prompts/                    # Independent git repository
     ├── .git/
     ├── conduct/                 # Behavioral rules (always active)
@@ -151,23 +151,10 @@ project/
     │   ├── git/                 # Git conventions
     │   ├── writing/             # Writing standards
     │   └── teaching/            # Teaching methodology
-    ├── command/                 # Executable commands (invoke by name)
-    │   ├── 00_context_reinforcement.md
-    │   └── 01_review_commit.md
-    └── CLAUDE.md                # Meta-prompt file copy
+    └── command/                 # Executable commands (invoke by name)
+        ├── 00_context_reinforcement.md
+        └── 01_review_commit.md
 ```
-
-### Meta-Prompt File Sync
-
-Meta-prompt files (`CLAUDE.md`, `CURSOR.md`, `AGENTS.md`, `COPILOT.md`) are automatically synchronized:
-
-| Operation | Direction |
-|-----------|-----------|
-| `push` | root → .prompts/ |
-| `pull` | .prompts/ → root |
-| `clone` | .prompts/ → root |
-
-This ensures meta-prompt files are version-controlled with prompts while remaining accessible at the project root.
 
 ### Registry Structure
 
