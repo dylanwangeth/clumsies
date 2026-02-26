@@ -43,9 +43,11 @@ pub fn run(stdout: anytype) !void {
     try stdout.print("{s}    {s}prompt list{s}                            List prompts\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}prompt register{s} <file> [--desc/--cat]  Register prompt\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}prompt update{s} <hash> [--desc/--cat]    Update prompt metadata\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}prompt replace{s} <hash> <file> [--desc/--cat]  Replace prompt content\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}prompt show{s} <hash>                     Show prompt content\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}prompt import{s} <hash>... [--cat <cat>...]  Import to .prompts/\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}prompt rm{s} <hash>...                    Remove prompt(s)\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}prompt rm{s} <hash>...                    Remove prompt(s)\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}prompt rename-cat{s} <old> <new>          Rename category\n\n", .{ P, Color.cyan, Color.reset });
 
     try stdout.print("{s}{s}{s}CONFIG:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}config set{s} <key> <value>  Set config value\n", .{ P, Color.cyan, Color.reset });
