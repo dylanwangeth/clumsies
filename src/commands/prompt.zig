@@ -111,7 +111,7 @@ fn printPromptHelp(out: anytype) !void {
     try out.print("{s}Commands:\n", .{P});
     try out.print("{s}  {s}list{s}              List prompts in registry\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}register{s} <file> [--desc/--cat]  Register prompt to registry\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}update{s} <hash> [--desc/--cat]    Update prompt metadata\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}update{s} <hash> [--name/--desc/--cat]  Update prompt metadata\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}replace{s} <hash> <file> [--desc/--cat]  Replace prompt content\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}show{s} <hash>                     Show prompt content\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}rm{s} <hash>...                    Remove prompt(s) from registry\n", .{ P, Color.cyan, Color.reset });
@@ -623,13 +623,22 @@ fn runRm(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: [
 
 fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, args: []const []const u8, sync: bool) !void {
     var hash_arg: ?[]const u8 = null;
+    var name_flag: ?[]const u8 = null;
     var desc_flag: ?[]const u8 = null;
     var cat_flag: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--desc")) {
+        if (std.mem.eql(u8, arg, "--name")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                name_flag = args[i];
+            } else {
+                try stderr.print("{s}{s}{s}Error:{s} --name requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
+                return;
+            }
+        } else if (std.mem.eql(u8, arg, "--desc")) {
             if (i + 1 < args.len) {
                 i += 1;
                 desc_flag = args[i];
@@ -647,7 +656,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
             }
         } else if (std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
-            try stderr.print("{s}Usage: {s}clumsies prompt update <hash> [--desc \"...\"] [--cat \"...\"]{s}\n\n", .{ P, Color.cyan, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies prompt update <hash> [--name/--desc/--cat]{s}\n\n", .{ P, Color.cyan, Color.reset });
             return;
         } else if (hash_arg == null) {
             hash_arg = arg;
@@ -656,13 +665,13 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
     if (hash_arg == null) {
         try stderr.print("{s}{s}{s}Error:{s} Hash required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies prompt update <hash> [--desc \"...\"] [--cat \"...\"]{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies prompt update <hash> [--name/--desc/--cat]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
-    if (desc_flag == null and cat_flag == null) {
-        try stderr.print("{s}{s}{s}Error:{s} At least one of --desc or --cat required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies prompt update <hash> [--desc \"...\"] [--cat \"...\"]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    if (name_flag == null and desc_flag == null and cat_flag == null) {
+        try stderr.print("{s}{s}{s}Error:{s} At least one of --name, --desc or --cat required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies prompt update <hash> [--name/--desc/--cat]{s}\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
@@ -709,7 +718,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-        const item_name = if (item.object.get("name")) |n| n.string else "-";
+        var item_name = if (item.object.get("name")) |n| n.string else "-";
         var item_desc = if (item.object.get("description")) |d| d.string else "-";
         const item_format = if (item.object.get("format")) |f| f.string else "md";
         var item_category = if (item.object.get("category")) |p| p.string else "conduct";
@@ -718,6 +727,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
         // Apply updates to matching prompt
         if (std.mem.startsWith(u8, item_hash, hash)) {
             found = true;
+            if (name_flag) |n| item_name = n;
             if (desc_flag) |d| item_desc = d;
             if (cat_flag) |c| item_category = c;
         }
@@ -770,6 +780,7 @@ fn runUpdate(stdout: anytype, stderr: anytype, allocator: std.mem.Allocator, arg
 
     try stdout.print("{s}{s}{s}✓{s} Updated prompt metadata\n", .{ P, Color.bold, Color.green, Color.reset });
     try stdout.print("{s}  Hash: {s}{s}{s}\n", .{ P, Color.cyan, hash, Color.reset });
+    if (name_flag) |n| try stdout.print("{s}  Name: {s}\n", .{ P, n });
     if (desc_flag) |d| try stdout.print("{s}  Description: {s}\n", .{ P, d });
     if (cat_flag) |c| try stdout.print("{s}  Category: {s}\n", .{ P, c });
     try stdout.writeAll("\n");
