@@ -4,31 +4,21 @@ A semantic layer for AI agent prompts.
 
 ## Why
 
-Prompts break once projects grow — not because they're badly written, but because we treat them as syntax instead of semantics.
+Prompts break once projects grow. We keep writing good ones, but they end up as loose text with no structure — hard to reuse, hard to share, hard to move between tools.
 
-Most AI tools today assume prompts are disposable. You write them, tweak them, move on. That works — until you try to reuse them across projects, share them with a team, or migrate between tools.
+At some point we noticed: prompts already form a semantic layer. We just never named it.
 
-At some point we realized: prompts already form a semantic layer — we just never named it.
-
-In practice, some prompts behave like rules (always active), others feel more like procedures (invoke on demand). We found it useful to organize them by meaning:
+Some prompts behave like rules (always active), others are more like procedures (invoke on demand). We found it useful to sort them by what they *mean*:
 
 - **conduct/** — behavioral rules, always in effect
 - **command/** — executable procedures, invoked by name or number
-- **context/** — project-specific knowledge, loaded as needed (local only)
+- **context/** — project knowledge, loaded as needed (local only)
 
-The `.prompts/` directory operates as an independent git repository. A meta-prompt file (`CLAUDE.md`, etc.) serves as a natural language index that guides AI to navigate this structure.
+The `.prompts/` directory is its own git repo. A meta-prompt file (CLAUDE.md, etc.) acts as a natural language index pointing AI into this structure.
 
-### A semantic system, not a prompt collection
+Different developers and stages of work need different slices of the prompt system. The registry preserves that structure across projects.
 
-Clumsies does not treat prompts as a flat collection to be shared wholesale.
-
-In real projects, prompts are inherently role- and context-sensitive: different developers, responsibilities, and stages of work require different parts of the system — not the same monolithic prompt.
-
-This is why Clumsies focuses on semantic structure. Prompts are meant to be composed, adapted, and selectively reused, instead of copied as a single block.
-
-The registry exists to preserve structure across projects, not to define a universal set of "best prompts".
-
-For more background, see [DESIGN.md](./DESIGN.md).
+More in [DESIGN.md](./DESIGN.md).
 
 ## Install
 
@@ -36,7 +26,7 @@ For more background, see [DESIGN.md](./DESIGN.md).
 curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
 ```
 
-The installer downloads the binary and verifies SHA256 checksum before execution.
+The installer downloads the binary and verifies SHA256 before execution.
 
 <details>
 <summary>Manual Install</summary>
@@ -56,115 +46,49 @@ mv clumsies-darwin-arm64 ~/.clumsies/bin/clumsies
 Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 </details>
 
-## Usage
-
-The CLI exists mostly to keep us honest. If this idea can't survive real workflows, it probably isn't worth much.
-
-### Registry Commands
+## Quick Start
 
 ```bash
-# Configure registry (one-time setup)
+# Point to your registry
 clumsies config set registry git@github.com:org/prompt-registry.git
 
-# List prompts and bundles
-clumsies ls                        # List prompts
-clumsies ls -b                     # List bundles
-clumsies ls -c conduct             # Filter by category
+# Import a bundle into your project
+clumsies get my-bundle
 
-# Register prompts
-clumsies add <file> -c conduct -d "Code style rules"
-clumsies add file1.md file2.md -c command    # Batch register
-
-# Show content (auto-detects prompt vs bundle)
-clumsies show a1b2c3               # Show prompt by hash prefix
-clumsies show my-bundle            # Show bundle by name
-clumsies show my-bundle --meta     # Show bundle meta-prompt
-
-# Update metadata or content
-clumsies set a1b2c3 -n new_name              # Rename prompt
-clumsies set a1b2c3 -c new-cat --all         # Rename category across all prompts
-clumsies set a1b2c3 -f new-file.md           # Replace prompt content
-clumsies set my-bundle --add ./conduct       # Add files to bundle
-clumsies set my-bundle --rm-prompt a1b2c3    # Remove prompt from bundle
-clumsies set my-bundle --meta CLAUDE.md      # Update bundle meta-prompt
-
-# Import to local .prompts/
-clumsies get a1b2c3                # Import prompt by hash
-clumsies get my-bundle             # Import full bundle
-clumsies get a1b2 a3c4 -c conduct # Import by hash + category
-
-# Publish bundle
-clumsies pub CLAUDE.md ./conduct ./command
-
-# Remove from registry
-clumsies rm a1b2c3                 # Remove prompt
-clumsies rm my-bundle              # Remove bundle
-```
-
-Type detection: hex-only refs → prompt hash prefix; otherwise → bundle name.
-
-### Workspace Commands (manage .prompts/)
-
-```bash
-# Clone existing prompts
+# Or clone an existing .prompts/ repo
 clumsies clone git@github.com:team/shared-prompts.git
-
-# Set/update remote origin
-clumsies remote git@github.com:user/my-prompts.git
-
-# Make changes and push
-clumsies push -m "Add review command"
-
-# Pull latest changes
-clumsies pull
-
-# Check status and history
-clumsies status
-clumsies log
 ```
 
-### Configuration
-
-```bash
-clumsies config set registry <url>           # Set registry URL
-clumsies config set entry_files <files>      # Set meta-prompt files to sync
-clumsies config set meta_prompt_file <file>  # Set default meta-prompt for init
-clumsies config get registry                 # Get config value
-clumsies config list                         # Show all config
-clumsies upgrade                             # Upgrade clumsies
-```
+Run `clumsies -h` to see what else is available.
 
 ## Architecture
 
 ```
 project/
-├── CLAUDE.md                    # Meta-prompt file (managed via bundle import/register)
-└── .prompts/                    # Independent git repository
+├── CLAUDE.md                    # Meta-prompt (natural language index)
+└── .prompts/                    # Independent git repo
     ├── .git/
-    ├── conduct/                 # Behavioral rules (always active)
-    │   ├── coding/              # Code style, testing, dependencies
-    │   ├── git/                 # Git conventions
-    │   ├── writing/             # Writing standards
-    │   └── teaching/            # Teaching methodology
-    └── command/                 # Executable commands (invoke by name)
+    ├── conduct/                 # Rules (always active)
+    │   ├── coding/
+    │   ├── git/
+    │   └── writing/
+    └── command/                 # Procedures (invoke by name)
         ├── 00_context_reinforcement.md
         └── 01_review_commit.md
 ```
 
-### Registry Structure
+The registry is a separate git repo storing prompts and bundles:
 
 ```
 registry/
 ├── prompts/
 │   ├── index.json
-│   └── <sha256>              # Pure hash, no extension
+│   └── <sha256>                 # Content-addressed, no extension
 ├── meta-prompts/
-│   └── <sha256>              # Pure hash, no extension
+│   └── <sha256>
 └── bundles/
     └── index.json
 ```
-
-Bundles reference prompts and meta-prompts by SHA-256 hash in `bundles/index.json`.
 
 ## Build from Source
 

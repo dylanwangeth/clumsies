@@ -18,12 +18,6 @@ pub const RegistryInfo = struct {
     }
 };
 
-const Config = struct {
-    registry: ?[]const u8 = null,
-    entry_files: ?[]const u8 = null,
-    meta_prompt_file: ?[]const u8 = null,
-};
-
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} Subcommand required\n", .{ P, Color.bold, Color.red, Color.reset });

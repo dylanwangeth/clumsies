@@ -194,6 +194,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     var existing_bundles: std.ArrayListUnmanaged(u8) = .{};
     defer existing_bundles.deinit(allocator);
+    var has_existing_bundles: bool = false;
 
     if (fs.openFileAbsolute(index_path, .{})) |idx_file| {
         const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
@@ -211,6 +212,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
                 for (bundles.array.items, 0..) |item, idx| {
                     if (idx > 0) try existing_bundles.appendSlice(allocator, ",");
                     try appendBundleEntry(allocator, &existing_bundles, item);
+                    has_existing_bundles = true;
                 }
             }
         } else |_| {}
@@ -219,7 +221,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
 
     const timestamp = std.time.timestamp();
-    const comma = if (existing_bundles.items.len > 22) "," else "";
+    const comma = if (has_existing_bundles) "," else "";
 
     // Collect unique categories
     var seen_cats = std.StringHashMap(void).init(allocator);
@@ -273,7 +275,11 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     var add_output: GitOutput = .{};
     defer add_output.deinit(allocator);
-    git.addAll(allocator, registry_path, &add_output) catch {};
+    git.addAll(allocator, registry_path, &add_output) catch {
+        sp4.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     var commit_output: GitOutput = .{};
     defer commit_output.deinit(allocator);

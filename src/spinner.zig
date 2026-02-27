@@ -8,12 +8,12 @@ const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "
 
 pub const Spinner = struct {
     message: []const u8,
-    frame: usize = 0,
-    running: bool = false,
+    frame: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     thread: ?std.Thread = null,
 
     pub fn start(self: *Spinner) void {
-        self.running = true;
+        self.running.store(true, .release);
         self.thread = std.Thread.spawn(.{}, spin, .{self}) catch null;
     }
 
@@ -36,7 +36,7 @@ pub const Spinner = struct {
     }
 
     fn stop(self: *Spinner) void {
-        self.running = false;
+        self.running.store(false, .release);
         if (self.thread) |t| {
             t.join();
             self.thread = null;
@@ -47,10 +47,11 @@ pub const Spinner = struct {
         // Use unbuffered stdout directly for immediate animation display
         const stdout = std.fs.File.stdout();
         var buf: [256]u8 = undefined;
-        while (self.running) {
-            const line = std.fmt.bufPrint(&buf, "\x1b[2K\r{s}{s}{s}{s} {s}...", .{ P, Color.orange, frames[self.frame], Color.reset, self.message }) catch continue;
+        while (self.running.load(.acquire)) {
+            const frame = self.frame.load(.acquire);
+            const line = std.fmt.bufPrint(&buf, "\x1b[2K\r{s}{s}{s}{s} {s}...", .{ P, Color.orange, frames[frame], Color.reset, self.message }) catch continue;
             _ = stdout.write(line) catch {};
-            self.frame = (self.frame + 1) % frames.len;
+            self.frame.store((frame + 1) % frames.len, .release);
             std.Thread.sleep(80 * std.time.ns_per_ms);
         }
         // Clear spinner line before final status is written

@@ -1,297 +1,112 @@
 # Design Notes
 
-Working notes on organizing prompts as a semantic layer.
+Working notes on organizing prompts as a semantic layer. This is a snapshot of what currently works for us.
 
-This isn't a standard — just a snapshot of what currently works for us.
+## 1. The Problem
 
-## 1. Problem Statement
+A single prompt file (CLAUDE.md, AGENTS.md) stops working once a project gets complex enough. Too much context crammed in, rules mixed with procedures, no way to reuse pieces across projects without copy-pasting the whole thing.
 
-### 1.1 The Single-File Limitation
+Tool-specific prompt systems make it worse. Claude Code uses `/project:gen-commit`, Gemini CLI uses `@gen-commit`, Cursor uses `/gen-commit`. Same idea, three syntaxes, none portable.
 
-As projects grow in complexity, a single prompt file (CLAUDE.md, AGENTS.md) faces fundamental limitations:
-
-- **Context overflow**: Too much information for the AI to retain effectively
-- **Mixed concerns**: Rules, commands, and business context tangled together
-- **Poor reusability**: Copy-pasting entire files across projects
-- **Maintenance burden**: One change requires reviewing the entire file
-
-### 1.2 The Tool Lock-in Problem
-
-Current solutions like `.claude/commands/` or tool-specific shortcuts create fragmentation:
-
-```
-Claude Code:    /project:gen-commit
-Gemini CLI:     @gen-commit
-Cursor:         /gen-commit
-```
-
-Developers must learn different syntaxes for each tool, and prompt configurations don't transfer.
-
-### 1.3 Our Approach
-
-We treat prompts as a **semantic layer**:
-
-- Organize prompts by **meaning** (conduct, command, context, journal)
-- Let AI understand the structure through **natural language**
-- **Tool-agnostic**: Works with any AI agent that can read files
-- **Git-native**: `.prompts/` operates as an independent git repository
+We wanted something simpler: organize prompts by meaning, let AI navigate via natural language, and keep everything in plain files so it works with any tool.
 
 ```
 Instead of:  /project:gen-commit --scope backend
 Just say:    "Generate a commit message following git_commit rules"
 ```
 
----
-
 ## 2. Core Concepts
 
-| Concept | Description |
-|---------|-------------|
-| **Prompt** | Atomic unit — a markdown file that guides AI Agent behavior |
-| **Meta-Prompt File** | Entry point (CLAUDE.md, AGENTS.md, etc.) that declares the prompt system |
-| **Bundle** | A shareable composition of prompts for specific use cases |
-| **Registry** | A git repository that stores prompts and bundles for sharing |
+Four things to know: **prompts** are individual markdown files. A **meta-prompt file** (CLAUDE.md, etc.) is the entry point that tells AI where to find them. **Bundles** group prompts together for sharing. The **registry** is a git repo that holds all of it.
 
-### 2.1 Project Structure
+### Project structure
 
 ```
 workspace/
 ├── CLAUDE.md              # Meta-prompt file
-└── .prompts/              # Independent git repository
-    ├── conduct/           # Behavioral rules (always active)
-    ├── command/           # Executable operations (invoke by name)
-    ├── context/           # Project-specific context (local only)
-    └── journal/           # Checkpoint logs (local only)
+└── .prompts/              # Independent git repo
+    ├── conduct/           # Rules (always active)
+    ├── command/           # Procedures (invoke by name)
+    ├── context/           # Project knowledge (local only)
+    └── journal/           # Problem logs (local only)
 ```
 
-> **Note**: Only `conduct/` and `command/` are shareable via registry. The `context/` and `journal/` directories are project-specific and remain local.
-
----
+Only `conduct/` and `command/` are shareable via registry. `context/` and `journal/` stay local.
 
 ## 3. Prompt Types
 
-### 3.1 conduct — Behavioral Rules
+### conduct — Rules
 
-**Semantic**: Constraints and standards the AI should **always follow**.
+Things the AI should always follow. Coding conventions, commit format, security guidelines. Loaded at the start of every conversation.
 
-**When loaded**: Injected into context at the start of every conversation.
+Reference them naturally: "Follow the coding standards in conduct/" or "Apply all conduct rules."
 
-**Examples**:
-- `code_style.md` — Coding conventions
-- `git_commit.md` — Commit message format
-- `security.md` — Security guidelines
+### command — Procedures
 
-**How to reference**:
-- "Follow the coding standards in conduct/"
-- "Apply all rules from the conduct directory"
+Things the AI runs on request. Review flows, release checklists, code generation steps. Numbered prefixes (00_, 01_) let users invoke by number: "Run command 01."
 
-### 3.2 command — Executable Operations
+### context — Project Knowledge (local)
 
-**Semantic**: Procedures the AI can **execute on request**.
+Domain context, architecture notes, tech decisions. Read before starting work. Not shared — every project has its own.
 
-**When loaded**: When the user explicitly invokes by name.
+### journal — Problem Logs (local)
 
-**Examples**:
-- `00_context_reinforcement.md` — Re-read context and correct drift
-- `01_review_commit.md` — Code review procedure
-
-**How to reference**:
-- "Run command 01"
-- "Execute context reinforcement"
-
-**Naming convention**: Numeric prefixes (00_, 01_) enable quick invocation by number.
-
-### 3.3 context — Project-Specific Context (Local Only)
-
-**Semantic**: Domain knowledge and project context loaded **as needed**.
-
-**When loaded**: Before starting work, or when discussing related topics.
-
-**Examples**:
-- `00_OVERVIEW.md` — Project goals and architecture
-- `01_TECH_STACK.md` — Technology decisions and rationale
-
-> **Note**: Not shareable via registry. These are project-specific and remain local.
-
-### 3.4 journal — Checkpoint Logs (Local Only)
-
-**Semantic**: Problem solutions and key decisions for **reference**.
-
-**When loaded**: When facing similar issues or making related decisions.
-
-**Examples**:
-- `00_PERFORMANCE_FIX.md` — How a performance issue was solved
-- `01_MIGRATION_NOTES.md` — Important notes from a migration
-
-> **Note**: Not shareable via registry. These are project-specific and remain local.
-
----
+How bugs were fixed, why decisions were made. Reference when facing similar issues. Also not shared.
 
 ## 4. Meta-Prompt File
 
-The meta-prompt file (CLAUDE.md, AGENTS.md, etc.) is a **natural language index** that helps AI agents understand and navigate the `.prompts/` directory.
+The meta-prompt file is a navigation guide, not a project introduction. It tells AI what's in `.prompts/` and how to use it.
 
-### 4.1 Purpose
+Typical contents: directory tree, what each directory means, file naming convention (`NN_UPPER_SNAKE_CASE.md`), how to invoke commands.
 
-The meta-prompt file is **not** a project introduction. It serves as:
-- Natural language index for the `.prompts/` directory
-- Navigation guide for AI to find and use prompts
-- Explanation of directory structure and file conventions
-
-### 4.2 Typical Content
-
-A meta-prompt file usually includes:
-
-| Section | Description |
-|---------|-------------|
-| Directory structure | Tree view of `.prompts/` subdirectories |
-| Directory explanation | What each directory contains and when to load it |
-| File naming | Naming convention (`NN_UPPER_SNAKE_CASE.md`) |
-| Command invocation | How to call commands (by number or name) |
-
-### 4.3 Bundle Frontmatter
-
-When used as part of a bundle, the meta-prompt file should include YAML frontmatter:
+When used as part of a bundle, the file includes YAML frontmatter:
 
 ```yaml
----
-name: bundle-name
-description: Brief description of the bundle
-task: coding
----
-```
-
-| Field | Description |
-|-------|-------------|
-| `name` | Bundle identifier (used in `init -B <name>`) |
-| `description` | Brief description of the bundle |
-| `task` | Task category (e.g., `coding`, `writing`) |
-
-### 4.4 Example
-
-```markdown
 ---
 name: my-coding-bundle
 description: Coding conduct and commands for AI agents
 task: coding
 ---
-
-# Prompts Index
-
-> Natural language index for `.prompts/` directory.
-
-## Directory Structure
-
-\`\`\`
-workspace/
-├── CLAUDE.md
-└── .prompts/
-    ├── context/    # Project context (read before starting)
-    ├── conduct/    # Behavioral rules (always active)
-    ├── command/    # Executable commands (on demand)
-    └── journal/    # Checkpoint logs (reference when needed)
-\`\`\`
-
-## Directory Explanation
-
-| Directory | When to Load | Content |
-|-----------|--------------|---------|
-| `context/` | Before starting work | Project goals, architecture, tech stack |
-| `conduct/` | Always active | Code style, git conventions, testing |
-| `command/` | User triggers | Reusable task workflows |
-| `journal/` | When facing issues | Problem solutions, key decisions |
-
-## File Naming
-
-All files use: `NN_UPPER_SNAKE_CASE.md`
-
-## Command Invocation
-
-- By number: "Execute command 0" → `.prompts/command/00_*.md`
-- By name: "Execute REVIEW_COMMIT" → matches the file
 ```
 
-### 4.5 Why This Works
-
-The AI doesn't need special syntax or tool support. It simply:
-1. Reads the meta-prompt file as a navigation guide
-2. Understands the `.prompts/` directory structure
-3. Knows when and how to load each type of prompt
-
----
+The AI doesn't need special syntax or tool support. It reads the meta-prompt, understands the directory layout, and knows when to load what.
 
 ## 5. Prompt File Format
 
-Each prompt is a Markdown file.
+Prompts are plain markdown. No frontmatter, no embedded metadata.
 
-### 5.1 Basic Format
+Metadata lives in `prompts/index.json` and is managed separately:
 
-```markdown
-# Command Name
+| Field | Source |
+|-------|--------|
+| `name` | From filename, prefix stripped. `03_GIT_COMMIT.md` becomes `GIT_COMMIT` |
+| `description` | `--desc` flag at registration, or `"-"` |
+| `category` | `--cat` flag, or inferred from directory structure |
 
-## Description
-What this command does.
-
-## Procedure
-1. Step one
-2. Step two
-3. Step three
-```
-
-### 5.2 Metadata Management
-
-Prompt files contain **pure content only** — no frontmatter or embedded metadata. All metadata is managed externally:
-
-| Metadata | Source |
-|----------|--------|
-| `name` | Derived from filename (strip sequence prefix). `03_GIT_COMMIT.md` → `GIT_COMMIT` |
-| `description` | Provided via `--desc` flag at registration, or `"-"` by default |
-| `category` | Provided via `--cat` flag at registration, directory structure for bulk registration, or `"conduct"` by default |
-
-Metadata is stored in `prompts/index.json` and can be updated after registration without changing the prompt file (and thus without changing its hash):
-
-```bash
-clumsies add file.md --desc "Git conventions" --cat conduct/git
-clumsies set <hash> --desc "Updated description"
-clumsies set <hash> --cat conduct/writing/zh
-```
-
-This separation ensures prompt content hashes remain stable across protocol changes.
-
----
+This separation means you can update metadata (rename, re-categorize) without changing the prompt content or its hash.
 
 ## 6. Registry
 
-A registry is a git repository for sharing prompts and bundles.
+A registry is a git repo for sharing prompts and bundles.
 
-### 6.1 Registry Structure
+### Structure
 
 ```
 registry/
 ├── prompts/
-│   ├── index.json           # Prompt metadata (includes format)
-│   └── {hash}               # Content files (pure SHA-256, no extension)
+│   ├── index.json           # Prompt metadata
+│   └── {hash}               # Content files (SHA-256, no extension)
 ├── meta-prompts/
-│   └── {hash}               # Meta-prompt files (pure SHA-256)
+│   └── {hash}
 └── bundles/
-    └── index.json           # Bundle metadata with prompt references
+    └── index.json
 ```
 
-### 6.2 Content-Addressable Storage (Prompts)
+### Content-addressable storage
 
-Individual prompts are stored by SHA-256 hash:
+Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The hash also serves as integrity check — content at a given hash never changes.
 
-1. Compute hash of the file content
-2. Store as `prompts/{hash}` (pure hash, no extension)
-3. Index in `prompts/index.json` with `format` field
-
-**Benefits**:
-- Deduplication: identical prompts stored once
-- Integrity: hash verifies content
-- Immutability: content at a hash never changes
-- Format-agnostic: supports any file type
-
-### 6.3 prompts/index.json
+### prompts/index.json
 
 ```json
 {
@@ -308,22 +123,7 @@ Individual prompts are stored by SHA-256 hash:
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `hash` | SHA-256 hash of the file content |
-| `name` | Prompt name (from filename, sequence prefix stripped) |
-| `description` | Description (from `--desc` flag or default `"-"`) |
-| `format` | Original file extension (md, txt, etc.) |
-| `category` | Target directory path (e.g., `conduct/git`, `command`) |
-| `created_at` | Unix timestamp |
-
-When importing, the full filename is constructed as: `{category}/{sequence}_{name}.{format}`
-
-### 6.4 Bundle Storage
-
-Bundles store references to prompts and meta-prompts by hash in `bundles/index.json`.
-
-### 6.5 bundles/index.json
+### bundles/index.json
 
 ```json
 {
@@ -343,64 +143,15 @@ Bundles store references to prompts and meta-prompts by hash in `bundles/index.j
 }
 ```
 
-The `category` in bundle references is the directory path (e.g., `conduct/git`, `command`).
-Full prompt details (name, format, etc.) are stored in `prompts/index.json`.
+Bundle `category` is the directory path (e.g., `conduct/git`). Full prompt details come from `prompts/index.json`.
 
-### 6.6 Sequence Number Assignment
+### Sequence numbers on import
 
-When importing prompts to a local `.prompts/` directory, sequence numbers are automatically assigned:
+When importing prompts to `.prompts/`, sequence numbers are auto-assigned: scan for existing `NN_` prefixes, fill the first gap, or use the next number. Final filename: `{NN}_{name}.{format}`.
 
-1. Scan target directory for existing files with `NN_` prefix
-2. Find first available gap (e.g., if 00, 01, 03 exist, assign 02)
-3. If no gap, use the next number after the highest
-4. Final filename: `{sequence:02d}_{name}.{format}`
+## 7. Compatibility
 
-This allows easy reference by number: "Run command 01" or "Follow conduct 03".
+Works alongside existing tool-specific setups:
 
----
-
-## 7. Design Principles
-
-### 7.1 Tool Agnostic
-
-The protocol does not depend on any specific AI tool. It works with:
-- Claude Code
-- Gemini CLI
-- Cursor
-- Any agent that can read files
-
-### 7.2 Git Native
-
-`.prompts/` is an independent git repository:
-- Full version control
-- Team collaboration via standard git workflows
-- Easy backup and sharing
-
-### 7.3 Semantic Over Syntactic
-
-Users interact through natural language:
-
-| Tool-specific | Clumsies way |
-|--------------|--------------|
-| `/project:review-commit` | "Execute review commit" |
-| `@command:gen-tests` | "Run the test generation command" |
-
-### 7.4 Human Readable
-
-Everything is Markdown. No compilation, no special tooling required.
-
----
-
-## 8. Compatibility
-
-### 8.1 With AGENTS.md
-
-Clumsies Protocol enhances AGENTS.md:
-- Use AGENTS.md as your meta-prompt file
-- Add `.prompts/` for modular organization
-
-### 8.2 With .claude/commands/
-
-Both can coexist:
-- `.claude/commands/` for tool-triggered shortcuts
-- `.prompts/command/` for semantic invocation
+- Use AGENTS.md as your meta-prompt file if you want
+- `.claude/commands/` and `.prompts/command/` can coexist — one for tool shortcuts, the other for semantic invocation

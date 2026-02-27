@@ -13,6 +13,7 @@ const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
 const resolveRef = commands.resolveRef;
 const appendBundleEntry = commands.appendBundleEntry;
+const appendPromptEntry = commands.appendPromptEntry;
 const PromptRef = commands.PromptRef;
 const collectAndUploadPrompts = commands.collectAndUploadPrompts;
 const updatePromptsIndex = commands.updatePromptsIndex;
@@ -173,25 +174,24 @@ fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
 
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-        var item_name = if (item.object.get("name")) |n| n.string else "-";
-        var item_desc = if (item.object.get("description")) |d| d.string else "-";
-        const item_format = if (item.object.get("format")) |f| f.string else "md";
-        var item_category = if (item.object.get("category")) |p| p.string else "conduct";
-        const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-
-        if (std.mem.startsWith(u8, item_hash, hash)) {
-            found = true;
-            if (name_flag) |n| item_name = n;
-            if (desc_flag) |d| item_desc = d;
-            if (cat_flag) |c| item_category = c;
-        }
 
         if (!first) try new_index.appendSlice(allocator, ",");
         first = false;
 
-        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
-        defer allocator.free(entry);
-        try new_index.appendSlice(allocator, entry);
+        if (std.mem.startsWith(u8, item_hash, hash)) {
+            found = true;
+            const item_name = name_flag orelse (if (item.object.get("name")) |n| n.string else "-");
+            const item_desc = desc_flag orelse (if (item.object.get("description")) |d| d.string else "-");
+            const item_category = cat_flag orelse (if (item.object.get("category")) |p| p.string else "conduct");
+            const item_format = if (item.object.get("format")) |f| f.string else "md";
+            const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+
+            const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
+            defer allocator.free(entry);
+            try new_index.appendSlice(allocator, entry);
+        } else {
+            try appendPromptEntry(allocator, &new_index, item);
+        }
     }
     try new_index.appendSlice(allocator, "\n  ]\n}\n");
 
@@ -205,7 +205,10 @@ fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(new_index.items) catch {};
+    idx_out.writeAll(new_index.items) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     // Commit and push
     var sp = spinner.init(stdout, "Updating prompt metadata");
@@ -213,7 +216,11 @@ fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
 
     var add_output: GitOutput = .{};
     defer add_output.deinit(allocator);
-    git.addAll(allocator, registry_path, &add_output) catch {};
+    git.addAll(allocator, registry_path, &add_output) catch {
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     var commit_output: GitOutput = .{};
     defer commit_output.deinit(allocator);
@@ -355,28 +362,24 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
 
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-        var item_name = if (item.object.get("name")) |n| n.string else "-";
-        var item_desc = if (item.object.get("description")) |d| d.string else "-";
-        var item_format = if (item.object.get("format")) |f| f.string else "md";
-        var item_category = if (item.object.get("category")) |p| p.string else "conduct";
-        const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-
-        var use_hash = item_hash;
-
-        if (std.mem.eql(u8, item_hash, old_full_hash.?)) {
-            use_hash = &new_hash_hex;
-            if (desc_flag) |d| item_desc = d;
-            if (cat_flag) |c| item_category = c;
-            if (hash_changed) item_format = new_format;
-            _ = &item_name;
-        }
 
         if (!first) try new_index.appendSlice(allocator, ",");
         first = false;
 
-        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ use_hash, item_name, item_desc, item_format, item_category, item_created });
-        defer allocator.free(entry);
-        try new_index.appendSlice(allocator, entry);
+        if (std.mem.eql(u8, item_hash, old_full_hash.?)) {
+            const use_hash: []const u8 = &new_hash_hex;
+            const item_name = if (item.object.get("name")) |n| n.string else "-";
+            const item_desc = desc_flag orelse (if (item.object.get("description")) |d| d.string else "-");
+            const item_format = if (hash_changed) new_format else (if (item.object.get("format")) |f| f.string else "md");
+            const item_category = cat_flag orelse (if (item.object.get("category")) |p| p.string else "conduct");
+            const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+
+            const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ use_hash, item_name, item_desc, item_format, item_category, item_created });
+            defer allocator.free(entry);
+            try new_index.appendSlice(allocator, entry);
+        } else {
+            try appendPromptEntry(allocator, &new_index, item);
+        }
     }
     try new_index.appendSlice(allocator, "\n  ]\n}\n");
 
@@ -385,7 +388,10 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(new_index.items) catch {};
+    idx_out.writeAll(new_index.items) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     // Update bundles/index.json hash refs
     if (hash_changed) {
@@ -478,7 +484,10 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
 
                     const bidx_out = fs.createFileAbsolute(bundles_index_path, .{}) catch return;
                     defer bidx_out.close();
-                    bidx_out.writeAll(new_bidx.items) catch {};
+                    bidx_out.writeAll(new_bidx.items) catch {
+                        try stderr.print("{s}{s}{s}Error:{s} Failed to write bundles index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+                        return;
+                    };
                 }
             } else |_| {}
         } else |_| {}
@@ -490,7 +499,11 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
 
     var add_output: GitOutput = .{};
     defer add_output.deinit(allocator);
-    git.addAll(allocator, registry_path, &add_output) catch {};
+    git.addAll(allocator, registry_path, &add_output) catch {
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     var commit_output: GitOutput = .{};
     defer commit_output.deinit(allocator);
@@ -581,23 +594,24 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
 
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-        const item_name = if (item.object.get("name")) |n| n.string else "-";
-        const item_desc = if (item.object.get("description")) |d| d.string else "-";
-        const item_format = if (item.object.get("format")) |f| f.string else "md";
-        var item_category = if (item.object.get("category")) |p| p.string else "conduct";
-        const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-
-        if (std.mem.eql(u8, item_category, old)) {
-            item_category = new_cat;
-            rename_count += 1;
-        }
+        const item_category = if (item.object.get("category")) |p| p.string else "conduct";
 
         if (!first) try new_index.appendSlice(allocator, ",");
         first = false;
 
-        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
-        defer allocator.free(entry);
-        try new_index.appendSlice(allocator, entry);
+        if (std.mem.eql(u8, item_category, old)) {
+            rename_count += 1;
+            const item_name = if (item.object.get("name")) |n| n.string else "-";
+            const item_desc = if (item.object.get("description")) |d| d.string else "-";
+            const item_format = if (item.object.get("format")) |f| f.string else "md";
+            const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+
+            const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, new_cat, item_created });
+            defer allocator.free(entry);
+            try new_index.appendSlice(allocator, entry);
+        } else {
+            try appendPromptEntry(allocator, &new_index, item);
+        }
     }
     try new_index.appendSlice(allocator, "\n  ]\n}\n");
 
@@ -606,7 +620,10 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(new_index.items) catch {};
+    idx_out.writeAll(new_index.items) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     // Update bundles/index.json
     const bundles_index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
@@ -677,7 +694,10 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
 
                 const bidx_out = fs.createFileAbsolute(bundles_index_path, .{}) catch return;
                 defer bidx_out.close();
-                bidx_out.writeAll(new_bidx.items) catch {};
+                bidx_out.writeAll(new_bidx.items) catch {
+                    try stderr.print("{s}{s}{s}Error:{s} Failed to write bundles index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+                    return;
+                };
             }
         } else |_| {}
     } else |_| {}
@@ -688,7 +708,11 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
 
     var add_output: GitOutput = .{};
     defer add_output.deinit(allocator);
-    git.addAll(allocator, registry_path, &add_output) catch {};
+    git.addAll(allocator, registry_path, &add_output) catch {
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     const commit_msg = try std.fmt.allocPrint(allocator, "Rename category: {s} -> {s}", .{ old, new_cat });
     defer allocator.free(commit_msg);
@@ -1041,7 +1065,11 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
     var add_output: GitOutput = .{};
     defer add_output.deinit(allocator);
-    git.addAll(allocator, registry_path, &add_output) catch {};
+    git.addAll(allocator, registry_path, &add_output) catch {
+        sp_push.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     var commit_output: GitOutput = .{};
     defer commit_output.deinit(allocator);

@@ -325,11 +325,8 @@ pub fn resolveRef(allocator: std.mem.Allocator, registry_path: []const u8, ref: 
         defer allocator.free(index_path);
 
         const file = fs.openFileAbsolute(index_path, .{}) catch return .not_found;
-        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-            file.close();
-            return .not_found;
-        };
-        file.close();
+        defer file.close();
+        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch return .not_found;
         defer allocator.free(content);
 
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return .not_found;
@@ -347,11 +344,8 @@ pub fn resolveRef(allocator: std.mem.Allocator, registry_path: []const u8, ref: 
         defer allocator.free(index_path);
 
         const file = fs.openFileAbsolute(index_path, .{}) catch return .not_found;
-        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-            file.close();
-            return .not_found;
-        };
-        file.close();
+        defer file.close();
+        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch return .not_found;
         defer allocator.free(content);
 
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return .not_found;
@@ -505,7 +499,14 @@ pub fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8
 
             const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, hash });
             defer allocator.free(dest_path);
-            fs.copyFileAbsolute(src_path, dest_path, .{}) catch {};
+            fs.copyFileAbsolute(src_path, dest_path, .{}) catch {
+                // Copy failed — skip this file, don't add to refs
+                allocator.free(hash);
+                allocator.free(name);
+                allocator.free(description);
+                allocator.free(format);
+                continue;
+            };
 
             try refs.append(allocator, .{
                 .hash = hash,
@@ -556,28 +557,14 @@ pub fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u
             if (parsed.value.object.get("prompts")) |prompts| {
                 for (prompts.array.items) |item| {
                     const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-                    const item_name = if (item.object.get("name")) |n| n.string else "-";
-                    const item_desc = if (item.object.get("description")) |d| d.string else "-";
-                    const item_format = if (item.object.get("format")) |f| f.string else "md";
-                    const item_category = if (item.object.get("category")) |p| p.string else "conduct";
-                    const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
                     const hash_copy = allocator.dupe(u8, item_hash) catch continue;
                     seen_hashes.put(hash_copy, {}) catch {
                         allocator.free(hash_copy);
                     };
 
-                    const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{
-                        if (first) "" else ",",
-                        item_hash,
-                        item_name,
-                        item_desc,
-                        item_format,
-                        item_category,
-                        item_created,
-                    });
-                    defer allocator.free(entry);
-                    try index_content.appendSlice(allocator, entry);
+                    if (!first) try index_content.appendSlice(allocator, ",");
+                    try appendPromptEntry(allocator, &index_content, item);
                     first = false;
                 }
             }
@@ -606,6 +593,20 @@ pub fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u
     const idx_out = try fs.createFileAbsolute(index_path, .{});
     defer idx_out.close();
     try idx_out.writeAll(index_content.items);
+}
+
+/// Serialize a prompt JSON entry to a buffer
+pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
+    const item_hash = if (item.object.get("hash")) |h| h.string else return;
+    const item_name = if (item.object.get("name")) |n| n.string else "-";
+    const item_desc = if (item.object.get("description")) |d| d.string else "-";
+    const item_format = if (item.object.get("format")) |f| f.string else "md";
+    const item_category = if (item.object.get("category")) |p| p.string else "conduct";
+    const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+
+    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
+    defer allocator.free(entry);
+    try buf.appendSlice(allocator, entry);
 }
 
 /// Serialize a bundle JSON entry to a buffer (handles both new and old format)

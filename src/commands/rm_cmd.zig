@@ -12,6 +12,7 @@ const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
 const resolveRef = commands.resolveRef;
 const appendBundleEntry = commands.appendBundleEntry;
+const appendPromptEntry = commands.appendPromptEntry;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     var refs: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -108,18 +109,9 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
         if (should_remove) continue;
 
-        const item_name = if (item.object.get("name")) |n| n.string else "-";
-        const item_desc = if (item.object.get("description")) |d| d.string else "-";
-        const item_format = if (item.object.get("format")) |f| f.string else "md";
-        const item_category = if (item.object.get("category")) |p| p.string else "conduct";
-        const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-
         if (!first) try new_prompts.appendSlice(allocator, ",");
         first = false;
-
-        const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
-        defer allocator.free(entry);
-        try new_prompts.appendSlice(allocator, entry);
+        try appendPromptEntry(allocator, &new_prompts, item);
     }
     try new_prompts.appendSlice(allocator, "\n  ]\n}\n");
 
@@ -141,7 +133,10 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(new_prompts.items) catch {};
+    idx_out.writeAll(new_prompts.items) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     // Commit and push
     var sp = spinner.init(stdout, "Removing from registry");
@@ -149,11 +144,16 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
     var add_output: GitOutput = .{};
     defer add_output.deinit(allocator);
-    git.addAll(allocator, registry_path, &add_output) catch {};
+    git.addAll(allocator, registry_path, &add_output) catch {
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     const commit_msg = if (removed_hashes.items.len == 1) "Remove prompt" else "Remove prompts";
     var commit_output: GitOutput = .{};
     defer commit_output.deinit(allocator);
+    // Commit may fail if no changes — that's ok, continue to push
     git.commit(allocator, registry_path, commit_msg, &commit_output) catch {};
 
     var git_output: GitOutput = .{};
@@ -237,7 +237,10 @@ fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(new_bundles.items) catch {};
+    idx_out.writeAll(new_bundles.items) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     // Commit and push
     var sp = spinner.init(stdout, "Removing from registry");
@@ -245,7 +248,11 @@ fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
     var add_output: GitOutput = .{};
     defer add_output.deinit(allocator);
-    git.addAll(allocator, registry_path, &add_output) catch {};
+    git.addAll(allocator, registry_path, &add_output) catch {
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     const commit_msg = if (removed_count == 1) "Remove bundle" else "Remove bundles";
     var commit_output: GitOutput = .{};

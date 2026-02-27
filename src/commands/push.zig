@@ -54,10 +54,6 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     var git_output: GitOutput = .{};
     defer git_output.deinit(allocator);
 
-    // Use unbuffered stdout for consistent ordering with spinner
-    const raw_stdout = std.fs.File.stdout();
-    _ = raw_stdout;
-
     var sp = spinner.init(stdout, "Pushing to remote");
     sp.start();
 

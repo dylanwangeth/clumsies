@@ -14,6 +14,7 @@ const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
 const hasFrontmatter = commands.hasFrontmatter;
 const stripFrontmatter = commands.stripFrontmatter;
+const appendPromptEntry = commands.appendPromptEntry;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     var file_paths: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -93,7 +94,11 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     var add_output: GitOutput = .{};
     defer add_output.deinit(allocator);
-    git.addAll(allocator, registry_path, &add_output) catch {};
+    git.addAll(allocator, registry_path, &add_output) catch {
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
     const commit_msg = if (registered == 1) "Add prompt" else "Add prompts";
     var commit_output: GitOutput = .{};
@@ -187,6 +192,7 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
 
     var existing_prompts: std.ArrayListUnmanaged(u8) = .{};
     defer existing_prompts.deinit(allocator);
+    var has_existing: bool = false;
 
     if (fs.openFileAbsolute(index_path, .{})) |idx_file| {
         const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
@@ -203,16 +209,8 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
                 try existing_prompts.appendSlice(allocator, "{\n  \"prompts\": [");
                 for (prompts.array.items, 0..) |item, idx| {
                     if (idx > 0) try existing_prompts.appendSlice(allocator, ",");
-                    const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-                    const item_name = if (item.object.get("name")) |n| n.string else "-";
-                    const item_desc = if (item.object.get("description")) |d| d.string else "-";
-                    const item_format = if (item.object.get("format")) |f| f.string else "md";
-                    const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-                    const item_category = if (item.object.get("category")) |p| p.string else "conduct";
-
-                    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
-                    defer allocator.free(entry);
-                    try existing_prompts.appendSlice(allocator, entry);
+                    try appendPromptEntry(allocator, &existing_prompts, item);
+                    has_existing = true;
                 }
             }
         } else |_| {}
@@ -222,7 +220,7 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
 
     const timestamp = std.time.timestamp();
     const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
-        if (existing_prompts.items.len > 20) "," else "",
+        if (has_existing) "," else "",
         hash_hex,
         name,
         description,

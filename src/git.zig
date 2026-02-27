@@ -18,6 +18,27 @@ pub const GitOutput = struct {
     }
 };
 
+const MAX_OUTPUT_SIZE = 1 * 1024 * 1024; // 1MB
+
+/// Read all data from a pipe file using dynamic allocation
+fn readPipeAlloc(allocator: std.mem.Allocator, file: std.fs.File) ?[]const u8 {
+    return file.readToEndAlloc(allocator, MAX_OUTPUT_SIZE) catch null;
+}
+
+/// Thread wrapper that writes result to a shared pointer
+fn readPipeThread(allocator: std.mem.Allocator, file: std.fs.File, result: *?[]const u8) void {
+    result.* = readPipeAlloc(allocator, file);
+}
+
+/// Helper to assign non-empty data to output or free it
+fn assignOrFree(allocator: std.mem.Allocator, data: ?[]const u8) ?[]const u8 {
+    if (data) |d| {
+        if (d.len > 0) return d;
+        allocator.free(d);
+    }
+    return null;
+}
+
 /// 通用 git 命令执行函数，捕获所有输出
 pub fn run(allocator: std.mem.Allocator, cwd: ?[]const u8, args: []const []const u8, output: ?*GitOutput) !void {
     var child = std.process.Child.init(args, allocator);
@@ -27,38 +48,33 @@ pub fn run(allocator: std.mem.Allocator, cwd: ?[]const u8, args: []const []const
 
     _ = child.spawn() catch return GitError.CommandFailed;
 
-    // Read stdout
-    var stdout_buf: [8192]u8 = undefined;
-    var stdout_len: usize = 0;
-    if (child.stdout) |stdout_file| {
-        while (stdout_len < stdout_buf.len) {
-            const n = stdout_file.read(stdout_buf[stdout_len..]) catch break;
-            if (n == 0) break;
-            stdout_len += n;
-        }
+    // Read stderr in a separate thread to avoid deadlock when both pipes fill
+    var stderr_result: ?[]const u8 = null;
+    const stderr_thread = std.Thread.spawn(.{}, readPipeThread, .{ allocator, child.stderr.?, &stderr_result }) catch null;
+
+    // Read stdout on main thread
+    const stdout_data = if (child.stdout) |f| readPipeAlloc(allocator, f) else null;
+
+    // Join stderr thread (or read sequentially as fallback)
+    if (stderr_thread) |t| {
+        t.join();
+    } else {
+        stderr_result = if (child.stderr) |f| readPipeAlloc(allocator, f) else null;
     }
 
-    // Read stderr
-    var stderr_buf: [8192]u8 = undefined;
-    var stderr_len: usize = 0;
-    if (child.stderr) |stderr_file| {
-        while (stderr_len < stderr_buf.len) {
-            const n = stderr_file.read(stderr_buf[stderr_len..]) catch break;
-            if (n == 0) break;
-            stderr_len += n;
-        }
-    }
-
-    const term = child.wait() catch return GitError.CommandFailed;
+    const term = child.wait() catch {
+        if (stdout_data) |d| allocator.free(d);
+        if (stderr_result) |d| allocator.free(d);
+        return GitError.CommandFailed;
+    };
 
     // Populate output if provided
     if (output) |out| {
-        if (stdout_len > 0) {
-            out.stdout = allocator.dupe(u8, stdout_buf[0..stdout_len]) catch null;
-        }
-        if (stderr_len > 0) {
-            out.stderr = allocator.dupe(u8, stderr_buf[0..stderr_len]) catch null;
-        }
+        out.stdout = assignOrFree(allocator, stdout_data);
+        out.stderr = assignOrFree(allocator, stderr_result);
+    } else {
+        if (stdout_data) |d| allocator.free(d);
+        if (stderr_result) |d| allocator.free(d);
     }
 
     switch (term) {

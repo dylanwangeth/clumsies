@@ -39,10 +39,6 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);
 
-    // Use unbuffered stdout for consistent ordering with spinner
-    const raw_stdout = std.fs.File.stdout();
-    _ = raw_stdout;
-
     var sp = spinner.init(stdout, "Cloning repository");
     sp.start();
 
