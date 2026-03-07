@@ -156,10 +156,10 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
             continue;
         }
 
-        if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, found_hash.?, found_name, found_format, found_category)) {
-            success_count += 1;
-        } else {
-            fail_count += 1;
+        switch (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, found_hash.?, found_name, found_format, found_category)) {
+            .imported => success_count += 1,
+            .skipped => {},
+            .failed => fail_count += 1,
         }
     }
 
@@ -182,10 +182,10 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
             if (!matches) continue;
             cat_match_count += 1;
 
-            if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, item_hash, item_name_opt, item_format, item_category)) {
-                success_count += 1;
-            } else {
-                fail_count += 1;
+            switch (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, item_hash, item_name_opt, item_format, item_category)) {
+                .imported => success_count += 1,
+                .skipped => {},
+                .failed => fail_count += 1,
             }
         }
 
@@ -201,8 +201,8 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
         try stdout.print("{s}Imported {s}{d}{s} prompt{s}\n\n", .{ P, Color.green, success_count, Color.reset, if (success_count > 1) "s" else "" });
     } else if (success_count > 0 and fail_count > 0) {
         try stdout.print("{s}Imported {s}{d}{s}, failed {s}{d}{s}\n\n", .{ P, Color.green, success_count, Color.reset, Color.red, fail_count, Color.reset });
-    } else {
-        try stderr.print("{s}No prompts imported\n\n", .{P});
+    } else if (fail_count > 0) {
+        try stderr.print("{s}No prompts imported, failed {s}{d}{s}\n\n", .{ P, Color.red, fail_count, Color.reset });
     }
 }
 
@@ -315,35 +315,23 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         const hash = if (ref.object.get("hash")) |h| h.string else continue;
 
         var category: []const u8 = "conduct";
-        var prompt_name: []const u8 = "prompt";
+        var prompt_name: ?[]const u8 = null;
         var prompt_format: []const u8 = "md";
         if (prompts_list) |pl| {
             for (pl.array.items) |p| {
                 const p_hash = if (p.object.get("hash")) |ph| ph.string else continue;
                 if (std.mem.eql(u8, p_hash, hash)) {
                     category = if (p.object.get("category")) |c| c.string else "conduct";
-                    prompt_name = if (p.object.get("name")) |n| n.string else "prompt";
+                    prompt_name = if (p.object.get("name")) |n| n.string else null;
                     prompt_format = if (p.object.get("format")) |f| f.string else "md";
                     break;
                 }
             }
         }
 
-        const src_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
-        defer allocator.free(src_path);
-
-        const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, category });
-        defer allocator.free(target_dir);
-        fs.cwd().makePath(target_dir) catch {};
-
-        const seq = findNextSequence(target_dir);
-        const filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq, prompt_name, prompt_format });
-        defer allocator.free(filename);
-        const dest_path = try std.fs.path.join(allocator, &.{ target_dir, filename });
-        defer allocator.free(dest_path);
-
-        fs.copyFileAbsolute(src_path, dest_path, .{}) catch continue;
-        prompt_count += 1;
+        if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, hash, prompt_name, prompt_format, category) == .imported) {
+            prompt_count += 1;
+        }
     }
     sp.succeed();
 

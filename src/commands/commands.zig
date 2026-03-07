@@ -411,7 +411,9 @@ pub fn stripFrontmatter(content: []const u8) []const u8 {
 }
 
 /// Import a single prompt file from registry to .prompts/{category}/
-pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, hash: []const u8, name_opt: ?[]const u8, format: []const u8, category: []const u8) !bool {
+pub const ImportResult = enum { imported, skipped, failed };
+
+pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, hash: []const u8, name_opt: ?[]const u8, format: []const u8, category: []const u8) !ImportResult {
     const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
     defer allocator.free(prompt_file_path);
 
@@ -419,8 +421,26 @@ pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
     defer allocator.free(target_dir);
     fs.cwd().makePath(target_dir) catch {};
 
-    const seq_num = findNextSequence(target_dir);
     const name_part = name_opt orelse hash[0..8];
+
+    // Check if a file with the same name suffix already exists (e.g. *_CODE_COMMENTS.md)
+    const suffix = try std.fmt.allocPrint(allocator, "_{s}.{s}", .{ name_part, format });
+    defer allocator.free(suffix);
+
+    if (fs.openDirAbsolute(target_dir, .{ .iterate = true })) |dir_handle| {
+        var dir = dir_handle;
+        defer dir.close();
+        var iter = dir.iterate();
+        while (iter.next() catch null) |entry| {
+            if (entry.kind != .file) continue;
+            if (std.mem.endsWith(u8, entry.name, suffix)) {
+                try stdout.print("{s}{s}{s}~{s} {s} (already exists)\n", .{ P, Color.bold, Color.dim, Color.reset, name_part });
+                return .skipped;
+            }
+        }
+    } else |_| {}
+
+    const seq_num = findNextSequence(target_dir);
     const dest_filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq_num, name_part, format });
     defer allocator.free(dest_filename);
 
@@ -429,11 +449,11 @@ pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
 
     fs.copyFileAbsolute(prompt_file_path, dest_path, .{}) catch {
         try stderr.print("{s}{s}{s}✗{s} Failed to copy: {s}\n", .{ P, Color.bold, Color.red, Color.reset, name_part });
-        return false;
+        return .failed;
     };
 
     try stdout.print("{s}{s}{s}✓{s} {s} → .prompts/{s}/{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, category, dest_filename });
-    return true;
+    return .imported;
 }
 
 /// Check if a bundle exists in the registry by name
