@@ -27,7 +27,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     if (!commands.promptsExist()) {
         try stderr.print("{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run {s}clumsies init{s} first\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Run {s}clumsies clone <url>{s} first\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 

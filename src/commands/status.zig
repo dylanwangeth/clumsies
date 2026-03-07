@@ -10,13 +10,13 @@ const printGitOutput = commands.printGitOutput;
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator) !void {
     if (!commands.promptsExist()) {
         try stderr.print("{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run {s}clumsies init <bundle> <url>{s} or {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
+        try stderr.print("{s}Run {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
     if (!commands.promptsIsGitRepo()) {
         try stderr.print("{s}{s}{s}Error:{s} .prompts/ is not a git repository\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run {s}clumsies init <bundle> <url>{s} or {s}clumsies clone <url>{s} to initialize\n\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
+        try stderr.print("{s}Run {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 

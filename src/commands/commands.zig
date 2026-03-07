@@ -672,4 +672,3 @@ pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     }
     try buf.appendSlice(allocator, "]\n    }");
 }
-

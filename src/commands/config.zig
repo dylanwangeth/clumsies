@@ -55,7 +55,7 @@ fn printConfigHelp(out: *std.io.Writer) !void {
     try out.print("{s}Config keys:\n", .{P});
     try out.print("{s}  {s}registry{s}          Registry URL\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}entry_files{s}       Meta-prompt files to sync\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}meta_prompt_file{s}  Default meta-prompt for init\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}meta_prompt_file{s}  Default meta-prompt for pub\n\n", .{ P, Color.cyan, Color.reset });
 }
 
 fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {

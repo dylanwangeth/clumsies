@@ -96,9 +96,10 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     defer allocator.free(prompts_path);
 
     if (!commands.promptsExist()) {
-        try stderr.print("{s}{s}{s}Error:{s} .prompts/ directory not found\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset });
-        return;
+        fs.cwd().makeDir(".prompts") catch |err| {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+            return;
+        };
     }
 
     // Read index
