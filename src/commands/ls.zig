@@ -181,12 +181,9 @@ fn listBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
         const item_task = if (item.object.get("task")) |t| t.string else "-";
         const desc = if (item.object.get("description")) |d| d.string else "-";
 
-        const categories_arr = item.object.get("categories");
-        const count = if (categories_arr) |c| c.array.items.len else blk: {
-            const prompts_arr = item.object.get("prompts");
-            break :blk if (prompts_arr) |p| p.array.items.len else 0;
-        };
-        const label: []const u8 = if (categories_arr != null) " cats" else " prompts";
+        const prompts_arr = item.object.get("prompts");
+        const count = if (prompts_arr) |p| p.array.items.len else 0;
+        const label: []const u8 = " prompts";
 
         var count_buf: [16]u8 = undefined;
         const count_str = std.fmt.bufPrint(&count_buf, "{d}{s}", .{ count, label }) catch "-";

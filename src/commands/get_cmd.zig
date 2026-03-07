@@ -303,128 +303,47 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     var sp = spinner.init(stdout, "Importing prompts");
     sp.start();
 
-    const has_categories = found_bundle.?.object.get("categories") != null;
+    const prompts_arr = found_bundle.?.object.get("prompts") orelse {
+        sp.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Bundle has no prompts\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
 
-    if (has_categories) {
-        const prompts_list = if (prompts_index) |pi| pi.value.object.get("prompts") else null;
-        if (prompts_list == null) {
-            sp.fail();
-            try stderr.print("{s}{s}{s}Error:{s} Prompts index not found in registry\n", .{ P, Color.bold, Color.red, Color.reset });
-            return;
-        }
+    const prompts_list = if (prompts_index) |pi| pi.value.object.get("prompts") else null;
 
-        const ImportEntry = struct { hash: []const u8, category: []const u8, name: []const u8, format: []const u8 };
-        var import_set = std.StringHashMap(ImportEntry).init(allocator);
-        defer import_set.deinit();
+    for (prompts_arr.array.items) |ref| {
+        const hash = if (ref.object.get("hash")) |h| h.string else continue;
 
-        if (found_bundle.?.object.get("categories")) |categories| {
-            for (categories.array.items) |cat_val| {
-                const cat = cat_val.string;
-                for (prompts_list.?.array.items) |p| {
-                    const p_cat = if (p.object.get("category")) |c| c.string else continue;
-                    if (std.mem.eql(u8, p_cat, cat)) {
-                        const p_hash = if (p.object.get("hash")) |h| h.string else continue;
-                        if (!import_set.contains(p_hash)) {
-                            import_set.put(p_hash, .{
-                                .hash = p_hash,
-                                .category = p_cat,
-                                .name = if (p.object.get("name")) |n| n.string else "prompt",
-                                .format = if (p.object.get("format")) |f| f.string else "md",
-                            }) catch {};
-                        }
-                    }
+        var category: []const u8 = "conduct";
+        var prompt_name: []const u8 = "prompt";
+        var prompt_format: []const u8 = "md";
+        if (prompts_list) |pl| {
+            for (pl.array.items) |p| {
+                const p_hash = if (p.object.get("hash")) |ph| ph.string else continue;
+                if (std.mem.eql(u8, p_hash, hash)) {
+                    category = if (p.object.get("category")) |c| c.string else "conduct";
+                    prompt_name = if (p.object.get("name")) |n| n.string else "prompt";
+                    prompt_format = if (p.object.get("format")) |f| f.string else "md";
+                    break;
                 }
             }
         }
 
-        if (found_bundle.?.object.get("prompts")) |precise_prompts| {
-            for (precise_prompts.array.items) |ref| {
-                const hash = if (ref.object.get("hash")) |h| h.string else continue;
-                if (!import_set.contains(hash)) {
-                    const ref_cat = if (ref.object.get("category")) |c| c.string else "conduct";
-                    var p_name: []const u8 = "prompt";
-                    var p_fmt: []const u8 = "md";
-                    for (prompts_list.?.array.items) |p| {
-                        const p_hash = if (p.object.get("hash")) |h| h.string else continue;
-                        if (std.mem.eql(u8, p_hash, hash)) {
-                            p_name = if (p.object.get("name")) |n| n.string else "prompt";
-                            p_fmt = if (p.object.get("format")) |f| f.string else "md";
-                            break;
-                        }
-                    }
-                    import_set.put(hash, .{
-                        .hash = hash,
-                        .category = ref_cat,
-                        .name = p_name,
-                        .format = p_fmt,
-                    }) catch {};
-                }
-            }
-        }
+        const src_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
+        defer allocator.free(src_path);
 
-        var iter = import_set.iterator();
-        while (iter.next()) |entry| {
-            const ie = entry.value_ptr.*;
+        const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, category });
+        defer allocator.free(target_dir);
+        fs.cwd().makePath(target_dir) catch {};
 
-            const src_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", ie.hash });
-            defer allocator.free(src_path);
+        const seq = findNextSequence(target_dir);
+        const filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq, prompt_name, prompt_format });
+        defer allocator.free(filename);
+        const dest_path = try std.fs.path.join(allocator, &.{ target_dir, filename });
+        defer allocator.free(dest_path);
 
-            const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, ie.category });
-            defer allocator.free(target_dir);
-            fs.cwd().makePath(target_dir) catch {};
-
-            const seq = findNextSequence(target_dir);
-            const filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq, ie.name, ie.format });
-            defer allocator.free(filename);
-            const dest_path = try std.fs.path.join(allocator, &.{ target_dir, filename });
-            defer allocator.free(dest_path);
-
-            fs.copyFileAbsolute(src_path, dest_path, .{}) catch continue;
-            prompt_count += 1;
-        }
-    } else {
-        // Old format
-        const prompts_arr = found_bundle.?.object.get("prompts") orelse {
-            sp.fail();
-            try stderr.print("{s}{s}{s}Error:{s} Bundle has no prompts\n", .{ P, Color.bold, Color.red, Color.reset });
-            return;
-        };
-
-        for (prompts_arr.array.items) |ref| {
-            const hash = if (ref.object.get("hash")) |h| h.string else continue;
-            const category = if (ref.object.get("category")) |c| c.string else "conduct";
-
-            var prompt_name: []const u8 = "prompt";
-            var prompt_format: []const u8 = "md";
-            if (prompts_index) |pi| {
-                if (pi.value.object.get("prompts")) |prompts_list| {
-                    for (prompts_list.array.items) |p| {
-                        const p_hash = if (p.object.get("hash")) |ph| ph.string else continue;
-                        if (std.mem.eql(u8, p_hash, hash)) {
-                            prompt_name = if (p.object.get("name")) |n| n.string else "prompt";
-                            prompt_format = if (p.object.get("format")) |f| f.string else "md";
-                            break;
-                        }
-                    }
-                }
-            }
-
-            const src_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
-            defer allocator.free(src_path);
-
-            const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, category });
-            defer allocator.free(target_dir);
-            fs.cwd().makePath(target_dir) catch {};
-
-            const seq = findNextSequence(target_dir);
-            const filename = try std.fmt.allocPrint(allocator, "{d:0>2}_{s}.{s}", .{ seq, prompt_name, prompt_format });
-            defer allocator.free(filename);
-            const dest_path = try std.fs.path.join(allocator, &.{ target_dir, filename });
-            defer allocator.free(dest_path);
-
-            fs.copyFileAbsolute(src_path, dest_path, .{}) catch continue;
-            prompt_count += 1;
-        }
+        fs.copyFileAbsolute(src_path, dest_path, .{}) catch continue;
+        prompt_count += 1;
     }
     sp.succeed();
 

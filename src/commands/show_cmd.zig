@@ -219,100 +219,36 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
 
     const prompts_list = if (prompts_index) |pi| pi.value.object.get("prompts") else null;
 
-    const has_categories = bundle.object.get("categories") != null;
+    const prompts_arr = bundle.object.get("prompts") orelse {
+        try stdout.print("{s}{s}No prompts in bundle{s}\n\n", .{ P, Color.dim, Color.reset });
+        return;
+    };
 
-    if (has_categories) {
-        const categories = bundle.object.get("categories").?;
+    try stdout.print("{s}{s}{s}Prompts ({d}):{s}\n", .{ P, Color.bold, Color.orange, prompts_arr.array.items.len, Color.reset });
+    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
+    try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}        {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
 
-        try stdout.print("{s}{s}{s}Categories ({d}):{s}\n", .{ P, Color.bold, Color.orange, categories.array.items.len, Color.reset });
-        for (categories.array.items) |cat_val| {
-            try stdout.print("{s}  {s}{s}{s}\n", .{ P, Color.cyan, cat_val.string, Color.reset });
-        }
-        try stdout.writeAll("\n");
+    for (prompts_arr.array.items) |ref| {
+        const hash = if (ref.object.get("hash")) |h| h.string else continue;
+        const short_hash = if (hash.len >= 8) hash[0..8] else hash;
 
-        try stdout.print("{s}{s}{s}Resolved prompts:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-        try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
-        try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}        {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
-        try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
-
-        var total: usize = 0;
-
+        var p_name: []const u8 = "-";
+        var p_desc: []const u8 = "-";
+        var p_cat: []const u8 = "-";
         if (prompts_list) |pl| {
-            for (categories.array.items) |cat_val| {
-                const cat = cat_val.string;
-                for (pl.array.items) |p| {
-                    const p_cat = if (p.object.get("category")) |c| c.string else continue;
-                    if (std.mem.eql(u8, p_cat, cat)) {
-                        const p_hash = if (p.object.get("hash")) |h| h.string else continue;
-                        const p_name = if (p.object.get("name")) |n| n.string else "-";
-                        const p_desc = if (p.object.get("description")) |d| d.string else "-";
-                        const short_hash = if (p_hash.len >= 8) p_hash[0..8] else p_hash;
-
-                        try stdout.print("{s}  {s}{s: <8}{s}  {s: <14}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, p_cat, p_name, p_desc });
-                        total += 1;
-                    }
+            for (pl.array.items) |p| {
+                const p_hash = if (p.object.get("hash")) |h| h.string else continue;
+                if (std.mem.eql(u8, p_hash, hash)) {
+                    p_name = if (p.object.get("name")) |n| n.string else "-";
+                    p_desc = if (p.object.get("description")) |d| d.string else "-";
+                    p_cat = if (p.object.get("category")) |c| c.string else "-";
+                    break;
                 }
             }
         }
 
-        if (bundle.object.get("prompts")) |precise| {
-            for (precise.array.items) |ref| {
-                const hash = if (ref.object.get("hash")) |h| h.string else continue;
-                const ref_cat = if (ref.object.get("category")) |c| c.string else "-";
-                const short_hash = if (hash.len >= 8) hash[0..8] else hash;
-
-                var p_name: []const u8 = "-";
-                var p_desc: []const u8 = "-";
-                if (prompts_list) |pl| {
-                    for (pl.array.items) |p| {
-                        const p_hash = if (p.object.get("hash")) |h| h.string else continue;
-                        if (std.mem.eql(u8, p_hash, hash)) {
-                            p_name = if (p.object.get("name")) |n| n.string else "-";
-                            p_desc = if (p.object.get("description")) |d| d.string else "-";
-                            break;
-                        }
-                    }
-                }
-
-                try stdout.print("{s}  {s}{s: <8}{s}  {s: <14}  {s: <20}  {s}  {s}(precise){s}\n", .{ P, Color.cyan, short_hash, Color.reset, ref_cat, p_name, p_desc, Color.dim, Color.reset });
-                total += 1;
-            }
-        }
-
-        if (total == 0) {
-            try stdout.print("{s}  {s}(no matching prompts){s}\n", .{ P, Color.dim, Color.reset });
-        }
-    } else {
-        const prompts_arr = bundle.object.get("prompts") orelse {
-            try stdout.print("{s}{s}No prompts in bundle{s}\n\n", .{ P, Color.dim, Color.reset });
-            return;
-        };
-
-        try stdout.print("{s}{s}{s}Prompts ({d}):{s}\n", .{ P, Color.bold, Color.orange, prompts_arr.array.items.len, Color.reset });
-        try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
-        try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}        {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
-        try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
-
-        for (prompts_arr.array.items) |ref| {
-            const hash = if (ref.object.get("hash")) |h| h.string else "-";
-            const category = if (ref.object.get("category")) |p| p.string else "-";
-            const short_hash = if (hash.len >= 8) hash[0..8] else hash;
-
-            var p_name: []const u8 = "-";
-            var p_desc: []const u8 = "-";
-            if (prompts_list) |pl| {
-                for (pl.array.items) |p| {
-                    const p_hash = if (p.object.get("hash")) |h| h.string else continue;
-                    if (std.mem.eql(u8, p_hash, hash)) {
-                        p_name = if (p.object.get("name")) |n| n.string else "-";
-                        p_desc = if (p.object.get("description")) |d| d.string else "-";
-                        break;
-                    }
-                }
-            }
-
-            try stdout.print("{s}  {s}{s: <8}{s}  {s: <14}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, category, p_name, p_desc });
-        }
+        try stdout.print("{s}  {s}{s: <8}{s}  {s: <14}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, p_cat, p_name, p_desc });
     }
     try stdout.writeAll("\n");
 }

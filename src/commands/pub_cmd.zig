@@ -223,20 +223,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const timestamp = std.time.timestamp();
     const comma = if (has_existing_bundles) "," else "";
 
-    // Collect unique categories
-    var seen_cats = std.StringHashMap(void).init(allocator);
-    defer seen_cats.deinit();
-    var cat_list: std.ArrayListUnmanaged([]const u8) = .{};
-    defer cat_list.deinit(allocator);
-
-    for (prompt_refs.items) |ref| {
-        if (!seen_cats.contains(ref.category)) {
-            seen_cats.put(ref.category, {}) catch {};
-            cat_list.append(allocator, ref.category) catch {};
-        }
-    }
-
-    const new_entry_start = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{d}\",\n      \"meta_prompt\": \"{s}\",\n      \"categories\": [", .{
+    const new_entry_start = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{d}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{
         comma,
         bundle_name,
         task,
@@ -247,16 +234,16 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     defer allocator.free(new_entry_start);
     try existing_bundles.appendSlice(allocator, new_entry_start);
 
-    for (cat_list.items, 0..) |cat, idx| {
-        const cat_entry = try std.fmt.allocPrint(allocator, "{s}\"{s}\"", .{
-            if (idx > 0) ", " else "",
-            cat,
+    for (prompt_refs.items, 0..) |ref, idx| {
+        const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
+            if (idx > 0) "," else "",
+            ref.hash,
         });
-        defer allocator.free(cat_entry);
-        try existing_bundles.appendSlice(allocator, cat_entry);
+        defer allocator.free(ref_entry);
+        try existing_bundles.appendSlice(allocator, ref_entry);
     }
 
-    try existing_bundles.appendSlice(allocator, "],\n      \"prompts\": []\n    }\n  ]\n}\n");
+    try existing_bundles.appendSlice(allocator, "]\n    }\n  ]\n}\n");
 
     const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
         sp3.fail();

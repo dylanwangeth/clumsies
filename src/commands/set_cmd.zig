@@ -425,57 +425,20 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
                         if (!bfirst) try new_bidx.appendSlice(allocator, ",");
                         bfirst = false;
 
-                        const bentry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"categories\": [", .{ bname, btask, bdesc, bcreated, bmeta });
+                        const bentry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ bname, btask, bdesc, bcreated, bmeta });
                         defer allocator.free(bentry_start);
                         try new_bidx.appendSlice(allocator, bentry_start);
 
-                        if (bitem.object.get("categories")) |categories| {
-                            for (categories.array.items, 0..) |cat, cidx| {
-                                const cat_entry = try std.fmt.allocPrint(allocator, "{s}\"{s}\"", .{
-                                    if (cidx > 0) ", " else "",
-                                    cat.string,
-                                });
-                                defer allocator.free(cat_entry);
-                                try new_bidx.appendSlice(allocator, cat_entry);
-                            }
-                        } else if (bitem.object.get("prompts")) |bprompts| {
-                            var seen_cats = std.StringHashMap(void).init(allocator);
-                            defer seen_cats.deinit();
-                            var cat_list: std.ArrayListUnmanaged([]const u8) = .{};
-                            defer cat_list.deinit(allocator);
-                            for (bprompts.array.items) |ref| {
-                                const cat = if (ref.object.get("category")) |c| c.string else continue;
-                                if (!seen_cats.contains(cat)) {
-                                    seen_cats.put(cat, {}) catch {};
-                                    cat_list.append(allocator, cat) catch {};
-                                }
-                            }
-                            for (cat_list.items, 0..) |cat, cidx| {
-                                const cat_entry = try std.fmt.allocPrint(allocator, "{s}\"{s}\"", .{
-                                    if (cidx > 0) ", " else "",
-                                    cat,
-                                });
-                                defer allocator.free(cat_entry);
-                                try new_bidx.appendSlice(allocator, cat_entry);
-                            }
-                        }
-
-                        try new_bidx.appendSlice(allocator, "],\n      \"prompts\": [");
-
                         if (bitem.object.get("prompts")) |bprompts| {
-                            if (bitem.object.get("categories") != null) {
-                                for (bprompts.array.items, 0..) |ref, ridx| {
-                                    const ref_hash = if (ref.object.get("hash")) |h| h.string else continue;
-                                    const ref_cat = if (ref.object.get("category")) |c| c.string else continue;
-                                    const out_hash = if (std.mem.eql(u8, ref_hash, old_full_hash.?)) &new_hash_hex else ref_hash;
-                                    const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
-                                        if (ridx > 0) "," else "",
-                                        out_hash,
-                                        ref_cat,
-                                    });
-                                    defer allocator.free(ref_entry);
-                                    try new_bidx.appendSlice(allocator, ref_entry);
-                                }
+                            for (bprompts.array.items, 0..) |ref, ridx| {
+                                const ref_hash = if (ref.object.get("hash")) |h| h.string else continue;
+                                const out_hash = if (std.mem.eql(u8, ref_hash, old_full_hash.?)) &new_hash_hex else ref_hash;
+                                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
+                                    if (ridx > 0) "," else "",
+                                    out_hash,
+                                });
+                                defer allocator.free(ref_entry);
+                                try new_bidx.appendSlice(allocator, ref_entry);
                             }
                         }
                         try new_bidx.appendSlice(allocator, "]\n    }");
@@ -656,33 +619,16 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
                     if (!bfirst) try new_bidx.appendSlice(allocator, ",");
                     bfirst = false;
 
-                    const bentry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"categories\": [", .{ bname, btask, bdesc, bcreated, bmeta });
+                    const bentry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ bname, btask, bdesc, bcreated, bmeta });
                     defer allocator.free(bentry_start);
                     try new_bidx.appendSlice(allocator, bentry_start);
-
-                    if (bitem.object.get("categories")) |categories| {
-                        for (categories.array.items, 0..) |cat, cidx| {
-                            const cat_str = if (std.mem.eql(u8, cat.string, old)) new_cat else cat.string;
-                            const cat_entry = try std.fmt.allocPrint(allocator, "{s}\"{s}\"", .{
-                                if (cidx > 0) ", " else "",
-                                cat_str,
-                            });
-                            defer allocator.free(cat_entry);
-                            try new_bidx.appendSlice(allocator, cat_entry);
-                        }
-                    }
-
-                    try new_bidx.appendSlice(allocator, "],\n      \"prompts\": [");
 
                     if (bitem.object.get("prompts")) |bprompts| {
                         for (bprompts.array.items, 0..) |ref, ridx| {
                             const ref_hash = if (ref.object.get("hash")) |h| h.string else continue;
-                            const ref_cat = if (ref.object.get("category")) |c| c.string else continue;
-                            const out_cat = if (std.mem.eql(u8, ref_cat, old)) new_cat else ref_cat;
-                            const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
+                            const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
                                 if (ridx > 0) "," else "",
                                 ref_hash,
-                                out_cat,
                             });
                             defer allocator.free(ref_entry);
                             try new_bidx.appendSlice(allocator, ref_entry);
@@ -910,7 +856,6 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     try new_index.appendSlice(allocator, "{\n  \"bundles\": [");
 
     var b_first = true;
-    var cats_added: usize = 0;
     var prompts_added: usize = 0;
     var prompts_removed: usize = 0;
 
@@ -926,114 +871,53 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
             const item_created = if (item.object.get("created_at")) |c| c.string else "0";
             const item_meta = new_meta_hash orelse (if (item.object.get("meta_prompt")) |m| m.string else "");
 
-            const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"categories\": [", .{ item_name, item_task, item_desc, item_created, item_meta });
+            const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ item_name, item_task, item_desc, item_created, item_meta });
             defer allocator.free(entry_start);
             try new_index.appendSlice(allocator, entry_start);
 
-            // Build categories
-            var cat_set = std.StringHashMap(void).init(allocator);
-            defer cat_set.deinit();
-            var cat_order: std.ArrayListUnmanaged([]const u8) = .{};
-            defer cat_order.deinit(allocator);
-
-            if (item.object.get("categories")) |existing_cats| {
-                for (existing_cats.array.items) |c| {
-                    if (!cat_set.contains(c.string)) {
-                        cat_set.put(c.string, {}) catch {};
-                        cat_order.append(allocator, c.string) catch {};
-                    }
-                }
-            } else if (item.object.get("prompts")) |old_prompts| {
-                for (old_prompts.array.items) |ref| {
-                    const cat = if (ref.object.get("category")) |c| c.string else continue;
-                    if (!cat_set.contains(cat)) {
-                        cat_set.put(cat, {}) catch {};
-                        cat_order.append(allocator, cat) catch {};
-                    }
-                }
-            }
-
-            for (new_refs.items) |ref| {
-                if (!cat_set.contains(ref.category)) {
-                    cat_set.put(ref.category, {}) catch {};
-                    cat_order.append(allocator, ref.category) catch {};
-                    cats_added += 1;
-                }
-            }
-
-            var cat_first = true;
-            for (cat_order.items) |cat| {
-                if (!cat_set.contains(cat)) continue;
-                const cat_entry = try std.fmt.allocPrint(allocator, "{s}\"{s}\"", .{
-                    if (cat_first) "" else ", ",
-                    cat,
-                });
-                defer allocator.free(cat_entry);
-                try new_index.appendSlice(allocator, cat_entry);
-                cat_first = false;
-            }
-
-            try new_index.appendSlice(allocator, "],\n      \"prompts\": [");
-
             var prompt_first = true;
 
-            // Keep existing precise prompts minus --rm-prompt
-            if (item.object.get("categories") != null) {
-                if (item.object.get("prompts")) |existing_prompts| {
-                    for (existing_prompts.array.items) |ref| {
-                        const ref_hash = if (ref.object.get("hash")) |h| h.string else continue;
-                        const cat = if (ref.object.get("category")) |c| c.string else continue;
+            // Keep existing prompts minus --rm-prompt
+            if (item.object.get("prompts")) |existing_prompts| {
+                for (existing_prompts.array.items) |ref| {
+                    const ref_hash = if (ref.object.get("hash")) |h| h.string else continue;
 
-                        var should_remove = false;
-                        for (rm_prompt_hashes.items) |rm_hash| {
-                            if (std.mem.startsWith(u8, ref_hash, rm_hash)) {
-                                should_remove = true;
-                                prompts_removed += 1;
-                                break;
-                            }
+                    var should_remove = false;
+                    for (rm_prompt_hashes.items) |rm_hash| {
+                        if (std.mem.startsWith(u8, ref_hash, rm_hash)) {
+                            should_remove = true;
+                            prompts_removed += 1;
+                            break;
                         }
-                        if (should_remove) continue;
-
-                        const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
-                            if (prompt_first) "" else ",",
-                            ref_hash,
-                            cat,
-                        });
-                        defer allocator.free(ref_entry);
-                        try new_index.appendSlice(allocator, ref_entry);
-                        prompt_first = false;
                     }
+                    if (should_remove) continue;
+
+                    const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
+                        if (prompt_first) "" else ",",
+                        ref_hash,
+                    });
+                    defer allocator.free(ref_entry);
+                    try new_index.appendSlice(allocator, ref_entry);
+                    prompt_first = false;
                 }
+            }
+
+            // Add new prompts from --add directories
+            for (new_refs.items) |ref| {
+                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
+                    if (prompt_first) "" else ",",
+                    ref.hash,
+                });
+                defer allocator.free(ref_entry);
+                try new_index.appendSlice(allocator, ref_entry);
+                prompt_first = false;
             }
 
             // Add --add-prompt hashes
             for (add_prompt_hashes.items) |add_hash| {
-                var found_cat: []const u8 = "conduct";
-                const p_idx_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
-                defer allocator.free(p_idx_path);
-                if (fs.openFileAbsolute(p_idx_path, .{})) |pf| {
-                    defer pf.close();
-                    if (pf.readToEndAlloc(allocator, MAX_FILE_SIZE)) |pc| {
-                        defer allocator.free(pc);
-                        if (std.json.parseFromSlice(std.json.Value, allocator, pc, .{})) |pp| {
-                            defer pp.deinit();
-                            if (pp.value.object.get("prompts")) |pl| {
-                                for (pl.array.items) |p| {
-                                    const ph = if (p.object.get("hash")) |h| h.string else continue;
-                                    if (std.mem.startsWith(u8, ph, add_hash)) {
-                                        found_cat = if (p.object.get("category")) |c| c.string else "conduct";
-                                        break;
-                                    }
-                                }
-                            }
-                        } else |_| {}
-                    } else |_| {}
-                } else |_| {}
-
-                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
+                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
                     if (prompt_first) "" else ",",
                     add_hash,
-                    found_cat,
                 });
                 defer allocator.free(ref_entry);
                 try new_index.appendSlice(allocator, ref_entry);
@@ -1089,7 +973,6 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
     try stdout.print("{s}{s}{s}✓{s} Updated bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
     if (new_meta_hash != null) try stdout.print("{s}    Meta-prompt updated\n", .{P});
-    if (cats_added > 0) try stdout.print("{s}    Categories added: {d}\n", .{ P, cats_added });
     if (prompts_added > 0) try stdout.print("{s}    Prompts added: {d}\n", .{ P, prompts_added });
     if (prompts_removed > 0) try stdout.print("{s}    Prompts removed: {d}\n", .{ P, prompts_removed });
 }

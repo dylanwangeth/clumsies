@@ -617,57 +617,19 @@ pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
     const item_meta = if (item.object.get("meta_prompt")) |m| m.string else "";
 
-    const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"categories\": [", .{ item_name, item_task, item_desc, item_created, item_meta });
+    const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ item_name, item_task, item_desc, item_created, item_meta });
     defer allocator.free(entry_start);
     try buf.appendSlice(allocator, entry_start);
 
-    if (item.object.get("categories")) |categories| {
-        for (categories.array.items, 0..) |cat, idx| {
-            const cat_entry = try std.fmt.allocPrint(allocator, "{s}\"{s}\"", .{
-                if (idx > 0) ", " else "",
-                cat.string,
-            });
-            defer allocator.free(cat_entry);
-            try buf.appendSlice(allocator, cat_entry);
-        }
-    } else if (item.object.get("prompts")) |prompts| {
-        var seen_cats = std.StringHashMap(void).init(allocator);
-        defer seen_cats.deinit();
-        var cat_list: std.ArrayListUnmanaged([]const u8) = .{};
-        defer cat_list.deinit(allocator);
-
-        for (prompts.array.items) |ref| {
-            const cat = if (ref.object.get("category")) |c| c.string else continue;
-            if (!seen_cats.contains(cat)) {
-                seen_cats.put(cat, {}) catch {};
-                cat_list.append(allocator, cat) catch {};
-            }
-        }
-        for (cat_list.items, 0..) |cat, idx| {
-            const cat_entry = try std.fmt.allocPrint(allocator, "{s}\"{s}\"", .{
-                if (idx > 0) ", " else "",
-                cat,
-            });
-            defer allocator.free(cat_entry);
-            try buf.appendSlice(allocator, cat_entry);
-        }
-    }
-
-    try buf.appendSlice(allocator, "],\n      \"prompts\": [");
-
     if (item.object.get("prompts")) |prompts| {
-        if (item.object.get("categories") != null) {
-            for (prompts.array.items, 0..) |ref, idx| {
-                const hash = if (ref.object.get("hash")) |h| h.string else continue;
-                const category = if (ref.object.get("category")) |p| p.string else continue;
-                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\", \"category\": \"{s}\" }}", .{
-                    if (idx > 0) "," else "",
-                    hash,
-                    category,
-                });
-                defer allocator.free(ref_entry);
-                try buf.appendSlice(allocator, ref_entry);
-            }
+        for (prompts.array.items, 0..) |ref, idx| {
+            const hash = if (ref.object.get("hash")) |h| h.string else continue;
+            const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
+                if (idx > 0) "," else "",
+                hash,
+            });
+            defer allocator.free(ref_entry);
+            try buf.appendSlice(allocator, ref_entry);
         }
     }
     try buf.appendSlice(allocator, "]\n    }");
