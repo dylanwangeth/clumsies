@@ -25,21 +25,30 @@ Four things to know: **prompts** are individual markdown files. A **meta-prompt 
 workspace/
 ├── CLAUDE.md              # Meta-prompt file
 └── .prompts/              # Independent git repo
-    ├── conduct/           # Rules (always active)
+    ├── regulation/        # Universal rules (reusable across projects)
+    ├── house-rules/       # Project-specific rules (current project only)
     ├── command/           # Procedures (invoke by name)
     ├── context/           # Project knowledge (local only)
     └── journal/           # Problem logs (local only)
 ```
 
-Only `conduct/` and `command/` are shareable via registry. `context/` and `journal/` stay local.
+`regulation/`, `house-rules/`, and `command/` are shareable via registry. `context/` and `journal/` stay local.
 
 ## 3. Prompt Types
 
-### conduct — Rules
+### regulation — Universal Rules
 
-Things the AI should always follow. Coding conventions, commit format, security guidelines. Loaded at the start of every conversation.
+Formal, institutional rules that apply across projects. Coding conventions, pedagogical guidelines, commit format, security standards. Loaded at the start of every conversation.
 
-Reference them naturally: "Follow the coding standards in conduct/" or "Apply all conduct rules."
+When you copy `.prompts/` to a new project, `regulation/` comes along as-is — no editing needed.
+
+Reference them naturally: "Follow the coding standards in regulation/" or "Apply all regulation rules."
+
+### house-rules — Project-Specific Rules
+
+Rules that only make sense in the current project. Tutorial structure, source evidence conventions, domain-specific formatting. Also loaded at the start of every conversation, but not expected to transfer to other projects.
+
+The name borrows from tabletop gaming: "house rules" are the table's own additions on top of standard rules. When starting a new project, you write fresh house-rules for it.
 
 ### command — Procedures
 
@@ -80,8 +89,8 @@ Metadata lives in `prompts/index.json` and is managed separately:
 | Field | Source |
 |-------|--------|
 | `name` | From filename, prefix stripped. `03_GIT_COMMIT.md` becomes `GIT_COMMIT` |
-| `description` | `--desc` flag at registration, or `"-"` |
-| `category` | `--cat` flag, or inferred from directory structure |
+| `description` | `--desc` flag, frontmatter `description:` field, or `"-"` |
+| `category` | `--cat` flag, or derived from `.prompts/` path (e.g., `regulation/coding`) |
 
 This separation means you can update metadata (rename, re-categorize) without changing the prompt content or its hash.
 
@@ -116,7 +125,7 @@ Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The ha
       "name": "git_commit",
       "description": "Git commit message format",
       "format": "md",
-      "category": "conduct",
+      "category": "regulation",
       "created_at": "1704067200"
     }
   ]
@@ -135,7 +144,7 @@ Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The ha
       "created_at": "1704067200",
       "meta_prompt": "f7g8h9...",
       "prompts": [
-        { "hash": "a1b2c3...", "category": "conduct" },
+        { "hash": "a1b2c3...", "category": "regulation" },
         { "hash": "d4e5f6...", "category": "command" }
       ]
     }
@@ -143,7 +152,7 @@ Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The ha
 }
 ```
 
-Bundle `category` is the directory path (e.g., `conduct/git`). Full prompt details come from `prompts/index.json`.
+Bundle `category` is the directory path (e.g., `regulation/coding`). Full prompt details come from `prompts/index.json`.
 
 ### Sequence numbers on import
 

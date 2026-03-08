@@ -10,7 +10,8 @@ At some point we noticed: prompts already form a semantic layer. We just never n
 
 Some prompts behave like rules (always active), others are more like procedures (invoke on demand). We found it useful to sort them by what they *mean*:
 
-- **conduct/** — behavioral rules, always in effect
+- **regulation/** — universal rules, always in effect, reusable across projects
+- **house-rules/** — project-specific rules, always in effect, scoped to current project
 - **command/** — executable procedures, invoked by name or number
 - **context/** — project knowledge, loaded as needed (local only)
 
@@ -68,10 +69,13 @@ project/
 ├── CLAUDE.md                    # Meta-prompt (natural language index)
 └── .prompts/                    # Independent git repo
     ├── .git/
-    ├── conduct/                 # Rules (always active)
+    ├── regulation/              # Universal rules (reusable across projects)
     │   ├── coding/
-    │   ├── git/
-    │   └── writing/
+    │   ├── pedagogy/
+    │   └── zig/
+    ├── house-rules/             # Project-specific rules (current project only)
+    │   ├── 00_TUTORIAL_STRUCTURE.md
+    │   └── 01_SOURCE_EVIDENCE.md
     └── command/                 # Procedures (invoke by name)
         ├── 00_context_reinforcement.md
         └── 01_review_commit.md
