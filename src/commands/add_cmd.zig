@@ -14,6 +14,7 @@ const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
 const hasFrontmatter = commands.hasFrontmatter;
 const stripFrontmatter = commands.stripFrontmatter;
+const parseFrontmatter = commands.parseFrontmatter;
 const appendPromptEntry = commands.appendPromptEntry;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -78,9 +79,54 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     defer allocator.free(prompts_dir);
     fs.cwd().makePath(prompts_dir) catch {};
 
+    // Expand directories into file lists
+    var expanded_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (expanded_paths.items) |p| allocator.free(p);
+        expanded_paths.deinit(allocator);
+    }
+
+    for (file_paths.items) |raw_path| {
+        const abs = if (std.fs.path.isAbsolute(raw_path))
+            try allocator.dupe(u8, raw_path)
+        else
+            try std.fs.path.join(allocator, &.{ cwd, raw_path });
+
+        const stat = fs.cwd().statFile(abs) catch {
+            // Not found — keep original path so registerOne can report the error
+            allocator.free(abs);
+            try expanded_paths.append(allocator, try allocator.dupe(u8, raw_path));
+            continue;
+        };
+
+        if (stat.kind == .directory) {
+            defer allocator.free(abs);
+            var dir = fs.openDirAbsolute(abs, .{ .iterate = true }) catch {
+                try stderr.print("{s}{s}{s}Error:{s} Could not open directory: {s}\n", .{ P, Color.bold, Color.red, Color.reset, raw_path });
+                continue;
+            };
+            defer dir.close();
+
+            var iter = dir.iterate();
+            while (try iter.next()) |entry| {
+                if (entry.kind != .file) continue;
+                const child = try std.fs.path.join(allocator, &.{ abs, entry.name });
+                try expanded_paths.append(allocator, child);
+            }
+        } else {
+            // Regular file — use abs path directly
+            try expanded_paths.append(allocator, abs);
+        }
+    }
+
+    if (expanded_paths.items.len == 0) {
+        try stderr.print("{s}{s}{s}Error:{s} No files found in the specified path(s)\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    }
+
     var registered: usize = 0;
 
-    for (file_paths.items) |file_path| {
+    for (expanded_paths.items) |file_path| {
         if (try registerOne(stdout, stderr, allocator, registry_path, prompts_dir, cwd, file_path, desc_flag, cat_flag)) {
             registered += 1;
         }
@@ -143,6 +189,7 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     };
     defer allocator.free(raw_content);
 
+    const fm = parseFrontmatter(raw_content);
     const had_frontmatter = hasFrontmatter(raw_content);
     const content = stripFrontmatter(raw_content);
 
@@ -163,8 +210,12 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     const name_end = ext_idx orelse basename.len;
     const raw_name = basename[0..name_end];
     const name = stripSequencePrefix(raw_name);
-    const description = desc_flag orelse "-";
-    const prompt_category = cat_flag orelse "conduct";
+    const description = desc_flag orelse fm.description orelse "-";
+    const prompt_category = cat_flag orelse deriveCategory(abs_path) orelse {
+        try stderr.print("{s}{s}{s}Error:{s} Could not derive category from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
+        try stderr.print("{s}  Use {s}--cat{s} to specify a category\n", .{ P, Color.cyan, Color.reset });
+        return false;
+    };
 
     // Copy file to registry
     const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, &hash_hex });
@@ -245,11 +296,25 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     return true;
 }
 
+/// Derive category from file path by finding `.prompts/` segment.
+/// e.g. ".prompts/conduct/arch/00_FOO.md" → "conduct/arch"
+fn deriveCategory(abs_path: []const u8) ?[]const u8 {
+    const marker = ".prompts/";
+    const idx = std.mem.indexOf(u8, abs_path, marker) orelse return null;
+    const after_marker = abs_path[idx + marker.len ..];
+
+    // Find last '/' to separate category from filename
+    const last_slash = std.mem.lastIndexOf(u8, after_marker, "/") orelse return null;
+    const category = after_marker[0..last_slash];
+    if (category.len == 0) return null;
+    return category;
+}
+
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies add <file>... [-c <cat>] [-d <desc>] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}Register prompt(s) to registry.\n\n", .{P});
+    try out.print("{s}Usage: {s}clumsies add <file|dir>... [-c <cat>] [-d <desc>] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Register prompt(s) to registry. Directories are expanded to their files.\n\n", .{P});
     try out.print("{s}Options:\n", .{P});
-    try out.print("{s}  {s}-c, --cat{s} <cat>    Category (default: conduct)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-c, --cat{s} <cat>    Category (derived from .prompts/ path)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-d, --desc{s} <desc>  Description\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}         Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}   Suppress git output\n", .{ P, Color.cyan, Color.reset });
