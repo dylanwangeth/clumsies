@@ -8,7 +8,7 @@ const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    var show_bundles: bool = false;
+    var show_prompts: bool = false;
     var cat_filter: ?[]const u8 = null;
     var sync: bool = false;
     var quiet_git: bool = false;
@@ -18,8 +18,8 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         const arg = args[i];
         if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
             quiet_git = true;
-        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--bundles")) {
-            show_bundles = true;
+        } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--prompts")) {
+            show_prompts = true;
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--cat")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -40,17 +40,17 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         }
     }
 
-    if (show_bundles) {
-        try listBundles(stdout, stderr, allocator, sync, quiet_git);
-    } else {
+    if (show_prompts) {
         try listPrompts(stdout, stderr, allocator, cat_filter, sync, quiet_git);
+    } else {
+        try listBundles(stdout, stderr, allocator, sync, quiet_git);
     }
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies ls [-b] [-c <cat>] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies ls [-p] [-c <cat>] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Options:\n", .{P});
-    try out.print("{s}  {s}-b, --bundles{s}     List bundles instead of prompts\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-p, --prompts{s}     List prompts instead of bundles\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-c, --cat{s} <cat>   Filter by category\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}           Sync registry before listing\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}     Suppress git output\n", .{ P, Color.cyan, Color.reset });
