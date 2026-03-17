@@ -12,6 +12,7 @@ pub const GitOutput = git.GitOutput;
 // Shared constants
 pub const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 pub const MAX_SEQUENCE_NUMBER: u8 = 99;
+pub const META_PROMPT_CATEGORY = "../";
 
 // Frontmatter metadata structure
 pub const Frontmatter = struct {
@@ -417,11 +418,41 @@ pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
     const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
     defer allocator.free(prompt_file_path);
 
+    const name_part = name_opt orelse hash[0..8];
+
+    // Meta-prompt files (category "../") go to project root without sequence prefix
+    if (std.mem.eql(u8, category, META_PROMPT_CATEGORY)) {
+        const cwd = std.process.getCwdAlloc(allocator) catch {
+            try stderr.print("{s}{s}{s}✗{s} Failed to determine project root\n", .{ P, Color.bold, Color.red, Color.reset });
+            return .failed;
+        };
+        defer allocator.free(cwd);
+
+        const dest_filename = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ name_part, format });
+        defer allocator.free(dest_filename);
+
+        const dest_path = try std.fs.path.join(allocator, &.{ cwd, dest_filename });
+        defer allocator.free(dest_path);
+
+        // Check if already exists
+        if (fs.openFileAbsolute(dest_path, .{})) |f| {
+            f.close();
+            try stdout.print("{s}{s}{s}~{s} {s} (already exists)\n", .{ P, Color.bold, Color.dim, Color.reset, dest_filename });
+            return .skipped;
+        } else |_| {}
+
+        fs.copyFileAbsolute(prompt_file_path, dest_path, .{}) catch {
+            try stderr.print("{s}{s}{s}✗{s} Failed to copy: {s}\n", .{ P, Color.bold, Color.red, Color.reset, dest_filename });
+            return .failed;
+        };
+
+        try stdout.print("{s}{s}{s}✓{s} {s} → ./{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, dest_filename });
+        return .imported;
+    }
+
     const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, category });
     defer allocator.free(target_dir);
     fs.cwd().makePath(target_dir) catch {};
-
-    const name_part = name_opt orelse hash[0..8];
 
     // Check if a file with the same name suffix already exists (e.g. *_CODE_COMMENTS.md)
     const suffix = try std.fmt.allocPrint(allocator, "_{s}.{s}", .{ name_part, format });

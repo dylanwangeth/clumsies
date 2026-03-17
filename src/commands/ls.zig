@@ -5,10 +5,12 @@ const commands = @import("commands.zig");
 const Color = commands.Color;
 const P = commands.P;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
+const META_PROMPT_CATEGORY = commands.META_PROMPT_CATEGORY;
 const ensureRegistry = commands.ensureRegistry;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     var show_prompts: bool = false;
+    var show_meta: bool = false;
     var cat_filter: ?[]const u8 = null;
     var sync: bool = false;
     var quiet_git: bool = false;
@@ -20,6 +22,8 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             quiet_git = true;
         } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--prompts")) {
             show_prompts = true;
+        } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--meta")) {
+            show_meta = true;
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--cat")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -40,7 +44,10 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         }
     }
 
-    if (show_prompts) {
+    if (show_meta) {
+        // --meta is sugar for --prompts --cat ../
+        try listPrompts(stdout, stderr, allocator, META_PROMPT_CATEGORY, sync, quiet_git);
+    } else if (show_prompts) {
         try listPrompts(stdout, stderr, allocator, cat_filter, sync, quiet_git);
     } else {
         try listBundles(stdout, stderr, allocator, sync, quiet_git);
@@ -48,13 +55,14 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies ls [-p] [-c <cat>] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies ls [-p] [-m] [-c <cat>] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Options:\n", .{P});
-    try out.print("{s}  {s}-p, --prompts{s}     List prompts instead of bundles\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-c, --cat{s} <cat>   Filter by category\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-s, --sync{s}           Sync registry before listing\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-p, --prompts{s}       List prompts instead of bundles\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-m, --meta{s}          List meta-prompt files (shorthand for -p -c ../)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-c, --cat{s} <cat>     Filter by category\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-s, --sync{s}          Sync registry before listing\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}     Suppress git output\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-h, --help{s}           Show this help\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}          Show this help\n\n", .{ P, Color.cyan, Color.reset });
 }
 
 fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, cat_filter: ?[]const u8, sync: bool, quiet_git: bool) !void {

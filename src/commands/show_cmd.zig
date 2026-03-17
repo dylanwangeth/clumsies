@@ -181,7 +181,7 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
             try stderr.print("{s}{s}{s}Error:{s} Bundle has no meta-prompt\n\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         }
-        const meta_path = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts", bundle_meta });
+        const meta_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", bundle_meta });
         defer allocator.free(meta_path);
 
         const meta_file = fs.openFileAbsolute(meta_path, .{}) catch {

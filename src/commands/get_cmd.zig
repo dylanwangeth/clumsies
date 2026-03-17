@@ -2,7 +2,6 @@ const std = @import("std");
 const fs = std.fs;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
-const config = @import("config.zig");
 const spinner = @import("../spinner.zig");
 
 const Color = commands.Color;
@@ -278,12 +277,6 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         return;
     }
 
-    const meta_prompt_hash = if (found_bundle.?.object.get("meta_prompt")) |m| m.string else "";
-    if (meta_prompt_hash.len == 0) {
-        try stderr.print("{s}{s}{s}Error:{s} Bundle has no meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    }
-
     // Read prompts index
     const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", "index.json" });
     defer allocator.free(prompts_index_path);
@@ -335,36 +328,8 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     }
     sp.succeed();
 
-    // Copy meta-prompt file
-    var sp2 = spinner.init(stdout, "Copying meta-prompt");
-    sp2.start();
-
-    const meta_src = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts", meta_prompt_hash });
-    defer allocator.free(meta_src);
-
-    const meta_prompt_file_opt = config.getMetaPromptFile(allocator) catch null;
-    defer if (meta_prompt_file_opt) |f| allocator.free(f);
-    const meta_prompt_filename = meta_prompt_file_opt orelse "CLAUDE.md";
-
-    const cwd = std.process.getCwdAlloc(allocator) catch {
-        sp2.fail();
-        return;
-    };
-    defer allocator.free(cwd);
-
-    const meta_dest = try std.fs.path.join(allocator, &.{ cwd, meta_prompt_filename });
-    defer allocator.free(meta_dest);
-
-    fs.copyFileAbsolute(meta_src, meta_dest, .{}) catch {
-        sp2.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to copy meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    sp2.succeed();
-
     try stdout.print("{s}{s}{s}✓{s} Imported bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
     try stdout.print("{s}    Prompts: {d}\n", .{ P, prompt_count });
-    try stdout.print("{s}    Meta-prompt: {s}\n", .{ P, meta_prompt_filename });
 
     if (remote_url) |url| {
         var remote_output: GitOutput = .{};

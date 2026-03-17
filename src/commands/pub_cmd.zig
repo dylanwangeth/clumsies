@@ -16,6 +16,7 @@ const ensureRegistry = commands.ensureRegistry;
 const isHexString = commands.isHexString;
 const bundleExists = commands.bundleExists;
 const PromptRef = commands.PromptRef;
+const META_PROMPT_CATEGORY = commands.META_PROMPT_CATEGORY;
 const collectAndUploadPrompts = commands.collectAndUploadPrompts;
 const updatePromptsIndex = commands.updatePromptsIndex;
 const appendBundleEntry = commands.appendBundleEntry;
@@ -119,10 +120,6 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     defer allocator.free(bundles_dir);
     fs.cwd().makePath(bundles_dir) catch {};
 
-    const meta_prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts" });
-    defer allocator.free(meta_prompts_dir);
-    fs.cwd().makePath(meta_prompts_dir) catch {};
-
     // Collect prompts
     var sp = spinner.init(stdout, "Uploading prompts");
     sp.start();
@@ -148,17 +145,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
     sp.succeed();
 
-    // Update prompts/index.json
-    var sp2 = spinner.init(stdout, "Updating prompts index");
-    sp2.start();
-    updatePromptsIndex(allocator, registry_path, prompt_refs.items) catch {
-        sp2.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    sp2.succeed();
-
-    // Upload meta-prompt file
+    // Upload meta-prompt file as a regular prompt with category "../"
     var sp_meta = spinner.init(stdout, "Uploading meta-prompt");
     sp_meta.start();
 
@@ -169,7 +156,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const meta_prompt_hash = try allocator.dupe(u8, &hash_hex);
     defer allocator.free(meta_prompt_hash);
 
-    const meta_dest_path = try std.fs.path.join(allocator, &.{ meta_prompts_dir, meta_prompt_hash });
+    const meta_dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, meta_prompt_hash });
     defer allocator.free(meta_dest_path);
 
     const meta_dest_file = fs.createFileAbsolute(meta_dest_path, .{}) catch {
@@ -183,7 +170,32 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     };
     meta_dest_file.close();
+
+    // Extract meta-prompt name from filename (e.g., "CLAUDE" from "CLAUDE.md")
+    const meta_basename = std.fs.path.basename(meta_prompt_path_arg);
+    const meta_ext_idx = std.mem.lastIndexOf(u8, meta_basename, ".");
+    const meta_name = if (meta_ext_idx) |idx| meta_basename[0..idx] else meta_basename;
+    const meta_format = if (meta_ext_idx) |idx| meta_basename[idx + 1 ..] else "md";
+
+    // Add MPF as a PromptRef with category "../"
+    try prompt_refs.append(allocator, .{
+        .hash = try allocator.dupe(u8, meta_prompt_hash),
+        .category = try allocator.dupe(u8, META_PROMPT_CATEGORY),
+        .name = try allocator.dupe(u8, meta_name),
+        .description = try allocator.dupe(u8, description),
+        .format = try allocator.dupe(u8, meta_format),
+    });
     sp_meta.succeed();
+
+    // Update prompts/index.json (includes both regular prompts and MPF)
+    var sp2 = spinner.init(stdout, "Updating prompts index");
+    sp2.start();
+    updatePromptsIndex(allocator, registry_path, prompt_refs.items) catch {
+        sp2.fail();
+        try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    sp2.succeed();
 
     // Create bundle entry
     var sp3 = spinner.init(stdout, "Creating bundle");

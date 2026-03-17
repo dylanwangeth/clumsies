@@ -103,13 +103,13 @@ A registry is a git repo for sharing prompts and bundles.
 ```
 registry/
 ├── prompts/
-│   ├── index.json           # Prompt metadata
+│   ├── index.json           # Prompt metadata (includes meta-prompt files)
 │   └── {hash}               # Content files (SHA-256, no extension)
-├── meta-prompts/
-│   └── {hash}
 └── bundles/
     └── index.json
 ```
+
+Meta-prompt files are stored in `prompts/` with `category: "../"`. The `../` convention reflects their position relative to `.prompts/` — they live at the project root, one level above `.prompts/`.
 
 ### Content-addressable storage
 
@@ -127,10 +127,20 @@ Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The ha
       "format": "md",
       "category": "regulation",
       "created_at": "1704067200"
+    },
+    {
+      "hash": "f7g8h9...",
+      "name": "CLAUDE",
+      "description": "Navigation guide for AI agents",
+      "format": "md",
+      "category": "../",
+      "created_at": "1704067200"
     }
   ]
 }
 ```
+
+The `../` category entry is a meta-prompt file. On import, it is placed at the project root (e.g., `./CLAUDE.md`) without sequence prefix.
 
 ### bundles/index.json
 
@@ -144,15 +154,16 @@ Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The ha
       "created_at": "1704067200",
       "meta_prompt": "f7g8h9...",
       "prompts": [
-        { "hash": "a1b2c3...", "category": "regulation" },
-        { "hash": "d4e5f6...", "category": "command" }
+        { "hash": "a1b2c3..." },
+        { "hash": "d4e5f6..." },
+        { "hash": "f7g8h9..." }
       ]
     }
   ]
 }
 ```
 
-Bundle `category` is the directory path (e.g., `regulation/coding`). Full prompt details come from `prompts/index.json`.
+The `meta_prompt` field is a convenience pointer to the meta-prompt file's hash; the same hash also appears in the `prompts` array and in `prompts/index.json` with `category: "../"`. Full prompt details come from `prompts/index.json`.
 
 ### Sequence numbers on import
 
