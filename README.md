@@ -1,23 +1,35 @@
 # clumsies
 
-A semantic layer for AI agent prompts.
+User-controlled memory for AI agents.
 
 ## Why
 
-Prompts break once projects grow. We keep writing good ones, but they end up as loose text with no structure — hard to reuse, hard to share, hard to move between tools.
+AI coding agents manage their own memory. Claude Code writes to `~/.claude/memory/`, Cursor stores context in its database, Copilot and Windsurf each have their own systems. They decide what to remember and what to surface in each conversation.
 
-At some point we noticed: prompts already form a semantic layer. We just never named it.
+You can't see what they remembered. You can't remove stale context or reorganize it. When the agent behaves differently across sessions, you have no way to check what context it was actually working with.
 
-Some prompts behave like rules (always active), others are more like procedures (invoke on demand). We found it useful to sort them by what they *mean*:
+clumsies flips this: you write the context as markdown files, organize them by meaning, and the agent reads what you put there.
 
-- **regulation/** — universal rules, always in effect, reusable across projects
-- **house-rules/** — project-specific rules, always in effect, scoped to current project
-- **command/** — executable procedures, invoked by name or number
-- **context/** — project knowledge, loaded as needed (local only)
+## How it works
 
-The `.prompts/` directory is its own git repo. A meta-prompt file (CLAUDE.md, etc.) acts as a natural language index pointing AI into this structure.
+Prompts live in `.prompts/`, an independent git repo inside your working directory:
 
-Different developers and stages of work need different slices of the prompt system. The registry preserves that structure across projects.
+```
+workspace/
+├── CLAUDE.md              # MPF (tells the agent where things are)
+└── .prompts/
+    ├── .git/
+    ├── rules/             # Coding standards, commit format, ...
+    ├── cmd/               # Procedures (run on demand)
+    ├── context/           # Project knowledge, architecture notes
+    └── ...                # Whatever else you need
+```
+
+You write the prompt files yourself, organize them into whatever directories make sense for you, and name them however you like. clumsies doesn't enforce any layout. You register them to a registry when you want to share or reuse across projects.
+
+The meta-prompt file (MPF) sits in the agent's working directory, which is where all coding agents look for instructions by default. It can be CLAUDE.md, AGENTS.md, COPILOT.md, or whatever your tool reads. The working directory can be a single project or a workspace containing multiple codebases. The MPF describes the `.prompts/` layout in natural language so the agent knows where to find rules, commands, and context. No special syntax, no tool integration needed.
+
+A registry (a separate git repo) handles sharing prompts across projects.
 
 More in [DESIGN.md](./DESIGN.md).
 
@@ -30,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.
 The installer downloads the binary and verifies SHA256 before execution.
 
 <details>
-<summary>Manual Install</summary>
+<summary>Manual install</summary>
 
 ```bash
 # Download binary and checksums
@@ -47,7 +59,7 @@ mv clumsies-darwin-arm64 ~/.clumsies/bin/clumsies
 Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 </details>
 
-## Quick Start
+## Quick start
 
 ```bash
 # Point to your registry
@@ -62,39 +74,22 @@ clumsies clone git@github.com:team/shared-prompts.git
 
 Run `clumsies -h` to see what else is available.
 
-## Architecture
+## Registry
 
-```
-project/
-├── CLAUDE.md                    # Meta-prompt (natural language index)
-└── .prompts/                    # Independent git repo
-    ├── .git/
-    ├── regulation/              # Universal rules (reusable across projects)
-    │   ├── coding/
-    │   ├── pedagogy/
-    │   └── zig/
-    ├── house-rules/             # Project-specific rules (current project only)
-    │   ├── 00_TUTORIAL_STRUCTURE.md
-    │   └── 01_SOURCE_EVIDENCE.md
-    └── command/                 # Procedures (invoke by name)
-        ├── 00_context_reinforcement.md
-        └── 01_review_commit.md
-```
-
-The registry is a separate git repo storing prompts and bundles:
+The registry is a git repo that stores prompts and bundles:
 
 ```
 registry/
 ├── prompts/
 │   ├── index.json
-│   └── <sha256>                 # Content-addressed, no extension
-├── meta-prompts/
-│   └── <sha256>
+│   └── <sha256>             # Content-addressed, no extension
 └── bundles/
     └── index.json
 ```
 
-## Build from Source
+Prompts are stored by SHA-256 hash. Same content, same hash, stored once. Bundles group prompts together for distribution.
+
+## Build from source
 
 Requires [Zig](https://ziglang.org/) 0.15+:
 

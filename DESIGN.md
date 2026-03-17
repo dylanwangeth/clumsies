@@ -1,6 +1,6 @@
 # Design Notes
 
-Working notes on organizing prompts as a semantic layer. This is a snapshot of what currently works for us.
+Working notes on how clumsies organizes user-controlled memory for AI agents. This is a snapshot of what currently works for us.
 
 ## 1. The Problem
 

@@ -5,7 +5,7 @@ const Color = styles.Color;
 const P = styles.P;
 
 pub fn run(stdout: *std.io.Writer) !void {
-    try stdout.print("{s}{s}{s}clumsies{s} - A semantic layer for AI agent prompts\n\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}{s}{s}clumsies{s} - User-controlled memory for AI agents\n\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     try stdout.print("{s}{s}{s}Registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}ls{s}        List prompts or bundles\n", .{ P, Color.cyan, Color.reset });
