@@ -4,6 +4,7 @@ const commands = @import("commands.zig");
 
 const Color = commands.Color;
 const P = commands.P;
+const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 
 pub const DEFAULT_ENTRY_FILES = [_][]const u8{ "CLAUDE.md", "CURSOR.md", "AGENTS.md", "COPILOT.md" };
 
@@ -176,7 +177,11 @@ fn setConfig(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     while (map_iter.next()) |entry| {
         if (!first) try output.appendSlice(allocator, ",\n");
         first = false;
-        const line = try std.fmt.allocPrint(allocator, "  \"{s}\": \"{s}\"", .{ entry.key_ptr.*, entry.value_ptr.* });
+        const esc_key = try jsonEscapeAlloc(allocator, entry.key_ptr.*);
+        defer allocator.free(esc_key);
+        const esc_val = try jsonEscapeAlloc(allocator, entry.value_ptr.*);
+        defer allocator.free(esc_val);
+        const line = try std.fmt.allocPrint(allocator, "  \"{s}\": \"{s}\"", .{ esc_key, esc_val });
         defer allocator.free(line);
         try output.appendSlice(allocator, line);
     }

@@ -77,6 +77,42 @@ pub fn hexEncode(bytes: []const u8, out: []u8) void {
     }
 }
 
+/// Escape a string for safe inclusion as a JSON string value.
+/// Handles: " → \", \ → \\, newline → \n, CR → \r, tab → \t, control chars → \uXXXX
+pub fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    var needs_escape = false;
+    for (input) |c| {
+        if (c == '"' or c == '\\' or c < 0x20) {
+            needs_escape = true;
+            break;
+        }
+    }
+    if (!needs_escape) return try allocator.dupe(u8, input);
+
+    var result: std.ArrayListUnmanaged(u8) = .{};
+    errdefer result.deinit(allocator);
+
+    for (input) |c| {
+        switch (c) {
+            '"' => try result.appendSlice(allocator, "\\\""),
+            '\\' => try result.appendSlice(allocator, "\\\\"),
+            '\n' => try result.appendSlice(allocator, "\\n"),
+            '\r' => try result.appendSlice(allocator, "\\r"),
+            '\t' => try result.appendSlice(allocator, "\\t"),
+            else => {
+                if (c < 0x20) {
+                    const hex = "0123456789abcdef";
+                    try result.appendSlice(allocator, &[_]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0f] });
+                } else {
+                    try result.append(allocator, c);
+                }
+            },
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
 /// Find next available sequence number with gap filling
 /// If files 00_, 01_, 03_ exist, returns 2 (fills the gap)
 /// If files 00_, 01_, 02_ exist, returns 3 (next number)
@@ -285,14 +321,24 @@ pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
         var git_output: GitOutput = .{};
         defer git_output.deinit(allocator);
 
+        var sync_ok = true;
         // If branch specified, ensure we're on correct branch
         if (registry_info.branch) |branch| {
             var checkout_output: GitOutput = .{};
             defer checkout_output.deinit(allocator);
-            git.fetchAndCheckout(allocator, registry_path, branch, &checkout_output) catch {};
+            git.fetchAndCheckout(allocator, registry_path, branch, &checkout_output) catch {
+                sync_ok = false;
+            };
         }
-        git.pull(allocator, registry_path, &git_output) catch {};
-        sp.succeed();
+        git.pull(allocator, registry_path, &git_output) catch {
+            sync_ok = false;
+        };
+        if (sync_ok) {
+            sp.succeed();
+        } else {
+            sp.fail();
+            try stderr.print("{s}{s}{s}Warning:{s} Sync failed, using local cache\n", .{ P, Color.bold, Color.orange, Color.reset });
+        }
         printGitOutputRaw(&git_output, quiet_git);
     }
     // else: registry exists and no sync requested - use local cache (fast path)
@@ -625,13 +671,22 @@ pub fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u
     for (refs) |ref| {
         if (seen_hashes.contains(ref.hash)) continue;
 
+        const esc_name = try jsonEscapeAlloc(allocator, ref.name);
+        defer allocator.free(esc_name);
+        const esc_desc = try jsonEscapeAlloc(allocator, ref.description);
+        defer allocator.free(esc_desc);
+        const esc_format = try jsonEscapeAlloc(allocator, ref.format);
+        defer allocator.free(esc_format);
+        const esc_category = try jsonEscapeAlloc(allocator, ref.category);
+        defer allocator.free(esc_category);
+
         const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}", .{
             if (first) "" else ",",
             ref.hash,
-            ref.name,
-            ref.description,
-            ref.format,
-            ref.category,
+            esc_name,
+            esc_desc,
+            esc_format,
+            esc_category,
             timestamp,
         });
         defer allocator.free(entry);
@@ -655,7 +710,16 @@ pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     const item_category = if (item.object.get("category")) |p| p.string else "conduct";
     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
-    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
+    const esc_name = try jsonEscapeAlloc(allocator, item_name);
+    defer allocator.free(esc_name);
+    const esc_desc = try jsonEscapeAlloc(allocator, item_desc);
+    defer allocator.free(esc_desc);
+    const esc_format = try jsonEscapeAlloc(allocator, item_format);
+    defer allocator.free(esc_format);
+    const esc_category = try jsonEscapeAlloc(allocator, item_category);
+    defer allocator.free(esc_category);
+
+    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, esc_name, esc_desc, esc_format, esc_category, item_created });
     defer allocator.free(entry);
     try buf.appendSlice(allocator, entry);
 }
@@ -668,7 +732,14 @@ pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
     const item_meta = if (item.object.get("meta_prompt")) |m| m.string else "";
 
-    const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ item_name, item_task, item_desc, item_created, item_meta });
+    const esc_name = try jsonEscapeAlloc(allocator, item_name);
+    defer allocator.free(esc_name);
+    const esc_task = try jsonEscapeAlloc(allocator, item_task);
+    defer allocator.free(esc_task);
+    const esc_desc = try jsonEscapeAlloc(allocator, item_desc);
+    defer allocator.free(esc_desc);
+
+    const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ esc_name, esc_task, esc_desc, item_created, item_meta });
     defer allocator.free(entry_start);
     try buf.appendSlice(allocator, entry_start);
 

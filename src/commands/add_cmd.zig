@@ -17,6 +17,7 @@ const hasFrontmatter = commands.hasFrontmatter;
 const stripFrontmatter = commands.stripFrontmatter;
 const parseFrontmatter = commands.parseFrontmatter;
 const appendPromptEntry = commands.appendPromptEntry;
+const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     var file_paths: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -110,18 +111,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
         if (stat.kind == .directory) {
             defer allocator.free(abs);
-            var dir = fs.openDirAbsolute(abs, .{ .iterate = true }) catch {
-                try stderr.print("{s}{s}{s}Error:{s} Could not open directory: {s}\n", .{ P, Color.bold, Color.red, Color.reset, raw_path });
-                continue;
-            };
-            defer dir.close();
-
-            var iter = dir.iterate();
-            while (try iter.next()) |entry| {
-                if (entry.kind != .file) continue;
-                const child = try std.fs.path.join(allocator, &.{ abs, entry.name });
-                try expanded_paths.append(allocator, child);
-            }
+            expandDirectory(allocator, abs, &expanded_paths);
         } else {
             // Regular file — use abs path directly
             try expanded_paths.append(allocator, abs);
@@ -283,13 +273,21 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     }
 
     const timestamp = std.time.timestamp();
+    const esc_name = try jsonEscapeAlloc(allocator, name);
+    defer allocator.free(esc_name);
+    const esc_desc = try jsonEscapeAlloc(allocator, description);
+    defer allocator.free(esc_desc);
+    const esc_format = try jsonEscapeAlloc(allocator, format);
+    defer allocator.free(esc_format);
+    const esc_category = try jsonEscapeAlloc(allocator, prompt_category);
+    defer allocator.free(esc_category);
     const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
         if (has_existing) "," else "",
         hash_hex,
-        name,
-        description,
-        format,
-        prompt_category,
+        esc_name,
+        esc_desc,
+        esc_format,
+        esc_category,
         timestamp,
     });
     defer allocator.free(new_entry);
@@ -321,6 +319,27 @@ fn deriveCategory(abs_path: []const u8) ?[]const u8 {
     const category = after_marker[0..last_slash];
     if (category.len == 0) return null;
     return category;
+}
+
+/// Recursively expand a directory into individual file paths
+fn expandDirectory(allocator: std.mem.Allocator, abs_path: []const u8, expanded_paths: *std.ArrayListUnmanaged([]const u8)) void {
+    var dir = fs.openDirAbsolute(abs_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (iter.next() catch null) |entry| {
+        const child = std.fs.path.join(allocator, &.{ abs_path, entry.name }) catch continue;
+        if (entry.kind == .directory) {
+            expandDirectory(allocator, child, expanded_paths);
+            allocator.free(child);
+        } else if (entry.kind == .file) {
+            expanded_paths.append(allocator, child) catch {
+                allocator.free(child);
+            };
+        } else {
+            allocator.free(child);
+        }
+    }
 }
 
 fn printHelp(out: *std.io.Writer) !void {

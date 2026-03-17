@@ -21,6 +21,7 @@ const collectAndUploadPrompts = commands.collectAndUploadPrompts;
 const updatePromptsIndex = commands.updatePromptsIndex;
 const appendBundleEntry = commands.appendBundleEntry;
 const freePromptRefs = commands.freePromptRefs;
+const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     var sync: bool = false;
@@ -235,11 +236,18 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const timestamp = std.time.timestamp();
     const comma = if (has_existing_bundles) "," else "";
 
+    const esc_bundle_name = try jsonEscapeAlloc(allocator, bundle_name);
+    defer allocator.free(esc_bundle_name);
+    const esc_task = try jsonEscapeAlloc(allocator, task);
+    defer allocator.free(esc_task);
+    const esc_description = try jsonEscapeAlloc(allocator, description);
+    defer allocator.free(esc_description);
+
     const new_entry_start = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{d}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{
         comma,
-        bundle_name,
-        task,
-        description,
+        esc_bundle_name,
+        esc_task,
+        esc_description,
         timestamp,
         meta_prompt_hash,
     });
