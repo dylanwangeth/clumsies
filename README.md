@@ -149,7 +149,3 @@ git clone https://github.com/lilhammerfun/clumsies.git
 cd clumsies
 zig build -Doptimize=ReleaseFast
 ```
-
-## License
-
-MIT
