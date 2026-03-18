@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Run tests
+        run: zig build test
+
+      - name: Extract version from tag
+        id: version
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Cross-compile all platforms
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          mkdir -p dist
+
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos
+          cp zig-out/bin/clumsies dist/clumsies-darwin-arm64
+
+          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos
+          cp zig-out/bin/clumsies dist/clumsies-darwin-x86_64
+
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux
+          cp zig-out/bin/clumsies dist/clumsies-linux-arm64
+
+          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux
+          cp zig-out/bin/clumsies dist/clumsies-linux-x86_64
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum clumsies-* > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          CHECKSUMS=$(cat dist/checksums.txt)
+
+          gh release create "$TAG" \
+            dist/clumsies-darwin-arm64 \
+            dist/clumsies-darwin-x86_64 \
+            dist/clumsies-linux-arm64 \
+            dist/clumsies-linux-x86_64 \
+            dist/checksums.txt \
+            --title "$TAG" \
+            --generate-notes \
+            --notes-start-tag "$(git tag --sort=-v:refname | head -2 | tail -1)" \
+            --verify-tag
