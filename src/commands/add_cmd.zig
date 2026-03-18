@@ -1,5 +1,6 @@
 const std = @import("std");
 const fs = std.fs;
+const testing = std.testing;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const spinner = @import("../spinner.zig");
@@ -352,4 +353,24 @@ fn printHelp(out: *std.io.Writer) !void {
     try out.print("{s}  {s}-s, --sync{s}         Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}    Suppress git output\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-h, --help{s}         Show this help\n", .{ P, Color.cyan, Color.reset });
+}
+
+test "deriveCategory: nested path" {
+    try testing.expectEqualStrings("rule/arch", deriveCategory("/home/user/.prompts/rule/arch/00_FOO.md").?);
+}
+
+test "deriveCategory: single level" {
+    try testing.expectEqualStrings("coding", deriveCategory("/path/.prompts/coding/01_BAR.md").?);
+}
+
+test "deriveCategory: no .prompts marker" {
+    try testing.expect(deriveCategory("/path/to/foo.md") == null);
+}
+
+test "deriveCategory: file directly in .prompts root" {
+    try testing.expect(deriveCategory("/path/.prompts/foo.md") == null);
+}
+
+test "deriveCategory: deep nesting" {
+    try testing.expectEqualStrings("rule/writing/blog", deriveCategory("/x/.prompts/rule/writing/blog/00_STYLE.md").?);
 }

@@ -1,86 +1,48 @@
-# Design Notes
+# Architecture
 
-Working notes on how clumsies organizes user-controlled memory for AI agents. This is a snapshot of what currently works for us.
+How clumsies organizes user-level memory for AI agents.
 
-## 1. The Problem
+## 1. Core Concepts
 
-A single prompt file (CLAUDE.md, AGENTS.md) stops working once a project gets complex enough. Too much context crammed in, rules mixed with procedures, no way to reuse pieces across projects without copy-pasting the whole thing.
-
-Tool-specific prompt systems make it worse. Claude Code uses `/project:gen-commit`, Gemini CLI uses `@gen-commit`, Cursor uses `/gen-commit`. Same idea, three syntaxes, none portable.
-
-We wanted something simpler: organize prompts by meaning, let AI navigate via natural language, and keep everything in plain files so it works with any tool.
-
-```
-Instead of:  /project:gen-commit --scope backend
-Just say:    "Generate a commit message following git_commit rules"
-```
-
-## 2. Core Concepts
-
-Four things to know: **prompts** are individual markdown files. A **meta-prompt file** (CLAUDE.md, etc.) is the entry point that tells AI where to find them. **Bundles** group prompts together for sharing. The **registry** is a git repo that holds all of it.
+Four things to know: **prompts** are individual markdown files. A **meta-prompt file (MPF)** (CLAUDE.md, etc.) tells AI where to find them. **Bundles** group prompts together for sharing. The **registry** is a git repo that holds all of it.
 
 ### Project structure
 
 ```
 workspace/
-├── CLAUDE.md              # Meta-prompt file
+├── CLAUDE.md              # MPF (meta-prompt file)
 └── .prompts/              # Independent git repo
     ├── regulation/        # Universal rules (reusable across projects)
     ├── house-rules/       # Project-specific rules (current project only)
     ├── command/           # Procedures (invoke by name)
     ├── context/           # Project knowledge (local only)
-    └── journal/           # Problem logs (local only)
+    ├── journal/           # Problem logs (local only)
+    └── ...                # Whatever else you need
 ```
 
 `regulation/`, `house-rules/`, and `command/` are shareable via registry. `context/` and `journal/` stay local.
 
-## 3. Prompt Types
+## 2. Directory Organization
 
-### regulation — Universal Rules
+clumsies does not enforce any directory layout. You organize `.prompts/` however you want — the directory names, nesting, and semantics are entirely up to you. clumsies only uses the directory path structurally: it derives the `category` metadata from the path relative to `.prompts/` (e.g., a file in `.prompts/coding/style/` gets category `coding/style`).
 
-Formal, institutional rules that apply across projects. Coding conventions, pedagogical guidelines, commit format, security standards. Loaded at the start of every conversation.
+The project structure shown above is one example. Here's the reasoning behind that particular layout:
 
-When you copy `.prompts/` to a new project, `regulation/` comes along as-is — no editing needed.
+- **regulation/** — Rules reusable across projects (coding standards, commit format). Registered in the registry and imported as-is into new projects.
+- **house-rules/** — Rules specific to the current project. Not expected to transfer.
+- **command/** — Procedures the AI runs on request. Numbered prefixes (00_, 01_) let users invoke by number: "Run command 01."
+- **context/** — Project knowledge (architecture notes, tech decisions). Stays local.
+- **journal/** — Problem logs (how bugs were fixed, why decisions changed). Stays local.
 
-Reference them naturally: "Follow the coding standards in regulation/" or "Apply all regulation rules."
-
-### house-rules — Project-Specific Rules
-
-Rules that only make sense in the current project. Tutorial structure, source evidence conventions, domain-specific formatting. Also loaded at the start of every conversation, but not expected to transfer to other projects.
-
-The name borrows from tabletop gaming: "house rules" are the table's own additions on top of standard rules. When starting a new project, you write fresh house-rules for it.
-
-### command — Procedures
-
-Things the AI runs on request. Review flows, release checklists, code generation steps. Numbered prefixes (00_, 01_) let users invoke by number: "Run command 01."
-
-### context — Project Knowledge (local)
-
-Domain context, architecture notes, tech decisions. Read before starting work. Not shared — every project has its own.
-
-### journal — Problem Logs (local)
-
-How bugs were fixed, why decisions were made. Reference when facing similar issues. Also not shared.
-
-## 4. Meta-Prompt File
+## 3. Meta-Prompt File (MPF)
 
 The meta-prompt file is a navigation guide, not a project introduction. It tells AI what's in `.prompts/` and how to use it.
 
 Typical contents: directory tree, what each directory means, file naming convention (`NN_UPPER_SNAKE_CASE.md`), how to invoke commands.
 
-When used as part of a bundle, the file includes YAML frontmatter:
+The AI doesn't need special syntax or tool support. It reads the MPF, understands the directory layout, and knows when to load what.
 
-```yaml
----
-name: my-coding-bundle
-description: Coding conduct and commands for AI agents
-task: coding
----
-```
-
-The AI doesn't need special syntax or tool support. It reads the meta-prompt, understands the directory layout, and knows when to load what.
-
-## 5. Prompt File Format
+## 4. Prompt File Format
 
 Prompts are plain markdown. No frontmatter, no embedded metadata.
 
@@ -94,7 +56,7 @@ Metadata lives in `prompts/index.json` and is managed separately:
 
 This separation means you can update metadata (rename, re-categorize) without changing the prompt content or its hash.
 
-## 6. Registry
+## 5. Registry
 
 A registry is a git repo for sharing prompts and bundles.
 
@@ -169,7 +131,7 @@ The `meta_prompt` field is a convenience pointer to the meta-prompt file's hash;
 
 When importing prompts to `.prompts/`, sequence numbers are auto-assigned: scan for existing `NN_` prefixes, fill the first gap, or use the next number. Final filename: `{NN}_{name}.{format}`.
 
-## 7. Compatibility
+## 6. Compatibility
 
 Works alongside existing tool-specific setups:
 
