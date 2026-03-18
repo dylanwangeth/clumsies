@@ -17,6 +17,9 @@ jobs:
         with:
           version: 0.15.1
 
+      - name: Lint (zig fmt)
+        run: zig fmt --check src/
+
       - name: Build (native)
         run: zig build
 
