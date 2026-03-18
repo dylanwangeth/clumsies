@@ -724,6 +724,236 @@ pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     try buf.appendSlice(allocator, entry);
 }
 
+const testing = std.testing;
+
+test "parseFrontmatter: all fields" {
+    const content = "---\nname: foo\ndescription: a thing\ncategory: rule/coding\ntask: coding\n---\nbody";
+    const fm = parseFrontmatter(content);
+    try testing.expectEqualStrings("foo", fm.name.?);
+    try testing.expectEqualStrings("a thing", fm.description.?);
+    try testing.expectEqualStrings("rule/coding", fm.category.?);
+    try testing.expectEqualStrings("coding", fm.task.?);
+}
+
+test "parseFrontmatter: subset of fields" {
+    const content = "---\ndescription: only desc\n---\nbody";
+    const fm = parseFrontmatter(content);
+    try testing.expect(fm.name == null);
+    try testing.expectEqualStrings("only desc", fm.description.?);
+    try testing.expect(fm.category == null);
+    try testing.expect(fm.task == null);
+}
+
+test "parseFrontmatter: no frontmatter" {
+    const fm = parseFrontmatter("just some content");
+    try testing.expect(fm.name == null);
+    try testing.expect(fm.description == null);
+}
+
+test "parseFrontmatter: malformed no closing delimiter" {
+    const fm = parseFrontmatter("---\nname: foo\nno closing");
+    try testing.expect(fm.name == null);
+}
+
+test "parseFrontmatter: empty content" {
+    const fm = parseFrontmatter("");
+    try testing.expect(fm.name == null);
+}
+
+test "parseFrontmatter: empty values ignored" {
+    const content = "---\nname:\ndescription: \n---\n";
+    const fm = parseFrontmatter(content);
+    try testing.expect(fm.name == null);
+    try testing.expect(fm.description == null);
+}
+
+test "parseFrontmatter: whitespace around values" {
+    const content = "---\nname:   bar  \n---\n";
+    const fm = parseFrontmatter(content);
+    try testing.expectEqualStrings("bar", fm.name.?);
+}
+
+test "stripSequencePrefix: normal prefix" {
+    try testing.expectEqualStrings("REVIEW_COMMIT", stripSequencePrefix("01_REVIEW_COMMIT"));
+}
+
+test "stripSequencePrefix: high number" {
+    try testing.expectEqualStrings("FOO", stripSequencePrefix("99_FOO"));
+}
+
+test "stripSequencePrefix: non-digit prefix unchanged" {
+    try testing.expectEqualStrings("AB_FOO", stripSequencePrefix("AB_FOO"));
+}
+
+test "stripSequencePrefix: too short unchanged" {
+    try testing.expectEqualStrings("1_", stripSequencePrefix("1_"));
+}
+
+test "stripSequencePrefix: empty string" {
+    try testing.expectEqualStrings("", stripSequencePrefix(""));
+}
+
+test "hexEncode: known bytes" {
+    var out: [6]u8 = undefined;
+    hexEncode(&[_]u8{ 0xde, 0xad, 0xbe }, &out);
+    try testing.expectEqualStrings("deadbe", &out);
+}
+
+test "hexEncode: all zeros" {
+    var out: [4]u8 = undefined;
+    hexEncode(&[_]u8{ 0x00, 0x00 }, &out);
+    try testing.expectEqualStrings("0000", &out);
+}
+
+test "hexEncode: all ff" {
+    var out: [4]u8 = undefined;
+    hexEncode(&[_]u8{ 0xff, 0xff }, &out);
+    try testing.expectEqualStrings("ffff", &out);
+}
+
+test "isHexString: valid lowercase" {
+    try testing.expect(isHexString("abcdef0123"));
+}
+
+test "isHexString: valid uppercase" {
+    try testing.expect(isHexString("ABCDEF"));
+}
+
+test "isHexString: mixed case" {
+    try testing.expect(isHexString("aAbB01"));
+}
+
+test "isHexString: invalid chars" {
+    try testing.expect(!isHexString("ghij"));
+}
+
+test "isHexString: empty string" {
+    try testing.expect(!isHexString(""));
+}
+
+test "isHexString: with space" {
+    try testing.expect(!isHexString("ab cd"));
+}
+
+test "jsonEscapeAlloc: plain string no escape" {
+    const result = try jsonEscapeAlloc(testing.allocator, "hello world");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("hello world", result);
+}
+
+test "jsonEscapeAlloc: quotes" {
+    const result = try jsonEscapeAlloc(testing.allocator, "say \"hi\"");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("say \\\"hi\\\"", result);
+}
+
+test "jsonEscapeAlloc: backslashes" {
+    const result = try jsonEscapeAlloc(testing.allocator, "a\\b");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("a\\\\b", result);
+}
+
+test "jsonEscapeAlloc: newline and tab" {
+    const result = try jsonEscapeAlloc(testing.allocator, "a\nb\tc");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("a\\nb\\tc", result);
+}
+
+test "jsonEscapeAlloc: carriage return" {
+    const result = try jsonEscapeAlloc(testing.allocator, "a\rb");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("a\\rb", result);
+}
+
+test "jsonEscapeAlloc: control character" {
+    const result = try jsonEscapeAlloc(testing.allocator, &[_]u8{0x01});
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("\\u0001", result);
+}
+
+test "jsonEscapeAlloc: empty string" {
+    const result = try jsonEscapeAlloc(testing.allocator, "");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("", result);
+}
+
+test "formatDate: unix epoch" {
+    var buf: [10]u8 = undefined;
+    try testing.expectEqualStrings("1970-01-01", formatDate(0, &buf));
+}
+
+test "formatDate: known date 2024-01-01" {
+    var buf: [10]u8 = undefined;
+    try testing.expectEqualStrings("2024-01-01", formatDate(1704067200, &buf));
+}
+
+test "formatDate: leap year feb 29" {
+    var buf: [10]u8 = undefined;
+    // 2024-02-29 = 1709164800
+    try testing.expectEqualStrings("2024-02-29", formatDate(1709164800, &buf));
+}
+
+test "formatDate: negative timestamp clamps to epoch" {
+    var buf: [10]u8 = undefined;
+    try testing.expectEqualStrings("1970-01-01", formatDate(-100, &buf));
+}
+
+test "formatDate: end of year" {
+    var buf: [10]u8 = undefined;
+    // 2023-12-31 = 1703980800
+    try testing.expectEqualStrings("2023-12-31", formatDate(1703980800, &buf));
+}
+
+test "formatDate: year 2026" {
+    var buf: [10]u8 = undefined;
+    // 2026-03-18 = 1774051200
+    try testing.expectEqualStrings("2026-03-18", formatDate(1774051200, &buf));
+}
+
+test "hasFrontmatter: valid with LF" {
+    try testing.expect(hasFrontmatter("---\nname: foo\n---\nbody"));
+}
+
+test "hasFrontmatter: valid with CRLF" {
+    try testing.expect(hasFrontmatter("---\r\nname: foo\n---\r\nbody"));
+}
+
+test "hasFrontmatter: ends with newline-dash-dash-dash" {
+    try testing.expect(hasFrontmatter("---\nname: foo\n---"));
+}
+
+test "hasFrontmatter: no frontmatter" {
+    try testing.expect(!hasFrontmatter("just content"));
+}
+
+test "hasFrontmatter: starts with dashes but no closing" {
+    try testing.expect(!hasFrontmatter("---\nname: foo\nno end"));
+}
+
+test "hasFrontmatter: empty" {
+    try testing.expect(!hasFrontmatter(""));
+}
+
+test "stripFrontmatter: strips and returns body" {
+    try testing.expectEqualStrings("body text", stripFrontmatter("---\nname: foo\n---\nbody text"));
+}
+
+test "stripFrontmatter: CRLF line endings" {
+    try testing.expectEqualStrings("body", stripFrontmatter("---\r\nname: foo\n---\r\nbody"));
+}
+
+test "stripFrontmatter: ends with delimiter returns empty" {
+    try testing.expectEqualStrings("", stripFrontmatter("---\nname: foo\n---"));
+}
+
+test "stripFrontmatter: no frontmatter returns original" {
+    try testing.expectEqualStrings("just content", stripFrontmatter("just content"));
+}
+
+test "stripFrontmatter: trims leading newlines from body" {
+    try testing.expectEqualStrings("body", stripFrontmatter("---\nfoo: bar\n---\n\n\nbody"));
+}
+
 /// Serialize a bundle JSON entry to a buffer (handles both new and old format)
 pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
     const item_name = if (item.object.get("name")) |n| n.string else return;
