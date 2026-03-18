@@ -1,5 +1,7 @@
 # clumsies
 
+[![CI](https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml/badge.svg)](https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml)
+
 User-level memory layer for AI agents.
 
 ## The problem
