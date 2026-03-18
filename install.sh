@@ -13,7 +13,7 @@ GREEN='\033[32m'
 RED='\033[31m'
 CYAN='\033[36m'
 
-info() { printf "  %b→%b %s\n" "$ORANGE" "$RESET" "$1"; }
+info() { printf "%b→%b %s\n" "$ORANGE" "$RESET" "$1"; }
 success() { printf "%b%b✓%b %s\n" "$BOLD" "$ORANGE" "$RESET" "$1"; }
 error() { printf "%b%bError:%b %s\n" "$BOLD" "$RED" "$RESET" "$1" >&2; exit 1; }
 
@@ -64,7 +64,7 @@ verify_checksum() {
     elif command -v shasum > /dev/null; then
         actual=$(shasum -a 256 "$file" | cut -d' ' -f1)
     else
-        printf "  %b!%b Warning: Cannot verify checksum\n" "$ORANGE" "$RESET"
+        printf "%b!%b Warning: Cannot verify checksum\n" "$ORANGE" "$RESET"
         return 0
     fi
 
@@ -74,13 +74,12 @@ verify_checksum() {
 }
 
 main() {
-    printf "\n%b%bInstalling %bclumsies%b%b...%b\n\n" "$BOLD" "" "$ORANGE" "$RESET" "$BOLD" "$RESET"
+    printf "%b%bInstalling %bclumsies%b%b...%b\n" "$BOLD" "" "$ORANGE" "$RESET" "$BOLD" "$RESET"
 
     PLATFORM=$(detect_platform)
     BINARY_NAME="clumsies-$PLATFORM"
-    printf "  %b→%b Detected platform: %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$PLATFORM" "$RESET"
-
-    printf "  %b→%b Creating %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$INSTALL_DIR" "$RESET"
+    printf "%b→%b Detected platform: %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$PLATFORM" "$RESET"
+    printf "%b→%b Creating %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$INSTALL_DIR" "$RESET"
     mkdir -p "$BIN_DIR"
 
     # Download checksums
@@ -115,7 +114,7 @@ main() {
     PATH_LINE='export PATH="$HOME/.clumsies/bin:$PATH"'
 
     if ! grep -q ".clumsies/bin" "$RC_FILE" 2>/dev/null; then
-        printf "  %b→%b Configuring PATH in %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$RC_FILE" "$RESET"
+        printf "%b→%b Configuring PATH in %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$RC_FILE" "$RESET"
         echo "" >> "$RC_FILE"
         echo "# clumsies" >> "$RC_FILE"
         echo "$PATH_LINE" >> "$RC_FILE"
@@ -123,12 +122,11 @@ main() {
         info "PATH already configured"
     fi
 
-    printf "\n"
     success "clumsies installed successfully!"
-    printf "\nRun %bsource $RC_FILE%b or restart your terminal, then try:\n\n" "$CYAN" "$RESET"
+    printf "Run %bsource $RC_FILE%b or restart your terminal, then try:\n" "$CYAN" "$RESET"
     printf "    %bclumsies --help%b\n" "$CYAN" "$RESET"
     printf "    %bclumsies config set registry <git-url>%b\n" "$CYAN" "$RESET"
-    printf "    %bclumsies ls%b\n\n" "$CYAN" "$RESET"
+    printf "    %bclumsies ls%b\n" "$CYAN" "$RESET"
 }
 
 main

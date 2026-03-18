@@ -11,5 +11,5 @@ pub const Color = struct {
     pub const cyan = "\x1b[36m";
 };
 
-// Left padding for all output
-pub const P = "  ";
+// Left padding (empty: no universal padding; indent only after colon-terminated lines)
+pub const P = "";

@@ -55,14 +55,14 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies ls [-p] [-m] [-c <cat>] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies ls [-p] [-m] [-c <cat>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-p, --prompts{s}       List prompts instead of bundles\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-m, --meta{s}          List meta-prompt files (shorthand for -p -c ../)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-c, --cat{s} <cat>     Filter by category\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}          Sync registry before listing\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}     Suppress git output\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-h, --help{s}          Show this help\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}          Show this help\n", .{ P, Color.cyan, Color.reset });
 }
 
 fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, cat_filter: ?[]const u8, sync: bool, quiet_git: bool) !void {
@@ -73,30 +73,30 @@ fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     defer allocator.free(index_path);
 
     const file = fs.openFileAbsolute(index_path, .{}) catch {
-        try stdout.print("{s}{s}No prompts found in registry{s}\n\n", .{ P, Color.dim, Color.reset });
+        try stdout.print("{s}{s}No prompts found in registry{s}\n", .{ P, Color.dim, Color.reset });
         return;
     };
     defer file.close();
 
     const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
 
     const items = parsed.value.object.get("prompts") orelse {
-        try stdout.print("{s}{s}No prompts found in registry{s}\n\n", .{ P, Color.dim, Color.reset });
+        try stdout.print("{s}{s}No prompts found in registry{s}\n", .{ P, Color.dim, Color.reset });
         return;
     };
 
     if (items.array.items.len == 0) {
-        try stdout.print("{s}{s}No prompts found in registry{s}\n\n", .{ P, Color.dim, Color.reset });
+        try stdout.print("{s}{s}No prompts found in registry{s}\n", .{ P, Color.dim, Color.reset });
         return;
     }
 
@@ -133,7 +133,6 @@ fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
         const short_hash = if (hash.len > 8) hash[0..8] else hash;
         try stdout.print("{s}  {s}{s: <8}{s}  {s: <16}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, category, name, desc });
     }
-    try stdout.writeAll("\n");
 }
 
 fn listBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool) !void {
@@ -144,30 +143,30 @@ fn listBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     defer allocator.free(index_path);
 
     const file = fs.openFileAbsolute(index_path, .{}) catch {
-        try stdout.print("{s}{s}No bundles found in registry{s}\n\n", .{ P, Color.dim, Color.reset });
+        try stdout.print("{s}{s}No bundles found in registry{s}\n", .{ P, Color.dim, Color.reset });
         return;
     };
     defer file.close();
 
     const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
 
     const items = parsed.value.object.get("bundles") orelse {
-        try stdout.print("{s}{s}No bundles found in registry{s}\n\n", .{ P, Color.dim, Color.reset });
+        try stdout.print("{s}{s}No bundles found in registry{s}\n", .{ P, Color.dim, Color.reset });
         return;
     };
 
     if (items.array.items.len == 0) {
-        try stdout.print("{s}{s}No bundles found in registry{s}\n\n", .{ P, Color.dim, Color.reset });
+        try stdout.print("{s}{s}No bundles found in registry{s}\n", .{ P, Color.dim, Color.reset });
         return;
     }
 
@@ -198,5 +197,4 @@ fn listBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
 
         try stdout.print("{s}  {s}{s: <20}{s}  {s: <8}  {s: <10}  {s}\n", .{ P, Color.cyan, name, Color.reset, item_task, count_str, desc });
     }
-    try stdout.writeAll("\n");
 }

@@ -46,17 +46,17 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 }
 
 fn printConfigHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies config <command> [key] [value]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies config <command> [key] [value]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Commands:\n", .{P});
     try out.print("{s}  {s}list{s}              List all config\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}get{s} <key>         Get config value\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}set{s} <key> <value> Set config value\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}set{s} <key> <value> Set config value\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Options:\n", .{P});
-    try out.print("{s}  {s}-h, --help{s}        Show this help\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}        Show this help\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Config keys:\n", .{P});
     try out.print("{s}  {s}registry{s}          Registry URL\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}entry_files{s}       Meta-prompt files to sync\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}meta_prompt_file{s}  Default meta-prompt for pub\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}meta_prompt_file{s}  Default meta-prompt for pub\n", .{ P, Color.cyan, Color.reset });
 }
 
 fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
@@ -82,7 +82,7 @@ fn listConfig(stdout: *std.io.Writer, allocator: std.mem.Allocator) !void {
     try stdout.print("{s}{s}{s}Configuration:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
 
     const parsed = readConfig(allocator) catch {
-        try stdout.print("{s}  {s}(no configuration){s}\n\n", .{ P, Color.dim, Color.reset });
+        try stdout.print("{s}  {s}(no configuration){s}\n", .{ P, Color.dim, Color.reset });
         return;
     };
     defer parsed.deinit();
@@ -104,7 +104,6 @@ fn listConfig(stdout: *std.io.Writer, allocator: std.mem.Allocator) !void {
         } else "-";
         try stdout.print("{s}  {s} = {s}\n", .{ P, key, value_str });
     }
-    try stdout.writeAll("\n");
 }
 
 fn getConfig(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, key: []const u8) !void {

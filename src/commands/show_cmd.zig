@@ -48,7 +48,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         .prompt => try showPrompt(stdout, stderr, allocator, registry_path, ref.?),
         .bundle => try showBundle(stdout, stderr, allocator, registry_path, ref.?, show_meta),
         .not_found => {
-            try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, ref.? });
+            try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, ref.? });
         },
     }
 }
@@ -58,25 +58,25 @@ fn showPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     defer allocator.free(index_path);
 
     const file = fs.openFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} No prompts found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No prompts found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer file.close();
 
     const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
 
     const prompts = parsed.value.object.get("prompts") orelse {
-        try stderr.print("{s}{s}{s}Error:{s} Prompt not found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Prompt not found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -93,7 +93,7 @@ fn showPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     }
 
     if (found_hash == null) {
-        try stderr.print("{s}{s}{s}Error:{s} Prompt not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+        try stderr.print("{s}{s}{s}Error:{s} Prompt not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
         return;
     }
 
@@ -101,13 +101,13 @@ fn showPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     defer allocator.free(prompt_path);
 
     const prompt_file = fs.openFileAbsolute(prompt_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Prompt file not found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Prompt file not found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer prompt_file.close();
 
     const prompt_content = prompt_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read prompt\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read prompt\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(prompt_content);
@@ -125,25 +125,25 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     defer allocator.free(index_path);
 
     const file = fs.openFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} No bundles found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No bundles found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer file.close();
 
     const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
 
     const bundles = parsed.value.object.get("bundles") orelse {
-        try stderr.print("{s}{s}{s}Error:{s} Bundle not found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle not found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -157,7 +157,7 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     }
 
     if (found_bundle == null) {
-        try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, name });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, name });
         return;
     }
 
@@ -174,24 +174,23 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
         const short_meta = if (bundle_meta.len >= 8) bundle_meta[0..8] else bundle_meta;
         try stdout.print("{s}{s}Meta-prompt:{s} {s}\n", .{ P, Color.orange, Color.reset, short_meta });
     }
-    try stdout.writeAll("\n");
 
     if (show_meta) {
         if (bundle_meta.len == 0) {
-            try stderr.print("{s}{s}{s}Error:{s} Bundle has no meta-prompt\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}{s}{s}Error:{s} Bundle has no meta-prompt\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         }
         const meta_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", bundle_meta });
         defer allocator.free(meta_path);
 
         const meta_file = fs.openFileAbsolute(meta_path, .{}) catch {
-            try stderr.print("{s}{s}{s}Error:{s} Meta-prompt file not found in registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}{s}{s}Error:{s} Meta-prompt file not found in registry\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
         defer meta_file.close();
 
         const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-            try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
         defer allocator.free(meta_content);
@@ -220,7 +219,7 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     const prompts_list = if (prompts_index) |pi| pi.value.object.get("prompts") else null;
 
     const prompts_arr = bundle.object.get("prompts") orelse {
-        try stdout.print("{s}{s}No prompts in bundle{s}\n\n", .{ P, Color.dim, Color.reset });
+        try stdout.print("{s}{s}No prompts in bundle{s}\n", .{ P, Color.dim, Color.reset });
         return;
     };
 
@@ -250,16 +249,15 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
 
         try stdout.print("{s}  {s}{s: <8}{s}  {s: <14}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, p_cat, p_name, p_desc });
     }
-    try stdout.writeAll("\n");
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies show <ref> [--meta] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies show <ref> [--meta] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Show prompt content or bundle details.\n", .{P});
-    try out.print("{s}Type is auto-detected: hex = prompt hash, otherwise = bundle name.\n\n", .{P});
+    try out.print("{s}Type is auto-detected: hex = prompt hash, otherwise = bundle name.\n", .{P});
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}--meta{s}           Show full meta-prompt content (bundles only)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}       Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}  Suppress git output\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-h, --help{s}       Show this help\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}       Show this help\n", .{ P, Color.cyan, Color.reset });
 }
