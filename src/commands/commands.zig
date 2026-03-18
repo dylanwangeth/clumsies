@@ -1011,6 +1011,88 @@ test "findNextSequence: nonexistent directory returns 0" {
     try testing.expectEqual(@as(u8, 0), findNextSequence("/tmp/clumsies_nonexistent_dir_test"));
 }
 
+fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
+    const file = try dir.createFile(sub_path, .{});
+    defer file.close();
+    try file.writeAll(content);
+}
+
+test "resolveRef: hash prefix matches prompt" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("prompts");
+    try writeTestFile(tmp.dir, "prompts/index.json",
+        \\{"prompts":[{"hash":"abcdef1234567890","name":"FOO","description":"-","format":"md","category":"rule","created_at":"0"}]}
+    );
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(RefKind.prompt, resolveRef(testing.allocator, path, "abcdef12"));
+}
+
+test "resolveRef: name matches bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("bundles");
+    try writeTestFile(tmp.dir, "bundles/index.json",
+        \\{"bundles":[{"name":"my-bundle","task":"-","description":"-","created_at":"0","meta_prompt":"","prompts":[]}]}
+    );
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(RefKind.bundle, resolveRef(testing.allocator, path, "my-bundle"));
+}
+
+test "resolveRef: no match returns not_found" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("prompts");
+    try tmp.dir.makePath("bundles");
+    try writeTestFile(tmp.dir, "prompts/index.json", "{\"prompts\":[]}");
+    try writeTestFile(tmp.dir, "bundles/index.json", "{\"bundles\":[]}");
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(RefKind.not_found, resolveRef(testing.allocator, path, "deadbeef"));
+    try testing.expectEqual(RefKind.not_found, resolveRef(testing.allocator, path, "nonexistent"));
+}
+
+test "resolveRef: no index files returns not_found" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(RefKind.not_found, resolveRef(testing.allocator, path, "abcdef"));
+    try testing.expectEqual(RefKind.not_found, resolveRef(testing.allocator, path, "some-name"));
+}
+
+test "bundleExists: existing bundle returns true" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("bundles");
+    try writeTestFile(tmp.dir, "bundles/index.json",
+        \\{"bundles":[{"name":"coding","task":"-","description":"-","created_at":"0","meta_prompt":"","prompts":[]}]}
+    );
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expect(bundleExists(testing.allocator, path, "coding"));
+}
+
+test "bundleExists: non-existing bundle returns false" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("bundles");
+    try writeTestFile(tmp.dir, "bundles/index.json", "{\"bundles\":[]}");
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expect(!bundleExists(testing.allocator, path, "nope"));
+}
+
+test "bundleExists: no index file returns false" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expect(!bundleExists(testing.allocator, path, "anything"));
+}
+
 /// Serialize a bundle JSON entry to a buffer (handles both new and old format)
 pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
     const item_name = if (item.object.get("name")) |n| n.string else return;
