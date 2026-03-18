@@ -12,6 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
@@ -55,6 +58,13 @@ jobs:
           TAG=${{ steps.version.outputs.tag }}
           CHECKSUMS=$(cat dist/checksums.txt)
 
+          PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
+
+          NOTES_FLAG=""
+          if [ -n "$PREV_TAG" ]; then
+            NOTES_FLAG="--notes-start-tag $PREV_TAG"
+          fi
+
           gh release create "$TAG" \
             dist/clumsies-darwin-arm64 \
             dist/clumsies-darwin-x86_64 \
@@ -63,5 +73,5 @@ jobs:
             dist/checksums.txt \
             --title "$TAG" \
             --generate-notes \
-            --notes-start-tag "$(git tag --sort=-v:refname | head -2 | tail -1)" \
+            $NOTES_FLAG \
             --verify-tag
