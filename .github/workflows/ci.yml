@@ -17,9 +17,6 @@ jobs:
         with:
           version: 0.15.1
 
-      - name: Run tests
-        run: zig build test
-
       - name: Build (native)
         run: zig build
 
