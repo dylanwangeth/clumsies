@@ -954,6 +954,63 @@ test "stripFrontmatter: trims leading newlines from body" {
     try testing.expectEqualStrings("body", stripFrontmatter("---\nfoo: bar\n---\n\n\nbody"));
 }
 
+fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {
+    return tmp.dir.realpath(".", buf) catch "";
+}
+
+test "findNextSequence: empty directory returns 0" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(@as(u8, 0), findNextSequence(path));
+}
+
+test "findNextSequence: one file returns next" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    _ = try tmp.dir.createFile("00_FOO.md", .{});
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(@as(u8, 1), findNextSequence(path));
+}
+
+test "findNextSequence: gap filling" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    _ = try tmp.dir.createFile("00_A.md", .{});
+    _ = try tmp.dir.createFile("01_B.md", .{});
+    _ = try tmp.dir.createFile("03_D.md", .{});
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(@as(u8, 2), findNextSequence(path));
+}
+
+test "findNextSequence: contiguous returns next" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    _ = try tmp.dir.createFile("00_A.md", .{});
+    _ = try tmp.dir.createFile("01_B.md", .{});
+    _ = try tmp.dir.createFile("02_C.md", .{});
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(@as(u8, 3), findNextSequence(path));
+}
+
+test "findNextSequence: ignores non-prefixed files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    _ = try tmp.dir.createFile("README.md", .{});
+    _ = try tmp.dir.createFile("notes.txt", .{});
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(@as(u8, 0), findNextSequence(path));
+}
+
+test "findNextSequence: nonexistent directory returns 0" {
+    try testing.expectEqual(@as(u8, 0), findNextSequence("/tmp/clumsies_nonexistent_dir_test"));
+}
+
 /// Serialize a bundle JSON entry to a buffer (handles both new and old format)
 pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
     const item_name = if (item.object.get("name")) |n| n.string else return;
