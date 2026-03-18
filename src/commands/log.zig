@@ -10,7 +10,7 @@ const printGitOutput = commands.printGitOutput;
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator) !void {
     if (!commands.promptsExist()) {
         try stderr.print("{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run {s}clumsies clone <url>{s} first\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Run {s}clumsies clone <url>{s} first\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
@@ -23,7 +23,6 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const log = git.getLog(allocator, prompts_path, 10, &git_output) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to get log\n", .{ P, Color.bold, Color.red, Color.reset });
         printGitOutput(stderr, &git_output);
-        try stderr.writeAll("\n");
         return;
     };
     defer allocator.free(log);
@@ -48,5 +47,4 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             }
         }
     }
-    try stdout.writeAll("\n");
 }

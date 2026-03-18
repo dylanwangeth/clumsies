@@ -20,7 +20,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             quiet_git = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
-            try stderr.print("{s}Usage: {s}clumsies remote <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies remote <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
             return;
         }
     }

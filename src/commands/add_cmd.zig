@@ -81,7 +81,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     defer allocator.free(registry_path);
 
     const cwd = std.process.getCwdAlloc(allocator) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(cwd);
@@ -142,7 +142,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     defer add_output.deinit(allocator);
     git.addAll(allocator, registry_path, &add_output) catch {
         sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -164,9 +164,9 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     printGitOutputRaw(&git_output, quiet_git);
 
     if (registered == 1) {
-        try stdout.print("{s}{s}{s}✓{s} Registered prompt in registry\n\n", .{ P, Color.bold, Color.green, Color.reset });
+        try stdout.print("{s}{s}{s}✓{s} Registered prompt in registry\n", .{ P, Color.bold, Color.green, Color.reset });
     } else {
-        try stdout.print("{s}{s}{s}✓{s} Registered {d} prompts in registry\n\n", .{ P, Color.bold, Color.green, Color.reset, registered });
+        try stdout.print("{s}{s}{s}✓{s} Registered {d} prompts in registry\n", .{ P, Color.bold, Color.green, Color.reset, registered });
     }
 }
 
@@ -217,7 +217,7 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     const description = desc_flag orelse fm.description orelse "-";
     const prompt_category = cat_flag orelse deriveCategory(abs_path) orelse {
         try stderr.print("{s}{s}{s}Error:{s} Could not derive category from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
-        try stderr.print("{s}  Use {s}--cat{s} to specify a category\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Use {s}--cat{s} to specify a category\n", .{ P, Color.cyan, Color.reset });
         return false;
     };
 
@@ -304,7 +304,7 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
         return false;
     };
 
-    try stdout.print("{s}  Hash: {s}{s}{s}  Name: {s}\n", .{ P, Color.cyan, hash_hex[0..8], Color.reset, name });
+    try stdout.print("{s}Hash: {s}{s}{s}  Name: {s}\n", .{ P, Color.cyan, hash_hex[0..8], Color.reset, name });
     return true;
 }
 
@@ -344,15 +344,15 @@ fn expandDirectory(allocator: std.mem.Allocator, abs_path: []const u8, expanded_
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies add <file|dir>... [-c <cat>] [-m] [-d <desc>] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}Register prompt(s) to registry. Directories are expanded to their files.\n\n", .{P});
+    try out.print("{s}Usage: {s}clumsies add <file|dir>... [-c <cat>] [-m] [-d <desc>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Register prompt(s) to registry. Directories are expanded to their files.\n", .{P});
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-c, --cat{s} <cat>    Category (derived from .prompts/ path)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-m, --meta{s}         Register as meta-prompt file (shorthand for -c ../)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-d, --desc{s} <desc>  Description\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}         Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}    Suppress git output\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-h, --help{s}         Show this help\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}         Show this help\n", .{ P, Color.cyan, Color.reset });
 }
 
 test "deriveCategory: nested path" {

@@ -53,7 +53,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         .prompt => try rmPrompts(stdout, stderr, allocator, registry_path, refs.items, quiet_git),
         .bundle => try rmBundles(stdout, stderr, allocator, registry_path, refs.items, quiet_git),
         .not_found => {
-            try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, refs.items[0] });
+            try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, refs.items[0] });
         },
     }
 }
@@ -63,26 +63,26 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     defer allocator.free(index_path);
 
     const file = fs.openFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} No prompts found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No prompts found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
     const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         file.close();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     file.close();
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
 
     const prompts = parsed.value.object.get("prompts") orelse {
-        try stderr.print("{s}{s}{s}Error:{s} Prompt not found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Prompt not found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -116,7 +116,7 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     try new_prompts.appendSlice(allocator, "\n  ]\n}\n");
 
     if (removed_hashes.items.len == 0) {
-        try stderr.print("{s}{s}{s}Error:{s} No matching prompts found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No matching prompts found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
 
@@ -129,12 +129,12 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
     // Write updated index
     const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer idx_out.close();
     idx_out.writeAll(new_prompts.items) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -146,7 +146,7 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     defer add_output.deinit(allocator);
     git.addAll(allocator, registry_path, &add_output) catch {
         sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -168,7 +168,7 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     sp.succeed();
     printGitOutputRaw(&git_output, quiet_git);
 
-    try stdout.print("{s}{s}{s}✓{s} Removed {d} prompt(s)\n\n", .{ P, Color.bold, Color.green, Color.reset, removed_hashes.items.len });
+    try stdout.print("{s}{s}{s}✓{s} Removed {d} prompt(s)\n", .{ P, Color.bold, Color.green, Color.reset, removed_hashes.items.len });
 }
 
 fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, name_args: []const []const u8, quiet_git: bool) !void {
@@ -176,26 +176,26 @@ fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     defer allocator.free(index_path);
 
     const file = fs.openFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} No bundles found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No bundles found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
     const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         file.close();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     file.close();
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
 
     const bundles = parsed.value.object.get("bundles") orelse {
-        try stderr.print("{s}{s}{s}Error:{s} Bundle not found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Bundle not found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -228,17 +228,17 @@ fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     try new_bundles.appendSlice(allocator, "\n  ]\n}\n");
 
     if (removed_count == 0) {
-        try stderr.print("{s}{s}{s}Error:{s} No matching bundles found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No matching bundles found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
 
     const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer idx_out.close();
     idx_out.writeAll(new_bundles.items) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -250,7 +250,7 @@ fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     defer add_output.deinit(allocator);
     git.addAll(allocator, registry_path, &add_output) catch {
         sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -272,15 +272,15 @@ fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     printGitOutputRaw(&git_output, quiet_git);
 
     try stdout.print("{s}{s}{s}✓{s} Removed {d} bundle(s)\n", .{ P, Color.bold, Color.green, Color.reset, removed_count });
-    try stdout.print("{s}{s}Note: Prompts are kept in registry (may be used by other bundles){s}\n\n", .{ P, Color.dim, Color.reset });
+    try stdout.print("{s}{s}Note: Prompts are kept in registry (may be used by other bundles){s}\n", .{ P, Color.dim, Color.reset });
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies rm <ref>... [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies rm <ref>... [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Remove prompt(s) or bundle(s) from registry.\n", .{P});
-    try out.print("{s}Type is auto-detected: hex = prompt hash, otherwise = bundle name.\n\n", .{P});
+    try out.print("{s}Type is auto-detected: hex = prompt hash, otherwise = bundle name.\n", .{P});
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-s, --sync{s}       Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}  Suppress git output\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-h, --help{s}       Show this help\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}       Show this help\n", .{ P, Color.cyan, Color.reset });
 }

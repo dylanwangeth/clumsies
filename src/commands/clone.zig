@@ -11,7 +11,7 @@ const printGitOutputRaw = commands.printGitOutputRaw;
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (commands.promptsExist()) {
         try stderr.print("{s}{s}{s}Error:{s} .prompts/ already exists\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Use {s}clumsies pull{s} to update\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Use {s}clumsies pull{s} to update\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
@@ -23,7 +23,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             quiet_git = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
-            try stderr.print("{s}Usage: {s}clumsies clone <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies clone <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
             return;
         } else if (remote_url == null) {
             remote_url = arg;
@@ -32,7 +32,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     if (remote_url == null) {
         try stderr.print("{s}{s}{s}Error:{s} Remote URL required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies clone <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Usage: {s}clumsies clone <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
         return;
     }
 
@@ -48,7 +48,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     git.clone(allocator, remote_url.?, prompts_path, &git_output) catch {
         sp.fail();
         printGitOutputRaw(&git_output, quiet_git);
-        try stderr.print("{s}{s}{s}Error:{s} Failed to clone repository\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to clone repository\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     sp.succeed();
@@ -56,8 +56,8 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     // Use unbuffered stdout for consistent ordering with spinner
     var buf: [512]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "{s}  Remote: {s}{s}{s}\n", .{ P, Color.cyan, remote_url.?, Color.reset }) catch return;
+    const line = std.fmt.bufPrint(&buf, "{s}Remote: {s}{s}{s}\n", .{ P, Color.cyan, remote_url.?, Color.reset }) catch return;
     _ = std.fs.File.stdout().write(line) catch {};
-    const tip = std.fmt.bufPrint(&buf, "{s}  Tip: Run '{s}clumsies bundle import <name>{s}' to get meta-prompt files\n\n", .{ P, Color.cyan, Color.reset }) catch return;
+    const tip = std.fmt.bufPrint(&buf, "{s}Tip: Run '{s}clumsies bundle import <name>{s}' to get meta-prompt files\n", .{ P, Color.cyan, Color.reset }) catch return;
     _ = std.fs.File.stdout().write(tip) catch {};
 }

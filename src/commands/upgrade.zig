@@ -8,5 +8,5 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, _: std.mem.Allocator,
     _ = stderr;
     try stdout.print("{s}Current version: {s}\n", .{ P, current_version });
     try stdout.print("{s}To upgrade, run:\n", .{P});
-    try stdout.print("{s}  {s}curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}  {s}curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh{s}\n", .{ P, Color.cyan, Color.reset });
 }

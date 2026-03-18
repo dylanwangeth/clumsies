@@ -56,7 +56,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const dirs = positional.items[1..];
 
     const cwd = std.process.getCwdAlloc(allocator) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(cwd);
@@ -69,12 +69,12 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     // Read meta-prompt file
     const meta_file = fs.openFileAbsolute(meta_prompt_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_path_arg });
+        try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_path_arg });
         return;
     };
     const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         meta_file.close();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     meta_file.close();
@@ -88,7 +88,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         try stderr.print("{s}  {s}name: my-bundle{s}\n", .{ P, Color.dim, Color.reset });
         try stderr.print("{s}  {s}description: A starter bundle{s}\n", .{ P, Color.dim, Color.reset });
         try stderr.print("{s}  {s}task: coding{s}\n", .{ P, Color.dim, Color.reset });
-        try stderr.print("{s}  {s}---{s}\n\n", .{ P, Color.dim, Color.reset });
+        try stderr.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
         return;
     };
     const description = fm.description orelse "-";
@@ -97,18 +97,16 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     // Validate bundle name: must contain at least one non-hex character
     if (isHexString(bundle_name)) {
         try stderr.print("{s}{s}{s}Error:{s} Bundle name must contain at least one non-hex character\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Names like '{s}' are ambiguous with prompt hashes\n\n", .{ P, bundle_name });
+        try stderr.print("{s}Names like '{s}' are ambiguous with prompt hashes\n", .{ P, bundle_name });
         return;
     }
-
-    try stdout.writeAll("\n");
 
     const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git) catch return;
     defer allocator.free(registry_path);
 
     if (bundleExists(allocator, registry_path, bundle_name)) {
         try stderr.print("{s}{s}{s}Error:{s} Bundle already exists: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
-        try stderr.print("{s}Use {s}clumsies rm {s}{s} to remove it first\n\n", .{ P, Color.cyan, bundle_name, Color.reset });
+        try stderr.print("{s}Use {s}clumsies rm {s}{s} to remove it first\n", .{ P, Color.cyan, bundle_name, Color.reset });
         return;
     }
 
@@ -141,7 +139,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     if (prompt_refs.items.len == 0) {
         sp.fail();
-        try stderr.print("{s}{s}{s}Error:{s} No prompt files found in specified directories\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No prompt files found in specified directories\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
     sp.succeed();
@@ -162,7 +160,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     const meta_dest_file = fs.createFileAbsolute(meta_dest_path, .{}) catch {
         sp_meta.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     meta_dest_file.writeAll(meta_content) catch {
@@ -193,7 +191,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     sp2.start();
     updatePromptsIndex(allocator, registry_path, prompt_refs.items) catch {
         sp2.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     sp2.succeed();
@@ -284,7 +282,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     defer add_output.deinit(allocator);
     git.addAll(allocator, registry_path, &add_output) catch {
         sp4.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to stage changes\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -305,20 +303,20 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     printGitOutputRaw(&git_output, quiet_git);
 
     try stdout.print("{s}{s}{s}✓{s} Published bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
-    try stdout.print("{s}  Prompts: {d}\n\n", .{ P, prompt_refs.items.len });
+    try stdout.print("{s}Prompts: {d}\n", .{ P, prompt_refs.items.len });
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies pub <meta-prompt-file> <dirs>... [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}Publish a bundle to registry.\n\n", .{P});
+    try out.print("{s}Usage: {s}clumsies pub <meta-prompt-file> <dirs>... [-s]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Publish a bundle to registry.\n", .{P});
     try out.print("{s}The meta-prompt file must have frontmatter with at least 'name':\n", .{P});
     try out.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
     try out.print("{s}  {s}name: my-bundle{s}\n", .{ P, Color.dim, Color.reset });
     try out.print("{s}  {s}description: A starter bundle{s}\n", .{ P, Color.dim, Color.reset });
     try out.print("{s}  {s}task: coding{s}\n", .{ P, Color.dim, Color.reset });
-    try out.print("{s}  {s}---{s}\n\n", .{ P, Color.dim, Color.reset });
+    try out.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-s, --sync{s}       Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}  Suppress git output\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-h, --help{s}       Show this help\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}       Show this help\n", .{ P, Color.cyan, Color.reset });
 }

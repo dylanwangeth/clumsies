@@ -76,7 +76,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             .not_found => {
                 // Check --cat mode
                 if (cat_filters.items.len == 0) {
-                    try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n\n", .{ P, Color.bold, Color.red, Color.reset, refs.items[0] });
+                    try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, refs.items[0] });
                     return;
                 }
             },
@@ -89,7 +89,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
 fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash_args: []const []const u8, cat_filters: []const []const u8) !void {
     const prompts_path = commands.getPromptsPath(allocator) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not determine .prompts/ path\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine .prompts/ path\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(prompts_path);
@@ -106,25 +106,25 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     defer allocator.free(index_path);
 
     const file = fs.openFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} No prompts found\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No prompts found\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer file.close();
 
     const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
 
     const prompts = parsed.value.object.get("prompts") orelse {
-        try stderr.print("{s}{s}{s}Error:{s} No prompts in registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} No prompts in registry\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
 
@@ -195,13 +195,12 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
         }
     }
 
-    try stdout.writeAll("\n");
     if (success_count > 0 and fail_count == 0) {
-        try stdout.print("{s}Imported {s}{d}{s} prompt{s}\n\n", .{ P, Color.green, success_count, Color.reset, if (success_count > 1) "s" else "" });
+        try stdout.print("{s}Imported {s}{d}{s} prompt{s}\n", .{ P, Color.green, success_count, Color.reset, if (success_count > 1) "s" else "" });
     } else if (success_count > 0 and fail_count > 0) {
-        try stdout.print("{s}Imported {s}{d}{s}, failed {s}{d}{s}\n\n", .{ P, Color.green, success_count, Color.reset, Color.red, fail_count, Color.reset });
+        try stdout.print("{s}Imported {s}{d}{s}, failed {s}{d}{s}\n", .{ P, Color.green, success_count, Color.reset, Color.red, fail_count, Color.reset });
     } else if (fail_count > 0) {
-        try stderr.print("{s}No prompts imported, failed {s}{d}{s}\n\n", .{ P, Color.red, fail_count, Color.reset });
+        try stderr.print("{s}No prompts imported, failed {s}{d}{s}\n", .{ P, Color.red, fail_count, Color.reset });
     }
 }
 
@@ -329,7 +328,7 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     sp.succeed();
 
     try stdout.print("{s}{s}{s}✓{s} Imported bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
-    try stdout.print("{s}    Prompts: {d}\n", .{ P, prompt_count });
+    try stdout.print("{s}Prompts: {d}\n", .{ P, prompt_count });
 
     if (remote_url) |url| {
         var remote_output: GitOutput = .{};
@@ -346,13 +345,13 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies get <ref>... [-c <cat>] [--remote-url <url>] [-s]{s}\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies get <ref>... [-c <cat>] [--remote-url <url>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Import prompt(s) or a bundle to local .prompts/.\n", .{P});
-    try out.print("{s}Type is auto-detected: hex = prompt, otherwise = bundle.\n\n", .{P});
+    try out.print("{s}Type is auto-detected: hex = prompt, otherwise = bundle.\n", .{P});
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-c, --cat{s} <cat>        Import all prompts in category (prefix match)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--remote-url{s} <url>      Add git remote after bundle import\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}             Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}        Suppress git output\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-h, --help{s}             Show this help\n\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}             Show this help\n", .{ P, Color.cyan, Color.reset });
 }

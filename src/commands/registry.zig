@@ -62,14 +62,14 @@ fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
 pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool) ![]const u8 {
     const registry_info = config.getRegistryInfo(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n\n", .{ P, Color.cyan, Color.reset });
-        try stderr.print("{s}Tip: Use {s}<git-url>#<branch>{s} to specify a branch\n\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
+        try stderr.print("{s}Tip: Use {s}<git-url>#<branch>{s} to specify a branch\n", .{ P, Color.cyan, Color.reset });
         return error.NoRegistry;
     };
     defer registry_info.deinit(allocator);
 
     const base_path = getBasePath(allocator) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not determine config path\n\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Could not determine config path\n", .{ P, Color.bold, Color.red, Color.reset });
         return error.NoBasePath;
     };
     defer allocator.free(base_path);
@@ -84,9 +84,6 @@ pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
     };
 
     if (!registry_exists) {
-        const stdout_raw = std.fs.File.stdout();
-        _ = stdout_raw.write("\n") catch {};
-
         var sp = spinner.init(stdout, "Fetching registry");
         sp.start();
         fs.cwd().makePath(base_path) catch {};
@@ -96,7 +93,7 @@ pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
         git.cloneWithBranch(allocator, registry_info.url, registry_path, registry_info.branch, &git_output) catch {
             sp.fail();
             printGitOutputRaw(&git_output, quiet_git);
-            try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}{s}{s}Error:{s} Failed to clone registry\n", .{ P, Color.bold, Color.red, Color.reset });
             return error.CloneFailed;
         };
         sp.succeed();
