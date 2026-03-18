@@ -1,5 +1,6 @@
 const std = @import("std");
 const fs = std.fs;
+const testing = std.testing;
 const commands = @import("commands.zig");
 
 const Color = commands.Color;
@@ -256,8 +257,6 @@ pub fn getMetaPromptFile(allocator: std.mem.Allocator) !?[]const u8 {
     }
     return null;
 }
-
-const testing = std.testing;
 
 test "parseRegistryUrl: https without branch" {
     const info = try parseRegistryUrl(testing.allocator, "https://github.com/foo/bar.git");

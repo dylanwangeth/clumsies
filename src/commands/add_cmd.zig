@@ -1,5 +1,6 @@
 const std = @import("std");
 const fs = std.fs;
+const testing = std.testing;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const spinner = @import("../spinner.zig");
@@ -353,8 +354,6 @@ fn printHelp(out: *std.io.Writer) !void {
     try out.print("{s}  {s}-Q, --quiet-git{s}    Suppress git output\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-h, --help{s}         Show this help\n\n", .{ P, Color.cyan, Color.reset });
 }
-
-const testing = @import("std").testing;
 
 test "deriveCategory: nested path" {
     try testing.expectEqualStrings("rule/arch", deriveCategory("/home/user/.prompts/rule/arch/00_FOO.md").?);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const build_options = @import("build_options");
 const styles = @import("styles.zig");
 
@@ -130,8 +131,6 @@ pub fn main() !void {
         .none => try cmd_help.run(stdout_writer),
     }
 }
-
-const testing = std.testing;
 
 test "command_map: all commands resolve" {
     const expected = [_]struct { str: []const u8, cmd: Command }{

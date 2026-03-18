@@ -1,5 +1,6 @@
 const std = @import("std");
 const fs = std.fs;
+const testing = std.testing;
 const styles = @import("../styles.zig");
 const git = @import("../git.zig");
 const spinner = @import("../spinner.zig");
@@ -724,7 +725,38 @@ pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     try buf.appendSlice(allocator, entry);
 }
 
-const testing = std.testing;
+/// Serialize a bundle JSON entry to a buffer (handles both new and old format)
+pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
+    const item_name = if (item.object.get("name")) |n| n.string else return;
+    const item_task = if (item.object.get("task")) |t| t.string else "-";
+    const item_desc = if (item.object.get("description")) |d| d.string else "-";
+    const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+    const item_meta = if (item.object.get("meta_prompt")) |m| m.string else "";
+
+    const esc_name = try jsonEscapeAlloc(allocator, item_name);
+    defer allocator.free(esc_name);
+    const esc_task = try jsonEscapeAlloc(allocator, item_task);
+    defer allocator.free(esc_task);
+    const esc_desc = try jsonEscapeAlloc(allocator, item_desc);
+    defer allocator.free(esc_desc);
+
+    const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ esc_name, esc_task, esc_desc, item_created, item_meta });
+    defer allocator.free(entry_start);
+    try buf.appendSlice(allocator, entry_start);
+
+    if (item.object.get("prompts")) |prompts| {
+        for (prompts.array.items, 0..) |ref, idx| {
+            const hash = if (ref.object.get("hash")) |h| h.string else continue;
+            const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
+                if (idx > 0) "," else "",
+                hash,
+            });
+            defer allocator.free(ref_entry);
+            try buf.appendSlice(allocator, ref_entry);
+        }
+    }
+    try buf.appendSlice(allocator, "]\n    }");
+}
 
 test "parseFrontmatter: all fields" {
     const content = "---\nname: foo\ndescription: a thing\ncategory: rule/coding\ntask: coding\n---\nbody";
@@ -1202,37 +1234,4 @@ test "updatePromptsIndex: escapes special chars in name" {
     const prompts = parsed.value.object.get("prompts").?;
     try testing.expectEqual(@as(usize, 1), prompts.array.items.len);
     try testing.expectEqualStrings("has\"quotes", prompts.array.items[0].object.get("name").?.string);
-}
-
-/// Serialize a bundle JSON entry to a buffer (handles both new and old format)
-pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
-    const item_name = if (item.object.get("name")) |n| n.string else return;
-    const item_task = if (item.object.get("task")) |t| t.string else "-";
-    const item_desc = if (item.object.get("description")) |d| d.string else "-";
-    const item_created = if (item.object.get("created_at")) |c| c.string else "0";
-    const item_meta = if (item.object.get("meta_prompt")) |m| m.string else "";
-
-    const esc_name = try jsonEscapeAlloc(allocator, item_name);
-    defer allocator.free(esc_name);
-    const esc_task = try jsonEscapeAlloc(allocator, item_task);
-    defer allocator.free(esc_task);
-    const esc_desc = try jsonEscapeAlloc(allocator, item_desc);
-    defer allocator.free(esc_desc);
-
-    const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ esc_name, esc_task, esc_desc, item_created, item_meta });
-    defer allocator.free(entry_start);
-    try buf.appendSlice(allocator, entry_start);
-
-    if (item.object.get("prompts")) |prompts| {
-        for (prompts.array.items, 0..) |ref, idx| {
-            const hash = if (ref.object.get("hash")) |h| h.string else continue;
-            const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
-                if (idx > 0) "," else "",
-                hash,
-            });
-            defer allocator.free(ref_entry);
-            try buf.appendSlice(allocator, ref_entry);
-        }
-    }
-    try buf.appendSlice(allocator, "]\n    }");
 }
