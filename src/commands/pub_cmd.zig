@@ -101,7 +101,6 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     }
 
-
     const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git) catch return;
     defer allocator.free(registry_path);
 

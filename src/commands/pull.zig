@@ -38,5 +38,4 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     };
     sp.succeed();
     printGitOutputRaw(&git_output, quiet_git);
-
 }
