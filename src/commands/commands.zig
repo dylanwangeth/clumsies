@@ -1093,6 +1093,117 @@ test "bundleExists: no index file returns false" {
     try testing.expect(!bundleExists(testing.allocator, path, "anything"));
 }
 
+fn readTmpFile(allocator: std.mem.Allocator, dir: std.fs.Dir, sub_path: []const u8) ![]const u8 {
+    const file = try dir.openFile(sub_path, .{});
+    defer file.close();
+    return try file.readToEndAlloc(allocator, MAX_FILE_SIZE);
+}
+
+test "updatePromptsIndex: creates new index from empty" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+
+    const refs = [_]PromptRef{.{
+        .hash = "aabbccdd",
+        .name = "TEST",
+        .description = "a test prompt",
+        .format = "md",
+        .category = "rule",
+    }};
+    try updatePromptsIndex(testing.allocator, path, &refs);
+
+    const content = try readTmpFile(testing.allocator, tmp.dir, "prompts/index.json");
+    defer testing.allocator.free(content);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, content, .{});
+    defer parsed.deinit();
+    const prompts = parsed.value.object.get("prompts").?;
+    try testing.expectEqual(@as(usize, 1), prompts.array.items.len);
+    try testing.expectEqualStrings("aabbccdd", prompts.array.items[0].object.get("hash").?.string);
+    try testing.expectEqualStrings("TEST", prompts.array.items[0].object.get("name").?.string);
+}
+
+test "updatePromptsIndex: appends to existing index" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("prompts");
+    try writeTestFile(tmp.dir, "prompts/index.json",
+        \\{"prompts":[{"hash":"existing1","name":"OLD","description":"-","format":"md","category":"rule","created_at":"0"}]}
+    );
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+
+    const refs = [_]PromptRef{.{
+        .hash = "newhash2",
+        .name = "NEW",
+        .description = "new one",
+        .format = "md",
+        .category = "cmd",
+    }};
+    try updatePromptsIndex(testing.allocator, path, &refs);
+
+    const content = try readTmpFile(testing.allocator, tmp.dir, "prompts/index.json");
+    defer testing.allocator.free(content);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, content, .{});
+    defer parsed.deinit();
+    const prompts = parsed.value.object.get("prompts").?;
+    try testing.expectEqual(@as(usize, 2), prompts.array.items.len);
+}
+
+test "updatePromptsIndex: skips duplicate hash" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("prompts");
+    try writeTestFile(tmp.dir, "prompts/index.json",
+        \\{"prompts":[{"hash":"samehash","name":"OLD","description":"-","format":"md","category":"rule","created_at":"0"}]}
+    );
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+
+    const refs = [_]PromptRef{.{
+        .hash = "samehash",
+        .name = "DUPLICATE",
+        .description = "should be skipped",
+        .format = "md",
+        .category = "rule",
+    }};
+    try updatePromptsIndex(testing.allocator, path, &refs);
+
+    const content = try readTmpFile(testing.allocator, tmp.dir, "prompts/index.json");
+    defer testing.allocator.free(content);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, content, .{});
+    defer parsed.deinit();
+    const prompts = parsed.value.object.get("prompts").?;
+    try testing.expectEqual(@as(usize, 1), prompts.array.items.len);
+    try testing.expectEqualStrings("OLD", prompts.array.items[0].object.get("name").?.string);
+}
+
+test "updatePromptsIndex: escapes special chars in name" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+
+    const refs = [_]PromptRef{.{
+        .hash = "abc123",
+        .name = "has\"quotes",
+        .description = "desc with\nnewline",
+        .format = "md",
+        .category = "rule",
+    }};
+    try updatePromptsIndex(testing.allocator, path, &refs);
+
+    const content = try readTmpFile(testing.allocator, tmp.dir, "prompts/index.json");
+    defer testing.allocator.free(content);
+    // Should be valid JSON despite special chars
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, content, .{});
+    defer parsed.deinit();
+    const prompts = parsed.value.object.get("prompts").?;
+    try testing.expectEqual(@as(usize, 1), prompts.array.items.len);
+    try testing.expectEqualStrings("has\"quotes", prompts.array.items[0].object.get("name").?.string);
+}
+
 /// Serialize a bundle JSON entry to a buffer (handles both new and old format)
 pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
     const item_name = if (item.object.get("name")) |n| n.string else return;
