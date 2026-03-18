@@ -130,3 +130,41 @@ pub fn main() !void {
         .none => try cmd_help.run(stdout_writer),
     }
 }
+
+const testing = std.testing;
+
+test "command_map: all commands resolve" {
+    const expected = [_]struct { str: []const u8, cmd: Command }{
+        .{ .str = "remote", .cmd = .remote },
+        .{ .str = "push", .cmd = .push },
+        .{ .str = "pull", .cmd = .pull },
+        .{ .str = "clone", .cmd = .clone },
+        .{ .str = "status", .cmd = .status },
+        .{ .str = "log", .cmd = .log },
+        .{ .str = "ls", .cmd = .ls },
+        .{ .str = "add", .cmd = .add },
+        .{ .str = "rm", .cmd = .rm_cmd },
+        .{ .str = "show", .cmd = .show_cmd },
+        .{ .str = "set", .cmd = .set_cmd },
+        .{ .str = "get", .cmd = .get },
+        .{ .str = "pub", .cmd = .pub_cmd },
+        .{ .str = "config", .cmd = .config },
+        .{ .str = "upgrade", .cmd = .upgrade },
+        .{ .str = "help", .cmd = .help },
+        .{ .str = "-h", .cmd = .help },
+        .{ .str = "--help", .cmd = .help },
+        .{ .str = "-v", .cmd = .version },
+        .{ .str = "--version", .cmd = .version },
+    };
+    for (expected) |e| {
+        const result = command_map.get(e.str);
+        try testing.expect(result != null);
+        try testing.expectEqual(e.cmd, result.?);
+    }
+}
+
+test "command_map: unknown command returns null" {
+    try testing.expect(command_map.get("foobar") == null);
+    try testing.expect(command_map.get("") == null);
+    try testing.expect(command_map.get("LS") == null);
+}

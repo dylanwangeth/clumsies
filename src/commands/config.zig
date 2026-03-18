@@ -210,12 +210,8 @@ pub fn getRegistry(allocator: std.mem.Allocator) ![]const u8 {
     return error.NoRegistry;
 }
 
-/// Get registry URL and branch, parsing "url#branch" format
-pub fn getRegistryInfo(allocator: std.mem.Allocator) !RegistryInfo {
-    const raw = try getRegistry(allocator);
-    defer allocator.free(raw);
-
-    // Find '#' separator for branch
+/// Parse "url#branch" format into separate url and branch components
+pub fn parseRegistryUrl(allocator: std.mem.Allocator, raw: []const u8) !RegistryInfo {
     if (std.mem.lastIndexOfScalar(u8, raw, '#')) |idx| {
         const url = try allocator.dupe(u8, raw[0..idx]);
         const branch = try allocator.dupe(u8, raw[idx + 1 ..]);
@@ -226,6 +222,13 @@ pub fn getRegistryInfo(allocator: std.mem.Allocator) !RegistryInfo {
         .url = try allocator.dupe(u8, raw),
         .branch = null,
     };
+}
+
+/// Get registry URL and branch, parsing "url#branch" format
+pub fn getRegistryInfo(allocator: std.mem.Allocator) !RegistryInfo {
+    const raw = try getRegistry(allocator);
+    defer allocator.free(raw);
+    return parseRegistryUrl(allocator, raw);
 }
 
 pub fn getEntryFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
@@ -252,4 +255,48 @@ pub fn getMetaPromptFile(allocator: std.mem.Allocator) !?[]const u8 {
         };
     }
     return null;
+}
+
+const testing = std.testing;
+
+test "parseRegistryUrl: https without branch" {
+    const info = try parseRegistryUrl(testing.allocator, "https://github.com/foo/bar.git");
+    defer info.deinit(testing.allocator);
+    try testing.expectEqualStrings("https://github.com/foo/bar.git", info.url);
+    try testing.expect(info.branch == null);
+}
+
+test "parseRegistryUrl: https with branch" {
+    const info = try parseRegistryUrl(testing.allocator, "https://github.com/foo/bar.git#main");
+    defer info.deinit(testing.allocator);
+    try testing.expectEqualStrings("https://github.com/foo/bar.git", info.url);
+    try testing.expectEqualStrings("main", info.branch.?);
+}
+
+test "parseRegistryUrl: ssh with branch" {
+    const info = try parseRegistryUrl(testing.allocator, "git@github.com:foo/bar.git#develop");
+    defer info.deinit(testing.allocator);
+    try testing.expectEqualStrings("git@github.com:foo/bar.git", info.url);
+    try testing.expectEqualStrings("develop", info.branch.?);
+}
+
+test "parseRegistryUrl: hash at end gives empty branch" {
+    const info = try parseRegistryUrl(testing.allocator, "https://github.com/foo/bar#");
+    defer info.deinit(testing.allocator);
+    try testing.expectEqualStrings("https://github.com/foo/bar", info.url);
+    try testing.expectEqualStrings("", info.branch.?);
+}
+
+test "parseRegistryUrl: multiple hashes uses last one" {
+    const info = try parseRegistryUrl(testing.allocator, "url#first#second");
+    defer info.deinit(testing.allocator);
+    try testing.expectEqualStrings("url#first", info.url);
+    try testing.expectEqualStrings("second", info.branch.?);
+}
+
+test "parseRegistryUrl: no hash no branch" {
+    const info = try parseRegistryUrl(testing.allocator, "git@github.com:foo/bar.git");
+    defer info.deinit(testing.allocator);
+    try testing.expectEqualStrings("git@github.com:foo/bar.git", info.url);
+    try testing.expect(info.branch == null);
 }
