@@ -30,8 +30,13 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     var sync: bool = false;
     var quiet_git: bool = false;
 
-    // Quick scan for ref and sync
+    // Quick scan for ref and sync, skipping values of known flags
+    var skip_next = false;
     for (args) |arg| {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
             quiet_git = true;
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
@@ -39,6 +44,13 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try printHelp(stdout);
             return;
+        } else if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--name") or
+            std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--desc") or
+            std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--cat") or
+            std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--file") or
+            std.mem.eql(u8, arg, "--meta"))
+        {
+            skip_next = true;
         } else if (ref == null and !std.mem.startsWith(u8, arg, "-")) {
             ref = arg;
         }
