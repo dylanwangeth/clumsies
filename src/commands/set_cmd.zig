@@ -740,46 +740,84 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     defer if (new_meta_hash) |h| allocator.free(h);
 
     if (meta_file_arg) |meta_arg| {
-        const meta_path = if (std.fs.path.isAbsolute(meta_arg))
-            try allocator.dupe(u8, meta_arg)
-        else
-            try std.fs.path.join(allocator, &.{ cwd, meta_arg });
-        defer allocator.free(meta_path);
+        if (commands.isHexString(meta_arg)) {
+            // Hash reference: resolve from registry prompts or meta-prompts
+            const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
+            defer allocator.free(prompts_index_path);
 
-        const meta_file = fs.openFileAbsolute(meta_path, .{}) catch {
-            try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_arg });
-            return;
-        };
-        const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            var resolved_hash: ?[]const u8 = null;
+
+            if (fs.openFileAbsolute(prompts_index_path, .{})) |pidx_file| {
+                const pidx_content = pidx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+                    pidx_file.close();
+                    return;
+                };
+                pidx_file.close();
+                defer allocator.free(pidx_content);
+
+                if (std.json.parseFromSlice(std.json.Value, allocator, pidx_content, .{})) |pidx_parsed| {
+                    defer pidx_parsed.deinit();
+                    if (pidx_parsed.value.object.get("prompts")) |pidx_prompts| {
+                        for (pidx_prompts.array.items) |pitem| {
+                            const pitem_hash = if (pitem.object.get("hash")) |h| h.string else continue;
+                            if (std.mem.startsWith(u8, pitem_hash, meta_arg)) {
+                                resolved_hash = try allocator.dupe(u8, pitem_hash);
+                                break;
+                            }
+                        }
+                    }
+                } else |_| {}
+            } else |_| {}
+
+            if (resolved_hash) |full_hash| {
+                new_meta_hash = full_hash;
+            } else {
+                try stderr.print("{s}{s}{s}Error:{s} No prompt found matching hash: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_arg });
+                return;
+            }
+        } else {
+            // File path: read file, hash it, and upload to meta-prompts
+            const meta_path = if (std.fs.path.isAbsolute(meta_arg))
+                try allocator.dupe(u8, meta_arg)
+            else
+                try std.fs.path.join(allocator, &.{ cwd, meta_arg });
+            defer allocator.free(meta_path);
+
+            const meta_file = fs.openFileAbsolute(meta_path, .{}) catch {
+                try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_arg });
+                return;
+            };
+            const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+                meta_file.close();
+                try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
+                return;
+            };
             meta_file.close();
-            try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
-            return;
-        };
-        meta_file.close();
-        defer allocator.free(meta_content);
+            defer allocator.free(meta_content);
 
-        var hash_bytes: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(meta_content, &hash_bytes, .{});
-        var hash_hex: [64]u8 = undefined;
-        hexEncode(&hash_bytes, &hash_hex);
-        new_meta_hash = try allocator.dupe(u8, &hash_hex);
+            var hash_bytes: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(meta_content, &hash_bytes, .{});
+            var hash_hex: [64]u8 = undefined;
+            hexEncode(&hash_bytes, &hash_hex);
+            new_meta_hash = try allocator.dupe(u8, &hash_hex);
 
-        const meta_prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts" });
-        defer allocator.free(meta_prompts_dir);
-        fs.cwd().makePath(meta_prompts_dir) catch {};
+            const meta_prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts" });
+            defer allocator.free(meta_prompts_dir);
+            fs.cwd().makePath(meta_prompts_dir) catch {};
 
-        const meta_dest_path = try std.fs.path.join(allocator, &.{ meta_prompts_dir, new_meta_hash.? });
-        defer allocator.free(meta_dest_path);
+            const meta_dest_path = try std.fs.path.join(allocator, &.{ meta_prompts_dir, new_meta_hash.? });
+            defer allocator.free(meta_dest_path);
 
-        const meta_dest_file = fs.createFileAbsolute(meta_dest_path, .{}) catch {
-            try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n", .{ P, Color.bold, Color.red, Color.reset });
-            return;
-        };
-        meta_dest_file.writeAll(meta_content) catch {
+            const meta_dest_file = fs.createFileAbsolute(meta_dest_path, .{}) catch {
+                try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n", .{ P, Color.bold, Color.red, Color.reset });
+                return;
+            };
+            meta_dest_file.writeAll(meta_content) catch {
+                meta_dest_file.close();
+                return;
+            };
             meta_dest_file.close();
-            return;
-        };
-        meta_dest_file.close();
+        }
     }
 
     // Process --add
@@ -816,6 +854,54 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
             return;
         };
         sp_idx.succeed();
+    }
+
+    // Validate --add-prompt hashes against prompts/index.json and resolve to full hashes
+    var resolved_add_hashes: std.ArrayListUnmanaged([]const u8) = .{};
+    defer {
+        for (resolved_add_hashes.items) |h| allocator.free(h);
+        resolved_add_hashes.deinit(allocator);
+    }
+
+    if (add_prompt_hashes.items.len > 0) {
+        const pidx_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
+        defer allocator.free(pidx_path);
+
+        const pidx_file = fs.openFileAbsolute(pidx_path, .{}) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Could not read prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        const pidx_content = pidx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            pidx_file.close();
+            return;
+        };
+        pidx_file.close();
+        defer allocator.free(pidx_content);
+
+        const pidx_parsed = std.json.parseFromSlice(std.json.Value, allocator, pidx_content, .{}) catch return;
+        defer pidx_parsed.deinit();
+
+        const pidx_prompts = pidx_parsed.value.object.get("prompts") orelse {
+            try stderr.print("{s}{s}{s}Error:{s} No prompts in index\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+
+        for (add_prompt_hashes.items) |add_hash| {
+            var found_full: ?[]const u8 = null;
+            for (pidx_prompts.array.items) |pitem| {
+                const pitem_hash = if (pitem.object.get("hash")) |h| h.string else continue;
+                if (std.mem.startsWith(u8, pitem_hash, add_hash)) {
+                    found_full = pitem_hash;
+                    break;
+                }
+            }
+            if (found_full) |full| {
+                try resolved_add_hashes.append(allocator, try allocator.dupe(u8, full));
+            } else {
+                try stderr.print("{s}{s}{s}Error:{s} No prompt found matching hash: {s}\n", .{ P, Color.bold, Color.red, Color.reset, add_hash });
+                return;
+            }
+        }
     }
 
     // Update bundle index
@@ -911,8 +997,8 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
                 prompt_first = false;
             }
 
-            // Add --add-prompt hashes
-            for (add_prompt_hashes.items) |add_hash| {
+            // Add --add-prompt hashes (already validated and resolved to full hashes)
+            for (resolved_add_hashes.items) |add_hash| {
                 const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
                     if (prompt_first) "" else ",",
                     add_hash,
