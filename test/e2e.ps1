@@ -114,7 +114,7 @@ try {
 
     # 3. add directory (derive category from path)
     Step "3. add directory (derive category)"
-    & $Clumsies add ".prompts\rule\testing\" -Q
+    & $Clumsies add ".prompts\rule\testing" -Q
     Assert-FileContains "index has TDD entry" $PromptsIndex "TDD"
     Assert-FileContains "derived category uses forward slash" $PromptsIndex "rule/testing"
     Assert-FileNotContains "no backslash in categories" $PromptsIndex 'rule\\testing'
