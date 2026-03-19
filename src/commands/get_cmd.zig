@@ -3,6 +3,7 @@ const fs = std.fs;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const spinner = @import("../spinner.zig");
+const flag = @import("../flags.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -15,47 +16,41 @@ const resolveRef = commands.resolveRef;
 const importPrompt = commands.importPrompt;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    var refs: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer refs.deinit(allocator);
-    var cat_filters: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer cat_filters.deinit(allocator);
-    var remote_url: ?[]const u8 = null;
-    var sync: bool = false;
-    var quiet_git: bool = false;
-
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
-            quiet_git = true;
-        } else if (std.mem.eql(u8, arg, "--cat") or std.mem.eql(u8, arg, "-c")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                try cat_filters.append(allocator, args[i]);
-            } else {
-                try stderr.print("{s}{s}{s}Error:{s} --cat requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "--remote-url") or std.mem.eql(u8, arg, "-r")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                remote_url = args[i];
-            }
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
-            sync = true;
-        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+    const Q = 0;
+    const C = 1;
+    const R = 2;
+    const S = 3;
+    const SPECS = [_]flag.FlagSpec{
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+        .{ .short = 'c', .long = "cat", .kind = .multi_value },
+        .{ .short = 'r', .long = "remote-url", .kind = .value },
+        .{ .short = 's', .long = "sync", .kind = .boolean },
+    };
+    var err_ctx: flag.ErrorContext = .{};
+    var result = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
             try printHelp(stdout);
             return;
-        } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
             try printHelp(stderr);
             return;
-        } else {
-            try refs.append(allocator, arg);
-        }
-    }
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer result.deinit(allocator);
+    const quiet_git = result.boolean(Q);
+    const cat_filters = result.multiValues(C);
+    const remote_url = result.value(R);
+    const sync = result.boolean(S);
+    const refs = result.positionals.items;
 
-    if (refs.items.len == 0 and cat_filters.items.len == 0) {
+    if (refs.len == 0 and cat_filters.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} Reference or --cat required\n", .{ P, Color.bold, Color.red, Color.reset });
         try printHelp(stderr);
         return;
@@ -65,26 +60,24 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     defer allocator.free(registry_path);
 
     // If first ref resolves as bundle, do bundle import; otherwise prompt import
-    if (refs.items.len > 0) {
-        const kind = resolveRef(allocator, registry_path, refs.items[0]);
+    if (refs.len > 0) {
+        const kind = resolveRef(allocator, registry_path, refs[0]);
         switch (kind) {
             .bundle => {
-                try getBundle(stdout, stderr, allocator, registry_path, refs.items[0], remote_url, quiet_git);
+                try getBundle(stdout, stderr, allocator, registry_path, refs[0], remote_url, quiet_git);
                 return;
             },
             .prompt => {},
             .not_found => {
-                // Check --cat mode
-                if (cat_filters.items.len == 0) {
-                    try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, refs.items[0] });
+                if (cat_filters.len == 0) {
+                    try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, refs[0] });
                     return;
                 }
             },
         }
     }
 
-    // Prompt import mode
-    try getPrompts(stdout, stderr, allocator, registry_path, refs.items, cat_filters.items);
+    try getPrompts(stdout, stderr, allocator, registry_path, refs, cat_filters);
 }
 
 fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash_args: []const []const u8, cat_filters: []const []const u8) !void {

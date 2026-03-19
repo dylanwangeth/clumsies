@@ -3,6 +3,7 @@ const fs = std.fs;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const spinner = @import("../spinner.zig");
+const flag = @import("../flags.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -15,45 +16,50 @@ const appendBundleEntry = commands.appendBundleEntry;
 const appendPromptEntry = commands.appendPromptEntry;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    var refs: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer refs.deinit(allocator);
-    var sync: bool = false;
-    var quiet_git: bool = false;
-
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
-            quiet_git = true;
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
-            sync = true;
-        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+    const Q = 0;
+    const S = 1;
+    const SPECS = [_]flag.FlagSpec{
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+        .{ .short = 's', .long = "sync", .kind = .boolean },
+    };
+    var err_ctx: flag.ErrorContext = .{};
+    var result = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
             try printHelp(stdout);
             return;
-        } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
             try printHelp(stderr);
             return;
-        } else {
-            try refs.append(allocator, arg);
-        }
-    }
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer result.deinit(allocator);
+    const quiet_git = result.boolean(Q);
+    const sync = result.boolean(S);
 
-    if (refs.items.len == 0) {
+    if (result.positionals.items.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} Reference required\n", .{ P, Color.bold, Color.red, Color.reset });
         try printHelp(stderr);
         return;
     }
 
+    const refs = result.positionals.items;
     const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git) catch return;
     defer allocator.free(registry_path);
 
-    // Resolve first ref to determine type (all refs should be same type)
-    const kind = resolveRef(allocator, registry_path, refs.items[0]);
+    const kind = resolveRef(allocator, registry_path, refs[0]);
 
     switch (kind) {
-        .prompt => try rmPrompts(stdout, stderr, allocator, registry_path, refs.items, quiet_git),
-        .bundle => try rmBundles(stdout, stderr, allocator, registry_path, refs.items, quiet_git),
+        .prompt => try rmPrompts(stdout, stderr, allocator, registry_path, refs, quiet_git),
+        .bundle => try rmBundles(stdout, stderr, allocator, registry_path, refs, quiet_git),
         .not_found => {
-            try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, refs.items[0] });
+            try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, refs[0] });
         },
     }
 }

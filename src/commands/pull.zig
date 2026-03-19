@@ -2,6 +2,7 @@ const std = @import("std");
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const spinner = @import("../spinner.zig");
+const flag = @import("../flags.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -15,12 +16,28 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     }
 
-    var quiet_git: bool = false;
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
-            quiet_git = true;
-        }
-    }
+    const Q = 0;
+    const SPECS = [_]flag.FlagSpec{
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+    };
+    var err_ctx: flag.ErrorContext = .{};
+    var result = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
+            try stdout.print("{s}Usage: {s}clumsies pull [-Q]{s}\n", .{ P, Color.cyan, Color.reset });
+            return;
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer result.deinit(allocator);
+    const quiet_git = result.boolean(Q);
 
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);

@@ -2,6 +2,7 @@ const std = @import("std");
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const spinner = @import("../spinner.zig");
+const flag = @import("../flags.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -15,20 +16,30 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     }
 
-    // Get remote URL from args
-    var remote_url: ?[]const u8 = null;
-    var quiet_git: bool = false;
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
-            quiet_git = true;
-        } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+    const Q = 0;
+    const SPECS = [_]flag.FlagSpec{
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+    };
+    var err_ctx: flag.ErrorContext = .{};
+    var result = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
+            try stdout.print("{s}Usage: {s}clumsies clone <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
+            return;
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
             try stderr.print("{s}Usage: {s}clumsies clone <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
             return;
-        } else if (remote_url == null) {
-            remote_url = arg;
-        }
-    }
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer result.deinit(allocator);
+    const quiet_git = result.boolean(Q);
+    const remote_url: ?[]const u8 = if (result.positionals.items.len > 0) result.positionals.items[0] else null;
 
     if (remote_url == null) {
         try stderr.print("{s}{s}{s}Error:{s} Remote URL required\n", .{ P, Color.bold, Color.red, Color.reset });
