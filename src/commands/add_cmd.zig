@@ -20,6 +20,9 @@ const stripFrontmatter = commands.stripFrontmatter;
 const parseFrontmatter = commands.parseFrontmatter;
 const appendPromptEntry = commands.appendPromptEntry;
 const jsonEscapeAlloc = commands.jsonEscapeAlloc;
+const PromptRef = commands.PromptRef;
+const freePromptRefs = commands.freePromptRefs;
+const updatePromptsIndex = commands.updatePromptsIndex;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
@@ -119,15 +122,23 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     }
 
-    var registered: usize = 0;
+    var refs: std.ArrayListUnmanaged(PromptRef) = .empty;
+    defer freePromptRefs(allocator, &refs);
 
     for (expanded_paths.items) |file_path| {
-        if (try registerOne(stdout, stderr, allocator, registry_path, prompts_dir, cwd, file_path, desc_flag, cat_flag)) {
-            registered += 1;
+        if (try preparePrompt(stdout, stderr, allocator, prompts_dir, cwd, file_path, desc_flag, cat_flag)) |ref| {
+            try refs.append(allocator, ref);
         }
     }
 
-    if (registered == 0) return;
+    if (refs.items.len == 0) return;
+
+    updatePromptsIndex(allocator, registry_path, refs.items) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+
+    const registered = refs.items.len;
 
     // Commit and push
     var sp = spinner.init(stdout, "Registering prompt(s)");
@@ -165,7 +176,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
 }
 
-fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, _: []const u8, prompts_dir: []const u8, cwd: []const u8, file_path: []const u8, desc_flag: ?[]const u8, cat_flag: ?[]const u8) !bool {
+fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, prompts_dir: []const u8, cwd: []const u8, file_path: []const u8, desc_flag: ?[]const u8, cat_flag: ?[]const u8) !?PromptRef {
     const abs_path = if (std.fs.path.isAbsolute(file_path))
         try allocator.dupe(u8, file_path)
     else
@@ -174,21 +185,20 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
 
     const file = fs.openFileAbsolute(abs_path, .{}) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not open file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
-        return false;
+        return null;
     };
     defer file.close();
 
     const raw_content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
-        return false;
+        return null;
     };
     defer allocator.free(raw_content);
 
     const fm = parseFrontmatter(raw_content);
     const is_meta = if (cat_flag) |c| std.mem.eql(u8, c, META_PROMPT_CATEGORY) else false;
 
-    // Meta-prompt files keep frontmatter for round-trip fidelity (pub → get → pub)
-    // Regular prompts strip frontmatter; metadata lives in index.json
+    // Meta-prompt files keep frontmatter for round-trip fidelity (pub -> get -> pub)
     const content = if (is_meta) raw_content else stripFrontmatter(raw_content);
     const had_frontmatter = if (!is_meta) hasFrontmatter(raw_content) else false;
 
@@ -196,13 +206,11 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
         try stdout.print("{s}{s}Stripped frontmatter from {s}{s}\n", .{ P, Color.dim, file_path, Color.reset });
     }
 
-    // Compute SHA-256 hash
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(content, &hash, .{});
     var hash_hex: [64]u8 = undefined;
     hexEncode(&hash, &hash_hex);
 
-    // Extract file extension and name
     const basename = std.fs.path.basename(file_path);
     const ext_idx = std.mem.lastIndexOf(u8, basename, ".");
     const format = if (ext_idx) |idx| basename[idx + 1 ..] else "md";
@@ -213,9 +221,10 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     const raw_category = cat_flag orelse deriveCategory(abs_path) orelse {
         try stderr.print("{s}{s}{s}Error:{s} Could not derive category from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
         try stderr.print("{s}Use {s}--cat{s} to specify a category\n", .{ P, Color.cyan, Color.reset });
-        return false;
+        return null;
     };
-    // Normalize backslashes to forward slashes for cross-platform registry consistency
+
+    // Normalize backslashes for cross-platform registry consistency
     var category_owned: ?[]u8 = null;
     defer if (category_owned) |c| allocator.free(c);
     const prompt_category: []const u8 = if (std.mem.indexOfScalar(u8, raw_category, '\\') != null) blk: {
@@ -231,84 +240,28 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     if (fs.openFileAbsolute(dest_path, .{})) |existing| {
         existing.close();
         try stdout.print("{s}{s}{s}!{s} Already exists: {s} ({s})\n", .{ P, Color.bold, Color.orange, Color.reset, name, hash_hex[0..8] });
-        return false;
+        return null;
     } else |_| {}
 
     const dest_file = fs.createFileAbsolute(dest_path, .{}) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to create file in registry\n", .{ P, Color.bold, Color.red, Color.reset });
-        return false;
+        return null;
     };
     defer dest_file.close();
     dest_file.writeAll(content) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to write file\n", .{ P, Color.bold, Color.red, Color.reset });
-        return false;
-    };
-
-    // Update index.json
-    const index_path = try std.fs.path.join(allocator, &.{ prompts_dir, "index.json" });
-    defer allocator.free(index_path);
-
-    var existing_prompts: std.ArrayListUnmanaged(u8) = .{};
-    defer existing_prompts.deinit(allocator);
-    var has_existing: bool = false;
-
-    if (fs.openFileAbsolute(index_path, .{})) |idx_file| {
-        const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-            idx_file.close();
-            try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
-            return false;
-        };
-        idx_file.close();
-        defer allocator.free(idx_content);
-
-        if (std.json.parseFromSlice(std.json.Value, allocator, idx_content, .{})) |parsed| {
-            defer parsed.deinit();
-            if (parsed.value.object.get("prompts")) |prompts| {
-                try existing_prompts.appendSlice(allocator, "{\n  \"prompts\": [");
-                for (prompts.array.items, 0..) |item, idx| {
-                    if (idx > 0) try existing_prompts.appendSlice(allocator, ",");
-                    try appendPromptEntry(allocator, &existing_prompts, item);
-                    has_existing = true;
-                }
-            }
-        } else |_| {}
-    } else |_| {
-        try existing_prompts.appendSlice(allocator, "{\n  \"prompts\": [");
-    }
-
-    const timestamp = std.time.timestamp();
-    const esc_name = try jsonEscapeAlloc(allocator, name);
-    defer allocator.free(esc_name);
-    const esc_desc = try jsonEscapeAlloc(allocator, description);
-    defer allocator.free(esc_desc);
-    const esc_format = try jsonEscapeAlloc(allocator, format);
-    defer allocator.free(esc_format);
-    const esc_category = try jsonEscapeAlloc(allocator, prompt_category);
-    defer allocator.free(esc_category);
-    const new_entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}\n  ]\n}}\n", .{
-        if (has_existing) "," else "",
-        hash_hex,
-        esc_name,
-        esc_desc,
-        esc_format,
-        esc_category,
-        timestamp,
-    });
-    defer allocator.free(new_entry);
-    try existing_prompts.appendSlice(allocator, new_entry);
-
-    const idx_out = fs.createFileAbsolute(index_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n", .{ P, Color.bold, Color.red, Color.reset });
-        return false;
-    };
-    defer idx_out.close();
-    idx_out.writeAll(existing_prompts.items) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to write index\n", .{ P, Color.bold, Color.red, Color.reset });
-        return false;
+        return null;
     };
 
     try stdout.print("{s}Hash: {s}{s}{s}  Name: {s}\n", .{ P, Color.cyan, hash_hex[0..8], Color.reset, name });
-    return true;
+
+    return .{
+        .hash = try allocator.dupe(u8, &hash_hex),
+        .category = try allocator.dupe(u8, prompt_category),
+        .name = try allocator.dupe(u8, name),
+        .description = try allocator.dupe(u8, description),
+        .format = try allocator.dupe(u8, format),
+    };
 }
 
 /// Derive category from file path by finding `.prompts/` segment.

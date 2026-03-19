@@ -47,6 +47,8 @@ pub const ParseResult = struct {
 };
 
 pub fn parse(specs: []const FlagSpec, allocator: std.mem.Allocator, args: []const []const u8, err_ctx: *ErrorContext) !ParseResult {
+    if (specs.len > MAX_FLAGS) @panic("specs exceeds MAX_FLAGS");
+
     var result: ParseResult = .{};
     errdefer result.deinit(allocator);
 
@@ -159,8 +161,6 @@ fn findShort(specs: []const FlagSpec, ch: u8) ?usize {
     }
     return null;
 }
-
-// Tests
 
 test "single boolean short flag" {
     const specs = [_]FlagSpec{

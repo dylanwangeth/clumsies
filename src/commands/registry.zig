@@ -15,9 +15,7 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 pub const RefKind = enum { prompt, bundle, not_found };
 
-/// Print git output using raw stdout (for use after spinner)
-/// If quiet=true, output is suppressed.
-fn printGitOutputRaw(output: *const GitOutput, quiet: bool) void {
+pub fn printGitOutputRaw(output: *const GitOutput, quiet: bool) void {
     if (quiet) return;
     const has_stdout = output.stdout != null and output.stdout.?.len > 0;
     const has_stderr = output.stderr != null and output.stderr.?.len > 0;
@@ -49,7 +47,7 @@ fn printGitOutputRaw(output: *const GitOutput, quiet: bool) void {
     }
 }
 
-fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
+pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch
         std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
         return error.NoHome;
