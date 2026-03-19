@@ -32,9 +32,9 @@ Two things, both simple:
 workspace/
 ├── CLAUDE.md              # MPF — tells the agent where things are
 └── .prompts/
-    ├── regulation/        # Reusable rules (from registry)
-    ├── house-rules/       # Project-specific rules
-    ├── command/           # Procedures (invoke by name)
+    ├── rule/              # Reusable rules (from registry)
+    ├── house-rule/        # Project-specific rules
+    ├── cmd/               # Procedures (invoke by name)
     ├── context/           # Project knowledge (stays local)
     └── ...                # Whatever else you need
 ```
@@ -81,7 +81,7 @@ graph LR
     class MPF,R accent
 ```
 
-Prompts get better through real use. You tell the agent "fix this code following regulation/coding/ZIG_STYLE", review the output, and find the prompt wasn't specific enough — so you refine it and try again. This cycle repeats until the prompt reliably produces the result you want. Once it's good enough, register it to the registry and reuse it across projects.
+Prompts get better through real use. You tell the agent "fix this code following rule/coding/ZIG_STYLE", review the output, and find the prompt wasn't specific enough — so you refine it and try again. This cycle repeats until the prompt reliably produces the result you want. Once it's good enough, register it to the registry and reuse it across projects.
 
 More on the design in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
@@ -116,7 +116,7 @@ Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 clumsies config set registry git@github.com:you/prompt-registry.git
 
 # Register a prompt
-clumsies add .prompts/regulation/coding/
+clumsies add .prompts/rule/coding/
 
 # Import a bundle into a new project
 clumsies get my-coding-bundle
