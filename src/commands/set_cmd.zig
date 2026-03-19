@@ -69,7 +69,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const kind = resolveRef(allocator, registry_path, ref.?);
 
     switch (kind) {
-        .prompt => try setPrompt(stdout, stderr, allocator, registry_path, ref.?, args, quiet_git),
+        .prompt => try setPrompt(stdout, stderr, allocator, registry_path, ref.?, args),
         .bundle => try setBundle(stdout, stderr, allocator, registry_path, ref.?, args, quiet_git),
         .not_found => {
             try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, ref.? });
@@ -77,8 +77,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
 }
 
-fn setPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, args: []const []const u8, quiet_git: bool) !void {
-    _ = quiet_git;
+fn setPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, args: []const []const u8) !void {
     const N = 0;
     const D = 1;
     const C = 2;
