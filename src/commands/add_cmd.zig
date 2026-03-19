@@ -93,8 +93,14 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         else
             try std.fs.path.join(allocator, &.{ cwd, raw_path });
 
-        const stat = fs.cwd().statFile(abs) catch {
-            // Not found — keep original path so registerOne can report the error
+        const stat = fs.cwd().statFile(abs) catch |err| {
+            // Windows: statFile calls openFile with .file_only, which returns
+            // IsDir for directories (ziglang/zig#5732). Handle it explicitly.
+            if (err == error.IsDir) {
+                defer allocator.free(abs);
+                expandDirectory(allocator, abs, &expanded_paths);
+                continue;
+            }
             allocator.free(abs);
             try expanded_paths.append(allocator, try allocator.dupe(u8, raw_path));
             continue;
@@ -104,7 +110,6 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             defer allocator.free(abs);
             expandDirectory(allocator, abs, &expanded_paths);
         } else {
-            // Regular file — use abs path directly
             try expanded_paths.append(allocator, abs);
         }
     }
