@@ -2,6 +2,7 @@ const std = @import("std");
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const spinner = @import("../spinner.zig");
+const flag = @import("../flags.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -15,22 +16,32 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     }
 
-    // Parse flags
-    var message: []const u8 = "Update prompts";
-    var quiet_git: bool = false;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "-Q") or std.mem.eql(u8, args[i], "--quiet-git")) {
-            quiet_git = true;
-        } else if ((std.mem.eql(u8, args[i], "-m") or std.mem.eql(u8, args[i], "--message")) and i + 1 < args.len) {
-            message = args[i + 1];
-            i += 1;
-        } else if (std.mem.startsWith(u8, args[i], "-")) {
-            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, args[i] });
+    const Q = 0;
+    const M = 1;
+    const SPECS = [_]flag.FlagSpec{
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+        .{ .short = 'm', .long = "message", .kind = .value },
+    };
+    var err_ctx: flag.ErrorContext = .{};
+    var result = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
+            try stdout.print("{s}Usage: {s}clumsies push [-m <message>]{s}\n", .{ P, Color.cyan, Color.reset });
+            return;
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
             try stderr.print("{s}Usage: {s}clumsies push [-m <message>]{s}\n", .{ P, Color.cyan, Color.reset });
             return;
-        }
-    }
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer result.deinit(allocator);
+    const quiet_git = result.boolean(Q);
+    const message = result.value(M) orelse "Update prompts";
 
     const prompts_path = try commands.getPromptsPath(allocator);
     defer allocator.free(prompts_path);

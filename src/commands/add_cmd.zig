@@ -4,6 +4,7 @@ const testing = std.testing;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const spinner = @import("../spinner.zig");
+const flag = @import("../flags.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -21,57 +22,46 @@ const appendPromptEntry = commands.appendPromptEntry;
 const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    var file_paths: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer file_paths.deinit(allocator);
-    var desc_flag: ?[]const u8 = null;
-    var cat_flag: ?[]const u8 = null;
-    var meta_flag: bool = false;
-    var sync: bool = false;
-    var quiet_git: bool = false;
-
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
-            quiet_git = true;
-        } else if (std.mem.eql(u8, arg, "--desc") or std.mem.eql(u8, arg, "-d")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                desc_flag = args[i];
-            } else {
-                try stderr.print("{s}{s}{s}Error:{s} --desc requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "--cat") or std.mem.eql(u8, arg, "-c")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                cat_flag = args[i];
-            } else {
-                try stderr.print("{s}{s}{s}Error:{s} --cat requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--meta")) {
-            meta_flag = true;
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
-            sync = true;
-        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+    const Q = 0;
+    const D = 1;
+    const C = 2;
+    const META = 3;
+    const S = 4;
+    const SPECS = [_]flag.FlagSpec{
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+        .{ .short = 'd', .long = "desc", .kind = .value },
+        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 'm', .long = "meta", .kind = .boolean },
+        .{ .short = 's', .long = "sync", .kind = .boolean },
+    };
+    var err_ctx: flag.ErrorContext = .{};
+    var result = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
             try printHelp(stdout);
             return;
-        } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
             try printHelp(stderr);
             return;
-        } else {
-            try file_paths.append(allocator, arg);
-        }
-    }
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer result.deinit(allocator);
+    const quiet_git = result.boolean(Q);
+    const desc_flag = result.value(D);
+    var cat_flag = result.value(C);
+    const sync = result.boolean(S);
 
-    // --meta is sugar for --cat ../
-    if (meta_flag) {
+    if (result.boolean(META)) {
         cat_flag = META_PROMPT_CATEGORY;
     }
 
-    if (file_paths.items.len == 0) {
+    if (result.positionals.items.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} File(s) required\n", .{ P, Color.bold, Color.red, Color.reset });
         try printHelp(stderr);
         return;
@@ -97,7 +87,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         expanded_paths.deinit(allocator);
     }
 
-    for (file_paths.items) |raw_path| {
+    for (result.positionals.items) |raw_path| {
         const abs = if (std.fs.path.isAbsolute(raw_path))
             try allocator.dupe(u8, raw_path)
         else

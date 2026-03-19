@@ -1,6 +1,7 @@
 const std = @import("std");
 const fs = std.fs;
 const commands = @import("commands.zig");
+const flag = @import("../flags.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -9,40 +10,41 @@ const META_PROMPT_CATEGORY = commands.META_PROMPT_CATEGORY;
 const ensureRegistry = commands.ensureRegistry;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    var show_prompts: bool = false;
-    var show_meta: bool = false;
-    var cat_filter: ?[]const u8 = null;
-    var sync: bool = false;
-    var quiet_git: bool = false;
-
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
-            quiet_git = true;
-        } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--prompts")) {
-            show_prompts = true;
-        } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--meta")) {
-            show_meta = true;
-        } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--cat")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                cat_filter = args[i];
-            } else {
-                try stderr.print("{s}{s}{s}Error:{s} --cat requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
-            sync = true;
-        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+    const Q = 0;
+    const P_ = 1;
+    const M = 2;
+    const C = 3;
+    const S = 4;
+    const SPECS = [_]flag.FlagSpec{
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+        .{ .short = 'p', .long = "prompts", .kind = .boolean },
+        .{ .short = 'm', .long = "meta", .kind = .boolean },
+        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 's', .long = "sync", .kind = .boolean },
+    };
+    var err_ctx: flag.ErrorContext = .{};
+    var result = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
             try printHelp(stdout);
             return;
-        } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, arg });
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
             try printHelp(stderr);
             return;
-        }
-    }
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer result.deinit(allocator);
+    const quiet_git = result.boolean(Q);
+    const show_prompts = result.boolean(P_);
+    const show_meta = result.boolean(M);
+    const cat_filter = result.value(C);
+    const sync = result.boolean(S);
 
     if (show_meta) {
         // --meta is sugar for --prompts --cat ../

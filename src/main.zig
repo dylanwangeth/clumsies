@@ -20,6 +20,8 @@ const cmd_get = @import("commands/get_cmd.zig");
 const cmd_pub = @import("commands/pub_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
+const flags = @import("flags.zig");
+
 const Color = styles.Color;
 const P = styles.P;
 

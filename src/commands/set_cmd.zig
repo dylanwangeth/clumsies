@@ -3,6 +3,7 @@ const fs = std.fs;
 const git = @import("../git.zig");
 const commands = @import("commands.zig");
 const spinner = @import("../spinner.zig");
+const flag = @import("../flags.zig");
 
 const Color = commands.Color;
 const P = commands.P;
@@ -77,51 +78,46 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 }
 
 fn setPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, args: []const []const u8, quiet_git: bool) !void {
-    var name_flag: ?[]const u8 = null;
-    var desc_flag: ?[]const u8 = null;
-    var cat_flag: ?[]const u8 = null;
-    var file_flag: ?[]const u8 = null;
-    var all_flag: bool = false;
-
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--name")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                name_flag = args[i];
-            } else {
-                try stderr.print("{s}{s}{s}Error:{s} --name requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--desc")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                desc_flag = args[i];
-            } else {
-                try stderr.print("{s}{s}{s}Error:{s} --desc requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--cat")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                cat_flag = args[i];
-            } else {
-                try stderr.print("{s}{s}{s}Error:{s} --cat requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--file")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                file_flag = args[i];
-            } else {
-                try stderr.print("{s}{s}{s}Error:{s} --file requires a value\n", .{ P, Color.bold, Color.red, Color.reset });
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "--all")) {
-            all_flag = true;
-        }
-    }
+    _ = quiet_git;
+    const N = 0;
+    const D = 1;
+    const C = 2;
+    const F = 3;
+    const ALL = 4;
+    const Q = 5;
+    const PROMPT_SPECS = [_]flag.FlagSpec{
+        .{ .short = 'n', .long = "name", .kind = .value },
+        .{ .short = 'd', .long = "desc", .kind = .value },
+        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 'f', .long = "file", .kind = .value },
+        .{ .short = null, .long = "all", .kind = .boolean },
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+        .{ .short = 's', .long = "sync", .kind = .boolean },
+    };
+    var err_ctx: flag.ErrorContext = .{};
+    var parsed = flag.parse(&PROMPT_SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
+            try printHelp(stdout);
+            return;
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            try printHelp(stderr);
+            return;
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer parsed.deinit(allocator);
+    const name_flag = parsed.value(N);
+    const desc_flag = parsed.value(D);
+    const cat_flag = parsed.value(C);
+    const file_flag = parsed.value(F);
+    const all_flag = parsed.boolean(ALL);
+    const p_quiet_git = parsed.boolean(Q);
 
     // --all requires --cat
     if (all_flag and cat_flag == null) {
@@ -131,21 +127,19 @@ fn setPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
     // --all with --cat: batch rename category (like old rename-cat)
     if (all_flag and cat_flag != null) {
-        try renameCatFromRef(stdout, stderr, allocator, registry_path, hash, cat_flag.?, quiet_git);
+        try renameCatFromRef(stdout, stderr, allocator, registry_path, hash, cat_flag.?, p_quiet_git);
         return;
     }
 
     if (file_flag != null) {
-        // Replace content (produces new hash)
-        try replacePrompt(stdout, stderr, allocator, registry_path, hash, file_flag.?, desc_flag, cat_flag, quiet_git);
+        try replacePrompt(stdout, stderr, allocator, registry_path, hash, file_flag.?, desc_flag, cat_flag, p_quiet_git);
     } else {
-        // Update metadata only
         if (name_flag == null and desc_flag == null and cat_flag == null) {
             try stderr.print("{s}{s}{s}Error:{s} At least one of -n, -d, -c, or -f required\n", .{ P, Color.bold, Color.red, Color.reset });
             try stderr.print("{s}Usage: {s}clumsies set <hash> [-n name] [-d desc] [-c cat] [-f file] [--all]{s}\n", .{ P, Color.cyan, Color.reset });
             return;
         }
-        try updatePromptMeta(stdout, stderr, allocator, registry_path, hash, name_flag, desc_flag, cat_flag, quiet_git);
+        try updatePromptMeta(stdout, stderr, allocator, registry_path, hash, name_flag, desc_flag, cat_flag, p_quiet_git);
     }
 }
 
