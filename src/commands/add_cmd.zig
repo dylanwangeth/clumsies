@@ -205,11 +205,19 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     const raw_name = basename[0..name_end];
     const name = stripSequencePrefix(raw_name);
     const description = desc_flag orelse fm.description orelse "-";
-    const prompt_category = cat_flag orelse deriveCategory(abs_path) orelse {
+    const raw_category = cat_flag orelse deriveCategory(abs_path) orelse {
         try stderr.print("{s}{s}{s}Error:{s} Could not derive category from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
         try stderr.print("{s}Use {s}--cat{s} to specify a category\n", .{ P, Color.cyan, Color.reset });
         return false;
     };
+    // Normalize backslashes to forward slashes for cross-platform registry consistency
+    var category_owned: ?[]u8 = null;
+    defer if (category_owned) |c| allocator.free(c);
+    const prompt_category: []const u8 = if (std.mem.indexOfScalar(u8, raw_category, '\\') != null) blk: {
+        category_owned = try allocator.dupe(u8, raw_category);
+        std.mem.replaceScalar(u8, category_owned.?, '\\', '/');
+        break :blk category_owned.?;
+    } else raw_category;
 
     // Copy file to registry
     const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, &hash_hex });
@@ -300,14 +308,18 @@ fn registerOne(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
 
 /// Derive category from file path by finding `.prompts/` segment.
 /// e.g. ".prompts/conduct/arch/00_FOO.md" → "conduct/arch"
+/// Handles both `/` and `\` separators for Windows compatibility.
 fn deriveCategory(abs_path: []const u8) ?[]const u8 {
-    const marker = ".prompts/";
-    const idx = std.mem.indexOf(u8, abs_path, marker) orelse return null;
-    const after_marker = abs_path[idx + marker.len ..];
+    const marker_fwd = ".prompts/";
+    const marker_bck = ".prompts\\";
+    const idx = std.mem.indexOf(u8, abs_path, marker_fwd) orelse
+        (std.mem.indexOf(u8, abs_path, marker_bck) orelse return null);
+    const after_marker = abs_path[idx + marker_fwd.len ..];
 
-    // Find last '/' to separate category from filename
-    const last_slash = std.mem.lastIndexOf(u8, after_marker, "/") orelse return null;
-    const category = after_marker[0..last_slash];
+    const last_fwd = std.mem.lastIndexOfScalar(u8, after_marker, '/');
+    const last_bck = std.mem.lastIndexOfScalar(u8, after_marker, '\\');
+    const last_sep = if (last_fwd) |f| (if (last_bck) |b| @max(f, b) else f) else (last_bck orelse return null);
+    const category = after_marker[0..last_sep];
     if (category.len == 0) return null;
     return category;
 }
@@ -363,4 +375,12 @@ test "deriveCategory: file directly in .prompts root" {
 
 test "deriveCategory: deep nesting" {
     try testing.expectEqualStrings("rule/writing/blog", deriveCategory("/x/.prompts/rule/writing/blog/00_STYLE.md").?);
+}
+
+test "deriveCategory: backslash separators" {
+    try testing.expectEqualStrings("rule\\arch", deriveCategory("C:\\Users\\foo\\.prompts\\rule\\arch\\00_FOO.md").?);
+}
+
+test "deriveCategory: backslash single level" {
+    try testing.expectEqualStrings("coding", deriveCategory("C:\\Users\\foo\\.prompts\\coding\\01_BAR.md").?);
 }

@@ -71,8 +71,14 @@ pub fn getPromptsPath(allocator: std.mem.Allocator) ![]const u8 {
     return try std.fs.path.join(allocator, &.{ cwd, ".prompts" });
 }
 
+pub fn getHomePath(allocator: std.mem.Allocator) ![]const u8 {
+    return std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
+        return error.NoHome;
+}
+
 pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return error.NoHome;
+    const home = try getHomePath(allocator);
     defer allocator.free(home);
     return try std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }
