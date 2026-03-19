@@ -50,7 +50,9 @@ fn printGitOutputRaw(output: *const GitOutput, quiet: bool) void {
 }
 
 fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return error.NoHome;
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
+        return error.NoHome;
     defer allocator.free(home);
     return try std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }

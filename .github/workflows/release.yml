@@ -45,6 +45,9 @@ jobs:
           zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux
           cp zig-out/bin/clumsies dist/clumsies-linux-x86_64
 
+          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows
+          cp zig-out/bin/clumsies.exe dist/clumsies-windows-x86_64.exe
+
       - name: Generate checksums
         run: |
           cd dist
@@ -70,6 +73,7 @@ jobs:
             dist/clumsies-darwin-x86_64 \
             dist/clumsies-linux-arm64 \
             dist/clumsies-linux-x86_64 \
+            dist/clumsies-windows-x86_64.exe \
             dist/checksums.txt \
             --title "$TAG" \
             --generate-notes \
