@@ -204,32 +204,9 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     };
     defer allocator.free(prompts_path);
 
-    // Create .prompts/ and git init if not exists
-    const need_init = !commands.promptsExist();
-    if (need_init) {
-        fs.cwd().makeDir(".prompts") catch |err| {
-            try stderr.print("{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n", .{ P, Color.bold, Color.red, Color.reset, err });
-            return;
-        };
+    try ensurePromptsDir(stdout, stderr, allocator, prompts_path, quiet_git);
 
-        const context_path = try std.fs.path.join(allocator, &.{ prompts_path, "context" });
-        defer allocator.free(context_path);
-        fs.cwd().makePath(context_path) catch {};
-
-        var init_output: GitOutput = .{};
-        defer init_output.deinit(allocator);
-
-        git.init(allocator, prompts_path, &init_output) catch {
-            printGitOutputRaw(&init_output, quiet_git);
-            try stderr.print("{s}{s}{s}Error:{s} Failed to initialize git repository\n", .{ P, Color.bold, Color.red, Color.reset });
-            fs.deleteTreeAbsolute(prompts_path) catch {};
-            return;
-        };
-        try stdout.print("{s}{s}{s}✓{s} Initialized .prompts/ repository\n", .{ P, Color.bold, Color.green, Color.reset });
-        printGitOutputRaw(&init_output, quiet_git);
-    }
-
-    // Read bundles/index.json
+    // Find bundle in index
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles", "index.json" });
     defer allocator.free(index_path);
 
@@ -264,12 +241,56 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         }
     }
 
-    if (found_bundle == null) {
+    const bundle = found_bundle orelse {
         try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bundle_name });
         return;
-    }
+    };
 
-    // Read prompts index
+    const prompt_count = try importBundlePrompts(stdout, stderr, allocator, registry_path, prompts_path, bundle);
+
+    try stdout.print("{s}{s}{s}✓{s} Imported bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
+    try stdout.print("{s}Prompts: {d}\n", .{ P, prompt_count });
+
+    if (remote_url) |url| {
+        var remote_output: GitOutput = .{};
+        defer remote_output.deinit(allocator);
+
+        git.addRemote(allocator, prompts_path, url, &remote_output) catch {
+            printGitOutputRaw(&remote_output, quiet_git);
+            try stderr.print("{s}{s}{s}Error:{s} Failed to add remote\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        try stdout.print("{s}{s}{s}✓{s} Added remote: {s}\n", .{ P, Color.bold, Color.green, Color.reset, url });
+        printGitOutputRaw(&remote_output, quiet_git);
+    }
+}
+
+fn ensurePromptsDir(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, prompts_path: []const u8, quiet_git: bool) !void {
+    if (commands.promptsExist()) return;
+
+    fs.cwd().makeDir(".prompts") catch |err| {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to create .prompts/: {}\n", .{ P, Color.bold, Color.red, Color.reset, err });
+        return;
+    };
+
+    const context_path = try std.fs.path.join(allocator, &.{ prompts_path, "context" });
+    defer allocator.free(context_path);
+    fs.cwd().makePath(context_path) catch {};
+
+    var init_output: GitOutput = .{};
+    defer init_output.deinit(allocator);
+
+    git.init(allocator, prompts_path, &init_output) catch {
+        printGitOutputRaw(&init_output, quiet_git);
+        try stderr.print("{s}{s}{s}Error:{s} Failed to initialize git repository\n", .{ P, Color.bold, Color.red, Color.reset });
+        fs.deleteTreeAbsolute(prompts_path) catch {};
+        return;
+    };
+    try stdout.print("{s}{s}{s}✓{s} Initialized .prompts/ repository\n", .{ P, Color.bold, Color.green, Color.reset });
+    printGitOutputRaw(&init_output, quiet_git);
+}
+
+fn importBundlePrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, bundle: std.json.Value) !usize {
     const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", "index.json" });
     defer allocator.free(prompts_index_path);
 
@@ -283,18 +304,17 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     } else |_| {}
     defer if (prompts_index) |pi| pi.deinit();
 
-    // Import prompts
-    var prompt_count: usize = 0;
     var sp = spinner.init(stdout, "Importing prompts");
     sp.start();
 
-    const prompts_arr = found_bundle.?.object.get("prompts") orelse {
+    const prompts_arr = bundle.object.get("prompts") orelse {
         sp.fail();
         try stderr.print("{s}{s}{s}Error:{s} Bundle has no prompts\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
+        return 0;
     };
 
     const prompts_list = if (prompts_index) |pi| pi.value.object.get("prompts") else null;
+    var count: usize = 0;
 
     for (prompts_arr.array.items) |ref| {
         const hash = if (ref.object.get("hash")) |h| h.string else continue;
@@ -315,26 +335,11 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         }
 
         if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, hash, prompt_name, prompt_format, category) == .imported) {
-            prompt_count += 1;
+            count += 1;
         }
     }
     sp.succeed();
-
-    try stdout.print("{s}{s}{s}✓{s} Imported bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
-    try stdout.print("{s}Prompts: {d}\n", .{ P, prompt_count });
-
-    if (remote_url) |url| {
-        var remote_output: GitOutput = .{};
-        defer remote_output.deinit(allocator);
-
-        git.addRemote(allocator, prompts_path, url, &remote_output) catch {
-            printGitOutputRaw(&remote_output, quiet_git);
-            try stderr.print("{s}{s}{s}Error:{s} Failed to add remote\n", .{ P, Color.bold, Color.red, Color.reset });
-            return;
-        };
-        try stdout.print("{s}{s}{s}✓{s} Added remote: {s}\n", .{ P, Color.bold, Color.green, Color.reset, url });
-        printGitOutputRaw(&remote_output, quiet_git);
-    }
+    return count;
 }
 
 fn printHelp(out: *std.io.Writer) !void {
