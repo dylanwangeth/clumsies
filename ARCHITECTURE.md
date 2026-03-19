@@ -12,15 +12,15 @@ Four things to know: **prompts** are individual markdown files. A **meta-prompt 
 workspace/
 ├── CLAUDE.md              # MPF (meta-prompt file)
 └── .prompts/              # Independent git repo
-    ├── regulation/        # Universal rules (reusable across projects)
-    ├── house-rules/       # Project-specific rules (current project only)
-    ├── command/           # Procedures (invoke by name)
+    ├── rule/              # Universal rules (reusable across projects)
+    ├── house-rule/        # Project-specific rules (current project only)
+    ├── cmd/               # Procedures (invoke by name)
     ├── context/           # Project knowledge (local only)
     ├── journal/           # Problem logs (local only)
     └── ...                # Whatever else you need
 ```
 
-`regulation/`, `house-rules/`, and `command/` are shareable via registry. `context/` and `journal/` stay local.
+`rule/`, `house-rule/`, and `cmd/` are shareable via registry. `context/` and `journal/` stay local.
 
 ## 2. Directory Organization
 
@@ -28,9 +28,9 @@ clumsies does not enforce any directory layout. You organize `.prompts/` however
 
 The project structure shown above is one example. Here's the reasoning behind that particular layout:
 
-- **regulation/** — Rules reusable across projects (coding standards, commit format). Registered in the registry and imported as-is into new projects.
-- **house-rules/** — Rules specific to the current project. Not expected to transfer.
-- **command/** — Procedures the AI runs on request. Numbered prefixes (00_, 01_) let users invoke by number: "Run command 01."
+- **rule/** — Rules reusable across projects (coding standards, commit format). Registered in the registry and imported as-is into new projects.
+- **house-rule/** — Rules specific to the current project. Not expected to transfer.
+- **cmd/** — Procedures the AI runs on request. Numbered prefixes (00_, 01_) let users invoke by number: "Run cmd 01."
 - **context/** — Project knowledge (architecture notes, tech decisions). Stays local.
 - **journal/** — Problem logs (how bugs were fixed, why decisions changed). Stays local.
 
@@ -52,7 +52,7 @@ Metadata lives in `prompts/index.json` and is managed separately:
 |-------|--------|
 | `name` | From filename, prefix stripped. `03_GIT_COMMIT.md` becomes `GIT_COMMIT` |
 | `description` | `--desc` flag, frontmatter `description:` field, or `"-"` |
-| `category` | `--cat` flag, or derived from `.prompts/` path (e.g., `regulation/coding`) |
+| `category` | `--cat` flag, or derived from `.prompts/` path (e.g., `rule/coding`) |
 
 This separation means you can update metadata (rename, re-categorize) without changing the prompt content or its hash.
 
@@ -87,7 +87,7 @@ Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The ha
       "name": "git_commit",
       "description": "Git commit message format",
       "format": "md",
-      "category": "regulation",
+      "category": "rule",
       "created_at": "1704067200"
     },
     {
@@ -136,4 +136,4 @@ When importing prompts to `.prompts/`, sequence numbers are auto-assigned: scan 
 Works alongside existing tool-specific setups:
 
 - Use AGENTS.md as your meta-prompt file if you want
-- `.claude/commands/` and `.prompts/command/` can coexist — one for tool shortcuts, the other for semantic invocation
+- `.claude/commands/` and `.prompts/cmd/` can coexist — one for tool shortcuts, the other for semantic invocation
