@@ -747,7 +747,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
     if (meta_file_arg) |meta_arg| {
         if (commands.isHexString(meta_arg)) {
-            // Hash reference: resolve from registry prompts or meta-prompts
+            // Hash reference: resolve from registry prompts
             const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
             defer allocator.free(prompts_index_path);
 
@@ -782,7 +782,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
                 return;
             }
         } else {
-            // File path: read file, hash it, and upload to meta-prompts
+            // File path: read file, hash it, and upload to prompts
             const meta_path = if (std.fs.path.isAbsolute(meta_arg))
                 try allocator.dupe(u8, meta_arg)
             else
@@ -807,11 +807,11 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
             hexEncode(&hash_bytes, &hash_hex);
             new_meta_hash = try allocator.dupe(u8, &hash_hex);
 
-            const meta_prompts_dir = try std.fs.path.join(allocator, &.{ registry_path, "meta-prompts" });
-            defer allocator.free(meta_prompts_dir);
-            fs.cwd().makePath(meta_prompts_dir) catch {};
+            const prompts_dir_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts" });
+            defer allocator.free(prompts_dir_path);
+            fs.cwd().makePath(prompts_dir_path) catch {};
 
-            const meta_dest_path = try std.fs.path.join(allocator, &.{ meta_prompts_dir, new_meta_hash.? });
+            const meta_dest_path = try std.fs.path.join(allocator, &.{ prompts_dir_path, new_meta_hash.? });
             defer allocator.free(meta_dest_path);
 
             const meta_dest_file = fs.createFileAbsolute(meta_dest_path, .{}) catch {
