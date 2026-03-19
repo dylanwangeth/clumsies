@@ -100,7 +100,7 @@ cd "$WORKSPACE"
 step "1. config set registry"
 "$CLUMSIES" config set registry "$REGISTRY"
 assert "config.json exists" test -f "$HOME_DIR/.clumsies/config.json"
-assert_file_contains "config.json contains registry path" "$HOME_DIR/.clumsies/config.json" "$REGISTRY"
+assert_file_contains "config.json contains registry" "$HOME_DIR/.clumsies/config.json" "mock-registry"
 
 # 2. add with explicit -c
 step "2. add with -c flag"

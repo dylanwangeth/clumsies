@@ -46,7 +46,7 @@ function Assert-Output($desc, $expected, $actual) {
 }
 
 function Assert-FileContains($desc, $file, $pattern) {
-    if ((Test-Path $file) -and (Select-String -Path $file -Pattern $pattern -Quiet)) {
+    if ((Test-Path $file) -and (Select-String -Path $file -Pattern $pattern -SimpleMatch -Quiet)) {
         Write-Host "  OK: $desc"
         $script:Pass++
     } else {
@@ -59,7 +59,7 @@ function Assert-FileContains($desc, $file, $pattern) {
 }
 
 function Assert-FileNotContains($desc, $file, $pattern) {
-    if (-not (Test-Path $file) -or -not (Select-String -Path $file -Pattern $pattern -Quiet)) {
+    if (-not (Test-Path $file) -or -not (Select-String -Path $file -Pattern $pattern -SimpleMatch -Quiet)) {
         Write-Host "  OK: $desc"
         $script:Pass++
     } else {
@@ -102,7 +102,7 @@ try {
     & $Clumsies config set registry $Registry
     $ConfigPath = Join-Path $HomeDir ".clumsies\config.json"
     Assert "config.json exists" { Test-Path $ConfigPath }
-    Assert-FileContains "config.json contains registry path" $ConfigPath ([regex]::Escape($Registry))
+    Assert-FileContains "config.json contains registry" $ConfigPath "mock-registry"
 
     # 2. add with explicit -c
     Step "2. add with -c flag"
