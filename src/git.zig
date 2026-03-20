@@ -7,7 +7,7 @@ pub const GitError = error{
     OutOfMemory,
 };
 
-/// Git 命令输出结构，统一捕获 stdout 和 stderr
+/// Captured stdout and stderr from a git command
 pub const GitOutput = struct {
     stdout: ?[]const u8 = null,
     stderr: ?[]const u8 = null,
@@ -39,7 +39,7 @@ fn assignOrFree(allocator: std.mem.Allocator, data: ?[]const u8) ?[]const u8 {
     return null;
 }
 
-/// 通用 git 命令执行函数，捕获所有输出
+/// Run a git command and capture output
 pub fn run(allocator: std.mem.Allocator, cwd: ?[]const u8, args: []const []const u8, output: ?*GitOutput) !void {
     var child = std.process.Child.init(args, allocator);
     if (cwd) |c| child.cwd = c;
