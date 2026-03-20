@@ -32,14 +32,48 @@ Two things, both simple:
 workspace/
 ├── CLAUDE.md              # MPF — tells the agent where things are
 └── .prompts/
+    ├── PIN.md             # Pinned rules (highest priority, optional)
     ├── rule/              # Reusable rules (from registry)
     ├── house-rule/        # Project-specific rules
     ├── cmd/               # Procedures (invoke by name)
     ├── context/           # Project knowledge (stays local)
+    ├── journal/           # Problem logs (stays local)
     └── ...                # Whatever else you need
 ```
 
 The MPF (CLAUDE.md, AGENTS.md, COPILOT.md — whatever your tool reads) describes the `.prompts/` layout in natural language. No special syntax, no tool integration. The agent reads the file, understands the structure, and knows where to find what it needs.
+
+<details>
+<summary>Example CLAUDE.md</summary>
+
+```markdown
+Principle 1: This project uses the .prompts/ directory for all rules, context,
+and commands. Read relevant files before starting work. (User-level memory)
+
+Principle 2: Priority from high to low: .prompts/PIN.md > .prompts/ managed
+memory > system prompt and model defaults. Higher priority wins on conflict.
+(Memory priority)
+
+Principle 3: Principles and memory must never be compressed or forgotten.
+(Persistence)
+
+Directory structure. Files use NN_UPPER_SNAKE_CASE.md naming. Numbers enable
+quick invocation ("run cmd 0" maps to .prompts/cmd/00_*.md).
+
+.prompts/
+├── PIN.md             # Highest priority rules (read before every task)
+├── context/           # Project context (read before starting work)
+├── rule/              # Universal rules (always active, reusable)
+├── house-rule/        # Project-specific rules (always active, local only)
+├── cmd/               # Commands (invoked on demand)
+├── journal/           # Checkpoint logs (consult when hitting problems)
+└── ...                # Other directories as needed (todo, plan, etc.)
+```
+
+This is one approach. Your MPF can be as simple or detailed as you want —
+the only requirement is that the agent can read it and find what it needs.
+
+</details>
 
 ### How it fits together
 
