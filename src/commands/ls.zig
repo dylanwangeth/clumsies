@@ -174,7 +174,7 @@ fn listBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
 
     try stdout.print("{s}{s}{s}Bundles in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}──────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}NAME{s}                  {s}TASK{s}      {s}GROUPS{s}      {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}  {s}NAME{s}                  {s}TASK{s}      {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}──────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     std.mem.sort(std.json.Value, items.array.items, {}, struct {
@@ -190,13 +190,6 @@ fn listBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
         const item_task = if (item.object.get("task")) |t| t.string else "-";
         const desc = if (item.object.get("description")) |d| d.string else "-";
 
-        const prompts_arr = item.object.get("prompts");
-        const count = if (prompts_arr) |p| p.array.items.len else 0;
-        const label: []const u8 = " prompts";
-
-        var count_buf: [16]u8 = undefined;
-        const count_str = std.fmt.bufPrint(&count_buf, "{d}{s}", .{ count, label }) catch "-";
-
-        try stdout.print("{s}  {s}{s: <20}{s}  {s: <8}  {s: <10}  {s}\n", .{ P, Color.cyan, name, Color.reset, item_task, count_str, desc });
+        try stdout.print("{s}  {s}{s: <20}{s}  {s: <8}  {s}\n", .{ P, Color.cyan, name, Color.reset, item_task, desc });
     }
 }
