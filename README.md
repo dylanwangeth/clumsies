@@ -115,19 +115,48 @@ Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 
 ## Quick start
 
+Get a working prompt setup in 30 seconds, no configuration needed.
+
+```bash
+mkdir clumsies-demo && cd clumsies-demo
+
+clumsies get opus-coding --registry https://github.com/lilhammerfun/clumsies-registry.git
+```
+
+This creates `.prompts/` with coding rules, reusable commands, and a four-layer architecture workflow (Architecture → ADR → Research → Spec). It also drops a `CLAUDE.md` at the project root that tells your agent where everything is.
+
+Now give your agent a task. Here's an example, or replace it with any project you're interested in:
+
+```
+Follow the arch rules to design a local-first AI agent orchestration
+framework. It should support multiple LLM backends, tool calling,
+streaming output, and conversation memory persistence.
+```
+
+The agent reads `CLAUDE.md`, discovers `.prompts/`, and finds the arch rules. You don't need to point it to specific files. That's the whole point of the MPF: it tells the agent where things are so you can talk in natural language.
+
+> The demo prompts are written in Chinese. The agent follows them regardless and responds in whatever language you write your task in. Add "用中文回复" or "Respond in English" if you want to be explicit.
+
+Check if it worked. The agent should have created files following the architecture workflow:
+
+```bash
+ls .prompts/context/
+# Expected: 01_ARCHITECTURE.md, and possibly adr/, research/, spec/
+```
+
+If you see an Architecture document that identifies modules, references ADRs for cross-cutting decisions, and links to Specs, the prompts are working. That structure came from the rules in `.prompts/rule/arch/`, not from the agent's defaults.
+
+### Build your own registry
+
 ```bash
 # Point to your registry
 clumsies config set registry git@github.com:you/prompt-registry.git
 
-# Register a prompt
+# Register prompts you've refined
 clumsies add .prompts/rule/coding/
 
-# Import a bundle into a new project
+# Import them into another project
 clumsies get my-coding-bundle
-
-# List what's in the registry
-clumsies ls        # bundles
-clumsies ls -p     # prompts
 ```
 
 ## Registry
