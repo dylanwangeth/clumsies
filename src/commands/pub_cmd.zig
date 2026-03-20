@@ -64,12 +64,13 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const sync = result.boolean(S);
 
     if (result.positionals.items.len < 2) {
-        try stderr.print("{s}{s}{s}Error:{s} Meta-prompt file and at least one directory required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}{s}{s}Error:{s} Meta-prompt (file or hash) and at least one directory required\n", .{ P, Color.bold, Color.red, Color.reset });
         try printHelp(stderr);
         return;
     }
 
-    const meta_prompt_path_arg = result.positionals.items[0];
+    const meta_prompt_arg = result.positionals.items[0];
+    const meta_is_hash = isHexString(meta_prompt_arg);
     const dirs = result.positionals.items[1..];
 
     const cwd = std.process.getCwdAlloc(allocator) catch {
@@ -77,25 +78,6 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     };
     defer allocator.free(cwd);
-
-    const meta_prompt_path = if (std.fs.path.isAbsolute(meta_prompt_path_arg))
-        try allocator.dupe(u8, meta_prompt_path_arg)
-    else
-        try std.fs.path.join(allocator, &.{ cwd, meta_prompt_path_arg });
-    defer allocator.free(meta_prompt_path);
-
-    // Read meta-prompt file
-    const meta_file = fs.openFileAbsolute(meta_prompt_path, .{}) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_path_arg });
-        return;
-    };
-    const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
-        meta_file.close();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    meta_file.close();
-    defer allocator.free(meta_content);
 
     // Validate bundle name: must contain at least one non-hex character
     if (isHexString(bundle_name)) {
@@ -136,7 +118,12 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             try std.fs.path.join(allocator, &.{ cwd, dir_arg });
         defer allocator.free(dir_path);
 
-        const group = std.fs.path.basename(dir_arg);
+        const group = commands.deriveGroupFromDir(dir_path) orelse {
+            sp.fail();
+            try stderr.print("{s}{s}{s}Error:{s} Could not derive group from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, dir_arg });
+            try stderr.print("{s}Directory must be under .prompts/ (e.g. .prompts/rule/coding/)\n", .{P});
+            return;
+        };
         collectAndUploadPrompts(allocator, dir_path, group, prompts_dir, &prompt_refs) catch continue;
     }
 
@@ -147,47 +134,110 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
     sp.succeed();
 
-    // Upload meta-prompt file as a regular prompt with group "../"
-    var sp_meta = spinner.init(stdout, "Uploading meta-prompt");
-    sp_meta.start();
+    // Resolve meta-prompt: either a hash reference or a local file
+    var meta_prompt_hash: []const u8 = undefined;
+    var meta_hash_owned = false;
+    defer if (meta_hash_owned) allocator.free(meta_prompt_hash);
 
-    var hash_bytes: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(meta_content, &hash_bytes, .{});
-    var hash_hex: [64]u8 = undefined;
-    hexEncode(&hash_bytes, &hash_hex);
-    const meta_prompt_hash = try allocator.dupe(u8, &hash_hex);
-    defer allocator.free(meta_prompt_hash);
+    if (meta_is_hash) {
+        // Resolve short hash to full hash from prompts/index.json
+        const pidx_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
+        defer allocator.free(pidx_path);
 
-    const meta_dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, meta_prompt_hash });
-    defer allocator.free(meta_dest_path);
+        var resolved: ?[]const u8 = null;
+        if (fs.openFileAbsolute(pidx_path, .{})) |pidx_file| {
+            const pidx_content = pidx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+                pidx_file.close();
+                try stderr.print("{s}{s}{s}Error:{s} Failed to read prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+                return;
+            };
+            pidx_file.close();
+            defer allocator.free(pidx_content);
 
-    const meta_dest_file = fs.createFileAbsolute(meta_dest_path, .{}) catch {
-        sp_meta.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
-    meta_dest_file.writeAll(meta_content) catch {
+            if (std.json.parseFromSlice(std.json.Value, allocator, pidx_content, .{})) |pidx_parsed| {
+                defer pidx_parsed.deinit();
+                if (pidx_parsed.value.object.get("prompts")) |pidx_prompts| {
+                    for (pidx_prompts.array.items) |pitem| {
+                        const pitem_hash = if (pitem.object.get("hash")) |h| h.string else continue;
+                        if (std.mem.startsWith(u8, pitem_hash, meta_prompt_arg)) {
+                            resolved = try allocator.dupe(u8, pitem_hash);
+                            break;
+                        }
+                    }
+                }
+            } else |_| {}
+        } else |_| {}
+
+        if (resolved) |full_hash| {
+            meta_prompt_hash = full_hash;
+            meta_hash_owned = true;
+        } else {
+            try stderr.print("{s}{s}{s}Error:{s} No prompt found matching hash: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_arg });
+            return;
+        }
+    } else {
+        // Local file: read, hash, upload
+        var sp_meta = spinner.init(stdout, "Uploading meta-prompt");
+        sp_meta.start();
+
+        const meta_prompt_path = if (std.fs.path.isAbsolute(meta_prompt_arg))
+            try allocator.dupe(u8, meta_prompt_arg)
+        else
+            try std.fs.path.join(allocator, &.{ cwd, meta_prompt_arg });
+        defer allocator.free(meta_prompt_path);
+
+        const meta_file = fs.openFileAbsolute(meta_prompt_path, .{}) catch {
+            sp_meta.fail();
+            try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_arg });
+            return;
+        };
+        const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            meta_file.close();
+            sp_meta.fail();
+            try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        meta_file.close();
+        defer allocator.free(meta_content);
+
+        var hash_bytes: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(meta_content, &hash_bytes, .{});
+        var hash_hex: [64]u8 = undefined;
+        hexEncode(&hash_bytes, &hash_hex);
+        meta_prompt_hash = try allocator.dupe(u8, &hash_hex);
+        meta_hash_owned = true;
+
+        const meta_dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, meta_prompt_hash });
+        defer allocator.free(meta_dest_path);
+
+        const meta_dest_file = fs.createFileAbsolute(meta_dest_path, .{}) catch {
+            sp_meta.fail();
+            try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        meta_dest_file.writeAll(meta_content) catch {
+            meta_dest_file.close();
+            sp_meta.fail();
+            return;
+        };
         meta_dest_file.close();
-        sp_meta.fail();
-        return;
-    };
-    meta_dest_file.close();
 
-    // Extract meta-prompt name from filename (e.g., "CLAUDE" from "CLAUDE.md")
-    const meta_basename = std.fs.path.basename(meta_prompt_path_arg);
-    const meta_ext_idx = std.mem.lastIndexOf(u8, meta_basename, ".");
-    const meta_name = if (meta_ext_idx) |idx| meta_basename[0..idx] else meta_basename;
-    const meta_format = if (meta_ext_idx) |idx| meta_basename[idx + 1 ..] else "md";
+        // Extract meta-prompt name from filename (e.g., "CLAUDE" from "CLAUDE.md")
+        const meta_basename = std.fs.path.basename(meta_prompt_arg);
+        const meta_ext_idx = std.mem.lastIndexOf(u8, meta_basename, ".");
+        const meta_name = if (meta_ext_idx) |idx| meta_basename[0..idx] else meta_basename;
+        const meta_format = if (meta_ext_idx) |idx| meta_basename[idx + 1 ..] else "md";
 
-    // Add MPF as a PromptRef with group "../"
-    try prompt_refs.append(allocator, .{
-        .hash = try allocator.dupe(u8, meta_prompt_hash),
-        .group = try allocator.dupe(u8, META_PROMPT_GROUP),
-        .name = try allocator.dupe(u8, meta_name),
-        .description = try allocator.dupe(u8, description),
-        .format = try allocator.dupe(u8, meta_format),
-    });
-    sp_meta.succeed();
+        // Add MPF as a PromptRef with group "../"
+        try prompt_refs.append(allocator, .{
+            .hash = try allocator.dupe(u8, meta_prompt_hash),
+            .group = try allocator.dupe(u8, META_PROMPT_GROUP),
+            .name = try allocator.dupe(u8, meta_name),
+            .description = try allocator.dupe(u8, description),
+            .format = try allocator.dupe(u8, meta_format),
+        });
+        sp_meta.succeed();
+    }
 
     // Update prompts/index.json (includes both regular prompts and MPF)
     var sp2 = spinner.init(stdout, "Updating prompts index");
@@ -310,8 +360,8 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies pub <meta-prompt-file> <dirs>... -n <name> [-d <desc>] [-t <task>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}Publish a bundle to registry.\n", .{P});
+    try out.print("{s}Usage: {s}clumsies pub <mpf-file|hash> <dirs>... -n <name> [-d <desc>] [-t <task>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Publish a bundle to registry. MPF can be a local file or a registry hash.\n", .{P});
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-n, --name{s} <name>  Bundle name (required)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-d, --desc{s} <desc>  Description\n", .{ P, Color.cyan, Color.reset });

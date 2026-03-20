@@ -147,12 +147,12 @@ assert "SNAKE_CASE file was imported" test -n "$FOUND"
 
 # 8. pub (bundle)
 step "8. pub bundle"
-mkdir -p "$WORKSPACE/bundle-test/conduct"
-printf "# Conduct Rule\n\nBe nice.\n" > "$WORKSPACE/bundle-test/conduct/00_BE_NICE.md"
-printf "# Test Meta Prompt\n\nThis is a test meta-prompt file.\n" > "$WORKSPACE/bundle-test/META.md"
-PUB_NO_NAME=$("$CLUMSIES" pub bundle-test/META.md bundle-test/conduct -Q 2>&1 || true)
+mkdir -p "$WORKSPACE/.prompts/conduct"
+printf "# Conduct Rule\n\nBe nice.\n" > "$WORKSPACE/.prompts/conduct/00_BE_NICE.md"
+printf "# Test Meta Prompt\n\nThis is a test meta-prompt file.\n" > "$WORKSPACE/META.md"
+PUB_NO_NAME=$("$CLUMSIES" pub META.md .prompts/conduct -Q 2>&1 || true)
 assert_output "pub without -n errors" "Error" "$PUB_NO_NAME"
-"$CLUMSIES" pub bundle-test/META.md bundle-test/conduct -n test-bundle -d "A test bundle" -t testing -Q
+"$CLUMSIES" pub META.md .prompts/conduct -n test-bundle -d "A test bundle" -t testing -Q
 BUNDLES_INDEX="$HOME_DIR/.clumsies/registry/bundles/index.json"
 assert "bundles/index.json exists" test -f "$BUNDLES_INDEX"
 assert_file_contains "bundle name in index" "$BUNDLES_INDEX" "test-bundle"
