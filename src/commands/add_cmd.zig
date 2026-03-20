@@ -204,7 +204,7 @@ fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
     const raw_name = basename[0..name_end];
     const name = stripSequencePrefix(raw_name);
     const description = desc_flag orelse "-";
-    const raw_group = group_flag orelse deriveGroup(abs_path) orelse {
+    const raw_group = group_flag orelse commands.deriveGroupFromFile(abs_path) orelse {
         try stderr.print("{s}{s}{s}Error:{s} Could not derive group from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
         try stderr.print("{s}Use {s}--group{s} to specify a group\n", .{ P, Color.cyan, Color.reset });
         return null;
@@ -250,24 +250,6 @@ fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
     };
 }
 
-/// Derive group from file path by finding `.prompts/` segment.
-/// e.g. ".prompts/conduct/arch/00_FOO.md" → "conduct/arch"
-/// Handles both `/` and `\` separators for Windows compatibility.
-fn deriveGroup(abs_path: []const u8) ?[]const u8 {
-    const marker_fwd = ".prompts/";
-    const marker_bck = ".prompts\\";
-    const idx = std.mem.indexOf(u8, abs_path, marker_fwd) orelse
-        (std.mem.indexOf(u8, abs_path, marker_bck) orelse return null);
-    const after_marker = abs_path[idx + marker_fwd.len ..];
-
-    const last_fwd = std.mem.lastIndexOfScalar(u8, after_marker, '/');
-    const last_bck = std.mem.lastIndexOfScalar(u8, after_marker, '\\');
-    const last_sep = if (last_fwd) |f| (if (last_bck) |b| @max(f, b) else f) else (last_bck orelse return null);
-    const group = after_marker[0..last_sep];
-    if (group.len == 0) return null;
-    return group;
-}
-
 /// Recursively expand a directory into individual file paths
 fn expandDirectory(allocator: std.mem.Allocator, abs_path: []const u8, expanded_paths: *std.ArrayListUnmanaged([]const u8)) void {
     var dir = fs.openDirAbsolute(abs_path, .{ .iterate = true }) catch return;
@@ -299,32 +281,4 @@ fn printHelp(out: *std.io.Writer) !void {
     try out.print("{s}  {s}-s, --sync{s}         Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}    Suppress git output\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-h, --help{s}         Show this help\n", .{ P, Color.cyan, Color.reset });
-}
-
-test "deriveGroup: nested path" {
-    try testing.expectEqualStrings("rule/arch", deriveGroup("/home/user/.prompts/rule/arch/00_FOO.md").?);
-}
-
-test "deriveGroup: single level" {
-    try testing.expectEqualStrings("coding", deriveGroup("/path/.prompts/coding/01_BAR.md").?);
-}
-
-test "deriveGroup: no .prompts marker" {
-    try testing.expect(deriveGroup("/path/to/foo.md") == null);
-}
-
-test "deriveGroup: file directly in .prompts root" {
-    try testing.expect(deriveGroup("/path/.prompts/foo.md") == null);
-}
-
-test "deriveGroup: deep nesting" {
-    try testing.expectEqualStrings("rule/writing/blog", deriveGroup("/x/.prompts/rule/writing/blog/00_STYLE.md").?);
-}
-
-test "deriveGroup: backslash separators" {
-    try testing.expectEqualStrings("rule\\arch", deriveGroup("C:\\Users\\foo\\.prompts\\rule\\arch\\00_FOO.md").?);
-}
-
-test "deriveGroup: backslash single level" {
-    try testing.expectEqualStrings("coding", deriveGroup("C:\\Users\\foo\\.prompts\\coding\\01_BAR.md").?);
 }

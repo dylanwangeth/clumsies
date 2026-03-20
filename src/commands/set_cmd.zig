@@ -843,7 +843,12 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
                 try std.fs.path.join(allocator, &.{ cwd, dir_arg });
             defer allocator.free(dir_path);
 
-            const group = std.fs.path.basename(dir_arg);
+            const group = commands.deriveGroupFromDir(dir_path) orelse {
+                sp_add.fail();
+                try stderr.print("{s}{s}{s}Error:{s} Could not derive group from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, dir_arg });
+                try stderr.print("{s}Directory must be under .prompts/ (e.g. .prompts/rule/coding/)\n", .{P});
+                return;
+            };
             collectAndUploadPrompts(allocator, dir_path, group, prompts_dir, &new_refs) catch continue;
         }
 

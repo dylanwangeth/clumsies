@@ -102,6 +102,89 @@ pub fn printGitOutput(writer: *std.io.Writer, output: *const GitOutput) void {
     }
 }
 
+/// Derive group from a file's absolute path by finding the `.prompts/` segment.
+/// Returns the path between `.prompts/` and the last separator (the file's parent directory).
+/// e.g. "/home/user/.prompts/rule/coding/00_FOO.md" → "rule/coding"
+pub fn deriveGroupFromFile(abs_path: []const u8) ?[]const u8 {
+    const after_marker = findAfterPromptsMarker(abs_path) orelse return null;
+    const last_fwd = std.mem.lastIndexOfScalar(u8, after_marker, '/');
+    const last_bck = std.mem.lastIndexOfScalar(u8, after_marker, '\\');
+    const last_sep = if (last_fwd) |f| (if (last_bck) |b| @max(f, b) else f) else (last_bck orelse return null);
+    const group = after_marker[0..last_sep];
+    if (group.len == 0) return null;
+    return group;
+}
+
+/// Derive group from a directory's absolute path by finding the `.prompts/` segment.
+/// Returns the full path after `.prompts/`.
+/// e.g. "/home/user/.prompts/rule/didactics" → "rule/didactics"
+pub fn deriveGroupFromDir(abs_path: []const u8) ?[]const u8 {
+    const after_marker = findAfterPromptsMarker(abs_path) orelse return null;
+    const trimmed = std.mem.trimRight(u8, after_marker, "/\\");
+    if (trimmed.len == 0) return null;
+    return trimmed;
+}
+
+fn findAfterPromptsMarker(abs_path: []const u8) ?[]const u8 {
+    const marker_fwd = ".prompts/";
+    const marker_bck = ".prompts\\";
+    const idx = std.mem.indexOf(u8, abs_path, marker_fwd) orelse
+        (std.mem.indexOf(u8, abs_path, marker_bck) orelse return null);
+    return abs_path[idx + marker_fwd.len ..];
+}
+
+test "deriveGroupFromFile: nested path" {
+    try testing.expectEqualStrings("rule/arch", deriveGroupFromFile("/home/user/.prompts/rule/arch/00_FOO.md").?);
+}
+
+test "deriveGroupFromFile: single level" {
+    try testing.expectEqualStrings("coding", deriveGroupFromFile("/path/.prompts/coding/01_BAR.md").?);
+}
+
+test "deriveGroupFromFile: no .prompts marker" {
+    try testing.expect(deriveGroupFromFile("/path/to/foo.md") == null);
+}
+
+test "deriveGroupFromFile: file directly in .prompts root" {
+    try testing.expect(deriveGroupFromFile("/path/.prompts/foo.md") == null);
+}
+
+test "deriveGroupFromFile: deep nesting" {
+    try testing.expectEqualStrings("rule/writing/blog", deriveGroupFromFile("/x/.prompts/rule/writing/blog/00_STYLE.md").?);
+}
+
+test "deriveGroupFromFile: backslash separators" {
+    try testing.expectEqualStrings("rule\\arch", deriveGroupFromFile("C:\\Users\\foo\\.prompts\\rule\\arch\\00_FOO.md").?);
+}
+
+test "deriveGroupFromDir: nested path" {
+    try testing.expectEqualStrings("rule/didactics", deriveGroupFromDir("/home/user/.prompts/rule/didactics").?);
+}
+
+test "deriveGroupFromDir: single level" {
+    try testing.expectEqualStrings("conduct", deriveGroupFromDir("/path/.prompts/conduct").?);
+}
+
+test "deriveGroupFromDir: trailing slash" {
+    try testing.expectEqualStrings("rule/coding", deriveGroupFromDir("/path/.prompts/rule/coding/").?);
+}
+
+test "deriveGroupFromDir: no .prompts marker" {
+    try testing.expect(deriveGroupFromDir("/path/to/somedir") == null);
+}
+
+test "deriveGroupFromDir: .prompts root itself" {
+    try testing.expect(deriveGroupFromDir("/path/.prompts/") == null);
+}
+
+test "deriveGroupFromDir: backslash separators" {
+    try testing.expectEqualStrings("rule\\didactics", deriveGroupFromDir("C:\\Users\\foo\\.prompts\\rule\\didactics").?);
+}
+
+test "deriveGroupFromDir: deep nesting" {
+    try testing.expectEqualStrings("rule/pedagogy/advanced", deriveGroupFromDir("/x/.prompts/rule/pedagogy/advanced").?);
+}
+
 test "formatDate: unix epoch" {
     var buf: [10]u8 = undefined;
     try testing.expectEqualStrings("1970-01-01", formatDate(0, &buf));
