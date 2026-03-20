@@ -51,7 +51,7 @@ Metadata lives in `prompts/index.json` and is managed separately:
 | Field | Source |
 |-------|--------|
 | `name` | From filename, prefix stripped. `03_GIT_COMMIT.md` becomes `GIT_COMMIT` |
-| `description` | `--desc` flag, frontmatter `description:` field, or `"-"` |
+| `description` | `--desc` flag, or `"-"` |
 | `group` | `--group` flag, or derived from `.prompts/` path (e.g., `rule/coding`) |
 
 This separation means you can update metadata (rename, re-categorize) without changing the prompt content or its hash.
