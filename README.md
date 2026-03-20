@@ -129,12 +129,6 @@ More on the design in [ARCHITECTURE.md](./ARCHITECTURE.md).
 curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
 ```
 
-**Windows (PowerShell):**
-
-```powershell
-irm https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.ps1 | iex
-```
-
 <details>
 <summary>Manual install</summary>
 
@@ -150,7 +144,7 @@ mkdir -p ~/.clumsies/bin
 mv clumsies-darwin-arm64 ~/.clumsies/bin/clumsies
 ```
 
-Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`, `windows-x86_64`
+Platforms: `darwin-arm64`, `darwin-x86_64`, `linux-arm64`, `linux-x86_64`
 </details>
 
 ## Quick start
