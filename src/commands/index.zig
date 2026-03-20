@@ -8,7 +8,7 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 /// PromptRef represents a prompt reference in a bundle
 pub const PromptRef = struct {
     hash: []const u8,
-    category: []const u8,
+    group: []const u8,
     name: []const u8,
     description: []const u8,
     format: []const u8,
@@ -18,7 +18,7 @@ pub const PromptRef = struct {
 pub fn freePromptRefs(allocator: std.mem.Allocator, refs: *std.ArrayListUnmanaged(PromptRef)) void {
     for (refs.items) |ref| {
         allocator.free(ref.hash);
-        allocator.free(ref.category);
+        allocator.free(ref.group);
         allocator.free(ref.name);
         allocator.free(ref.description);
         allocator.free(ref.format);
@@ -87,16 +87,16 @@ pub fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u
         defer allocator.free(esc_desc);
         const esc_format = try encoding.jsonEscapeAlloc(allocator, ref.format);
         defer allocator.free(esc_format);
-        const esc_category = try encoding.jsonEscapeAlloc(allocator, ref.category);
-        defer allocator.free(esc_category);
+        const esc_group = try encoding.jsonEscapeAlloc(allocator, ref.group);
+        defer allocator.free(esc_group);
 
-        const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}", .{
+        const entry = try std.fmt.allocPrint(allocator, "{s}\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"group\": \"{s}\",\n      \"created_at\": \"{d}\"\n    }}", .{
             if (first) "" else ",",
             ref.hash,
             esc_name,
             esc_desc,
             esc_format,
-            esc_category,
+            esc_group,
             timestamp,
         });
         defer allocator.free(entry);
@@ -117,7 +117,7 @@ pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     const item_name = if (item.object.get("name")) |n| n.string else "-";
     const item_desc = if (item.object.get("description")) |d| d.string else "-";
     const item_format = if (item.object.get("format")) |f| f.string else "md";
-    const item_category = if (item.object.get("category")) |p| p.string else "conduct";
+    const item_group = if (item.object.get("group")) |p| p.string else "conduct";
     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
     const esc_name = try encoding.jsonEscapeAlloc(allocator, item_name);
@@ -126,10 +126,10 @@ pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     defer allocator.free(esc_desc);
     const esc_format = try encoding.jsonEscapeAlloc(allocator, item_format);
     defer allocator.free(esc_format);
-    const esc_category = try encoding.jsonEscapeAlloc(allocator, item_category);
-    defer allocator.free(esc_category);
+    const esc_group = try encoding.jsonEscapeAlloc(allocator, item_group);
+    defer allocator.free(esc_group);
 
-    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, esc_name, esc_desc, esc_format, esc_category, item_created });
+    const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"group\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, esc_name, esc_desc, esc_format, esc_group, item_created });
     defer allocator.free(entry);
     try buf.appendSlice(allocator, entry);
 }
@@ -194,7 +194,7 @@ test "updatePromptsIndex: creates new index from empty" {
         .name = "TEST",
         .description = "a test prompt",
         .format = "md",
-        .category = "rule",
+        .group = "rule",
     }};
     try updatePromptsIndex(testing.allocator, path, &refs);
 
@@ -213,7 +213,7 @@ test "updatePromptsIndex: appends to existing index" {
     defer tmp.cleanup();
     try tmp.dir.makePath("prompts");
     try writeTestFile(tmp.dir, "prompts/index.json",
-        \\{"prompts":[{"hash":"existing1","name":"OLD","description":"-","format":"md","category":"rule","created_at":"0"}]}
+        \\{"prompts":[{"hash":"existing1","name":"OLD","description":"-","format":"md","group":"rule","created_at":"0"}]}
     );
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = tmpDirAbsolutePath(&tmp, &buf);
@@ -223,7 +223,7 @@ test "updatePromptsIndex: appends to existing index" {
         .name = "NEW",
         .description = "new one",
         .format = "md",
-        .category = "cmd",
+        .group = "cmd",
     }};
     try updatePromptsIndex(testing.allocator, path, &refs);
 
@@ -240,7 +240,7 @@ test "updatePromptsIndex: skips duplicate hash" {
     defer tmp.cleanup();
     try tmp.dir.makePath("prompts");
     try writeTestFile(tmp.dir, "prompts/index.json",
-        \\{"prompts":[{"hash":"samehash","name":"OLD","description":"-","format":"md","category":"rule","created_at":"0"}]}
+        \\{"prompts":[{"hash":"samehash","name":"OLD","description":"-","format":"md","group":"rule","created_at":"0"}]}
     );
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = tmpDirAbsolutePath(&tmp, &buf);
@@ -250,7 +250,7 @@ test "updatePromptsIndex: skips duplicate hash" {
         .name = "DUPLICATE",
         .description = "should be skipped",
         .format = "md",
-        .category = "rule",
+        .group = "rule",
     }};
     try updatePromptsIndex(testing.allocator, path, &refs);
 
@@ -274,7 +274,7 @@ test "updatePromptsIndex: escapes special chars in name" {
         .name = "has\"quotes",
         .description = "desc with\nnewline",
         .format = "md",
-        .category = "rule",
+        .group = "rule",
     }};
     try updatePromptsIndex(testing.allocator, path, &refs);
 

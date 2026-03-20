@@ -13,7 +13,7 @@ const printGitOutputRaw = commands.printGitOutputRaw;
 const stripSequencePrefix = commands.stripSequencePrefix;
 const hexEncode = commands.hexEncode;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
-const META_PROMPT_CATEGORY = commands.META_PROMPT_CATEGORY;
+const META_PROMPT_GROUP = commands.META_PROMPT_GROUP;
 const ensureRegistry = commands.ensureRegistry;
 const hasFrontmatter = commands.hasFrontmatter;
 const stripFrontmatter = commands.stripFrontmatter;
@@ -33,7 +33,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const SPECS = [_]flag.FlagSpec{
         .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
         .{ .short = 'd', .long = "desc", .kind = .value },
-        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 'g', .long = "group", .kind = .value },
         .{ .short = 'm', .long = "meta", .kind = .boolean },
         .{ .short = 's', .long = "sync", .kind = .boolean },
     };
@@ -57,11 +57,11 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     defer result.deinit(allocator);
     const quiet_git = result.boolean(Q);
     const desc_flag = result.value(D);
-    var cat_flag = result.value(C);
+    var group_flag = result.value(C);
     const sync = result.boolean(S);
 
     if (result.boolean(META)) {
-        cat_flag = META_PROMPT_CATEGORY;
+        group_flag = META_PROMPT_GROUP;
     }
 
     if (result.positionals.items.len == 0) {
@@ -126,7 +126,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     defer freePromptRefs(allocator, &refs);
 
     for (expanded_paths.items) |file_path| {
-        if (try preparePrompt(stdout, stderr, allocator, prompts_dir, cwd, file_path, desc_flag, cat_flag)) |ref| {
+        if (try preparePrompt(stdout, stderr, allocator, prompts_dir, cwd, file_path, desc_flag, group_flag)) |ref| {
             try refs.append(allocator, ref);
         }
     }
@@ -176,7 +176,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
 }
 
-fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, prompts_dir: []const u8, cwd: []const u8, file_path: []const u8, desc_flag: ?[]const u8, cat_flag: ?[]const u8) !?PromptRef {
+fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, prompts_dir: []const u8, cwd: []const u8, file_path: []const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8) !?PromptRef {
     const abs_path = if (std.fs.path.isAbsolute(file_path))
         try allocator.dupe(u8, file_path)
     else
@@ -196,7 +196,7 @@ fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
     defer allocator.free(raw_content);
 
     const fm = parseFrontmatter(raw_content);
-    const is_meta = if (cat_flag) |c| std.mem.eql(u8, c, META_PROMPT_CATEGORY) else false;
+    const is_meta = if (group_flag) |c| std.mem.eql(u8, c, META_PROMPT_GROUP) else false;
 
     // Meta-prompt files keep frontmatter for round-trip fidelity (pub -> get -> pub)
     const content = if (is_meta) raw_content else stripFrontmatter(raw_content);
@@ -218,20 +218,20 @@ fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
     const raw_name = basename[0..name_end];
     const name = stripSequencePrefix(raw_name);
     const description = desc_flag orelse fm.description orelse "-";
-    const raw_category = cat_flag orelse deriveCategory(abs_path) orelse {
-        try stderr.print("{s}{s}{s}Error:{s} Could not derive category from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
-        try stderr.print("{s}Use {s}--cat{s} to specify a category\n", .{ P, Color.cyan, Color.reset });
+    const raw_group = group_flag orelse deriveGroup(abs_path) orelse {
+        try stderr.print("{s}{s}{s}Error:{s} Could not derive group from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
+        try stderr.print("{s}Use {s}--group{s} to specify a group\n", .{ P, Color.cyan, Color.reset });
         return null;
     };
 
     // Normalize backslashes for cross-platform registry consistency
-    var category_owned: ?[]u8 = null;
-    defer if (category_owned) |c| allocator.free(c);
-    const prompt_category: []const u8 = if (std.mem.indexOfScalar(u8, raw_category, '\\') != null) blk: {
-        category_owned = try allocator.dupe(u8, raw_category);
-        std.mem.replaceScalar(u8, category_owned.?, '\\', '/');
-        break :blk category_owned.?;
-    } else raw_category;
+    var group_owned: ?[]u8 = null;
+    defer if (group_owned) |c| allocator.free(c);
+    const prompt_group: []const u8 = if (std.mem.indexOfScalar(u8, raw_group, '\\') != null) blk: {
+        group_owned = try allocator.dupe(u8, raw_group);
+        std.mem.replaceScalar(u8, group_owned.?, '\\', '/');
+        break :blk group_owned.?;
+    } else raw_group;
 
     // Copy file to registry
     const dest_path = try std.fs.path.join(allocator, &.{ prompts_dir, &hash_hex });
@@ -257,17 +257,17 @@ fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
 
     return .{
         .hash = try allocator.dupe(u8, &hash_hex),
-        .category = try allocator.dupe(u8, prompt_category),
+        .group = try allocator.dupe(u8, prompt_group),
         .name = try allocator.dupe(u8, name),
         .description = try allocator.dupe(u8, description),
         .format = try allocator.dupe(u8, format),
     };
 }
 
-/// Derive category from file path by finding `.prompts/` segment.
+/// Derive group from file path by finding `.prompts/` segment.
 /// e.g. ".prompts/conduct/arch/00_FOO.md" → "conduct/arch"
 /// Handles both `/` and `\` separators for Windows compatibility.
-fn deriveCategory(abs_path: []const u8) ?[]const u8 {
+fn deriveGroup(abs_path: []const u8) ?[]const u8 {
     const marker_fwd = ".prompts/";
     const marker_bck = ".prompts\\";
     const idx = std.mem.indexOf(u8, abs_path, marker_fwd) orelse
@@ -277,9 +277,9 @@ fn deriveCategory(abs_path: []const u8) ?[]const u8 {
     const last_fwd = std.mem.lastIndexOfScalar(u8, after_marker, '/');
     const last_bck = std.mem.lastIndexOfScalar(u8, after_marker, '\\');
     const last_sep = if (last_fwd) |f| (if (last_bck) |b| @max(f, b) else f) else (last_bck orelse return null);
-    const category = after_marker[0..last_sep];
-    if (category.len == 0) return null;
-    return category;
+    const group = after_marker[0..last_sep];
+    if (group.len == 0) return null;
+    return group;
 }
 
 /// Recursively expand a directory into individual file paths
@@ -304,41 +304,41 @@ fn expandDirectory(allocator: std.mem.Allocator, abs_path: []const u8, expanded_
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies add <file|dir>... [-c <cat>] [-m] [-d <desc>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies add <file|dir>... [-g <group>] [-m] [-d <desc>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Register prompt(s) to registry. Directories are expanded to their files.\n", .{P});
     try out.print("{s}Options:\n", .{P});
-    try out.print("{s}  {s}-c, --cat{s} <cat>    Category (derived from .prompts/ path)\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-m, --meta{s}         Register as meta-prompt file (shorthand for -c ../)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-g, --group{s} <group> Group (derived from .prompts/ path)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-m, --meta{s}          Register as meta-prompt file (shorthand for -g ../)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-d, --desc{s} <desc>  Description\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}         Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}    Suppress git output\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-h, --help{s}         Show this help\n", .{ P, Color.cyan, Color.reset });
 }
 
-test "deriveCategory: nested path" {
-    try testing.expectEqualStrings("rule/arch", deriveCategory("/home/user/.prompts/rule/arch/00_FOO.md").?);
+test "deriveGroup: nested path" {
+    try testing.expectEqualStrings("rule/arch", deriveGroup("/home/user/.prompts/rule/arch/00_FOO.md").?);
 }
 
-test "deriveCategory: single level" {
-    try testing.expectEqualStrings("coding", deriveCategory("/path/.prompts/coding/01_BAR.md").?);
+test "deriveGroup: single level" {
+    try testing.expectEqualStrings("coding", deriveGroup("/path/.prompts/coding/01_BAR.md").?);
 }
 
-test "deriveCategory: no .prompts marker" {
-    try testing.expect(deriveCategory("/path/to/foo.md") == null);
+test "deriveGroup: no .prompts marker" {
+    try testing.expect(deriveGroup("/path/to/foo.md") == null);
 }
 
-test "deriveCategory: file directly in .prompts root" {
-    try testing.expect(deriveCategory("/path/.prompts/foo.md") == null);
+test "deriveGroup: file directly in .prompts root" {
+    try testing.expect(deriveGroup("/path/.prompts/foo.md") == null);
 }
 
-test "deriveCategory: deep nesting" {
-    try testing.expectEqualStrings("rule/writing/blog", deriveCategory("/x/.prompts/rule/writing/blog/00_STYLE.md").?);
+test "deriveGroup: deep nesting" {
+    try testing.expectEqualStrings("rule/writing/blog", deriveGroup("/x/.prompts/rule/writing/blog/00_STYLE.md").?);
 }
 
-test "deriveCategory: backslash separators" {
-    try testing.expectEqualStrings("rule\\arch", deriveCategory("C:\\Users\\foo\\.prompts\\rule\\arch\\00_FOO.md").?);
+test "deriveGroup: backslash separators" {
+    try testing.expectEqualStrings("rule\\arch", deriveGroup("C:\\Users\\foo\\.prompts\\rule\\arch\\00_FOO.md").?);
 }
 
-test "deriveCategory: backslash single level" {
-    try testing.expectEqualStrings("coding", deriveCategory("C:\\Users\\foo\\.prompts\\coding\\01_BAR.md").?);
+test "deriveGroup: backslash single level" {
+    try testing.expectEqualStrings("coding", deriveGroup("C:\\Users\\foo\\.prompts\\coding\\01_BAR.md").?);
 }

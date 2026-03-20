@@ -47,7 +47,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             return;
         } else if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--name") or
             std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--desc") or
-            std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--cat") or
+            std.mem.eql(u8, arg, "-g") or std.mem.eql(u8, arg, "--group") or
             std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--file") or
             std.mem.eql(u8, arg, "--meta"))
         {
@@ -87,7 +87,7 @@ fn setPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     const PROMPT_SPECS = [_]flag.FlagSpec{
         .{ .short = 'n', .long = "name", .kind = .value },
         .{ .short = 'd', .long = "desc", .kind = .value },
-        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 'g', .long = "group", .kind = .value },
         .{ .short = 'f', .long = "file", .kind = .value },
         .{ .short = null, .long = "all", .kind = .boolean },
         .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
@@ -113,36 +113,36 @@ fn setPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     defer parsed.deinit(allocator);
     const name_flag = parsed.value(N);
     const desc_flag = parsed.value(D);
-    const cat_flag = parsed.value(C);
+    const group_flag = parsed.value(C);
     const file_flag = parsed.value(F);
     const all_flag = parsed.boolean(ALL);
     const p_quiet_git = parsed.boolean(Q);
 
-    // --all requires --cat
-    if (all_flag and cat_flag == null) {
-        try stderr.print("{s}{s}{s}Error:{s} --all requires --cat\n", .{ P, Color.bold, Color.red, Color.reset });
+    // --all requires --group
+    if (all_flag and group_flag == null) {
+        try stderr.print("{s}{s}{s}Error:{s} --all requires --group\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
 
-    // --all with --cat: batch rename category (like old rename-cat)
-    if (all_flag and cat_flag != null) {
-        try renameCatFromRef(stdout, stderr, allocator, registry_path, hash, cat_flag.?, p_quiet_git);
+    // --all with --group: batch rename group (like old rename-group)
+    if (all_flag and group_flag != null) {
+        try renameGroupFromRef(stdout, stderr, allocator, registry_path, hash, group_flag.?, p_quiet_git);
         return;
     }
 
     if (file_flag != null) {
-        try replacePrompt(stdout, stderr, allocator, registry_path, hash, file_flag.?, desc_flag, cat_flag, p_quiet_git);
+        try replacePrompt(stdout, stderr, allocator, registry_path, hash, file_flag.?, desc_flag, group_flag, p_quiet_git);
     } else {
-        if (name_flag == null and desc_flag == null and cat_flag == null) {
-            try stderr.print("{s}{s}{s}Error:{s} At least one of -n, -d, -c, or -f required\n", .{ P, Color.bold, Color.red, Color.reset });
-            try stderr.print("{s}Usage: {s}clumsies set <hash> [-n name] [-d desc] [-c cat] [-f file] [--all]{s}\n", .{ P, Color.cyan, Color.reset });
+        if (name_flag == null and desc_flag == null and group_flag == null) {
+            try stderr.print("{s}{s}{s}Error:{s} At least one of -n, -d, -g, or -f required\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}Usage: {s}clumsies set <hash> [-n name] [-d desc] [-g group] [-f file] [--all]{s}\n", .{ P, Color.cyan, Color.reset });
             return;
         }
-        try updatePromptMeta(stdout, stderr, allocator, registry_path, hash, name_flag, desc_flag, cat_flag, p_quiet_git);
+        try updatePromptMeta(stdout, stderr, allocator, registry_path, hash, name_flag, desc_flag, group_flag, p_quiet_git);
     }
 }
 
-fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, name_flag: ?[]const u8, desc_flag: ?[]const u8, cat_flag: ?[]const u8, quiet_git: bool) !void {
+fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, name_flag: ?[]const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8, quiet_git: bool) !void {
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
     defer allocator.free(index_path);
 
@@ -187,11 +187,11 @@ fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
             found = true;
             const item_name = name_flag orelse (if (item.object.get("name")) |n| n.string else "-");
             const item_desc = desc_flag orelse (if (item.object.get("description")) |d| d.string else "-");
-            const item_category = cat_flag orelse (if (item.object.get("category")) |p| p.string else "conduct");
+            const item_group = group_flag orelse (if (item.object.get("group")) |p| p.string else "conduct");
             const item_format = if (item.object.get("format")) |f| f.string else "md";
             const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
-            const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_category, item_created });
+            const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"group\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, item_group, item_created });
             defer allocator.free(entry);
             try new_index.appendSlice(allocator, entry);
         } else {
@@ -247,10 +247,10 @@ fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
     try stdout.print("{s}Hash: {s}{s}{s}\n", .{ P, Color.cyan, hash, Color.reset });
     if (name_flag) |n| try stdout.print("{s}Name: {s}\n", .{ P, n });
     if (desc_flag) |d| try stdout.print("{s}Description: {s}\n", .{ P, d });
-    if (cat_flag) |c| try stdout.print("{s}Category: {s}\n", .{ P, c });
+    if (group_flag) |g| try stdout.print("{s}Group: {s}\n", .{ P, g });
 }
 
-fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, file_path: []const u8, desc_flag: ?[]const u8, cat_flag: ?[]const u8, quiet_git: bool) !void {
+fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, file_path: []const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8, quiet_git: bool) !void {
     const cwd = std.process.getCwdAlloc(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -326,7 +326,7 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
     }
 
     if (std.mem.eql(u8, old_full_hash.?, &new_hash_hex)) {
-        if (desc_flag == null and cat_flag == null) {
+        if (desc_flag == null and group_flag == null) {
             try stdout.print("{s}{s}{s}!{s} No changes — new file has the same hash\n", .{ P, Color.bold, Color.orange, Color.reset });
             try stdout.print("{s}Hash: {s}{s}{s}\n", .{ P, Color.cyan, new_hash_hex, Color.reset });
             return;
@@ -375,10 +375,10 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
             const item_name = if (item.object.get("name")) |n| n.string else "-";
             const item_desc = desc_flag orelse (if (item.object.get("description")) |d| d.string else "-");
             const item_format = if (hash_changed) new_format else (if (item.object.get("format")) |f| f.string else "md");
-            const item_category = cat_flag orelse (if (item.object.get("category")) |p| p.string else "conduct");
+            const item_group = group_flag orelse (if (item.object.get("group")) |p| p.string else "conduct");
             const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
-            const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ use_hash, item_name, item_desc, item_format, item_category, item_created });
+            const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"group\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ use_hash, item_name, item_desc, item_format, item_group, item_created });
             defer allocator.free(entry);
             try new_index.appendSlice(allocator, entry);
         } else {
@@ -496,11 +496,11 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
         try stdout.print("{s}Hash: {s}{s}{s} (unchanged)\n", .{ P, Color.cyan, new_hash_hex, Color.reset });
     }
     if (desc_flag) |d| try stdout.print("{s}Description: {s}\n", .{ P, d });
-    if (cat_flag) |c| try stdout.print("{s}Category: {s}\n", .{ P, c });
+    if (group_flag) |g| try stdout.print("{s}Group: {s}\n", .{ P, g });
 }
 
-fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, new_cat: []const u8, quiet_git: bool) !void {
-    // Read prompts/index.json to find the old category of this prompt
+fn renameGroupFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, new_group: []const u8, quiet_git: bool) !void {
+    // Read prompts/index.json to find the old group of this prompt
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
     defer allocator.free(index_path);
 
@@ -528,29 +528,29 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
         return;
     };
 
-    // Find old category from the target prompt
-    var old_cat: ?[]const u8 = null;
+    // Find old group from the target prompt
+    var old_group: ?[]const u8 = null;
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
         if (std.mem.startsWith(u8, item_hash, hash)) {
-            old_cat = if (item.object.get("category")) |c| c.string else "conduct";
+            old_group = if (item.object.get("group")) |c| c.string else "conduct";
             break;
         }
     }
 
-    if (old_cat == null) {
+    if (old_group == null) {
         try stderr.print("{s}{s}{s}Error:{s} Prompt not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
         return;
     }
 
-    const old = old_cat.?;
+    const old = old_group.?;
 
-    if (std.mem.eql(u8, old, new_cat)) {
-        try stderr.print("{s}{s}{s}Error:{s} Old and new category are the same\n", .{ P, Color.bold, Color.red, Color.reset });
+    if (std.mem.eql(u8, old, new_group)) {
+        try stderr.print("{s}{s}{s}Error:{s} Old and new group are the same\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
 
-    // Rename all prompts with old_cat to new_cat
+    // Rename all prompts with old group to new group
     var rename_count: usize = 0;
     var new_index: std.ArrayListUnmanaged(u8) = .{};
     defer new_index.deinit(allocator);
@@ -560,19 +560,19 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
 
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-        const item_category = if (item.object.get("category")) |p| p.string else "conduct";
+        const item_group = if (item.object.get("group")) |p| p.string else "conduct";
 
         if (!first) try new_index.appendSlice(allocator, ",");
         first = false;
 
-        if (std.mem.eql(u8, item_category, old)) {
+        if (std.mem.eql(u8, item_group, old)) {
             rename_count += 1;
             const item_name = if (item.object.get("name")) |n| n.string else "-";
             const item_desc = if (item.object.get("description")) |d| d.string else "-";
             const item_format = if (item.object.get("format")) |f| f.string else "md";
             const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
-            const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"category\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, new_cat, item_created });
+            const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"group\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ item_hash, item_name, item_desc, item_format, new_group, item_created });
             defer allocator.free(entry);
             try new_index.appendSlice(allocator, entry);
         } else {
@@ -652,7 +652,7 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
     } else |_| {}
 
     // Commit and push
-    var sp = spinner.init(stdout, "Renaming category");
+    var sp = spinner.init(stdout, "Renaming group");
     sp.start();
 
     var add_output: GitOutput = .{};
@@ -663,7 +663,7 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
         return;
     };
 
-    const commit_msg = try std.fmt.allocPrint(allocator, "Rename category: {s} -> {s}", .{ old, new_cat });
+    const commit_msg = try std.fmt.allocPrint(allocator, "Rename group: {s} -> {s}", .{ old, new_group });
     defer allocator.free(commit_msg);
 
     var commit_output: GitOutput = .{};
@@ -682,7 +682,7 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
     sp.succeed();
     printGitOutputRaw(&git_output, quiet_git);
 
-    try stdout.print("{s}{s}{s}✓{s} Renamed category: {s} → {s}\n", .{ P, Color.bold, Color.green, Color.reset, old, new_cat });
+    try stdout.print("{s}{s}{s}✓{s} Renamed group: {s} → {s}\n", .{ P, Color.bold, Color.green, Color.reset, old, new_group });
     try stdout.print("{s}  {s}{d}{s} prompt(s) updated\n", .{ P, Color.cyan, rename_count, Color.reset });
 }
 
@@ -843,8 +843,8 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
                 try std.fs.path.join(allocator, &.{ cwd, dir_arg });
             defer allocator.free(dir_path);
 
-            const category = std.fs.path.basename(dir_arg);
-            collectAndUploadPrompts(allocator, dir_path, category, prompts_dir, &new_refs) catch continue;
+            const group = std.fs.path.basename(dir_arg);
+            collectAndUploadPrompts(allocator, dir_path, group, prompts_dir, &new_refs) catch continue;
         }
 
         if (new_refs.items.len == 0) {
@@ -1076,8 +1076,8 @@ fn printHelp(out: *std.io.Writer) !void {
     try out.print("{s}Type is auto-detected: hex = prompt, otherwise = bundle.\n", .{P});
     try out.print("{s}{s}{s}Prompt options:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try out.print("{s}  {s}-n, --name{s} <name>   Rename prompt\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-c, --cat{s} <cat>     Change category\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-c --cat{s} <cat> {s}--all{s}  Rename category for all prompts with same old category\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-g, --group{s} <group>  Change group\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-g --group{s} <group> {s}--all{s}  Rename group for all prompts with same old group\n", .{ P, Color.cyan, Color.reset, Color.cyan, Color.reset });
     try out.print("{s}  {s}-d, --desc{s} <desc>   Change description\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-f, --file{s} <file>   Replace content (produces new hash)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}{s}{s}Bundle options:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });

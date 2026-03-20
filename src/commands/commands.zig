@@ -17,7 +17,7 @@ pub const GitOutput = git.GitOutput;
 
 pub const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 pub const MAX_SEQUENCE_NUMBER: u8 = sequence_mod.MAX_SEQUENCE_NUMBER;
-pub const META_PROMPT_CATEGORY = "../";
+pub const META_PROMPT_GROUP = "../";
 
 pub const Frontmatter = frontmatter_mod.Frontmatter;
 pub const parseFrontmatter = frontmatter_mod.parseFrontmatter;

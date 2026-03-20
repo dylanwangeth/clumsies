@@ -219,7 +219,7 @@ test "resolveRef: hash prefix matches prompt" {
     defer tmp.cleanup();
     try tmp.dir.makePath("prompts");
     try writeTestFile(tmp.dir, "prompts/index.json",
-        \\{"prompts":[{"hash":"abcdef1234567890","name":"FOO","description":"-","format":"md","category":"rule","created_at":"0"}]}
+        \\{"prompts":[{"hash":"abcdef1234567890","name":"FOO","description":"-","format":"md","group":"rule","created_at":"0"}]}
     );
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = tmpDirAbsolutePath(&tmp, &buf);

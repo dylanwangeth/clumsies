@@ -104,20 +104,20 @@ try {
     Assert "config.json exists" { Test-Path $ConfigPath }
     Assert-FileContains "config.json contains registry" $ConfigPath "mock-registry"
 
-    # 2. add with explicit -c
-    Step "2. add with -c flag"
-    & $Clumsies add ".prompts\rule\coding\00_SNAKE_CASE.md" -c "rule/coding" -Q
+    # 2. add with explicit -g
+    Step "2. add with -g flag"
+    & $Clumsies add ".prompts\rule\coding\00_SNAKE_CASE.md" -g "rule/coding" -Q
     $PromptsIndex = Join-Path $HomeDir ".clumsies\registry\prompts\index.json"
     Assert "prompts/index.json exists" { Test-Path $PromptsIndex }
     Assert-FileContains "index has SNAKE_CASE entry" $PromptsIndex "SNAKE_CASE"
-    Assert-FileContains "category uses forward slash" $PromptsIndex "rule/coding"
+    Assert-FileContains "group uses forward slash" $PromptsIndex "rule/coding"
 
-    # 3. add directory (derive category from path)
-    Step "3. add directory (derive category)"
+    # 3. add directory (derive group from path)
+    Step "3. add directory (derive group)"
     & $Clumsies add ".prompts\rule\testing" -Q
     Assert-FileContains "index has TDD entry" $PromptsIndex "TDD"
-    Assert-FileContains "derived category uses forward slash" $PromptsIndex "rule/testing"
-    Assert-FileNotContains "no backslash in categories" $PromptsIndex 'rule\\testing'
+    Assert-FileContains "derived group uses forward slash" $PromptsIndex "rule/testing"
+    Assert-FileNotContains "no backslash in groups" $PromptsIndex 'rule\\testing'
 
     # Extract hash
     $HashLine = Select-String -Path $PromptsIndex -Pattern '"hash": "([a-f0-9]+)"' | Select-Object -First 1

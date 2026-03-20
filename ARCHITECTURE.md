@@ -24,7 +24,7 @@ workspace/
 
 ## 2. Directory Organization
 
-clumsies does not enforce any directory layout. You organize `.prompts/` however you want — the directory names, nesting, and semantics are entirely up to you. clumsies only uses the directory path structurally: it derives the `category` metadata from the path relative to `.prompts/` (e.g., a file in `.prompts/coding/style/` gets category `coding/style`).
+clumsies does not enforce any directory layout. You organize `.prompts/` however you want — the directory names, nesting, and semantics are entirely up to you. clumsies only uses the directory path structurally: it derives the `group` metadata from the path relative to `.prompts/` (e.g., a file in `.prompts/coding/style/` gets group `coding/style`).
 
 The project structure shown above is one example. Here's the reasoning behind that particular layout:
 
@@ -52,7 +52,7 @@ Metadata lives in `prompts/index.json` and is managed separately:
 |-------|--------|
 | `name` | From filename, prefix stripped. `03_GIT_COMMIT.md` becomes `GIT_COMMIT` |
 | `description` | `--desc` flag, frontmatter `description:` field, or `"-"` |
-| `category` | `--cat` flag, or derived from `.prompts/` path (e.g., `rule/coding`) |
+| `group` | `--group` flag, or derived from `.prompts/` path (e.g., `rule/coding`) |
 
 This separation means you can update metadata (rename, re-categorize) without changing the prompt content or its hash.
 
@@ -71,7 +71,7 @@ registry/
     └── index.json
 ```
 
-Meta-prompt files are stored in `prompts/` with `category: "../"`. The `../` convention reflects their position relative to `.prompts/` — they live at the project root, one level above `.prompts/`.
+Meta-prompt files are stored in `prompts/` with `"group": "../"`. The `../` convention reflects their position relative to `.prompts/` — they live at the project root, one level above `.prompts/`.
 
 ### Content-addressable storage
 
@@ -87,7 +87,7 @@ Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The ha
       "name": "git_commit",
       "description": "Git commit message format",
       "format": "md",
-      "category": "rule",
+      "group": "rule",
       "created_at": "1704067200"
     },
     {
@@ -95,14 +95,14 @@ Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The ha
       "name": "CLAUDE",
       "description": "Navigation guide for AI agents",
       "format": "md",
-      "category": "../",
+      "group": "../",
       "created_at": "1704067200"
     }
   ]
 }
 ```
 
-The `../` category entry is a meta-prompt file. On import, it is placed at the project root (e.g., `./CLAUDE.md`) without sequence prefix.
+The `"group": "../"` entry is a meta-prompt file. On import, it is placed at the project root (e.g., `./CLAUDE.md`) without sequence prefix.
 
 ### bundles/index.json
 
@@ -125,7 +125,7 @@ The `../` category entry is a meta-prompt file. On import, it is placed at the p
 }
 ```
 
-The `meta_prompt` field is a convenience pointer to the meta-prompt file's hash; the same hash also appears in the `prompts` array and in `prompts/index.json` with `category: "../"`. Full prompt details come from `prompts/index.json`.
+The `meta_prompt` field is a convenience pointer to the meta-prompt file's hash; the same hash also appears in the `prompts` array and in `prompts/index.json` with `"group": "../"`. Full prompt details come from `prompts/index.json`.
 
 ### Sequence numbers on import
 
