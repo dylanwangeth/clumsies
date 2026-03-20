@@ -23,7 +23,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const REG = 4;
     const SPECS = [_]flag.FlagSpec{
         .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
-        .{ .short = 'c', .long = "cat", .kind = .multi_value },
+        .{ .short = 'g', .long = "group", .kind = .multi_value },
         .{ .short = 'r', .long = "remote-url", .kind = .value },
         .{ .short = 's', .long = "sync", .kind = .boolean },
         .{ .short = null, .long = "registry", .kind = .value },
@@ -47,14 +47,14 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     };
     defer result.deinit(allocator);
     const quiet_git = result.boolean(Q);
-    const cat_filters = result.multiValues(C);
+    const group_filters = result.multiValues(C);
     const remote_url = result.value(R);
     const sync = result.boolean(S);
     const registry_override = result.value(REG);
     const refs = result.positionals.items;
 
-    if (refs.len == 0 and cat_filters.len == 0) {
-        try stderr.print("{s}{s}{s}Error:{s} Reference or --cat required\n", .{ P, Color.bold, Color.red, Color.reset });
+    if (refs.len == 0 and group_filters.len == 0) {
+        try stderr.print("{s}{s}{s}Error:{s} Reference or --group required\n", .{ P, Color.bold, Color.red, Color.reset });
         try printHelp(stderr);
         return;
     }
@@ -72,7 +72,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             },
             .prompt => {},
             .not_found => {
-                if (cat_filters.len == 0) {
+                if (group_filters.len == 0) {
                     try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, refs[0] });
                     return;
                 }
@@ -80,10 +80,10 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         }
     }
 
-    try getPrompts(stdout, stderr, allocator, registry_path, refs, cat_filters);
+    try getPrompts(stdout, stderr, allocator, registry_path, refs, group_filters);
 }
 
-fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash_args: []const []const u8, cat_filters: []const []const u8) !void {
+fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash_args: []const []const u8, group_filters: []const []const u8) !void {
     const prompts_path = commands.getPromptsPath(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine .prompts/ path\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -132,7 +132,7 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
         var found_hash: ?[]const u8 = null;
         var found_name: ?[]const u8 = null;
         var found_format: []const u8 = "md";
-        var found_category: []const u8 = "conduct";
+        var found_group: []const u8 = "conduct";
 
         for (prompts.array.items) |item| {
             const item_hash = if (item.object.get("hash")) |h| h.string else continue;
@@ -140,7 +140,7 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
                 found_hash = item_hash;
                 found_name = if (item.object.get("name")) |n| n.string else null;
                 found_format = if (item.object.get("format")) |f| f.string else "md";
-                found_category = if (item.object.get("category")) |p| p.string else "conduct";
+                found_group = if (item.object.get("group")) |p| p.string else "conduct";
                 break;
             }
         }
@@ -151,42 +151,42 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
             continue;
         }
 
-        switch (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, found_hash.?, found_name, found_format, found_category)) {
+        switch (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, found_hash.?, found_name, found_format, found_group)) {
             .imported => success_count += 1,
             .skipped => {},
             .failed => fail_count += 1,
         }
     }
 
-    // Import by category (prefix match)
-    if (cat_filters.len > 0) {
-        var cat_match_count: usize = 0;
+    // Import by group (prefix match)
+    if (group_filters.len > 0) {
+        var group_match_count: usize = 0;
         for (prompts.array.items) |item| {
             const item_hash = if (item.object.get("hash")) |h| h.string else continue;
             const item_name_opt: ?[]const u8 = if (item.object.get("name")) |n| n.string else null;
             const item_format = if (item.object.get("format")) |f| f.string else "md";
-            const item_category = if (item.object.get("category")) |p| p.string else "conduct";
+            const item_group = if (item.object.get("group")) |p| p.string else "conduct";
 
             var matches = false;
-            for (cat_filters) |cat| {
-                if (std.mem.eql(u8, item_category, cat) or (std.mem.startsWith(u8, item_category, cat) and (cat.len == item_category.len or item_category[cat.len] == '/'))) {
+            for (group_filters) |grp| {
+                if (std.mem.eql(u8, item_group, grp) or (std.mem.startsWith(u8, item_group, grp) and (grp.len == item_group.len or item_group[grp.len] == '/'))) {
                     matches = true;
                     break;
                 }
             }
             if (!matches) continue;
-            cat_match_count += 1;
+            group_match_count += 1;
 
-            switch (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, item_hash, item_name_opt, item_format, item_category)) {
+            switch (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, item_hash, item_name_opt, item_format, item_group)) {
                 .imported => success_count += 1,
                 .skipped => {},
                 .failed => fail_count += 1,
             }
         }
 
-        if (cat_match_count == 0) {
-            for (cat_filters) |cat| {
-                try stderr.print("{s}{s}{s}✗{s} No prompts in category: {s}\n", .{ P, Color.bold, Color.red, Color.reset, cat });
+        if (group_match_count == 0) {
+            for (group_filters) |grp| {
+                try stderr.print("{s}{s}{s}✗{s} No prompts in group: {s}\n", .{ P, Color.bold, Color.red, Color.reset, grp });
             }
         }
     }
@@ -322,14 +322,14 @@ fn importBundlePrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator
     for (prompts_arr.array.items) |ref| {
         const hash = if (ref.object.get("hash")) |h| h.string else continue;
 
-        var category: []const u8 = "conduct";
+        var group: []const u8 = "conduct";
         var prompt_name: ?[]const u8 = null;
         var prompt_format: []const u8 = "md";
         if (prompts_list) |pl| {
             for (pl.array.items) |p| {
                 const p_hash = if (p.object.get("hash")) |ph| ph.string else continue;
                 if (std.mem.eql(u8, p_hash, hash)) {
-                    category = if (p.object.get("category")) |c| c.string else "conduct";
+                    group = if (p.object.get("group")) |c| c.string else "conduct";
                     prompt_name = if (p.object.get("name")) |n| n.string else null;
                     prompt_format = if (p.object.get("format")) |f| f.string else "md";
                     break;
@@ -337,7 +337,7 @@ fn importBundlePrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator
             }
         }
 
-        if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, hash, prompt_name, prompt_format, category) == .imported) {
+        if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, hash, prompt_name, prompt_format, group) == .imported) {
             count += 1;
         }
     }
@@ -346,11 +346,11 @@ fn importBundlePrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies get <ref>... [-c <cat>] [--remote-url <url>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies get <ref>... [-g <group>] [--remote-url <url>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Import prompt(s) or a bundle to local .prompts/.\n", .{P});
     try out.print("{s}Type is auto-detected: hex = prompt, otherwise = bundle.\n", .{P});
     try out.print("{s}Options:\n", .{P});
-    try out.print("{s}  {s}-c, --cat{s} <cat>        Import all prompts in category (prefix match)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-g, --group{s} <group>    Import all prompts in group (prefix match)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--remote-url{s} <url>      Add git remote after bundle import\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--registry{s} <url>         Use a different registry (read-only)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}             Sync registry before command\n", .{ P, Color.cyan, Color.reset });

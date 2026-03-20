@@ -196,14 +196,14 @@ test "combined short boolean flags -psQ" {
     try testing.expect(result.boolean(2));
 }
 
-test "combined short flag + tail value -psc foo" {
+test "combined short flag + tail value -psg foo" {
     const specs = [_]FlagSpec{
         .{ .short = 'p', .long = "prompts", .kind = .boolean },
         .{ .short = 's', .long = "sync", .kind = .boolean },
-        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 'g', .long = "group", .kind = .value },
     };
     var err_ctx: ErrorContext = .{};
-    var result = try parse(&specs, testing.allocator, &.{ "-psc", "conduct" }, &err_ctx);
+    var result = try parse(&specs, testing.allocator, &.{ "-psg", "conduct" }, &err_ctx);
     defer result.deinit(testing.allocator);
     try testing.expect(result.boolean(0));
     try testing.expect(result.boolean(1));
@@ -212,14 +212,14 @@ test "combined short flag + tail value -psc foo" {
 
 test "value flag in middle of combined group errors" {
     const specs = [_]FlagSpec{
-        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 'g', .long = "group", .kind = .value },
         .{ .short = 'p', .long = "prompts", .kind = .boolean },
         .{ .short = 's', .long = "sync", .kind = .boolean },
     };
     var err_ctx: ErrorContext = .{};
-    const result = parse(&specs, testing.allocator, &.{"-cps"}, &err_ctx);
+    const result = parse(&specs, testing.allocator, &.{"-gps"}, &err_ctx);
     try testing.expectError(error.MissingValue, result);
-    try testing.expectEqualStrings("-c", err_ctx.flag.?);
+    try testing.expectEqualStrings("-g", err_ctx.flag.?);
 }
 
 test "unknown flag errors" {
@@ -242,12 +242,12 @@ test "unknown short flag errors" {
     try testing.expectEqualStrings("-x", err_ctx.flag.?);
 }
 
-test "multi_value comma separated -c A,B,C" {
+test "multi_value comma separated -g A,B,C" {
     const specs = [_]FlagSpec{
-        .{ .short = 'c', .long = "cat", .kind = .multi_value },
+        .{ .short = 'g', .long = "group", .kind = .multi_value },
     };
     var err_ctx: ErrorContext = .{};
-    var result = try parse(&specs, testing.allocator, &.{ "-c", "A,B,C" }, &err_ctx);
+    var result = try parse(&specs, testing.allocator, &.{ "-g", "A,B,C" }, &err_ctx);
     defer result.deinit(testing.allocator);
     const vals = result.multiValues(0);
     try testing.expectEqual(@as(usize, 3), vals.len);
@@ -256,12 +256,12 @@ test "multi_value comma separated -c A,B,C" {
     try testing.expectEqualStrings("C", vals[2]);
 }
 
-test "multi_value repeated flag -c A -c B" {
+test "multi_value repeated flag -g A -g B" {
     const specs = [_]FlagSpec{
-        .{ .short = 'c', .long = "cat", .kind = .multi_value },
+        .{ .short = 'g', .long = "group", .kind = .multi_value },
     };
     var err_ctx: ErrorContext = .{};
-    var result = try parse(&specs, testing.allocator, &.{ "-c", "A", "-c", "B" }, &err_ctx);
+    var result = try parse(&specs, testing.allocator, &.{ "-g", "A", "-g", "B" }, &err_ctx);
     defer result.deinit(testing.allocator);
     const vals = result.multiValues(0);
     try testing.expectEqual(@as(usize, 2), vals.len);
@@ -269,12 +269,12 @@ test "multi_value repeated flag -c A -c B" {
     try testing.expectEqualStrings("B", vals[1]);
 }
 
-test "multi_value combo: -c A,B -c C" {
+test "multi_value combo: -g A,B -g C" {
     const specs = [_]FlagSpec{
-        .{ .short = 'c', .long = "cat", .kind = .multi_value },
+        .{ .short = 'g', .long = "group", .kind = .multi_value },
     };
     var err_ctx: ErrorContext = .{};
-    var result = try parse(&specs, testing.allocator, &.{ "-c", "A,B", "-c", "C" }, &err_ctx);
+    var result = try parse(&specs, testing.allocator, &.{ "-g", "A,B", "-g", "C" }, &err_ctx);
     defer result.deinit(testing.allocator);
     const vals = result.multiValues(0);
     try testing.expectEqual(@as(usize, 3), vals.len);
@@ -298,22 +298,22 @@ test "positional args collected" {
 
 test "MissingValue: flag at end without value" {
     const specs = [_]FlagSpec{
-        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 'g', .long = "group", .kind = .value },
     };
     var err_ctx: ErrorContext = .{};
-    const result = parse(&specs, testing.allocator, &.{"-c"}, &err_ctx);
+    const result = parse(&specs, testing.allocator, &.{"-g"}, &err_ctx);
     try testing.expectError(error.MissingValue, result);
-    try testing.expectEqualStrings("-c", err_ctx.flag.?);
+    try testing.expectEqualStrings("-g", err_ctx.flag.?);
 }
 
 test "MissingValue: long flag at end without value" {
     const specs = [_]FlagSpec{
-        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 'g', .long = "group", .kind = .value },
     };
     var err_ctx: ErrorContext = .{};
-    const result = parse(&specs, testing.allocator, &.{"--cat"}, &err_ctx);
+    const result = parse(&specs, testing.allocator, &.{"--group"}, &err_ctx);
     try testing.expectError(error.MissingValue, result);
-    try testing.expectEqualStrings("--cat", err_ctx.flag.?);
+    try testing.expectEqualStrings("--group", err_ctx.flag.?);
 }
 
 test "-h returns HelpRequested" {

@@ -210,7 +210,7 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
         return;
     }
 
-    // Read prompts/index.json for resolving categories to prompts
+    // Read prompts/index.json for resolving groups to prompts
     const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
     defer allocator.free(prompts_index_path);
 
@@ -233,7 +233,7 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
 
     try stdout.print("{s}{s}{s}Prompts ({d}):{s}\n", .{ P, Color.bold, Color.orange, prompts_arr.array.items.len, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}        {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}  {s}HASH{s}      {s}GROUP{s}           {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     for (prompts_arr.array.items) |ref| {
@@ -242,20 +242,20 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
 
         var p_name: []const u8 = "-";
         var p_desc: []const u8 = "-";
-        var p_cat: []const u8 = "-";
+        var p_group: []const u8 = "-";
         if (prompts_list) |pl| {
             for (pl.array.items) |p| {
                 const p_hash = if (p.object.get("hash")) |h| h.string else continue;
                 if (std.mem.eql(u8, p_hash, hash)) {
                     p_name = if (p.object.get("name")) |n| n.string else "-";
                     p_desc = if (p.object.get("description")) |d| d.string else "-";
-                    p_cat = if (p.object.get("category")) |c| c.string else "-";
+                    p_group = if (p.object.get("group")) |c| c.string else "-";
                     break;
                 }
             }
         }
 
-        try stdout.print("{s}  {s}{s: <8}{s}  {s: <14}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, p_cat, p_name, p_desc });
+        try stdout.print("{s}  {s}{s: <8}{s}  {s: <14}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, p_group, p_name, p_desc });
     }
 }
 

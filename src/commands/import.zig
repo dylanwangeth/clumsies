@@ -10,21 +10,21 @@ const Color = styles.Color;
 const P = styles.P;
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const META_PROMPT_CATEGORY = "../";
+const META_PROMPT_GROUP = "../";
 
 pub const PromptRef = index.PromptRef;
 
-/// Import a single prompt file from registry to .prompts/{category}/
+/// Import a single prompt file from registry to .prompts/{group}/
 pub const ImportResult = enum { imported, skipped, failed };
 
-pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, hash: []const u8, name_opt: ?[]const u8, format: []const u8, category: []const u8) !ImportResult {
+pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, hash: []const u8, name_opt: ?[]const u8, format: []const u8, group: []const u8) !ImportResult {
     const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
     defer allocator.free(prompt_file_path);
 
     const name_part = name_opt orelse hash[0..8];
 
-    // Meta-prompt files (category "../") go to project root without sequence prefix
-    if (std.mem.eql(u8, category, META_PROMPT_CATEGORY)) {
+    // Meta-prompt files (group "../") go to project root without sequence prefix
+    if (std.mem.eql(u8, group, META_PROMPT_GROUP)) {
         const cwd = std.process.getCwdAlloc(allocator) catch {
             try stderr.print("{s}{s}{s}✗{s} Failed to determine project root\n", .{ P, Color.bold, Color.red, Color.reset });
             return .failed;
@@ -53,7 +53,7 @@ pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
         return .imported;
     }
 
-    const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, category });
+    const target_dir = try std.fs.path.join(allocator, &.{ prompts_path, group });
     defer allocator.free(target_dir);
     fs.cwd().makePath(target_dir) catch {};
 
@@ -86,7 +86,7 @@ pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
         return .failed;
     };
 
-    try stdout.print("{s}{s}{s}✓{s} {s} → .prompts/{s}/{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, category, dest_filename });
+    try stdout.print("{s}{s}{s}✓{s} {s} → .prompts/{s}/{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, group, dest_filename });
     return .imported;
 }
 
@@ -140,7 +140,7 @@ pub fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8
 
             try refs.append(allocator, .{
                 .hash = hash,
-                .category = try allocator.dupe(u8, base_name),
+                .group = try allocator.dupe(u8, base_name),
                 .name = name,
                 .description = description,
                 .format = format,

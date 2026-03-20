@@ -5,7 +5,7 @@ const testing = std.testing;
 pub const Frontmatter = struct {
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
-    category: ?[]const u8 = null,
+    group: ?[]const u8 = null,
     task: ?[]const u8 = null,
 };
 
@@ -31,9 +31,9 @@ pub fn parseFrontmatter(content: []const u8) Frontmatter {
         } else if (std.mem.startsWith(u8, trimmed, "description:")) {
             const value = std.mem.trim(u8, trimmed[12..], " \t");
             if (value.len > 0) fm.description = value;
-        } else if (std.mem.startsWith(u8, trimmed, "category:")) {
-            const value = std.mem.trim(u8, trimmed[9..], " \t");
-            if (value.len > 0) fm.category = value;
+        } else if (std.mem.startsWith(u8, trimmed, "group:")) {
+            const value = std.mem.trim(u8, trimmed[6..], " \t");
+            if (value.len > 0) fm.group = value;
         } else if (std.mem.startsWith(u8, trimmed, "task:")) {
             const value = std.mem.trim(u8, trimmed[5..], " \t");
             if (value.len > 0) fm.task = value;
@@ -73,11 +73,11 @@ pub fn stripFrontmatter(content: []const u8) []const u8 {
 }
 
 test "parseFrontmatter: all fields" {
-    const content = "---\nname: foo\ndescription: a thing\ncategory: rule/coding\ntask: coding\n---\nbody";
+    const content = "---\nname: foo\ndescription: a thing\ngroup: rule/coding\ntask: coding\n---\nbody";
     const fm = parseFrontmatter(content);
     try testing.expectEqualStrings("foo", fm.name.?);
     try testing.expectEqualStrings("a thing", fm.description.?);
-    try testing.expectEqualStrings("rule/coding", fm.category.?);
+    try testing.expectEqualStrings("rule/coding", fm.group.?);
     try testing.expectEqualStrings("coding", fm.task.?);
 }
 
@@ -86,7 +86,7 @@ test "parseFrontmatter: subset of fields" {
     const fm = parseFrontmatter(content);
     try testing.expect(fm.name == null);
     try testing.expectEqualStrings("only desc", fm.description.?);
-    try testing.expect(fm.category == null);
+    try testing.expect(fm.group == null);
     try testing.expect(fm.task == null);
 }
 

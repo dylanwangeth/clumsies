@@ -102,20 +102,20 @@ step "1. config set registry"
 assert "config.json exists" test -f "$HOME_DIR/.clumsies/config.json"
 assert_file_contains "config.json contains registry" "$HOME_DIR/.clumsies/config.json" "mock-registry"
 
-# 2. add with explicit -c
-step "2. add with -c flag"
-"$CLUMSIES" add .prompts/rule/coding/00_SNAKE_CASE.md -c rule/coding -Q
+# 2. add with explicit -g
+step "2. add with -g flag"
+"$CLUMSIES" add .prompts/rule/coding/00_SNAKE_CASE.md -g rule/coding -Q
 PROMPTS_INDEX="$HOME_DIR/.clumsies/registry/prompts/index.json"
 assert "prompts/index.json exists" test -f "$PROMPTS_INDEX"
 assert_file_contains "index has SNAKE_CASE entry" "$PROMPTS_INDEX" "SNAKE_CASE"
-assert_file_contains "category uses forward slash" "$PROMPTS_INDEX" "rule/coding"
+assert_file_contains "group uses forward slash" "$PROMPTS_INDEX" "rule/coding"
 
-# 3. add directory (derive category from path)
-step "3. add directory (derive category)"
+# 3. add directory (derive group from path)
+step "3. add directory (derive group)"
 "$CLUMSIES" add .prompts/rule/testing/ -Q
 assert_file_contains "index has TDD entry" "$PROMPTS_INDEX" "TDD"
-assert_file_contains "derived category uses forward slash" "$PROMPTS_INDEX" "rule/testing"
-assert_file_not_contains "no backslash in categories" "$PROMPTS_INDEX" 'rule\\testing'
+assert_file_contains "derived group uses forward slash" "$PROMPTS_INDEX" "rule/testing"
+assert_file_not_contains "no backslash in groups" "$PROMPTS_INDEX" 'rule\\testing'
 
 # Extract a hash for later use
 HASH=$(grep -o '"hash": "[a-f0-9]*"' "$PROMPTS_INDEX" | head -1 | cut -d'"' -f4)

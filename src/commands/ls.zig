@@ -6,7 +6,7 @@ const flag = @import("../flags.zig");
 const Color = commands.Color;
 const P = commands.P;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
-const META_PROMPT_CATEGORY = commands.META_PROMPT_CATEGORY;
+const META_PROMPT_GROUP = commands.META_PROMPT_GROUP;
 const ensureRegistry = commands.ensureRegistry;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -19,7 +19,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
         .{ .short = 'p', .long = "prompts", .kind = .boolean },
         .{ .short = 'm', .long = "meta", .kind = .boolean },
-        .{ .short = 'c', .long = "cat", .kind = .value },
+        .{ .short = 'g', .long = "group", .kind = .value },
         .{ .short = 's', .long = "sync", .kind = .boolean },
     };
     var err_ctx: flag.ErrorContext = .{};
@@ -43,31 +43,31 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const quiet_git = result.boolean(Q);
     const show_prompts = result.boolean(P_);
     const show_meta = result.boolean(M);
-    const cat_filter = result.value(C);
+    const group_filter = result.value(C);
     const sync = result.boolean(S);
 
     if (show_meta) {
-        // --meta is sugar for --prompts --cat ../
-        try listPrompts(stdout, stderr, allocator, META_PROMPT_CATEGORY, sync, quiet_git);
+        // --meta is sugar for --prompts --group ../
+        try listPrompts(stdout, stderr, allocator, META_PROMPT_GROUP, sync, quiet_git);
     } else if (show_prompts) {
-        try listPrompts(stdout, stderr, allocator, cat_filter, sync, quiet_git);
+        try listPrompts(stdout, stderr, allocator, group_filter, sync, quiet_git);
     } else {
         try listBundles(stdout, stderr, allocator, sync, quiet_git);
     }
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies ls [-p] [-m] [-c <cat>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies ls [-p] [-m] [-g <group>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Options:\n", .{P});
-    try out.print("{s}  {s}-p, --prompts{s}       List prompts instead of bundles\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-m, --meta{s}          List meta-prompt files (shorthand for -p -c ../)\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-c, --cat{s} <cat>     Filter by category\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-p, --prompts{s}        List prompts instead of bundles\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-m, --meta{s}           List meta-prompt files (shorthand for -p -g ../)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-g, --group{s} <group>  Filter by group\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}          Sync registry before listing\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}     Suppress git output\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-h, --help{s}          Show this help\n", .{ P, Color.cyan, Color.reset });
 }
 
-fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, cat_filter: ?[]const u8, sync: bool, quiet_git: bool) !void {
+fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, group_filter: ?[]const u8, sync: bool, quiet_git: bool) !void {
     const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git, null) catch return;
     defer allocator.free(registry_path);
 
@@ -104,15 +104,15 @@ fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
 
     try stdout.print("{s}{s}{s}Prompts in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}HASH{s}      {s}CATEGORY{s}          {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}  {s}HASH{s}      {s}GROUP{s}             {s}NAME{s}                  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}──────────────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     std.mem.sort(std.json.Value, items.array.items, {}, struct {
         fn lessThan(_: void, a: std.json.Value, b: std.json.Value) bool {
-            const a_cat = if (a.object.get("category")) |c| c.string else "";
-            const b_cat = if (b.object.get("category")) |c| c.string else "";
-            const cat_order = std.mem.order(u8, a_cat, b_cat);
-            if (cat_order != .eq) return cat_order == .lt;
+            const a_group = if (a.object.get("group")) |c| c.string else "";
+            const b_group = if (b.object.get("group")) |c| c.string else "";
+            const group_order = std.mem.order(u8, a_group, b_group);
+            if (group_order != .eq) return group_order == .lt;
             const a_name = if (a.object.get("name")) |n| n.string else "";
             const b_name = if (b.object.get("name")) |n| n.string else "";
             return std.mem.order(u8, a_name, b_name) == .lt;
@@ -123,17 +123,17 @@ fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
         const hash = if (item.object.get("hash")) |h| h.string else continue;
         const name = if (item.object.get("name")) |n| n.string else "-";
         const desc = if (item.object.get("description")) |d| d.string else "-";
-        const category = if (item.object.get("category")) |c| c.string else "conduct";
+        const group = if (item.object.get("group")) |c| c.string else "conduct";
 
-        // Apply category filter
-        if (cat_filter) |filter| {
-            if (!std.mem.eql(u8, category, filter) and
-                !(std.mem.startsWith(u8, category, filter) and category.len > filter.len and category[filter.len] == '/'))
+        // Apply group filter
+        if (group_filter) |filter| {
+            if (!std.mem.eql(u8, group, filter) and
+                !(std.mem.startsWith(u8, group, filter) and group.len > filter.len and group[filter.len] == '/'))
                 continue;
         }
 
         const short_hash = if (hash.len > 8) hash[0..8] else hash;
-        try stdout.print("{s}  {s}{s: <8}{s}  {s: <16}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, category, name, desc });
+        try stdout.print("{s}  {s}{s: <8}{s}  {s: <16}  {s: <20}  {s}\n", .{ P, Color.cyan, short_hash, Color.reset, group, name, desc });
     }
 }
 
@@ -174,7 +174,7 @@ fn listBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
 
     try stdout.print("{s}{s}{s}Bundles in registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}──────────────────────────────────────────────────────────────────────────────\n", .{P});
-    try stdout.print("{s}  {s}NAME{s}                  {s}TASK{s}      {s}CATEGORIES{s}  {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
+    try stdout.print("{s}  {s}NAME{s}                  {s}TASK{s}      {s}GROUPS{s}      {s}DESCRIPTION{s}\n", .{ P, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset, Color.orange, Color.reset });
     try stdout.print("{s}──────────────────────────────────────────────────────────────────────────────\n", .{P});
 
     std.mem.sort(std.json.Value, items.array.items, {}, struct {

@@ -17,7 +17,7 @@ const ensureRegistry = commands.ensureRegistry;
 const isHexString = commands.isHexString;
 const bundleExists = commands.bundleExists;
 const PromptRef = commands.PromptRef;
-const META_PROMPT_CATEGORY = commands.META_PROMPT_CATEGORY;
+const META_PROMPT_GROUP = commands.META_PROMPT_GROUP;
 const collectAndUploadPrompts = commands.collectAndUploadPrompts;
 const updatePromptsIndex = commands.updatePromptsIndex;
 const appendBundleEntry = commands.appendBundleEntry;
@@ -139,8 +139,8 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             try std.fs.path.join(allocator, &.{ cwd, dir_arg });
         defer allocator.free(dir_path);
 
-        const category = std.fs.path.basename(dir_arg);
-        collectAndUploadPrompts(allocator, dir_path, category, prompts_dir, &prompt_refs) catch continue;
+        const group = std.fs.path.basename(dir_arg);
+        collectAndUploadPrompts(allocator, dir_path, group, prompts_dir, &prompt_refs) catch continue;
     }
 
     if (prompt_refs.items.len == 0) {
@@ -150,7 +150,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
     sp.succeed();
 
-    // Upload meta-prompt file as a regular prompt with category "../"
+    // Upload meta-prompt file as a regular prompt with group "../"
     var sp_meta = spinner.init(stdout, "Uploading meta-prompt");
     sp_meta.start();
 
@@ -182,10 +182,10 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const meta_name = if (meta_ext_idx) |idx| meta_basename[0..idx] else meta_basename;
     const meta_format = if (meta_ext_idx) |idx| meta_basename[idx + 1 ..] else "md";
 
-    // Add MPF as a PromptRef with category "../"
+    // Add MPF as a PromptRef with group "../"
     try prompt_refs.append(allocator, .{
         .hash = try allocator.dupe(u8, meta_prompt_hash),
-        .category = try allocator.dupe(u8, META_PROMPT_CATEGORY),
+        .group = try allocator.dupe(u8, META_PROMPT_GROUP),
         .name = try allocator.dupe(u8, meta_name),
         .description = try allocator.dupe(u8, description),
         .format = try allocator.dupe(u8, meta_format),
