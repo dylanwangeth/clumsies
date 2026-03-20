@@ -152,17 +152,10 @@ try {
     Step "8. pub bundle"
     New-Item -ItemType Directory -Path "$Workspace\bundle-test\conduct" -Force | Out-Null
     "# Conduct Rule`n`nBe nice.`n" | Set-Content "$Workspace\bundle-test\conduct\00_BE_NICE.md" -Encoding UTF8
-    @"
----
-name: test-bundle
-description: A test bundle
-task: testing
----
-# Test Meta Prompt
-
-This is a test meta-prompt file.
-"@ | Set-Content "$Workspace\bundle-test\META.md" -Encoding UTF8
-    & $Clumsies pub "bundle-test\META.md" "bundle-test\conduct" -Q
+    "# Test Meta Prompt`n`nThis is a test meta-prompt file.`n" | Set-Content "$Workspace\bundle-test\META.md" -Encoding UTF8
+    $PubNoName = & $Clumsies pub "bundle-test\META.md" "bundle-test\conduct" -Q 2>&1 | Out-String
+    Assert-Output "pub without -n errors" "Error" $PubNoName
+    & $Clumsies pub "bundle-test\META.md" "bundle-test\conduct" -n test-bundle -d "A test bundle" -t testing -Q
     $BundlesIndex = Join-Path $HomeDir ".clumsies\registry\bundles\index.json"
     Assert "bundles/index.json exists" { Test-Path $BundlesIndex }
     Assert-FileContains "bundle name in index" $BundlesIndex "test-bundle"

@@ -15,9 +15,6 @@ const hexEncode = commands.hexEncode;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const META_PROMPT_GROUP = commands.META_PROMPT_GROUP;
 const ensureRegistry = commands.ensureRegistry;
-const hasFrontmatter = commands.hasFrontmatter;
-const stripFrontmatter = commands.stripFrontmatter;
-const parseFrontmatter = commands.parseFrontmatter;
 const appendPromptEntry = commands.appendPromptEntry;
 const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 const PromptRef = commands.PromptRef;
@@ -195,19 +192,8 @@ fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
     };
     defer allocator.free(raw_content);
 
-    const fm = parseFrontmatter(raw_content);
-    const is_meta = if (group_flag) |c| std.mem.eql(u8, c, META_PROMPT_GROUP) else false;
-
-    // Meta-prompt files keep frontmatter for round-trip fidelity (pub -> get -> pub)
-    const content = if (is_meta) raw_content else stripFrontmatter(raw_content);
-    const had_frontmatter = if (!is_meta) hasFrontmatter(raw_content) else false;
-
-    if (had_frontmatter) {
-        try stdout.print("{s}{s}Stripped frontmatter from {s}{s}\n", .{ P, Color.dim, file_path, Color.reset });
-    }
-
     var hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(content, &hash, .{});
+    std.crypto.hash.sha2.Sha256.hash(raw_content, &hash, .{});
     var hash_hex: [64]u8 = undefined;
     hexEncode(&hash, &hash_hex);
 
@@ -217,7 +203,7 @@ fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
     const name_end = ext_idx orelse basename.len;
     const raw_name = basename[0..name_end];
     const name = stripSequencePrefix(raw_name);
-    const description = desc_flag orelse fm.description orelse "-";
+    const description = desc_flag orelse "-";
     const raw_group = group_flag orelse deriveGroup(abs_path) orelse {
         try stderr.print("{s}{s}{s}Error:{s} Could not derive group from path: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
         try stderr.print("{s}Use {s}--group{s} to specify a group\n", .{ P, Color.cyan, Color.reset });
@@ -248,7 +234,7 @@ fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
         return null;
     };
     defer dest_file.close();
-    dest_file.writeAll(content) catch {
+    dest_file.writeAll(raw_content) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to write file\n", .{ P, Color.bold, Color.red, Color.reset });
         return null;
     };

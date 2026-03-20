@@ -4,7 +4,6 @@ const testing = std.testing;
 const styles = @import("../styles.zig");
 const git = @import("../git.zig");
 
-const frontmatter_mod = @import("frontmatter.zig");
 const sequence_mod = @import("sequence.zig");
 const encoding_mod = @import("encoding.zig");
 const registry_mod = @import("registry.zig");
@@ -18,11 +17,6 @@ pub const GitOutput = git.GitOutput;
 pub const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 pub const MAX_SEQUENCE_NUMBER: u8 = sequence_mod.MAX_SEQUENCE_NUMBER;
 pub const META_PROMPT_GROUP = "../";
-
-pub const Frontmatter = frontmatter_mod.Frontmatter;
-pub const parseFrontmatter = frontmatter_mod.parseFrontmatter;
-pub const hasFrontmatter = frontmatter_mod.hasFrontmatter;
-pub const stripFrontmatter = frontmatter_mod.stripFrontmatter;
 
 pub const stripSequencePrefix = sequence_mod.stripSequencePrefix;
 pub const findNextSequence = sequence_mod.findNextSequence;

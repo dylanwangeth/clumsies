@@ -7,10 +7,8 @@ const flag = @import("../flags.zig");
 
 const Color = commands.Color;
 const P = commands.P;
-const Frontmatter = commands.Frontmatter;
 const GitOutput = commands.GitOutput;
 const printGitOutputRaw = commands.printGitOutputRaw;
-const parseFrontmatter = commands.parseFrontmatter;
 const hexEncode = commands.hexEncode;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
@@ -25,9 +23,15 @@ const freePromptRefs = commands.freePromptRefs;
 const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    const Q = 0;
-    const S = 1;
+    const N = 0;
+    const D = 1;
+    const T = 2;
+    const Q = 3;
+    const S = 4;
     const SPECS = [_]flag.FlagSpec{
+        .{ .short = 'n', .long = "name", .kind = .value },
+        .{ .short = 'd', .long = "desc", .kind = .value },
+        .{ .short = 't', .long = "task", .kind = .value },
         .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
         .{ .short = 's', .long = "sync", .kind = .boolean },
     };
@@ -49,6 +53,13 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer result.deinit(allocator);
+    const bundle_name = result.value(N) orelse {
+        try stderr.print("{s}{s}{s}Error:{s} -n/--name is required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try printHelp(stderr);
+        return;
+    };
+    const description = result.value(D) orelse "-";
+    const task = result.value(T) orelse "-";
     const quiet_git = result.boolean(Q);
     const sync = result.boolean(S);
 
@@ -85,20 +96,6 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     };
     meta_file.close();
     defer allocator.free(meta_content);
-
-    const fm = parseFrontmatter(meta_content);
-    const bundle_name = fm.name orelse {
-        try stderr.print("{s}{s}{s}Error:{s} Meta-prompt file must have 'name' in frontmatter\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Example:\n", .{P});
-        try stderr.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
-        try stderr.print("{s}  {s}name: my-bundle{s}\n", .{ P, Color.dim, Color.reset });
-        try stderr.print("{s}  {s}description: A starter bundle{s}\n", .{ P, Color.dim, Color.reset });
-        try stderr.print("{s}  {s}task: coding{s}\n", .{ P, Color.dim, Color.reset });
-        try stderr.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
-        return;
-    };
-    const description = fm.description orelse "-";
-    const task = fm.task orelse "-";
 
     // Validate bundle name: must contain at least one non-hex character
     if (isHexString(bundle_name)) {
@@ -313,16 +310,13 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies pub <meta-prompt-file> <dirs>... [-s]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies pub <meta-prompt-file> <dirs>... -n <name> [-d <desc>] [-t <task>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Publish a bundle to registry.\n", .{P});
-    try out.print("{s}The meta-prompt file must have frontmatter with at least 'name':\n", .{P});
-    try out.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
-    try out.print("{s}  {s}name: my-bundle{s}\n", .{ P, Color.dim, Color.reset });
-    try out.print("{s}  {s}description: A starter bundle{s}\n", .{ P, Color.dim, Color.reset });
-    try out.print("{s}  {s}task: coding{s}\n", .{ P, Color.dim, Color.reset });
-    try out.print("{s}  {s}---{s}\n", .{ P, Color.dim, Color.reset });
     try out.print("{s}Options:\n", .{P});
-    try out.print("{s}  {s}-s, --sync{s}       Sync registry before command\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-Q, --quiet-git{s}  Suppress git output\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-h, --help{s}       Show this help\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-n, --name{s} <name>  Bundle name (required)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-d, --desc{s} <desc>  Description\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-t, --task{s} <task>  Task type\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-s, --sync{s}         Sync registry before command\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-Q, --quiet-git{s}    Suppress git output\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}         Show this help\n", .{ P, Color.cyan, Color.reset });
 }
