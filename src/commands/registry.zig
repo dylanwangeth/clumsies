@@ -55,17 +55,19 @@ pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
     return try std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }
 
-/// Ensure registry exists, optionally sync with remote
-/// Caller must free the returned path
-/// If sync=false and registry exists locally, skip network operations (fast path)
-/// If registry doesn't exist, always clones regardless of sync flag
-pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool) ![]const u8 {
-    const registry_info = config.getRegistryInfo(allocator) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
-        try stderr.print("{s}Tip: Use {s}<git-url>#<branch>{s} to specify a branch\n", .{ P, Color.cyan, Color.reset });
-        return error.NoRegistry;
-    };
+/// Ensure registry exists, optionally sync with remote.
+/// If registry_url is provided, use it instead of the configured registry
+/// and cache in ~/.clumsies/cache/<hash>/.
+pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool, registry_url: ?[]const u8) ![]const u8 {
+    const registry_info = if (registry_url) |url|
+        try config.parseRegistryUrl(allocator, url)
+    else
+        config.getRegistryInfo(allocator) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
+            try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
+            try stderr.print("{s}Tip: Use {s}<git-url>#<branch>{s} to specify a branch\n", .{ P, Color.cyan, Color.reset });
+            return error.NoRegistry;
+        };
     defer registry_info.deinit(allocator);
 
     const base_path = getBasePath(allocator) catch {
@@ -74,7 +76,14 @@ pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
     };
     defer allocator.free(base_path);
 
-    const registry_path = try std.fs.path.join(allocator, &.{ base_path, "registry" });
+    // Override: cache in ~/.clumsies/cache/<hash>/ to avoid conflicts
+    const registry_path = if (registry_url != null) blk: {
+        var hash: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(registry_info.url, &hash, .{});
+        var hex: [64]u8 = undefined;
+        encoding.hexEncode(&hash, &hex);
+        break :blk try std.fs.path.join(allocator, &.{ base_path, "cache", hex[0..16] });
+    } else try std.fs.path.join(allocator, &.{ base_path, "registry" });
     errdefer allocator.free(registry_path);
 
     const registry_exists = blk: {

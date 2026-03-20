@@ -20,11 +20,13 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const C = 1;
     const R = 2;
     const S = 3;
+    const REG = 4;
     const SPECS = [_]flag.FlagSpec{
         .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
         .{ .short = 'c', .long = "cat", .kind = .multi_value },
         .{ .short = 'r', .long = "remote-url", .kind = .value },
         .{ .short = 's', .long = "sync", .kind = .boolean },
+        .{ .short = null, .long = "registry", .kind = .value },
     };
     var err_ctx: flag.ErrorContext = .{};
     var result = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
@@ -48,6 +50,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const cat_filters = result.multiValues(C);
     const remote_url = result.value(R);
     const sync = result.boolean(S);
+    const registry_override = result.value(REG);
     const refs = result.positionals.items;
 
     if (refs.len == 0 and cat_filters.len == 0) {
@@ -56,7 +59,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     }
 
-    const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git, registry_override) catch return;
     defer allocator.free(registry_path);
 
     // If first ref resolves as bundle, do bundle import; otherwise prompt import
@@ -349,6 +352,7 @@ fn printHelp(out: *std.io.Writer) !void {
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-c, --cat{s} <cat>        Import all prompts in category (prefix match)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--remote-url{s} <url>      Add git remote after bundle import\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}--registry{s} <url>         Use a different registry (read-only)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-s, --sync{s}             Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}        Suppress git output\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-h, --help{s}             Show this help\n", .{ P, Color.cyan, Color.reset });

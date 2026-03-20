@@ -68,7 +68,7 @@ fn printHelp(out: *std.io.Writer) !void {
 }
 
 fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, cat_filter: ?[]const u8, sync: bool, quiet_git: bool) !void {
-    const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git, null) catch return;
     defer allocator.free(registry_path);
 
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
@@ -138,7 +138,7 @@ fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
 }
 
 fn listBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool) !void {
-    const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git) catch return;
+    const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git, null) catch return;
     defer allocator.free(registry_path);
 
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
