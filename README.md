@@ -83,6 +83,10 @@ graph LR
 
 Prompts get better through real use. You tell the agent "fix this code following rule/coding/ZIG_STYLE", review the output, and find the prompt wasn't specific enough — so you refine it and try again. This cycle repeats until the prompt reliably produces the result you want. Once it's good enough, register it to the registry and reuse it across projects.
 
+You don't have to start from scratch. Good prompts circulate widely — skills marketplaces, GitHub repos, developer communities. They make excellent starting points. But a prompt written for someone else's workflow rarely works perfectly in yours: your team's conventions, your project's constraints, your tool preferences — small differences compound. A shared prompt is a foundation, not a finished product.
+
+This is why clumsies is a personal registry, not a marketplace. The value of a prompt comes from refining it through your own practice. Borrow freely, but own the result.
+
 More on the design in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Install
