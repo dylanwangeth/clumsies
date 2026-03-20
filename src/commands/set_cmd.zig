@@ -70,7 +70,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     switch (kind) {
         .prompt => try setPrompt(stdout, stderr, allocator, registry_path, ref.?, args),
-        .bundle => try setBundle(stdout, stderr, allocator, registry_path, ref.?, args, quiet_git),
+        .bundle => try setBundle(stdout, stderr, allocator, registry_path, ref.?, args),
         .not_found => {
             try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, ref.? });
         },
@@ -686,47 +686,50 @@ fn renameCatFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
     try stdout.print("{s}  {s}{d}{s} prompt(s) updated\n", .{ P, Color.cyan, rename_count, Color.reset });
 }
 
-fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, bundle_name: []const u8, args: []const []const u8, quiet_git: bool) !void {
-    // Parse bundle-specific flags
-    var add_dirs: std.ArrayListUnmanaged([]const u8) = .{};
-    defer add_dirs.deinit(allocator);
-    var rm_prompt_hashes: std.ArrayListUnmanaged([]const u8) = .{};
-    defer rm_prompt_hashes.deinit(allocator);
-    var add_prompt_hashes: std.ArrayListUnmanaged([]const u8) = .{};
-    defer add_prompt_hashes.deinit(allocator);
-    var meta_file_arg: ?[]const u8 = null;
+fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, bundle_name: []const u8, args: []const []const u8) !void {
+    const ADD = 0;
+    const RM = 1;
+    const AP = 2;
+    const META = 3;
+    const D = 4;
+    const BQ = 5;
+    const BUNDLE_SPECS = [_]flag.FlagSpec{
+        .{ .short = null, .long = "add", .kind = .multi_value },
+        .{ .short = null, .long = "rm-prompt", .kind = .multi_value },
+        .{ .short = null, .long = "add-prompt", .kind = .multi_value },
+        .{ .short = null, .long = "meta", .kind = .value },
+        .{ .short = 'd', .long = "desc", .kind = .value },
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+        .{ .short = 's', .long = "sync", .kind = .boolean },
+    };
+    var err_ctx: flag.ErrorContext = .{};
+    var parsed = flag.parse(&BUNDLE_SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
+            try printHelp(stdout);
+            return;
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            try printHelp(stderr);
+            return;
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer parsed.deinit(allocator);
+    const add_dirs = parsed.multiValues(ADD);
+    const rm_prompt_hashes = parsed.multiValues(RM);
+    const add_prompt_hashes = parsed.multiValues(AP);
+    const meta_file_arg = parsed.value(META);
+    const desc_flag = parsed.value(D);
+    const b_quiet_git = parsed.boolean(BQ);
 
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--add")) {
-            i += 1;
-            while (i < args.len and !std.mem.startsWith(u8, args[i], "--")) : (i += 1) {
-                try add_dirs.append(allocator, args[i]);
-            }
-            if (i < args.len) i -= 1;
-        } else if (std.mem.eql(u8, args[i], "--rm-prompt")) {
-            i += 1;
-            while (i < args.len and !std.mem.startsWith(u8, args[i], "--")) : (i += 1) {
-                try rm_prompt_hashes.append(allocator, args[i]);
-            }
-            if (i < args.len) i -= 1;
-        } else if (std.mem.eql(u8, args[i], "--add-prompt")) {
-            i += 1;
-            while (i < args.len and !std.mem.startsWith(u8, args[i], "--")) : (i += 1) {
-                try add_prompt_hashes.append(allocator, args[i]);
-            }
-            if (i < args.len) i -= 1;
-        } else if (std.mem.eql(u8, args[i], "--meta")) {
-            i += 1;
-            if (i < args.len and !std.mem.startsWith(u8, args[i], "--")) {
-                meta_file_arg = args[i];
-            }
-        }
-    }
-
-    if (add_dirs.items.len == 0 and rm_prompt_hashes.items.len == 0 and add_prompt_hashes.items.len == 0 and meta_file_arg == null) {
+    if (add_dirs.len == 0 and rm_prompt_hashes.len == 0 and add_prompt_hashes.len == 0 and meta_file_arg == null and desc_flag == null) {
         try stderr.print("{s}{s}{s}Error:{s} No changes specified\n", .{ P, Color.bold, Color.red, Color.reset });
-        try stderr.print("{s}Usage: {s}clumsies set <bundle> [--add <dirs>] [--rm-prompt <hash>] [--add-prompt <hash>] [--meta <file>]{s}\n", .{ P, Color.cyan, Color.reset });
+        try printHelp(stderr);
         return;
     }
 
@@ -829,11 +832,11 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     var new_refs: std.ArrayListUnmanaged(PromptRef) = .{};
     defer freePromptRefs(allocator, &new_refs);
 
-    if (add_dirs.items.len > 0) {
+    if (add_dirs.len > 0) {
         var sp_add = spinner.init(stdout, "Uploading prompts");
         sp_add.start();
 
-        for (add_dirs.items) |dir_arg| {
+        for (add_dirs) |dir_arg| {
             const dir_path = if (std.fs.path.isAbsolute(dir_arg))
                 try allocator.dupe(u8, dir_arg)
             else
@@ -868,7 +871,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         resolved_add_hashes.deinit(allocator);
     }
 
-    if (add_prompt_hashes.items.len > 0) {
+    if (add_prompt_hashes.len > 0) {
         const pidx_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
         defer allocator.free(pidx_path);
 
@@ -891,7 +894,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
             return;
         };
 
-        for (add_prompt_hashes.items) |add_hash| {
+        for (add_prompt_hashes) |add_hash| {
             var found_full: ?[]const u8 = null;
             for (pidx_prompts.array.items) |pitem| {
                 const pitem_hash = if (pitem.object.get("hash")) |h| h.string else continue;
@@ -929,13 +932,13 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     idx_file.close();
     defer allocator.free(idx_content);
 
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, idx_content, .{}) catch {
+    const idx_parsed = std.json.parseFromSlice(std.json.Value, allocator, idx_content, .{}) catch {
         sp_update.fail();
         return;
     };
-    defer parsed.deinit();
+    defer idx_parsed.deinit();
 
-    const bundles = parsed.value.object.get("bundles") orelse {
+    const bundles = idx_parsed.value.object.get("bundles") orelse {
         sp_update.fail();
         return;
     };
@@ -956,7 +959,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
         if (std.mem.eql(u8, item_name, bundle_name)) {
             const item_task = if (item.object.get("task")) |t| t.string else "-";
-            const item_desc = if (item.object.get("description")) |d| d.string else "-";
+            const item_desc = desc_flag orelse (if (item.object.get("description")) |d| d.string else "-");
             const item_created = if (item.object.get("created_at")) |c| c.string else "0";
             const item_meta = new_meta_hash orelse (if (item.object.get("meta_prompt")) |m| m.string else "");
 
@@ -972,7 +975,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
                     const ref_hash = if (ref.object.get("hash")) |h| h.string else continue;
 
                     var should_remove = false;
-                    for (rm_prompt_hashes.items) |rm_hash| {
+                    for (rm_prompt_hashes) |rm_hash| {
                         if (std.mem.startsWith(u8, ref_hash, rm_hash)) {
                             should_remove = true;
                             prompts_removed += 1;
@@ -1053,14 +1056,15 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
     git.push(allocator, registry_path, &git_output) catch {
         sp_push.fail();
-        printGitOutputRaw(&git_output, quiet_git);
+        printGitOutputRaw(&git_output, b_quiet_git);
         try stderr.print("{s}{s}{s}Warning:{s} Updated locally but failed to push\n", .{ P, Color.bold, Color.orange, Color.reset });
         return;
     };
     sp_push.succeed();
-    printGitOutputRaw(&git_output, quiet_git);
+    printGitOutputRaw(&git_output, b_quiet_git);
 
     try stdout.print("{s}{s}{s}✓{s} Updated bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_name });
+    if (desc_flag != null) try stdout.print("{s}    Description updated\n", .{P});
     if (new_meta_hash != null) try stdout.print("{s}    Meta-prompt updated\n", .{P});
     if (prompts_added > 0) try stdout.print("{s}    Prompts added: {d}\n", .{ P, prompts_added });
     if (prompts_removed > 0) try stdout.print("{s}    Prompts removed: {d}\n", .{ P, prompts_removed });
@@ -1077,10 +1081,11 @@ fn printHelp(out: *std.io.Writer) !void {
     try out.print("{s}  {s}-d, --desc{s} <desc>   Change description\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-f, --file{s} <file>   Replace content (produces new hash)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}{s}{s}Bundle options:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try out.print("{s}  {s}--add{s} <dirs>...         Add prompt files from directories\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}--rm-prompt{s} <hash>...   Remove prompt from bundle\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}--add-prompt{s} <hash>...  Add existing prompt to bundle\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}--meta{s} <file>           Update meta-prompt\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-d, --desc{s} <desc>       Change description\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}--add{s} <dir>[,<dir>]      Add prompt files from directories\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}--rm-prompt{s} <hash>[,...]  Remove prompt from bundle\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}--add-prompt{s} <hash>[,...] Add existing prompt to bundle\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}--meta{s} <file>            Update meta-prompt\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Common options:\n", .{P});
     try out.print("{s}  {s}-s, --sync{s}       Sync registry before command\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-Q, --quiet-git{s}  Suppress git output\n", .{ P, Color.cyan, Color.reset });
