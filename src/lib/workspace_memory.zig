@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const config = @import("config.zig");
 const prompt = @import("prompt.zig");
+const usage_log = @import("usage_log.zig");
 
 pub const MemoryKind = enum {
     pin,
@@ -28,6 +29,46 @@ pub const MemoryItem = struct {
 pub const DiscoverOptions = struct {
     entry_files_override: ?[]const []const u8 = null,
     include_prompts: bool = true,
+};
+
+pub const KnownMemory = struct {
+    id: []const u8,
+    hash: []const u8,
+};
+
+pub const ActivateRequest = struct {
+    ids: []const []const u8,
+    known: []const KnownMemory = &.{},
+    task_id: ?[]const u8 = null,
+    turn_id: ?[]const u8 = null,
+};
+
+pub const ActivatedMemory = struct {
+    id: []const u8,
+    kind: MemoryKind,
+    path: []const u8,
+    name: []const u8,
+    group: ?[]const u8,
+    hash: []const u8,
+    priority: MemoryPriority,
+    changed: bool,
+    content: ?[]const u8,
+};
+
+pub const ActivationResult = struct {
+    items: std.ArrayListUnmanaged(ActivatedMemory) = .empty,
+
+    pub fn deinit(self: *ActivationResult, allocator: std.mem.Allocator) void {
+        for (self.items.items) |item| {
+            allocator.free(item.id);
+            allocator.free(item.path);
+            allocator.free(item.name);
+            if (item.group) |group| allocator.free(group);
+            allocator.free(item.hash);
+            if (item.content) |content| allocator.free(content);
+        }
+        self.items.deinit(allocator);
+    }
 };
 
 pub fn deinitMemoryItems(allocator: std.mem.Allocator, items: *std.ArrayListUnmanaged(MemoryItem)) void {
@@ -83,6 +124,43 @@ pub fn discoverStartupMemory(allocator: std.mem.Allocator, workspace_root: []con
         .entry_files_override = entry_files_override,
         .include_prompts = false,
     });
+}
+
+pub fn listMemory(allocator: std.mem.Allocator, workspace_root: []const u8, options: DiscoverOptions) !std.ArrayListUnmanaged(MemoryItem) {
+    return discoverWorkspaceMemory(allocator, workspace_root, options);
+}
+
+pub fn startupMemory(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    entry_files_override: ?[]const []const u8,
+    known: []const KnownMemory,
+) !ActivationResult {
+    var items = try discoverStartupMemory(allocator, workspace_root, entry_files_override);
+    defer deinitMemoryItems(allocator, &items);
+
+    return try materializeAll(allocator, workspace_root, items.items, known);
+}
+
+pub fn activateMemory(allocator: std.mem.Allocator, workspace_root: []const u8, request: ActivateRequest) !ActivationResult {
+    var inventory = try discoverWorkspaceMemory(allocator, workspace_root, .{});
+    defer deinitMemoryItems(allocator, &inventory);
+
+    var result = try materializeSelection(allocator, workspace_root, inventory.items, request.ids, request.known);
+    errdefer result.deinit(allocator);
+
+    var refs: std.ArrayListUnmanaged(usage_log.ActivationRef) = .empty;
+    defer refs.deinit(allocator);
+    try refs.ensureTotalCapacity(allocator, result.items.items.len);
+    for (result.items.items) |item| {
+        refs.appendAssumeCapacity(.{
+            .id = item.id,
+            .hash = item.hash,
+        });
+    }
+
+    try usage_log.appendActivation(allocator, workspace_root, "activate", request.task_id, request.turn_id, refs.items);
+    return result;
 }
 
 fn maybeAppendNamedFile(
@@ -171,6 +249,103 @@ fn lessThanMemoryItem(_: void, a: MemoryItem, b: MemoryItem) bool {
     return std.mem.order(u8, a.path, b.path) == .lt;
 }
 
+fn materializeAll(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    items: []const MemoryItem,
+    known: []const KnownMemory,
+) !ActivationResult {
+    var result: ActivationResult = .{};
+    errdefer result.deinit(allocator);
+
+    try result.items.ensureTotalCapacity(allocator, items.len);
+    for (items) |item| {
+        try result.items.append(allocator, try materializeItem(allocator, workspace_root, item, knownHashFor(item.id, known)));
+    }
+    return result;
+}
+
+fn materializeSelection(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    inventory: []const MemoryItem,
+    ids: []const []const u8,
+    known: []const KnownMemory,
+) !ActivationResult {
+    var result: ActivationResult = .{};
+    errdefer result.deinit(allocator);
+
+    var seen_ids = std.StringHashMap(void).init(allocator);
+    defer {
+        var key_iter = seen_ids.keyIterator();
+        while (key_iter.next()) |key| allocator.free(@constCast(key.*));
+        seen_ids.deinit();
+    }
+
+    for (ids) |id| {
+        if (seen_ids.contains(id)) continue;
+
+        const seen_key = try allocator.dupe(u8, id);
+        errdefer allocator.free(seen_key);
+        try seen_ids.put(seen_key, {});
+
+        const item = findMemoryById(inventory, id) orelse return error.UnknownMemoryId;
+        try result.items.append(allocator, try materializeItem(allocator, workspace_root, item, knownHashFor(id, known)));
+    }
+
+    return result;
+}
+
+fn materializeItem(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    item: MemoryItem,
+    known_hash: ?[]const u8,
+) !ActivatedMemory {
+    const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, item.hash);
+    const content = if (changed)
+        try readWorkspaceFileAlloc(allocator, workspace_root, item.path)
+    else
+        null;
+    errdefer if (content) |owned| allocator.free(owned);
+
+    return .{
+        .id = try allocator.dupe(u8, item.id),
+        .kind = item.kind,
+        .path = try allocator.dupe(u8, item.path),
+        .name = try allocator.dupe(u8, item.name),
+        .group = if (item.group) |group| try allocator.dupe(u8, group) else null,
+        .hash = try allocator.dupe(u8, item.hash),
+        .priority = item.priority,
+        .changed = changed,
+        .content = content,
+    };
+}
+
+fn readWorkspaceFileAlloc(allocator: std.mem.Allocator, workspace_root: []const u8, rel_path: []const u8) ![]const u8 {
+    const abs_path = try std.fs.path.join(allocator, &.{ workspace_root, rel_path });
+    defer allocator.free(abs_path);
+
+    const file = try std.fs.openFileAbsolute(abs_path, .{});
+    defer file.close();
+
+    return try file.readToEndAlloc(allocator, prompt.MAX_FILE_SIZE);
+}
+
+fn findMemoryById(inventory: []const MemoryItem, id: []const u8) ?MemoryItem {
+    for (inventory) |item| {
+        if (std.mem.eql(u8, item.id, id)) return item;
+    }
+    return null;
+}
+
+fn knownHashFor(id: []const u8, known: []const KnownMemory) ?[]const u8 {
+    for (known) |entry| {
+        if (std.mem.eql(u8, entry.id, id)) return entry.hash;
+    }
+    return null;
+}
+
 fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
     defer file.close();
@@ -226,4 +401,73 @@ test "discoverStartupMemory: excludes prompt files" {
     try testing.expectEqual(@as(usize, 2), items.items.len);
     try testing.expectEqual(MemoryKind.pin, items.items[0].kind);
     try testing.expectEqual(MemoryKind.entry_file, items.items[1].kind);
+}
+
+test "startupMemory: only changed items include content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "PIN.md", "pin memory");
+    try writeFile(tmp.dir, "AGENTS.md", "entry memory");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const pin_hash = try prompt.readFileHashHexAlloc(testing.allocator, try std.fs.path.join(testing.allocator, &.{ root, "PIN.md" }));
+    defer testing.allocator.free(pin_hash);
+
+    var result = try startupMemory(testing.allocator, root, &.{"AGENTS.md"}, &.{
+        .{ .id = "pin:PIN.md", .hash = pin_hash },
+    });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), result.items.items.len);
+    try testing.expect(!result.items.items[0].changed);
+    try testing.expect(result.items.items[0].content == null);
+    try testing.expect(result.items.items[1].changed);
+    try testing.expectEqualStrings("entry memory", result.items.items[1].content.?);
+}
+
+test "activateMemory: deduplicates ids and logs activation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".prompts/rule");
+    try writeFile(tmp.dir, ".prompts/rule/01_NOTE.md", "prompt memory");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var result = try activateMemory(testing.allocator, root, .{
+        .ids = &.{ "prompt:rule/01_NOTE.md", "prompt:rule/01_NOTE.md" },
+        .task_id = "task-1",
+        .turn_id = "turn-2",
+    });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.items.items.len);
+    try testing.expect(result.items.items[0].changed);
+    try testing.expectEqualStrings("prompt memory", result.items.items[0].content.?);
+
+    const log_path = try usage_log.getActivationLogPath(testing.allocator, root);
+    defer testing.allocator.free(log_path);
+    const file = try std.fs.openFileAbsolute(log_path, .{});
+    defer file.close();
+    const content = try file.readToEndAlloc(testing.allocator, 4096);
+    defer testing.allocator.free(content);
+
+    try testing.expect(std.mem.indexOf(u8, content, "\"task_id\":\"task-1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "\"id\":\"prompt:rule/01_NOTE.md\"") != null);
+}
+
+test "activateMemory: unknown id fails" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try testing.expectError(error.UnknownMemoryId, activateMemory(testing.allocator, root, .{
+        .ids = &.{"prompt:missing.md"},
+    }));
 }
