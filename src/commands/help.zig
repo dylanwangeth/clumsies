@@ -23,6 +23,7 @@ pub fn run(stdout: *std.io.Writer) !void {
     try stdout.print("{s}    {s}log{s}       Show commit history\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}{s}{s}Other:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}config{s}    Manage configuration\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}mcp{s}       Start MCP stdio server\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}upgrade{s}   Upgrade to latest version\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}{s}Run {s}clumsies <command> -h{s}{s} for details.{s}\n", .{ P, Color.dim, Color.reset, Color.dim, Color.dim, Color.reset });
 }
