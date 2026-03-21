@@ -14,6 +14,8 @@ const ensureRegistry = commands.ensureRegistry;
 const resolveRef = commands.resolveRef;
 const appendBundleEntry = commands.appendBundleEntry;
 const appendPromptEntry = commands.appendPromptEntry;
+const findPromptByHashPrefix = commands.findPromptByHashPrefix;
+const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
@@ -58,6 +60,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     switch (kind) {
         .prompt => try rmPrompts(stdout, stderr, allocator, registry_path, refs, quiet_git),
         .bundle => try rmBundles(stdout, stderr, allocator, registry_path, refs, quiet_git),
+        .ambiguous_prompt => try printAmbiguousPromptHashError(stderr, refs[0]),
         .not_found => {
             try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, refs[0] });
         },
@@ -95,6 +98,29 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     var removed_hashes: std.ArrayListUnmanaged([]const u8) = .{};
     defer removed_hashes.deinit(allocator);
 
+    for (hash_args) |hash| {
+        switch (findPromptByHashPrefix(prompts, hash)) {
+            .unique => |entry| {
+                var duplicate = false;
+                for (removed_hashes.items) |existing| {
+                    if (std.mem.eql(u8, existing, entry.hash)) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) try removed_hashes.append(allocator, entry.hash);
+            },
+            .ambiguous => {
+                try printAmbiguousPromptHashError(stderr, hash);
+                return;
+            },
+            .not_found => {
+                try stderr.print("{s}{s}{s}Error:{s} No prompt found matching hash: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+                return;
+            },
+        }
+    }
+
     var new_prompts: std.ArrayListUnmanaged(u8) = .{};
     defer new_prompts.deinit(allocator);
 
@@ -105,10 +131,9 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
 
         var should_remove = false;
-        for (hash_args) |hash| {
-            if (std.mem.startsWith(u8, item_hash, hash)) {
+        for (removed_hashes.items) |hash| {
+            if (std.mem.eql(u8, item_hash, hash)) {
                 should_remove = true;
-                try removed_hashes.append(allocator, item_hash);
                 break;
             }
         }
@@ -117,7 +142,13 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
         if (!first) try new_prompts.appendSlice(allocator, ",");
         first = false;
-        try appendPromptEntry(allocator, &new_prompts, item);
+        appendPromptEntry(allocator, &new_prompts, item) catch |err| switch (err) {
+            error.MissingGroup => {
+                try stderr.print("{s}{s}{s}Error:{s} Prompt metadata missing group: {s}\n", .{ P, Color.bold, Color.red, Color.reset, item_hash });
+                return;
+            },
+            else => return err,
+        };
     }
     try new_prompts.appendSlice(allocator, "\n  ]\n}\n");
 

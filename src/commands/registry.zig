@@ -13,7 +13,21 @@ const GitOutput = git.GitOutput;
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-pub const RefKind = enum { prompt, bundle, not_found };
+pub const PromptIndexEntry = struct {
+    hash: []const u8,
+    name: ?[]const u8 = null,
+    description: []const u8 = "-",
+    format: []const u8 = "md",
+    group: ?[]const u8 = null,
+};
+
+pub const PromptMatch = union(enum) {
+    unique: PromptIndexEntry,
+    ambiguous: void,
+    not_found: void,
+};
+
+pub const RefKind = enum { prompt, bundle, ambiguous_prompt, not_found };
 
 pub fn printGitOutputRaw(output: *const GitOutput, quiet: bool) void {
     if (quiet) return;
@@ -155,11 +169,11 @@ pub fn resolveRef(allocator: std.mem.Allocator, registry_path: []const u8, ref: 
         defer parsed.deinit();
 
         const prompts = parsed.value.object.get("prompts") orelse return .not_found;
-        for (prompts.array.items) |item| {
-            const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-            if (std.mem.startsWith(u8, item_hash, ref)) return .prompt;
-        }
-        return .not_found;
+        return switch (findPromptByHashPrefix(prompts, ref)) {
+            .unique => .prompt,
+            .ambiguous => .ambiguous_prompt,
+            .not_found => .not_found,
+        };
     } else {
         const index_path = std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" }) catch return .not_found;
         defer allocator.free(index_path);
@@ -179,6 +193,33 @@ pub fn resolveRef(allocator: std.mem.Allocator, registry_path: []const u8, ref: 
         }
         return .not_found;
     }
+}
+
+pub fn findPromptByHashPrefix(prompts: std.json.Value, prefix: []const u8) PromptMatch {
+    var found: ?PromptIndexEntry = null;
+
+    for (prompts.array.items) |item| {
+        const item_hash = if (item.object.get("hash")) |h| h.string else continue;
+        if (!std.mem.startsWith(u8, item_hash, prefix)) continue;
+
+        if (found != null) return .ambiguous;
+
+        found = .{
+            .hash = item_hash,
+            .name = if (item.object.get("name")) |n| n.string else null,
+            .description = if (item.object.get("description")) |d| d.string else "-",
+            .format = if (item.object.get("format")) |f| f.string else "md",
+            .group = if (item.object.get("group")) |g| g.string else null,
+        };
+    }
+
+    if (found) |entry| return .{ .unique = entry };
+    return .not_found;
+}
+
+pub fn printAmbiguousPromptHashError(stderr: *std.io.Writer, ref: []const u8) !void {
+    try stderr.print("{s}{s}{s}Error:{s} Ambiguous prompt hash prefix: {s}\n", .{ P, Color.bold, Color.red, Color.reset, ref });
+    try stderr.print("{s}Use a longer prefix or the full hash\n", .{P});
 }
 
 /// Check if a bundle exists in the registry by name
@@ -226,6 +267,21 @@ test "resolveRef: hash prefix matches prompt" {
     try testing.expectEqual(RefKind.prompt, resolveRef(testing.allocator, path, "abcdef12"));
 }
 
+test "resolveRef: ambiguous hash prefix returns ambiguous_prompt" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("prompts");
+    try writeTestFile(tmp.dir, "prompts/index.json",
+        \\{"prompts":[
+        \\{"hash":"abcdef1234567890","name":"FOO","description":"-","format":"md","group":"rule","created_at":"0"},
+        \\{"hash":"abcdef99aaaa0000","name":"BAR","description":"-","format":"md","group":"rule","created_at":"0"}
+        \\]}
+    );
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+    try testing.expectEqual(RefKind.ambiguous_prompt, resolveRef(testing.allocator, path, "abcdef"));
+}
+
 test "resolveRef: name matches bundle" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -249,6 +305,44 @@ test "resolveRef: no match returns not_found" {
     const path = tmpDirAbsolutePath(&tmp, &buf);
     try testing.expectEqual(RefKind.not_found, resolveRef(testing.allocator, path, "deadbeef"));
     try testing.expectEqual(RefKind.not_found, resolveRef(testing.allocator, path, "nonexistent"));
+}
+
+test "findPromptByHashPrefix: unique match returns metadata" {
+    const json =
+        \\{"prompts":[{"hash":"abcdef1234567890","name":"FOO","description":"desc","format":"md","group":"rule","created_at":"0"}]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+
+    const prompts = parsed.value.object.get("prompts").?;
+    const match = findPromptByHashPrefix(prompts, "abcdef12");
+    switch (match) {
+        .unique => |entry| {
+            try testing.expectEqualStrings("abcdef1234567890", entry.hash);
+            try testing.expectEqualStrings("FOO", entry.name.?);
+            try testing.expectEqualStrings("desc", entry.description);
+            try testing.expectEqualStrings("md", entry.format);
+            try testing.expectEqualStrings("rule", entry.group.?);
+        },
+        else => return error.UnexpectedResult,
+    }
+}
+
+test "findPromptByHashPrefix: ambiguous prefix returns ambiguous" {
+    const json =
+        \\{"prompts":[
+        \\{"hash":"abcdef1234567890","name":"FOO","description":"-","format":"md","group":"rule","created_at":"0"},
+        \\{"hash":"abcdef99aaaa0000","name":"BAR","description":"-","format":"md","group":"rule","created_at":"0"}
+        \\]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+
+    const prompts = parsed.value.object.get("prompts").?;
+    switch (findPromptByHashPrefix(prompts, "abcdef")) {
+        .ambiguous => {},
+        else => return error.UnexpectedResult,
+    }
 }
 
 test "resolveRef: no index files returns not_found" {

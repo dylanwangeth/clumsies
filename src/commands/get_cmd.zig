@@ -13,6 +13,8 @@ const findNextSequence = commands.findNextSequence;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
 const resolveRef = commands.resolveRef;
+const findPromptByHashPrefix = commands.findPromptByHashPrefix;
+const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 const importPrompt = commands.importPrompt;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -71,6 +73,10 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
                 return;
             },
             .prompt => {},
+            .ambiguous_prompt => {
+                try printAmbiguousPromptHashError(stderr, refs[0]);
+                return;
+            },
             .not_found => {
                 if (group_filters.len == 0) {
                     try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, refs[0] });
@@ -129,29 +135,27 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
 
     // Import by hash
     for (hash_args) |hash| {
-        var found_hash: ?[]const u8 = null;
-        var found_name: ?[]const u8 = null;
-        var found_format: []const u8 = "md";
-        var found_group: []const u8 = "conduct";
+        const entry = switch (findPromptByHashPrefix(prompts, hash)) {
+            .unique => |entry| entry,
+            .ambiguous => {
+                try printAmbiguousPromptHashError(stderr, hash);
+                fail_count += 1;
+                continue;
+            },
+            .not_found => {
+                try stderr.print("{s}{s}{s}✗{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+                fail_count += 1;
+                continue;
+            },
+        };
 
-        for (prompts.array.items) |item| {
-            const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-            if (std.mem.startsWith(u8, item_hash, hash)) {
-                found_hash = item_hash;
-                found_name = if (item.object.get("name")) |n| n.string else null;
-                found_format = if (item.object.get("format")) |f| f.string else "md";
-                found_group = if (item.object.get("group")) |p| p.string else "conduct";
-                break;
-            }
-        }
-
-        if (found_hash == null) {
-            try stderr.print("{s}{s}{s}✗{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+        const group = entry.group orelse {
+            try stderr.print("{s}{s}{s}✗{s} Prompt metadata missing group: {s}\n", .{ P, Color.bold, Color.red, Color.reset, entry.hash });
             fail_count += 1;
             continue;
-        }
+        };
 
-        switch (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, found_hash.?, found_name, found_format, found_group)) {
+        switch (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, entry.hash, entry.name, entry.format, group)) {
             .imported => success_count += 1,
             .skipped => {},
             .failed => fail_count += 1,
@@ -165,7 +169,11 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
             const item_hash = if (item.object.get("hash")) |h| h.string else continue;
             const item_name_opt: ?[]const u8 = if (item.object.get("name")) |n| n.string else null;
             const item_format = if (item.object.get("format")) |f| f.string else "md";
-            const item_group = if (item.object.get("group")) |p| p.string else "conduct";
+            const item_group = if (item.object.get("group")) |p| p.string else {
+                try stderr.print("{s}{s}{s}✗{s} Prompt metadata missing group: {s}\n", .{ P, Color.bold, Color.red, Color.reset, item_hash });
+                fail_count += 1;
+                continue;
+            };
 
             var matches = false;
             for (group_filters) |grp| {
@@ -322,14 +330,14 @@ fn importBundlePrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator
     for (prompts_arr.array.items) |ref| {
         const hash = if (ref.object.get("hash")) |h| h.string else continue;
 
-        var group: []const u8 = "conduct";
+        var group: ?[]const u8 = null;
         var prompt_name: ?[]const u8 = null;
         var prompt_format: []const u8 = "md";
         if (prompts_list) |pl| {
             for (pl.array.items) |p| {
                 const p_hash = if (p.object.get("hash")) |ph| ph.string else continue;
                 if (std.mem.eql(u8, p_hash, hash)) {
-                    group = if (p.object.get("group")) |c| c.string else "conduct";
+                    group = if (p.object.get("group")) |c| c.string else null;
                     prompt_name = if (p.object.get("name")) |n| n.string else null;
                     prompt_format = if (p.object.get("format")) |f| f.string else "md";
                     break;
@@ -337,7 +345,13 @@ fn importBundlePrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator
             }
         }
 
-        if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, hash, prompt_name, prompt_format, group) == .imported) {
+        const resolved_group = group orelse {
+            sp.fail();
+            try stderr.print("{s}{s}{s}Error:{s} Prompt metadata missing group: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+            return error.MissingGroup;
+        };
+
+        if (try importPrompt(stdout, stderr, allocator, registry_path, prompts_path, hash, prompt_name, prompt_format, resolved_group) == .imported) {
             count += 1;
         }
     }

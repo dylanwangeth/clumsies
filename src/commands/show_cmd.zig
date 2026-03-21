@@ -8,6 +8,8 @@ const P = commands.P;
 const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
 const resolveRef = commands.resolveRef;
+const findPromptByHashPrefix = commands.findPromptByHashPrefix;
+const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
@@ -55,6 +57,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     switch (kind) {
         .prompt => try showPrompt(stdout, stderr, allocator, registry_path, ref.?),
         .bundle => try showBundle(stdout, stderr, allocator, registry_path, ref.?, show_meta),
+        .ambiguous_prompt => try printAmbiguousPromptHashError(stderr, ref.?),
         .not_found => {
             try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, ref.? });
         },
@@ -88,24 +91,19 @@ fn showPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
         return;
     };
 
-    var found_hash: ?[]const u8 = null;
-    var found_name: ?[]const u8 = null;
+    const entry = switch (findPromptByHashPrefix(prompts, hash)) {
+        .unique => |entry| entry,
+        .ambiguous => {
+            try printAmbiguousPromptHashError(stderr, hash);
+            return;
+        },
+        .not_found => {
+            try stderr.print("{s}{s}{s}Error:{s} Prompt not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+            return;
+        },
+    };
 
-    for (prompts.array.items) |item| {
-        const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-        if (std.mem.startsWith(u8, item_hash, hash)) {
-            found_hash = item_hash;
-            found_name = if (item.object.get("name")) |n| n.string else null;
-            break;
-        }
-    }
-
-    if (found_hash == null) {
-        try stderr.print("{s}{s}{s}Error:{s} Prompt not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
-        return;
-    }
-
-    const prompt_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", found_hash.? });
+    const prompt_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", entry.hash });
     defer allocator.free(prompt_path);
 
     const prompt_file = fs.openFileAbsolute(prompt_path, .{}) catch {
@@ -120,10 +118,10 @@ fn showPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     };
     defer allocator.free(prompt_content);
 
-    if (found_name) |n| {
+    if (entry.name) |n| {
         try stdout.print("{s}{s}{s}Prompt:{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, n });
     }
-    try stdout.print("{s}{s}Hash:{s} {s}\n", .{ P, Color.orange, Color.reset, found_hash.? });
+    try stdout.print("{s}{s}Hash:{s} {s}\n", .{ P, Color.orange, Color.reset, entry.hash });
     try stdout.print("{s}────────────────────────────────────────────────────────────────────────────\n", .{P});
     try stdout.print("{s}\n", .{prompt_content});
 }

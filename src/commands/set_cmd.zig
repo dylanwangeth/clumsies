@@ -19,6 +19,8 @@ const PromptRef = commands.PromptRef;
 const collectAndUploadPrompts = commands.collectAndUploadPrompts;
 const updatePromptsIndex = commands.updatePromptsIndex;
 const freePromptRefs = commands.freePromptRefs;
+const findPromptByHashPrefix = commands.findPromptByHashPrefix;
+const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 5;
@@ -74,6 +76,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     switch (kind) {
         .prompt => try setPrompt(stdout, stderr, allocator, registry_path, ref.?, args),
         .bundle => try setBundle(stdout, stderr, allocator, registry_path, ref.?, args),
+        .ambiguous_prompt => try printAmbiguousPromptHashError(stderr, ref.?),
         .not_found => {
             try stderr.print("{s}{s}{s}Error:{s} Not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, ref.? });
         },
@@ -145,6 +148,24 @@ fn setPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     }
 }
 
+fn existingPromptGroup(stderr: *std.io.Writer, item: std.json.Value, hash: []const u8) !?[]const u8 {
+    if (item.object.get("group")) |group| return group.string;
+    try stderr.print("{s}{s}{s}Error:{s} Prompt metadata missing group: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
+    return null;
+}
+
+fn appendPromptEntryOrReport(stderr: *std.io.Writer, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !bool {
+    const item_hash = if (item.object.get("hash")) |hash| hash.string else return true;
+    appendPromptEntry(allocator, buf, item) catch |err| switch (err) {
+        error.MissingGroup => {
+            try stderr.print("{s}{s}{s}Error:{s} Prompt metadata missing group: {s}\n", .{ P, Color.bold, Color.red, Color.reset, item_hash });
+            return false;
+        },
+        else => return err,
+    };
+    return true;
+}
+
 fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, name_flag: ?[]const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8, quiet_git: bool) !void {
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
     defer allocator.free(index_path);
@@ -190,7 +211,7 @@ fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
             found = true;
             const item_name = name_flag orelse (if (item.object.get("name")) |n| n.string else "-");
             const item_desc = desc_flag orelse (if (item.object.get("description")) |d| d.string else "-");
-            const item_group = group_flag orelse (if (item.object.get("group")) |p| p.string else "conduct");
+            const item_group = group_flag orelse ((try existingPromptGroup(stderr, item, item_hash)) orelse return);
             const item_format = if (item.object.get("format")) |f| f.string else "md";
             const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
@@ -198,7 +219,7 @@ fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
             defer allocator.free(entry);
             try new_index.appendSlice(allocator, entry);
         } else {
-            try appendPromptEntry(allocator, &new_index, item);
+            if (!(try appendPromptEntryOrReport(stderr, allocator, &new_index, item))) return;
         }
     }
     try new_index.appendSlice(allocator, "\n  ]\n}\n");
@@ -378,14 +399,14 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
             const item_name = if (item.object.get("name")) |n| n.string else "-";
             const item_desc = desc_flag orelse (if (item.object.get("description")) |d| d.string else "-");
             const item_format = if (hash_changed) new_format else (if (item.object.get("format")) |f| f.string else "md");
-            const item_group = group_flag orelse (if (item.object.get("group")) |p| p.string else "conduct");
+            const item_group = group_flag orelse ((try existingPromptGroup(stderr, item, item_hash)) orelse return);
             const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
             const entry = try std.fmt.allocPrint(allocator, "\n    {{\n      \"hash\": \"{s}\",\n      \"name\": \"{s}\",\n      \"description\": \"{s}\",\n      \"format\": \"{s}\",\n      \"group\": \"{s}\",\n      \"created_at\": \"{s}\"\n    }}", .{ use_hash, item_name, item_desc, item_format, item_group, item_created });
             defer allocator.free(entry);
             try new_index.appendSlice(allocator, entry);
         } else {
-            try appendPromptEntry(allocator, &new_index, item);
+            if (!(try appendPromptEntryOrReport(stderr, allocator, &new_index, item))) return;
         }
     }
     try new_index.appendSlice(allocator, "\n  ]\n}\n");
@@ -537,7 +558,7 @@ fn renameGroupFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
         if (std.mem.startsWith(u8, item_hash, hash)) {
-            old_group = if (item.object.get("group")) |c| c.string else "conduct";
+            old_group = (try existingPromptGroup(stderr, item, item_hash)) orelse return;
             break;
         }
     }
@@ -564,7 +585,7 @@ fn renameGroupFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
 
     for (prompts.array.items) |item| {
         const item_hash = if (item.object.get("hash")) |h| h.string else continue;
-        const item_group = if (item.object.get("group")) |p| p.string else "conduct";
+        const item_group = (try existingPromptGroup(stderr, item, item_hash)) orelse return;
 
         if (!first) try new_index.appendSlice(allocator, ",");
         first = false;
@@ -580,7 +601,7 @@ fn renameGroupFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
             defer allocator.free(entry);
             try new_index.appendSlice(allocator, entry);
         } else {
-            try appendPromptEntry(allocator, &new_index, item);
+            if (!(try appendPromptEntryOrReport(stderr, allocator, &new_index, item))) return;
         }
     }
     try new_index.appendSlice(allocator, "\n  ]\n}\n");
@@ -697,8 +718,6 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
             const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
             defer allocator.free(prompts_index_path);
 
-            var resolved_hash: ?[]const u8 = null;
-
             if (fs.openFileAbsolute(prompts_index_path, .{})) |pidx_file| {
                 const pidx_content = pidx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
                     pidx_file.close();
@@ -710,20 +729,19 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
                 if (std.json.parseFromSlice(std.json.Value, allocator, pidx_content, .{})) |pidx_parsed| {
                     defer pidx_parsed.deinit();
                     if (pidx_parsed.value.object.get("prompts")) |pidx_prompts| {
-                        for (pidx_prompts.array.items) |pitem| {
-                            const pitem_hash = if (pitem.object.get("hash")) |h| h.string else continue;
-                            if (std.mem.startsWith(u8, pitem_hash, meta_arg)) {
-                                resolved_hash = try allocator.dupe(u8, pitem_hash);
-                                break;
-                            }
+                        switch (findPromptByHashPrefix(pidx_prompts, meta_arg)) {
+                            .unique => |entry| new_meta_hash = try allocator.dupe(u8, entry.hash),
+                            .ambiguous => {
+                                try printAmbiguousPromptHashError(stderr, meta_arg);
+                                return;
+                            },
+                            .not_found => {},
                         }
                     }
                 } else |_| {}
             } else |_| {}
 
-            if (resolved_hash) |full_hash| {
-                new_meta_hash = full_hash;
-            } else {
+            if (new_meta_hash == null) {
                 try stderr.print("{s}{s}{s}Error:{s} No prompt found matching hash: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_arg });
                 return;
             }
@@ -805,9 +823,13 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 
         var sp_idx = spinner.init(stdout, "Updating prompts index");
         sp_idx.start();
-        updatePromptsIndex(allocator, registry_path, new_refs.items) catch {
+        updatePromptsIndex(allocator, registry_path, new_refs.items) catch |err| {
             sp_idx.fail();
-            try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+            if (err == error.MissingGroup) {
+                try stderr.print("{s}{s}{s}Error:{s} Existing prompt metadata missing group in prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+            } else {
+                try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+            }
             return;
         };
         sp_idx.succeed();
@@ -820,7 +842,13 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         resolved_add_hashes.deinit(allocator);
     }
 
-    if (add_prompt_hashes.len > 0) {
+    var resolved_rm_hashes: std.ArrayListUnmanaged([]const u8) = .{};
+    defer {
+        for (resolved_rm_hashes.items) |h| allocator.free(h);
+        resolved_rm_hashes.deinit(allocator);
+    }
+
+    if (add_prompt_hashes.len > 0 or rm_prompt_hashes.len > 0) {
         const pidx_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
         defer allocator.free(pidx_path);
 
@@ -843,20 +871,31 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
             return;
         };
 
-        for (add_prompt_hashes) |add_hash| {
-            var found_full: ?[]const u8 = null;
-            for (pidx_prompts.array.items) |pitem| {
-                const pitem_hash = if (pitem.object.get("hash")) |h| h.string else continue;
-                if (std.mem.startsWith(u8, pitem_hash, add_hash)) {
-                    found_full = pitem_hash;
-                    break;
-                }
+        for (rm_prompt_hashes) |rm_hash| {
+            switch (findPromptByHashPrefix(pidx_prompts, rm_hash)) {
+                .unique => |entry| try resolved_rm_hashes.append(allocator, try allocator.dupe(u8, entry.hash)),
+                .ambiguous => {
+                    try printAmbiguousPromptHashError(stderr, rm_hash);
+                    return;
+                },
+                .not_found => {
+                    try stderr.print("{s}{s}{s}Error:{s} No prompt found matching hash: {s}\n", .{ P, Color.bold, Color.red, Color.reset, rm_hash });
+                    return;
+                },
             }
-            if (found_full) |full| {
-                try resolved_add_hashes.append(allocator, try allocator.dupe(u8, full));
-            } else {
-                try stderr.print("{s}{s}{s}Error:{s} No prompt found matching hash: {s}\n", .{ P, Color.bold, Color.red, Color.reset, add_hash });
-                return;
+        }
+
+        for (add_prompt_hashes) |add_hash| {
+            switch (findPromptByHashPrefix(pidx_prompts, add_hash)) {
+                .unique => |entry| try resolved_add_hashes.append(allocator, try allocator.dupe(u8, entry.hash)),
+                .ambiguous => {
+                    try printAmbiguousPromptHashError(stderr, add_hash);
+                    return;
+                },
+                .not_found => {
+                    try stderr.print("{s}{s}{s}Error:{s} No prompt found matching hash: {s}\n", .{ P, Color.bold, Color.red, Color.reset, add_hash });
+                    return;
+                },
             }
         }
     }
@@ -926,8 +965,8 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
                     const ref_hash = if (ref.object.get("hash")) |h| h.string else continue;
 
                     var should_remove = false;
-                    for (rm_prompt_hashes) |rm_hash| {
-                        if (std.mem.startsWith(u8, ref_hash, rm_hash)) {
+                    for (resolved_rm_hashes.items) |rm_hash| {
+                        if (std.mem.eql(u8, ref_hash, rm_hash)) {
                             should_remove = true;
                             prompts_removed += 1;
                             break;

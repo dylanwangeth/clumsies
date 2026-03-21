@@ -26,8 +26,12 @@ pub const jsonEscapeAlloc = encoding_mod.jsonEscapeAlloc;
 pub const isHexString = encoding_mod.isHexString;
 
 pub const RefKind = registry_mod.RefKind;
+pub const PromptMatch = registry_mod.PromptMatch;
+pub const PromptIndexEntry = registry_mod.PromptIndexEntry;
 pub const ensureRegistry = registry_mod.ensureRegistry;
 pub const resolveRef = registry_mod.resolveRef;
+pub const findPromptByHashPrefix = registry_mod.findPromptByHashPrefix;
+pub const printAmbiguousPromptHashError = registry_mod.printAmbiguousPromptHashError;
 pub const bundleExists = registry_mod.bundleExists;
 pub const printGitOutputRaw = registry_mod.printGitOutputRaw;
 pub const getBasePath = registry_mod.getBasePath;

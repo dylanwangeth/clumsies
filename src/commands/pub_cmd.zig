@@ -21,6 +21,8 @@ const updatePromptsIndex = commands.updatePromptsIndex;
 const appendBundleEntry = commands.appendBundleEntry;
 const freePromptRefs = commands.freePromptRefs;
 const jsonEscapeAlloc = commands.jsonEscapeAlloc;
+const findPromptByHashPrefix = commands.findPromptByHashPrefix;
+const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const N = 0;
@@ -144,7 +146,6 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         const pidx_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
         defer allocator.free(pidx_path);
 
-        var resolved: ?[]const u8 = null;
         if (fs.openFileAbsolute(pidx_path, .{})) |pidx_file| {
             const pidx_content = pidx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
                 pidx_file.close();
@@ -157,21 +158,22 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
             if (std.json.parseFromSlice(std.json.Value, allocator, pidx_content, .{})) |pidx_parsed| {
                 defer pidx_parsed.deinit();
                 if (pidx_parsed.value.object.get("prompts")) |pidx_prompts| {
-                    for (pidx_prompts.array.items) |pitem| {
-                        const pitem_hash = if (pitem.object.get("hash")) |h| h.string else continue;
-                        if (std.mem.startsWith(u8, pitem_hash, meta_prompt_arg)) {
-                            resolved = try allocator.dupe(u8, pitem_hash);
-                            break;
-                        }
+                    switch (findPromptByHashPrefix(pidx_prompts, meta_prompt_arg)) {
+                        .unique => |entry| {
+                            meta_prompt_hash = try allocator.dupe(u8, entry.hash);
+                            meta_hash_owned = true;
+                        },
+                        .ambiguous => {
+                            try printAmbiguousPromptHashError(stderr, meta_prompt_arg);
+                            return;
+                        },
+                        .not_found => {},
                     }
                 }
             } else |_| {}
         } else |_| {}
 
-        if (resolved) |full_hash| {
-            meta_prompt_hash = full_hash;
-            meta_hash_owned = true;
-        } else {
+        if (!meta_hash_owned) {
             try stderr.print("{s}{s}{s}Error:{s} No prompt found matching hash: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_arg });
             return;
         }
@@ -242,9 +244,13 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     // Update prompts/index.json (includes both regular prompts and MPF)
     var sp2 = spinner.init(stdout, "Updating prompts index");
     sp2.start();
-    updatePromptsIndex(allocator, registry_path, prompt_refs.items) catch {
+    updatePromptsIndex(allocator, registry_path, prompt_refs.items) catch |err| {
         sp2.fail();
-        try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+        if (err == error.MissingGroup) {
+            try stderr.print("{s}{s}{s}Error:{s} Existing prompt metadata missing group in prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+        } else {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+        }
         return;
     };
     sp2.succeed();

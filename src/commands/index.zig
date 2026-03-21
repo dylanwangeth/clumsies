@@ -117,7 +117,7 @@ pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     const item_name = if (item.object.get("name")) |n| n.string else "-";
     const item_desc = if (item.object.get("description")) |d| d.string else "-";
     const item_format = if (item.object.get("format")) |f| f.string else "md";
-    const item_group = if (item.object.get("group")) |p| p.string else "conduct";
+    const item_group = if (item.object.get("group")) |p| p.string else return error.MissingGroup;
     const item_created = if (item.object.get("created_at")) |c| c.string else "0";
 
     const esc_name = try encoding.jsonEscapeAlloc(allocator, item_name);
@@ -285,4 +285,16 @@ test "updatePromptsIndex: escapes special chars in name" {
     const prompts = parsed.value.object.get("prompts").?;
     try testing.expectEqual(@as(usize, 1), prompts.array.items.len);
     try testing.expectEqualStrings("has\"quotes", prompts.array.items[0].object.get("name").?.string);
+}
+
+test "appendPromptEntry: missing group returns error" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"hash":"abc123","name":"TEST","description":"-","format":"md","created_at":"0"}
+    , .{});
+    defer parsed.deinit();
+
+    var buf: std.ArrayListUnmanaged(u8) = .{};
+    defer buf.deinit(testing.allocator);
+
+    try testing.expectError(error.MissingGroup, appendPromptEntry(testing.allocator, &buf, parsed.value));
 }
