@@ -159,9 +159,16 @@ assert_file_contains "bundle name in index" "$BUNDLES_INDEX" "test-bundle"
 # Verify meta_prompt hash points to a file in prompts/, not meta-prompts/
 META_HASH=$(grep -o '"meta_prompt": "[a-f0-9]*"' "$BUNDLES_INDEX" | head -1 | cut -d'"' -f4)
 assert "meta-prompt file in prompts/" test -f "$HOME_DIR/.clumsies/registry/prompts/$META_HASH"
+CONDUCT_HASH=$(grep -B 5 '"name": "BE_NICE"' "$PROMPTS_INDEX" | grep -o '"hash": "[a-f0-9]*"' | head -1 | cut -d'"' -f4)
 
-# 9. get <bundle>
-step "9. get bundle"
+# 9. set <bundle> with trailing ref and dedupe existing prompt
+step "9. set bundle trailing ref + dedupe"
+"$CLUMSIES" set --add-prompt "$CONDUCT_HASH" test-bundle -Q
+BUNDLE_PROMPT_COUNT=$(grep -o "$CONDUCT_HASH" "$BUNDLES_INDEX" | wc -l | tr -d ' ')
+assert "bundle prompt kept unique" test "$BUNDLE_PROMPT_COUNT" = "1"
+
+# 10. get <bundle>
+step "10. get bundle"
 rm -rf "$WORKSPACE/.prompts"
 "$CLUMSIES" get test-bundle -Q
 assert ".prompts/ created" test -d "$WORKSPACE/.prompts"
@@ -169,15 +176,14 @@ CONDUCT_FILE=$(find "$WORKSPACE/.prompts" -name "*BE_NICE*" -type f 2>/dev/null 
 assert "bundle prompt imported" test -n "$CONDUCT_FILE"
 assert "meta-prompt created at project root" test -f "$WORKSPACE/META.md"
 
-# 10. set <hash> -d "new description"
-step "10. set metadata"
-CONDUCT_HASH=$(grep -o '"hash": "[a-f0-9]*"' "$PROMPTS_INDEX" | tail -1 | cut -d'"' -f4)
+# 11. set <hash> -d "new description"
+step "11. set metadata"
 CONDUCT_SHORT="${CONDUCT_HASH:0:8}"
 "$CLUMSIES" set "$CONDUCT_SHORT" -d "Updated description" -Q
 assert_file_contains "description updated" "$PROMPTS_INDEX" "Updated description"
 
-# 11. rm <hash>
-step "11. rm prompt"
+# 12. rm <hash>
+step "12. rm prompt"
 "$CLUMSIES" rm "$CONDUCT_SHORT" -Q
 assert_file_not_contains "prompt removed from index" "$PROMPTS_INDEX" "$CONDUCT_HASH"
 assert "prompt file deleted" test ! -f "$HOME_DIR/.clumsies/registry/prompts/$CONDUCT_HASH"
