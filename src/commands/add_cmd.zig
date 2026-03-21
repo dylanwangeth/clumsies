@@ -130,8 +130,12 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     if (refs.items.len == 0) return;
 
-    updatePromptsIndex(allocator, registry_path, refs.items) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+    updatePromptsIndex(allocator, registry_path, refs.items) catch |err| {
+        if (err == error.MissingGroup) {
+            try stderr.print("{s}{s}{s}Error:{s} Existing prompt metadata missing group in prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+        } else {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to update prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
+        }
         return;
     };
 

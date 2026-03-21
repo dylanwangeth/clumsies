@@ -123,10 +123,11 @@ fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
         const hash = if (item.object.get("hash")) |h| h.string else continue;
         const name = if (item.object.get("name")) |n| n.string else "-";
         const desc = if (item.object.get("description")) |d| d.string else "-";
-        const group = if (item.object.get("group")) |c| c.string else "conduct";
+        const group = if (item.object.get("group")) |c| c.string else "<missing>";
 
         // Apply group filter
         if (group_filter) |filter| {
+            if (!item.object.contains("group")) continue;
             if (!std.mem.eql(u8, group, filter) and
                 !(std.mem.startsWith(u8, group, filter) and group.len > filter.len and group[filter.len] == '/'))
                 continue;

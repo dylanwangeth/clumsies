@@ -94,6 +94,9 @@ mkdir -p "$WORKSPACE/.prompts/rule/coding"
 printf "# Test Coding Rule\n\nAlways use snake_case.\n" > "$WORKSPACE/.prompts/rule/coding/00_SNAKE_CASE.md"
 mkdir -p "$WORKSPACE/.prompts/rule/testing"
 printf "# Test Testing Rule\n\nWrite tests first.\n" > "$WORKSPACE/.prompts/rule/testing/00_TDD.md"
+mkdir -p "$WORKSPACE/.prompts/rule/ambiguous"
+printf "# Prompt 264\n\ncontent 264\n" > "$WORKSPACE/.prompts/rule/ambiguous/00_ALPHA.md"
+printf "# Prompt 269\n\ncontent 269\n" > "$WORKSPACE/.prompts/rule/ambiguous/01_BETA.md"
 cd "$WORKSPACE"
 
 # 1. config set registry
@@ -117,6 +120,16 @@ assert_file_contains "index has TDD entry" "$PROMPTS_INDEX" "TDD"
 assert_file_contains "derived group uses forward slash" "$PROMPTS_INDEX" "rule/testing"
 assert_file_not_contains "no backslash in groups" "$PROMPTS_INDEX" 'rule\\testing'
 
+# 3b. add directory with colliding hash prefixes
+step "3b. add directory (ambiguous short hash setup)"
+"$CLUMSIES" add .prompts/rule/ambiguous/ -Q
+ALPHA_HASH=$(grep -B 5 '"name": "ALPHA"' "$PROMPTS_INDEX" | grep -o '"hash": "[a-f0-9]*"' | head -1 | cut -d'"' -f4)
+BETA_HASH=$(grep -B 5 '"name": "BETA"' "$PROMPTS_INDEX" | grep -o '"hash": "[a-f0-9]*"' | head -1 | cut -d'"' -f4)
+AMBIG_PREFIX="${ALPHA_HASH:0:4}"
+assert "alpha hash found" test -n "$ALPHA_HASH"
+assert "beta hash found" test -n "$BETA_HASH"
+assert "hash prefix is ambiguous" test "${BETA_HASH:0:4}" = "$AMBIG_PREFIX"
+
 # Extract a hash for later use
 HASH=$(grep -o '"hash": "[a-f0-9]*"' "$PROMPTS_INDEX" | head -1 | cut -d'"' -f4)
 SHORT_HASH="${HASH:0:8}"
@@ -136,6 +149,11 @@ assert_output "combined flags work" "SNAKE_CASE" "$LS_COMBINED"
 step "6. show <hash>"
 SHOW_OUTPUT=$("$CLUMSIES" show "$SHORT_HASH" -Q 2>&1 || true)
 assert_output "show contains prompt content" "snake_case" "$SHOW_OUTPUT"
+
+# 6b. show ambiguous <hash>
+step "6b. show ambiguous <hash>"
+SHOW_AMBIG=$("$CLUMSIES" show "$AMBIG_PREFIX" -Q 2>&1 || true)
+assert_output "ambiguous short hash rejected" "Ambiguous prompt hash prefix" "$SHOW_AMBIG"
 
 # 7. get <hash> (import prompt)
 step "7. get <hash>"
@@ -187,6 +205,13 @@ step "12. rm prompt"
 "$CLUMSIES" rm "$CONDUCT_SHORT" -Q
 assert_file_not_contains "prompt removed from index" "$PROMPTS_INDEX" "$CONDUCT_HASH"
 assert "prompt file deleted" test ! -f "$HOME_DIR/.clumsies/registry/prompts/$CONDUCT_HASH"
+
+# 13. rm ambiguous <hash>
+step "13. rm ambiguous <hash>"
+RM_AMBIG=$("$CLUMSIES" rm "$AMBIG_PREFIX" -Q 2>&1 || true)
+assert_output "ambiguous rm rejected" "Ambiguous prompt hash prefix" "$RM_AMBIG"
+assert_file_contains "alpha preserved after ambiguous rm" "$PROMPTS_INDEX" "$ALPHA_HASH"
+assert_file_contains "beta preserved after ambiguous rm" "$PROMPTS_INDEX" "$BETA_HASH"
 
 # Summary
 printf "\n=== Results: %d passed, %d failed ===\n" "$PASS" "$FAIL"
