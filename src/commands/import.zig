@@ -2,8 +2,9 @@ const std = @import("std");
 const fs = std.fs;
 const testing = std.testing;
 const styles = @import("../styles.zig");
-const sequence = @import("sequence.zig");
-const encoding = @import("encoding.zig");
+const lib = @import("clumsies_lib");
+const sequence = lib.sequence;
+const encoding = lib.encoding;
 const index = @import("index.zig");
 
 const Color = styles.Color;

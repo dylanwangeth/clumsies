@@ -3,9 +3,12 @@ const fs = std.fs;
 const testing = std.testing;
 const styles = @import("../styles.zig");
 const git = @import("../git.zig");
+const lib = @import("clumsies_lib");
 
-const sequence_mod = @import("sequence.zig");
-const encoding_mod = @import("encoding.zig");
+const config_mod = lib.config;
+const sequence_mod = lib.sequence;
+const encoding_mod = lib.encoding;
+const prompt_mod = lib.prompt;
 const registry_mod = @import("registry.zig");
 const index_mod = @import("index.zig");
 const import_mod = @import("import.zig");
@@ -34,7 +37,7 @@ pub const findPromptByHashPrefix = registry_mod.findPromptByHashPrefix;
 pub const printAmbiguousPromptHashError = registry_mod.printAmbiguousPromptHashError;
 pub const bundleExists = registry_mod.bundleExists;
 pub const printGitOutputRaw = registry_mod.printGitOutputRaw;
-pub const getBasePath = registry_mod.getBasePath;
+pub const getBasePath = config_mod.getBasePath;
 
 pub const PromptRef = index_mod.PromptRef;
 pub const freePromptRefs = index_mod.freePromptRefs;
@@ -49,21 +52,15 @@ pub const importPrompt = import_mod.importPrompt;
 pub const collectAndUploadPrompts = import_mod.collectAndUploadPrompts;
 
 pub fn getPromptsPath(allocator: std.mem.Allocator) ![]const u8 {
-    const cwd = try std.process.getCwdAlloc(allocator);
-    defer allocator.free(cwd);
-    return try std.fs.path.join(allocator, &.{ cwd, ".prompts" });
+    return prompt_mod.getPromptsPath(allocator);
 }
 
 pub fn promptsExist() bool {
-    var dir = std.fs.cwd().openDir(".prompts", .{}) catch return false;
-    dir.close();
-    return true;
+    return prompt_mod.promptsExist();
 }
 
 pub fn promptsIsGitRepo() bool {
-    var dir = std.fs.cwd().openDir(".prompts/.git", .{}) catch return false;
-    dir.close();
-    return true;
+    return prompt_mod.promptsIsGitRepo();
 }
 
 /// Format timestamp to ISO date string (YYYY-MM-DD)
@@ -112,31 +109,14 @@ pub fn printGitOutput(writer: *std.io.Writer, output: *const GitOutput) void {
 /// Returns the path between `.prompts/` and the last separator (the file's parent directory).
 /// e.g. "/home/user/.prompts/rule/coding/00_FOO.md" → "rule/coding"
 pub fn deriveGroupFromFile(abs_path: []const u8) ?[]const u8 {
-    const after_marker = findAfterPromptsMarker(abs_path) orelse return null;
-    const last_fwd = std.mem.lastIndexOfScalar(u8, after_marker, '/');
-    const last_bck = std.mem.lastIndexOfScalar(u8, after_marker, '\\');
-    const last_sep = if (last_fwd) |f| (if (last_bck) |b| @max(f, b) else f) else (last_bck orelse return null);
-    const group = after_marker[0..last_sep];
-    if (group.len == 0) return null;
-    return group;
+    return prompt_mod.deriveGroupFromFile(abs_path);
 }
 
 /// Derive group from a directory's absolute path by finding the `.prompts/` segment.
 /// Returns the full path after `.prompts/`.
 /// e.g. "/home/user/.prompts/rule/didactics" → "rule/didactics"
 pub fn deriveGroupFromDir(abs_path: []const u8) ?[]const u8 {
-    const after_marker = findAfterPromptsMarker(abs_path) orelse return null;
-    const trimmed = std.mem.trimRight(u8, after_marker, "/\\");
-    if (trimmed.len == 0) return null;
-    return trimmed;
-}
-
-fn findAfterPromptsMarker(abs_path: []const u8) ?[]const u8 {
-    const marker_fwd = ".prompts/";
-    const marker_bck = ".prompts\\";
-    const idx = std.mem.indexOf(u8, abs_path, marker_fwd) orelse
-        (std.mem.indexOf(u8, abs_path, marker_bck) orelse return null);
-    return abs_path[idx + marker_fwd.len ..];
+    return prompt_mod.deriveGroupFromDir(abs_path);
 }
 
 test "deriveGroupFromFile: nested path" {

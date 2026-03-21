@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-/// Encode bytes to hexadecimal string
+/// Encode bytes to hexadecimal string.
 pub fn hexEncode(bytes: []const u8, out: []u8) void {
     const hex_chars = "0123456789abcdef";
     for (bytes, 0..) |byte, i| {
@@ -11,7 +11,6 @@ pub fn hexEncode(bytes: []const u8, out: []u8) void {
 }
 
 /// Escape a string for safe inclusion as a JSON string value.
-/// Handles: " → \", \ → \\, newline → \n, CR → \r, tab → \t, control chars → \uXXXX
 pub fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     var needs_escape = false;
     for (input) |c| {
@@ -46,7 +45,7 @@ pub fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]const
     return try result.toOwnedSlice(allocator);
 }
 
-/// Check if a string consists entirely of hexadecimal characters
+/// Check if a string consists entirely of hexadecimal characters.
 pub fn isHexString(s: []const u8) bool {
     if (s.len == 0) return false;
     for (s) |c| {

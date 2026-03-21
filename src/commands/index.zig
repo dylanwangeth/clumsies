@@ -1,7 +1,8 @@
 const std = @import("std");
 const fs = std.fs;
 const testing = std.testing;
-const encoding = @import("encoding.zig");
+const lib = @import("clumsies_lib");
+const encoding = lib.encoding;
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
