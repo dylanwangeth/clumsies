@@ -3,8 +3,7 @@ const testing = std.testing;
 
 pub const MAX_SEQUENCE_NUMBER: u8 = 99;
 
-/// Strip sequence prefix (NN_) from filename if present
-/// e.g., "01_review_commit" -> "review_commit"
+/// Strip sequence prefix (NN_) from filename if present.
 pub fn stripSequencePrefix(name: []const u8) []const u8 {
     if (name.len >= 3 and name[2] == '_') {
         if (std.ascii.isDigit(name[0]) and std.ascii.isDigit(name[1])) {
@@ -14,9 +13,7 @@ pub fn stripSequencePrefix(name: []const u8) []const u8 {
     return name;
 }
 
-/// Find next available sequence number with gap filling
-/// If files 00_, 01_, 03_ exist, returns 2 (fills the gap)
-/// If files 00_, 01_, 02_ exist, returns 3 (next number)
+/// Find next available sequence number with gap filling.
 pub fn findNextSequence(dir_path: []const u8) u8 {
     var used: [100]bool = [_]bool{false} ** 100;
     var max_seq: u8 = 0;
@@ -27,7 +24,6 @@ pub fn findNextSequence(dir_path: []const u8) u8 {
     var iter = dir.iterate();
     while (iter.next() catch null) |entry| {
         if (entry.kind != .file) continue;
-
         if (entry.name.len < 3) continue;
         if (entry.name[2] != '_') continue;
 

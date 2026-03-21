@@ -11,6 +11,12 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
 
+    const lib = b.addModule("clumsies_lib", .{
+        .root_source_file = b.path("src/lib/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "clumsies",
         .root_module = b.createModule(.{
@@ -19,6 +25,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "clumsies_lib", .module = lib },
             },
         }),
     });
@@ -43,6 +50,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "clumsies_lib", .module = lib },
             },
         }),
     });

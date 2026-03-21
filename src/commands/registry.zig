@@ -4,8 +4,9 @@ const testing = std.testing;
 const styles = @import("../styles.zig");
 const git = @import("../git.zig");
 const spinner = @import("../spinner.zig");
-const config = @import("config.zig");
-const encoding = @import("encoding.zig");
+const lib = @import("clumsies_lib");
+const encoding = lib.encoding;
+const lib_config = lib.config;
 
 const Color = styles.Color;
 const P = styles.P;
@@ -61,14 +62,6 @@ pub fn printGitOutputRaw(output: *const GitOutput, quiet: bool) void {
     }
 }
 
-pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
-        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
-        return error.NoHome;
-    defer allocator.free(home);
-    return try std.fs.path.join(allocator, &.{ home, ".clumsies" });
-}
-
 fn getOverrideCachePath(allocator: std.mem.Allocator, base_path: []const u8, url: []const u8, branch: ?[]const u8) ![]const u8 {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update(url);
@@ -93,9 +86,9 @@ fn getOverrideCachePath(allocator: std.mem.Allocator, base_path: []const u8, url
 /// and cache in ~/.clumsies/cache/<hash(url,branch)>/.
 pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool, registry_url: ?[]const u8) ![]const u8 {
     const registry_info = if (registry_url) |url|
-        try config.parseRegistryUrl(allocator, url)
+        try lib_config.parseRegistryUrl(allocator, url)
     else
-        config.getRegistryInfo(allocator) catch {
+        lib_config.getRegistryInfo(allocator) catch {
             try stderr.print("{s}{s}{s}Error:{s} Registry not configured\n", .{ P, Color.bold, Color.red, Color.reset });
             try stderr.print("{s}Run: {s}clumsies config set registry <git-url>{s}\n", .{ P, Color.cyan, Color.reset });
             try stderr.print("{s}Tip: Use {s}<git-url>#<branch>{s} to specify a branch\n", .{ P, Color.cyan, Color.reset });
@@ -103,7 +96,7 @@ pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
         };
     defer registry_info.deinit(allocator);
 
-    const base_path = getBasePath(allocator) catch {
+    const base_path = lib_config.getBasePath(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine config path\n", .{ P, Color.bold, Color.red, Color.reset });
         return error.NoBasePath;
     };

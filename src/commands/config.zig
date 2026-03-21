@@ -2,23 +2,15 @@ const std = @import("std");
 const fs = std.fs;
 const testing = std.testing;
 const commands = @import("commands.zig");
+const lib = @import("clumsies_lib");
+const lib_config = lib.config;
 
 const Color = commands.Color;
 const P = commands.P;
 const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 
-pub const DEFAULT_ENTRY_FILES = [_][]const u8{ "CLAUDE.md", "CURSOR.md", "AGENTS.md", "COPILOT.md" };
-
-/// Registry URL with optional branch (parsed from "url#branch" format)
-pub const RegistryInfo = struct {
-    url: []const u8,
-    branch: ?[]const u8,
-
-    pub fn deinit(self: RegistryInfo, allocator: std.mem.Allocator) void {
-        allocator.free(self.url);
-        if (self.branch) |b| allocator.free(b);
-    }
-};
+pub const DEFAULT_ENTRY_FILES = lib_config.DEFAULT_ENTRY_FILES;
+pub const RegistryInfo = lib_config.RegistryInfo;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
@@ -61,22 +53,11 @@ fn printConfigHelp(out: *std.io.Writer) !void {
 }
 
 fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
-    const base = try commands.getBasePath(allocator);
-    defer allocator.free(base);
-    return try std.fs.path.join(allocator, &.{ base, "config.json" });
+    return lib_config.getConfigPath(allocator);
 }
 
 fn readConfig(allocator: std.mem.Allocator) !std.json.Parsed(std.json.Value) {
-    const config_path = try getConfigPath(allocator);
-    defer allocator.free(config_path);
-
-    const file = fs.openFileAbsolute(config_path, .{}) catch return error.NoConfig;
-    defer file.close();
-
-    const content = try file.readToEndAlloc(allocator, 10 * 1024);
-    defer allocator.free(content);
-
-    return std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    return lib_config.readConfig(allocator);
 }
 
 fn listConfig(stdout: *std.io.Writer, allocator: std.mem.Allocator) !void {
@@ -198,63 +179,25 @@ fn setConfig(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
 }
 
 pub fn getRegistry(allocator: std.mem.Allocator) ![]const u8 {
-    const parsed = try readConfig(allocator);
-    defer parsed.deinit();
-
-    if (parsed.value.object.get("registry")) |value| {
-        return switch (value) {
-            .string => |s| try allocator.dupe(u8, s),
-            else => error.NoRegistry,
-        };
-    }
-    return error.NoRegistry;
+    return lib_config.getRegistry(allocator);
 }
 
 /// Parse "url#branch" format into separate url and branch components
 pub fn parseRegistryUrl(allocator: std.mem.Allocator, raw: []const u8) !RegistryInfo {
-    if (std.mem.lastIndexOfScalar(u8, raw, '#')) |idx| {
-        const url = try allocator.dupe(u8, raw[0..idx]);
-        const branch = try allocator.dupe(u8, raw[idx + 1 ..]);
-        return .{ .url = url, .branch = branch };
-    }
-
-    return .{
-        .url = try allocator.dupe(u8, raw),
-        .branch = null,
-    };
+    return lib_config.parseRegistryUrl(allocator, raw);
 }
 
 /// Get registry URL and branch, parsing "url#branch" format
 pub fn getRegistryInfo(allocator: std.mem.Allocator) !RegistryInfo {
-    const raw = try getRegistry(allocator);
-    defer allocator.free(raw);
-    return parseRegistryUrl(allocator, raw);
+    return lib_config.getRegistryInfo(allocator);
 }
 
 pub fn getEntryFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
-    const parsed = readConfig(allocator) catch return null;
-    defer parsed.deinit();
-
-    if (parsed.value.object.get("entry_files")) |value| {
-        return switch (value) {
-            .string => |s| try allocator.dupe(u8, s),
-            else => null,
-        };
-    }
-    return null;
+    return lib_config.getEntryFilesStr(allocator);
 }
 
 pub fn getMetaPromptFile(allocator: std.mem.Allocator) !?[]const u8 {
-    const parsed = readConfig(allocator) catch return null;
-    defer parsed.deinit();
-
-    if (parsed.value.object.get("meta_prompt_file")) |value| {
-        return switch (value) {
-            .string => |s| try allocator.dupe(u8, s),
-            else => null,
-        };
-    }
-    return null;
+    return lib_config.getMetaPromptFile(allocator);
 }
 
 test "parseRegistryUrl: https without branch" {
