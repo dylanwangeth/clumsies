@@ -144,6 +144,82 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         return;
     };
 
+    // Clean up bundle references to removed prompts
+    const bundles_index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
+    defer allocator.free(bundles_index_path);
+
+    if (fs.openFileAbsolute(bundles_index_path, .{})) |bfile| {
+        const bcontent = bfile.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            bfile.close();
+            return;
+        };
+        bfile.close();
+        defer allocator.free(bcontent);
+
+        if (std.json.parseFromSlice(std.json.Value, allocator, bcontent, .{})) |bparsed| {
+            defer bparsed.deinit();
+
+            if (bparsed.value.object.get("bundles")) |bundles| {
+                var new_bidx: std.ArrayListUnmanaged(u8) = .{};
+                defer new_bidx.deinit(allocator);
+                try new_bidx.appendSlice(allocator, "{\n  \"bundles\": [");
+
+                var bfirst = true;
+                for (bundles.array.items) |bitem| {
+                    const bname = if (bitem.object.get("name")) |n| n.string else continue;
+                    const btask = if (bitem.object.get("task")) |t| t.string else "-";
+                    const bdesc = if (bitem.object.get("description")) |d| d.string else "-";
+                    const bcreated = if (bitem.object.get("created_at")) |c| c.string else "0";
+                    var bmeta = if (bitem.object.get("meta_prompt")) |m| m.string else "";
+
+                    for (removed_hashes.items) |rh| {
+                        if (std.mem.eql(u8, bmeta, rh)) {
+                            bmeta = "";
+                            break;
+                        }
+                    }
+
+                    if (!bfirst) try new_bidx.appendSlice(allocator, ",");
+                    bfirst = false;
+
+                    const bentry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ bname, btask, bdesc, bcreated, bmeta });
+                    defer allocator.free(bentry_start);
+                    try new_bidx.appendSlice(allocator, bentry_start);
+
+                    if (bitem.object.get("prompts")) |bprompts| {
+                        var pfirst = true;
+                        for (bprompts.array.items) |ref| {
+                            const ref_hash = if (ref.object.get("hash")) |h| h.string else continue;
+
+                            var skip = false;
+                            for (removed_hashes.items) |rh| {
+                                if (std.mem.eql(u8, ref_hash, rh)) {
+                                    skip = true;
+                                    break;
+                                }
+                            }
+                            if (skip) continue;
+
+                            const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
+                                if (pfirst) "" else ",",
+                                ref_hash,
+                            });
+                            defer allocator.free(ref_entry);
+                            try new_bidx.appendSlice(allocator, ref_entry);
+                            pfirst = false;
+                        }
+                    }
+                    try new_bidx.appendSlice(allocator, "]\n    }");
+                }
+                try new_bidx.appendSlice(allocator, "\n  ]\n}\n");
+
+                const bidx_out = fs.createFileAbsolute(bundles_index_path, .{}) catch return;
+                defer bidx_out.close();
+                bidx_out.writeAll(new_bidx.items) catch return;
+            }
+        } else |_| {}
+    } else |_| {}
+
     // Commit and push
     var sp = spinner.init(stdout, "Removing from registry");
     sp.start();
