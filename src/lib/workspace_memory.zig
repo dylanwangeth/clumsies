@@ -31,6 +31,13 @@ pub const DiscoverOptions = struct {
     include_prompts: bool = true,
 };
 
+pub const ListRequest = struct {
+    include_prompts: bool = true,
+    kind: ?MemoryKind = null,
+    group: ?[]const u8 = null,
+    query: ?[]const u8 = null,
+};
+
 pub const KnownMemory = struct {
     id: []const u8,
     hash: []const u8,
@@ -126,8 +133,27 @@ pub fn discoverStartupMemory(allocator: std.mem.Allocator, workspace_root: []con
     });
 }
 
-pub fn listMemory(allocator: std.mem.Allocator, workspace_root: []const u8, options: DiscoverOptions) !std.ArrayListUnmanaged(MemoryItem) {
-    return discoverWorkspaceMemory(allocator, workspace_root, options);
+pub fn listMemory(allocator: std.mem.Allocator, workspace_root: []const u8, request: ListRequest) !std.ArrayListUnmanaged(MemoryItem) {
+    var discovered = try discoverWorkspaceMemory(allocator, workspace_root, .{
+        .include_prompts = request.include_prompts,
+    });
+    errdefer deinitMemoryItems(allocator, &discovered);
+
+    if (request.kind == null and request.group == null and request.query == null) {
+        return discovered;
+    }
+
+    var filtered: std.ArrayListUnmanaged(MemoryItem) = .empty;
+    errdefer deinitMemoryItems(allocator, &filtered);
+
+    for (discovered.items) |item| {
+        if (!matchesListRequest(item, request)) continue;
+        try filtered.append(allocator, item);
+    }
+
+    discovered.items.len = 0;
+    deinitMemoryItems(allocator, &discovered);
+    return filtered;
 }
 
 pub fn startupMemory(
@@ -247,6 +273,47 @@ fn lessThanMemoryItem(_: void, a: MemoryItem, b: MemoryItem) bool {
     const prio_order = std.math.order(@intFromEnum(a.priority), @intFromEnum(b.priority));
     if (prio_order != .eq) return prio_order == .lt;
     return std.mem.order(u8, a.path, b.path) == .lt;
+}
+
+fn matchesListRequest(item: MemoryItem, request: ListRequest) bool {
+    if (request.kind) |kind| {
+        if (item.kind != kind) return false;
+    }
+
+    if (request.group) |group| {
+        const item_group = item.group orelse return false;
+        if (!matchesGroupFilter(item_group, group)) return false;
+    }
+
+    if (request.query) |query| {
+        if (!(containsIgnoreCase(item.id, query) or
+            containsIgnoreCase(item.path, query) or
+            containsIgnoreCase(item.name, query) or
+            (item.group != null and containsIgnoreCase(item.group.?, query))))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+fn matchesGroupFilter(item_group: []const u8, group: []const u8) bool {
+    if (std.mem.eql(u8, item_group, group)) return true;
+    if (!std.mem.startsWith(u8, item_group, group)) return false;
+    return group.len < item_group.len and item_group[group.len] == '/';
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+
+    const last_start = haystack.len - needle.len;
+    var start: usize = 0;
+    while (start <= last_start) : (start += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[start .. start + needle.len], needle)) return true;
+    }
+    return false;
 }
 
 fn materializeAll(
@@ -401,6 +468,35 @@ test "discoverStartupMemory: excludes prompt files" {
     try testing.expectEqual(@as(usize, 2), items.items.len);
     try testing.expectEqual(MemoryKind.pin, items.items[0].kind);
     try testing.expectEqual(MemoryKind.entry_file, items.items[1].kind);
+}
+
+test "listMemory: filters by kind group and query" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".prompts/rule/coding");
+    try tmp.dir.makePath(".prompts/rule/writing");
+    try writeFile(tmp.dir, "AGENTS.md", "entry memory");
+    try writeFile(tmp.dir, ".prompts/rule/coding/03_PR_WORKFLOW.md", "workflow memory");
+    try writeFile(tmp.dir, ".prompts/rule/writing/01_BLOG.md", "blog memory");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var coding_items = try listMemory(testing.allocator, root, .{
+        .group = "rule/coding",
+    });
+    defer deinitMemoryItems(testing.allocator, &coding_items);
+    try testing.expectEqual(@as(usize, 1), coding_items.items.len);
+    try testing.expectEqualStrings("prompt:rule/coding/03_PR_WORKFLOW.md", coding_items.items[0].id);
+
+    var prompt_items = try listMemory(testing.allocator, root, .{
+        .kind = .prompt,
+        .query = "blog",
+    });
+    defer deinitMemoryItems(testing.allocator, &prompt_items);
+    try testing.expectEqual(@as(usize, 1), prompt_items.items.len);
+    try testing.expectEqualStrings("BLOG", prompt_items.items[0].name);
 }
 
 test "startupMemory: only changed items include content" {

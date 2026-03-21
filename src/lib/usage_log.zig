@@ -36,7 +36,10 @@ pub fn appendActivation(
     defer allocator.free(log_path);
 
     if (std.fs.path.dirname(log_path)) |dir_path| {
-        try std.fs.makeDirAbsolute(dir_path);
+        std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
     } else {
         return error.InvalidLogPath;
     }
