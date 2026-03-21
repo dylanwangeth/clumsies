@@ -44,7 +44,9 @@ pub fn appendActivation(
         return error.InvalidLogPath;
     }
 
-    var file = try std.fs.openFileAbsolute(log_path, .{ .mode = .read_write });
+    var file = try std.fs.createFileAbsolute(log_path, .{
+        .truncate = false,
+    });
     defer file.close();
     try file.seekFromEnd(0);
 

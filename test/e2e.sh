@@ -163,6 +163,22 @@ assert "imported file exists in .prompts/" test -d "$WORKSPACE/.prompts"
 FOUND=$(find "$WORKSPACE/.prompts" -name "*SNAKE_CASE*" -type f 2>/dev/null | head -1)
 assert "SNAKE_CASE file was imported" test -n "$FOUND"
 
+# 7b. mcp serve memory.activate
+step "7b. mcp serve memory.activate"
+MCP_OUTPUT=$(
+    printf '%s\n%s\n%s\n' \
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"1.0"}}}' \
+        '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+        '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory.activate","arguments":{"ids":["prompt:rule/coding/00_SNAKE_CASE.md"],"taskId":"e2e-task","turnId":"turn-1"}}}' \
+    | "$CLUMSIES" mcp serve
+)
+assert_output "mcp initialize returns protocol version" '"protocolVersion":"2025-06-18"' "$MCP_OUTPUT"
+assert_output "mcp activate returns prompt id" 'prompt:rule/coding/00_SNAKE_CASE.md' "$MCP_OUTPUT"
+assert_output "mcp activate returns prompt content" 'snake_case' "$MCP_OUTPUT"
+MCP_LOG=$(find "$HOME_DIR/.clumsies/usage" -type f 2>/dev/null | head -1)
+assert "mcp activation log created" test -n "$MCP_LOG"
+assert_file_contains "mcp activation log contains task id" "$MCP_LOG" '"task_id":"e2e-task"'
+
 # 8. pub (bundle)
 step "8. pub bundle"
 mkdir -p "$WORKSPACE/.prompts/conduct"
