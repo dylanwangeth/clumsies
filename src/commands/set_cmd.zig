@@ -21,41 +21,44 @@ const updatePromptsIndex = commands.updatePromptsIndex;
 const freePromptRefs = commands.freePromptRefs;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    if (args.len == 0) {
-        try printHelp(stderr);
-        return;
-    }
+    const Q = 5;
+    const S = 6;
+    const SPECS = [_]flag.FlagSpec{
+        .{ .short = 'n', .long = "name", .kind = .value },
+        .{ .short = 'd', .long = "desc", .kind = .value },
+        .{ .short = 'g', .long = "group", .kind = .value },
+        .{ .short = 'f', .long = "file", .kind = .value },
+        .{ .short = null, .long = "all", .kind = .boolean },
+        .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
+        .{ .short = 's', .long = "sync", .kind = .boolean },
+        .{ .short = null, .long = "add", .kind = .multi_value },
+        .{ .short = null, .long = "rm-prompt", .kind = .multi_value },
+        .{ .short = null, .long = "add-prompt", .kind = .multi_value },
+        .{ .short = null, .long = "meta", .kind = .value },
+    };
 
-    // First positional arg is the ref
-    var ref: ?[]const u8 = null;
-    var sync: bool = false;
-    var quiet_git: bool = false;
-
-    // Quick scan for ref and sync, skipping values of known flags
-    var skip_next = false;
-    for (args) |arg| {
-        if (skip_next) {
-            skip_next = false;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "-Q") or std.mem.eql(u8, arg, "--quiet-git")) {
-            quiet_git = true;
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--sync")) {
-            sync = true;
-        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+    var err_ctx: flag.ErrorContext = .{};
+    var parsed = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
+        error.HelpRequested => {
             try printHelp(stdout);
             return;
-        } else if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--name") or
-            std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--desc") or
-            std.mem.eql(u8, arg, "-g") or std.mem.eql(u8, arg, "--group") or
-            std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--file") or
-            std.mem.eql(u8, arg, "--meta"))
-        {
-            skip_next = true;
-        } else if (ref == null and !std.mem.startsWith(u8, arg, "-")) {
-            ref = arg;
-        }
-    }
+        },
+        error.UnknownFlag => {
+            try stderr.print("{s}{s}{s}Error:{s} Unknown flag: {s}\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            try printHelp(stderr);
+            return;
+        },
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer parsed.deinit(allocator);
+
+    const ref: ?[]const u8 = if (parsed.positionals.items.len > 0) parsed.positionals.items[0] else null;
+    const sync = parsed.boolean(S);
+    const quiet_git = parsed.boolean(Q);
 
     if (ref == null) {
         try stderr.print("{s}{s}{s}Error:{s} Reference required\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -914,6 +917,8 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
             try new_index.appendSlice(allocator, entry_start);
 
             var prompt_first = true;
+            var seen_hashes: std.ArrayListUnmanaged([]const u8) = .{};
+            defer seen_hashes.deinit(allocator);
 
             // Keep existing prompts minus --rm-prompt
             if (item.object.get("prompts")) |existing_prompts| {
@@ -930,37 +935,22 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
                     }
                     if (should_remove) continue;
 
-                    const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
-                        if (prompt_first) "" else ",",
-                        ref_hash,
-                    });
-                    defer allocator.free(ref_entry);
-                    try new_index.appendSlice(allocator, ref_entry);
-                    prompt_first = false;
+                    _ = try appendBundlePromptRef(allocator, &new_index, &seen_hashes, &prompt_first, ref_hash);
                 }
             }
 
             // Add new prompts from --add directories
             for (new_refs.items) |ref| {
-                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
-                    if (prompt_first) "" else ",",
-                    ref.hash,
-                });
-                defer allocator.free(ref_entry);
-                try new_index.appendSlice(allocator, ref_entry);
-                prompt_first = false;
+                if (try appendBundlePromptRef(allocator, &new_index, &seen_hashes, &prompt_first, ref.hash)) {
+                    prompts_added += 1;
+                }
             }
 
             // Add --add-prompt hashes (already validated and resolved to full hashes)
             for (resolved_add_hashes.items) |add_hash| {
-                const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
-                    if (prompt_first) "" else ",",
-                    add_hash,
-                });
-                defer allocator.free(ref_entry);
-                try new_index.appendSlice(allocator, ref_entry);
-                prompt_first = false;
-                prompts_added += 1;
+                if (try appendBundlePromptRef(allocator, &new_index, &seen_hashes, &prompt_first, add_hash)) {
+                    prompts_added += 1;
+                }
             }
 
             try new_index.appendSlice(allocator, "]\n    }");
@@ -1014,6 +1004,23 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     if (new_meta_hash != null) try stdout.print("{s}    Meta-prompt updated\n", .{P});
     if (prompts_added > 0) try stdout.print("{s}    Prompts added: {d}\n", .{ P, prompts_added });
     if (prompts_removed > 0) try stdout.print("{s}    Prompts removed: {d}\n", .{ P, prompts_removed });
+}
+
+fn appendBundlePromptRef(allocator: std.mem.Allocator, new_index: *std.ArrayListUnmanaged(u8), seen_hashes: *std.ArrayListUnmanaged([]const u8), prompt_first: *bool, hash: []const u8) !bool {
+    for (seen_hashes.items) |seen_hash| {
+        if (std.mem.eql(u8, seen_hash, hash)) return false;
+    }
+
+    try seen_hashes.append(allocator, hash);
+
+    const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
+        if (prompt_first.*) "" else ",",
+        hash,
+    });
+    defer allocator.free(ref_entry);
+    try new_index.appendSlice(allocator, ref_entry);
+    prompt_first.* = false;
+    return true;
 }
 
 fn printHelp(out: *std.io.Writer) !void {
