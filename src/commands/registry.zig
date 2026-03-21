@@ -69,9 +69,28 @@ pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
     return try std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }
 
+fn getOverrideCachePath(allocator: std.mem.Allocator, base_path: []const u8, url: []const u8, branch: ?[]const u8) ![]const u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(url);
+    hasher.update("\x00");
+    if (branch) |b| {
+        hasher.update("\x01");
+        hasher.update(b);
+    } else {
+        hasher.update("\x02");
+    }
+
+    var hash: [32]u8 = undefined;
+    hasher.final(&hash);
+
+    var hex: [64]u8 = undefined;
+    encoding.hexEncode(&hash, &hex);
+    return try std.fs.path.join(allocator, &.{ base_path, "cache", hex[0..16] });
+}
+
 /// Ensure registry exists, optionally sync with remote.
 /// If registry_url is provided, use it instead of the configured registry
-/// and cache in ~/.clumsies/cache/<hash>/.
+/// and cache in ~/.clumsies/cache/<hash(url,branch)>/.
 pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool, registry_url: ?[]const u8) ![]const u8 {
     const registry_info = if (registry_url) |url|
         try config.parseRegistryUrl(allocator, url)
@@ -90,14 +109,11 @@ pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
     };
     defer allocator.free(base_path);
 
-    // Override: cache in ~/.clumsies/cache/<hash>/ to avoid conflicts
-    const registry_path = if (registry_url != null) blk: {
-        var hash: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(registry_info.url, &hash, .{});
-        var hex: [64]u8 = undefined;
-        encoding.hexEncode(&hash, &hex);
-        break :blk try std.fs.path.join(allocator, &.{ base_path, "cache", hex[0..16] });
-    } else try std.fs.path.join(allocator, &.{ base_path, "registry" });
+    // Override: cache in ~/.clumsies/cache/<hash(url,branch)>/ to avoid conflicts
+    const registry_path = if (registry_url != null)
+        try getOverrideCachePath(allocator, base_path, registry_info.url, registry_info.branch)
+    else
+        try std.fs.path.join(allocator, &.{ base_path, "registry" });
     errdefer allocator.free(registry_path);
 
     const registry_exists = blk: {
@@ -382,4 +398,31 @@ test "bundleExists: no index file returns false" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = tmpDirAbsolutePath(&tmp, &buf);
     try testing.expect(!bundleExists(testing.allocator, path, "anything"));
+}
+
+test "getOverrideCachePath: same url different branches differ" {
+    const main_path = try getOverrideCachePath(testing.allocator, "/tmp/clumsies", "https://github.com/foo/bar.git", "main");
+    defer testing.allocator.free(main_path);
+    const dev_path = try getOverrideCachePath(testing.allocator, "/tmp/clumsies", "https://github.com/foo/bar.git", "develop");
+    defer testing.allocator.free(dev_path);
+
+    try testing.expect(!std.mem.eql(u8, main_path, dev_path));
+}
+
+test "getOverrideCachePath: same url and branch are stable" {
+    const path_a = try getOverrideCachePath(testing.allocator, "/tmp/clumsies", "https://github.com/foo/bar.git", "main");
+    defer testing.allocator.free(path_a);
+    const path_b = try getOverrideCachePath(testing.allocator, "/tmp/clumsies", "https://github.com/foo/bar.git", "main");
+    defer testing.allocator.free(path_b);
+
+    try testing.expectEqualStrings(path_a, path_b);
+}
+
+test "getOverrideCachePath: branchless override differs from branch-specific" {
+    const default_path = try getOverrideCachePath(testing.allocator, "/tmp/clumsies", "https://github.com/foo/bar.git", null);
+    defer testing.allocator.free(default_path);
+    const main_path = try getOverrideCachePath(testing.allocator, "/tmp/clumsies", "https://github.com/foo/bar.git", "main");
+    defer testing.allocator.free(main_path);
+
+    try testing.expect(!std.mem.eql(u8, default_path, main_path));
 }
