@@ -121,10 +121,14 @@ pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, 
         return try handleComplete(allocator, workspace_root, args_obj);
     }
 
-    // Stubs for remaining tools
     if (std.mem.eql(u8, name, "memory.shortcut")) {
-        return try buildToolErrorResult(allocator, "memory.shortcut: not yet implemented");
+        return handleShortcut(allocator, workspace_root, args_obj) catch |err| switch (err) {
+            error.UnknownPromptId => try buildToolErrorResult(allocator, "No matching workflow found"),
+            else => return err,
+        };
     }
+
+    // Stubs for remaining tools
     if (std.mem.eql(u8, name, "memory.stats")) {
         return try buildToolErrorResult(allocator, "memory.stats: not yet implemented");
     }
@@ -310,6 +314,65 @@ fn handleComplete(
     return try buildToolSuccessResult(allocator, structured);
 }
 
+fn handleShortcut(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    args_obj: std.json.ObjectMap,
+) ![]u8 {
+    const task_id = if (args_obj.get("taskId")) |value| switch (value) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    } else return error.InvalidParams;
+
+    const name = if (args_obj.get("name")) |value| switch (value) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    } else return error.InvalidParams;
+
+    // Search workflow/ for a file matching the name (case-insensitive)
+    var workflows = try workspace_prompt.discoverSearchable(allocator, workspace_root, .workflow, null);
+    defer workspace_prompt.deinitPromptItems(allocator, &workflows);
+
+    var match_id: ?[]const u8 = null;
+    for (workflows.items) |item| {
+        if (containsIgnoreCase(item.name, name) or containsIgnoreCase(item.id, name)) {
+            match_id = item.id;
+            break;
+        }
+    }
+
+    const workflow_id = match_id orelse return error.UnknownPromptId;
+
+    // Load the matched workflow
+    var result = try workspace_prompt.loadPrompts(allocator, workspace_root, &.{workflow_id}, &.{});
+    defer result.deinit(allocator);
+
+    // Trace: shortcut event
+    const ws_id = try trace.workspaceId(allocator, workspace_root);
+    defer allocator.free(ws_id);
+    try trace.appendTraceEvent(allocator, workspace_root, .{
+        .event_type = .shortcut,
+        .workspace_id = ws_id,
+        .task_id = task_id,
+        .workflow_name = name,
+    });
+
+    const structured = try serializeLoadResult(allocator, &result, workspace_root);
+    defer allocator.free(structured);
+    return try buildToolSuccessResult(allocator, structured);
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    const last_start = haystack.len - needle.len;
+    var start: usize = 0;
+    while (start <= last_start) : (start += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[start .. start + needle.len], needle)) return true;
+    }
+    return false;
+}
+
 // --- Serialization ---
 
 fn buildToolSuccessResult(allocator: std.mem.Allocator, structured_json: []const u8) ![]u8 {
@@ -409,9 +472,23 @@ fn appendLoadedPrompt(
         .{ esc_id, workspace_prompt.kindToString(item.kind), if (item.changed) "true" else "false", item.hash },
     );
     if (item.content) |content| {
-        const esc_content = try encoding.jsonEscapeAlloc(allocator, content);
-        defer allocator.free(esc_content);
-        try buf.writer(allocator).print("\"{s}\"", .{esc_content});
+        // Refer reminder injection for Rule and Workflow
+        const needs_reminder = item.kind == .rule or item.kind == .workflow;
+        if (needs_reminder) {
+            const reminder = try std.fmt.allocPrint(
+                allocator,
+                "{s}\n\n---\n[clumsies] When you reference constraints from this prompt, call memory.refer:\n  promptId: {s}\n  promptHash: {s}\n  constraintId or ranges: the constraint you used\n---",
+                .{ content, item.id, item.hash },
+            );
+            defer allocator.free(reminder);
+            const esc_content = try encoding.jsonEscapeAlloc(allocator, reminder);
+            defer allocator.free(esc_content);
+            try buf.writer(allocator).print("\"{s}\"", .{esc_content});
+        } else {
+            const esc_content = try encoding.jsonEscapeAlloc(allocator, content);
+            defer allocator.free(esc_content);
+            try buf.writer(allocator).print("\"{s}\"", .{esc_content});
+        }
     } else {
         try buf.appendSlice(allocator, "null");
     }
