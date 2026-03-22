@@ -386,6 +386,190 @@ fn knownHashFor(id: []const u8, known: []const KnownHash) ?[]const u8 {
     return null;
 }
 
+// --- Constraint parsing (for validate) ---
+
+pub const ParsedConstraint = struct {
+    id: []const u8,
+    line_start: usize,
+    line_end: usize,
+};
+
+pub const ValidateResult = struct {
+    valid: bool,
+    constraints: std.ArrayList(ParsedConstraint),
+    issues: std.ArrayList([]const u8),
+
+    pub fn deinit(self: *ValidateResult, allocator: std.mem.Allocator) void {
+        for (self.constraints.items) |c| {
+            allocator.free(c.id);
+        }
+        self.constraints.deinit(allocator);
+        for (self.issues.items) |issue| {
+            allocator.free(issue);
+        }
+        self.issues.deinit(allocator);
+    }
+};
+
+/// Parse constraints from prompt content according to s2 format standard.
+/// Rules: # = title (skip), ## = constraint region, list items within region
+/// are individual constraints, otherwise the whole region is one constraint.
+pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !ValidateResult {
+    var constraints: std.ArrayList(ParsedConstraint) = .empty;
+    errdefer {
+        for (constraints.items) |c| allocator.free(c.id);
+        constraints.deinit(allocator);
+    }
+    var issues: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (issues.items) |i| allocator.free(i);
+        issues.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    var line_num: usize = 0;
+    var constraint_counter: usize = 0;
+
+    // State: are we inside a ## region?
+    var in_region = false;
+    var region_start: usize = 0;
+    var region_has_list = false;
+
+    while (lines.next()) |line| {
+        line_num += 1;
+        const trimmed = std.mem.trimLeft(u8, line, " \t");
+
+        // # heading = title, skip
+        if (std.mem.startsWith(u8, trimmed, "# ") and !std.mem.startsWith(u8, trimmed, "## ")) {
+            continue;
+        }
+
+        // ## heading = new constraint region
+        if (std.mem.startsWith(u8, trimmed, "## ")) {
+            // Close previous region if open
+            if (in_region and !region_has_list) {
+                constraint_counter += 1;
+                const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
+                try constraints.append(allocator, .{
+                    .id = id,
+                    .line_start = region_start,
+                    .line_end = line_num - 1,
+                });
+            }
+            in_region = true;
+            region_start = line_num;
+            region_has_list = false;
+            continue;
+        }
+
+        // List item (- or 1.) within a region = individual constraint
+        if (in_region and (std.mem.startsWith(u8, trimmed, "- ") or isOrderedListItem(trimmed))) {
+            // Skip support material lines
+            if (std.mem.startsWith(u8, trimmed, "- **理由**") or
+                std.mem.startsWith(u8, trimmed, "- **示例**"))
+                continue;
+
+            region_has_list = true;
+            constraint_counter += 1;
+            const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
+            try constraints.append(allocator, .{
+                .id = id,
+                .line_start = line_num,
+                .line_end = line_num,
+            });
+            continue;
+        }
+
+        // **理由** / **示例** = support material, skip
+        if (std.mem.startsWith(u8, trimmed, "**理由**") or
+            std.mem.startsWith(u8, trimmed, "**示例**") or
+            std.mem.startsWith(u8, trimmed, "✅") or
+            std.mem.startsWith(u8, trimmed, "❌"))
+        {
+            continue;
+        }
+    }
+
+    // Close last region
+    if (in_region and !region_has_list) {
+        constraint_counter += 1;
+        const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
+        try constraints.append(allocator, .{
+            .id = id,
+            .line_start = region_start,
+            .line_end = line_num,
+        });
+    }
+
+    // Rule 4: no ## headings and no list items → whole file is one constraint
+    if (constraint_counter == 0 and content.len > 0) {
+        constraint_counter += 1;
+        const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
+        try constraints.append(allocator, .{
+            .id = id,
+            .line_start = 1,
+            .line_end = line_num,
+        });
+    }
+
+    if (constraint_counter == 0) {
+        try issues.append(allocator, try allocator.dupe(u8, "File contains no parseable constraints"));
+    }
+
+    return .{
+        .valid = issues.items.len == 0,
+        .constraints = constraints,
+        .issues = issues,
+    };
+}
+
+fn isOrderedListItem(line: []const u8) bool {
+    var i: usize = 0;
+    while (i < line.len and std.ascii.isDigit(line[i])) : (i += 1) {}
+    if (i == 0 or i >= line.len) return false;
+    return line[i] == '.' and i + 1 < line.len and line[i + 1] == ' ';
+}
+
+/// Validate a prompt file. For Rule/Workflow: parse constraints. For Directive: just check readable.
+pub fn validatePrompt(allocator: std.mem.Allocator, workspace_root: []const u8, prompt_id: []const u8) !ValidateResult {
+    var all = try discoverAll(allocator, workspace_root);
+    defer deinitPromptItems(allocator, &all);
+
+    const item = findPromptById(all.items, prompt_id) orelse {
+        var issues: std.ArrayList([]const u8) = .empty;
+        try issues.append(allocator, try allocator.dupe(u8, "Prompt not found"));
+        return .{
+            .valid = false,
+            .constraints = .empty,
+            .issues = issues,
+        };
+    };
+
+    if (item.kind == .directive or item.kind == .data) {
+        // Just check readable
+        const content = readWorkspaceFileAlloc(allocator, workspace_root, item.path) catch {
+            var issues: std.ArrayList([]const u8) = .empty;
+            try issues.append(allocator, try allocator.dupe(u8, "File not readable"));
+            return .{
+                .valid = false,
+                .constraints = .empty,
+                .issues = issues,
+            };
+        };
+        allocator.free(content);
+        return .{
+            .valid = true,
+            .constraints = .empty,
+            .issues = .empty,
+        };
+    }
+
+    // Rule or Workflow: parse constraints
+    const content = try readWorkspaceFileAlloc(allocator, workspace_root, item.path);
+    defer allocator.free(content);
+    return try parseConstraints(allocator, content);
+}
+
 // --- Tests ---
 
 fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
@@ -565,4 +749,62 @@ test "loadPrompts: unknown id fails" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     try testing.expectError(error.UnknownPromptId, loadPrompts(testing.allocator, root, &.{"rule:missing.md"}, &.{}));
+}
+
+test "parseConstraints: list items become individual constraints" {
+    const content =
+        \\# Code Style
+        \\
+        \\## Naming
+        \\
+        \\- Use snake_case for functions
+        \\- Use PascalCase for types
+        \\
+        \\## Forbidden
+        \\
+        \\- No Hungarian notation
+        \\- No single-letter names
+    ;
+    var result = try parseConstraints(testing.allocator, content);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.valid);
+    try testing.expectEqual(@as(usize, 4), result.constraints.items.len);
+    try testing.expectEqualStrings("c-1", result.constraints.items[0].id);
+    try testing.expectEqualStrings("c-4", result.constraints.items[3].id);
+}
+
+test "parseConstraints: region without list is single constraint" {
+    const content =
+        \\# My Rule
+        \\
+        \\## Core principle
+        \\
+        \\Write code that is easy to read.
+        \\Prefer clarity over cleverness.
+    ;
+    var result = try parseConstraints(testing.allocator, content);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.valid);
+    try testing.expectEqual(@as(usize, 1), result.constraints.items.len);
+}
+
+test "parseConstraints: no headings no lists is one constraint" {
+    const content = "Always use English in code comments.";
+    var result = try parseConstraints(testing.allocator, content);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.valid);
+    try testing.expectEqual(@as(usize, 1), result.constraints.items.len);
+    try testing.expectEqual(@as(usize, 1), result.constraints.items[0].line_start);
+}
+
+test "parseConstraints: empty content" {
+    var result = try parseConstraints(testing.allocator, "");
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(!result.valid);
+    try testing.expectEqual(@as(usize, 0), result.constraints.items.len);
+    try testing.expectEqual(@as(usize, 1), result.issues.items.len);
 }

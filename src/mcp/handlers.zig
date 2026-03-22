@@ -133,7 +133,7 @@ pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, 
         return try buildToolErrorResult(allocator, "memory.stats: not yet implemented");
     }
     if (std.mem.eql(u8, name, "memory.validate")) {
-        return try buildToolErrorResult(allocator, "memory.validate: not yet implemented");
+        return try handleValidate(allocator, workspace_root, args_obj);
     }
 
     return try buildToolErrorResult(allocator, "Unknown tool");
@@ -310,6 +310,43 @@ fn handleComplete(
     const esc_status = try encoding.jsonEscapeAlloc(allocator, status);
     defer allocator.free(esc_status);
     const structured = try std.fmt.allocPrint(allocator, "{{\"taskId\":\"{s}\",\"status\":\"{s}\"}}", .{ task_id, esc_status });
+    defer allocator.free(structured);
+    return try buildToolSuccessResult(allocator, structured);
+}
+
+fn handleValidate(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    args_obj: std.json.ObjectMap,
+) ![]u8 {
+    const prompt_id = if (args_obj.get("promptId")) |value| switch (value) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    } else return error.InvalidParams;
+
+    var result = try workspace_prompt.validatePrompt(allocator, workspace_root, prompt_id);
+    defer result.deinit(allocator);
+
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    try buf.writer(allocator).print("{{\"valid\":{s},\"constraints\":[", .{if (result.valid) "true" else "false"});
+    for (result.constraints.items, 0..) |c, idx| {
+        if (idx > 0) try buf.append(allocator, ',');
+        const esc_id = try encoding.jsonEscapeAlloc(allocator, c.id);
+        defer allocator.free(esc_id);
+        try buf.writer(allocator).print("{{\"id\":\"{s}\",\"lineStart\":{d},\"lineEnd\":{d}}}", .{ esc_id, c.line_start, c.line_end });
+    }
+    try buf.appendSlice(allocator, "],\"issues\":[");
+    for (result.issues.items, 0..) |issue, idx| {
+        if (idx > 0) try buf.append(allocator, ',');
+        const esc = try encoding.jsonEscapeAlloc(allocator, issue);
+        defer allocator.free(esc);
+        try buf.writer(allocator).print("\"{s}\"", .{esc});
+    }
+    try buf.appendSlice(allocator, "]}");
+
+    const structured = try buf.toOwnedSlice(allocator);
     defer allocator.free(structured);
     return try buildToolSuccessResult(allocator, structured);
 }
