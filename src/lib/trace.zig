@@ -199,6 +199,145 @@ fn serializeTraceEvent(allocator: std.mem.Allocator, event: TraceEvent) ![]u8 {
     return try buf.toOwnedSlice(allocator);
 }
 
+// --- Stats: read and aggregate trace ---
+
+pub const PromptStats = struct {
+    id: []const u8,
+    refer_count: usize = 0,
+    completed_tasks: usize = 0,
+    abandoned_tasks: usize = 0,
+    task_set: std.StringHashMap([]const u8), // task_id → status
+};
+
+pub const WorkspaceStats = struct {
+    prompts: std.StringArrayHashMap(PromptStats),
+
+    pub fn deinit(self: *WorkspaceStats, allocator: std.mem.Allocator) void {
+        var iter = self.prompts.iterator();
+        while (iter.next()) |entry| {
+            var ps = entry.value_ptr;
+            allocator.free(ps.id);
+            var ts_iter = ps.task_set.iterator();
+            while (ts_iter.next()) |ts_entry| {
+                allocator.free(@constCast(ts_entry.key_ptr.*));
+                allocator.free(ts_entry.value_ptr.*);
+            }
+            ps.task_set.deinit();
+        }
+        self.prompts.deinit();
+    }
+};
+
+pub fn computeWorkspaceStats(allocator: std.mem.Allocator, workspace_root: []const u8) !WorkspaceStats {
+    var stats: WorkspaceStats = .{ .prompts = .init(allocator) };
+    errdefer stats.deinit(allocator);
+
+    const trace_path = try std.fs.path.join(allocator, &.{ workspace_root, CLUMSIES_DIR, TRACE_FILE });
+    defer allocator.free(trace_path);
+
+    const file = std.fs.openFileAbsolute(trace_path, .{}) catch return stats;
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+    defer allocator.free(content);
+
+    // Build task_id → status map from complete events
+    var task_status = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var iter = task_status.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(@constCast(entry.key_ptr.*));
+            allocator.free(entry.value_ptr.*);
+        }
+        task_status.deinit();
+    }
+
+    // First pass: collect task statuses
+    var lines1 = std.mem.splitScalar(u8, content, '\n');
+    while (lines1.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
+        defer parsed.deinit();
+
+        const obj = switch (parsed.value) {
+            .object => |o| o,
+            else => continue,
+        };
+
+        const evt_type = getStr(obj, "type") orelse continue;
+        if (!std.mem.eql(u8, evt_type, "complete")) continue;
+
+        const tid = getStr(obj, "task_id") orelse continue;
+        const status = getStr(obj, "status") orelse continue;
+
+        const key = try allocator.dupe(u8, tid);
+        errdefer allocator.free(key);
+        const val = try allocator.dupe(u8, status);
+        errdefer allocator.free(val);
+
+        if (try task_status.fetchPut(key, val)) |old| {
+            allocator.free(@constCast(old.key));
+            allocator.free(old.value);
+        }
+    }
+
+    // Second pass: aggregate refer events
+    var lines2 = std.mem.splitScalar(u8, content, '\n');
+    while (lines2.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
+        defer parsed.deinit();
+
+        const obj = switch (parsed.value) {
+            .object => |o| o,
+            else => continue,
+        };
+
+        const evt_type = getStr(obj, "type") orelse continue;
+        if (!std.mem.eql(u8, evt_type, "refer")) continue;
+
+        const pid = getStr(obj, "prompt_id") orelse continue;
+        const tid = getStr(obj, "task_id") orelse continue;
+
+        const gop = try stats.prompts.getOrPut(pid);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{
+                .id = try allocator.dupe(u8, pid),
+                .task_set = .init(allocator),
+            };
+        }
+        gop.value_ptr.refer_count += 1;
+
+        // Track unique tasks per prompt
+        if (!gop.value_ptr.task_set.contains(tid)) {
+            const ts_key = try allocator.dupe(u8, tid);
+            errdefer allocator.free(ts_key);
+
+            const task_st = task_status.get(tid) orelse "in_progress";
+            const ts_val = try allocator.dupe(u8, task_st);
+            errdefer allocator.free(ts_val);
+
+            try gop.value_ptr.task_set.put(ts_key, ts_val);
+
+            if (std.mem.eql(u8, task_st, "completed")) {
+                gop.value_ptr.completed_tasks += 1;
+            } else if (std.mem.eql(u8, task_st, "abandoned")) {
+                gop.value_ptr.abandoned_tasks += 1;
+            }
+        }
+    }
+
+    return stats;
+}
+
+fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const val = obj.get(key) orelse return null;
+    return switch (val) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
 // --- Tests ---
 
 fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
