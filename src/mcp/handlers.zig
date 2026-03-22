@@ -128,9 +128,8 @@ pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, 
         };
     }
 
-    // Stubs for remaining tools
     if (std.mem.eql(u8, name, "memory.stats")) {
-        return try buildToolErrorResult(allocator, "memory.stats: not yet implemented");
+        return try handleStats(allocator, workspace_root, args_obj);
     }
     if (std.mem.eql(u8, name, "memory.validate")) {
         return try handleValidate(allocator, workspace_root, args_obj);
@@ -310,6 +309,82 @@ fn handleComplete(
     const esc_status = try encoding.jsonEscapeAlloc(allocator, status);
     defer allocator.free(esc_status);
     const structured = try std.fmt.allocPrint(allocator, "{{\"taskId\":\"{s}\",\"status\":\"{s}\"}}", .{ task_id, esc_status });
+    defer allocator.free(structured);
+    return try buildToolSuccessResult(allocator, structured);
+}
+
+fn handleStats(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    args_obj: std.json.ObjectMap,
+) ![]u8 {
+    const scope = if (args_obj.get("scope")) |value| switch (value) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    } else return error.InvalidParams;
+
+    if (std.mem.eql(u8, scope, "workspace")) {
+        return try handleStatsWorkspace(allocator, workspace_root);
+    }
+
+    // prompt and diff scopes: stub for now
+    return try buildToolErrorResult(allocator, "Only workspace scope is implemented so far");
+}
+
+fn handleStatsWorkspace(allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
+    var stats = try trace.computeWorkspaceStats(allocator, workspace_root);
+    defer stats.deinit(allocator);
+
+    // Build data JSON
+    var data_buf: std.ArrayList(u8) = .empty;
+    errdefer data_buf.deinit(allocator);
+
+    try data_buf.appendSlice(allocator, "{\"prompts\":[");
+    var iter = stats.prompts.iterator();
+    var first = true;
+    while (iter.next()) |entry| {
+        if (!first) try data_buf.append(allocator, ',');
+        first = false;
+
+        const ps = entry.value_ptr;
+        const esc_id = try encoding.jsonEscapeAlloc(allocator, ps.id);
+        defer allocator.free(esc_id);
+
+        const total_tasks = ps.completed_tasks + ps.abandoned_tasks;
+        try data_buf.writer(allocator).print(
+            "{{\"id\":\"{s}\",\"totalRefers\":{d},\"completedTasks\":{d},\"abandonedTasks\":{d},\"totalTasks\":{d}}}",
+            .{ esc_id, ps.refer_count, ps.completed_tasks, ps.abandoned_tasks, total_tasks },
+        );
+    }
+    try data_buf.appendSlice(allocator, "]}");
+
+    // Build view text
+    var view_buf: std.ArrayList(u8) = .empty;
+    errdefer view_buf.deinit(allocator);
+
+    try view_buf.appendSlice(allocator, "Prompt                                    Refers  Tasks(ok/fail)\\n");
+    try view_buf.appendSlice(allocator, "────────────────────────────────────────────────────────────────\\n");
+
+    var iter2 = stats.prompts.iterator();
+    while (iter2.next()) |entry| {
+        const ps = entry.value_ptr;
+        try view_buf.writer(allocator).print("{s: <42}{d: >6}  {d}/{d}\\n", .{
+            ps.id,
+            ps.refer_count,
+            ps.completed_tasks,
+            ps.abandoned_tasks,
+        });
+    }
+
+    const data_json = try data_buf.toOwnedSlice(allocator);
+    defer allocator.free(data_json);
+    const view_text = try view_buf.toOwnedSlice(allocator);
+    defer allocator.free(view_text);
+
+    const esc_view = try encoding.jsonEscapeAlloc(allocator, view_text);
+    defer allocator.free(esc_view);
+
+    const structured = try std.fmt.allocPrint(allocator, "{{\"data\":{s},\"view\":\"{s}\"}}", .{ data_json, esc_view });
     defer allocator.free(structured);
     return try buildToolSuccessResult(allocator, structured);
 }
