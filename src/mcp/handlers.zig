@@ -182,6 +182,14 @@ fn handleSearch(
     var items = try workspace_prompt.discoverSearchable(allocator, workspace_root, kind, group);
     defer workspace_prompt.deinitPromptItems(allocator, &items);
 
+    // Trace: search event
+    const ws_id = try trace.workspaceId(allocator, workspace_root);
+    defer allocator.free(ws_id);
+    try trace.appendTraceEvent(allocator, workspace_root, .{
+        .event_type = .search,
+        .workspace_id = ws_id,
+    });
+
     const structured = try serializePromptList(allocator, items.items);
     defer allocator.free(structured);
     return try buildToolSuccessResult(allocator, structured);
@@ -192,6 +200,11 @@ fn handleLoad(
     workspace_root: []const u8,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
+    const task_id = if (args_obj.get("taskId")) |value| switch (value) {
+        .string => |s| s,
+        else => null,
+    } else null;
+
     var ids = try parseRequiredIds(allocator, args_obj.get("ids"));
     defer ids.deinit(allocator);
 
@@ -200,6 +213,19 @@ fn handleLoad(
 
     var result = try workspace_prompt.loadPrompts(allocator, workspace_root, ids.items, known.items);
     defer result.deinit(allocator);
+
+    // Trace: load event for each loaded item
+    const ws_id = try trace.workspaceId(allocator, workspace_root);
+    defer allocator.free(ws_id);
+    for (result.items.items) |item| {
+        try trace.appendTraceEvent(allocator, workspace_root, .{
+            .event_type = .load,
+            .workspace_id = ws_id,
+            .task_id = task_id,
+            .prompt_id = item.id,
+            .prompt_hash = item.hash,
+        });
+    }
 
     const structured = try serializeLoadResult(allocator, &result, workspace_root);
     defer allocator.free(structured);
