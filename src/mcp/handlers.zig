@@ -25,7 +25,7 @@ pub fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) 
 pub fn buildToolsListResult(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(
         u8,
-        "{\"tools\":[" ++ "{\"name\":\"memory.startup\",\"title\":\"Startup Memory\",\"description\":\"Return startup memory for the current workspace and only include content when hashes changed.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"entryFiles\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"known\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"hash\":{\"type\":\"string\"}},\"required\":[\"id\",\"hash\"],\"additionalProperties\":false}}},\"additionalProperties\":false}}," ++ "{\"name\":\"memory.list\",\"title\":\"List Memory\",\"description\":\"List workspace memory metadata with optional kind, group, and query filters.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"includePrompts\":{\"type\":\"boolean\"},\"kind\":{\"type\":\"string\",\"enum\":[\"pin\",\"entry_file\",\"prompt\"]},\"group\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}},\"additionalProperties\":false}}," ++ "{\"name\":\"memory.activate\",\"title\":\"Activate Memory\",\"description\":\"Activate selected memory ids, log the activation, and return only changed content.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"known\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"hash\":{\"type\":\"string\"}},\"required\":[\"id\",\"hash\"],\"additionalProperties\":false}},\"taskId\":{\"type\":\"string\"},\"turnId\":{\"type\":\"string\"}},\"required\":[\"ids\"],\"additionalProperties\":false}}]}",
+        "{\"tools\":[" ++ "{\"name\":\"memory.startup\",\"title\":\"Startup Memory\",\"description\":\"Return startup memory for the current workspace, including PIN and meta-prompt files, and only include content when hashes changed.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"metaPromptFiles\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"known\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"hash\":{\"type\":\"string\"}},\"required\":[\"id\",\"hash\"],\"additionalProperties\":false}}},\"additionalProperties\":false}}," ++ "{\"name\":\"memory.list\",\"title\":\"List Memory\",\"description\":\"List workspace memory metadata with optional kind, group, and query filters.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"includePrompts\":{\"type\":\"boolean\"},\"kind\":{\"type\":\"string\",\"enum\":[\"pin\",\"meta_prompt_file\",\"prompt\"]},\"group\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}},\"additionalProperties\":false}}," ++ "{\"name\":\"memory.activate\",\"title\":\"Activate Memory\",\"description\":\"Activate selected memory ids, log the activation, and return only changed content.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"known\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"hash\":{\"type\":\"string\"}},\"required\":[\"id\",\"hash\"],\"additionalProperties\":false}},\"taskId\":{\"type\":\"string\"},\"turnId\":{\"type\":\"string\"}},\"required\":[\"ids\"],\"additionalProperties\":false}}]}",
     );
 }
 
@@ -70,13 +70,13 @@ fn handleStartupTool(
     var known = try parseKnownList(allocator, args_obj.get("known"));
     defer known.deinit(allocator);
 
-    var entry_files = try parseStringList(allocator, args_obj.get("entryFiles"));
-    defer entry_files.deinit(allocator);
+    var meta_prompt_files = try parseStringList(allocator, args_obj.get("metaPromptFiles"));
+    defer meta_prompt_files.deinit(allocator);
 
     var result = try workspace_memory.startupMemory(
         allocator,
         workspace_root,
-        if (entry_files.items.len > 0) entry_files.items else null,
+        if (meta_prompt_files.items.len > 0) meta_prompt_files.items else null,
         known.items,
     );
     defer result.deinit(allocator);
@@ -183,7 +183,7 @@ fn parseMemoryKind(value: std.json.Value) !?workspace_memory.MemoryKind {
     };
 
     if (std.mem.eql(u8, str, "pin")) return .pin;
-    if (std.mem.eql(u8, str, "entry_file")) return .entry_file;
+    if (std.mem.eql(u8, str, "meta_prompt_file")) return .meta_prompt_file;
     if (std.mem.eql(u8, str, "prompt")) return .prompt;
     return error.InvalidParams;
 }

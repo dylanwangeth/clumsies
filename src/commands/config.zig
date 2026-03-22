@@ -9,7 +9,7 @@ const Color = commands.Color;
 const P = commands.P;
 const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 
-pub const DEFAULT_ENTRY_FILES = lib_config.DEFAULT_ENTRY_FILES;
+pub const DEFAULT_META_PROMPT_FILES = lib_config.DEFAULT_META_PROMPT_FILES;
 pub const RegistryInfo = lib_config.RegistryInfo;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -48,7 +48,7 @@ fn printConfigHelp(out: *std.io.Writer) !void {
     try out.print("{s}  {s}-h, --help{s}        Show this help\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Config keys:\n", .{P});
     try out.print("{s}  {s}registry{s}          Registry URL\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}entry_files{s}       Meta-prompt files to sync\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}meta_prompt_files{s} Meta-prompt files for startup recall\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}meta_prompt_file{s}  Default meta-prompt for pub\n", .{ P, Color.cyan, Color.reset });
 }
 
@@ -192,8 +192,8 @@ pub fn getRegistryInfo(allocator: std.mem.Allocator) !RegistryInfo {
     return lib_config.getRegistryInfo(allocator);
 }
 
-pub fn getEntryFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
-    return lib_config.getEntryFilesStr(allocator);
+pub fn getMetaPromptFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
+    return lib_config.getMetaPromptFilesStr(allocator);
 }
 
 pub fn getMetaPromptFile(allocator: std.mem.Allocator) !?[]const u8 {
