@@ -2,7 +2,7 @@ const std = @import("std");
 const fs = std.fs;
 const testing = std.testing;
 
-pub const DEFAULT_ENTRY_FILES = [_][]const u8{ "CLAUDE.md", "CURSOR.md", "AGENTS.md", "COPILOT.md" };
+pub const DEFAULT_META_PROMPT_FILES = [_][]const u8{ "CLAUDE.md", "CURSOR.md", "AGENTS.md", "COPILOT.md" };
 
 /// Registry URL with optional branch parsed from "url#branch".
 pub const RegistryInfo = struct {
@@ -74,9 +74,16 @@ pub fn getRegistryInfo(allocator: std.mem.Allocator) !RegistryInfo {
     return parseRegistryUrl(allocator, raw);
 }
 
-pub fn getEntryFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
+pub fn getMetaPromptFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
     const parsed = readConfig(allocator) catch return null;
     defer parsed.deinit();
+
+    if (parsed.value.object.get("meta_prompt_files")) |value| {
+        return switch (value) {
+            .string => |s| try allocator.dupe(u8, s),
+            else => null,
+        };
+    }
 
     if (parsed.value.object.get("entry_files")) |value| {
         return switch (value) {
@@ -84,6 +91,7 @@ pub fn getEntryFilesStr(allocator: std.mem.Allocator) !?[]const u8 {
             else => null,
         };
     }
+
     return null;
 }
 
@@ -105,7 +113,7 @@ pub fn freeOwnedStrings(allocator: std.mem.Allocator, items: *std.ArrayListUnman
     items.deinit(allocator);
 }
 
-pub fn parseEntryFiles(allocator: std.mem.Allocator, raw: ?[]const u8) !std.ArrayListUnmanaged([]const u8) {
+pub fn parseMetaPromptFiles(allocator: std.mem.Allocator, raw: ?[]const u8) !std.ArrayListUnmanaged([]const u8) {
     var files: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer freeOwnedStrings(allocator, &files);
 
@@ -119,8 +127,8 @@ pub fn parseEntryFiles(allocator: std.mem.Allocator, raw: ?[]const u8) !std.Arra
     }
 
     if (files.items.len == 0) {
-        for (DEFAULT_ENTRY_FILES) |entry| {
-            try files.append(allocator, try allocator.dupe(u8, entry));
+        for (DEFAULT_META_PROMPT_FILES) |mpf| {
+            try files.append(allocator, try allocator.dupe(u8, mpf));
         }
     }
 
@@ -169,15 +177,15 @@ test "parseRegistryUrl: no hash no branch" {
     try testing.expect(info.branch == null);
 }
 
-test "parseEntryFiles: uses defaults when unset" {
-    var files = try parseEntryFiles(testing.allocator, null);
+test "parseMetaPromptFiles: uses defaults when unset" {
+    var files = try parseMetaPromptFiles(testing.allocator, null);
     defer freeOwnedStrings(testing.allocator, &files);
-    try testing.expectEqual(@as(usize, DEFAULT_ENTRY_FILES.len), files.items.len);
+    try testing.expectEqual(@as(usize, DEFAULT_META_PROMPT_FILES.len), files.items.len);
     try testing.expectEqualStrings("CLAUDE.md", files.items[0]);
 }
 
-test "parseEntryFiles: trims configured list" {
-    var files = try parseEntryFiles(testing.allocator, "AGENTS.md, CUSTOM.md , ,PIN.md");
+test "parseMetaPromptFiles: trims configured list" {
+    var files = try parseMetaPromptFiles(testing.allocator, "AGENTS.md, CUSTOM.md , ,PIN.md");
     defer freeOwnedStrings(testing.allocator, &files);
     try testing.expectEqual(@as(usize, 3), files.items.len);
     try testing.expectEqualStrings("AGENTS.md", files.items[0]);

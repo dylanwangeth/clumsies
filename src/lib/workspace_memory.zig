@@ -6,7 +6,7 @@ const usage_log = @import("usage_log.zig");
 
 pub const MemoryKind = enum {
     pin,
-    entry_file,
+    meta_prompt_file,
     prompt,
 };
 
@@ -27,7 +27,7 @@ pub const MemoryItem = struct {
 };
 
 pub const DiscoverOptions = struct {
-    entry_files_override: ?[]const []const u8 = null,
+    meta_prompt_files_override: ?[]const []const u8 = null,
     include_prompts: bool = true,
 };
 
@@ -102,19 +102,19 @@ pub fn discoverWorkspaceMemory(allocator: std.mem.Allocator, workspace_root: []c
 
     try maybeAppendNamedFile(allocator, workspace_root, "PIN.md", .pin, .highest, &seen_named_paths, &items);
 
-    if (options.entry_files_override) |entry_files| {
-        for (entry_files) |entry_file| {
-            try maybeAppendNamedFile(allocator, workspace_root, entry_file, .entry_file, .high, &seen_named_paths, &items);
+    if (options.meta_prompt_files_override) |meta_prompt_files| {
+        for (meta_prompt_files) |meta_prompt_file| {
+            try maybeAppendNamedFile(allocator, workspace_root, meta_prompt_file, .meta_prompt_file, .high, &seen_named_paths, &items);
         }
     } else {
-        const raw_entry_files = try config.getEntryFilesStr(allocator);
-        defer if (raw_entry_files) |raw| allocator.free(raw);
+        const raw_meta_prompt_files = try config.getMetaPromptFilesStr(allocator);
+        defer if (raw_meta_prompt_files) |raw| allocator.free(raw);
 
-        var entry_files = try config.parseEntryFiles(allocator, raw_entry_files);
-        defer config.freeOwnedStrings(allocator, &entry_files);
+        var meta_prompt_files = try config.parseMetaPromptFiles(allocator, raw_meta_prompt_files);
+        defer config.freeOwnedStrings(allocator, &meta_prompt_files);
 
-        for (entry_files.items) |entry_file| {
-            try maybeAppendNamedFile(allocator, workspace_root, entry_file, .entry_file, .high, &seen_named_paths, &items);
+        for (meta_prompt_files.items) |meta_prompt_file| {
+            try maybeAppendNamedFile(allocator, workspace_root, meta_prompt_file, .meta_prompt_file, .high, &seen_named_paths, &items);
         }
     }
 
@@ -126,9 +126,9 @@ pub fn discoverWorkspaceMemory(allocator: std.mem.Allocator, workspace_root: []c
     return items;
 }
 
-pub fn discoverStartupMemory(allocator: std.mem.Allocator, workspace_root: []const u8, entry_files_override: ?[]const []const u8) !std.ArrayListUnmanaged(MemoryItem) {
+pub fn discoverStartupMemory(allocator: std.mem.Allocator, workspace_root: []const u8, meta_prompt_files_override: ?[]const []const u8) !std.ArrayListUnmanaged(MemoryItem) {
     return discoverWorkspaceMemory(allocator, workspace_root, .{
-        .entry_files_override = entry_files_override,
+        .meta_prompt_files_override = meta_prompt_files_override,
         .include_prompts = false,
     });
 }
@@ -159,10 +159,10 @@ pub fn listMemory(allocator: std.mem.Allocator, workspace_root: []const u8, requ
 pub fn startupMemory(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
-    entry_files_override: ?[]const []const u8,
+    meta_prompt_files_override: ?[]const []const u8,
     known: []const KnownMemory,
 ) !ActivationResult {
-    var items = try discoverStartupMemory(allocator, workspace_root, entry_files_override);
+    var items = try discoverStartupMemory(allocator, workspace_root, meta_prompt_files_override);
     defer deinitMemoryItems(allocator, &items);
 
     return try materializeAll(allocator, workspace_root, items.items, known);
@@ -213,7 +213,7 @@ fn maybeAppendNamedFile(
     const name = prompt.displayNameFromFilename(std.fs.path.basename(rel_path));
     const id_prefix = switch (kind) {
         .pin => "pin",
-        .entry_file => "entry",
+        .meta_prompt_file => "mpf",
         .prompt => "prompt",
     };
 
@@ -423,20 +423,20 @@ fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8)
     return tmp.dir.realpath(".", buf) catch "";
 }
 
-test "discoverWorkspaceMemory: finds pin entry file and prompts" {
+test "discoverWorkspaceMemory: finds pin MPF and prompts" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try tmp.dir.makePath(".prompts/rule/coding");
     try writeFile(tmp.dir, "PIN.md", "pin memory");
-    try writeFile(tmp.dir, "AGENTS.md", "entry memory");
+    try writeFile(tmp.dir, "AGENTS.md", "mpf memory");
     try writeFile(tmp.dir, ".prompts/rule/coding/03_PR_WORKFLOW.md", "workflow memory");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     var items = try discoverWorkspaceMemory(testing.allocator, root, .{
-        .entry_files_override = &.{"AGENTS.md"},
+        .meta_prompt_files_override = &.{"AGENTS.md"},
     });
     defer deinitMemoryItems(testing.allocator, &items);
 
@@ -456,7 +456,7 @@ test "discoverStartupMemory: excludes prompt files" {
 
     try tmp.dir.makePath(".prompts/rule");
     try writeFile(tmp.dir, "PIN.md", "pin memory");
-    try writeFile(tmp.dir, "AGENTS.md", "entry memory");
+    try writeFile(tmp.dir, "AGENTS.md", "mpf memory");
     try writeFile(tmp.dir, ".prompts/rule/01_NOTE.md", "prompt memory");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -467,7 +467,7 @@ test "discoverStartupMemory: excludes prompt files" {
 
     try testing.expectEqual(@as(usize, 2), items.items.len);
     try testing.expectEqual(MemoryKind.pin, items.items[0].kind);
-    try testing.expectEqual(MemoryKind.entry_file, items.items[1].kind);
+    try testing.expectEqual(MemoryKind.meta_prompt_file, items.items[1].kind);
 }
 
 test "listMemory: filters by kind group and query" {
@@ -476,7 +476,7 @@ test "listMemory: filters by kind group and query" {
 
     try tmp.dir.makePath(".prompts/rule/coding");
     try tmp.dir.makePath(".prompts/rule/writing");
-    try writeFile(tmp.dir, "AGENTS.md", "entry memory");
+    try writeFile(tmp.dir, "AGENTS.md", "mpf memory");
     try writeFile(tmp.dir, ".prompts/rule/coding/03_PR_WORKFLOW.md", "workflow memory");
     try writeFile(tmp.dir, ".prompts/rule/writing/01_BLOG.md", "blog memory");
 
@@ -504,7 +504,7 @@ test "startupMemory: only changed items include content" {
     defer tmp.cleanup();
 
     try writeFile(tmp.dir, "PIN.md", "pin memory");
-    try writeFile(tmp.dir, "AGENTS.md", "entry memory");
+    try writeFile(tmp.dir, "AGENTS.md", "mpf memory");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
@@ -521,7 +521,7 @@ test "startupMemory: only changed items include content" {
     try testing.expect(!result.items.items[0].changed);
     try testing.expect(result.items.items[0].content == null);
     try testing.expect(result.items.items[1].changed);
-    try testing.expectEqualStrings("entry memory", result.items.items[1].content.?);
+    try testing.expectEqualStrings("mpf memory", result.items.items[1].content.?);
 }
 
 test "activateMemory: deduplicates ids and logs activation" {

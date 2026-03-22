@@ -120,7 +120,7 @@ test "getActivationLogPath: stable per workspace" {
 test "buildActivationLine: renders refs and nullable ids" {
     const line = try buildActivationLine(testing.allocator, "/tmp/ws", "activate", null, "turn-1", &.{
         .{ .id = "pin:PIN.md", .hash = "abcd" },
-        .{ .id = "entry:AGENTS.md", .hash = "efgh" },
+        .{ .id = "mpf:AGENTS.md", .hash = "efgh" },
     });
     defer testing.allocator.free(line);
 
