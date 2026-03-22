@@ -80,7 +80,7 @@ pub fn formatDate(timestamp: i64, buf: *[10]u8) []const u8 {
 }
 
 /// Print git output in unified format with dim styling
-pub fn printGitOutput(writer: *std.io.Writer, output: *const GitOutput) void {
+pub fn printGitOutput(writer: *std.Io.Writer, output: *const GitOutput) void {
     const has_stdout = output.stdout != null and output.stdout.?.len > 0;
     const has_stderr = output.stderr != null and output.stderr.?.len > 0;
 

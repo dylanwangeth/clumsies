@@ -63,7 +63,7 @@ fn buildActivationLine(
     turn_id: ?[]const u8,
     refs: []const ActivationRef,
 ) ![]const u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     const esc_workspace = try encoding.jsonEscapeAlloc(allocator, workspace_root);

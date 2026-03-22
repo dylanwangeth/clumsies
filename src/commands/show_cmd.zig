@@ -11,7 +11,7 @@ const resolveRef = commands.resolveRef;
 const findPromptByHashPrefix = commands.findPromptByHashPrefix;
 const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
     const META = 1;
     const S = 2;
@@ -64,7 +64,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
 }
 
-fn showPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8) !void {
+fn showPrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8) !void {
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
     defer allocator.free(index_path);
 
@@ -126,7 +126,7 @@ fn showPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     try stdout.print("{s}\n", .{prompt_content});
 }
 
-fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, name: []const u8, show_meta: bool) !void {
+fn showBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, name: []const u8, show_meta: bool) !void {
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
     defer allocator.free(index_path);
 
@@ -257,7 +257,7 @@ fn showBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     }
 }
 
-fn printHelp(out: *std.io.Writer) !void {
+fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies show <ref> [--meta] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Show prompt content or bundle details.\n", .{P});
     try out.print("{s}Type is auto-detected: hex = prompt hash, otherwise = bundle name.\n", .{P});

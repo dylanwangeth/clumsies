@@ -23,7 +23,7 @@ const updatePromptsIndex = commands.updatePromptsIndex;
 const addPromptsToBundle = commands.addPromptsToBundle;
 const bundleExists = commands.bundleExists;
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
     const D = 1;
     const C = 2;
@@ -86,7 +86,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     fs.cwd().makePath(prompts_dir) catch {};
 
     // Expand directories into file lists
-    var expanded_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    var expanded_paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (expanded_paths.items) |p| allocator.free(p);
         expanded_paths.deinit(allocator);
@@ -132,7 +132,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         }
     }
 
-    var refs: std.ArrayListUnmanaged(PromptRef) = .empty;
+    var refs: std.ArrayList(PromptRef) = .empty;
     defer freePromptRefs(allocator, &refs);
 
     for (expanded_paths.items) |file_path| {
@@ -212,7 +212,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
 }
 
-fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, prompts_dir: []const u8, cwd: []const u8, file_path: []const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8) !?PromptRef {
+fn preparePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, prompts_dir: []const u8, cwd: []const u8, file_path: []const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8) !?PromptRef {
     const abs_path = if (std.fs.path.isAbsolute(file_path))
         try allocator.dupe(u8, file_path)
     else
@@ -290,7 +290,7 @@ fn preparePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
 }
 
 /// Recursively expand a directory into individual file paths
-fn expandDirectory(allocator: std.mem.Allocator, abs_path: []const u8, expanded_paths: *std.ArrayListUnmanaged([]const u8)) void {
+fn expandDirectory(allocator: std.mem.Allocator, abs_path: []const u8, expanded_paths: *std.ArrayList([]const u8)) void {
     var dir = fs.openDirAbsolute(abs_path, .{ .iterate = true }) catch return;
     defer dir.close();
 
@@ -310,7 +310,7 @@ fn expandDirectory(allocator: std.mem.Allocator, abs_path: []const u8, expanded_
     }
 }
 
-fn printHelp(out: *std.io.Writer) !void {
+fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies add <file|dir>... [-g <group>] [-b <bundle>] [-m] [-d <desc>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Register prompt(s) to registry. Directories are expanded to their files.\n", .{P});
     try out.print("{s}Options:\n", .{P});

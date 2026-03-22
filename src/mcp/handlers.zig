@@ -188,15 +188,15 @@ fn parseMemoryKind(value: std.json.Value) !?workspace_memory.MemoryKind {
     return error.InvalidParams;
 }
 
-fn parseRequiredIds(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !std.ArrayListUnmanaged([]const u8) {
+fn parseRequiredIds(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !std.ArrayList([]const u8) {
     var ids = try parseStringList(allocator, value_opt);
     errdefer ids.deinit(allocator);
     if (ids.items.len == 0) return error.InvalidParams;
     return ids;
 }
 
-fn parseStringList(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !std.ArrayListUnmanaged([]const u8) {
-    var values: std.ArrayListUnmanaged([]const u8) = .empty;
+fn parseStringList(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !std.ArrayList([]const u8) {
+    var values: std.ArrayList([]const u8) = .empty;
     errdefer values.deinit(allocator);
 
     const value = value_opt orelse return values;
@@ -216,8 +216,8 @@ fn parseStringList(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !st
     return values;
 }
 
-fn parseKnownList(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !std.ArrayListUnmanaged(workspace_memory.KnownMemory) {
-    var known: std.ArrayListUnmanaged(workspace_memory.KnownMemory) = .empty;
+fn parseKnownList(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !std.ArrayList(workspace_memory.KnownMemory) {
+    var known: std.ArrayList(workspace_memory.KnownMemory) = .empty;
     errdefer known.deinit(allocator);
 
     const value = value_opt orelse return known;
@@ -246,7 +246,7 @@ fn parseKnownList(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !std
 }
 
 fn serializeMemoryList(allocator: std.mem.Allocator, items: []const workspace_memory.MemoryItem) ![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, "{\"items\":[");
@@ -260,7 +260,7 @@ fn serializeMemoryList(allocator: std.mem.Allocator, items: []const workspace_me
 }
 
 fn serializeActivationResult(allocator: std.mem.Allocator, result: *workspace_memory.ActivationResult) ![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, "{\"items\":[");
@@ -275,7 +275,7 @@ fn serializeActivationResult(allocator: std.mem.Allocator, result: *workspace_me
 
 fn appendMemoryMetadata(
     allocator: std.mem.Allocator,
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     item: workspace_memory.MemoryItem,
 ) !void {
     const esc_id = try encoding.jsonEscapeAlloc(allocator, item.id);
@@ -301,7 +301,7 @@ fn appendMemoryMetadata(
 
 fn appendActivatedMemory(
     allocator: std.mem.Allocator,
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     item: workspace_memory.ActivatedMemory,
 ) !void {
     const esc_id = try encoding.jsonEscapeAlloc(allocator, item.id);

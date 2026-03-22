@@ -4,7 +4,7 @@ const styles = @import("../styles.zig");
 const Color = styles.Color;
 const P = styles.P;
 
-pub fn run(stdout: *std.io.Writer) !void {
+pub fn run(stdout: *std.Io.Writer) !void {
     try stdout.print("{s}{s}{s}clumsies{s} - User-controlled memory for AI agents\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}{s}{s}Registry:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}ls{s}        List prompts or bundles\n", .{ P, Color.cyan, Color.reset });

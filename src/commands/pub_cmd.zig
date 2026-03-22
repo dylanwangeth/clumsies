@@ -24,7 +24,7 @@ const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 const findPromptByHashPrefix = commands.findPromptByHashPrefix;
 const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const N = 0;
     const D = 1;
     const T = 2;
@@ -110,7 +110,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     var sp = spinner.init(stdout, "Uploading prompts");
     sp.start();
 
-    var prompt_refs: std.ArrayListUnmanaged(PromptRef) = .{};
+    var prompt_refs: std.ArrayList(PromptRef) = .empty;
     defer freePromptRefs(allocator, &prompt_refs);
 
     for (dirs) |dir_arg| {
@@ -262,7 +262,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const index_path = try std.fs.path.join(allocator, &.{ bundles_dir, "index.json" });
     defer allocator.free(index_path);
 
-    var existing_bundles: std.ArrayListUnmanaged(u8) = .{};
+    var existing_bundles: std.ArrayList(u8) = .empty;
     defer existing_bundles.deinit(allocator);
     var has_existing_bundles: bool = false;
 
@@ -365,7 +365,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     try stdout.print("{s}Prompts: {d}\n", .{ P, prompt_refs.items.len });
 }
 
-fn printHelp(out: *std.io.Writer) !void {
+fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies pub <mpf-file|hash> <dirs>... -n <name> [-d <desc>] [-t <task>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Publish a bundle to registry. MPF can be a local file or a registry hash.\n", .{P});
     try out.print("{s}Options:\n", .{P});

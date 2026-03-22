@@ -9,7 +9,7 @@ const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const META_PROMPT_GROUP = commands.META_PROMPT_GROUP;
 const ensureRegistry = commands.ensureRegistry;
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
     const P_ = 1;
     const M = 2;
@@ -56,7 +56,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
 }
 
-fn printHelp(out: *std.io.Writer) !void {
+fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies ls [-p] [-m] [-g <group>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-p, --prompts{s}        List prompts instead of bundles\n", .{ P, Color.cyan, Color.reset });
@@ -67,7 +67,7 @@ fn printHelp(out: *std.io.Writer) !void {
     try out.print("{s}  {s}-h, --help{s}          Show this help\n", .{ P, Color.cyan, Color.reset });
 }
 
-fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, group_filter: ?[]const u8, sync: bool, quiet_git: bool) !void {
+fn listPrompts(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, group_filter: ?[]const u8, sync: bool, quiet_git: bool) !void {
     const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git, null) catch return;
     defer allocator.free(registry_path);
 
@@ -138,7 +138,7 @@ fn listPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.me
     }
 }
 
-fn listBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool) !void {
+fn listBundles(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool) !void {
     const registry_path = ensureRegistry(stdout, stderr, allocator, sync, quiet_git, null) catch return;
     defer allocator.free(registry_path);
 

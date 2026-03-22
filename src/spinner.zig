@@ -67,7 +67,7 @@ pub const Spinner = struct {
     }
 };
 
-pub fn init(_: *std.io.Writer, message: []const u8) Spinner {
+pub fn init(_: *std.Io.Writer, message: []const u8) Spinner {
     return Spinner{
         .message = message,
         .is_tty = std.fs.File.stdout().isTty(),

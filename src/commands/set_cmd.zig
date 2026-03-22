@@ -23,7 +23,7 @@ const freePromptRefs = commands.freePromptRefs;
 const findPromptByHashPrefix = commands.findPromptByHashPrefix;
 const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 5;
     const S = 6;
     const SPECS = [_]flag.FlagSpec{
@@ -84,7 +84,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
 }
 
-fn setPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, args: []const []const u8) !void {
+fn setPrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, args: []const []const u8) !void {
     const N = 0;
     const D = 1;
     const C = 2;
@@ -149,13 +149,13 @@ fn setPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     }
 }
 
-fn existingPromptGroup(stderr: *std.io.Writer, item: std.json.Value, hash: []const u8) !?[]const u8 {
+fn existingPromptGroup(stderr: *std.Io.Writer, item: std.json.Value, hash: []const u8) !?[]const u8 {
     if (item.object.get("group")) |group| return group.string;
     try stderr.print("{s}{s}{s}Error:{s} Prompt metadata missing group: {s}\n", .{ P, Color.bold, Color.red, Color.reset, hash });
     return null;
 }
 
-fn appendPromptEntryOrReport(stderr: *std.io.Writer, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !bool {
+fn appendPromptEntryOrReport(stderr: *std.Io.Writer, allocator: std.mem.Allocator, buf: *std.ArrayList(u8), item: std.json.Value) !bool {
     const item_hash = if (item.object.get("hash")) |hash| hash.string else return true;
     appendPromptEntry(allocator, buf, item) catch |err| switch (err) {
         error.MissingGroup => {
@@ -167,7 +167,7 @@ fn appendPromptEntryOrReport(stderr: *std.io.Writer, allocator: std.mem.Allocato
     return true;
 }
 
-fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, name_flag: ?[]const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8, quiet_git: bool) !void {
+fn updatePromptMeta(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, name_flag: ?[]const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8, quiet_git: bool) !void {
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
     defer allocator.free(index_path);
 
@@ -196,7 +196,7 @@ fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
     };
 
     var found = false;
-    var new_index: std.ArrayListUnmanaged(u8) = .{};
+    var new_index: std.ArrayList(u8) = .empty;
     defer new_index.deinit(allocator);
 
     try new_index.appendSlice(allocator, "{\n  \"prompts\": [");
@@ -275,7 +275,7 @@ fn updatePromptMeta(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
     if (group_flag) |g| try stdout.print("{s}Group: {s}\n", .{ P, g });
 }
 
-fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, file_path: []const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8, quiet_git: bool) !void {
+fn replacePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, file_path: []const u8, desc_flag: ?[]const u8, group_flag: ?[]const u8, quiet_git: bool) !void {
     const cwd = std.process.getCwdAlloc(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine current directory\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -383,7 +383,7 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
     }
 
     // Rebuild prompts/index.json
-    var new_index: std.ArrayListUnmanaged(u8) = .{};
+    var new_index: std.ArrayList(u8) = .empty;
     defer new_index.deinit(allocator);
 
     try new_index.appendSlice(allocator, "{\n  \"prompts\": [");
@@ -439,7 +439,7 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
                 defer bparsed.deinit();
 
                 if (bparsed.value.object.get("bundles")) |bundles| {
-                    var new_bidx: std.ArrayListUnmanaged(u8) = .{};
+                    var new_bidx: std.ArrayList(u8) = .empty;
                     defer new_bidx.deinit(allocator);
                     try new_bidx.appendSlice(allocator, "{\n  \"bundles\": [");
 
@@ -525,7 +525,7 @@ fn replacePrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.
     if (group_flag) |g| try stdout.print("{s}Group: {s}\n", .{ P, g });
 }
 
-fn renameGroupFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, new_group: []const u8, quiet_git: bool) !void {
+fn renameGroupFromRef(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash: []const u8, new_group: []const u8, quiet_git: bool) !void {
     // Read prompts/index.json to find the old group of this prompt
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
     defer allocator.free(index_path);
@@ -578,7 +578,7 @@ fn renameGroupFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
 
     // Rename all prompts with old group to new group
     var rename_count: usize = 0;
-    var new_index: std.ArrayListUnmanaged(u8) = .{};
+    var new_index: std.ArrayList(u8) = .empty;
     defer new_index.deinit(allocator);
 
     try new_index.appendSlice(allocator, "{\n  \"prompts\": [");
@@ -652,7 +652,7 @@ fn renameGroupFromRef(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator:
     try stdout.print("{s}  {s}{d}{s} prompt(s) updated\n", .{ P, Color.cyan, rename_count, Color.reset });
 }
 
-fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, bundle_name: []const u8, args: []const []const u8) !void {
+fn setBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, bundle_name: []const u8, args: []const []const u8) !void {
     const ADD = 0;
     const RM = 1;
     const AP = 2;
@@ -792,7 +792,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     }
 
     // Process --add
-    var new_refs: std.ArrayListUnmanaged(PromptRef) = .{};
+    var new_refs: std.ArrayList(PromptRef) = .empty;
     defer freePromptRefs(allocator, &new_refs);
 
     if (add_dirs.len > 0) {
@@ -837,13 +837,13 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     }
 
     // Validate --add-prompt hashes against prompts/index.json and resolve to full hashes
-    var resolved_add_hashes: std.ArrayListUnmanaged([]const u8) = .{};
+    var resolved_add_hashes: std.ArrayList([]const u8) = .empty;
     defer {
         for (resolved_add_hashes.items) |h| allocator.free(h);
         resolved_add_hashes.deinit(allocator);
     }
 
-    var resolved_rm_hashes: std.ArrayListUnmanaged([]const u8) = .{};
+    var resolved_rm_hashes: std.ArrayList([]const u8) = .empty;
     defer {
         for (resolved_rm_hashes.items) |h| allocator.free(h);
         resolved_rm_hashes.deinit(allocator);
@@ -932,7 +932,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         return;
     };
 
-    var new_index: std.ArrayListUnmanaged(u8) = .{};
+    var new_index: std.ArrayList(u8) = .empty;
     defer new_index.deinit(allocator);
     try new_index.appendSlice(allocator, "{\n  \"bundles\": [");
 
@@ -957,7 +957,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
             try new_index.appendSlice(allocator, entry_start);
 
             var prompt_first = true;
-            var seen_hashes: std.ArrayListUnmanaged([]const u8) = .{};
+            var seen_hashes: std.ArrayList([]const u8) = .empty;
             defer seen_hashes.deinit(allocator);
 
             // Keep existing prompts minus --rm-prompt
@@ -1046,7 +1046,7 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     if (prompts_removed > 0) try stdout.print("{s}    Prompts removed: {d}\n", .{ P, prompts_removed });
 }
 
-fn printHelp(out: *std.io.Writer) !void {
+fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies set <ref> [options] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Update prompt metadata/content or bundle composition.\n", .{P});
     try out.print("{s}Type is auto-detected: hex = prompt, otherwise = bundle.\n", .{P});

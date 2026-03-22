@@ -84,7 +84,7 @@ fn getOverrideCachePath(allocator: std.mem.Allocator, base_path: []const u8, url
 /// Ensure registry exists, optionally sync with remote.
 /// If registry_url is provided, use it instead of the configured registry
 /// and cache in ~/.clumsies/cache/<hash(url,branch)>/.
-pub fn ensureRegistry(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool, registry_url: ?[]const u8) ![]const u8 {
+pub fn ensureRegistry(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, sync: bool, quiet_git: bool, registry_url: ?[]const u8) ![]const u8 {
     const registry_info = if (registry_url) |url|
         try lib_config.parseRegistryUrl(allocator, url)
     else
@@ -226,7 +226,7 @@ pub fn findPromptByHashPrefix(prompts: std.json.Value, prefix: []const u8) Promp
     return .not_found;
 }
 
-pub fn printAmbiguousPromptHashError(stderr: *std.io.Writer, ref: []const u8) !void {
+pub fn printAmbiguousPromptHashError(stderr: *std.Io.Writer, ref: []const u8) !void {
     try stderr.print("{s}{s}{s}Error:{s} Ambiguous prompt hash prefix: {s}\n", .{ P, Color.bold, Color.red, Color.reset, ref });
     try stderr.print("{s}Use a longer prefix or the full hash\n", .{P});
 }
