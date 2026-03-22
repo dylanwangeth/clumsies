@@ -16,7 +16,7 @@ pub const PromptRef = struct {
 };
 
 /// Free all owned fields in a PromptRef list
-pub fn freePromptRefs(allocator: std.mem.Allocator, refs: *std.ArrayListUnmanaged(PromptRef)) void {
+pub fn freePromptRefs(allocator: std.mem.Allocator, refs: *std.ArrayList(PromptRef)) void {
     for (refs.items) |ref| {
         allocator.free(ref.hash);
         allocator.free(ref.group);
@@ -36,7 +36,7 @@ pub fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u
     const index_path = try std.fs.path.join(allocator, &.{ prompts_dir, "index.json" });
     defer allocator.free(index_path);
 
-    var index_content: std.ArrayListUnmanaged(u8) = .{};
+    var index_content: std.ArrayList(u8) = .empty;
     defer index_content.deinit(allocator);
     try index_content.appendSlice(allocator, "{\n  \"prompts\": [");
 
@@ -113,7 +113,7 @@ pub fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u
 }
 
 /// Serialize a prompt JSON entry to a buffer
-pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
+pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), item: std.json.Value) !void {
     const item_hash = if (item.object.get("hash")) |h| h.string else return;
     const item_name = if (item.object.get("name")) |n| n.string else "-";
     const item_desc = if (item.object.get("description")) |d| d.string else "-";
@@ -136,7 +136,7 @@ pub fn appendPromptEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
 }
 
 /// Serialize a bundle JSON entry to a buffer (handles both new and old format)
-pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), item: std.json.Value) !void {
+pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), item: std.json.Value) !void {
     const item_name = if (item.object.get("name")) |n| n.string else return;
     const item_task = if (item.object.get("task")) |t| t.string else "-";
     const item_desc = if (item.object.get("description")) |d| d.string else "-";
@@ -455,7 +455,7 @@ test "appendPromptEntry: missing group returns error" {
     , .{});
     defer parsed.deinit();
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(testing.allocator);
 
     try testing.expectError(error.MissingGroup, appendPromptEntry(testing.allocator, &buf, parsed.value));

@@ -7,7 +7,7 @@ const P = commands.P;
 const GitOutput = commands.GitOutput;
 const printGitOutput = commands.printGitOutput;
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator) !void {
     if (!commands.promptsExist()) {
         try stderr.print("{s}{s}{s}Error:{s} .prompts/ not found\n", .{ P, Color.bold, Color.red, Color.reset });
         try stderr.print("{s}Run {s}clumsies clone <url>{s} first\n", .{ P, Color.cyan, Color.reset });

@@ -18,7 +18,7 @@ pub const PromptRef = index.PromptRef;
 /// Import a single prompt file from registry to .prompts/{group}/
 pub const ImportResult = enum { imported, skipped, failed };
 
-pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, hash: []const u8, name_opt: ?[]const u8, format: []const u8, group: []const u8) !ImportResult {
+pub fn importPrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, hash: []const u8, name_opt: ?[]const u8, format: []const u8, group: []const u8) !ImportResult {
     const prompt_file_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", hash });
     defer allocator.free(prompt_file_path);
 
@@ -92,7 +92,7 @@ pub fn importPrompt(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
 }
 
 /// Recursively collect prompt files from a directory and upload to registry
-pub fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, base_name: []const u8, prompts_dir: []const u8, refs: *std.ArrayListUnmanaged(PromptRef)) !void {
+pub fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8, base_name: []const u8, prompts_dir: []const u8, refs: *std.ArrayList(PromptRef)) !void {
     var dir = fs.openDirAbsolute(src_dir, .{ .iterate = true }) catch return error.Failed;
     defer dir.close();
 

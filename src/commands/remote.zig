@@ -8,7 +8,7 @@ const P = commands.P;
 const GitOutput = commands.GitOutput;
 const printGitOutputRaw = commands.printGitOutputRaw;
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
     const SPECS = [_]flag.FlagSpec{
         .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },

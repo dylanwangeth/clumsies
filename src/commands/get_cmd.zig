@@ -17,7 +17,7 @@ const findPromptByHashPrefix = commands.findPromptByHashPrefix;
 const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 const importPrompt = commands.importPrompt;
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
     const C = 1;
     const R = 2;
@@ -89,7 +89,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     try getPrompts(stdout, stderr, allocator, registry_path, refs, group_filters);
 }
 
-fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash_args: []const []const u8, group_filters: []const []const u8) !void {
+fn getPrompts(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash_args: []const []const u8, group_filters: []const []const u8) !void {
     const prompts_path = commands.getPromptsPath(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine .prompts/ path\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -208,7 +208,7 @@ fn getPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem
     }
 }
 
-fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, bundle_name: []const u8, remote_url: ?[]const u8, quiet_git: bool) !void {
+fn getBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, bundle_name: []const u8, remote_url: ?[]const u8, quiet_git: bool) !void {
     const prompts_path = commands.getPromptsPath(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine .prompts/ path\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -276,7 +276,7 @@ fn getBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     }
 }
 
-fn ensurePromptsDir(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, prompts_path: []const u8, quiet_git: bool) !void {
+fn ensurePromptsDir(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, prompts_path: []const u8, quiet_git: bool) !void {
     if (commands.promptsExist()) return;
 
     fs.cwd().makeDir(".prompts") catch |err| {
@@ -301,7 +301,7 @@ fn ensurePromptsDir(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: s
     printGitOutputRaw(&init_output, quiet_git);
 }
 
-fn importBundlePrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, bundle: std.json.Value) !usize {
+fn importBundlePrompts(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, prompts_path: []const u8, bundle: std.json.Value) !usize {
     const prompts_index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts", "index.json" });
     defer allocator.free(prompts_index_path);
 
@@ -359,7 +359,7 @@ fn importBundlePrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator
     return count;
 }
 
-fn printHelp(out: *std.io.Writer) !void {
+fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies get <ref>... [-g <group>] [--remote-url <url>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Import prompt(s) or a bundle to local .prompts/.\n", .{P});
     try out.print("{s}Type is auto-detected: hex = prompt, otherwise = bundle.\n", .{P});

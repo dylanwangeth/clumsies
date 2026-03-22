@@ -16,7 +16,7 @@ pub const ErrorCode = enum(i32) {
 };
 
 pub fn buildResultAlloc(allocator: std.mem.Allocator, id: std.json.Value, result_json: []const u8) ![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     try buf.writer(allocator).writeAll("{\"jsonrpc\":\"" ++ JSONRPC_VERSION ++ "\",\"id\":");
@@ -29,7 +29,7 @@ pub fn buildResultAlloc(allocator: std.mem.Allocator, id: std.json.Value, result
 }
 
 pub fn buildErrorAlloc(allocator: std.mem.Allocator, id: ?std.json.Value, code: ErrorCode, message: []const u8) ![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     const esc_message = try encoding.jsonEscapeAlloc(allocator, message);
@@ -46,7 +46,7 @@ pub fn buildErrorAlloc(allocator: std.mem.Allocator, id: ?std.json.Value, code: 
     return try buf.toOwnedSlice(allocator);
 }
 
-fn appendJsonId(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), value: std.json.Value) !void {
+fn appendJsonId(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: std.json.Value) !void {
     switch (value) {
         .null => try buf.appendSlice(allocator, "null"),
         .integer => |num| try buf.writer(allocator).print("{d}", .{num}),

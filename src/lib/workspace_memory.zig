@@ -63,7 +63,7 @@ pub const ActivatedMemory = struct {
 };
 
 pub const ActivationResult = struct {
-    items: std.ArrayListUnmanaged(ActivatedMemory) = .empty,
+    items: std.ArrayList(ActivatedMemory) = .empty,
 
     pub fn deinit(self: *ActivationResult, allocator: std.mem.Allocator) void {
         for (self.items.items) |item| {
@@ -78,7 +78,7 @@ pub const ActivationResult = struct {
     }
 };
 
-pub fn deinitMemoryItems(allocator: std.mem.Allocator, items: *std.ArrayListUnmanaged(MemoryItem)) void {
+pub fn deinitMemoryItems(allocator: std.mem.Allocator, items: *std.ArrayList(MemoryItem)) void {
     for (items.items) |item| {
         allocator.free(item.id);
         allocator.free(item.path);
@@ -89,8 +89,8 @@ pub fn deinitMemoryItems(allocator: std.mem.Allocator, items: *std.ArrayListUnma
     items.deinit(allocator);
 }
 
-pub fn discoverWorkspaceMemory(allocator: std.mem.Allocator, workspace_root: []const u8, options: DiscoverOptions) !std.ArrayListUnmanaged(MemoryItem) {
-    var items: std.ArrayListUnmanaged(MemoryItem) = .empty;
+pub fn discoverWorkspaceMemory(allocator: std.mem.Allocator, workspace_root: []const u8, options: DiscoverOptions) !std.ArrayList(MemoryItem) {
+    var items: std.ArrayList(MemoryItem) = .empty;
     errdefer deinitMemoryItems(allocator, &items);
 
     var seen_named_paths = std.StringHashMap(void).init(allocator);
@@ -126,14 +126,14 @@ pub fn discoverWorkspaceMemory(allocator: std.mem.Allocator, workspace_root: []c
     return items;
 }
 
-pub fn discoverStartupMemory(allocator: std.mem.Allocator, workspace_root: []const u8, meta_prompt_files_override: ?[]const []const u8) !std.ArrayListUnmanaged(MemoryItem) {
+pub fn discoverStartupMemory(allocator: std.mem.Allocator, workspace_root: []const u8, meta_prompt_files_override: ?[]const []const u8) !std.ArrayList(MemoryItem) {
     return discoverWorkspaceMemory(allocator, workspace_root, .{
         .meta_prompt_files_override = meta_prompt_files_override,
         .include_prompts = false,
     });
 }
 
-pub fn listMemory(allocator: std.mem.Allocator, workspace_root: []const u8, request: ListRequest) !std.ArrayListUnmanaged(MemoryItem) {
+pub fn listMemory(allocator: std.mem.Allocator, workspace_root: []const u8, request: ListRequest) !std.ArrayList(MemoryItem) {
     var discovered = try discoverWorkspaceMemory(allocator, workspace_root, .{
         .include_prompts = request.include_prompts,
     });
@@ -143,7 +143,7 @@ pub fn listMemory(allocator: std.mem.Allocator, workspace_root: []const u8, requ
         return discovered;
     }
 
-    var filtered: std.ArrayListUnmanaged(MemoryItem) = .empty;
+    var filtered: std.ArrayList(MemoryItem) = .empty;
     errdefer deinitMemoryItems(allocator, &filtered);
 
     for (discovered.items) |item| {
@@ -175,7 +175,7 @@ pub fn activateMemory(allocator: std.mem.Allocator, workspace_root: []const u8, 
     var result = try materializeSelection(allocator, workspace_root, inventory.items, request.ids, request.known);
     errdefer result.deinit(allocator);
 
-    var refs: std.ArrayListUnmanaged(usage_log.ActivationRef) = .empty;
+    var refs: std.ArrayList(usage_log.ActivationRef) = .empty;
     defer refs.deinit(allocator);
     try refs.ensureTotalCapacity(allocator, result.items.items.len);
     for (result.items.items) |item| {
@@ -196,7 +196,7 @@ fn maybeAppendNamedFile(
     kind: MemoryKind,
     priority: MemoryPriority,
     seen_named_paths: *std.StringHashMap(void),
-    items: *std.ArrayListUnmanaged(MemoryItem),
+    items: *std.ArrayList(MemoryItem),
 ) !void {
     if (seen_named_paths.contains(rel_path)) return;
 
@@ -228,7 +228,7 @@ fn maybeAppendNamedFile(
     });
 }
 
-fn appendPromptMemory(allocator: std.mem.Allocator, workspace_root: []const u8, items: *std.ArrayListUnmanaged(MemoryItem)) !void {
+fn appendPromptMemory(allocator: std.mem.Allocator, workspace_root: []const u8, items: *std.ArrayList(MemoryItem)) !void {
     const prompts_root = try std.fs.path.join(allocator, &.{ workspace_root, ".prompts" });
     defer allocator.free(prompts_root);
 

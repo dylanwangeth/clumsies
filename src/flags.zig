@@ -19,12 +19,12 @@ const MAX_FLAGS = 16;
 const FlagState = struct {
     set: bool = false,
     val: ?[]const u8 = null,
-    multi: std.ArrayListUnmanaged([]const u8) = .empty,
+    multi: std.ArrayList([]const u8) = .empty,
 };
 
 pub const ParseResult = struct {
     flags: [MAX_FLAGS]FlagState = [_]FlagState{.{}} ** MAX_FLAGS,
-    positionals: std.ArrayListUnmanaged([]const u8) = .empty,
+    positionals: std.ArrayList([]const u8) = .empty,
 
     pub fn boolean(self: *const ParseResult, comptime idx: usize) bool {
         return self.flags[idx].set;

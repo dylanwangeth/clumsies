@@ -108,13 +108,13 @@ pub fn getMetaPromptFile(allocator: std.mem.Allocator) !?[]const u8 {
     return null;
 }
 
-pub fn freeOwnedStrings(allocator: std.mem.Allocator, items: *std.ArrayListUnmanaged([]const u8)) void {
+pub fn freeOwnedStrings(allocator: std.mem.Allocator, items: *std.ArrayList([]const u8)) void {
     for (items.items) |item| allocator.free(item);
     items.deinit(allocator);
 }
 
-pub fn parseMetaPromptFiles(allocator: std.mem.Allocator, raw: ?[]const u8) !std.ArrayListUnmanaged([]const u8) {
-    var files: std.ArrayListUnmanaged([]const u8) = .empty;
+pub fn parseMetaPromptFiles(allocator: std.mem.Allocator, raw: ?[]const u8) !std.ArrayList([]const u8) {
+    var files: std.ArrayList([]const u8) = .empty;
     errdefer freeOwnedStrings(allocator, &files);
 
     if (raw) |configured| {

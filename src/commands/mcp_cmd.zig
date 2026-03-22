@@ -6,8 +6,8 @@ const Color = styles.Color;
 const P = styles.P;
 
 pub fn run(
-    stdout: *std.io.Writer,
-    stderr: *std.io.Writer,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
     allocator: std.mem.Allocator,
     args: []const []const u8,
     version: []const u8,
@@ -32,7 +32,7 @@ pub fn run(
     try printHelp(stderr);
 }
 
-fn printHelp(out: *std.io.Writer) !void {
+fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies mcp serve{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Commands:\n", .{P});
     try out.print("{s}  {s}serve{s}     Start MCP stdio server for the current workspace\n", .{ P, Color.cyan, Color.reset });

@@ -9,7 +9,7 @@ pub const State = struct {
     initialize_seen: bool = false,
 };
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, version: []const u8) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, version: []const u8) !void {
     _ = stderr;
 
     const workspace_root = try std.process.getCwdAlloc(allocator);

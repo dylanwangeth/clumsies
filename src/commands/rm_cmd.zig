@@ -17,7 +17,7 @@ const appendPromptEntry = commands.appendPromptEntry;
 const findPromptByHashPrefix = commands.findPromptByHashPrefix;
 const printAmbiguousPromptHashError = commands.printAmbiguousPromptHashError;
 
-pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
     const S = 1;
     const SPECS = [_]flag.FlagSpec{
@@ -67,7 +67,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     }
 }
 
-fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash_args: []const []const u8, quiet_git: bool) !void {
+fn rmPrompts(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, hash_args: []const []const u8, quiet_git: bool) !void {
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "prompts/index.json" });
     defer allocator.free(index_path);
 
@@ -95,7 +95,7 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         return;
     };
 
-    var removed_hashes: std.ArrayListUnmanaged([]const u8) = .{};
+    var removed_hashes: std.ArrayList([]const u8) = .empty;
     defer removed_hashes.deinit(allocator);
 
     for (hash_args) |hash| {
@@ -121,7 +121,7 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
         }
     }
 
-    var new_prompts: std.ArrayListUnmanaged(u8) = .{};
+    var new_prompts: std.ArrayList(u8) = .empty;
     defer new_prompts.deinit(allocator);
 
     try new_prompts.appendSlice(allocator, "{\n  \"prompts\": [");
@@ -191,7 +191,7 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
             defer bparsed.deinit();
 
             if (bparsed.value.object.get("bundles")) |bundles| {
-                var new_bidx: std.ArrayListUnmanaged(u8) = .{};
+                var new_bidx: std.ArrayList(u8) = .empty;
                 defer new_bidx.deinit(allocator);
                 try new_bidx.appendSlice(allocator, "{\n  \"bundles\": [");
 
@@ -284,7 +284,7 @@ fn rmPrompts(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     try stdout.print("{s}{s}{s}✓{s} Removed {d} prompt(s)\n", .{ P, Color.bold, Color.green, Color.reset, removed_hashes.items.len });
 }
 
-fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, name_args: []const []const u8, quiet_git: bool) !void {
+fn rmBundles(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, registry_path: []const u8, name_args: []const []const u8, quiet_git: bool) !void {
     const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
     defer allocator.free(index_path);
 
@@ -313,7 +313,7 @@ fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     };
 
     var removed_count: usize = 0;
-    var new_bundles: std.ArrayListUnmanaged(u8) = .{};
+    var new_bundles: std.ArrayList(u8) = .empty;
     defer new_bundles.deinit(allocator);
 
     try new_bundles.appendSlice(allocator, "{\n  \"bundles\": [");
@@ -388,7 +388,7 @@ fn rmBundles(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     try stdout.print("{s}{s}Note: Prompts are kept in registry (may be used by other bundles){s}\n", .{ P, Color.dim, Color.reset });
 }
 
-fn printHelp(out: *std.io.Writer) !void {
+fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies rm <ref>... [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Remove prompt(s) or bundle(s) from registry.\n", .{P});
     try out.print("{s}Type is auto-detected: hex = prompt hash, otherwise = bundle name.\n", .{P});
