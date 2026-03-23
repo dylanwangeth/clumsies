@@ -3,8 +3,6 @@ const testing = std.testing;
 const config = @import("config.zig");
 const prompt = @import("prompt.zig");
 
-// --- Data model (v2) ---
-
 pub const PromptKind = enum {
     directive,
     rule,
@@ -59,7 +57,7 @@ pub const LoadResult = struct {
     }
 };
 
-// --- Kind directory mapping ---
+// Kind directory mapping
 
 const kind_dirs = [_]struct { dir: []const u8, kind: PromptKind }{
     .{ .dir = "directive", .kind = .directive },
@@ -84,21 +82,23 @@ pub fn kindToString(kind: PromptKind) []const u8 {
     };
 }
 
-// --- Public API ---
+// Public API
+
+fn freePromptItem(allocator: std.mem.Allocator, item: PromptItem) void {
+    allocator.free(item.id);
+    allocator.free(item.path);
+    allocator.free(item.name);
+    if (item.group) |group| allocator.free(group);
+    allocator.free(item.hash);
+}
 
 pub fn deinitPromptItems(allocator: std.mem.Allocator, items: *std.ArrayList(PromptItem)) void {
-    for (items.items) |item| {
-        allocator.free(item.id);
-        allocator.free(item.path);
-        allocator.free(item.name);
-        if (item.group) |group| allocator.free(group);
-        allocator.free(item.hash);
-    }
+    for (items.items) |item| freePromptItem(allocator, item);
     items.deinit(allocator);
 }
 
 /// Discover all prompts in the .prompts/ directory, organized by kind.
-/// Also detects MPF files (CLAUDE.md, AGENTS.md) at workspace root as directives (backward compat).
+/// Also detects MPF files (CLAUDE.md, AGENTS.md) at workspace root as directives.
 pub fn discoverAll(allocator: std.mem.Allocator, workspace_root: []const u8) !std.ArrayList(PromptItem) {
     var items: std.ArrayList(PromptItem) = .empty;
     errdefer deinitPromptItems(allocator, &items);
@@ -155,29 +155,24 @@ pub fn discoverSearchable(allocator: std.mem.Allocator, workspace_root: []const 
         try scanKindDirectory(allocator, prompts_root, kd.dir, kd.kind, &items);
     }
 
-    // Apply group filter
+    // Apply group filter in-place to avoid double-free on shared pointers
     if (group_filter) |gf| {
-        var filtered: std.ArrayList(PromptItem) = .empty;
-        errdefer deinitPromptItems(allocator, &filtered);
-
+        var write_idx: usize = 0;
         for (items.items) |item| {
-            const item_group = item.group orelse continue;
+            const item_group = item.group orelse {
+                freePromptItem(allocator, item);
+                continue;
+            };
             if (std.mem.eql(u8, item_group, gf) or
                 (std.mem.startsWith(u8, item_group, gf) and gf.len < item_group.len and item_group[gf.len] == '/'))
             {
-                try filtered.append(allocator, item);
+                items.items[write_idx] = item;
+                write_idx += 1;
             } else {
-                allocator.free(item.id);
-                allocator.free(item.path);
-                allocator.free(item.name);
-                if (item.group) |group| allocator.free(group);
-                allocator.free(item.hash);
+                freePromptItem(allocator, item);
             }
         }
-
-        items.items.len = 0;
-        items.deinit(allocator);
-        return filtered;
+        items.items.len = write_idx;
     }
 
     std.mem.sort(PromptItem, items.items, {}, lessThanPromptItem);
@@ -199,8 +194,6 @@ pub fn loadDirectives(allocator: std.mem.Allocator, workspace_root: []const u8, 
 
     return try materializeAll(allocator, workspace_root, items.items, known);
 }
-
-// --- Internal ---
 
 fn detectMpfAsDirective(allocator: std.mem.Allocator, workspace_root: []const u8, items: *std.ArrayList(PromptItem)) !void {
     const raw_mpf = try config.getMetaPromptFilesStr(allocator);
@@ -386,7 +379,7 @@ fn knownHashFor(id: []const u8, known: []const KnownHash) ?[]const u8 {
     return null;
 }
 
-// --- Constraint parsing (for validate) ---
+// Constraint parsing (for validate)
 
 pub const ParsedConstraint = struct {
     id: []const u8,
@@ -569,8 +562,6 @@ pub fn validatePrompt(allocator: std.mem.Allocator, workspace_root: []const u8, 
     defer allocator.free(content);
     return try parseConstraints(allocator, content);
 }
-
-// --- Tests ---
 
 fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
