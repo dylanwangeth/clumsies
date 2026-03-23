@@ -7,8 +7,6 @@ const encoding = lib.encoding;
 const trace = lib.trace;
 const workspace_prompt = lib.workspace_prompt;
 
-// --- Initialize ---
-
 pub fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u8 {
     const esc_version = try encoding.jsonEscapeAlloc(allocator, version);
     defer allocator.free(esc_version);
@@ -26,8 +24,6 @@ pub fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) 
         .{ protocol.PROTOCOL_VERSION, esc_version, esc_instructions },
     );
 }
-
-// --- Tool list (v2: 9 tools) ---
 
 pub fn buildToolsListResult(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(u8, "{\"tools\":[" ++
@@ -78,8 +74,6 @@ const tool_stats =
 const tool_validate =
     "{\"name\":\"memory.validate\",\"title\":\"Validate\",\"description\":\"Validate a prompt file against the standard format. Returns parsed constraints and issues.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"}},\"required\":[\"promptId\"],\"additionalProperties\":false}}";
-
-// --- Tool dispatch ---
 
 pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, params: std.json.Value) ![]u8 {
     const params_obj = switch (params) {
@@ -137,8 +131,6 @@ pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, 
 
     return try buildToolErrorResult(allocator, "Unknown tool");
 }
-
-// --- Handlers ---
 
 fn handleSetup(
     allocator: std.mem.Allocator,
@@ -332,9 +324,11 @@ fn handleComplete(
         .status = status,
     });
 
+    const esc_tid = try encoding.jsonEscapeAlloc(allocator, task_id);
+    defer allocator.free(esc_tid);
     const esc_status = try encoding.jsonEscapeAlloc(allocator, status);
     defer allocator.free(esc_status);
-    const structured = try std.fmt.allocPrint(allocator, "{{\"taskId\":\"{s}\",\"status\":\"{s}\"}}", .{ task_id, esc_status });
+    const structured = try std.fmt.allocPrint(allocator, "{{\"taskId\":\"{s}\",\"status\":\"{s}\"}}", .{ esc_tid, esc_status });
     defer allocator.free(structured);
     return try buildToolSuccessResult(allocator, structured);
 }
@@ -511,8 +505,6 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-// --- Serialization ---
-
 fn buildToolSuccessResult(allocator: std.mem.Allocator, structured_json: []const u8) ![]u8 {
     const esc_text = try encoding.jsonEscapeAlloc(allocator, structured_json);
     defer allocator.free(esc_text);
@@ -553,15 +545,13 @@ fn serializeLoadResult(allocator: std.mem.Allocator, result: *workspace_prompt.L
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
-    // workspace_id from workspace_root hash
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update(workspace_root);
-    var hash: [32]u8 = undefined;
-    hasher.final(&hash);
-    var hex: [64]u8 = undefined;
-    lib.encoding.hexEncode(&hash, &hex);
+    const ws_id = try trace.workspaceId(allocator, workspace_root);
+    defer allocator.free(ws_id);
 
-    try buf.writer(allocator).print("{{\"workspaceId\":\"ws-{s}\",\"items\":[", .{hex[0..16]});
+    const esc_ws = try encoding.jsonEscapeAlloc(allocator, ws_id);
+    defer allocator.free(esc_ws);
+
+    try buf.writer(allocator).print("{{\"workspaceId\":\"{s}\",\"items\":[", .{esc_ws});
     for (result.items.items, 0..) |item, idx| {
         if (idx > 0) try buf.append(allocator, ',');
         try appendLoadedPrompt(allocator, &buf, item);
@@ -633,8 +623,6 @@ fn appendLoadedPrompt(
     try buf.appendSlice(allocator, "}");
 }
 
-// --- Parsing helpers ---
-
 fn parsePromptKind(value: std.json.Value) !?workspace_prompt.PromptKind {
     const str = switch (value) {
         .string => |s| s,
@@ -697,9 +685,7 @@ fn parseKnownHashes(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !s
     return known;
 }
 
-// --- Tests ---
-
-test "buildToolsListResult: exposes v2 tools" {
+test "buildToolsListResult: exposes all memory tools" {
     const result = try buildToolsListResult(testing.allocator);
     defer testing.allocator.free(result);
 

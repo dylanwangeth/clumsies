@@ -7,8 +7,6 @@ pub const TRACE_FILE = "trace.jsonl";
 pub const TASKS_DIR = "tasks";
 pub const TASKS_INDEX = "index.json";
 
-// --- Trace event types ---
-
 pub const EventType = enum {
     setup,
     begin,
@@ -44,8 +42,6 @@ pub const TraceEvent = struct {
     // complete fields
     status: ?[]const u8 = null,
 };
-
-// --- Task management ---
 
 pub const TaskStatus = enum {
     in_progress,
@@ -199,7 +195,7 @@ fn serializeTraceEvent(allocator: std.mem.Allocator, event: TraceEvent) ![]u8 {
     return try buf.toOwnedSlice(allocator);
 }
 
-// --- Stats: read and aggregate trace ---
+// Stats: read and aggregate trace
 
 pub const PromptStats = struct {
     id: []const u8,
@@ -301,8 +297,10 @@ pub fn computeWorkspaceStats(allocator: std.mem.Allocator, workspace_root: []con
 
         const gop = try stats.prompts.getOrPut(pid);
         if (!gop.found_existing) {
+            const owned_key = try allocator.dupe(u8, pid);
+            gop.key_ptr.* = owned_key;
             gop.value_ptr.* = .{
-                .id = try allocator.dupe(u8, pid),
+                .id = owned_key,
                 .task_set = .init(allocator),
             };
         }
@@ -337,8 +335,6 @@ fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
         else => null,
     };
 }
-
-// --- Tests ---
 
 fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
