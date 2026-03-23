@@ -188,8 +188,8 @@ assert_output "mcp setup returns workspaceId" '"workspaceId":"ws-' "$MCP_OUTPUT"
 assert_output "mcp load returns prompt id" 'rule:coding/00_SNAKE_CASE.md' "$MCP_OUTPUT"
 assert_output "mcp load returns prompt content" 'snake_case' "$MCP_OUTPUT"
 assert_output "mcp load includes refer reminder" '[clumsies]' "$MCP_OUTPUT"
-MCP_TRACE="$WORKSPACE/.clumsies/trace.jsonl"
-assert "mcp trace log created" test -f "$MCP_TRACE"
+MCP_TRACE=$(find "$WORKSPACE/.clumsies" -name "ws-*.jsonl" -type f 2>/dev/null | head -1)
+assert "mcp trace log created" test -n "$MCP_TRACE"
 assert_file_contains "mcp trace contains setup event" "$MCP_TRACE" '"type":"setup"'
 assert_file_contains "mcp trace contains load event" "$MCP_TRACE" '"type":"load"'
 
