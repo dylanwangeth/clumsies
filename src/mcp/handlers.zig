@@ -148,7 +148,7 @@ fn handleSetup(
     defer allocator.free(ws_id);
     try trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .setup,
-        .workspace_id = ws_id,
+
         .synced_count = result.items.items.len,
     });
 
@@ -179,7 +179,6 @@ fn handleSearch(
     defer allocator.free(ws_id);
     try trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .search,
-        .workspace_id = ws_id,
     });
 
     const structured = try serializePromptList(allocator, items.items);
@@ -212,7 +211,7 @@ fn handleLoad(
     for (result.items.items) |item| {
         try trace.appendTraceEvent(allocator, workspace_root, .{
             .event_type = .load,
-            .workspace_id = ws_id,
+
             .task_id = task_id,
             .prompt_id = item.id,
             .prompt_hash = item.hash,
@@ -241,7 +240,7 @@ fn handleBegin(
 
     try trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .begin,
-        .workspace_id = ws_id,
+
         .task_id = task_id,
         .goal_summary = goal_summary,
     });
@@ -263,6 +262,10 @@ fn handleRefer(
         else => return error.InvalidParams,
     } else return error.InvalidParams;
 
+    if (try trace.isTaskFinalized(allocator, workspace_root, task_id)) {
+        return try buildToolErrorResult(allocator, "Task is already finalized");
+    }
+
     const prompt_id = if (args_obj.get("promptId")) |value| switch (value) {
         .string => |s| s,
         else => return error.InvalidParams,
@@ -275,20 +278,17 @@ fn handleRefer(
 
     const constraint_id = if (args_obj.get("constraintId")) |value| switch (value) {
         .string => |s| s,
-        else => null,
-    } else null;
+        else => return error.InvalidParams,
+    } else return error.InvalidParams;
 
     const reason = if (args_obj.get("reason")) |value| switch (value) {
         .string => |s| s,
         else => null,
     } else null;
 
-    const ws_id = try trace.workspaceId(allocator, workspace_root);
-    defer allocator.free(ws_id);
-
     try trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .refer,
-        .workspace_id = ws_id,
+
         .task_id = task_id,
         .prompt_id = prompt_id,
         .prompt_hash = prompt_hash,
@@ -309,17 +309,22 @@ fn handleComplete(
         else => return error.InvalidParams,
     } else return error.InvalidParams;
 
+    if (try trace.isTaskFinalized(allocator, workspace_root, task_id)) {
+        return try buildToolErrorResult(allocator, "Task is already finalized");
+    }
+
     const status = if (args_obj.get("status")) |value| switch (value) {
         .string => |s| s,
         else => return error.InvalidParams,
     } else return error.InvalidParams;
 
-    const ws_id = try trace.workspaceId(allocator, workspace_root);
-    defer allocator.free(ws_id);
+    if (!std.mem.eql(u8, status, "completed") and !std.mem.eql(u8, status, "abandoned")) {
+        return try buildToolErrorResult(allocator, "Status must be 'completed' or 'abandoned'");
+    }
 
     try trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .complete,
-        .workspace_id = ws_id,
+
         .task_id = task_id,
         .status = status,
     });
@@ -430,7 +435,9 @@ fn handleValidate(
         if (idx > 0) try buf.append(allocator, ',');
         const esc_id = try encoding.jsonEscapeAlloc(allocator, c.id);
         defer allocator.free(esc_id);
-        try buf.writer(allocator).print("{{\"id\":\"{s}\",\"lineStart\":{d},\"lineEnd\":{d}}}", .{ esc_id, c.line_start, c.line_end });
+        const esc_th = try encoding.jsonEscapeAlloc(allocator, c.text_hash);
+        defer allocator.free(esc_th);
+        try buf.writer(allocator).print("{{\"id\":\"{s}\",\"textHash\":\"{s}\"}}", .{ esc_id, esc_th });
     }
     try buf.appendSlice(allocator, "],\"issues\":[");
     for (result.issues.items, 0..) |issue, idx| {
@@ -484,7 +491,7 @@ fn handleShortcut(
     defer allocator.free(ws_id);
     try trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .shortcut,
-        .workspace_id = ws_id,
+
         .task_id = task_id,
         .workflow_name = name,
     });

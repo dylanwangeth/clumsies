@@ -383,8 +383,7 @@ fn knownHashFor(id: []const u8, known: []const KnownHash) ?[]const u8 {
 
 pub const ParsedConstraint = struct {
     id: []const u8,
-    line_start: usize,
-    line_end: usize,
+    text_hash: []const u8,
 };
 
 pub const ValidateResult = struct {
@@ -395,6 +394,7 @@ pub const ValidateResult = struct {
     pub fn deinit(self: *ValidateResult, allocator: std.mem.Allocator) void {
         for (self.constraints.items) |c| {
             allocator.free(c.id);
+            allocator.free(c.text_hash);
         }
         self.constraints.deinit(allocator);
         for (self.issues.items) |issue| {
@@ -404,13 +404,27 @@ pub const ValidateResult = struct {
     }
 };
 
+fn computeTextHash(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(text);
+    var hash: [32]u8 = undefined;
+    hasher.final(&hash);
+    var hex: [64]u8 = undefined;
+    const encoding = @import("encoding.zig");
+    encoding.hexEncode(&hash, &hex);
+    return try allocator.dupe(u8, &hex);
+}
+
 /// Parse constraints from prompt content according to s2 format standard.
 /// Rules: # = title (skip), ## = constraint region, list items within region
 /// are individual constraints, otherwise the whole region is one constraint.
 pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !ValidateResult {
     var constraints: std.ArrayList(ParsedConstraint) = .empty;
     errdefer {
-        for (constraints.items) |c| allocator.free(c.id);
+        for (constraints.items) |c| {
+            allocator.free(c.id);
+            allocator.free(c.text_hash);
+        }
         constraints.deinit(allocator);
     }
     var issues: std.ArrayList([]const u8) = .empty;
@@ -427,6 +441,7 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
     var in_region = false;
     var region_start: usize = 0;
     var region_has_list = false;
+    var region_heading: []const u8 = "";
 
     while (lines.next()) |line| {
         line_num += 1;
@@ -443,15 +458,16 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
             if (in_region and !region_has_list) {
                 constraint_counter += 1;
                 const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
+                const th = try computeTextHash(allocator, region_heading);
                 try constraints.append(allocator, .{
                     .id = id,
-                    .line_start = region_start,
-                    .line_end = line_num - 1,
+                    .text_hash = th,
                 });
             }
             in_region = true;
             region_start = line_num;
             region_has_list = false;
+            region_heading = trimmed;
             continue;
         }
 
@@ -465,10 +481,10 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
             region_has_list = true;
             constraint_counter += 1;
             const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
+            const th = try computeTextHash(allocator, trimmed);
             try constraints.append(allocator, .{
                 .id = id,
-                .line_start = line_num,
-                .line_end = line_num,
+                .text_hash = th,
             });
             continue;
         }
@@ -487,21 +503,20 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
     if (in_region and !region_has_list) {
         constraint_counter += 1;
         const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
+        const th = try computeTextHash(allocator, region_heading);
         try constraints.append(allocator, .{
             .id = id,
-            .line_start = region_start,
-            .line_end = line_num,
+            .text_hash = th,
         });
     }
 
-    // Rule 4: no ## headings and no list items → whole file is one constraint
     if (constraint_counter == 0 and content.len > 0) {
         constraint_counter += 1;
         const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
+        const th = try computeTextHash(allocator, content);
         try constraints.append(allocator, .{
             .id = id,
-            .line_start = 1,
-            .line_end = line_num,
+            .text_hash = th,
         });
     }
 
@@ -788,7 +803,7 @@ test "parseConstraints: no headings no lists is one constraint" {
 
     try testing.expect(result.valid);
     try testing.expectEqual(@as(usize, 1), result.constraints.items.len);
-    try testing.expectEqual(@as(usize, 1), result.constraints.items[0].line_start);
+    try testing.expectEqualStrings("c-1", result.constraints.items[0].id);
 }
 
 test "parseConstraints: empty content" {

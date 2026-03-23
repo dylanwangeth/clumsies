@@ -3,9 +3,6 @@ const testing = std.testing;
 const encoding = @import("encoding.zig");
 
 pub const CLUMSIES_DIR = ".clumsies";
-pub const TRACE_FILE = "trace.jsonl";
-pub const TASKS_DIR = "tasks";
-pub const TASKS_INDEX = "index.json";
 
 pub const EventType = enum {
     setup,
@@ -19,7 +16,6 @@ pub const EventType = enum {
 
 pub const TraceEvent = struct {
     event_type: EventType,
-    workspace_id: []const u8,
     task_id: ?[]const u8 = null,
 
     // setup fields
@@ -68,6 +64,15 @@ pub fn workspaceId(allocator: std.mem.Allocator, workspace_root: []const u8) ![]
     return try std.fmt.allocPrint(allocator, "ws-{s}", .{hex[0..16]});
 }
 
+/// Get the trace file path: .clumsies/{workspace_id}.jsonl
+pub fn traceFilePath(allocator: std.mem.Allocator, workspace_root: []const u8) ![]const u8 {
+    const ws_id = try workspaceId(allocator, workspace_root);
+    defer allocator.free(ws_id);
+    const filename = try std.fmt.allocPrint(allocator, "{s}.jsonl", .{ws_id});
+    defer allocator.free(filename);
+    return try std.fs.path.join(allocator, &.{ workspace_root, CLUMSIES_DIR, filename });
+}
+
 /// Generate a unique task_id.
 pub fn generateTaskId(allocator: std.mem.Allocator) ![]const u8 {
     const ts = std.time.milliTimestamp();
@@ -87,21 +92,45 @@ pub fn ensureClumsiesDir(workspace_root: []const u8, allocator: std.mem.Allocato
         error.PathAlreadyExists => {},
         else => return err,
     };
+}
 
-    const tasks_path = try std.fs.path.join(allocator, &.{ workspace_root, CLUMSIES_DIR, TASKS_DIR });
-    defer allocator.free(tasks_path);
+/// Check if a task has been finalized (completed or abandoned).
+pub fn isTaskFinalized(allocator: std.mem.Allocator, workspace_root: []const u8, task_id: []const u8) !bool {
+    const trace_path = try traceFilePath(allocator, workspace_root);
+    defer allocator.free(trace_path);
 
-    std.fs.makeDirAbsolute(tasks_path) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
+    const file = std.fs.openFileAbsolute(trace_path, .{}) catch return false;
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+    defer allocator.free(content);
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
+        defer parsed.deinit();
+
+        const obj = switch (parsed.value) {
+            .object => |o| o,
+            else => continue,
+        };
+
+        const evt_type = getStr(obj, "type") orelse continue;
+        if (!std.mem.eql(u8, evt_type, "complete")) continue;
+
+        const tid = getStr(obj, "task_id") orelse continue;
+        if (std.mem.eql(u8, tid, task_id)) return true;
+    }
+
+    return false;
 }
 
 /// Append a trace event to trace.jsonl.
 pub fn appendTraceEvent(allocator: std.mem.Allocator, workspace_root: []const u8, event: TraceEvent) !void {
     try ensureClumsiesDir(workspace_root, allocator);
 
-    const trace_path = try std.fs.path.join(allocator, &.{ workspace_root, CLUMSIES_DIR, TRACE_FILE });
+    const trace_path = try traceFilePath(allocator, workspace_root);
     defer allocator.free(trace_path);
 
     var file = try std.fs.createFileAbsolute(trace_path, .{ .truncate = false });
@@ -121,10 +150,7 @@ fn serializeTraceEvent(allocator: std.mem.Allocator, event: TraceEvent) ![]u8 {
     const ts = std.time.milliTimestamp();
     const type_str = @tagName(event.event_type);
 
-    const esc_ws = try encoding.jsonEscapeAlloc(allocator, event.workspace_id);
-    defer allocator.free(esc_ws);
-
-    try buf.writer(allocator).print("{{\"type\":\"{s}\",\"ts\":{d},\"workspace_id\":\"{s}\"", .{ type_str, ts, esc_ws });
+    try buf.writer(allocator).print("{{\"type\":\"{s}\",\"ts\":{d}", .{ type_str, ts });
 
     if (event.task_id) |tid| {
         const esc = try encoding.jsonEscapeAlloc(allocator, tid);
@@ -228,7 +254,7 @@ pub fn computeWorkspaceStats(allocator: std.mem.Allocator, workspace_root: []con
     var stats: WorkspaceStats = .{ .prompts = .init(allocator) };
     errdefer stats.deinit(allocator);
 
-    const trace_path = try std.fs.path.join(allocator, &.{ workspace_root, CLUMSIES_DIR, TRACE_FILE });
+    const trace_path = try traceFilePath(allocator, workspace_root);
     defer allocator.free(trace_path);
 
     const file = std.fs.openFileAbsolute(trace_path, .{}) catch return stats;
@@ -373,19 +399,16 @@ test "appendTraceEvent: writes jsonl" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    const ws_id = try workspaceId(testing.allocator, root);
-    defer testing.allocator.free(ws_id);
-
     try appendTraceEvent(testing.allocator, root, .{
         .event_type = .begin,
-        .workspace_id = ws_id,
+
         .task_id = "task-001",
         .goal_summary = "test goal",
     });
 
     try appendTraceEvent(testing.allocator, root, .{
         .event_type = .refer,
-        .workspace_id = ws_id,
+
         .task_id = "task-001",
         .prompt_id = "rule:zig/00_STYLE.md",
         .prompt_hash = "abc123",
@@ -395,13 +418,13 @@ test "appendTraceEvent: writes jsonl" {
 
     try appendTraceEvent(testing.allocator, root, .{
         .event_type = .complete,
-        .workspace_id = ws_id,
+
         .task_id = "task-001",
         .status = "completed",
     });
 
     // Read and verify
-    const trace_path = try std.fs.path.join(testing.allocator, &.{ root, CLUMSIES_DIR, TRACE_FILE });
+    const trace_path = try traceFilePath(testing.allocator, root);
     defer testing.allocator.free(trace_path);
 
     const file = try std.fs.openFileAbsolute(trace_path, .{});
