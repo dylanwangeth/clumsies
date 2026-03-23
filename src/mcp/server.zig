@@ -39,6 +39,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
         if (response) |owned| {
             try stdout.writeAll(owned);
+            try stdout.flush();
         }
     }
 }
