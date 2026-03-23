@@ -75,6 +75,7 @@ const tool_validate =
     "{\"name\":\"memory.validate\",\"title\":\"Validate\",\"description\":\"Validate a prompt file against the standard format. Returns parsed constraints and issues.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"}},\"required\":[\"promptId\"],\"additionalProperties\":false}}";
 
+
 pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, params: std.json.Value) ![]u8 {
     const params_obj = switch (params) {
         .object => |obj| obj,
@@ -348,8 +349,49 @@ fn handleStats(
         return try handleStatsWorkspace(allocator, workspace_root);
     }
 
-    // prompt and diff scopes: stub for now
-    return try buildToolErrorResult(allocator, "Only workspace scope is implemented so far");
+    const time_buckets: ?[]const u8 = if (args_obj.get("timeBuckets")) |value| switch (value) {
+        .string => |s| s,
+        else => null,
+    } else null;
+
+    if (std.mem.eql(u8, scope, "prompt")) {
+        const prompt_id = if (args_obj.get("promptId")) |value| switch (value) {
+            .string => |s| s,
+            else => return error.InvalidParams,
+        } else return try buildToolErrorResult(allocator, "promptId is required for prompt scope");
+
+        const task_id = if (args_obj.get("taskId")) |value| switch (value) {
+            .string => |s| s,
+            else => null,
+        } else null;
+
+        if (time_buckets) |tb| {
+            return try handleStatsPromptTimeBuckets(allocator, workspace_root, prompt_id, task_id, tb);
+        }
+
+        return try handleStatsPrompt(allocator, workspace_root, prompt_id, task_id);
+    }
+
+    if (std.mem.eql(u8, scope, "diff")) {
+        const prompt_id = if (args_obj.get("promptId")) |value| switch (value) {
+            .string => |s| s,
+            else => return error.InvalidParams,
+        } else return try buildToolErrorResult(allocator, "promptId is required for diff scope");
+
+        const old_hash = if (args_obj.get("oldHash")) |value| switch (value) {
+            .string => |s| s,
+            else => return error.InvalidParams,
+        } else return try buildToolErrorResult(allocator, "oldHash is required for diff scope");
+
+        const new_hash = if (args_obj.get("newHash")) |value| switch (value) {
+            .string => |s| s,
+            else => return error.InvalidParams,
+        } else return try buildToolErrorResult(allocator, "newHash is required for diff scope");
+
+        return try handleStatsDiff(allocator, workspace_root, prompt_id, old_hash, new_hash);
+    }
+
+    return try buildToolErrorResult(allocator, "Unknown scope. Use: workspace, prompt, or diff");
 }
 
 fn handleStatsWorkspace(allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
@@ -395,6 +437,487 @@ fn handleStatsWorkspace(allocator: std.mem.Allocator, workspace_root: []const u8
             ps.completed_tasks,
             ps.abandoned_tasks,
         });
+    }
+
+    const data_json = try data_buf.toOwnedSlice(allocator);
+    defer allocator.free(data_json);
+    const view_text = try view_buf.toOwnedSlice(allocator);
+    defer allocator.free(view_text);
+
+    const esc_view = try encoding.jsonEscapeAlloc(allocator, view_text);
+    defer allocator.free(esc_view);
+
+    const structured = try std.fmt.allocPrint(allocator, "{{\"data\":{s},\"view\":\"{s}\"}}", .{ data_json, esc_view });
+    defer allocator.free(structured);
+    return try buildToolSuccessResult(allocator, structured);
+}
+
+fn handleStatsPrompt(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    prompt_id: []const u8,
+    task_id_filter: ?[]const u8,
+) ![]u8 {
+    var stats = try trace.computePromptStats(allocator, workspace_root, prompt_id, task_id_filter);
+    defer stats.deinit(allocator);
+
+    // Also parse current constraints from the file to detect cold/dead ones
+    var all_constraints: std.ArrayList(workspace_prompt.ParsedConstraint) = .empty;
+    defer {
+        for (all_constraints.items) |c| {
+            allocator.free(c.id);
+            allocator.free(c.text_hash);
+        }
+        all_constraints.deinit(allocator);
+    }
+
+    // Try to load and parse the prompt file for its constraint list
+    blk: {
+        var inventory = workspace_prompt.discoverAll(allocator, workspace_root) catch break :blk;
+        defer workspace_prompt.deinitPromptItems(allocator, &inventory);
+
+        for (inventory.items) |item| {
+            if (std.mem.eql(u8, item.id, prompt_id)) {
+                if (item.kind == .rule or item.kind == .workflow) {
+                    const content = workspace_prompt.loadPrompts(allocator, workspace_root, &.{prompt_id}, &.{}) catch break :blk;
+                    var result = content;
+                    defer result.deinit(allocator);
+                    if (result.items.items.len > 0) {
+                        if (result.items.items[0].content) |file_content| {
+                            var parsed = workspace_prompt.parseConstraints(allocator, file_content) catch break :blk;
+                            // Transfer ownership
+                            all_constraints = parsed.constraints;
+                            parsed.constraints = .empty;
+                            for (parsed.issues.items) |issue| allocator.free(issue);
+                            parsed.issues.deinit(allocator);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // Build data JSON
+    var data_buf: std.ArrayList(u8) = .empty;
+    errdefer data_buf.deinit(allocator);
+
+    const esc_pid = try encoding.jsonEscapeAlloc(allocator, prompt_id);
+    defer allocator.free(esc_pid);
+
+    try data_buf.writer(allocator).print("{{\"id\":\"{s}\",\"hash\":", .{esc_pid});
+    if (stats.prompt_hash) |h| {
+        try data_buf.writer(allocator).print("\"{s}\"", .{h});
+    } else {
+        try data_buf.appendSlice(allocator, "null");
+    }
+    try data_buf.writer(allocator).print(",\"totalTasks\":{d},\"constraints\":[", .{stats.total_tasks});
+
+    // Use all_constraints order if available, falling back to stats keys
+    if (all_constraints.items.len > 0) {
+        for (all_constraints.items, 0..) |c, idx| {
+            if (idx > 0) try data_buf.append(allocator, ',');
+            const esc_cid = try encoding.jsonEscapeAlloc(allocator, c.id);
+            defer allocator.free(esc_cid);
+
+            const cs = stats.constraints.get(c.id);
+            const refer_count = if (cs) |s| s.refer_count else 0;
+            const task_count = if (cs) |s| s.task_count else 0;
+
+            try data_buf.writer(allocator).print(
+                "{{\"constraintId\":\"{s}\",\"referCount\":{d},\"taskCount\":{d}}}",
+                .{ esc_cid, refer_count, task_count },
+            );
+        }
+    } else {
+        var iter = stats.constraints.iterator();
+        var first = true;
+        while (iter.next()) |entry| {
+            if (!first) try data_buf.append(allocator, ',');
+            first = false;
+            const cs = entry.value_ptr;
+            const esc_cid = try encoding.jsonEscapeAlloc(allocator, cs.constraint_id);
+            defer allocator.free(esc_cid);
+            try data_buf.writer(allocator).print(
+                "{{\"constraintId\":\"{s}\",\"referCount\":{d},\"taskCount\":{d}}}",
+                .{ esc_cid, cs.refer_count, cs.task_count },
+            );
+        }
+    }
+    try data_buf.appendSlice(allocator, "]}");
+
+    // Build view (Constraint Heatmap)
+    var view_buf: std.ArrayList(u8) = .empty;
+    errdefer view_buf.deinit(allocator);
+
+    try view_buf.writer(allocator).print("{s}  {d} tasks\\n", .{ prompt_id, stats.total_tasks });
+    try view_buf.appendSlice(allocator, "──────────────────────────────────────────────────────────\\n");
+
+    if (all_constraints.items.len > 0) {
+        var cold_count: usize = 0;
+        for (all_constraints.items) |c| {
+            const cs = stats.constraints.get(c.id);
+            const refer_count = if (cs) |s| s.refer_count else 0;
+            const task_count = if (cs) |s| s.task_count else 0;
+
+            const label: []const u8 = if (refer_count == 0 and stats.total_tasks > 0)
+                "  <- dead"
+            else if (task_count > 0 and task_count * 3 < stats.total_tasks)
+                "  <- cold"
+            else
+                "";
+
+            if (refer_count == 0 or (task_count > 0 and task_count * 3 < stats.total_tasks)) {
+                cold_count += 1;
+            }
+
+            try view_buf.writer(allocator).print("{s: <20} {d: >4} refers  {d: >3} tasks{s}\\n", .{
+                c.id, refer_count, task_count, label,
+            });
+        }
+        if (cold_count > 0) {
+            try view_buf.writer(allocator).print("\\n{d} out of {d} constraints are cold or dead.\\n", .{ cold_count, all_constraints.items.len });
+        }
+    } else {
+        var iter = stats.constraints.iterator();
+        while (iter.next()) |entry| {
+            const cs = entry.value_ptr;
+            try view_buf.writer(allocator).print("{s: <20} {d: >4} refers  {d: >3} tasks\\n", .{
+                cs.constraint_id, cs.refer_count, cs.task_count,
+            });
+        }
+    }
+
+    const data_json = try data_buf.toOwnedSlice(allocator);
+    defer allocator.free(data_json);
+    const view_text = try view_buf.toOwnedSlice(allocator);
+    defer allocator.free(view_text);
+
+    const esc_view = try encoding.jsonEscapeAlloc(allocator, view_text);
+    defer allocator.free(esc_view);
+
+    const structured = try std.fmt.allocPrint(allocator, "{{\"data\":{s},\"view\":\"{s}\"}}", .{ data_json, esc_view });
+    defer allocator.free(structured);
+    return try buildToolSuccessResult(allocator, structured);
+}
+
+fn handleStatsPromptTimeBuckets(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    prompt_id: []const u8,
+    task_id_filter: ?[]const u8,
+    time_buckets: []const u8,
+) ![]u8 {
+    const is_daily = std.mem.eql(u8, time_buckets, "daily");
+    const is_weekly = std.mem.eql(u8, time_buckets, "weekly");
+    if (!is_daily and !is_weekly) {
+        return try buildToolErrorResult(allocator, "timeBuckets must be 'daily' or 'weekly'");
+    }
+
+    // Get total constraint count from current file
+    var total_constraints: usize = 0;
+    blk: {
+        var inventory = workspace_prompt.discoverAll(allocator, workspace_root) catch break :blk;
+        defer workspace_prompt.deinitPromptItems(allocator, &inventory);
+        for (inventory.items) |item| {
+            if (std.mem.eql(u8, item.id, prompt_id)) {
+                if (item.kind == .rule or item.kind == .workflow) {
+                    var result = workspace_prompt.loadPrompts(allocator, workspace_root, &.{prompt_id}, &.{}) catch break :blk;
+                    defer result.deinit(allocator);
+                    if (result.items.items.len > 0) {
+                        if (result.items.items[0].content) |content| {
+                            var parsed = workspace_prompt.parseConstraints(allocator, content) catch break :blk;
+                            total_constraints = parsed.constraints.items.len;
+                            parsed.deinit(allocator);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    var events = try trace.collectReferEvents(allocator, workspace_root, prompt_id, task_id_filter);
+    defer {
+        for (events.items) |e| {
+            allocator.free(e.constraint_id);
+            allocator.free(e.task_id);
+        }
+        events.deinit(allocator);
+    }
+
+    // Sort events by timestamp
+    std.mem.sort(trace.ReferEvent, events.items, {}, struct {
+        fn lessThan(_: void, a: trace.ReferEvent, b: trace.ReferEvent) bool {
+            return a.timestamp < b.timestamp;
+        }
+    }.lessThan);
+
+    // Group by date bucket and compute cumulative coverage
+    var bucket_order: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (bucket_order.items) |b| allocator.free(b);
+        bucket_order.deinit(allocator);
+    }
+
+    var bucket_tasks: std.StringArrayHashMap(usize) = .init(allocator);
+    defer bucket_tasks.deinit();
+
+    // Track cumulative distinct constraints seen
+    var seen_constraints = std.StringHashMap(void).init(allocator);
+    defer {
+        var iter = seen_constraints.keyIterator();
+        while (iter.next()) |key| allocator.free(@constCast(key.*));
+        seen_constraints.deinit();
+    }
+    var seen_tasks_global = std.StringHashMap(void).init(allocator);
+    defer {
+        var iter = seen_tasks_global.keyIterator();
+        while (iter.next()) |key| allocator.free(@constCast(key.*));
+        seen_tasks_global.deinit();
+    }
+
+    // Per-bucket new task tracking
+    var bucket_new_tasks: std.StringArrayHashMap(std.StringHashMap(void)) = .init(allocator);
+    defer {
+        var iter = bucket_new_tasks.iterator();
+        while (iter.next()) |entry| {
+            var ts_iter = entry.value_ptr.keyIterator();
+            while (ts_iter.next()) |key| allocator.free(@constCast(key.*));
+            entry.value_ptr.deinit();
+        }
+        bucket_new_tasks.deinit();
+    }
+
+    var cumulative_coverage: std.StringArrayHashMap(f64) = .init(allocator);
+    defer cumulative_coverage.deinit();
+
+    for (events.items) |event| {
+        const date_key = if (is_daily)
+            try trace.msToDateStr(allocator, event.timestamp)
+        else
+            try trace.msToWeekStr(allocator, event.timestamp);
+
+        // Ensure bucket exists in order
+        if (!bucket_tasks.contains(date_key)) {
+            try bucket_order.append(allocator, try allocator.dupe(u8, date_key));
+            try bucket_tasks.put(date_key, 0);
+            try bucket_new_tasks.put(date_key, .init(allocator));
+        }
+
+        // Track constraint
+        if (!seen_constraints.contains(event.constraint_id)) {
+            try seen_constraints.put(try allocator.dupe(u8, event.constraint_id), {});
+        }
+
+        // Track task per bucket
+        var task_map = bucket_new_tasks.getPtr(date_key).?;
+        if (!task_map.contains(event.task_id)) {
+            try task_map.put(try allocator.dupe(u8, event.task_id), {});
+        }
+
+        // Update cumulative coverage
+        const coverage: f64 = if (total_constraints > 0)
+            @as(f64, @floatFromInt(seen_constraints.count())) / @as(f64, @floatFromInt(total_constraints))
+        else
+            0.0;
+        try cumulative_coverage.put(date_key, coverage);
+
+        allocator.free(date_key);
+    }
+
+    // Build output
+    var data_buf: std.ArrayList(u8) = .empty;
+    errdefer data_buf.deinit(allocator);
+
+    const esc_pid = try encoding.jsonEscapeAlloc(allocator, prompt_id);
+    defer allocator.free(esc_pid);
+
+    try data_buf.writer(allocator).print("{{\"id\":\"{s}\",\"coverageOverTime\":[", .{esc_pid});
+
+    for (bucket_order.items, 0..) |bucket, idx| {
+        if (idx > 0) try data_buf.append(allocator, ',');
+        const esc_date = try encoding.jsonEscapeAlloc(allocator, bucket);
+        defer allocator.free(esc_date);
+        const coverage = cumulative_coverage.get(bucket) orelse 0.0;
+        const tasks = if (bucket_new_tasks.getPtr(bucket)) |m| m.count() else 0;
+        try data_buf.writer(allocator).print(
+            "{{\"date\":\"{s}\",\"coverageRatio\":{d:.2},\"tasks\":{d}}}",
+            .{ esc_date, coverage, tasks },
+        );
+    }
+    try data_buf.appendSlice(allocator, "]}");
+
+    // Build view
+    var view_buf: std.ArrayList(u8) = .empty;
+    errdefer view_buf.deinit(allocator);
+
+    try view_buf.writer(allocator).print("{s}  coverage over time ({s})\\n", .{ prompt_id, time_buckets });
+    try view_buf.appendSlice(allocator, "──────────────────────────────────────────────────────────\\n");
+    try view_buf.appendSlice(allocator, "Date              Coverage  Tasks\\n");
+
+    for (bucket_order.items) |bucket| {
+        const coverage = cumulative_coverage.get(bucket) orelse 0.0;
+        const tasks = if (bucket_new_tasks.getPtr(bucket)) |m| m.count() else 0;
+        const pct: usize = @intFromFloat(coverage * 100.0);
+        try view_buf.writer(allocator).print("{s: <18}{d: >3}%      {d: >3}\\n", .{ bucket, pct, tasks });
+    }
+
+    const data_json = try data_buf.toOwnedSlice(allocator);
+    defer allocator.free(data_json);
+    const view_text = try view_buf.toOwnedSlice(allocator);
+    defer allocator.free(view_text);
+
+    const esc_view = try encoding.jsonEscapeAlloc(allocator, view_text);
+    defer allocator.free(esc_view);
+
+    const structured = try std.fmt.allocPrint(allocator, "{{\"data\":{s},\"view\":\"{s}\"}}", .{ data_json, esc_view });
+    defer allocator.free(structured);
+    return try buildToolSuccessResult(allocator, structured);
+}
+
+fn handleStatsDiff(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    prompt_id: []const u8,
+    old_hash: []const u8,
+    new_hash: []const u8,
+) ![]u8 {
+    // Get refer counts for old and new versions
+    var old_refers = try trace.computeReferCountsByConstraint(allocator, workspace_root, prompt_id, old_hash);
+    defer {
+        var iter = old_refers.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(@constCast(entry.key_ptr.*));
+            var ts_iter = entry.value_ptr.task_set.keyIterator();
+            while (ts_iter.next()) |key| allocator.free(@constCast(key.*));
+            entry.value_ptr.task_set.deinit();
+        }
+        old_refers.deinit();
+    }
+
+    var new_refers = try trace.computeReferCountsByConstraint(allocator, workspace_root, prompt_id, new_hash);
+    defer {
+        var iter = new_refers.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(@constCast(entry.key_ptr.*));
+            var ts_iter = entry.value_ptr.task_set.keyIterator();
+            while (ts_iter.next()) |key| allocator.free(@constCast(key.*));
+            entry.value_ptr.task_set.deinit();
+        }
+        new_refers.deinit();
+    }
+
+    // We need the constraint text_hashes to match across versions.
+    // Try to load old and new versions from trace to get constraint info.
+    // Since we can't read old file versions, we rely on validate data stored in trace.
+    // For now, we report by constraint_id and note that matching requires text_hash
+    // which would come from cached validate results.
+
+    // Build output JSON
+    var data_buf: std.ArrayList(u8) = .empty;
+    errdefer data_buf.deinit(allocator);
+
+    const esc_pid = try encoding.jsonEscapeAlloc(allocator, prompt_id);
+    defer allocator.free(esc_pid);
+    const esc_old = try encoding.jsonEscapeAlloc(allocator, old_hash);
+    defer allocator.free(esc_old);
+    const esc_new = try encoding.jsonEscapeAlloc(allocator, new_hash);
+    defer allocator.free(esc_new);
+
+    try data_buf.writer(allocator).print(
+        "{{\"promptId\":\"{s}\",\"oldHash\":\"{s}\",\"newHash\":\"{s}\"",
+        .{ esc_pid, esc_old, esc_new },
+    );
+
+    // old_only: constraints in old but not new
+    try data_buf.appendSlice(allocator, ",\"oldOnly\":[");
+    {
+        var iter = old_refers.iterator();
+        var first = true;
+        while (iter.next()) |entry| {
+            if (new_refers.contains(entry.key_ptr.*)) continue;
+            if (!first) try data_buf.append(allocator, ',');
+            first = false;
+            const esc_cid = try encoding.jsonEscapeAlloc(allocator, entry.key_ptr.*);
+            defer allocator.free(esc_cid);
+            try data_buf.writer(allocator).print(
+                "{{\"constraintId\":\"{s}\",\"referCount\":{d},\"taskCount\":{d}}}",
+                .{ esc_cid, entry.value_ptr.refer_count, entry.value_ptr.task_set.count() },
+            );
+        }
+    }
+    try data_buf.appendSlice(allocator, "],\"newOnly\":[");
+    {
+        var iter = new_refers.iterator();
+        var first = true;
+        while (iter.next()) |entry| {
+            if (old_refers.contains(entry.key_ptr.*)) continue;
+            if (!first) try data_buf.append(allocator, ',');
+            first = false;
+            const esc_cid = try encoding.jsonEscapeAlloc(allocator, entry.key_ptr.*);
+            defer allocator.free(esc_cid);
+            try data_buf.writer(allocator).print(
+                "{{\"constraintId\":\"{s}\",\"referCount\":{d},\"taskCount\":{d}}}",
+                .{ esc_cid, entry.value_ptr.refer_count, entry.value_ptr.task_set.count() },
+            );
+        }
+    }
+    try data_buf.appendSlice(allocator, "],\"matched\":[");
+    {
+        var iter = old_refers.iterator();
+        var first = true;
+        while (iter.next()) |entry| {
+            const new_entry = new_refers.get(entry.key_ptr.*) orelse continue;
+            if (!first) try data_buf.append(allocator, ',');
+            first = false;
+            const esc_cid = try encoding.jsonEscapeAlloc(allocator, entry.key_ptr.*);
+            defer allocator.free(esc_cid);
+            try data_buf.writer(allocator).print(
+                "{{\"constraintId\":\"{s}\",\"oldReferCount\":{d},\"oldTaskCount\":{d},\"newReferCount\":{d},\"newTaskCount\":{d}}}",
+                .{ esc_cid, entry.value_ptr.refer_count, entry.value_ptr.task_set.count(), new_entry.refer_count, new_entry.task_set.count() },
+            );
+        }
+    }
+    try data_buf.appendSlice(allocator, "]}");
+
+    // Build view
+    var view_buf: std.ArrayList(u8) = .empty;
+    errdefer view_buf.deinit(allocator);
+
+    try view_buf.writer(allocator).print("{s}  {s} -> {s}\\n", .{ prompt_id, old_hash[0..@min(7, old_hash.len)], new_hash[0..@min(7, new_hash.len)] });
+    try view_buf.appendSlice(allocator, "─────────────────────────────────────────────────────\\n");
+
+    // Matched
+    {
+        var iter = old_refers.iterator();
+        while (iter.next()) |entry| {
+            const new_entry = new_refers.get(entry.key_ptr.*) orelse continue;
+            try view_buf.writer(allocator).print("  {s: <20} {d}/{d} -> {d}/{d}  (stable)\\n", .{
+                entry.key_ptr.*,       entry.value_ptr.refer_count, entry.value_ptr.task_set.count(),
+                new_entry.refer_count, new_entry.task_set.count(),
+            });
+        }
+    }
+    // Old only
+    {
+        var iter = old_refers.iterator();
+        while (iter.next()) |entry| {
+            if (new_refers.contains(entry.key_ptr.*)) continue;
+            try view_buf.writer(allocator).print("- {s: <20} {d}/{d}  (removed)\\n", .{
+                entry.key_ptr.*, entry.value_ptr.refer_count, entry.value_ptr.task_set.count(),
+            });
+        }
+    }
+    // New only
+    {
+        var iter = new_refers.iterator();
+        while (iter.next()) |entry| {
+            if (old_refers.contains(entry.key_ptr.*)) continue;
+            try view_buf.writer(allocator).print("+ {s: <20} {d}/{d}  (new)\\n", .{
+                entry.key_ptr.*, entry.value_ptr.refer_count, entry.value_ptr.task_set.count(),
+            });
+        }
     }
 
     const data_json = try data_buf.toOwnedSlice(allocator);
@@ -497,6 +1020,7 @@ fn handleShortcut(
     return try buildToolSuccessResult(allocator, structured);
 }
 
+
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     if (needle.len == 0) return true;
     if (needle.len > haystack.len) return false;
@@ -577,17 +1101,19 @@ fn serializeLoadResultWithConstraints(allocator: std.mem.Allocator, result: *wor
     try buf.writer(allocator).print("{{\"workspaceId\":\"{s}\",\"items\":[", .{esc_ws});
     for (result.items.items, 0..) |item, idx| {
         if (idx > 0) try buf.append(allocator, ',');
-        try appendLoadedPrompt(allocator, &buf, item);
 
-        // For Rule/Workflow with content, append constraints array
+        // For Rule/Workflow with content, parse constraints first so we can
+        // include them in both the refer reminder and the JSON output
         if ((item.kind == .rule or item.kind == .workflow) and item.content != null) {
-            // Remove trailing } from the just-appended item to add constraints field
+            var parsed = try workspace_prompt.parseConstraints(allocator, item.content.?);
+            defer parsed.deinit(allocator);
+
+            try appendLoadedPromptWithConstraints(allocator, &buf, item, parsed.constraints.items);
+
+            // Reopen the item JSON to append constraints array
             if (buf.items.len > 0 and buf.items[buf.items.len - 1] == '}') {
                 buf.items.len -= 1;
             }
-
-            var parsed = try workspace_prompt.parseConstraints(allocator, item.content.?);
-            defer parsed.deinit(allocator);
 
             try buf.appendSlice(allocator, ",\"constraints\":[");
             for (parsed.constraints.items, 0..) |c, cidx| {
@@ -599,6 +1125,8 @@ fn serializeLoadResultWithConstraints(allocator: std.mem.Allocator, result: *wor
                 try buf.writer(allocator).print("{{\"id\":\"{s}\",\"textHash\":\"{s}\"}}", .{ esc_cid, esc_th });
             }
             try buf.appendSlice(allocator, "]}");
+        } else {
+            try appendLoadedPrompt(allocator, &buf, item);
         }
     }
     try buf.appendSlice(allocator, "]}");
@@ -637,6 +1165,15 @@ fn appendLoadedPrompt(
     buf: *std.ArrayList(u8),
     item: workspace_prompt.LoadedPrompt,
 ) !void {
+    return appendLoadedPromptWithConstraints(allocator, buf, item, &.{});
+}
+
+fn appendLoadedPromptWithConstraints(
+    allocator: std.mem.Allocator,
+    buf: *std.ArrayList(u8),
+    item: workspace_prompt.LoadedPrompt,
+    constraints: []const workspace_prompt.ParsedConstraint,
+) !void {
     const esc_id = try encoding.jsonEscapeAlloc(allocator, item.id);
     defer allocator.free(esc_id);
 
@@ -645,13 +1182,23 @@ fn appendLoadedPrompt(
         .{ esc_id, workspace_prompt.kindToString(item.kind), if (item.changed) "true" else "false", item.hash },
     );
     if (item.content) |content| {
-        // Refer reminder injection for Rule and Workflow
         const needs_reminder = item.kind == .rule or item.kind == .workflow;
         if (needs_reminder) {
+            // Build constraint list for the reminder
+            var constraint_list_buf: std.ArrayList(u8) = .empty;
+            defer constraint_list_buf.deinit(allocator);
+            for (constraints) |c| {
+                try constraint_list_buf.writer(allocator).print("  - {s}\n", .{c.id});
+            }
+            const constraint_list = if (constraint_list_buf.items.len > 0)
+                constraint_list_buf.items
+            else
+                @as([]const u8, "  (no constraints parsed)\n");
+
             const reminder = try std.fmt.allocPrint(
                 allocator,
-                "{s}\n\n---\n[clumsies] When you reference constraints from this prompt, call memory.refer:\n  promptId: {s}\n  promptHash: {s}\n  constraintId or ranges: the constraint you used\n---",
-                .{ content, item.id, item.hash },
+                "{s}\n\n---\n[clumsies] When you reference constraints from this prompt, call memory.refer:\n  promptId: {s}\n  promptHash: {s}\n  constraintId: pick from the list below\n{s}---",
+                .{ content, item.id, item.hash, constraint_list },
             );
             defer allocator.free(reminder);
             const esc_content = try encoding.jsonEscapeAlloc(allocator, reminder);
