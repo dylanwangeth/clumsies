@@ -205,20 +205,16 @@ fn handleLoad(
     var result = try workspace_prompt.loadPrompts(allocator, workspace_root, ids.items, known.items);
     defer result.deinit(allocator);
 
-    // Trace: load event for each loaded item
-    const ws_id = try trace.workspaceId(allocator, workspace_root);
-    defer allocator.free(ws_id);
     for (result.items.items) |item| {
         try trace.appendTraceEvent(allocator, workspace_root, .{
             .event_type = .load,
-
             .task_id = task_id,
             .prompt_id = item.id,
             .prompt_hash = item.hash,
         });
     }
 
-    const structured = try serializeLoadResult(allocator, &result, workspace_root);
+    const structured = try serializeLoadResultWithConstraints(allocator, &result, workspace_root);
     defer allocator.free(structured);
     return try buildToolSuccessResult(allocator, structured);
 }
@@ -562,6 +558,48 @@ fn serializeLoadResult(allocator: std.mem.Allocator, result: *workspace_prompt.L
     for (result.items.items, 0..) |item, idx| {
         if (idx > 0) try buf.append(allocator, ',');
         try appendLoadedPrompt(allocator, &buf, item);
+    }
+    try buf.appendSlice(allocator, "]}");
+
+    return try buf.toOwnedSlice(allocator);
+}
+
+fn serializeLoadResultWithConstraints(allocator: std.mem.Allocator, result: *workspace_prompt.LoadResult, workspace_root: []const u8) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    const ws_id = try trace.workspaceId(allocator, workspace_root);
+    defer allocator.free(ws_id);
+
+    const esc_ws = try encoding.jsonEscapeAlloc(allocator, ws_id);
+    defer allocator.free(esc_ws);
+
+    try buf.writer(allocator).print("{{\"workspaceId\":\"{s}\",\"items\":[", .{esc_ws});
+    for (result.items.items, 0..) |item, idx| {
+        if (idx > 0) try buf.append(allocator, ',');
+        try appendLoadedPrompt(allocator, &buf, item);
+
+        // For Rule/Workflow with content, append constraints array
+        if ((item.kind == .rule or item.kind == .workflow) and item.content != null) {
+            // Remove trailing } from the just-appended item to add constraints field
+            if (buf.items.len > 0 and buf.items[buf.items.len - 1] == '}') {
+                buf.items.len -= 1;
+            }
+
+            var parsed = try workspace_prompt.parseConstraints(allocator, item.content.?);
+            defer parsed.deinit(allocator);
+
+            try buf.appendSlice(allocator, ",\"constraints\":[");
+            for (parsed.constraints.items, 0..) |c, cidx| {
+                if (cidx > 0) try buf.append(allocator, ',');
+                const esc_cid = try encoding.jsonEscapeAlloc(allocator, c.id);
+                defer allocator.free(esc_cid);
+                const esc_th = try encoding.jsonEscapeAlloc(allocator, c.text_hash);
+                defer allocator.free(esc_th);
+                try buf.writer(allocator).print("{{\"id\":\"{s}\",\"textHash\":\"{s}\"}}", .{ esc_cid, esc_th });
+            }
+            try buf.appendSlice(allocator, "]}");
+        }
     }
     try buf.appendSlice(allocator, "]}");
 
