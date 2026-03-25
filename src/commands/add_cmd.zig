@@ -20,6 +20,8 @@ const jsonEscapeAlloc = commands.jsonEscapeAlloc;
 const PromptRef = commands.PromptRef;
 const freePromptRefs = commands.freePromptRefs;
 const updatePromptsIndex = commands.updatePromptsIndex;
+const addPromptsToBundle = commands.addPromptsToBundle;
+const bundleExists = commands.bundleExists;
 
 pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const Q = 0;
@@ -27,12 +29,14 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const C = 2;
     const META = 3;
     const S = 4;
+    const B = 5;
     const SPECS = [_]flag.FlagSpec{
         .{ .short = 'Q', .long = "quiet-git", .kind = .boolean },
         .{ .short = 'd', .long = "desc", .kind = .value },
         .{ .short = 'g', .long = "group", .kind = .value },
         .{ .short = 'm', .long = "meta", .kind = .boolean },
         .{ .short = 's', .long = "sync", .kind = .boolean },
+        .{ .short = 'b', .long = "bundle", .kind = .value },
     };
     var err_ctx: flag.ErrorContext = .{};
     var result = flag.parse(&SPECS, allocator, args, &err_ctx) catch |err| switch (err) {
@@ -56,6 +60,7 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
     const desc_flag = result.value(D);
     var group_flag = result.value(C);
     const sync = result.boolean(S);
+    const bundle_flag = result.value(B);
 
     if (result.boolean(META)) {
         group_flag = META_PROMPT_GROUP;
@@ -119,6 +124,14 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     }
 
+    // Validate bundle exists before registering (fail fast)
+    if (bundle_flag) |bname| {
+        if (!bundleExists(allocator, registry_path, bname)) {
+            try stderr.print("{s}{s}{s}Error:{s} Bundle not found: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bname });
+            return;
+        }
+    }
+
     var refs: std.ArrayListUnmanaged(PromptRef) = .empty;
     defer freePromptRefs(allocator, &refs);
 
@@ -141,6 +154,20 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
 
     const registered = refs.items.len;
 
+    // Add to bundle if requested
+    var bundle_added: usize = 0;
+    if (bundle_flag) |bname| {
+        var hash_ptrs: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer hash_ptrs.deinit(allocator);
+        for (refs.items) |ref| {
+            try hash_ptrs.append(allocator, ref.hash);
+        }
+        bundle_added = addPromptsToBundle(allocator, registry_path, bname, hash_ptrs.items) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to add prompts to bundle: {s}\n", .{ P, Color.bold, Color.red, Color.reset, bname });
+            return;
+        };
+    }
+
     // Commit and push
     var sp = spinner.init(stdout, "Registering prompt(s)");
     sp.start();
@@ -153,7 +180,10 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     };
 
-    const commit_msg = if (registered == 1) "Add prompt" else "Add prompts";
+    const commit_msg = if (bundle_flag != null)
+        (if (registered == 1) "Add prompt to bundle" else "Add prompts to bundle")
+    else
+        (if (registered == 1) "Add prompt" else "Add prompts");
     var commit_output: GitOutput = .{};
     defer commit_output.deinit(allocator);
     git.commit(allocator, registry_path, commit_msg, &commit_output) catch {};
@@ -174,6 +204,11 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         try stdout.print("{s}{s}{s}✓{s} Registered prompt in registry\n", .{ P, Color.bold, Color.green, Color.reset });
     } else {
         try stdout.print("{s}{s}{s}✓{s} Registered {d} prompts in registry\n", .{ P, Color.bold, Color.green, Color.reset, registered });
+    }
+    if (bundle_flag) |bname| {
+        if (bundle_added > 0) {
+            try stdout.print("{s}{s}{s}✓{s} Added {d} prompt{s} to bundle: {s}\n", .{ P, Color.bold, Color.green, Color.reset, bundle_added, if (bundle_added == 1) "" else "s", bname });
+        }
     }
 }
 
@@ -276,13 +311,14 @@ fn expandDirectory(allocator: std.mem.Allocator, abs_path: []const u8, expanded_
 }
 
 fn printHelp(out: *std.io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies add <file|dir>... [-g <group>] [-m] [-d <desc>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies add <file|dir>... [-g <group>] [-b <bundle>] [-m] [-d <desc>] [-s]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Register prompt(s) to registry. Directories are expanded to their files.\n", .{P});
     try out.print("{s}Options:\n", .{P});
-    try out.print("{s}  {s}-g, --group{s} <group> Group (derived from .prompts/ path)\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-m, --meta{s}          Register as meta-prompt file (shorthand for -g ../)\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-d, --desc{s} <desc>  Description\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-s, --sync{s}         Sync registry before command\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-Q, --quiet-git{s}    Suppress git output\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-h, --help{s}         Show this help\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-g, --group{s} <group>   Group (derived from .prompts/ path)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-b, --bundle{s} <name>  Add to bundle after registering\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-m, --meta{s}            Register as meta-prompt file (shorthand for -g ../)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-d, --desc{s} <desc>    Description\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-s, --sync{s}           Sync registry before command\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-Q, --quiet-git{s}      Suppress git output\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-h, --help{s}           Show this help\n", .{ P, Color.cyan, Color.reset });
 }

@@ -167,6 +167,112 @@ pub fn appendBundleEntry(allocator: std.mem.Allocator, buf: *std.ArrayListUnmana
     try buf.appendSlice(allocator, "]\n    }");
 }
 
+/// Append a prompt hash reference to a bundle JSON buffer, deduplicating by hash.
+/// Returns true if the hash was actually added (not a duplicate).
+pub fn appendBundlePromptRef(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), seen_hashes: *std.ArrayListUnmanaged([]const u8), prompt_first: *bool, hash: []const u8) !bool {
+    for (seen_hashes.items) |seen_hash| {
+        if (std.mem.eql(u8, seen_hash, hash)) return false;
+    }
+
+    try seen_hashes.append(allocator, hash);
+
+    const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
+        if (prompt_first.*) "" else ",",
+        hash,
+    });
+    defer allocator.free(ref_entry);
+    try buf.appendSlice(allocator, ref_entry);
+    prompt_first.* = false;
+    return true;
+}
+
+/// Add prompt hashes to an existing bundle in bundles/index.json.
+/// Returns the number of prompts actually added (excluding duplicates).
+pub fn addPromptsToBundle(allocator: std.mem.Allocator, registry_path: []const u8, bundle_name: []const u8, hashes: []const []const u8) !usize {
+    const index_path = try std.fs.path.join(allocator, &.{ registry_path, "bundles/index.json" });
+    defer allocator.free(index_path);
+
+    const idx_file = fs.openFileAbsolute(index_path, .{}) catch return error.BundleIndexNotFound;
+    const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+        idx_file.close();
+        return error.BundleIndexNotFound;
+    };
+    idx_file.close();
+    defer allocator.free(idx_content);
+
+    const idx_parsed = std.json.parseFromSlice(std.json.Value, allocator, idx_content, .{}) catch
+        return error.BundleIndexNotFound;
+    defer idx_parsed.deinit();
+
+    const bundles = idx_parsed.value.object.get("bundles") orelse return error.BundleNotFound;
+
+    var new_index: std.ArrayListUnmanaged(u8) = .empty;
+    defer new_index.deinit(allocator);
+    try new_index.appendSlice(allocator, "{\n  \"bundles\": [");
+
+    var b_first = true;
+    var prompts_added: usize = 0;
+    var found_bundle = false;
+
+    for (bundles.array.items) |item| {
+        const item_name = if (item.object.get("name")) |n| n.string else continue;
+
+        if (!b_first) try new_index.appendSlice(allocator, ",");
+        b_first = false;
+
+        if (std.mem.eql(u8, item_name, bundle_name)) {
+            found_bundle = true;
+            const item_task = if (item.object.get("task")) |t| t.string else "-";
+            const item_desc = if (item.object.get("description")) |d| d.string else "-";
+            const item_created = if (item.object.get("created_at")) |c| c.string else "0";
+            const item_meta = if (item.object.get("meta_prompt")) |m| m.string else "";
+
+            const esc_name = try encoding.jsonEscapeAlloc(allocator, item_name);
+            defer allocator.free(esc_name);
+            const esc_task = try encoding.jsonEscapeAlloc(allocator, item_task);
+            defer allocator.free(esc_task);
+            const esc_desc = try encoding.jsonEscapeAlloc(allocator, item_desc);
+            defer allocator.free(esc_desc);
+
+            const entry_start = try std.fmt.allocPrint(allocator, "\n    {{\n      \"name\": \"{s}\",\n      \"task\": \"{s}\",\n      \"description\": \"{s}\",\n      \"created_at\": \"{s}\",\n      \"meta_prompt\": \"{s}\",\n      \"prompts\": [", .{ esc_name, esc_task, esc_desc, item_created, item_meta });
+            defer allocator.free(entry_start);
+            try new_index.appendSlice(allocator, entry_start);
+
+            var prompt_first = true;
+            var seen_hashes: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer seen_hashes.deinit(allocator);
+
+            // Keep existing prompts
+            if (item.object.get("prompts")) |existing_prompts| {
+                for (existing_prompts.array.items) |ref| {
+                    const ref_hash = if (ref.object.get("hash")) |h| h.string else continue;
+                    _ = try appendBundlePromptRef(allocator, &new_index, &seen_hashes, &prompt_first, ref_hash);
+                }
+            }
+
+            // Add new prompt hashes
+            for (hashes) |hash| {
+                if (try appendBundlePromptRef(allocator, &new_index, &seen_hashes, &prompt_first, hash)) {
+                    prompts_added += 1;
+                }
+            }
+
+            try new_index.appendSlice(allocator, "]\n    }");
+        } else {
+            try appendBundleEntry(allocator, &new_index, item);
+        }
+    }
+    try new_index.appendSlice(allocator, "\n  ]\n}\n");
+
+    if (!found_bundle) return error.BundleNotFound;
+
+    const idx_out = fs.createFileAbsolute(index_path, .{}) catch return error.BundleIndexNotFound;
+    defer idx_out.close();
+    idx_out.writeAll(new_index.items) catch return error.BundleIndexNotFound;
+
+    return prompts_added;
+}
+
 fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
     defer file.close();
@@ -285,6 +391,61 @@ test "updatePromptsIndex: escapes special chars in name" {
     const prompts = parsed.value.object.get("prompts").?;
     try testing.expectEqual(@as(usize, 1), prompts.array.items.len);
     try testing.expectEqualStrings("has\"quotes", prompts.array.items[0].object.get("name").?.string);
+}
+
+test "addPromptsToBundle: adds prompts to existing bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("bundles");
+    try writeTestFile(tmp.dir, "bundles/index.json",
+        \\{"bundles":[{"name":"test-bundle","task":"-","description":"test","created_at":"0","meta_prompt":"","prompts":[{"hash":"existing1"}]}]}
+    );
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+
+    const hashes = [_][]const u8{"newhash2"};
+    const added = try addPromptsToBundle(testing.allocator, path, "test-bundle", &hashes);
+    try testing.expectEqual(@as(usize, 1), added);
+
+    const content = try readTmpFile(testing.allocator, tmp.dir, "bundles/index.json");
+    defer testing.allocator.free(content);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, content, .{});
+    defer parsed.deinit();
+    const bundles = parsed.value.object.get("bundles").?;
+    const bundle = bundles.array.items[0];
+    const prompts = bundle.object.get("prompts").?;
+    try testing.expectEqual(@as(usize, 2), prompts.array.items.len);
+    try testing.expectEqualStrings("existing1", prompts.array.items[0].object.get("hash").?.string);
+    try testing.expectEqualStrings("newhash2", prompts.array.items[1].object.get("hash").?.string);
+}
+
+test "addPromptsToBundle: skips duplicate hashes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("bundles");
+    try writeTestFile(tmp.dir, "bundles/index.json",
+        \\{"bundles":[{"name":"test-bundle","task":"-","description":"test","created_at":"0","meta_prompt":"","prompts":[{"hash":"existing1"}]}]}
+    );
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+
+    const hashes = [_][]const u8{"existing1"};
+    const added = try addPromptsToBundle(testing.allocator, path, "test-bundle", &hashes);
+    try testing.expectEqual(@as(usize, 0), added);
+}
+
+test "addPromptsToBundle: returns error for nonexistent bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("bundles");
+    try writeTestFile(tmp.dir, "bundles/index.json",
+        \\{"bundles":[{"name":"other","task":"-","description":"test","created_at":"0","meta_prompt":"","prompts":[]}]}
+    );
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmpDirAbsolutePath(&tmp, &buf);
+
+    const hashes = [_][]const u8{"abc123"};
+    try testing.expectError(error.BundleNotFound, addPromptsToBundle(testing.allocator, path, "nonexistent", &hashes));
 }
 
 test "appendPromptEntry: missing group returns error" {
