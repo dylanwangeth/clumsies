@@ -14,6 +14,7 @@ const MAX_FILE_SIZE = commands.MAX_FILE_SIZE;
 const ensureRegistry = commands.ensureRegistry;
 const resolveRef = commands.resolveRef;
 const appendBundleEntry = commands.appendBundleEntry;
+const appendBundlePromptRef = commands.appendBundlePromptRef;
 const appendPromptEntry = commands.appendPromptEntry;
 const PromptRef = commands.PromptRef;
 const collectAndUploadPrompts = commands.collectAndUploadPrompts;
@@ -1043,23 +1044,6 @@ fn setBundle(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.
     if (new_meta_hash != null) try stdout.print("{s}    Meta-prompt updated\n", .{P});
     if (prompts_added > 0) try stdout.print("{s}    Prompts added: {d}\n", .{ P, prompts_added });
     if (prompts_removed > 0) try stdout.print("{s}    Prompts removed: {d}\n", .{ P, prompts_removed });
-}
-
-fn appendBundlePromptRef(allocator: std.mem.Allocator, new_index: *std.ArrayListUnmanaged(u8), seen_hashes: *std.ArrayListUnmanaged([]const u8), prompt_first: *bool, hash: []const u8) !bool {
-    for (seen_hashes.items) |seen_hash| {
-        if (std.mem.eql(u8, seen_hash, hash)) return false;
-    }
-
-    try seen_hashes.append(allocator, hash);
-
-    const ref_entry = try std.fmt.allocPrint(allocator, "{s}\n        {{ \"hash\": \"{s}\" }}", .{
-        if (prompt_first.*) "" else ",",
-        hash,
-    });
-    defer allocator.free(ref_entry);
-    try new_index.appendSlice(allocator, ref_entry);
-    prompt_first.* = false;
-    return true;
 }
 
 fn printHelp(out: *std.io.Writer) !void {

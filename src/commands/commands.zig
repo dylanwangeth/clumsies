@@ -41,6 +41,8 @@ pub const freePromptRefs = index_mod.freePromptRefs;
 pub const updatePromptsIndex = index_mod.updatePromptsIndex;
 pub const appendPromptEntry = index_mod.appendPromptEntry;
 pub const appendBundleEntry = index_mod.appendBundleEntry;
+pub const appendBundlePromptRef = index_mod.appendBundlePromptRef;
+pub const addPromptsToBundle = index_mod.addPromptsToBundle;
 
 pub const ImportResult = import_mod.ImportResult;
 pub const importPrompt = import_mod.importPrompt;
