@@ -45,6 +45,12 @@ pub fn run(stdout: *std.io.Writer, stderr: *std.io.Writer, allocator: std.mem.Al
         return;
     }
 
+    if (!commands.promptsIsGitRepo()) {
+        try stderr.print("{s}{s}{s}Error:{s} .prompts/ is not a git repository\n", .{ P, Color.bold, Color.red, Color.reset });
+        try stderr.print("{s}Run {s}clumsies clone <url>{s} first\n", .{ P, Color.cyan, Color.reset });
+        return;
+    }
+
     const prompts_path = commands.getPromptsPath(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Could not determine .prompts/ path\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
