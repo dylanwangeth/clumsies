@@ -75,7 +75,6 @@ const tool_validate =
     "{\"name\":\"memory.validate\",\"title\":\"Validate\",\"description\":\"Validate a prompt file against the standard format. Returns parsed constraints and issues.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"}},\"required\":[\"promptId\"],\"additionalProperties\":false}}";
 
-
 pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, params: std.json.Value) ![]u8 {
     const params_obj = switch (params) {
         .object => |obj| obj,
@@ -1019,7 +1018,6 @@ fn handleShortcut(
     defer allocator.free(structured);
     return try buildToolSuccessResult(allocator, structured);
 }
-
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     if (needle.len == 0) return true;
