@@ -424,13 +424,13 @@ fn handleStatsWorkspace(allocator: std.mem.Allocator, workspace_root: []const u8
     var view_buf: std.ArrayList(u8) = .empty;
     errdefer view_buf.deinit(allocator);
 
-    try view_buf.appendSlice(allocator, "Prompt                                    Refers  Tasks(ok/fail)\\n");
-    try view_buf.appendSlice(allocator, "────────────────────────────────────────────────────────────────\\n");
+    try view_buf.appendSlice(allocator, "Prompt                                    Refers  Tasks(ok/fail)\n");
+    try view_buf.appendSlice(allocator, "────────────────────────────────────────────────────────────────\n");
 
     var iter2 = stats.prompts.iterator();
     while (iter2.next()) |entry| {
         const ps = entry.value_ptr;
-        try view_buf.writer(allocator).print("{s: <42}{d: >6}  {d}/{d}\\n", .{
+        try view_buf.writer(allocator).print("{s: <42}{d: >6}  {d}/{d}\n", .{
             ps.id,
             ps.refer_count,
             ps.completed_tasks,
@@ -549,8 +549,8 @@ fn handleStatsPrompt(
     var view_buf: std.ArrayList(u8) = .empty;
     errdefer view_buf.deinit(allocator);
 
-    try view_buf.writer(allocator).print("{s}  {d} tasks\\n", .{ prompt_id, stats.total_tasks });
-    try view_buf.appendSlice(allocator, "──────────────────────────────────────────────────────────\\n");
+    try view_buf.writer(allocator).print("{s}  {d} tasks\n", .{ prompt_id, stats.total_tasks });
+    try view_buf.appendSlice(allocator, "──────────────────────────────────────────────────────────\n");
 
     if (all_constraints.items.len > 0) {
         var cold_count: usize = 0;
@@ -570,18 +570,18 @@ fn handleStatsPrompt(
                 cold_count += 1;
             }
 
-            try view_buf.writer(allocator).print("{s: <20} {d: >4} refers  {d: >3} tasks{s}\\n", .{
+            try view_buf.writer(allocator).print("{s: <20} {d: >4} refers  {d: >3} tasks{s}\n", .{
                 c.id, refer_count, task_count, label,
             });
         }
         if (cold_count > 0) {
-            try view_buf.writer(allocator).print("\\n{d} out of {d} constraints are cold or dead.\\n", .{ cold_count, all_constraints.items.len });
+            try view_buf.writer(allocator).print("\n{d} out of {d} constraints are cold or dead.\n", .{ cold_count, all_constraints.items.len });
         }
     } else {
         var iter = stats.constraints.iterator();
         while (iter.next()) |entry| {
             const cs = entry.value_ptr;
-            try view_buf.writer(allocator).print("{s: <20} {d: >4} refers  {d: >3} tasks\\n", .{
+            try view_buf.writer(allocator).print("{s: <20} {d: >4} refers  {d: >3} tasks\n", .{
                 cs.constraint_id, cs.refer_count, cs.task_count,
             });
         }
@@ -751,15 +751,15 @@ fn handleStatsPromptTimeBuckets(
     var view_buf: std.ArrayList(u8) = .empty;
     errdefer view_buf.deinit(allocator);
 
-    try view_buf.writer(allocator).print("{s}  coverage over time ({s})\\n", .{ prompt_id, time_buckets });
-    try view_buf.appendSlice(allocator, "──────────────────────────────────────────────────────────\\n");
-    try view_buf.appendSlice(allocator, "Date              Coverage  Tasks\\n");
+    try view_buf.writer(allocator).print("{s}  coverage over time ({s})\n", .{ prompt_id, time_buckets });
+    try view_buf.appendSlice(allocator, "──────────────────────────────────────────────────────────\n");
+    try view_buf.appendSlice(allocator, "Date              Coverage  Tasks\n");
 
     for (bucket_order.items) |bucket| {
         const coverage = cumulative_coverage.get(bucket) orelse 0.0;
         const tasks = if (bucket_new_tasks.getPtr(bucket)) |m| m.count() else 0;
         const pct: usize = @intFromFloat(coverage * 100.0);
-        try view_buf.writer(allocator).print("{s: <18}{d: >3}%      {d: >3}\\n", .{ bucket, pct, tasks });
+        try view_buf.writer(allocator).print("{s: <18}{d: >3}%      {d: >3}\n", .{ bucket, pct, tasks });
     }
 
     const data_json = try data_buf.toOwnedSlice(allocator);
@@ -884,15 +884,15 @@ fn handleStatsDiff(
     var view_buf: std.ArrayList(u8) = .empty;
     errdefer view_buf.deinit(allocator);
 
-    try view_buf.writer(allocator).print("{s}  {s} -> {s}\\n", .{ prompt_id, old_hash[0..@min(7, old_hash.len)], new_hash[0..@min(7, new_hash.len)] });
-    try view_buf.appendSlice(allocator, "─────────────────────────────────────────────────────\\n");
+    try view_buf.writer(allocator).print("{s}  {s} -> {s}\n", .{ prompt_id, old_hash[0..@min(7, old_hash.len)], new_hash[0..@min(7, new_hash.len)] });
+    try view_buf.appendSlice(allocator, "─────────────────────────────────────────────────────\n");
 
     // Matched
     {
         var iter = old_refers.iterator();
         while (iter.next()) |entry| {
             const new_entry = new_refers.get(entry.key_ptr.*) orelse continue;
-            try view_buf.writer(allocator).print("  {s: <20} {d}/{d} -> {d}/{d}  (stable)\\n", .{
+            try view_buf.writer(allocator).print("  {s: <20} {d}/{d} -> {d}/{d}  (stable)\n", .{
                 entry.key_ptr.*,       entry.value_ptr.refer_count, entry.value_ptr.task_set.count(),
                 new_entry.refer_count, new_entry.task_set.count(),
             });
@@ -903,7 +903,7 @@ fn handleStatsDiff(
         var iter = old_refers.iterator();
         while (iter.next()) |entry| {
             if (new_refers.contains(entry.key_ptr.*)) continue;
-            try view_buf.writer(allocator).print("- {s: <20} {d}/{d}  (removed)\\n", .{
+            try view_buf.writer(allocator).print("- {s: <20} {d}/{d}  (removed)\n", .{
                 entry.key_ptr.*, entry.value_ptr.refer_count, entry.value_ptr.task_set.count(),
             });
         }
@@ -913,7 +913,7 @@ fn handleStatsDiff(
         var iter = new_refers.iterator();
         while (iter.next()) |entry| {
             if (old_refers.contains(entry.key_ptr.*)) continue;
-            try view_buf.writer(allocator).print("+ {s: <20} {d}/{d}  (new)\\n", .{
+            try view_buf.writer(allocator).print("+ {s: <20} {d}/{d}  (new)\n", .{
                 entry.key_ptr.*, entry.value_ptr.refer_count, entry.value_ptr.task_set.count(),
             });
         }
