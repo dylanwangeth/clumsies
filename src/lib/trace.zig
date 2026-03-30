@@ -19,7 +19,7 @@ pub const TraceEvent = struct {
     task_id: ?[]const u8 = null,
 
     // setup fields
-    synced_count: ?usize = null,
+    mpf_hash: ?[]const u8 = null,
 
     // begin fields
     goal_summary: ?[]const u8 = null,
@@ -161,8 +161,10 @@ fn serializeTraceEvent(allocator: std.mem.Allocator, event: TraceEvent) ![]u8 {
     // Type-specific fields
     switch (event.event_type) {
         .setup => {
-            if (event.synced_count) |count| {
-                try buf.writer(allocator).print(",\"synced_count\":{d}", .{count});
+            if (event.mpf_hash) |h| {
+                const esc = try encoding.jsonEscapeAlloc(allocator, h);
+                defer allocator.free(esc);
+                try buf.writer(allocator).print(",\"mpf_hash\":\"{s}\"", .{esc});
             }
         },
         .begin => {

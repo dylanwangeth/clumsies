@@ -4,7 +4,6 @@ const config = @import("config.zig");
 const prompt = @import("prompt.zig");
 
 pub const PromptKind = enum {
-    directive,
     rule,
     workflow,
     data,
@@ -60,7 +59,6 @@ pub const LoadResult = struct {
 // Kind directory mapping
 
 const kind_dirs = [_]struct { dir: []const u8, kind: PromptKind }{
-    .{ .dir = "directive", .kind = .directive },
     .{ .dir = "rule", .kind = .rule },
     .{ .dir = "workflow", .kind = .workflow },
     .{ .dir = "data", .kind = .data },
@@ -68,18 +66,49 @@ const kind_dirs = [_]struct { dir: []const u8, kind: PromptKind }{
 
 fn priorityForKind(kind: PromptKind) SetupPriority {
     return switch (kind) {
-        .directive => .high,
         .rule, .workflow, .data => .normal,
     };
 }
 
 pub fn kindToString(kind: PromptKind) []const u8 {
     return switch (kind) {
-        .directive => "directive",
         .rule => "rule",
         .workflow => "workflow",
         .data => "data",
     };
+}
+
+pub const MpfResult = struct {
+    content: ?[]const u8,
+    hash: ?[]const u8,
+
+    pub fn deinit(self: *MpfResult, allocator: std.mem.Allocator) void {
+        if (self.content) |c| allocator.free(c);
+        if (self.hash) |h| allocator.free(h);
+    }
+};
+
+pub fn loadMpf(allocator: std.mem.Allocator, workspace_root: []const u8, known_hash: ?[]const u8) !MpfResult {
+    const mpf_path = try std.fs.path.join(allocator, &.{ workspace_root, ".prompts", "META_PROMPT.md" });
+    defer allocator.free(mpf_path);
+
+    const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return .{ .content = null, .hash = null };
+    defer file.close();
+
+    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return .{ .content = null, .hash = null };
+    errdefer allocator.free(content);
+
+    const hash = try prompt.hashContentHexAlloc(allocator, content);
+    errdefer allocator.free(hash);
+
+    if (known_hash) |kh| {
+        if (std.mem.eql(u8, kh, hash)) {
+            allocator.free(content);
+            return .{ .content = null, .hash = hash };
+        }
+    }
+
+    return .{ .content = content, .hash = hash };
 }
 
 // Public API
@@ -98,15 +127,10 @@ pub fn deinitPromptItems(allocator: std.mem.Allocator, items: *std.ArrayList(Pro
 }
 
 /// Discover all prompts in the .prompts/ directory, organized by kind.
-/// Also detects MPF files (CLAUDE.md, AGENTS.md) at workspace root as directives.
 pub fn discoverAll(allocator: std.mem.Allocator, workspace_root: []const u8) !std.ArrayList(PromptItem) {
     var items: std.ArrayList(PromptItem) = .empty;
     errdefer deinitPromptItems(allocator, &items);
 
-    // Backward compat: detect MPF files at workspace root as directives
-    try detectMpfAsDirective(allocator, workspace_root, &items);
-
-    // Scan each kind directory under .prompts/
     const prompts_root = try std.fs.path.join(allocator, &.{ workspace_root, ".prompts" });
     defer allocator.free(prompts_root);
 
@@ -118,23 +142,7 @@ pub fn discoverAll(allocator: std.mem.Allocator, workspace_root: []const u8) !st
     return items;
 }
 
-/// Discover only directives (for memory.setup).
-pub fn discoverDirectives(allocator: std.mem.Allocator, workspace_root: []const u8) !std.ArrayList(PromptItem) {
-    var items: std.ArrayList(PromptItem) = .empty;
-    errdefer deinitPromptItems(allocator, &items);
-
-    try detectMpfAsDirective(allocator, workspace_root, &items);
-
-    const prompts_root = try std.fs.path.join(allocator, &.{ workspace_root, ".prompts" });
-    defer allocator.free(prompts_root);
-
-    try scanKindDirectory(allocator, prompts_root, "directive", .directive, &items);
-
-    std.mem.sort(PromptItem, items.items, {}, lessThanPromptItem);
-    return items;
-}
-
-/// Discover non-directive prompts (for memory.search).
+/// Discover prompts for memory.search.
 pub fn discoverSearchable(allocator: std.mem.Allocator, workspace_root: []const u8, kind_filter: ?PromptKind, group_filter: ?[]const u8) !std.ArrayList(PromptItem) {
     var items: std.ArrayList(PromptItem) = .empty;
     errdefer deinitPromptItems(allocator, &items);
@@ -185,42 +193,6 @@ pub fn loadPrompts(allocator: std.mem.Allocator, workspace_root: []const u8, ids
     defer deinitPromptItems(allocator, &inventory);
 
     return try materializeSelection(allocator, workspace_root, inventory.items, ids, known);
-}
-
-/// Load all directives, returning content for changed items (delta).
-pub fn loadDirectives(allocator: std.mem.Allocator, workspace_root: []const u8, known: []const KnownHash) !LoadResult {
-    var items = try discoverDirectives(allocator, workspace_root);
-    defer deinitPromptItems(allocator, &items);
-
-    return try materializeAll(allocator, workspace_root, items.items, known);
-}
-
-fn detectMpfAsDirective(allocator: std.mem.Allocator, workspace_root: []const u8, items: *std.ArrayList(PromptItem)) !void {
-    const raw_mpf = try config.getMetaPromptFilesStr(allocator);
-    defer if (raw_mpf) |raw| allocator.free(raw);
-
-    var mpf_list = try config.parseMetaPromptFiles(allocator, raw_mpf);
-    defer config.freeOwnedStrings(allocator, &mpf_list);
-
-    for (mpf_list.items) |mpf_name| {
-        const abs_path = try std.fs.path.join(allocator, &.{ workspace_root, mpf_name });
-        defer allocator.free(abs_path);
-
-        const file = std.fs.openFileAbsolute(abs_path, .{}) catch continue;
-        file.close();
-
-        const display_name = prompt.displayNameFromFilename(std.fs.path.basename(mpf_name));
-
-        try items.append(allocator, .{
-            .id = try std.fmt.allocPrint(allocator, "directive:{s}", .{mpf_name}),
-            .kind = .directive,
-            .path = try allocator.dupe(u8, mpf_name),
-            .name = try allocator.dupe(u8, display_name),
-            .group = null,
-            .hash = try prompt.readFileHashHexAlloc(allocator, abs_path),
-            .priority = .high,
-        });
-    }
 }
 
 fn scanKindDirectory(
@@ -538,7 +510,7 @@ fn isOrderedListItem(line: []const u8) bool {
     return line[i] == '.' and i + 1 < line.len and line[i + 1] == ' ';
 }
 
-/// Validate a prompt file. For Rule/Workflow: parse constraints. For Directive: just check readable.
+/// Validate a prompt file. For Rule/Workflow: parse constraints. For Data: just check readable.
 pub fn validatePrompt(allocator: std.mem.Allocator, workspace_root: []const u8, prompt_id: []const u8) !ValidateResult {
     var all = try discoverAll(allocator, workspace_root);
     defer deinitPromptItems(allocator, &all);
@@ -553,7 +525,7 @@ pub fn validatePrompt(allocator: std.mem.Allocator, workspace_root: []const u8, 
         };
     };
 
-    if (item.kind == .directive or item.kind == .data) {
+    if (item.kind == .data) {
         // Just check readable
         const content = readWorkspaceFileAlloc(allocator, workspace_root, item.path) catch {
             var issues: std.ArrayList([]const u8) = .empty;
@@ -588,17 +560,14 @@ fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8)
     return tmp.dir.realpath(".", buf) catch "";
 }
 
-test "discoverAll: finds directives rules and workflows by kind directory" {
+test "discoverAll: finds rules workflows and data by kind directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".prompts/directive/context");
     try tmp.dir.makePath(".prompts/rule/coding");
     try tmp.dir.makePath(".prompts/workflow");
     try tmp.dir.makePath(".prompts/data/research");
 
-    try writeFile(tmp.dir, ".prompts/directive/PIN.md", "pin content");
-    try writeFile(tmp.dir, ".prompts/directive/context/01_ARCH.md", "arch content");
     try writeFile(tmp.dir, ".prompts/rule/coding/00_COMPAT.md", "compat rule");
     try writeFile(tmp.dir, ".prompts/workflow/00_GEN_COMMIT.md", "commit workflow");
     try writeFile(tmp.dir, ".prompts/data/research/R1-0.md", "research data");
@@ -609,22 +578,12 @@ test "discoverAll: finds directives rules and workflows by kind directory" {
     var items = try discoverAll(testing.allocator, root);
     defer deinitPromptItems(testing.allocator, &items);
 
-    try testing.expectEqual(@as(usize, 5), items.items.len);
+    try testing.expectEqual(@as(usize, 3), items.items.len);
 
-    // Directives should come first (high priority)
-    try testing.expectEqual(PromptKind.directive, items.items[0].kind);
-    try testing.expectEqual(PromptKind.directive, items.items[1].kind);
-
-    // Check id format: kind:relative_path (relative to kind dir)
-    var found_arch = false;
     var found_rule = false;
     var found_workflow = false;
     var found_data = false;
     for (items.items) |item| {
-        if (std.mem.eql(u8, item.id, "directive:context/01_ARCH.md")) {
-            found_arch = true;
-            try testing.expectEqualStrings("context", item.group.?);
-        }
         if (std.mem.eql(u8, item.id, "rule:coding/00_COMPAT.md")) {
             found_rule = true;
             try testing.expectEqualStrings("coding", item.group.?);
@@ -638,31 +597,67 @@ test "discoverAll: finds directives rules and workflows by kind directory" {
             try testing.expectEqualStrings("research", item.group.?);
         }
     }
-    try testing.expect(found_arch);
     try testing.expect(found_rule);
     try testing.expect(found_workflow);
     try testing.expect(found_data);
 }
 
-test "discoverDirectives: only returns directives" {
+test "loadMpf: returns content and hash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".prompts/directive");
-    try tmp.dir.makePath(".prompts/rule");
-
-    try writeFile(tmp.dir, ".prompts/directive/PIN.md", "pin");
-    try writeFile(tmp.dir, ".prompts/rule/00_STYLE.md", "style rule");
+    try tmp.dir.makePath(".prompts");
+    try writeFile(tmp.dir, ".prompts/META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    var items = try discoverDirectives(testing.allocator, root);
-    defer deinitPromptItems(testing.allocator, &items);
+    var result = try loadMpf(testing.allocator, root, null);
+    defer result.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 1), items.items.len);
-    try testing.expectEqual(PromptKind.directive, items.items[0].kind);
-    try testing.expectEqualStrings("directive:PIN.md", items.items[0].id);
+    try testing.expect(result.content != null);
+    try testing.expectEqualStrings("bootstrap rules", result.content.?);
+    try testing.expect(result.hash != null);
+}
+
+test "loadMpf: delta when hash matches" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".prompts");
+    try writeFile(tmp.dir, ".prompts/META_PROMPT.md", "bootstrap rules");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    // First load to get hash
+    var first = try loadMpf(testing.allocator, root, null);
+    const hash = try testing.allocator.dupe(u8, first.hash.?);
+    defer testing.allocator.free(hash);
+    first.deinit(testing.allocator);
+
+    // Second load with known hash — content should be null (no delta)
+    var second = try loadMpf(testing.allocator, root, hash);
+    defer second.deinit(testing.allocator);
+
+    try testing.expect(second.content == null);
+    try testing.expect(second.hash != null);
+}
+
+test "loadMpf: returns null when file missing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".prompts");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var result = try loadMpf(testing.allocator, root, null);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.content == null);
+    try testing.expect(result.hash == null);
 }
 
 test "discoverSearchable: filters by kind and group" {
@@ -690,43 +685,6 @@ test "discoverSearchable: filters by kind and group" {
     defer deinitPromptItems(testing.allocator, &zig_rules);
     try testing.expectEqual(@as(usize, 1), zig_rules.items.len);
     try testing.expectEqualStrings("rule:zig/00_STYLE.md", zig_rules.items[0].id);
-}
-
-test "loadDirectives: delta based on knownHashes" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath(".prompts/directive");
-    try writeFile(tmp.dir, ".prompts/directive/PIN.md", "pin content");
-    try writeFile(tmp.dir, ".prompts/directive/OVERVIEW.md", "overview");
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-
-    // Get hash of PIN.md
-    const pin_path = try std.fs.path.join(testing.allocator, &.{ root, ".prompts/directive/PIN.md" });
-    defer testing.allocator.free(pin_path);
-    const pin_hash = try prompt.readFileHashHexAlloc(testing.allocator, pin_path);
-    defer testing.allocator.free(pin_hash);
-
-    // Load with PIN.md hash known — should get delta (only OVERVIEW content)
-    var result = try loadDirectives(testing.allocator, root, &.{
-        .{ .id = "directive:PIN.md", .hash = pin_hash },
-    });
-    defer result.deinit(testing.allocator);
-
-    try testing.expectEqual(@as(usize, 2), result.items.items.len);
-
-    for (result.items.items) |item| {
-        if (std.mem.eql(u8, item.id, "directive:PIN.md")) {
-            try testing.expect(!item.changed);
-            try testing.expect(item.content == null);
-        }
-        if (std.mem.eql(u8, item.id, "directive:OVERVIEW.md")) {
-            try testing.expect(item.changed);
-            try testing.expectEqualStrings("overview", item.content.?);
-        }
-    }
 }
 
 test "loadPrompts: loads by id with delta" {
