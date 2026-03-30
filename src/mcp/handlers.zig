@@ -49,8 +49,8 @@ const tool_begin =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"goalSummary\":{\"type\":\"string\"}},\"required\":[\"goalSummary\"],\"additionalProperties\":false}}";
 
 const tool_search =
-    "{\"name\":\"memory.search\",\"title\":\"Search\",\"description\":\"Discover available rules, workflows, and data. Returns fresh metadata from the workspace.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"data\"]},\"group\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
+    "{\"name\":\"memory.search\",\"title\":\"Search\",\"description\":\"Discover available rules, workflows, and context. Returns fresh metadata from the workspace.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const tool_load =
     "{\"name\":\"memory.load\",\"title\":\"Load\",\"description\":\"Load prompt content by ids. Returns delta based on knownHashes. Rule/Workflow content includes a refer reminder.\"," ++
@@ -794,7 +794,7 @@ fn parsePromptKind(value: std.json.Value) !?workspace_prompt.PromptKind {
 
     if (std.mem.eql(u8, str, "rule")) return .rule;
     if (std.mem.eql(u8, str, "workflow")) return .workflow;
-    if (std.mem.eql(u8, str, "data")) return .data;
+    if (std.mem.eql(u8, str, "context")) return .context;
     return error.InvalidParams;
 }
 

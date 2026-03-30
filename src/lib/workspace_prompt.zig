@@ -6,7 +6,7 @@ const prompt = @import("prompt.zig");
 pub const PromptKind = enum {
     rule,
     workflow,
-    data,
+    context,
 };
 
 pub const SetupPriority = enum(u8) {
@@ -61,12 +61,12 @@ pub const LoadResult = struct {
 const kind_dirs = [_]struct { dir: []const u8, kind: PromptKind }{
     .{ .dir = "rule", .kind = .rule },
     .{ .dir = "workflow", .kind = .workflow },
-    .{ .dir = "data", .kind = .data },
+    .{ .dir = "context", .kind = .context },
 };
 
 fn priorityForKind(kind: PromptKind) SetupPriority {
     return switch (kind) {
-        .rule, .workflow, .data => .normal,
+        .rule, .workflow, .context => .normal,
     };
 }
 
@@ -74,7 +74,7 @@ pub fn kindToString(kind: PromptKind) []const u8 {
     return switch (kind) {
         .rule => "rule",
         .workflow => "workflow",
-        .data => "data",
+        .context => "context",
     };
 }
 
@@ -153,7 +153,7 @@ pub fn discoverSearchable(allocator: std.mem.Allocator, workspace_root: []const 
     const searchable_kinds = [_]struct { dir: []const u8, kind: PromptKind }{
         .{ .dir = "rule", .kind = .rule },
         .{ .dir = "workflow", .kind = .workflow },
-        .{ .dir = "data", .kind = .data },
+        .{ .dir = "context", .kind = .context },
     };
 
     for (searchable_kinds) |kd| {
@@ -525,7 +525,7 @@ pub fn validatePrompt(allocator: std.mem.Allocator, workspace_root: []const u8, 
         };
     };
 
-    if (item.kind == .data) {
+    if (item.kind == .context) {
         // Just check readable
         const content = readWorkspaceFileAlloc(allocator, workspace_root, item.path) catch {
             var issues: std.ArrayList([]const u8) = .empty;
@@ -566,11 +566,11 @@ test "discoverAll: finds rules workflows and data by kind directory" {
 
     try tmp.dir.makePath(".prompts/rule/coding");
     try tmp.dir.makePath(".prompts/workflow");
-    try tmp.dir.makePath(".prompts/data/research");
+    try tmp.dir.makePath(".prompts/context/research");
 
     try writeFile(tmp.dir, ".prompts/rule/coding/00_COMPAT.md", "compat rule");
     try writeFile(tmp.dir, ".prompts/workflow/00_GEN_COMMIT.md", "commit workflow");
-    try writeFile(tmp.dir, ".prompts/data/research/R1-0.md", "research data");
+    try writeFile(tmp.dir, ".prompts/context/research/R1-0.md", "research data");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
@@ -592,7 +592,7 @@ test "discoverAll: finds rules workflows and data by kind directory" {
             found_workflow = true;
             try testing.expect(item.group == null);
         }
-        if (std.mem.eql(u8, item.id, "data:research/R1-0.md")) {
+        if (std.mem.eql(u8, item.id, "context:research/R1-0.md")) {
             found_data = true;
             try testing.expectEqualStrings("research", item.group.?);
         }
