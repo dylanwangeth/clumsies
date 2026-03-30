@@ -19,6 +19,7 @@ const cmd_set = @import("commands/set_cmd.zig");
 const cmd_get = @import("commands/get_cmd.zig");
 const cmd_pub = @import("commands/pub_cmd.zig");
 const cmd_mcp = @import("commands/mcp_cmd.zig");
+const cmd_stats = @import("commands/stats_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const flags = @import("flags.zig");
@@ -43,6 +44,7 @@ const Command = enum {
     get,
     pub_cmd,
     mcp,
+    stats_cmd,
     config,
     upgrade,
     help,
@@ -66,6 +68,7 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "get", .get },
     .{ "pub", .pub_cmd },
     .{ "mcp", .mcp },
+    .{ "stats", .stats_cmd },
     .{ "config", .config },
     .{ "upgrade", .upgrade },
     .{ "help", .help },
@@ -132,6 +135,7 @@ pub fn main() !void {
         .get => try cmd_get.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .pub_cmd => try cmd_pub.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
+        .stats_cmd => try cmd_stats.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .config => try cmd_config.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .upgrade => try cmd_upgrade.run(stdout_writer, stderr_writer, allocator, version),
         .none => try cmd_help.run(stdout_writer),
