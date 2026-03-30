@@ -13,9 +13,9 @@ pub fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) 
     defer allocator.free(esc_version);
 
     const instructions =
-        "Call memory.setup to load directives, memory.search to discover rules/workflows, " ++
-        "memory.load to get content, memory.refer to declare constraint usage, " ++
-        "and memory.complete to finalize a task.";
+        "Call memory.setup to bootstrap the protocol and get usage instructions, " ++
+        "memory.search to discover rules/workflows, memory.load to get content, " ++
+        "memory.refer to declare constraint usage, and memory.complete to finalize a task.";
     const esc_instructions = try encoding.jsonEscapeAlloc(allocator, instructions);
     defer allocator.free(esc_instructions);
 
@@ -41,8 +41,8 @@ pub fn buildToolsListResult(allocator: std.mem.Allocator) ![]u8 {
 }
 
 const tool_setup =
-    "{\"name\":\"memory.setup\",\"title\":\"Setup\",\"description\":\"Sync directives from the .prompts/directive/ directory. Returns workspace_id and directive content (delta based on knownHashes).\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"additionalProperties\":false}}";
+    "{\"name\":\"memory.setup\",\"title\":\"Setup\",\"description\":\"Bootstrap the protocol. Returns workspace_id and meta-prompt content with usage instructions (delta based on knownHash).\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"knownHash\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const tool_begin =
     "{\"name\":\"memory.begin\",\"title\":\"Begin Task\",\"description\":\"Start a new task. Returns a task_id.\"," ++
@@ -138,24 +138,44 @@ fn handleSetup(
     workspace_root: []const u8,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
-    var known = try parseKnownHashes(allocator, args_obj.get("knownHashes"));
-    defer known.deinit(allocator);
+    const known_hash: ?[]const u8 = if (args_obj.get("knownHash")) |value| switch (value) {
+        .string => |s| s,
+        else => null,
+    } else null;
 
-    var result = try workspace_prompt.loadDirectives(allocator, workspace_root, known.items);
-    defer result.deinit(allocator);
+    var mpf = try workspace_prompt.loadMpf(allocator, workspace_root, known_hash);
+    defer mpf.deinit(allocator);
 
-    // Trace: setup event
     const ws_id = try trace.workspaceId(allocator, workspace_root);
     defer allocator.free(ws_id);
+
     try trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .setup,
-
-        .synced_count = result.items.items.len,
+        .mpf_hash = mpf.hash,
     });
 
-    const structured = try serializeLoadResult(allocator, &result, workspace_root);
-    defer allocator.free(structured);
-    return try buildToolSuccessResult(allocator, structured);
+    const esc_ws = try encoding.jsonEscapeAlloc(allocator, ws_id);
+    defer allocator.free(esc_ws);
+
+    if (mpf.content) |content| {
+        const esc_content = try encoding.jsonEscapeAlloc(allocator, content);
+        defer allocator.free(esc_content);
+        const esc_hash = try encoding.jsonEscapeAlloc(allocator, mpf.hash.?);
+        defer allocator.free(esc_hash);
+        const structured = try std.fmt.allocPrint(allocator, "{{\"workspaceId\":\"{s}\",\"mpf\":{{\"hash\":\"{s}\",\"content\":\"{s}\"}}}}", .{ esc_ws, esc_hash, esc_content });
+        defer allocator.free(structured);
+        return try buildToolSuccessResult(allocator, structured);
+    } else if (mpf.hash) |hash| {
+        const esc_hash = try encoding.jsonEscapeAlloc(allocator, hash);
+        defer allocator.free(esc_hash);
+        const structured = try std.fmt.allocPrint(allocator, "{{\"workspaceId\":\"{s}\",\"mpf\":{{\"hash\":\"{s}\",\"changed\":false}}}}", .{ esc_ws, esc_hash });
+        defer allocator.free(structured);
+        return try buildToolSuccessResult(allocator, structured);
+    } else {
+        const structured = try std.fmt.allocPrint(allocator, "{{\"workspaceId\":\"{s}\",\"mpf\":null}}", .{esc_ws});
+        defer allocator.free(structured);
+        return try buildToolSuccessResult(allocator, structured);
+    }
 }
 
 fn handleSearch(
@@ -848,14 +868,14 @@ test "buildToolsListResult: exposes all memory tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
 }
 
-test "handleToolCall: memory.setup returns directives" {
+test "handleToolCall: memory.setup returns mpf content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".prompts/directive");
-    const file = try tmp.dir.createFile(".prompts/directive/PIN.md", .{});
+    try tmp.dir.makePath(".prompts");
+    const file = try tmp.dir.createFile(".prompts/META_PROMPT.md", .{});
     defer file.close();
-    try file.writeAll("pin content");
+    try file.writeAll("bootstrap content");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
@@ -867,8 +887,27 @@ test "handleToolCall: memory.setup returns directives" {
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"workspaceId\":\"ws-") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"directive:PIN.md\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "pin content") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "bootstrap content") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"hash\":\"") != null);
+}
+
+test "handleToolCall: memory.setup returns null when no mpf" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".prompts");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
+
+    const params = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"memory.setup\",\"arguments\":{}}", .{});
+    defer params.deinit();
+
+    const result = try handleToolCall(testing.allocator, root, params.value);
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"workspaceId\":\"ws-") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"mpf\":null") != null);
 }
 
 test "handleToolCall: memory.search returns rule metadata" {
