@@ -424,8 +424,19 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
             continue;
         }
 
-        // ## heading = new constraint region
+        // ## heading = new constraint region (with reserved heading exceptions)
         if (std.mem.startsWith(u8, trimmed, "## ")) {
+            const heading_text = trimmed[3..];
+
+            // Reserved: ## Steps — execution steps, not constraints
+            const is_steps = std.ascii.eqlIgnoreCase(heading_text, "Steps") or
+                std.ascii.eqlIgnoreCase(heading_text, "steps");
+            // Reserved: ## Examples — supporting material
+            const is_examples = std.ascii.eqlIgnoreCase(heading_text, "Examples") or
+                std.ascii.eqlIgnoreCase(heading_text, "examples") or
+                std.ascii.eqlIgnoreCase(heading_text, "Example") or
+                std.ascii.eqlIgnoreCase(heading_text, "example");
+
             // Close previous region if open
             if (in_region and !region_has_list) {
                 constraint_counter += 1;
@@ -436,6 +447,12 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
                     .text_hash = th,
                 });
             }
+
+            if (is_steps or is_examples) {
+                in_region = false;
+                continue;
+            }
+
             in_region = true;
             region_start = line_num;
             region_has_list = false;
