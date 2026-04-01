@@ -121,7 +121,7 @@ zig build -Doptimize=ReleaseFast
 
 | Component | Status |
 |-----------|--------|
-| CLI + Registry | Stable — prompt management, bundles, import/export, task lifecycle |
+| CLI + Registry | Working — prompt management, bundles, import/export, task lifecycle |
 | MCP Server | Working — `clumsies mcp serve`, 9 tools |
 | Stats engine | Working — workspace/prompt/diff/timebucket scopes |
 | Claude Code plugin | Alpha — hooks, skills, auto-skill generation |
