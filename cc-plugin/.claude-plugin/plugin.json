@@ -1,6 +1,6 @@
 {
   "name": "clumsies",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha",
   "description": "User-level memory for AI agents. Protocol bootstrapping, task tracking, and constraint tracing via hooks and skills.",
   "author": {
     "name": "lilhammerfun",
