@@ -39,7 +39,7 @@ argument-hint: "[task description]"
 user-invocable: true
 allowed-tools: Bash
 ---
-!\`clumsies load workflow:$rel_path\`
+!\`cd "\${CLAUDE_PROJECT_DIR:-.}" && clumsies load workflow:$rel_path\`
 
 \$ARGUMENTS
 SKILL
