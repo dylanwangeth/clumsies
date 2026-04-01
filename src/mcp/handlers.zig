@@ -295,8 +295,8 @@ fn handleRefer(
 
     const constraint_id = if (args_obj.get("constraintId")) |value| switch (value) {
         .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
+        else => null,
+    } else null;
 
     const reason = if (args_obj.get("reason")) |value| switch (value) {
         .string => |s| s,
