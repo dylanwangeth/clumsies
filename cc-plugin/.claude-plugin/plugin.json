@@ -1,0 +1,15 @@
+{
+  "name": "clumsies",
+  "version": "0.1.0",
+  "description": "User-level memory for AI agents. Protocol bootstrapping, task tracking, and constraint tracing via hooks and skills.",
+  "author": {
+    "name": "lilhammerfun",
+    "url": "https://github.com/lilhammerfun"
+  },
+  "repository": "https://github.com/lilhammerfun/clumsies",
+  "license": "MIT",
+  "keywords": ["memory", "prompts", "constraints", "workflow"],
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}
