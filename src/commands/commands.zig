@@ -19,7 +19,7 @@ pub const GitOutput = git.GitOutput;
 
 pub const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 pub const MAX_SEQUENCE_NUMBER: u8 = sequence_mod.MAX_SEQUENCE_NUMBER;
-pub const META_PROMPT_GROUP = "../";
+pub const META_PROMPT_GROUP = ".";
 
 pub const stripSequencePrefix = sequence_mod.stripSequencePrefix;
 pub const findNextSequence = sequence_mod.findNextSequence;

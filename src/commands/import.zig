@@ -11,7 +11,7 @@ const Color = styles.Color;
 const P = styles.P;
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const META_PROMPT_GROUP = "../";
+const META_PROMPT_GROUP = ".";
 
 pub const PromptRef = index.PromptRef;
 
@@ -24,18 +24,12 @@ pub fn importPrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: s
 
     const name_part = name_opt orelse hash[0..8];
 
-    // Meta-prompt files (group "../") go to project root without sequence prefix
+    // Meta-prompt files (group ".") go to .prompts/ root without sequence prefix
     if (std.mem.eql(u8, group, META_PROMPT_GROUP)) {
-        const cwd = std.process.getCwdAlloc(allocator) catch {
-            try stderr.print("{s}{s}{s}✗{s} Failed to determine project root\n", .{ P, Color.bold, Color.red, Color.reset });
-            return .failed;
-        };
-        defer allocator.free(cwd);
-
         const dest_filename = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ name_part, format });
         defer allocator.free(dest_filename);
 
-        const dest_path = try std.fs.path.join(allocator, &.{ cwd, dest_filename });
+        const dest_path = try std.fs.path.join(allocator, &.{ prompts_path, dest_filename });
         defer allocator.free(dest_path);
 
         // Check if already exists
@@ -50,7 +44,7 @@ pub fn importPrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: s
             return .failed;
         };
 
-        try stdout.print("{s}{s}{s}✓{s} {s} → ./{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, dest_filename });
+        try stdout.print("{s}{s}{s}✓{s} {s} → .prompts/{s}\n", .{ P, Color.bold, Color.green, Color.reset, name_part, dest_filename });
         return .imported;
     }
 
