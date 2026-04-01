@@ -24,6 +24,9 @@ const cmd_setup = @import("commands/setup_cmd.zig");
 const cmd_begin = @import("commands/begin_cmd.zig");
 const cmd_complete = @import("commands/complete_cmd.zig");
 const cmd_search = @import("commands/search_cmd.zig");
+const cmd_load = @import("commands/load_cmd.zig");
+const cmd_refer = @import("commands/refer_cmd.zig");
+const cmd_validate = @import("commands/validate_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const flags = @import("flags.zig");
@@ -53,6 +56,9 @@ const Command = enum {
     begin_cmd,
     complete_cmd,
     search_cmd,
+    load_cmd,
+    refer_cmd,
+    validate_cmd,
     config,
     upgrade,
     help,
@@ -81,6 +87,9 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "begin", .begin_cmd },
     .{ "complete", .complete_cmd },
     .{ "search", .search_cmd },
+    .{ "load", .load_cmd },
+    .{ "refer", .refer_cmd },
+    .{ "validate", .validate_cmd },
     .{ "config", .config },
     .{ "upgrade", .upgrade },
     .{ "help", .help },
@@ -152,6 +161,9 @@ pub fn main() !void {
         .begin_cmd => try cmd_begin.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .complete_cmd => try cmd_complete.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .search_cmd => try cmd_search.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .load_cmd => try cmd_load.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .refer_cmd => try cmd_refer.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .validate_cmd => try cmd_validate.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .config => try cmd_config.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .upgrade => try cmd_upgrade.run(stdout_writer, stderr_writer, allocator, version),
         .none => try cmd_help.run(stdout_writer),
