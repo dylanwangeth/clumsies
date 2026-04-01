@@ -21,6 +21,11 @@ pub fn run(stdout: *std.Io.Writer) !void {
     try stdout.print("{s}    {s}pull{s}      Pull latest\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}status{s}    Show git status\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}log{s}       Show commit history\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}{s}{s}Task:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}    {s}setup{s}     Load META_PROMPT.md\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}begin{s}     Start a task (idempotent)\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}complete{s}  Mark task as done\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}search{s}    Discover available prompts\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}{s}{s}Other:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}stats{s}     Show prompt usage stats\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}config{s}    Manage configuration\n", .{ P, Color.cyan, Color.reset });

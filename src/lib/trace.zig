@@ -126,6 +126,68 @@ pub fn isTaskFinalized(allocator: std.mem.Allocator, workspace_root: []const u8,
     return false;
 }
 
+/// Find the most recent active (non-finalized) task. Returns null if none.
+pub fn getActiveTaskId(allocator: std.mem.Allocator, workspace_root: []const u8) !?[]const u8 {
+    const trace_path = try traceFilePath(allocator, workspace_root);
+    defer allocator.free(trace_path);
+
+    const file = std.fs.openFileAbsolute(trace_path, .{}) catch return null;
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+    defer allocator.free(content);
+
+    // Track all begun and completed task ids
+    var begun = std.StringHashMap(void).init(allocator);
+    defer {
+        var iter = begun.keyIterator();
+        while (iter.next()) |key| allocator.free(@constCast(key.*));
+        begun.deinit();
+    }
+    var completed = std.StringHashMap(void).init(allocator);
+    defer {
+        var iter = completed.keyIterator();
+        while (iter.next()) |key| allocator.free(@constCast(key.*));
+        completed.deinit();
+    }
+
+    var last_begun: ?[]const u8 = null;
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
+        defer parsed.deinit();
+
+        const obj = switch (parsed.value) {
+            .object => |o| o,
+            else => continue,
+        };
+
+        const evt_type = getStr(obj, "type") orelse continue;
+        const tid = getStr(obj, "task_id") orelse continue;
+
+        if (std.mem.eql(u8, evt_type, "begin")) {
+            const key = try allocator.dupe(u8, tid);
+            try begun.put(key, {});
+            if (last_begun) |lb| allocator.free(lb);
+            last_begun = try allocator.dupe(u8, tid);
+        } else if (std.mem.eql(u8, evt_type, "complete")) {
+            const key = try allocator.dupe(u8, tid);
+            try completed.put(key, {});
+        }
+    }
+
+    if (last_begun) |lb| {
+        if (completed.contains(lb)) {
+            allocator.free(lb);
+            return null;
+        }
+        return lb;
+    }
+    return null;
+}
+
 /// Append a trace event to trace.jsonl.
 pub fn appendTraceEvent(allocator: std.mem.Allocator, workspace_root: []const u8, event: TraceEvent) !void {
     try ensureClumsiesDir(workspace_root, allocator);
