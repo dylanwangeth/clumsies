@@ -2,138 +2,126 @@
 
 How clumsies organizes user-level memory for AI agents.
 
-## 1. Core Concepts
-
-Four things to know: **prompts** are individual markdown files. A **meta-prompt file (MPF)** (CLAUDE.md, etc.) tells AI where to find them. **Bundles** group prompts together for sharing. The **registry** is a git repo that holds all of it.
-
-### Project structure
+## 1. System overview
 
 ```
-workspace/
-├── CLAUDE.md              # MPF (meta-prompt file)
-└── .prompts/              # Independent git repo
-    ├── rule/              # Universal rules (reusable across projects)
-    ├── house-rule/        # Project-specific rules (current project only)
-    ├── cmd/               # Procedures (invoke by name)
-    ├── context/           # Project knowledge (local only)
-    ├── journal/           # Problem logs (local only)
-    └── ...                # Whatever else you need
+Core (Zig library)
+├── MCP Server     → agent-facing protocol (search, load, refer, etc.)
+├── CLI            → human-facing commands + hook/script target
+└── CC Plugin      → Claude Code adapter (hooks + skills)
+    ├── Hooks      → call CLI on session start / stop
+    └── Skills     → /complete-task, /stats, /search, auto-generated workflows
 ```
 
-`rule/`, `house-rule/`, and `cmd/` are shareable via registry. `context/` and `journal/` stay local.
+All three entry points share a single core library and write to the same trace log. MCP works with any MCP-compatible agent. The CC Plugin adds reliability on top of MCP for Claude Code specifically.
 
-## 2. Directory Organization
+## 2. The `.prompts/` space
 
-clumsies does not enforce any directory layout. You organize `.prompts/` however you want — the directory names, nesting, and semantics are entirely up to you. clumsies only uses the directory path structurally: it derives the `group` metadata from the path relative to `.prompts/` (e.g., a file in `.prompts/coding/style/` gets group `coding/style`).
+A directory of markdown files sitting in your project. Three kinds:
 
-The project structure shown above is one example. Here's the reasoning behind that particular layout:
+| Kind | Directory | Meaning |
+|------|-----------|---------|
+| **Rule** | `rule/` | Constraints that guide agent behavior. Parsed into individual constraints. |
+| **Workflow** | `workflow/` | Ordered sequences of constraints. Used as procedures or methodologies. |
+| **Context** | `context/` | Reference material. No instructions — just facts for the agent to draw on. |
 
-- **rule/** — Rules reusable across projects (coding standards, commit format). Registered in the registry and imported as-is into new projects.
-- **house-rule/** — Rules specific to the current project. Not expected to transfer.
-- **cmd/** — Procedures the AI runs on request. Numbered prefixes (00_, 01_) let users invoke by number: "Run cmd 01."
-- **context/** — Project knowledge (architecture notes, tech decisions). Stays local.
-- **journal/** — Problem logs (how bugs were fixed, why decisions changed). Stays local.
+Subdirectories under each kind are groups (e.g., `rule/coding/`, `workflow/cmd/`). The first-level directory name is the kind, everything below is organizational.
 
-## 3. Meta-Prompt File (MPF)
+```
+.prompts/
+├── META_PROMPT.md         # Protocol bootstrap — loaded on session start
+├── rule/
+│   ├── coding/            # group=coding
+│   └── zig/               # group=zig
+├── workflow/
+│   └── cmd/               # group=cmd
+└── context/
+    ├── spec/              # group=spec
+    └── research/          # group=research
+```
 
-The meta-prompt file is a navigation guide, not a project introduction. It tells AI what's in `.prompts/` and how to use it.
+`META_PROMPT.md` is the entry point. It tells the agent what `.prompts/` is, how to use the MCP tools, and what the priority model looks like. The MCP server reads it on `memory.setup`. The CC Plugin loads it automatically on session start.
 
-Typical contents: directory tree, what each directory means, file naming convention (`NN_UPPER_SNAKE_CASE.md`), how to invoke commands.
+## 3. MCP Protocol
 
-The AI doesn't need special syntax or tool support. It reads the MPF, understands the directory layout, and knows when to load what.
+Nine tools for agent interaction:
 
-## 4. Prompt File Format
+| Tool | Purpose |
+|------|---------|
+| `memory.setup` | Bootstrap — load META_PROMPT.md content |
+| `memory.begin` | Start a task, return task_id |
+| `memory.search` | Discover available rules/workflows/context |
+| `memory.load` | Load prompt content by id (with hash-based delta) |
+| `memory.refer` | Declare a constraint reference |
+| `memory.shortcut` | Invoke a workflow by name |
+| `memory.complete` | Finalize a task |
+| `memory.stats` | Query aggregated trace data |
+| `memory.validate` | Check prompt format, list constraints |
 
-Prompts are plain markdown. No frontmatter, no embedded metadata.
+Every tool call produces a trace event in `.clumsies/trace.jsonl`. Trace data drives the stats engine.
 
-Metadata lives in `prompts/index.json` and is managed separately:
+## 4. Trace and stats
 
-| Field | Source |
-|-------|--------|
-| `name` | From filename, prefix stripped. `03_GIT_COMMIT.md` becomes `GIT_COMMIT` |
-| `description` | `--desc` flag, or `"-"` |
-| `group` | `--group` flag, or derived from `.prompts/` path (e.g., `rule/coding`) |
+`.clumsies/` is the system space (like `.git/` for git). It stores trace logs — a JSONL timeline of all MCP interactions. Users don't edit it directly.
 
-This separation means you can update metadata (rename, re-categorize) without changing the prompt content or its hash.
+The stats engine aggregates trace data into views:
 
-## 5. Registry
+- **Workspace scope**: which prompts are used, how often, in how many tasks
+- **Prompt scope**: which constraints within a prompt are hot, cold, or dead
+- **Diff scope**: how constraint usage changed between prompt versions
+- **Time buckets**: coverage trends over days or weeks
 
-A registry is a git repo for sharing prompts and bundles.
+Available via `clumsies stats` (CLI) and `memory.stats` (MCP).
 
-### Structure
+## 5. Claude Code Plugin
+
+The plugin solves MCP's passive nature — agents may forget to call tools.
+
+**Hooks** (system-driven):
+- `SessionStart`: loads META_PROMPT.md, creates/resumes a task, generates workflow skills
+- `Stop`: reminds the agent to declare constraint references
+
+**Skills** (user-driven):
+- `/complete-task` — mark task as done (user decides, not agent)
+- `/stats` — show constraint usage
+- `/search` — discover available prompts
+- Auto-generated workflow skills from `.prompts/workflow/` (e.g., `/gen-commit-msg`)
+
+All workflow skills support `$ARGUMENTS` — pass a task description to use the workflow as a methodology, or invoke without arguments for a quick procedure.
+
+## 6. Registry
+
+A git repo for sharing prompts and bundles across projects.
 
 ```
 registry/
 ├── prompts/
-│   ├── index.json           # Prompt metadata (includes meta-prompt files)
-│   └── {hash}               # Content files (SHA-256, no extension)
+│   ├── index.json         # Prompt metadata
+│   └── {hash}             # Content files (SHA-256, no extension)
 └── bundles/
     └── index.json
 ```
 
-Meta-prompt files are stored in `prompts/` with `"group": "../"`. The `../` convention reflects their position relative to `.prompts/` — they live at the project root, one level above `.prompts/`.
+Prompts are content-addressed by SHA-256. Same content = same hash = stored once. Metadata (name, description, group) lives in `index.json`, separate from content.
 
-### Content-addressable storage
+Bundles group prompts for distribution. A bundle can include a meta-prompt file (stored with `"group": "../"` to indicate it belongs at the project root).
 
-Prompts are stored by SHA-256 hash. Same content, same hash, stored once. The hash also serves as integrity check — content at a given hash never changes.
+## 7. Prompt format
 
-### prompts/index.json
+Prompts are plain markdown. No frontmatter required.
 
-```json
-{
-  "prompts": [
-    {
-      "hash": "a1b2c3...",
-      "name": "git_commit",
-      "description": "Git commit message format",
-      "format": "md",
-      "group": "rule",
-      "created_at": "1704067200"
-    },
-    {
-      "hash": "f7g8h9...",
-      "name": "CLAUDE",
-      "description": "Navigation guide for AI agents",
-      "format": "md",
-      "group": "../",
-      "created_at": "1704067200"
-    }
-  ]
-}
-```
+Rule and Workflow files follow a constraint format: `##` headings and list items are parsed as individual constraints by `memory.validate`. Each constraint gets a stable id (`c-1`, `c-2`, ...) and a `text_hash` for cross-version tracking.
 
-The `"group": "../"` entry is a meta-prompt file. On import, it is placed at the project root (e.g., `./CLAUDE.md`) without sequence prefix.
+Context files are not parsed for constraints — they provide background information as-is.
 
-### bundles/index.json
+## 8. CLI commands
 
-```json
-{
-  "bundles": [
-    {
-      "name": "my-bundle",
-      "task": "coding",
-      "description": "A starter bundle",
-      "created_at": "1704067200",
-      "meta_prompt": "f7g8h9...",
-      "prompts": [
-        { "hash": "a1b2c3..." },
-        { "hash": "d4e5f6..." },
-        { "hash": "f7g8h9..." }
-      ]
-    }
-  ]
-}
-```
+**Registry**: `add`, `rm`, `ls`, `show`, `set`, `get`, `pub` — manage prompts and bundles.
 
-The `meta_prompt` field is a convenience pointer to the meta-prompt file's hash; the same hash also appears in the `prompts` array and in `prompts/index.json` with `"group": "../"`. Full prompt details come from `prompts/index.json`.
+**Workspace**: `clone`, `remote`, `push`, `pull`, `status`, `log` — manage `.prompts/` as a git repo.
 
-### Sequence numbers on import
+**Task**: `setup`, `begin`, `complete`, `search`, `load`, `refer`, `validate` — mirror MCP tools for use by hooks and scripts.
 
-When importing prompts to `.prompts/`, sequence numbers are auto-assigned: scan for existing `NN_` prefixes, fill the first gap, or use the next number. Final filename: `{NN}_{name}.{format}`.
+**Other**: `stats`, `config`, `mcp`, `upgrade`.
 
-## 6. Compatibility
-
-Works alongside existing tool-specific setups:
-
-- Use AGENTS.md as your meta-prompt file if you want
-- `.claude/commands/` and `.prompts/cmd/` can coexist — one for tool shortcuts, the other for semantic invocation
+All task commands detect whether stdout is a terminal. TTY mode shows human-friendly output with colors. Pipe mode outputs raw text for programmatic consumption by hooks.
