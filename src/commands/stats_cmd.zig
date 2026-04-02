@@ -12,14 +12,12 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const PROMPT = 1;
     const OLD_HASH = 2;
     const NEW_HASH = 3;
-    const TASK = 4;
-    const TIME = 5;
+    const TIME = 4;
     const SPECS = [_]flag.FlagSpec{
         .{ .short = null, .long = "scope", .kind = .value },
         .{ .short = 'p', .long = "prompt", .kind = .value },
         .{ .short = null, .long = "old-hash", .kind = .value },
         .{ .short = null, .long = "new-hash", .kind = .value },
-        .{ .short = 't', .long = "task", .kind = .value },
         .{ .short = null, .long = "time", .kind = .value },
     };
     var err_ctx: flag.ErrorContext = .{};
@@ -51,7 +49,6 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     const scope = result.value(SCOPE) orelse "workspace";
     const prompt_id = result.value(PROMPT);
-    const task_id = result.value(TASK);
     const time_buckets = result.value(TIME);
 
     if (std.mem.eql(u8, scope, "workspace")) {
@@ -84,7 +81,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
                 return;
             }
 
-            var tb_result = stats.computeTimeBuckets(allocator, workspace_root, pid, task_id, tb) catch {
+            var tb_result = stats.computeTimeBuckets(allocator, workspace_root, pid, tb) catch {
                 try stderr.print("{s}{s}{s}Error:{s} Failed to compute time bucket stats\n", .{ P, Color.bold, Color.red, Color.reset });
                 return;
             };
@@ -99,7 +96,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             return;
         }
 
-        var p_result = stats.computePrompt(allocator, workspace_root, pid, task_id) catch {
+        var p_result = stats.computePrompt(allocator, workspace_root, pid) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to compute prompt stats\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
@@ -158,7 +155,6 @@ fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}  {s}-p, --prompt{s} <id>     Prompt id (required for prompt/diff)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--old-hash{s} <hash>     Old hash (required for diff)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--new-hash{s} <hash>     New hash (required for diff)\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-t, --task{s} <id>       Filter by task id\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--time{s} <daily|weekly>  Time-series view\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-h, --help{s}            Show this help\n", .{ P, Color.cyan, Color.reset });
 }

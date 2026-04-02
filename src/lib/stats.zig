@@ -47,9 +47,6 @@ pub const DiffResult = struct {
         var iter = map.iterator();
         while (iter.next()) |entry| {
             allocator.free(@constCast(entry.key_ptr.*));
-            var ts_iter = entry.value_ptr.task_set.keyIterator();
-            while (ts_iter.next()) |key| allocator.free(@constCast(key.*));
-            entry.value_ptr.task_set.deinit();
         }
         map.deinit();
     }
@@ -61,20 +58,14 @@ pub const TimeBucketsResult = struct {
     total_constraints: usize,
     bucket_order: std.ArrayList([]const u8),
     cumulative_coverage: std.StringArrayHashMap(f64),
-    bucket_new_tasks: std.StringArrayHashMap(std.StringHashMap(void)),
+    bucket_refer_count: std.StringArrayHashMap(usize),
 
     pub fn deinit(self: *TimeBucketsResult, allocator: std.mem.Allocator) void {
         allocator.free(self.prompt_id);
         for (self.bucket_order.items) |b| allocator.free(b);
         self.bucket_order.deinit(allocator);
         self.cumulative_coverage.deinit();
-        var iter = self.bucket_new_tasks.iterator();
-        while (iter.next()) |entry| {
-            var ts_iter = entry.value_ptr.keyIterator();
-            while (ts_iter.next()) |key| allocator.free(@constCast(key.*));
-            entry.value_ptr.deinit();
-        }
-        self.bucket_new_tasks.deinit();
+        self.bucket_refer_count.deinit();
     }
 };
 
@@ -84,8 +75,8 @@ pub fn computeWorkspace(allocator: std.mem.Allocator, workspace_root: []const u8
     return .{ .stats = try trace.computeWorkspaceStats(allocator, workspace_root) };
 }
 
-pub fn computePrompt(allocator: std.mem.Allocator, workspace_root: []const u8, prompt_id: []const u8, task_id_filter: ?[]const u8) !PromptResult {
-    var stats = try trace.computePromptStats(allocator, workspace_root, prompt_id, task_id_filter);
+pub fn computePrompt(allocator: std.mem.Allocator, workspace_root: []const u8, prompt_id: []const u8) !PromptResult {
+    var stats = try trace.computePromptStats(allocator, workspace_root, prompt_id);
     errdefer stats.deinit(allocator);
 
     var all_constraints: std.ArrayList(workspace_prompt.ParsedConstraint) = .empty;
@@ -128,24 +119,14 @@ pub fn computeDiff(allocator: std.mem.Allocator, workspace_root: []const u8, pro
     var old_refers = try trace.computeReferCountsByConstraint(allocator, workspace_root, prompt_id, old_hash);
     errdefer {
         var iter = old_refers.iterator();
-        while (iter.next()) |entry| {
-            allocator.free(@constCast(entry.key_ptr.*));
-            var ts_iter = entry.value_ptr.task_set.keyIterator();
-            while (ts_iter.next()) |key| allocator.free(@constCast(key.*));
-            entry.value_ptr.task_set.deinit();
-        }
+        while (iter.next()) |entry| allocator.free(@constCast(entry.key_ptr.*));
         old_refers.deinit();
     }
 
     var new_refers = try trace.computeReferCountsByConstraint(allocator, workspace_root, prompt_id, new_hash);
     errdefer {
         var iter = new_refers.iterator();
-        while (iter.next()) |entry| {
-            allocator.free(@constCast(entry.key_ptr.*));
-            var ts_iter = entry.value_ptr.task_set.keyIterator();
-            while (ts_iter.next()) |key| allocator.free(@constCast(key.*));
-            entry.value_ptr.task_set.deinit();
-        }
+        while (iter.next()) |entry| allocator.free(@constCast(entry.key_ptr.*));
         new_refers.deinit();
     }
 
@@ -162,7 +143,6 @@ pub fn computeTimeBuckets(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     prompt_id: []const u8,
-    task_id_filter: ?[]const u8,
     time_buckets: []const u8,
 ) !TimeBucketsResult {
     const is_daily = std.mem.eql(u8, time_buckets, "daily");
@@ -189,11 +169,10 @@ pub fn computeTimeBuckets(
         }
     }
 
-    var events = try trace.collectReferEvents(allocator, workspace_root, prompt_id, task_id_filter);
+    var events = try trace.collectReferEvents(allocator, workspace_root, prompt_id);
     defer {
         for (events.items) |e| {
             allocator.free(e.constraint_id);
-            allocator.free(e.task_id);
         }
         events.deinit(allocator);
     }
@@ -210,32 +189,15 @@ pub fn computeTimeBuckets(
         bucket_order.deinit(allocator);
     }
 
-    var bucket_tasks: std.StringArrayHashMap(usize) = .init(allocator);
-    defer bucket_tasks.deinit();
-
     var seen_constraints = std.StringHashMap(void).init(allocator);
     defer {
         var iter = seen_constraints.keyIterator();
         while (iter.next()) |key| allocator.free(@constCast(key.*));
         seen_constraints.deinit();
     }
-    var seen_tasks_global = std.StringHashMap(void).init(allocator);
-    defer {
-        var iter = seen_tasks_global.keyIterator();
-        while (iter.next()) |key| allocator.free(@constCast(key.*));
-        seen_tasks_global.deinit();
-    }
 
-    var bucket_new_tasks: std.StringArrayHashMap(std.StringHashMap(void)) = .init(allocator);
-    errdefer {
-        var iter = bucket_new_tasks.iterator();
-        while (iter.next()) |entry| {
-            var ts_iter = entry.value_ptr.keyIterator();
-            while (ts_iter.next()) |key| allocator.free(@constCast(key.*));
-            entry.value_ptr.deinit();
-        }
-        bucket_new_tasks.deinit();
-    }
+    var bucket_refer_count: std.StringArrayHashMap(usize) = .init(allocator);
+    errdefer bucket_refer_count.deinit();
 
     var cumulative_coverage: std.StringArrayHashMap(f64) = .init(allocator);
     errdefer cumulative_coverage.deinit();
@@ -246,20 +208,17 @@ pub fn computeTimeBuckets(
         else
             try trace.msToWeekStr(allocator, event.timestamp);
 
-        if (!bucket_tasks.contains(date_key)) {
+        if (!bucket_refer_count.contains(date_key)) {
             try bucket_order.append(allocator, try allocator.dupe(u8, date_key));
-            try bucket_tasks.put(date_key, 0);
-            try bucket_new_tasks.put(date_key, .init(allocator));
+            try bucket_refer_count.put(date_key, 0);
         }
 
         if (!seen_constraints.contains(event.constraint_id)) {
             try seen_constraints.put(try allocator.dupe(u8, event.constraint_id), {});
         }
 
-        var task_map = bucket_new_tasks.getPtr(date_key).?;
-        if (!task_map.contains(event.task_id)) {
-            try task_map.put(try allocator.dupe(u8, event.task_id), {});
-        }
+        const count_ptr = bucket_refer_count.getPtr(date_key).?;
+        count_ptr.* += 1;
 
         const coverage: f64 = if (total_constraints > 0)
             @as(f64, @floatFromInt(seen_constraints.count())) / @as(f64, @floatFromInt(total_constraints))
@@ -276,7 +235,7 @@ pub fn computeTimeBuckets(
         .total_constraints = total_constraints,
         .bucket_order = bucket_order,
         .cumulative_coverage = cumulative_coverage,
-        .bucket_new_tasks = bucket_new_tasks,
+        .bucket_refer_count = bucket_refer_count,
     };
 }
 
@@ -286,17 +245,15 @@ pub fn renderWorkspaceView(allocator: std.mem.Allocator, result: *const Workspac
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "Prompt                                    Refers  Tasks(ok/fail)\n");
-    try buf.appendSlice(allocator, "────────────────────────────────────────────────────────────────\n");
+    try buf.appendSlice(allocator, "Prompt                                    Refers\n");
+    try buf.appendSlice(allocator, "──────────────────────────────────────────────────\n");
 
     var iter = result.stats.prompts.iterator();
     while (iter.next()) |entry| {
         const ps = entry.value_ptr;
-        try buf.writer(allocator).print("{s: <42}{d: >6}  {d}/{d}\n", .{
+        try buf.writer(allocator).print("{s: <42}{d: >6}\n", .{
             ps.id,
             ps.refer_count,
-            ps.completed_tasks,
-            ps.abandoned_tasks,
         });
     }
 
@@ -307,7 +264,7 @@ pub fn renderPromptView(allocator: std.mem.Allocator, result: *const PromptResul
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
-    try buf.writer(allocator).print("{s}  {d} tasks\n", .{ result.stats.prompt_id, result.stats.total_tasks });
+    try buf.writer(allocator).print("{s}\n", .{result.stats.prompt_id});
     try buf.appendSlice(allocator, "──────────────────────────────────────────────────────────\n");
 
     if (result.constraints.items.len > 0) {
@@ -315,32 +272,29 @@ pub fn renderPromptView(allocator: std.mem.Allocator, result: *const PromptResul
         for (result.constraints.items) |c| {
             const cs = result.stats.constraints.get(c.id);
             const refer_count = if (cs) |s| s.refer_count else 0;
-            const task_count = if (cs) |s| s.task_count else 0;
 
-            const label: []const u8 = if (refer_count == 0 and result.stats.total_tasks > 0)
-                "  <- dead"
-            else if (task_count > 0 and task_count * 3 < result.stats.total_tasks)
-                "  <- cold"
+            const label: []const u8 = if (refer_count == 0)
+                "  <- unused"
             else
                 "";
 
-            if (refer_count == 0 or (task_count > 0 and task_count * 3 < result.stats.total_tasks)) {
+            if (refer_count == 0) {
                 cold_count += 1;
             }
 
-            try buf.writer(allocator).print("{s: <20} {d: >4} refers  {d: >3} tasks{s}\n", .{
-                c.id, refer_count, task_count, label,
+            try buf.writer(allocator).print("{s: <20} {d: >4} refers{s}\n", .{
+                c.id, refer_count, label,
             });
         }
         if (cold_count > 0) {
-            try buf.writer(allocator).print("\n{d} out of {d} constraints are cold or dead.\n", .{ cold_count, result.constraints.items.len });
+            try buf.writer(allocator).print("\n{d} out of {d} constraints are unused.\n", .{ cold_count, result.constraints.items.len });
         }
     } else {
         var iter = result.stats.constraints.iterator();
         while (iter.next()) |entry| {
             const cs = entry.value_ptr;
-            try buf.writer(allocator).print("{s: <20} {d: >4} refers  {d: >3} tasks\n", .{
-                cs.constraint_id, cs.refer_count, cs.task_count,
+            try buf.writer(allocator).print("{s: <20} {d: >4} refers\n", .{
+                cs.constraint_id, cs.refer_count,
             });
         }
     }
@@ -364,12 +318,10 @@ pub fn renderDiffView(allocator: std.mem.Allocator, result: *const DiffResult) !
         var iter = result.old_refers.iterator();
         while (iter.next()) |entry| {
             const new_entry = result.new_refers.get(entry.key_ptr.*) orelse continue;
-            try buf.writer(allocator).print("  {s: <20} {d}/{d} -> {d}/{d}  (stable)\n", .{
+            try buf.writer(allocator).print("  {s: <20} {d} -> {d}  (stable)\n", .{
                 entry.key_ptr.*,
                 entry.value_ptr.refer_count,
-                entry.value_ptr.task_set.count(),
                 new_entry.refer_count,
-                new_entry.task_set.count(),
             });
         }
     }
@@ -378,10 +330,9 @@ pub fn renderDiffView(allocator: std.mem.Allocator, result: *const DiffResult) !
         var iter = result.old_refers.iterator();
         while (iter.next()) |entry| {
             if (result.new_refers.contains(entry.key_ptr.*)) continue;
-            try buf.writer(allocator).print("- {s: <20} {d}/{d}  (removed)\n", .{
+            try buf.writer(allocator).print("- {s: <20} {d}  (removed)\n", .{
                 entry.key_ptr.*,
                 entry.value_ptr.refer_count,
-                entry.value_ptr.task_set.count(),
             });
         }
     }
@@ -390,10 +341,9 @@ pub fn renderDiffView(allocator: std.mem.Allocator, result: *const DiffResult) !
         var iter = result.new_refers.iterator();
         while (iter.next()) |entry| {
             if (result.old_refers.contains(entry.key_ptr.*)) continue;
-            try buf.writer(allocator).print("+ {s: <20} {d}/{d}  (new)\n", .{
+            try buf.writer(allocator).print("+ {s: <20} {d}  (new)\n", .{
                 entry.key_ptr.*,
                 entry.value_ptr.refer_count,
-                entry.value_ptr.task_set.count(),
             });
         }
     }
@@ -407,13 +357,13 @@ pub fn renderTimeBucketsView(allocator: std.mem.Allocator, result: *const TimeBu
 
     try buf.writer(allocator).print("{s}  coverage over time ({s})\n", .{ result.prompt_id, result.time_buckets });
     try buf.appendSlice(allocator, "──────────────────────────────────────────────────────────\n");
-    try buf.appendSlice(allocator, "Date              Coverage  Tasks\n");
+    try buf.appendSlice(allocator, "Date              Coverage  Refers\n");
 
     for (result.bucket_order.items) |bucket| {
         const coverage = result.cumulative_coverage.get(bucket) orelse 0.0;
-        const tasks = if (result.bucket_new_tasks.getPtr(@constCast(bucket))) |m| m.count() else 0;
+        const refers = result.bucket_refer_count.get(bucket) orelse 0;
         const pct: usize = @intFromFloat(coverage * 100.0);
-        try buf.writer(allocator).print("{s: <18}{d: >3}%      {d: >3}\n", .{ bucket, pct, tasks });
+        try buf.writer(allocator).print("{s: <18}{d: >3}%      {d: >3}\n", .{ bucket, pct, refers });
     }
 
     return try buf.toOwnedSlice(allocator);
@@ -436,10 +386,9 @@ pub fn renderWorkspaceDataJson(allocator: std.mem.Allocator, result: *const Work
         const esc_id = try encoding.jsonEscapeAlloc(allocator, ps.id);
         defer allocator.free(esc_id);
 
-        const total_tasks = ps.completed_tasks + ps.abandoned_tasks;
         try buf.writer(allocator).print(
-            "{{\"id\":\"{s}\",\"totalRefers\":{d},\"completedTasks\":{d},\"abandonedTasks\":{d},\"totalTasks\":{d}}}",
-            .{ esc_id, ps.refer_count, ps.completed_tasks, ps.abandoned_tasks, total_tasks },
+            "{{\"id\":\"{s}\",\"totalRefers\":{d}}}",
+            .{ esc_id, ps.refer_count },
         );
     }
     try buf.appendSlice(allocator, "]}");
@@ -460,7 +409,7 @@ pub fn renderPromptDataJson(allocator: std.mem.Allocator, result: *const PromptR
     } else {
         try buf.appendSlice(allocator, "null");
     }
-    try buf.writer(allocator).print(",\"totalTasks\":{d},\"constraints\":[", .{result.stats.total_tasks});
+    try buf.appendSlice(allocator, ",\"constraints\":[");
 
     if (result.constraints.items.len > 0) {
         for (result.constraints.items, 0..) |c, idx| {
@@ -470,11 +419,10 @@ pub fn renderPromptDataJson(allocator: std.mem.Allocator, result: *const PromptR
 
             const cs = result.stats.constraints.get(c.id);
             const refer_count = if (cs) |s| s.refer_count else 0;
-            const task_count = if (cs) |s| s.task_count else 0;
 
             try buf.writer(allocator).print(
-                "{{\"constraintId\":\"{s}\",\"referCount\":{d},\"taskCount\":{d}}}",
-                .{ esc_cid, refer_count, task_count },
+                "{{\"constraintId\":\"{s}\",\"referCount\":{d}}}",
+                .{ esc_cid, refer_count },
             );
         }
     } else {
@@ -487,8 +435,8 @@ pub fn renderPromptDataJson(allocator: std.mem.Allocator, result: *const PromptR
             const esc_cid = try encoding.jsonEscapeAlloc(allocator, cs.constraint_id);
             defer allocator.free(esc_cid);
             try buf.writer(allocator).print(
-                "{{\"constraintId\":\"{s}\",\"referCount\":{d},\"taskCount\":{d}}}",
-                .{ esc_cid, cs.refer_count, cs.task_count },
+                "{{\"constraintId\":\"{s}\",\"referCount\":{d}}}",
+                .{ esc_cid, cs.refer_count },
             );
         }
     }
@@ -525,8 +473,8 @@ pub fn renderDiffDataJson(allocator: std.mem.Allocator, result: *const DiffResul
             const esc_cid = try encoding.jsonEscapeAlloc(allocator, entry.key_ptr.*);
             defer allocator.free(esc_cid);
             try buf.writer(allocator).print(
-                "{{\"constraintId\":\"{s}\",\"referCount\":{d},\"taskCount\":{d}}}",
-                .{ esc_cid, entry.value_ptr.refer_count, entry.value_ptr.task_set.count() },
+                "{{\"constraintId\":\"{s}\",\"referCount\":{d}}}",
+                .{ esc_cid, entry.value_ptr.refer_count },
             );
         }
     }
@@ -542,8 +490,8 @@ pub fn renderDiffDataJson(allocator: std.mem.Allocator, result: *const DiffResul
             const esc_cid = try encoding.jsonEscapeAlloc(allocator, entry.key_ptr.*);
             defer allocator.free(esc_cid);
             try buf.writer(allocator).print(
-                "{{\"constraintId\":\"{s}\",\"referCount\":{d},\"taskCount\":{d}}}",
-                .{ esc_cid, entry.value_ptr.refer_count, entry.value_ptr.task_set.count() },
+                "{{\"constraintId\":\"{s}\",\"referCount\":{d}}}",
+                .{ esc_cid, entry.value_ptr.refer_count },
             );
         }
     }
@@ -559,8 +507,8 @@ pub fn renderDiffDataJson(allocator: std.mem.Allocator, result: *const DiffResul
             const esc_cid = try encoding.jsonEscapeAlloc(allocator, entry.key_ptr.*);
             defer allocator.free(esc_cid);
             try buf.writer(allocator).print(
-                "{{\"constraintId\":\"{s}\",\"oldReferCount\":{d},\"oldTaskCount\":{d},\"newReferCount\":{d},\"newTaskCount\":{d}}}",
-                .{ esc_cid, entry.value_ptr.refer_count, entry.value_ptr.task_set.count(), new_entry.refer_count, new_entry.task_set.count() },
+                "{{\"constraintId\":\"{s}\",\"oldReferCount\":{d},\"newReferCount\":{d}}}",
+                .{ esc_cid, entry.value_ptr.refer_count, new_entry.refer_count },
             );
         }
     }
@@ -583,10 +531,10 @@ pub fn renderTimeBucketsDataJson(allocator: std.mem.Allocator, result: *const Ti
         const esc_date = try encoding.jsonEscapeAlloc(allocator, bucket);
         defer allocator.free(esc_date);
         const coverage = result.cumulative_coverage.get(bucket) orelse 0.0;
-        const tasks = if (result.bucket_new_tasks.getPtr(@constCast(bucket))) |m| m.count() else 0;
+        const refers = result.bucket_refer_count.get(bucket) orelse 0;
         try buf.writer(allocator).print(
-            "{{\"date\":\"{s}\",\"coverageRatio\":{d:.2},\"tasks\":{d}}}",
-            .{ esc_date, coverage, tasks },
+            "{{\"date\":\"{s}\",\"coverageRatio\":{d:.2},\"refers\":{d}}}",
+            .{ esc_date, coverage, refers },
         );
     }
     try buf.appendSlice(allocator, "]}");

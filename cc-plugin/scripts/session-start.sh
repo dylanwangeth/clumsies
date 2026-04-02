@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SessionStart hook: generate workflow skills + instruct agent to bootstrap protocol.
+# SessionStart hook: bootstrap protocol via CLI and generate workflow skills.
 
 set -euo pipefail
 
@@ -43,11 +43,8 @@ SKILL
   done
 fi
 
-# 3. Output: instruct agent to bootstrap protocol via MCP
-cat <<'INST'
-MANDATORY — HIGHEST PRIORITY — EXECUTE BEFORE ANY OTHER ACTION:
-You MUST call the `memory.setup` MCP tool immediately as your FIRST action in this session. Do NOT read files, do NOT respond to the user, do NOT call any other tool until memory.setup has been called and completed. This is a non-negotiable protocol requirement. If memory.setup is a deferred tool, call ToolSearch first to fetch its schema, then call it immediately.
-INST
+# 3. Bootstrap: run clumsies _agent setup to output META_PROMPT.md content directly
+"$CLUMSIES" _agent setup
 
 # List available workflow skills
 if [ -d "$SKILLS_DIR" ] && [ "$(ls -A "$SKILLS_DIR" 2>/dev/null)" ]; then

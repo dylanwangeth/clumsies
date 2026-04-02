@@ -45,16 +45,13 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         .mpf_hash = mpf.hash,
     }) catch {};
 
+    if (output.detect() == .human) {
+        try stderr.print("{s}{s}{s}Error:{s} This command is for agent environments only (hooks/pipes).\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    }
+
     if (mpf.content) |content| {
-        if (output.detect() == .human) {
-            try stdout.print("{s}{s}{s}✓{s} Loaded META_PROMPT.md ({d} bytes)\n", .{ P, Color.bold, Color.green, Color.reset, content.len });
-        } else {
-            try stdout.writeAll(content);
-        }
-    } else {
-        if (output.detect() == .human) {
-            try stderr.print("{s}{s}{s}Warning:{s} No .prompts/META_PROMPT.md found\n", .{ P, Color.bold, Color.orange, Color.reset });
-        }
+        try stdout.writeAll(content);
     }
 }
 
