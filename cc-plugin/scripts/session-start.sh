@@ -8,7 +8,12 @@ source "$SCRIPT_DIR/resolve-binary.sh"
 
 cd "$PROJECT_DIR"
 
-# 1. Setup: load META_PROMPT.md
+# 1. Persist PROJECT_DIR into Bash tool environment
+if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  echo "export CLAUDE_PROJECT_DIR=\"$PROJECT_DIR\"" >> "$CLAUDE_ENV_FILE"
+fi
+
+# 2. Setup: load META_PROMPT.md
 MPF_CONTENT=$("$CLUMSIES" setup 2>/dev/null || true)
 
 # 3. Auto-generate workflow skills
@@ -36,7 +41,7 @@ argument-hint: "[task description]"
 user-invocable: true
 allowed-tools: Bash
 ---
-!\`cd "\${CLAUDE_PROJECT_DIR:-.}" && clumsies load workflow:$rel_path\`
+!\`cd "\${CLAUDE_PROJECT_DIR:-$PROJECT_DIR}" && clumsies load workflow:$rel_path\`
 
 \$ARGUMENTS
 SKILL
