@@ -44,11 +44,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         return;
     };
 
-    const constraint_id = result.value(CONSTRAINT) orelse {
-        try stderr.print("{s}{s}{s}Error:{s} --constraint is required\n", .{ P, Color.bold, Color.red, Color.reset });
-        try printHelp(stderr);
-        return;
-    };
+    const constraint_id = result.value(CONSTRAINT);
 
     const workspace_root = try std.process.getCwdAlloc(allocator);
     defer allocator.free(workspace_root);
@@ -69,16 +65,20 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
 
     if (output.detect() == .human) {
-        try stdout.print("{s}{s}{s}✓{s} Referred {s} :: {s}\n", .{ P, Color.bold, Color.green, Color.reset, prompt_id, constraint_id });
+        if (constraint_id) |cid| {
+            try stdout.print("{s}{s}{s}✓{s} Referred {s} :: {s}\n", .{ P, Color.bold, Color.green, Color.reset, prompt_id, cid });
+        } else {
+            try stdout.print("{s}{s}{s}✓{s} Referred {s}\n", .{ P, Color.bold, Color.green, Color.reset, prompt_id });
+        }
     }
 }
 
 fn printHelp(out: *std.Io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies refer -p <prompt-id> -c <constraint-id> [--hash <hash>] [-r <reason>]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies refer -p <prompt-id> [-c <constraint-id>] [--hash <hash>] [-r <reason>]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Declare a constraint reference. Writes a refer event to trace.\n", .{P});
     try out.print("{s}Options:\n", .{P});
     try out.print("{s}  {s}-p, --prompt{s} <id>         Prompt id (required)\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}-c, --constraint{s} <id>     Constraint id (required)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}-c, --constraint{s} <id>     Constraint id\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--hash{s} <hash>             Prompt hash\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}-r, --reason{s} <reason>     Why this constraint was referenced\n", .{ P, Color.cyan, Color.reset });
 }
