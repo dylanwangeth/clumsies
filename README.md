@@ -3,12 +3,12 @@
 [![CI](https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml/badge.svg)](https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml)
 [![Tests](https://github.com/lilhammerfun/clumsies/actions/workflows/test.yml/badge.svg)](https://github.com/lilhammerfun/clumsies/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/github/license/lilhammerfun/clumsies?label=License)](https://github.com/lilhammerfun/clumsies/blob/main/LICENSE)
-[![Release](https://img.shields.io/github/v/release/lilhammerfun/clumsies?include_prereleases&label=Release)](https://github.com/lilhammerfun/clumsies/releases/tag/v0.17.0-alpha)
+[![Release](https://img.shields.io/github/v/release/lilhammerfun/clumsies?include_prereleases&label=Release)](https://github.com/lilhammerfun/clumsies/releases/tag/v0.18.0-alpha)
 [![Zig](https://img.shields.io/badge/Zig-0.15%2B-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 
-User-controlled constraints that survive agent memory compression.
+Persistent, deterministic, and user-managed project memory for vibe coding.
 
-> **v0.17.0-alpha** — functional but not battle-tested. The stable release (v0.16.3) does not include MCP, stats, or the Claude Code plugin.
+> **v0.18.0-alpha** — functional but not battle-tested. The MCP server, stats engine, and Claude Code plugin are all part of this release line.
 
 ## The problem
 
@@ -30,25 +30,18 @@ The agent has no authority to compress, summarize, or delete anything in `.promp
 
 **CLI + Registry.** Manage a personal prompt library. Register constraints refined through real use, store them in a git-based registry, import them into any project.
 
-**MCP Server.** Structured protocol for agents to discover constraints (`memory.search`), load them (`memory.load`), and declare references (`memory.refer`). Every interaction produces a trace log.
+**MCP Server.** Structured protocol for agents to discover constraints (`memory.search`), load them (`memory.load`), and declare references (`memory.refer` — batch support). Every interaction produces a trace log.
 
 **Stats engine.** Aggregates trace data: which constraints are hot, which are cold, how coverage changes across versions.
 
-**Claude Code plugin.** Hooks and skills that solve MCP's passive nature. Startup hook loads your meta-prompt automatically. Stop hook reminds the agent to declare constraint references. `/complete-task` puts task completion in your hands.
+**Claude Code plugin.** Hooks and skills that solve MCP's passive nature. Startup hook loads your meta-prompt automatically via CLI pipe. Stop hook reminds the agent to declare constraint references.
 
 ## Quick start with Claude Code
 
-Install the CLI (v0.17.0-alpha — the install script pulls the stable release; for alpha, download manually from [releases](https://github.com/lilhammerfun/clumsies/releases/tag/v0.17.0-alpha)):
+Install the CLI:
 
 ```bash
-# stable (v0.16.3, no MCP/plugin support)
 curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
-
-# alpha (v0.17.0-alpha, recommended for full experience)
-curl -LO https://github.com/lilhammerfun/clumsies/releases/download/v0.17.0-alpha/clumsies-darwin-arm64
-chmod +x clumsies-darwin-arm64
-mkdir -p ~/.clumsies/bin
-mv clumsies-darwin-arm64 ~/.clumsies/bin/clumsies
 ```
 
 Import a starter bundle into your project:
@@ -64,7 +57,7 @@ This creates `.prompts/` with coding rules, workflows, and a `META_PROMPT.md`. L
 claude --plugin-dir /path/to/clumsies/cc-plugin
 ```
 
-On session start, the plugin loads `META_PROMPT.md`, creates a task, and generates slash commands for your workflows. Give the agent a task — it will search and load constraints from `.prompts/`. When you're done, type `/complete-task`.
+On session start, the plugin loads `META_PROMPT.md` and generates slash commands for your workflows. Give the agent a task — it will search and load constraints from `.prompts/`.
 
 Check what happened:
 
@@ -91,8 +84,6 @@ clumsies stats
 curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
 ```
 
-This installs the stable release. For the alpha release with MCP and plugin support, see [Quick start](#quick-start-with-claude-code) above.
-
 <details>
 <summary>Build from source</summary>
 
@@ -108,12 +99,12 @@ zig build -Doptimize=ReleaseFast
 
 ## Status
 
-**Current version: v0.17.0-alpha**
+**Current version: v0.18.0-alpha**
 
 | Component | Status |
 |-----------|--------|
-| CLI + Registry | Working — prompt management, bundles, import/export, task lifecycle |
-| MCP Server | Working — `clumsies mcp serve`, 9 tools |
+| CLI + Registry | Working — prompt management, bundles, import/export |
+| MCP Server | Working — `clumsies mcp serve`, 4 tools (setup, search, load, refer) |
 | Stats engine | Working — workspace/prompt/diff/timebucket scopes |
 | Claude Code plugin | Alpha — hooks, skills, auto-skill generation |
 
