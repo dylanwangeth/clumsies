@@ -176,6 +176,17 @@ pub fn getActiveTaskId(allocator: std.mem.Allocator, workspace_root: []const u8)
         };
 
         const evt_type = getStr(obj, "type") orelse continue;
+
+        // setup marks a new session boundary — reset active task tracking
+        if (std.mem.eql(u8, evt_type, "setup")) {
+            var it = begun.keyIterator();
+            while (it.next()) |key| allocator.free(@constCast(key.*));
+            begun.clearRetainingCapacity();
+            if (last_begun) |lb| allocator.free(lb);
+            last_begun = null;
+            continue;
+        }
+
         const tid = getStr(obj, "task_id") orelse continue;
 
         if (std.mem.eql(u8, evt_type, "begin")) {
