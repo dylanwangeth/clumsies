@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SessionStart hook: bootstrap protocol + begin task + generate workflow skills.
+# SessionStart hook: bootstrap protocol + generate workflow skills.
 
 set -euo pipefail
 
@@ -11,9 +11,6 @@ cd "$PROJECT_DIR"
 # 1. Setup: load META_PROMPT.md
 MPF_CONTENT=$("$CLUMSIES" setup 2>/dev/null || true)
 
-# 2. Begin: idempotent task creation
-TASK_ID=$("$CLUMSIES" begin 2>/dev/null || true)
-
 # 3. Auto-generate workflow skills
 SKILLS_DIR="$PROJECT_DIR/.claude/skills"
 WORKFLOW_DIR="$PROMPTS_DIR/workflow"
@@ -24,7 +21,7 @@ if [ -d "$WORKFLOW_DIR" ]; then
     filename="$(basename "$filepath")"
     # Strip sequence prefix (NN_) and extension, lowercase, underscores to hyphens
     slug="$(echo "$filename" | sed 's/^[0-9]*_//; s/\.md$//; s/_/-/g' | tr '[:upper:]' '[:lower:]')"
-    rel_path="${filepath#"$PROMPTS_DIR/"}"
+    rel_path="${filepath#"$WORKFLOW_DIR/"}"
 
     skill_dir="$SKILLS_DIR/$slug"
     skill_file="$skill_dir/SKILL.md"
@@ -53,10 +50,6 @@ fi
 if [ -n "$MPF_CONTENT" ]; then
   echo "$MPF_CONTENT"
   echo ""
-fi
-
-if [ -n "$TASK_ID" ]; then
-  echo "Active task: $TASK_ID"
 fi
 
 # List available workflow skills

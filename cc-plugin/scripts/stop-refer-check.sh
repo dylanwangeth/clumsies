@@ -20,6 +20,6 @@ fi
 cat <<'EOF'
 {
   "decision": "block",
-  "reason": "Before finishing, check: did you reference constraints from .prompts/ during this work? If you applied any rule or followed any workflow, call memory.refer to record each reference."
+  "reason": "Before finishing, check: did you reference constraints from .prompts/ during this work? If you applied any rule or followed any workflow, declare each reference via CLI: clumsies refer -p <prompt-id> [-c <constraint-id>] [-r <reason>]"
 }
 EOF
