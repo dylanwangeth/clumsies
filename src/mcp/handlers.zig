@@ -14,7 +14,7 @@ pub fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) 
     const instructions =
         "Call memory.setup to bootstrap the protocol and get usage instructions, " ++
         "memory.search to discover rules/workflows, memory.load to get content, " ++
-        "memory.refer to declare constraint usage, and memory.complete to finalize a task.";
+        "and memory.refer to declare constraint usage.";
     const esc_instructions = try encoding.jsonEscapeAlloc(allocator, instructions);
     defer allocator.free(esc_instructions);
 
@@ -28,11 +28,9 @@ pub fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) 
 pub fn buildToolsListResult(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(u8, "{\"tools\":[" ++
         tool_setup ++ "," ++
-        tool_begin ++ "," ++
         tool_search ++ "," ++
         tool_load ++ "," ++
-        tool_refer ++ "," ++
-        tool_complete ++
+        tool_refer ++
         "]}");
 }
 
@@ -40,25 +38,17 @@ const tool_setup =
     "{\"name\":\"memory.setup\",\"title\":\"Setup\",\"description\":\"Bootstrap the protocol. Returns workspace_id and meta-prompt content with usage instructions (delta based on knownHash).\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"knownHash\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
-const tool_begin =
-    "{\"name\":\"memory.begin\",\"title\":\"Begin Task\",\"description\":\"Start a new task. Returns a task_id.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"goal\":{\"type\":\"string\"}},\"required\":[\"goal\"],\"additionalProperties\":false}}";
-
 const tool_search =
     "{\"name\":\"memory.search\",\"title\":\"Search\",\"description\":\"Discover available rules, workflows, and context. Returns fresh metadata from the workspace.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const tool_load =
     "{\"name\":\"memory.load\",\"title\":\"Load\",\"description\":\"Load prompt content by ids. Returns delta based on knownHashes. Rule/Workflow content includes a refer reminder.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"taskId\":{\"type\":\"string\"},\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"taskId\",\"ids\"],\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\"],\"additionalProperties\":false}}";
 
 const tool_refer =
     "{\"name\":\"memory.refer\",\"title\":\"Refer\",\"description\":\"Declare that you referenced a specific constraint from a loaded prompt.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"taskId\":{\"type\":\"string\"},\"promptId\":{\"type\":\"string\"},\"promptHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"ranges\":{\"type\":\"array\",\"items\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"reason\":{\"type\":\"string\"}},\"required\":[\"taskId\",\"promptId\"],\"additionalProperties\":false}}";
-
-const tool_complete =
-    "{\"name\":\"memory.complete\",\"title\":\"Complete Task\",\"description\":\"Declare a task as completed or abandoned. No further events accepted for this task.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"taskId\":{\"type\":\"string\"},\"status\":{\"type\":\"string\",\"enum\":[\"completed\",\"abandoned\"]}},\"required\":[\"taskId\",\"status\"],\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"},\"promptHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"ranges\":{\"type\":\"array\",\"items\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"reason\":{\"type\":\"string\"}},\"required\":[\"promptId\"],\"additionalProperties\":false}}";
 
 pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, params: std.json.Value) ![]u8 {
     const params_obj = switch (params) {
@@ -90,14 +80,8 @@ pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, 
         };
     }
 
-    if (std.mem.eql(u8, name, "memory.begin")) {
-        return try handleBegin(allocator, workspace_root, args_obj);
-    }
     if (std.mem.eql(u8, name, "memory.refer")) {
         return try handleRefer(allocator, workspace_root, args_obj);
-    }
-    if (std.mem.eql(u8, name, "memory.complete")) {
-        return try handleComplete(allocator, workspace_root, args_obj);
     }
 
     return try buildToolErrorResult(allocator, "Unknown tool");
@@ -182,11 +166,6 @@ fn handleLoad(
     workspace_root: []const u8,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
-    const task_id = if (args_obj.get("taskId")) |value| switch (value) {
-        .string => |s| s,
-        else => null,
-    } else null;
-
     var ids = try parseRequiredIds(allocator, args_obj.get("ids"));
     defer ids.deinit(allocator);
 
@@ -199,7 +178,6 @@ fn handleLoad(
     for (result.items.items) |item| {
         try trace.appendTraceEvent(allocator, workspace_root, .{
             .event_type = .load,
-            .task_id = task_id,
             .prompt_id = item.id,
             .prompt_hash = item.hash,
         });
@@ -210,49 +188,11 @@ fn handleLoad(
     return try buildToolSuccessResult(allocator, structured);
 }
 
-fn handleBegin(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    args_obj: std.json.ObjectMap,
-) ![]u8 {
-    const goal = if (args_obj.get("goal")) |value| switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
-
-    const ws_id = try trace.workspaceId(allocator, workspace_root);
-    defer allocator.free(ws_id);
-    const task_id = try trace.generateTaskId(allocator);
-    defer allocator.free(task_id);
-
-    try trace.appendTraceEvent(allocator, workspace_root, .{
-        .event_type = .begin,
-
-        .task_id = task_id,
-        .goal = goal,
-    });
-
-    const esc_tid = try encoding.jsonEscapeAlloc(allocator, task_id);
-    defer allocator.free(esc_tid);
-    const structured = try std.fmt.allocPrint(allocator, "{{\"taskId\":\"{s}\"}}", .{esc_tid});
-    defer allocator.free(structured);
-    return try buildToolSuccessResult(allocator, structured);
-}
-
 fn handleRefer(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
-    const task_id = if (args_obj.get("taskId")) |value| switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
-
-    if (try trace.isTaskFinalized(allocator, workspace_root, task_id)) {
-        return try buildToolErrorResult(allocator, "Task is already finalized");
-    }
-
     const prompt_id = if (args_obj.get("promptId")) |value| switch (value) {
         .string => |s| s,
         else => return error.InvalidParams,
@@ -275,8 +215,6 @@ fn handleRefer(
 
     try trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .refer,
-
-        .task_id = task_id,
         .prompt_id = prompt_id,
         .prompt_hash = prompt_hash,
         .constraint_id = constraint_id,
@@ -284,45 +222,6 @@ fn handleRefer(
     });
 
     return try buildToolSuccessResult(allocator, "{\"ok\":true}");
-}
-
-fn handleComplete(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    args_obj: std.json.ObjectMap,
-) ![]u8 {
-    const task_id = if (args_obj.get("taskId")) |value| switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
-
-    if (try trace.isTaskFinalized(allocator, workspace_root, task_id)) {
-        return try buildToolErrorResult(allocator, "Task is already finalized");
-    }
-
-    const status = if (args_obj.get("status")) |value| switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
-
-    if (!std.mem.eql(u8, status, "completed") and !std.mem.eql(u8, status, "abandoned")) {
-        return try buildToolErrorResult(allocator, "Status must be 'completed' or 'abandoned'");
-    }
-
-    try trace.appendTraceEvent(allocator, workspace_root, .{
-        .event_type = .complete,
-
-        .task_id = task_id,
-        .status = status,
-    });
-
-    const esc_tid = try encoding.jsonEscapeAlloc(allocator, task_id);
-    defer allocator.free(esc_tid);
-    const esc_status = try encoding.jsonEscapeAlloc(allocator, status);
-    defer allocator.free(esc_status);
-    const structured = try std.fmt.allocPrint(allocator, "{{\"taskId\":\"{s}\",\"status\":\"{s}\"}}", .{ esc_tid, esc_status });
-    defer allocator.free(structured);
-    return try buildToolSuccessResult(allocator, structured);
 }
 
 fn buildToolSuccessResult(allocator: std.mem.Allocator, structured_json: []const u8) ![]u8 {
@@ -575,13 +474,13 @@ test "buildToolsListResult: exposes all memory tools" {
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.setup\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.begin\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.search\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.load\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.refer\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.complete\"") != null);
 
-    // Old tools should NOT be present
+    // Removed tools should NOT be present
+    try testing.expect(std.mem.indexOf(u8, result, "\"memory.begin\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"memory.complete\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.list\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
@@ -663,7 +562,7 @@ test "handleToolCall: memory.load returns content" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
 
-    const params = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"memory.load\",\"arguments\":{\"taskId\":\"t-1\",\"ids\":[\"rule:00_STYLE.md\"]}}", .{});
+    const params = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"memory.load\",\"arguments\":{\"ids\":[\"rule:00_STYLE.md\"]}}", .{});
     defer params.deinit();
 
     const result = try handleToolCall(testing.allocator, root, params.value);

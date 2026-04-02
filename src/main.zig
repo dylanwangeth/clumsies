@@ -20,6 +20,7 @@ const cmd_get = @import("commands/get_cmd.zig");
 const cmd_pub = @import("commands/pub_cmd.zig");
 const cmd_mcp = @import("commands/mcp_cmd.zig");
 const cmd_stats = @import("commands/stats_cmd.zig");
+const cmd_setup = @import("commands/setup_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const flags = @import("flags.zig");
@@ -102,6 +103,7 @@ pub fn main() !void {
     var cmd_args_start: usize = 1;
 
     // Parse command using lookup table
+    var is_agent_cmd = false;
     for (args[1..], 1..) |arg, i| {
         if (command_map.get(arg)) |matched_cmd| {
             cmd = matched_cmd;
@@ -111,9 +113,26 @@ pub fn main() !void {
             }
             break;
         }
+        // Hidden _agent prefix: clumsies _agent <subcommand> [args...]
+        if (std.mem.eql(u8, arg, "_agent")) {
+            is_agent_cmd = true;
+            cmd_args_start = i + 1;
+            break;
+        }
     }
 
     const cmd_args = args[cmd_args_start..];
+
+    // Handle _agent subcommands (hidden, not in help)
+    if (is_agent_cmd) {
+        const subcmd = if (cmd_args.len > 0) cmd_args[0] else "";
+        if (std.mem.eql(u8, subcmd, "setup")) {
+            try cmd_setup.run(stdout_writer, stderr_writer, allocator, cmd_args[1..]);
+        } else {
+            try stderr_writer.print("{s}{s}{s}Error:{s} Unknown agent command: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
+        }
+        return;
+    }
 
     // Execute command
     switch (cmd) {
@@ -181,7 +200,7 @@ test "command_map: unknown command returns null" {
 }
 
 test "command_map: agent-facing commands not exposed as public CLI" {
-    const agent_only = [_][]const u8{ "setup", "begin", "complete", "search", "load", "refer", "validate" };
+    const agent_only = [_][]const u8{ "setup", "begin", "complete", "search", "load", "refer", "validate", "_agent" };
     for (agent_only) |cmd| {
         try testing.expect(command_map.get(cmd) == null);
     }

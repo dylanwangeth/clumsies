@@ -49,12 +49,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const workspace_root = try std.process.getCwdAlloc(allocator);
     defer allocator.free(workspace_root);
 
-    const active_task = trace.getActiveTaskId(allocator, workspace_root) catch null;
-    defer if (active_task) |t| allocator.free(t);
-
     trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .refer,
-        .task_id = active_task,
         .prompt_id = prompt_id,
         .prompt_hash = result.value(HASH),
         .constraint_id = constraint_id,

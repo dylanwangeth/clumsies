@@ -46,16 +46,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
     defer load_result.deinit(allocator);
 
-    // Trace load events
-    const active_task = trace.getActiveTaskId(allocator, workspace_root) catch null;
-    defer if (active_task) |t| allocator.free(t);
-
     const mode = output.detect();
 
     for (load_result.items.items) |item| {
         trace.appendTraceEvent(allocator, workspace_root, .{
             .event_type = .load,
-            .task_id = active_task,
             .prompt_id = item.id,
             .prompt_hash = item.hash,
         }) catch {};
