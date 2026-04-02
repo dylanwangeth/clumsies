@@ -91,9 +91,9 @@ pub fn main() !void {
     const stderr_writer = &stderr_file_writer.interface;
 
     // Setup allocator
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_alloc = std.heap.DebugAllocator(.{}){};
+    defer _ = debug_alloc.deinit();
+    const allocator = debug_alloc.allocator();
 
     // Parse args
     const args = try std.process.argsAlloc(allocator);
