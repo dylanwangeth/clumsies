@@ -20,13 +20,6 @@ const cmd_get = @import("commands/get_cmd.zig");
 const cmd_pub = @import("commands/pub_cmd.zig");
 const cmd_mcp = @import("commands/mcp_cmd.zig");
 const cmd_stats = @import("commands/stats_cmd.zig");
-const cmd_setup = @import("commands/setup_cmd.zig");
-const cmd_begin = @import("commands/begin_cmd.zig");
-const cmd_complete = @import("commands/complete_cmd.zig");
-const cmd_search = @import("commands/search_cmd.zig");
-const cmd_load = @import("commands/load_cmd.zig");
-const cmd_refer = @import("commands/refer_cmd.zig");
-const cmd_validate = @import("commands/validate_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const flags = @import("flags.zig");
@@ -52,13 +45,6 @@ const Command = enum {
     pub_cmd,
     mcp,
     stats_cmd,
-    setup_cmd,
-    begin_cmd,
-    complete_cmd,
-    search_cmd,
-    load_cmd,
-    refer_cmd,
-    validate_cmd,
     config,
     upgrade,
     help,
@@ -83,13 +69,6 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "pub", .pub_cmd },
     .{ "mcp", .mcp },
     .{ "stats", .stats_cmd },
-    .{ "setup", .setup_cmd },
-    .{ "begin", .begin_cmd },
-    .{ "complete", .complete_cmd },
-    .{ "search", .search_cmd },
-    .{ "load", .load_cmd },
-    .{ "refer", .refer_cmd },
-    .{ "validate", .validate_cmd },
     .{ "config", .config },
     .{ "upgrade", .upgrade },
     .{ "help", .help },
@@ -157,13 +136,6 @@ pub fn main() !void {
         .pub_cmd => try cmd_pub.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
         .stats_cmd => try cmd_stats.run(stdout_writer, stderr_writer, allocator, cmd_args),
-        .setup_cmd => try cmd_setup.run(stdout_writer, stderr_writer, allocator, cmd_args),
-        .begin_cmd => try cmd_begin.run(stdout_writer, stderr_writer, allocator, cmd_args),
-        .complete_cmd => try cmd_complete.run(stdout_writer, stderr_writer, allocator, cmd_args),
-        .search_cmd => try cmd_search.run(stdout_writer, stderr_writer, allocator, cmd_args),
-        .load_cmd => try cmd_load.run(stdout_writer, stderr_writer, allocator, cmd_args),
-        .refer_cmd => try cmd_refer.run(stdout_writer, stderr_writer, allocator, cmd_args),
-        .validate_cmd => try cmd_validate.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .config => try cmd_config.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .upgrade => try cmd_upgrade.run(stdout_writer, stderr_writer, allocator, version),
         .none => try cmd_help.run(stdout_writer),
@@ -186,6 +158,7 @@ test "command_map: all commands resolve" {
         .{ .str = "get", .cmd = .get },
         .{ .str = "pub", .cmd = .pub_cmd },
         .{ .str = "mcp", .cmd = .mcp },
+        .{ .str = "stats", .cmd = .stats_cmd },
         .{ .str = "config", .cmd = .config },
         .{ .str = "upgrade", .cmd = .upgrade },
         .{ .str = "help", .cmd = .help },
@@ -205,4 +178,11 @@ test "command_map: unknown command returns null" {
     try testing.expect(command_map.get("foobar") == null);
     try testing.expect(command_map.get("") == null);
     try testing.expect(command_map.get("LS") == null);
+}
+
+test "command_map: agent-facing commands not exposed as public CLI" {
+    const agent_only = [_][]const u8{ "setup", "begin", "complete", "search", "load", "refer", "validate" };
+    for (agent_only) |cmd| {
+        try testing.expect(command_map.get(cmd) == null);
+    }
 }

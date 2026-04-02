@@ -11,7 +11,6 @@ pub const EventType = enum {
     search,
     load,
     refer,
-    shortcut,
     complete,
 };
 
@@ -32,9 +31,6 @@ pub const TraceEvent = struct {
     // refer fields
     constraint_id: ?[]const u8 = null,
     reason: ?[]const u8 = null,
-
-    // shortcut fields
-    workflow_name: ?[]const u8 = null,
 
     // complete fields
     status: ?[]const u8 = null,
@@ -286,13 +282,6 @@ fn serializeTraceEvent(allocator: std.mem.Allocator, event: TraceEvent) ![]u8 {
                 const esc = try encoding.jsonEscapeAlloc(allocator, r);
                 defer allocator.free(esc);
                 try buf.writer(allocator).print(",\"reason\":\"{s}\"", .{esc});
-            }
-        },
-        .shortcut => {
-            if (event.workflow_name) |wn| {
-                const esc = try encoding.jsonEscapeAlloc(allocator, wn);
-                defer allocator.free(esc);
-                try buf.writer(allocator).print(",\"workflow\":\"{s}\"", .{esc});
             }
         },
         .complete => {

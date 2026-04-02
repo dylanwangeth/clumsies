@@ -120,8 +120,8 @@ Context files are not parsed for constraints — they provide background informa
 
 **Workspace**: `clone`, `remote`, `push`, `pull`, `status`, `log` — manage `.prompts/` as a git repo.
 
-**Task**: `setup`, `begin`, `complete`, `search`, `load`, `refer`, `validate` — mirror MCP tools for use by hooks and scripts.
-
 **Other**: `stats`, `config`, `mcp`, `upgrade`.
 
-All task commands detect whether stdout is a terminal. TTY mode shows human-friendly output with colors. Pipe mode outputs raw text for programmatic consumption by hooks.
+Agent-facing operations (setup, begin, search, load, refer, complete, validate) are only available via MCP tools. CLI does not expose them — MCP and CLI serve as natural environment boundaries. CC Plugin hooks output instructions that prompt the agent to call MCP tools; they do not call CLI commands.
+
+All commands detect whether stdout is a terminal. TTY mode shows human-friendly output with colors. Pipe mode outputs raw text for programmatic consumption.

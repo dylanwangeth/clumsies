@@ -4,7 +4,6 @@ const lib = @import("clumsies_lib");
 const protocol = @import("protocol.zig");
 
 const encoding = lib.encoding;
-const stats = lib.stats;
 const trace = lib.trace;
 const workspace_prompt = lib.workspace_prompt;
 
@@ -33,10 +32,7 @@ pub fn buildToolsListResult(allocator: std.mem.Allocator) ![]u8 {
         tool_search ++ "," ++
         tool_load ++ "," ++
         tool_refer ++ "," ++
-        tool_shortcut ++ "," ++
-        tool_complete ++ "," ++
-        tool_stats ++ "," ++
-        tool_validate ++
+        tool_complete ++
         "]}");
 }
 
@@ -60,21 +56,9 @@ const tool_refer =
     "{\"name\":\"memory.refer\",\"title\":\"Refer\",\"description\":\"Declare that you referenced a specific constraint from a loaded prompt.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"taskId\":{\"type\":\"string\"},\"promptId\":{\"type\":\"string\"},\"promptHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"ranges\":{\"type\":\"array\",\"items\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"reason\":{\"type\":\"string\"}},\"required\":[\"taskId\",\"promptId\"],\"additionalProperties\":false}}";
 
-const tool_shortcut =
-    "{\"name\":\"memory.shortcut\",\"title\":\"Shortcut\",\"description\":\"Invoke a workflow by name. Searches workflow/ directory and loads matching file.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"taskId\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"}},\"required\":[\"taskId\",\"name\"],\"additionalProperties\":false}}";
-
 const tool_complete =
     "{\"name\":\"memory.complete\",\"title\":\"Complete Task\",\"description\":\"Declare a task as completed or abandoned. No further events accepted for this task.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"taskId\":{\"type\":\"string\"},\"status\":{\"type\":\"string\",\"enum\":[\"completed\",\"abandoned\"]}},\"required\":[\"taskId\",\"status\"],\"additionalProperties\":false}}";
-
-const tool_stats =
-    "{\"name\":\"memory.stats\",\"title\":\"Stats\",\"description\":\"Query aggregated trace data. Returns structured data and a pre-rendered text view.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"scope\":{\"type\":\"string\",\"enum\":[\"workspace\",\"prompt\",\"diff\"]},\"promptId\":{\"type\":\"string\"},\"taskId\":{\"type\":\"string\"},\"oldHash\":{\"type\":\"string\"},\"newHash\":{\"type\":\"string\"},\"timeBuckets\":{\"type\":\"string\",\"enum\":[\"daily\",\"weekly\"]}},\"required\":[\"scope\"],\"additionalProperties\":false}}";
-
-const tool_validate =
-    "{\"name\":\"memory.validate\",\"title\":\"Validate\",\"description\":\"Validate a prompt file against the standard format. Returns parsed constraints and issues.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"}},\"required\":[\"promptId\"],\"additionalProperties\":false}}";
 
 pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, params: std.json.Value) ![]u8 {
     const params_obj = switch (params) {
@@ -114,20 +98,6 @@ pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, 
     }
     if (std.mem.eql(u8, name, "memory.complete")) {
         return try handleComplete(allocator, workspace_root, args_obj);
-    }
-
-    if (std.mem.eql(u8, name, "memory.shortcut")) {
-        return handleShortcut(allocator, workspace_root, args_obj) catch |err| switch (err) {
-            error.UnknownPromptId => try buildToolErrorResult(allocator, "No matching workflow found"),
-            else => return err,
-        };
-    }
-
-    if (std.mem.eql(u8, name, "memory.stats")) {
-        return try handleStats(allocator, workspace_root, args_obj);
-    }
-    if (std.mem.eql(u8, name, "memory.validate")) {
-        return try handleValidate(allocator, workspace_root, args_obj);
     }
 
     return try buildToolErrorResult(allocator, "Unknown tool");
@@ -353,254 +323,6 @@ fn handleComplete(
     const structured = try std.fmt.allocPrint(allocator, "{{\"taskId\":\"{s}\",\"status\":\"{s}\"}}", .{ esc_tid, esc_status });
     defer allocator.free(structured);
     return try buildToolSuccessResult(allocator, structured);
-}
-
-fn handleStats(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    args_obj: std.json.ObjectMap,
-) ![]u8 {
-    const scope = if (args_obj.get("scope")) |value| switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
-
-    if (std.mem.eql(u8, scope, "workspace")) {
-        return try handleStatsWorkspace(allocator, workspace_root);
-    }
-
-    const time_buckets: ?[]const u8 = if (args_obj.get("timeBuckets")) |value| switch (value) {
-        .string => |s| s,
-        else => null,
-    } else null;
-
-    if (std.mem.eql(u8, scope, "prompt")) {
-        const prompt_id = if (args_obj.get("promptId")) |value| switch (value) {
-            .string => |s| s,
-            else => return error.InvalidParams,
-        } else return try buildToolErrorResult(allocator, "promptId is required for prompt scope");
-
-        const task_id = if (args_obj.get("taskId")) |value| switch (value) {
-            .string => |s| s,
-            else => null,
-        } else null;
-
-        if (time_buckets) |tb| {
-            return try handleStatsPromptTimeBuckets(allocator, workspace_root, prompt_id, task_id, tb);
-        }
-
-        return try handleStatsPrompt(allocator, workspace_root, prompt_id, task_id);
-    }
-
-    if (std.mem.eql(u8, scope, "diff")) {
-        const prompt_id = if (args_obj.get("promptId")) |value| switch (value) {
-            .string => |s| s,
-            else => return error.InvalidParams,
-        } else return try buildToolErrorResult(allocator, "promptId is required for diff scope");
-
-        const old_hash = if (args_obj.get("oldHash")) |value| switch (value) {
-            .string => |s| s,
-            else => return error.InvalidParams,
-        } else return try buildToolErrorResult(allocator, "oldHash is required for diff scope");
-
-        const new_hash = if (args_obj.get("newHash")) |value| switch (value) {
-            .string => |s| s,
-            else => return error.InvalidParams,
-        } else return try buildToolErrorResult(allocator, "newHash is required for diff scope");
-
-        return try handleStatsDiff(allocator, workspace_root, prompt_id, old_hash, new_hash);
-    }
-
-    return try buildToolErrorResult(allocator, "Unknown scope. Use: workspace, prompt, or diff");
-}
-
-fn handleStatsWorkspace(allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
-    var result = try stats.computeWorkspace(allocator, workspace_root);
-    defer result.deinit(allocator);
-
-    const data_json = try stats.renderWorkspaceDataJson(allocator, &result);
-    defer allocator.free(data_json);
-    const view_text = try stats.renderWorkspaceView(allocator, &result);
-    defer allocator.free(view_text);
-
-    const esc_view = try encoding.jsonEscapeAlloc(allocator, view_text);
-    defer allocator.free(esc_view);
-
-    const structured = try std.fmt.allocPrint(allocator, "{{\"data\":{s},\"view\":\"{s}\"}}", .{ data_json, esc_view });
-    defer allocator.free(structured);
-    return try buildToolSuccessResult(allocator, structured);
-}
-
-fn handleStatsPrompt(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    prompt_id: []const u8,
-    task_id_filter: ?[]const u8,
-) ![]u8 {
-    var result = try stats.computePrompt(allocator, workspace_root, prompt_id, task_id_filter);
-    defer result.deinit(allocator);
-
-    const data_json = try stats.renderPromptDataJson(allocator, &result);
-    defer allocator.free(data_json);
-    const view_text = try stats.renderPromptView(allocator, &result);
-    defer allocator.free(view_text);
-
-    const esc_view = try encoding.jsonEscapeAlloc(allocator, view_text);
-    defer allocator.free(esc_view);
-
-    const structured = try std.fmt.allocPrint(allocator, "{{\"data\":{s},\"view\":\"{s}\"}}", .{ data_json, esc_view });
-    defer allocator.free(structured);
-    return try buildToolSuccessResult(allocator, structured);
-}
-
-fn handleStatsPromptTimeBuckets(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    prompt_id: []const u8,
-    task_id_filter: ?[]const u8,
-    time_buckets: []const u8,
-) ![]u8 {
-    const is_daily = std.mem.eql(u8, time_buckets, "daily");
-    const is_weekly = std.mem.eql(u8, time_buckets, "weekly");
-    if (!is_daily and !is_weekly) {
-        return try buildToolErrorResult(allocator, "timeBuckets must be 'daily' or 'weekly'");
-    }
-
-    var result = try stats.computeTimeBuckets(allocator, workspace_root, prompt_id, task_id_filter, time_buckets);
-    defer result.deinit(allocator);
-
-    const data_json = try stats.renderTimeBucketsDataJson(allocator, &result);
-    defer allocator.free(data_json);
-    const view_text = try stats.renderTimeBucketsView(allocator, &result);
-    defer allocator.free(view_text);
-
-    const esc_view = try encoding.jsonEscapeAlloc(allocator, view_text);
-    defer allocator.free(esc_view);
-
-    const structured = try std.fmt.allocPrint(allocator, "{{\"data\":{s},\"view\":\"{s}\"}}", .{ data_json, esc_view });
-    defer allocator.free(structured);
-    return try buildToolSuccessResult(allocator, structured);
-}
-
-fn handleStatsDiff(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    prompt_id: []const u8,
-    old_hash: []const u8,
-    new_hash: []const u8,
-) ![]u8 {
-    var result = try stats.computeDiff(allocator, workspace_root, prompt_id, old_hash, new_hash);
-    defer result.deinit(allocator);
-
-    const data_json = try stats.renderDiffDataJson(allocator, &result);
-    defer allocator.free(data_json);
-    const view_text = try stats.renderDiffView(allocator, &result);
-    defer allocator.free(view_text);
-
-    const esc_view = try encoding.jsonEscapeAlloc(allocator, view_text);
-    defer allocator.free(esc_view);
-
-    const structured = try std.fmt.allocPrint(allocator, "{{\"data\":{s},\"view\":\"{s}\"}}", .{ data_json, esc_view });
-    defer allocator.free(structured);
-    return try buildToolSuccessResult(allocator, structured);
-}
-
-fn handleValidate(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    args_obj: std.json.ObjectMap,
-) ![]u8 {
-    const prompt_id = if (args_obj.get("promptId")) |value| switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
-
-    var result = try workspace_prompt.validatePrompt(allocator, workspace_root, prompt_id);
-    defer result.deinit(allocator);
-
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(allocator);
-
-    try buf.writer(allocator).print("{{\"valid\":{s},\"constraints\":[", .{if (result.valid) "true" else "false"});
-    for (result.constraints.items, 0..) |c, idx| {
-        if (idx > 0) try buf.append(allocator, ',');
-        const esc_id = try encoding.jsonEscapeAlloc(allocator, c.id);
-        defer allocator.free(esc_id);
-        const esc_th = try encoding.jsonEscapeAlloc(allocator, c.text_hash);
-        defer allocator.free(esc_th);
-        try buf.writer(allocator).print("{{\"id\":\"{s}\",\"textHash\":\"{s}\"}}", .{ esc_id, esc_th });
-    }
-    try buf.appendSlice(allocator, "],\"issues\":[");
-    for (result.issues.items, 0..) |issue, idx| {
-        if (idx > 0) try buf.append(allocator, ',');
-        const esc = try encoding.jsonEscapeAlloc(allocator, issue);
-        defer allocator.free(esc);
-        try buf.writer(allocator).print("\"{s}\"", .{esc});
-    }
-    try buf.appendSlice(allocator, "]}");
-
-    const structured = try buf.toOwnedSlice(allocator);
-    defer allocator.free(structured);
-    return try buildToolSuccessResult(allocator, structured);
-}
-
-fn handleShortcut(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    args_obj: std.json.ObjectMap,
-) ![]u8 {
-    const task_id = if (args_obj.get("taskId")) |value| switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
-
-    const name = if (args_obj.get("name")) |value| switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
-
-    // Search workflow/ for a file matching the name (case-insensitive)
-    var workflows = try workspace_prompt.discoverSearchable(allocator, workspace_root, .workflow, null);
-    defer workspace_prompt.deinitPromptItems(allocator, &workflows);
-
-    var match_id: ?[]const u8 = null;
-    for (workflows.items) |item| {
-        if (containsIgnoreCase(item.name, name) or containsIgnoreCase(item.id, name)) {
-            match_id = item.id;
-            break;
-        }
-    }
-
-    const workflow_id = match_id orelse return error.UnknownPromptId;
-
-    // Load the matched workflow
-    var result = try workspace_prompt.loadPrompts(allocator, workspace_root, &.{workflow_id}, &.{});
-    defer result.deinit(allocator);
-
-    // Trace: shortcut event
-    const ws_id = try trace.workspaceId(allocator, workspace_root);
-    defer allocator.free(ws_id);
-    try trace.appendTraceEvent(allocator, workspace_root, .{
-        .event_type = .shortcut,
-
-        .task_id = task_id,
-        .workflow_name = name,
-    });
-
-    const structured = try serializeLoadResult(allocator, &result, workspace_root);
-    defer allocator.free(structured);
-    return try buildToolSuccessResult(allocator, structured);
-}
-
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-    const last_start = haystack.len - needle.len;
-    var start: usize = 0;
-    while (start <= last_start) : (start += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[start .. start + needle.len], needle)) return true;
-    }
-    return false;
 }
 
 fn buildToolSuccessResult(allocator: std.mem.Allocator, structured_json: []const u8) ![]u8 {
@@ -857,10 +579,7 @@ test "buildToolsListResult: exposes all memory tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.search\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.load\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.refer\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.shortcut\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.complete\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.stats\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.validate\"") != null);
 
     // Old tools should NOT be present
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
