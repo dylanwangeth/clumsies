@@ -46,7 +46,7 @@ const tool_setup =
 
 const tool_begin =
     "{\"name\":\"memory.begin\",\"title\":\"Begin Task\",\"description\":\"Start a new task. Returns a task_id.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"goalSummary\":{\"type\":\"string\"}},\"required\":[\"goalSummary\"],\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"goal\":{\"type\":\"string\"}},\"required\":[\"goal\"],\"additionalProperties\":false}}";
 
 const tool_search =
     "{\"name\":\"memory.search\",\"title\":\"Search\",\"description\":\"Discover available rules, workflows, and context. Returns fresh metadata from the workspace.\"," ++
@@ -245,7 +245,7 @@ fn handleBegin(
     workspace_root: []const u8,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
-    const goal_summary = if (args_obj.get("goalSummary")) |value| switch (value) {
+    const goal = if (args_obj.get("goal")) |value| switch (value) {
         .string => |s| s,
         else => return error.InvalidParams,
     } else return error.InvalidParams;
@@ -259,7 +259,7 @@ fn handleBegin(
         .event_type = .begin,
 
         .task_id = task_id,
-        .goal_summary = goal_summary,
+        .goal = goal,
     });
 
     const esc_tid = try encoding.jsonEscapeAlloc(allocator, task_id);

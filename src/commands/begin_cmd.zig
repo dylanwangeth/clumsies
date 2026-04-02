@@ -60,7 +60,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     trace.appendTraceEvent(allocator, workspace_root, .{
         .event_type = .begin,
         .task_id = task_id,
-        .goal_summary = goal,
+        .goal = goal,
     }) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to write begin event\n", .{ P, Color.bold, Color.red, Color.reset });
         return;

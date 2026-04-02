@@ -1,8 +1,9 @@
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("encoding.zig");
+const config = @import("config.zig");
 
-pub const CLUMSIES_DIR = ".clumsies";
+pub const LOG_DIR = "log";
 
 pub const EventType = enum {
     setup,
@@ -22,7 +23,7 @@ pub const TraceEvent = struct {
     mpf_hash: ?[]const u8 = null,
 
     // begin fields
-    goal_summary: ?[]const u8 = null,
+    goal: ?[]const u8 = null,
 
     // load fields
     prompt_id: ?[]const u8 = null,
@@ -48,7 +49,7 @@ pub const TaskStatus = enum {
 pub const TaskInfo = struct {
     task_id: []const u8,
     workspace_id: []const u8,
-    goal_summary: []const u8,
+    goal: []const u8,
     status: TaskStatus,
 };
 
@@ -64,13 +65,15 @@ pub fn workspaceId(allocator: std.mem.Allocator, workspace_root: []const u8) ![]
     return try std.fmt.allocPrint(allocator, "ws-{s}", .{hex[0..16]});
 }
 
-/// Get the trace file path: .clumsies/{workspace_id}.jsonl
+/// Get the trace file path: ~/.clumsies/log/{workspace_id}.jsonl
 pub fn traceFilePath(allocator: std.mem.Allocator, workspace_root: []const u8) ![]const u8 {
+    const base = try config.getBasePath(allocator);
+    defer allocator.free(base);
     const ws_id = try workspaceId(allocator, workspace_root);
     defer allocator.free(ws_id);
     const filename = try std.fmt.allocPrint(allocator, "{s}.jsonl", .{ws_id});
     defer allocator.free(filename);
-    return try std.fs.path.join(allocator, &.{ workspace_root, CLUMSIES_DIR, filename });
+    return try std.fs.path.join(allocator, &.{ base, LOG_DIR, filename });
 }
 
 /// Generate a unique task_id.
@@ -83,12 +86,20 @@ pub fn generateTaskId(allocator: std.mem.Allocator) ![]const u8 {
     return try std.fmt.allocPrint(allocator, "task-{d}-{s}", .{ ts, rand_hex[0..8] });
 }
 
-/// Ensure .clumsies/ directory exists.
-pub fn ensureClumsiesDir(workspace_root: []const u8, allocator: std.mem.Allocator) !void {
-    const clumsies_path = try std.fs.path.join(allocator, &.{ workspace_root, CLUMSIES_DIR });
-    defer allocator.free(clumsies_path);
+/// Ensure ~/.clumsies/log/ directory exists.
+pub fn ensureLogDir(allocator: std.mem.Allocator) !void {
+    const base = try config.getBasePath(allocator);
+    defer allocator.free(base);
 
-    std.fs.makeDirAbsolute(clumsies_path) catch |err| switch (err) {
+    std.fs.makeDirAbsolute(base) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    const log_path = try std.fs.path.join(allocator, &.{ base, LOG_DIR });
+    defer allocator.free(log_path);
+
+    std.fs.makeDirAbsolute(log_path) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
@@ -190,7 +201,7 @@ pub fn getActiveTaskId(allocator: std.mem.Allocator, workspace_root: []const u8)
 
 /// Append a trace event to trace.jsonl.
 pub fn appendTraceEvent(allocator: std.mem.Allocator, workspace_root: []const u8, event: TraceEvent) !void {
-    try ensureClumsiesDir(workspace_root, allocator);
+    try ensureLogDir(allocator);
 
     const trace_path = try traceFilePath(allocator, workspace_root);
     defer allocator.free(trace_path);
@@ -230,10 +241,10 @@ fn serializeTraceEvent(allocator: std.mem.Allocator, event: TraceEvent) ![]u8 {
             }
         },
         .begin => {
-            if (event.goal_summary) |gs| {
+            if (event.goal) |gs| {
                 const esc = try encoding.jsonEscapeAlloc(allocator, gs);
                 defer allocator.free(esc);
-                try buf.writer(allocator).print(",\"goal_summary\":\"{s}\"", .{esc});
+                try buf.writer(allocator).print(",\"goal\":\"{s}\"", .{esc});
             }
         },
         .load => {
@@ -861,16 +872,6 @@ fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     };
 }
 
-fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(sub_path, .{});
-    defer file.close();
-    try file.writeAll(content);
-}
-
-fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {
-    return tmp.dir.realpath(".", buf) catch "";
-}
-
 test "workspaceId: deterministic from path" {
     const id1 = try workspaceId(testing.allocator, "/path/to/project");
     defer testing.allocator.free(id1);
@@ -892,17 +893,14 @@ test "generateTaskId: unique" {
 }
 
 test "appendTraceEvent: writes jsonl" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
+    // Use a unique fake workspace root so the trace file doesn't collide
+    const root = "/tmp/clumsies-test-appendTraceEvent-unique";
 
     try appendTraceEvent(testing.allocator, root, .{
         .event_type = .begin,
 
         .task_id = "task-001",
-        .goal_summary = "test goal",
+        .goal = "test goal",
     });
 
     try appendTraceEvent(testing.allocator, root, .{
@@ -926,6 +924,9 @@ test "appendTraceEvent: writes jsonl" {
     const trace_path = try traceFilePath(testing.allocator, root);
     defer testing.allocator.free(trace_path);
 
+    // Clean up trace file after test
+    defer std.fs.deleteFileAbsolute(trace_path) catch {};
+
     const file = try std.fs.openFileAbsolute(trace_path, .{});
     defer file.close();
     const content = try file.readToEndAlloc(testing.allocator, 16384);
@@ -941,7 +942,7 @@ test "appendTraceEvent: writes jsonl" {
 
     // Content checks
     try testing.expect(std.mem.indexOf(u8, content, "\"type\":\"begin\"") != null);
-    try testing.expect(std.mem.indexOf(u8, content, "\"goal_summary\":\"test goal\"") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "\"goal\":\"test goal\"") != null);
     try testing.expect(std.mem.indexOf(u8, content, "\"type\":\"refer\"") != null);
     try testing.expect(std.mem.indexOf(u8, content, "\"constraint_id\":\"c-1\"") != null);
     try testing.expect(std.mem.indexOf(u8, content, "\"type\":\"complete\"") != null);
