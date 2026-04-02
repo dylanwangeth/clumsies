@@ -47,8 +47,8 @@ const tool_load =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\"],\"additionalProperties\":false}}";
 
 const tool_refer =
-    "{\"name\":\"memory.refer\",\"title\":\"Refer\",\"description\":\"Declare that you referenced a specific constraint from a loaded prompt.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"},\"promptHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"ranges\":{\"type\":\"array\",\"items\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"reason\":{\"type\":\"string\"}},\"required\":[\"promptId\"],\"additionalProperties\":false}}";
+    "{\"name\":\"memory.refer\",\"title\":\"Refer\",\"description\":\"Declare constraint references from loaded prompts. Pass an array of refs, each with promptId and optional constraintId.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"},\"promptHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"promptId\"]}}},\"required\":[\"refs\"],\"additionalProperties\":false}}";
 
 pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, params: std.json.Value) ![]u8 {
     const params_obj = switch (params) {
@@ -193,35 +193,54 @@ fn handleRefer(
     workspace_root: []const u8,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
-    const prompt_id = if (args_obj.get("promptId")) |value| switch (value) {
-        .string => |s| s,
+    const refs_val = args_obj.get("refs") orelse return error.InvalidParams;
+    const refs_array = switch (refs_val) {
+        .array => |a| a,
         else => return error.InvalidParams,
-    } else return error.InvalidParams;
+    };
 
-    const prompt_hash = if (args_obj.get("promptHash")) |value| switch (value) {
-        .string => |s| s,
-        else => null,
-    } else null;
+    if (refs_array.items.len == 0) return error.InvalidParams;
 
-    const constraint_id = if (args_obj.get("constraintId")) |value| switch (value) {
-        .string => |s| s,
-        else => null,
-    } else null;
+    var count: usize = 0;
+    for (refs_array.items) |ref_val| {
+        const ref_obj = switch (ref_val) {
+            .object => |o| o,
+            else => continue,
+        };
 
-    const reason = if (args_obj.get("reason")) |value| switch (value) {
-        .string => |s| s,
-        else => null,
-    } else null;
+        const prompt_id = if (ref_obj.get("promptId")) |v| switch (v) {
+            .string => |s| s,
+            else => continue,
+        } else continue;
 
-    try trace.appendTraceEvent(allocator, workspace_root, .{
-        .event_type = .refer,
-        .prompt_id = prompt_id,
-        .prompt_hash = prompt_hash,
-        .constraint_id = constraint_id,
-        .reason = reason,
-    });
+        const prompt_hash = if (ref_obj.get("promptHash")) |v| switch (v) {
+            .string => |s| s,
+            else => null,
+        } else null;
 
-    return try buildToolSuccessResult(allocator, "{\"ok\":true}");
+        const constraint_id = if (ref_obj.get("constraintId")) |v| switch (v) {
+            .string => |s| s,
+            else => null,
+        } else null;
+
+        const reason = if (ref_obj.get("reason")) |v| switch (v) {
+            .string => |s| s,
+            else => null,
+        } else null;
+
+        try trace.appendTraceEvent(allocator, workspace_root, .{
+            .event_type = .refer,
+            .prompt_id = prompt_id,
+            .prompt_hash = prompt_hash,
+            .constraint_id = constraint_id,
+            .reason = reason,
+        });
+        count += 1;
+    }
+
+    var buf: [64]u8 = undefined;
+    const structured = std.fmt.bufPrint(&buf, "{{\"ok\":true,\"count\":{d}}}", .{count}) catch return error.InternalError;
+    return try buildToolSuccessResult(allocator, structured);
 }
 
 fn buildToolSuccessResult(allocator: std.mem.Allocator, structured_json: []const u8) ![]u8 {
@@ -389,7 +408,7 @@ fn appendLoadedPromptWithConstraints(
 
             const reminder = try std.fmt.allocPrint(
                 allocator,
-                "{s}\n\n---\n[clumsies] When you reference constraints from this prompt, call memory.refer:\n  promptId: {s}\n  promptHash: {s}\n  constraintId: pick from the list below\n{s}---",
+                "{s}\n\n---\n[clumsies] When you apply constraints from this prompt, include them in a single memory.refer call at the end of your response.\nrefs entry fields: promptId: {s}, promptHash: {s}, constraintId: pick from below\n{s}---",
                 .{ content, item.id, item.hash, constraint_list },
             );
             defer allocator.free(reminder);
