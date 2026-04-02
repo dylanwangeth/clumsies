@@ -292,8 +292,10 @@ fn materializeSelection(
         if (seen_ids.contains(id)) continue;
 
         const seen_key = try allocator.dupe(u8, id);
-        errdefer allocator.free(seen_key);
-        try seen_ids.put(seen_key, {});
+        seen_ids.put(seen_key, {}) catch |err| {
+            allocator.free(seen_key);
+            return err;
+        };
 
         const item = findPromptById(inventory, id) orelse return error.UnknownPromptId;
         try result.items.append(allocator, try materializeItem(allocator, workspace_root, item, knownHashFor(id, known)));
