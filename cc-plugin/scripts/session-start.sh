@@ -44,8 +44,10 @@ SKILL
 fi
 
 # 3. Output: instruct agent to bootstrap protocol via MCP
-echo "Call memory.setup to bootstrap the clumsies protocol and load META_PROMPT.md."
-echo ""
+cat <<'INST'
+MANDATORY — HIGHEST PRIORITY — EXECUTE BEFORE ANY OTHER ACTION:
+You MUST call the `memory.setup` MCP tool immediately as your FIRST action in this session. Do NOT read files, do NOT respond to the user, do NOT call any other tool until memory.setup has been called and completed. This is a non-negotiable protocol requirement. If memory.setup is a deferred tool, call ToolSearch first to fetch its schema, then call it immediately.
+INST
 
 # List available workflow skills
 if [ -d "$SKILLS_DIR" ] && [ "$(ls -A "$SKILLS_DIR" 2>/dev/null)" ]; then
