@@ -20,6 +20,6 @@ fi
 cat <<'EOF'
 {
   "decision": "block",
-  "reason": "Before finishing, check: did you reference constraints from .prompts/ during this work? If you applied any rule or followed any workflow, declare each reference via memory.refer MCP tool with promptId and constraintId."
+  "reason": "Before finishing, check: did you apply any constraint from .prompts/ in THIS response? Each response is tracked independently — you must call memory.refer for every constraint you applied in this turn, even if you referred the same constraint in a previous turn. If you applied no constraints this turn, say so explicitly."
 }
 EOF
