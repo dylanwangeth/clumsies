@@ -512,7 +512,10 @@ test "handleToolCall: memory.setup returns mpf content" {
     try tmp.dir.makePath(".prompts");
     const file = try tmp.dir.createFile(".prompts/META_PROMPT.md", .{});
     defer file.close();
-    try file.writeAll("bootstrap content");
+    var tw_buf1: [4096]u8 = undefined;
+    var tw1 = std.fs.File.Writer.init(file, &tw_buf1);
+    defer tw1.interface.flush() catch {};
+    try tw1.interface.writeAll("bootstrap content");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
@@ -554,7 +557,10 @@ test "handleToolCall: memory.search returns rule metadata" {
     try tmp.dir.makePath(".prompts/rule/coding");
     const file = try tmp.dir.createFile(".prompts/rule/coding/00_COMPAT.md", .{});
     defer file.close();
-    try file.writeAll("compat rule");
+    var tw_buf2: [4096]u8 = undefined;
+    var tw2 = std.fs.File.Writer.init(file, &tw_buf2);
+    defer tw2.interface.flush() catch {};
+    try tw2.interface.writeAll("compat rule");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
@@ -576,7 +582,10 @@ test "handleToolCall: memory.load returns content" {
     try tmp.dir.makePath(".prompts/rule");
     const file = try tmp.dir.createFile(".prompts/rule/00_STYLE.md", .{});
     defer file.close();
-    try file.writeAll("style content");
+    var tw_buf3: [4096]u8 = undefined;
+    var tw3 = std.fs.File.Writer.init(file, &tw_buf3);
+    defer tw3.interface.flush() catch {};
+    try tw3.interface.writeAll("style content");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
