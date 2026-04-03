@@ -90,10 +90,17 @@ pub fn main() !void {
     const stdout_writer = &stdout_file_writer.interface;
     const stderr_writer = &stderr_file_writer.interface;
 
-    // Setup allocator
-    var debug_alloc = std.heap.DebugAllocator(.{}){};
-    defer _ = debug_alloc.deinit();
-    const allocator = debug_alloc.allocator();
+    // Setup allocator: DebugAllocator for debug builds (safety checks),
+    // smp_allocator for release builds (no overhead).
+    var debug_alloc: if (@import("builtin").mode == .Debug) std.heap.DebugAllocator(.{}) else struct {} =
+        if (@import("builtin").mode == .Debug) .{} else .{};
+    defer if (@import("builtin").mode == .Debug) {
+        _ = debug_alloc.deinit();
+    };
+    const allocator = if (@import("builtin").mode == .Debug)
+        debug_alloc.allocator()
+    else
+        std.heap.smp_allocator;
 
     // Parse args
     const args = try std.process.argsAlloc(allocator);
