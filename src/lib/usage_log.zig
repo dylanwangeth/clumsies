@@ -53,7 +53,7 @@ pub fn appendActivation(
     const line = try buildActivationLine(allocator, workspace_root, phase, task_id, turn_id, refs);
     defer allocator.free(line);
     var write_buf: [4096]u8 = undefined;
-    var fw = std.fs.File.Writer.init(file, &write_buf);
+    var fw = std.fs.File.Writer.initStreaming(file, &write_buf);
     try fw.interface.writeAll(line);
     try fw.interface.flush();
 }
