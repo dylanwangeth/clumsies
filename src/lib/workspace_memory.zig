@@ -514,7 +514,9 @@ test "startupMemory: only changed items include content" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    const pin_hash = try prompt.readFileHashHexAlloc(testing.allocator, try std.fs.path.join(testing.allocator, &.{ root, "PIN.md" }));
+    const pin_path = try std.fs.path.join(testing.allocator, &.{ root, "PIN.md" });
+    defer testing.allocator.free(pin_path);
+    const pin_hash = try prompt.readFileHashHexAlloc(testing.allocator, pin_path);
     defer testing.allocator.free(pin_hash);
 
     var result = try startupMemory(testing.allocator, root, &.{"AGENTS.md"}, &.{

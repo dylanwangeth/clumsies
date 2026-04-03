@@ -21,7 +21,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             try printHelp(stderr);
             return;
         },
-        error.MissingValue, error.OutOfMemory => return error.OutOfMemory,
+        error.MissingValue => {
+            try stderr.print("{s}{s}{s}Error:{s} {s} requires a value\n", .{ P, Color.bold, Color.red, Color.reset, err_ctx.flag.? });
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
     };
     defer result.deinit(allocator);
 
