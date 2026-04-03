@@ -36,7 +36,9 @@ pub fn readConfig(allocator: std.mem.Allocator) !std.json.Parsed(std.json.Value)
     const file = fs.openFileAbsolute(config_path, .{}) catch return error.NoConfig;
     defer file.close();
 
-    const content = try file.readToEndAlloc(allocator, 10 * 1024);
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = try fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024));
     defer allocator.free(content);
 
     return std.json.parseFromSlice(std.json.Value, allocator, content, .{});

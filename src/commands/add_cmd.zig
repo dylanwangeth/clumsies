@@ -225,7 +225,9 @@ fn preparePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.
     };
     defer file.close();
 
-    const raw_content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const raw_content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, file_path });
         return null;
     };
@@ -273,7 +275,10 @@ fn preparePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.
         return null;
     };
     defer dest_file.close();
-    dest_file.writeAll(raw_content) catch {
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(dest_file, &write_buf);
+    defer fw.interface.flush() catch {};
+    fw.interface.writeAll(raw_content) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to write file\n", .{ P, Color.bold, Color.red, Color.reset });
         return null;
     };

@@ -53,7 +53,9 @@ pub fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u
     const timestamp = std.time.timestamp();
 
     if (fs.openFileAbsolute(index_path, .{})) |file| {
-        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+        var read_buf: [4096]u8 = undefined;
+        var fr = std.fs.File.Reader.init(file, &read_buf);
+        const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
             file.close();
             return;
         };
@@ -109,7 +111,10 @@ pub fn updatePromptsIndex(allocator: std.mem.Allocator, registry_path: []const u
 
     const idx_out = try fs.createFileAbsolute(index_path, .{});
     defer idx_out.close();
-    try idx_out.writeAll(index_content.items);
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(idx_out, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(index_content.items);
 }
 
 /// Serialize a prompt JSON entry to a buffer
@@ -194,7 +199,9 @@ pub fn addPromptsToBundle(allocator: std.mem.Allocator, registry_path: []const u
     defer allocator.free(index_path);
 
     const idx_file = fs.openFileAbsolute(index_path, .{}) catch return error.BundleIndexNotFound;
-    const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(idx_file, &read_buf);
+    const idx_content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         idx_file.close();
         return error.BundleIndexNotFound;
     };
@@ -269,7 +276,10 @@ pub fn addPromptsToBundle(allocator: std.mem.Allocator, registry_path: []const u
 
     const idx_out = fs.createFileAbsolute(index_path, .{}) catch return error.BundleIndexNotFound;
     defer idx_out.close();
-    idx_out.writeAll(new_index.items) catch return error.BundleIndexNotFound;
+    var fw_buf: [4096]u8 = undefined;
+    var idx_fw = std.fs.File.Writer.init(idx_out, &fw_buf);
+    defer idx_fw.interface.flush() catch {};
+    idx_fw.interface.writeAll(new_index.items) catch return error.BundleIndexNotFound;
 
     return prompts_added;
 }
@@ -277,13 +287,18 @@ pub fn addPromptsToBundle(allocator: std.mem.Allocator, registry_path: []const u
 fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
     defer file.close();
-    try file.writeAll(content);
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(content);
 }
 
 fn readTmpFile(allocator: std.mem.Allocator, dir: std.fs.Dir, sub_path: []const u8) ![]const u8 {
     const file = try dir.openFile(sub_path, .{});
     defer file.close();
-    return try file.readToEndAlloc(allocator, MAX_FILE_SIZE);
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE));
 }
 
 fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {

@@ -396,7 +396,9 @@ fn readWorkspaceFileAlloc(allocator: std.mem.Allocator, workspace_root: []const 
     const file = try std.fs.openFileAbsolute(abs_path, .{});
     defer file.close();
 
-    return try file.readToEndAlloc(allocator, prompt.MAX_FILE_SIZE);
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(prompt.MAX_FILE_SIZE));
 }
 
 fn findMemoryById(inventory: []const MemoryItem, id: []const u8) ?MemoryItem {
@@ -416,7 +418,10 @@ fn knownHashFor(id: []const u8, known: []const KnownMemory) ?[]const u8 {
 fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
     defer file.close();
-    try file.writeAll(content);
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(content);
 }
 
 fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {

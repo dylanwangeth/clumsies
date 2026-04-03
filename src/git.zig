@@ -22,7 +22,9 @@ const MAX_OUTPUT_SIZE = 1 * 1024 * 1024; // 1MB
 
 /// Read all data from a pipe file using dynamic allocation
 fn readPipeAlloc(allocator: std.mem.Allocator, file: std.fs.File) ?[]const u8 {
-    return file.readToEndAlloc(allocator, MAX_OUTPUT_SIZE) catch null;
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    return fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_OUTPUT_SIZE)) catch null;
 }
 
 /// Thread wrapper that writes result to a shared pointer

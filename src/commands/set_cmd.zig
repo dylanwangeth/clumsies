@@ -176,7 +176,9 @@ fn updatePromptMeta(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: s
         return;
     };
 
-    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         file.close();
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -235,7 +237,10 @@ fn updatePromptMeta(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: s
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(new_index.items) catch {
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(idx_out, &write_buf);
+    defer fw.interface.flush() catch {};
+    fw.interface.writeAll(new_index.items) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -294,7 +299,9 @@ fn replacePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.
     };
     defer new_file.close();
 
-    const new_content = new_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var rd_buf: [4096]u8 = undefined;
+    var nfr = std.fs.File.Reader.init(new_file, &rd_buf);
+    const new_content = nfr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read file\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -317,7 +324,9 @@ fn replacePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.
         return;
     };
 
-    const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var rd_buf2: [4096]u8 = undefined;
+    var ifr = std.fs.File.Reader.init(idx_file, &rd_buf2);
+    const idx_content = ifr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         idx_file.close();
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -372,7 +381,10 @@ fn replacePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.
             return;
         };
         defer dest_file.close();
-        dest_file.writeAll(new_content) catch {
+        var dest_write_buf: [4096]u8 = undefined;
+        var dest_fw = std.fs.File.Writer.init(dest_file, &dest_write_buf);
+        defer dest_fw.interface.flush() catch {};
+        dest_fw.interface.writeAll(new_content) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to write file\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
@@ -417,7 +429,10 @@ fn replacePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(new_index.items) catch {
+    var idx_write_buf: [4096]u8 = undefined;
+    var idx_fw = std.fs.File.Writer.init(idx_out, &idx_write_buf);
+    defer idx_fw.interface.flush() catch {};
+    idx_fw.interface.writeAll(new_index.items) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -428,7 +443,9 @@ fn replacePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.
         defer allocator.free(bundles_index_path);
 
         if (fs.openFileAbsolute(bundles_index_path, .{})) |bfile| {
-            const bcontent = bfile.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            var rd_buf3: [4096]u8 = undefined;
+            var bfr = std.fs.File.Reader.init(bfile, &rd_buf3);
+            const bcontent = bfr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
                 bfile.close();
                 return;
             };
@@ -477,7 +494,10 @@ fn replacePrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.
 
                     const bidx_out = fs.createFileAbsolute(bundles_index_path, .{}) catch return;
                     defer bidx_out.close();
-                    bidx_out.writeAll(new_bidx.items) catch {
+                    var bidx_write_buf: [4096]u8 = undefined;
+                    var bidx_fw = std.fs.File.Writer.init(bidx_out, &bidx_write_buf);
+                    defer bidx_fw.interface.flush() catch {};
+                    bidx_fw.interface.writeAll(new_bidx.items) catch {
                         try stderr.print("{s}{s}{s}Error:{s} Failed to write bundles index\n", .{ P, Color.bold, Color.red, Color.reset });
                         return;
                     };
@@ -535,7 +555,9 @@ fn renameGroupFromRef(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator:
         return;
     };
 
-    const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(idx_file, &read_buf);
+    const idx_content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         idx_file.close();
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
@@ -612,7 +634,10 @@ fn renameGroupFromRef(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator:
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(new_index.items) catch {
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(idx_out, &write_buf);
+    defer fw.interface.flush() catch {};
+    fw.interface.writeAll(new_index.items) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to write index data\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -720,7 +745,9 @@ fn setBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.
             defer allocator.free(prompts_index_path);
 
             if (fs.openFileAbsolute(prompts_index_path, .{})) |pidx_file| {
-                const pidx_content = pidx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+                var rd_buf4: [4096]u8 = undefined;
+                var pfr = std.fs.File.Reader.init(pidx_file, &rd_buf4);
+                const pidx_content = pfr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
                     pidx_file.close();
                     return;
                 };
@@ -758,7 +785,9 @@ fn setBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.
                 try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_arg });
                 return;
             };
-            const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            var rd_buf5: [4096]u8 = undefined;
+            var mfr = std.fs.File.Reader.init(meta_file, &rd_buf5);
+            const meta_content = mfr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
                 meta_file.close();
                 try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
                 return;
@@ -783,10 +812,14 @@ fn setBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.
                 try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n", .{ P, Color.bold, Color.red, Color.reset });
                 return;
             };
-            meta_dest_file.writeAll(meta_content) catch {
+            var meta_write_buf: [4096]u8 = undefined;
+            var meta_fw = std.fs.File.Writer.init(meta_dest_file, &meta_write_buf);
+            meta_fw.interface.writeAll(meta_content) catch {
+                meta_fw.interface.flush() catch {};
                 meta_dest_file.close();
                 return;
             };
+            meta_fw.interface.flush() catch {};
             meta_dest_file.close();
         }
     }
@@ -857,7 +890,9 @@ fn setBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.
             try stderr.print("{s}{s}{s}Error:{s} Could not read prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
-        const pidx_content = pidx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+        var rd_buf6: [4096]u8 = undefined;
+        var pfr2 = std.fs.File.Reader.init(pidx_file, &rd_buf6);
+        const pidx_content = pfr2.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
             pidx_file.close();
             return;
         };
@@ -913,7 +948,9 @@ fn setBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.
         try stderr.print("{s}{s}{s}Error:{s} Failed to read bundle index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
-    const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var rd_buf7: [4096]u8 = undefined;
+    var ifr2 = std.fs.File.Reader.init(idx_file, &rd_buf7);
+    const idx_content = ifr2.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         idx_file.close();
         sp_update.fail();
         return;
@@ -1005,7 +1042,10 @@ fn setBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(new_index.items) catch {
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(idx_out, &write_buf);
+    defer fw.interface.flush() catch {};
+    fw.interface.writeAll(new_index.items) catch {
         sp_update.fail();
         return;
     };

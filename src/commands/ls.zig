@@ -80,7 +80,9 @@ fn listPrompts(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.me
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -151,7 +153,9 @@ fn listBundles(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.me
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };

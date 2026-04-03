@@ -95,7 +95,9 @@ pub fn loadMpf(allocator: std.mem.Allocator, workspace_root: []const u8, known_h
     const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return .{ .content = null, .hash = null };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return .{ .content = null, .hash = null };
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch return .{ .content = null, .hash = null };
     errdefer allocator.free(content);
 
     const hash = try prompt.hashContentHexAlloc(allocator, content);
@@ -336,7 +338,9 @@ fn readWorkspaceFileAlloc(allocator: std.mem.Allocator, workspace_root: []const 
     const file = try std.fs.openFileAbsolute(abs_path, .{});
     defer file.close();
 
-    return try file.readToEndAlloc(allocator, prompt.MAX_FILE_SIZE);
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(prompt.MAX_FILE_SIZE));
 }
 
 fn findPromptById(inventory: []const PromptItem, id: []const u8) ?PromptItem {
@@ -572,7 +576,10 @@ pub fn validatePrompt(allocator: std.mem.Allocator, workspace_root: []const u8, 
 fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
     defer file.close();
-    try file.writeAll(content);
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(content);
 }
 
 fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {

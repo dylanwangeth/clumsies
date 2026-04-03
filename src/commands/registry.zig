@@ -171,7 +171,9 @@ pub fn resolveRef(allocator: std.mem.Allocator, registry_path: []const u8, ref: 
 
         const file = fs.openFileAbsolute(index_path, .{}) catch return .not_found;
         defer file.close();
-        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch return .not_found;
+        var read_buf: [4096]u8 = undefined;
+        var fr = std.fs.File.Reader.init(file, &read_buf);
+        const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch return .not_found;
         defer allocator.free(content);
 
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return .not_found;
@@ -189,7 +191,9 @@ pub fn resolveRef(allocator: std.mem.Allocator, registry_path: []const u8, ref: 
 
         const file = fs.openFileAbsolute(index_path, .{}) catch return .not_found;
         defer file.close();
-        const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch return .not_found;
+        var read_buf: [4096]u8 = undefined;
+        var fr = std.fs.File.Reader.init(file, &read_buf);
+        const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch return .not_found;
         defer allocator.free(content);
 
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return .not_found;
@@ -239,7 +243,9 @@ pub fn bundleExists(allocator: std.mem.Allocator, registry_path: []const u8, nam
     const file = fs.openFileAbsolute(index_path, .{}) catch return false;
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch return false;
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch return false;
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return false;
@@ -257,7 +263,10 @@ pub fn bundleExists(allocator: std.mem.Allocator, registry_path: []const u8, nam
 fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
     defer file.close();
-    try file.writeAll(content);
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(content);
 }
 
 fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {

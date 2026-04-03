@@ -61,7 +61,9 @@ pub fn readFileHashHexAlloc(allocator: std.mem.Allocator, abs_path: []const u8) 
     const file = try std.fs.openFileAbsolute(abs_path, .{});
     defer file.close();
 
-    const content = try file.readToEndAlloc(allocator, MAX_FILE_SIZE);
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = try fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE));
     defer allocator.free(content);
 
     return try hashContentHexAlloc(allocator, content);

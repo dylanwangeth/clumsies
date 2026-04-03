@@ -52,7 +52,10 @@ pub fn appendActivation(
 
     const line = try buildActivationLine(allocator, workspace_root, phase, task_id, turn_id, refs);
     defer allocator.free(line);
-    try file.writeAll(line);
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(line);
 }
 
 fn buildActivationLine(

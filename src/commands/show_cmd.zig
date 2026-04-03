@@ -74,7 +74,9 @@ fn showPrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -112,7 +114,9 @@ fn showPrompt(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem
     };
     defer prompt_file.close();
 
-    const prompt_content = prompt_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var rd_buf: [4096]u8 = undefined;
+    var pfr = std.fs.File.Reader.init(prompt_file, &rd_buf);
+    const prompt_content = pfr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read prompt\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -136,7 +140,9 @@ fn showBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -195,7 +201,9 @@ fn showBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem
         };
         defer meta_file.close();
 
-        const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+        var rd_buf2: [4096]u8 = undefined;
+        var mfr = std.fs.File.Reader.init(meta_file, &rd_buf2);
+        const meta_content = mfr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
@@ -215,7 +223,9 @@ fn showBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem
     var prompts_index: ?std.json.Parsed(std.json.Value) = null;
     if (fs.openFileAbsolute(prompts_index_path, .{})) |pf| {
         defer pf.close();
-        if (pf.readToEndAlloc(allocator, MAX_FILE_SIZE)) |pc| {
+        var rd_buf3: [4096]u8 = undefined;
+        var pfr2 = std.fs.File.Reader.init(pf, &rd_buf3);
+        if (pfr2.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE))) |pc| {
             defer allocator.free(pc);
             prompts_index = std.json.parseFromSlice(std.json.Value, allocator, pc, .{}) catch null;
         } else |_| {}
