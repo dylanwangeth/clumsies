@@ -173,7 +173,10 @@ fn setConfig(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.
         return;
     };
     defer file.close();
-    try file.writeAll(output.items);
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(output.items);
 
     try stdout.print("{s}{s}{s}✓{s} Set {s} = {s}\n", .{ P, Color.bold, Color.green, Color.reset, key, value });
 }

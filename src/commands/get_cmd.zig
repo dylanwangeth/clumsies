@@ -113,7 +113,9 @@ fn getPrompts(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem
     };
     defer file.close();
 
-    const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to read index\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -225,7 +227,9 @@ fn getBundle(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.
         try stderr.print("{s}{s}{s}Error:{s} No bundles found in registry\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
-    const index_content = index_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+    var rd_buf: [4096]u8 = undefined;
+    var ifr = std.fs.File.Reader.init(index_file, &rd_buf);
+    const index_content = ifr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
         index_file.close();
         return;
     };
@@ -308,7 +312,9 @@ fn importBundlePrompts(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator
     var prompts_index: ?std.json.Parsed(std.json.Value) = null;
     if (fs.openFileAbsolute(prompts_index_path, .{})) |pf| {
         defer pf.close();
-        if (pf.readToEndAlloc(allocator, MAX_FILE_SIZE)) |content| {
+        var rd_buf2: [4096]u8 = undefined;
+        var pfr = std.fs.File.Reader.init(pf, &rd_buf2);
+        if (pfr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE))) |content| {
             defer allocator.free(content);
             prompts_index = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch null;
         } else |_| {}

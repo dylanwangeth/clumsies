@@ -83,7 +83,10 @@ pub fn appendTraceEvent(allocator: std.mem.Allocator, workspace_root: []const u8
     const line = try serializeTraceEvent(allocator, event);
     defer allocator.free(line);
 
-    try file.writeAll(line);
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(line);
 }
 
 fn serializeTraceEvent(allocator: std.mem.Allocator, event: TraceEvent) ![]u8 {
@@ -170,7 +173,9 @@ pub fn computeWorkspaceStats(allocator: std.mem.Allocator, workspace_root: []con
     const file = std.fs.openFileAbsolute(trace_path, .{}) catch return stats;
     defer file.close();
 
-    const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = try fr.interface.allocRemaining(allocator, std.io.Limit.limited(64 * 1024 * 1024));
     defer allocator.free(content);
 
     // Aggregate refer events
@@ -246,7 +251,9 @@ pub fn computePromptStats(
     const file = std.fs.openFileAbsolute(trace_path, .{}) catch return stats;
     defer file.close();
 
-    const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = try fr.interface.allocRemaining(allocator, std.io.Limit.limited(64 * 1024 * 1024));
     defer allocator.free(content);
 
     // Aggregate refer events for this prompt
@@ -372,7 +379,9 @@ pub fn computeReferCountsByConstraint(
     const file = std.fs.openFileAbsolute(trace_path, .{}) catch return result;
     defer file.close();
 
-    const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = try fr.interface.allocRemaining(allocator, std.io.Limit.limited(64 * 1024 * 1024));
     defer allocator.free(content);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -465,7 +474,9 @@ pub fn collectReferEvents(
     const file = std.fs.openFileAbsolute(trace_path, .{}) catch return events;
     defer file.close();
 
-    const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = try fr.interface.allocRemaining(allocator, std.io.Limit.limited(64 * 1024 * 1024));
     defer allocator.free(content);
 
     var lines = std.mem.splitScalar(u8, content, '\n');

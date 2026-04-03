@@ -147,7 +147,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         defer allocator.free(pidx_path);
 
         if (fs.openFileAbsolute(pidx_path, .{})) |pidx_file| {
-            const pidx_content = pidx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            var read_buf: [4096]u8 = undefined;
+            var pfr = std.fs.File.Reader.init(pidx_file, &read_buf);
+            const pidx_content = pfr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
                 pidx_file.close();
                 try stderr.print("{s}{s}{s}Error:{s} Failed to read prompts index\n", .{ P, Color.bold, Color.red, Color.reset });
                 return;
@@ -193,7 +195,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             try stderr.print("{s}{s}{s}Error:{s} Could not open meta-prompt file: {s}\n", .{ P, Color.bold, Color.red, Color.reset, meta_prompt_arg });
             return;
         };
-        const meta_content = meta_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+        var rd_buf: [4096]u8 = undefined;
+        var mfr = std.fs.File.Reader.init(meta_file, &rd_buf);
+        const meta_content = mfr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
             meta_file.close();
             sp_meta.fail();
             try stderr.print("{s}{s}{s}Error:{s} Failed to read meta-prompt file\n", .{ P, Color.bold, Color.red, Color.reset });
@@ -217,11 +221,15 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             try stderr.print("{s}{s}{s}Error:{s} Failed to write meta-prompt to registry\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
-        meta_dest_file.writeAll(meta_content) catch {
+        var meta_write_buf: [4096]u8 = undefined;
+        var meta_fw = std.fs.File.Writer.init(meta_dest_file, &meta_write_buf);
+        meta_fw.interface.writeAll(meta_content) catch {
+            meta_fw.interface.flush() catch {};
             meta_dest_file.close();
             sp_meta.fail();
             return;
         };
+        meta_fw.interface.flush() catch {};
         meta_dest_file.close();
 
         // Extract meta-prompt name from filename (e.g., "CLAUDE" from "CLAUDE.md")
@@ -267,7 +275,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     var has_existing_bundles: bool = false;
 
     if (fs.openFileAbsolute(index_path, .{})) |idx_file| {
-        const idx_content = idx_file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+        var rd_buf2: [4096]u8 = undefined;
+        var ifr = std.fs.File.Reader.init(idx_file, &rd_buf2);
+        const idx_content = ifr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
             idx_file.close();
             sp3.fail();
             return;
@@ -327,7 +337,10 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         return;
     };
     defer idx_out.close();
-    idx_out.writeAll(existing_bundles.items) catch {
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(idx_out, &write_buf);
+    defer fw.interface.flush() catch {};
+    fw.interface.writeAll(existing_bundles.items) catch {
         sp3.fail();
         return;
     };

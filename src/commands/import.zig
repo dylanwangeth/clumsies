@@ -106,7 +106,9 @@ pub fn collectAndUploadPrompts(allocator: std.mem.Allocator, src_dir: []const u8
             const name_end = ext_idx.?;
 
             const file = fs.openFileAbsolute(src_path, .{}) catch continue;
-            const content = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch {
+            var read_buf: [4096]u8 = undefined;
+            var fr = std.fs.File.Reader.init(file, &read_buf);
+            const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE)) catch {
                 file.close();
                 continue;
             };
