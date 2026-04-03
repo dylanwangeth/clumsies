@@ -279,26 +279,6 @@ fn serializePromptList(allocator: std.mem.Allocator, items: []const workspace_pr
     return try buf.toOwnedSlice(allocator);
 }
 
-fn serializeLoadResult(allocator: std.mem.Allocator, result: *workspace_prompt.LoadResult, workspace_root: []const u8) ![]u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(allocator);
-
-    const ws_id = try trace.workspaceId(allocator, workspace_root);
-    defer allocator.free(ws_id);
-
-    const esc_ws = try encoding.jsonEscapeAlloc(allocator, ws_id);
-    defer allocator.free(esc_ws);
-
-    try buf.writer(allocator).print("{{\"workspaceId\":\"{s}\",\"items\":[", .{esc_ws});
-    for (result.items.items, 0..) |item, idx| {
-        if (idx > 0) try buf.append(allocator, ',');
-        try appendLoadedPrompt(allocator, &buf, item);
-    }
-    try buf.appendSlice(allocator, "]}");
-
-    return try buf.toOwnedSlice(allocator);
-}
-
 fn serializeLoadResultWithConstraints(allocator: std.mem.Allocator, result: *workspace_prompt.LoadResult, workspace_root: []const u8) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);

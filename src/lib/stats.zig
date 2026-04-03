@@ -209,8 +209,10 @@ pub fn computeTimeBuckets(
             try trace.msToWeekStr(allocator, event.timestamp);
 
         if (!bucket_refer_count.contains(date_key)) {
+            // First visit: dupe key for bucket_order, bucket_refer_count, and cumulative_coverage
+            const owned_key = try allocator.dupe(u8, date_key);
             try bucket_order.append(allocator, try allocator.dupe(u8, date_key));
-            try bucket_refer_count.put(date_key, 0);
+            try bucket_refer_count.put(owned_key, 0);
         }
 
         if (!seen_constraints.contains(event.constraint_id)) {
@@ -224,7 +226,9 @@ pub fn computeTimeBuckets(
             @as(f64, @floatFromInt(seen_constraints.count())) / @as(f64, @floatFromInt(total_constraints))
         else
             0.0;
-        try cumulative_coverage.put(date_key, coverage);
+        // Use the owned key already in the map for cumulative_coverage
+        const stable_key = bucket_refer_count.getKey(date_key).?;
+        try cumulative_coverage.put(stable_key, coverage);
 
         allocator.free(date_key);
     }
