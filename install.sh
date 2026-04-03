@@ -73,18 +73,40 @@ verify_checksum() {
     fi
 }
 
+get_latest_tag() {
+    API_URL="https://api.github.com/repos/$REPO/releases?per_page=1"
+    if command -v curl > /dev/null; then
+        TAG=$(curl -fsSL "$API_URL" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+    elif command -v wget > /dev/null; then
+        TAG=$(wget -qO- "$API_URL" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+    else
+        error "curl or wget required"
+    fi
+
+    if [ -z "$TAG" ]; then
+        error "Failed to fetch latest release tag"
+    fi
+
+    echo "$TAG"
+}
+
 main() {
     printf "%b%bInstalling %bclumsies%b%b...%b\n" "$BOLD" "" "$ORANGE" "$RESET" "$BOLD" "$RESET"
 
     PLATFORM=$(detect_platform)
     BINARY_NAME="clumsies-$PLATFORM"
     printf "%b→%b Detected platform: %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$PLATFORM" "$RESET"
+
+    info "Fetching latest release..."
+    TAG=$(get_latest_tag)
+    printf "%b→%b Latest release: %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$TAG" "$RESET"
+
     printf "%b→%b Creating %b%s%b\n" "$ORANGE" "$RESET" "$ORANGE" "$INSTALL_DIR" "$RESET"
     mkdir -p "$BIN_DIR"
 
     # Download checksums
     info "Downloading checksums..."
-    CHECKSUMS_URL="https://github.com/$REPO/releases/latest/download/checksums.txt"
+    CHECKSUMS_URL="https://github.com/$REPO/releases/download/$TAG/checksums.txt"
     CHECKSUMS_FILE=$(mktemp)
     download "$CHECKSUMS_URL" "$CHECKSUMS_FILE"
 
@@ -97,7 +119,7 @@ main() {
 
     # Download binary
     info "Downloading binary..."
-    DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$BINARY_NAME"
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$BINARY_NAME"
     TEMP_BINARY=$(mktemp)
     download "$DOWNLOAD_URL" "$TEMP_BINARY"
 
