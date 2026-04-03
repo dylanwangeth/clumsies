@@ -579,7 +579,9 @@ test "appendTraceEvent: writes jsonl" {
 
     const file = try std.fs.openFileAbsolute(trace_path, .{});
     defer file.close();
-    const content = try file.readToEndAlloc(testing.allocator, 16384);
+    var tr_buf: [4096]u8 = undefined;
+    var tr = std.fs.File.Reader.init(file, &tr_buf);
+    const content = try tr.interface.readAllAlloc(testing.allocator, 16384);
     defer testing.allocator.free(content);
 
     // Should have 2 lines

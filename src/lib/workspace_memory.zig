@@ -554,7 +554,9 @@ test "activateMemory: deduplicates ids and logs activation" {
     defer testing.allocator.free(log_path);
     const file = try std.fs.openFileAbsolute(log_path, .{});
     defer file.close();
-    const content = try file.readToEndAlloc(testing.allocator, 4096);
+    var tr_buf: [4096]u8 = undefined;
+    var tr = std.fs.File.Reader.init(file, &tr_buf);
+    const content = try tr.interface.readAllAlloc(testing.allocator, 4096);
     defer testing.allocator.free(content);
 
     try testing.expect(std.mem.indexOf(u8, content, "\"task_id\":\"task-1\"") != null);
