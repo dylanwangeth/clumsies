@@ -85,8 +85,8 @@ pub fn appendTraceEvent(allocator: std.mem.Allocator, workspace_root: []const u8
 
     var write_buf: [4096]u8 = undefined;
     var fw = std.fs.File.Writer.init(file, &write_buf);
-    defer fw.interface.flush() catch {};
     try fw.interface.writeAll(line);
+    try fw.interface.flush();
 }
 
 fn serializeTraceEvent(allocator: std.mem.Allocator, event: TraceEvent) ![]u8 {

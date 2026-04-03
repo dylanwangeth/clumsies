@@ -54,8 +54,8 @@ pub fn appendActivation(
     defer allocator.free(line);
     var write_buf: [4096]u8 = undefined;
     var fw = std.fs.File.Writer.init(file, &write_buf);
-    defer fw.interface.flush() catch {};
     try fw.interface.writeAll(line);
+    try fw.interface.flush();
 }
 
 fn buildActivationLine(
