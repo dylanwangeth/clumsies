@@ -1,24 +1,19 @@
-const ids = @import("ids.zig");
+const std = @import("std");
 
-pub const WorkspaceManifest = struct {
-    ws_id: []const u8,
-    name: []const u8,
-    revision: i64,
-    prompts: []const PromptEntry,
-    context: []const ContextEntry,
+pub const KvEntry = struct {
+    key: []const u8,
+    value: []const u8,
 };
 
-pub const PromptEntry = struct {
-    prompt_id: []const u8,
-    content_hash: []const u8,
-};
+pub const KvMap = struct {
+    entries: []const KvEntry,
 
-pub const ContextEntry = struct {
-    path: []const u8,
-    content_hash: []const u8,
-};
-
-pub const LibraryManifest = struct {
-    revision: i64,
-    prompts: []const PromptEntry,
+    pub fn jsonStringify(self: *const @This(), jw: anytype) !void {
+        try jw.beginObject();
+        for (self.entries) |e| {
+            try jw.objectField(e.key);
+            try jw.write(e.value);
+        }
+        try jw.endObject();
+    }
 };

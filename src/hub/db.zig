@@ -20,7 +20,7 @@ pub fn initPool(allocator: std.mem.Allocator, config: Config) !*Pool {
     });
 }
 
-pub fn migrate(allocator: std.mem.Allocator, pool: *Pool) !void {
+pub fn migrate(pool: *Pool) !void {
     const conn = try pool.acquire();
     defer conn.release();
 
@@ -32,7 +32,6 @@ pub fn migrate(allocator: std.mem.Allocator, pool: *Pool) !void {
         if (conn.err) |pg_err| {
             try w.interface.print("pg: {s}\n", .{pg_err.message});
         }
-        _ = allocator;
         return err;
     };
 }

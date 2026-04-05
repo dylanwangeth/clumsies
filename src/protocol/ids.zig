@@ -1,25 +1,5 @@
 const std = @import("std");
 
-pub const PromptId = struct {
-    value: []const u8,
-
-    pub fn format(self: PromptId, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.writeAll(self.value);
-    }
-};
-
-pub const WorkspaceId = struct {
-    value: []const u8,
-
-    pub fn format(self: WorkspaceId, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.writeAll(self.value);
-    }
-};
-
-pub const ProposalId = struct {
-    value: []const u8,
-};
-
 pub const Revision = struct {
     value: i64,
 

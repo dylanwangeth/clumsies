@@ -15,7 +15,6 @@ const HttpServer = httpz.Server(*Context);
 pub const Context = struct {
     pool: *pg.Pool,
     config: Config,
-    user: ?auth.AuthUser = null,
 };
 
 pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Server {

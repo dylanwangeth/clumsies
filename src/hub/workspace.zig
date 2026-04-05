@@ -3,6 +3,8 @@ const httpz = @import("httpz");
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("../protocol/api_error.zig").send;
+const KvMap = @import("../protocol/manifest.zig").KvMap;
+const KvEntry = @import("../protocol/manifest.zig").KvEntry;
 
 const CreateRequest = struct {
     name: []const u8,
@@ -33,10 +35,10 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     std.crypto.random.bytes(&rand_bytes);
     var ws_id_buf: [35]u8 = undefined;
     @memcpy(ws_id_buf[0..3], "ws-");
-    const hex = "0123456789abcdef";
+    const hex_chars = "0123456789abcdef";
     for (rand_bytes, 0..) |byte, i| {
-        ws_id_buf[3 + i * 2] = hex[byte >> 4];
-        ws_id_buf[3 + i * 2 + 1] = hex[byte & 0x0f];
+        ws_id_buf[3 + i * 2] = hex_chars[byte >> 4];
+        ws_id_buf[3 + i * 2 + 1] = hex_chars[byte & 0x0f];
     }
 
     _ = conn.exec(
@@ -160,11 +162,11 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     } orelse {
         return apiError(res, 404, "NOT_FOUND", "workspace not found");
     };
-    defer ws_row.deinit() catch {};
 
-    const ws_id_val = try ws_row.get([]const u8, 0);
-    const ws_name = try ws_row.get([]const u8, 1);
+    const ws_id_val = try req.arena.dupe(u8, try ws_row.get([]const u8, 0));
+    const ws_name = try req.arena.dupe(u8, try ws_row.get([]const u8, 1));
     const revision = try ws_row.get(i32, 2);
+    ws_row.deinit() catch {};
 
     if (req.header("if-none-match")) |etag| {
         var rev_buf: [32]u8 = undefined;
@@ -175,59 +177,21 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         }
     }
 
-    // Build JSON response manually for dynamic key-value maps
-    const w = res.writer();
-    try w.writeAll("{\"ws_id\":\"");
-    try w.writeAll(ws_id_val);
-    try w.writeAll("\",\"name\":\"");
-    try w.writeAll(ws_name);
-    try w.print("\",\"revision\":{d},\"prompts\":{{", .{revision});
+    const prompts = try collectKvMap(req.arena, conn, "SELECT wp.prompt_id, p.content_hash FROM workspace_prompts wp JOIN prompts p ON p.prompt_id = wp.prompt_id WHERE wp.ws_id = $1", .{ws_id});
 
-    var prompts_result = conn.query(
-        "SELECT wp.prompt_id, p.content_hash FROM workspace_prompts wp JOIN prompts p ON p.prompt_id = wp.prompt_id WHERE wp.ws_id = $1",
-        .{ws_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-    defer prompts_result.deinit();
-
-    var first = true;
-    while (try prompts_result.next()) |prow| {
-        if (!first) try w.writeAll(",");
-        first = false;
-        try w.writeAll("\"");
-        try w.writeAll(try prow.get([]const u8, 0));
-        try w.writeAll("\":\"");
-        try w.writeAll(try prow.get([]const u8, 1));
-        try w.writeAll("\"");
-    }
-
-    try w.writeAll("},\"context\":{");
-
-    var files_result = conn.query(
-        "SELECT path, content_hash FROM workspace_files WHERE ws_id = $1",
-        .{ws_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-    defer files_result.deinit();
-
-    first = true;
-    while (try files_result.next()) |frow| {
-        if (!first) try w.writeAll(",");
-        first = false;
-        try w.writeAll("\"");
-        try w.writeAll(try frow.get([]const u8, 0));
-        try w.writeAll("\":\"");
-        try w.writeAll(try frow.get([]const u8, 1));
-        try w.writeAll("\"");
-    }
-
-    try w.writeAll("}}");
+    const context = try collectKvMap(req.arena, conn, "SELECT path, content_hash FROM workspace_files WHERE ws_id = $1", .{ws_id});
 
     var etag_buf: [32]u8 = undefined;
-    const etag = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
-    res.header("ETag", etag);
+    const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
+    res.header("ETag", try req.arena.dupe(u8, etag_slice));
+
+    try res.json(.{
+        .ws_id = ws_id_val,
+        .name = ws_name,
+        .revision = revision,
+        .prompts = prompts,
+        .context = context,
+    }, .{});
 }
 
 const AddPromptRequest = struct {
@@ -262,7 +226,7 @@ pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     } orelse {
         return apiError(res, 404, "NOT_FOUND", "prompt not found");
     };
-    defer prompt_row.deinit() catch {};
+    prompt_row.deinit() catch {};
 
     _ = conn.exec(
         "INSERT INTO workspace_prompts (ws_id, prompt_id) VALUES ($1, $2)",
@@ -284,9 +248,23 @@ pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     } orelse {
         return apiError(res, 404, "NOT_FOUND", "workspace not found");
     };
-    defer rev_row.deinit() catch {};
+    const new_rev = try rev_row.get(i32, 0);
+    rev_row.deinit() catch {};
 
-    try res.json(.{
-        .revision = try rev_row.get(i32, 0),
-    }, .{});
+    try res.json(.{ .revision = new_rev }, .{});
+}
+
+fn collectKvMap(arena: std.mem.Allocator, conn: anytype, sql: []const u8, params: anytype) !KvMap {
+    var result = conn.query(sql, params) catch return KvMap{ .entries = &.{} };
+    defer result.deinit();
+
+    var entries: std.ArrayList(KvEntry) = .empty;
+    while (try result.next()) |row| {
+        try entries.append(arena, .{
+            .key = try arena.dupe(u8, try row.get([]const u8, 0)),
+            .value = try arena.dupe(u8, try row.get([]const u8, 1)),
+        });
+    }
+
+    return KvMap{ .entries = entries.items };
 }
