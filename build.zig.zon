@@ -2,6 +2,16 @@
     .fingerprint = 0xa21731978d142f78,
     .name = .clumsies,
     .version = "0.18.0-alpha",
+    .dependencies = .{
+        .httpz = .{
+            .url = "git+https://github.com/karlseguin/http.zig#1a4d53b95bc4ac6c84cbc081727428de40c8c635",
+            .hash = "httpz-0.0.0-PNVzrNVOBwDlxyffzwONpI9j9dYqKWXxopU1ZCLt4C09",
+        },
+        .pg = .{
+            .url = "git+https://github.com/karlseguin/pg.zig#e58b318b7867ef065b3135983f829219c5eef891",
+            .hash = "pg-0.0.0-Wp_7gXFoBgD0fQ72WICKa-bxLga03AXXQ3BbIsjjohQ3",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
