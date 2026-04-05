@@ -60,6 +60,11 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         .{ &ws_id_buf, user.user_id },
     ) catch {};
 
+    // Initialize workspace from bundle if specified
+    if (body.bundle_id) |bid| {
+        initFromBundle(conn, &ws_id_buf, bid);
+    }
+
     res.status = 201;
     try res.json(.{
         .ws_id = &ws_id_buf,
@@ -69,7 +74,7 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
 }
 
 pub fn handleGet(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
@@ -81,6 +86,10 @@ pub fn handleGet(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
 
     var row = conn.row(
         "SELECT ws_id, name, revision FROM workspaces WHERE ws_id = $1",
@@ -104,7 +113,7 @@ const UpdateRequest = struct {
 };
 
 pub fn handleUpdate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
@@ -122,6 +131,12 @@ pub fn handleUpdate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
+
+    if (!try checkIfMatch(conn, req, res, ws_id)) return;
 
     var row = conn.row(
         "UPDATE workspaces SET name = $1, revision = revision + 1 WHERE ws_id = $2 RETURNING ws_id, name, revision",
@@ -141,7 +156,7 @@ pub fn handleUpdate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
 }
 
 pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
@@ -153,6 +168,10 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
 
     var ws_row = conn.row(
         "SELECT ws_id, name, revision FROM workspaces WHERE ws_id = $1",
@@ -199,7 +218,7 @@ const AddPromptRequest = struct {
 };
 
 pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
@@ -217,6 +236,12 @@ pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
+
+    if (!try checkIfMatch(conn, req, res, ws_id)) return;
 
     var prompt_row = conn.row(
         "SELECT prompt_id FROM prompts WHERE prompt_id = $1",
@@ -255,7 +280,7 @@ pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
 }
 
 pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
@@ -270,6 +295,12 @@ pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
+
+    if (!try checkIfMatch(conn, req, res, ws_id)) return;
 
     const deleted = conn.exec(
         "DELETE FROM workspace_prompts WHERE ws_id = $1 AND prompt_id = $2",
@@ -297,7 +328,7 @@ pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz
 }
 
 pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
@@ -309,6 +340,10 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
 
     const FileMeta = struct {
         path: []const u8,
@@ -335,7 +370,7 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
 }
 
 pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
@@ -353,6 +388,10 @@ pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *htt
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
 
     var row = conn.row(
         "SELECT content FROM workspace_files WHERE ws_id = $1 AND path = $2",
@@ -371,7 +410,7 @@ pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *htt
 }
 
 pub fn handlePutFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
@@ -389,6 +428,11 @@ pub fn handlePutFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
     };
 
+    const max_file_size = 10 * 1024 * 1024; // 10MB
+    if (body.len > max_file_size) {
+        return apiError(res, 413, "PAYLOAD_TOO_LARGE", "file exceeds 10MB limit");
+    }
+
     const hash = @import("../protocol/hash.zig").ContentHash.compute(body);
     const hash_slice: []const u8 = &hash;
 
@@ -396,6 +440,12 @@ pub fn handlePutFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
+
+    if (!try checkIfMatch(conn, req, res, ws_id)) return;
 
     _ = conn.exec(
         \\INSERT INTO workspace_files (ws_id, path, content, content_hash, updated_at)
@@ -425,7 +475,7 @@ pub fn handlePutFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
 }
 
 pub fn handleDeleteFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
@@ -443,6 +493,12 @@ pub fn handleDeleteFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
+
+    if (!try checkIfMatch(conn, req, res, ws_id)) return;
 
     const deleted = conn.exec(
         "DELETE FROM workspace_files WHERE ws_id = $1 AND path = $2",
@@ -467,6 +523,53 @@ pub fn handleDeleteFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     rev_row.deinit() catch {};
 
     try res.json(.{ .revision = new_rev }, .{});
+}
+
+fn initFromBundle(conn: anytype, ws_id: []const u8, bundle_id: []const u8) void {
+    var result = conn.query(
+        "SELECT prompt_id FROM bundle_prompts WHERE bundle_id = $1",
+        .{bundle_id},
+    ) catch return;
+    defer result.deinit();
+
+    while (result.next() catch null) |brow| {
+        const pid = brow.get([]const u8, 0) catch continue;
+        _ = conn.exec(
+            "INSERT INTO workspace_prompts (ws_id, prompt_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            .{ ws_id, pid },
+        ) catch {};
+    }
+}
+
+fn checkIfMatch(conn: anytype, req: anytype, res: anytype, ws_id: []const u8) !bool {
+    const if_match = req.header("if-match") orelse return true;
+    // Parse "rev-N" from the ETag
+    const trimmed = if (if_match.len > 2 and if_match[0] == '"' and if_match[if_match.len - 1] == '"')
+        if_match[1 .. if_match.len - 1]
+    else
+        if_match;
+    if (!std.mem.startsWith(u8, trimmed, "rev-")) {
+        try apiError(res, 412, "PRECONDITION_FAILED", "invalid ETag format");
+        return false;
+    }
+    const expected_rev = std.fmt.parseInt(i32, trimmed[4..], 10) catch {
+        try apiError(res, 412, "PRECONDITION_FAILED", "invalid ETag format");
+        return false;
+    };
+    var rev_row = conn.row("SELECT revision FROM workspaces WHERE ws_id = $1", .{ws_id}) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    } orelse {
+        try apiError(res, 404, "NOT_FOUND", "workspace not found");
+        return false;
+    };
+    const current_rev = try rev_row.get(i32, 0);
+    rev_row.deinit() catch {};
+    if (current_rev != expected_rev) {
+        try apiError(res, 412, "PRECONDITION_FAILED", "revision mismatch, re-fetch manifest");
+        return false;
+    }
+    return true;
 }
 
 fn collectKvMap(arena: std.mem.Allocator, conn: anytype, sql: []const u8, params: anytype) !KvMap {

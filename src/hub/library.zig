@@ -73,6 +73,7 @@ const PromptMeta = struct {
     canonical_name: []const u8,
     content_hash: []const u8,
     updated_at: []const u8,
+    source: []const u8,
 };
 
 pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -80,17 +81,30 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
+    const qs = req.query() catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid query string");
+    };
+    const kind_filter = qs.get("kind");
+
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
 
-    var result = conn.query(
-        "SELECT prompt_id, kind, canonical_name, content_hash, updated_at::text FROM prompts WHERE org_id = $1::uuid ORDER BY canonical_name",
-        .{user.org_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
+    var result = if (kind_filter) |kind|
+        conn.query(
+            "SELECT p.prompt_id, p.kind, p.canonical_name, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.kind = $2 ORDER BY p.canonical_name",
+            .{ user.org_id, kind },
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        }
+    else
+        conn.query(
+            "SELECT p.prompt_id, p.kind, p.canonical_name, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid ORDER BY p.canonical_name",
+            .{user.org_id},
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        };
     defer result.deinit();
 
     var list: std.ArrayList(PromptMeta) = .empty;
@@ -101,11 +115,18 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
             .canonical_name = try req.arena.dupe(u8, try row.get([]const u8, 2)),
             .content_hash = try req.arena.dupe(u8, try row.get([]const u8, 3)),
             .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+            .source = try req.arena.dupe(u8, try row.get([]const u8, 5)),
         });
     }
 
     try res.json(.{ .prompts = list.items }, .{});
 }
+
+const HistoryEntry = struct {
+    content_hash: []const u8,
+    merged_at: []const u8,
+    proposal_id: ?[]const u8,
+};
 
 pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -125,7 +146,7 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     defer conn.release();
 
     var row = conn.row(
-        "SELECT prompt_id, kind, canonical_name, content_hash, updated_at::text FROM prompts WHERE org_id = $1::uuid AND canonical_name = $2",
+        "SELECT p.prompt_id, p.kind, p.canonical_name, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.canonical_name = $2",
         .{ user.org_id, name },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -138,7 +159,31 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const canonical_name = try req.arena.dupe(u8, try row.get([]const u8, 2));
     const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 3));
     const updated_at = try req.arena.dupe(u8, try row.get([]const u8, 4));
+    const source = try req.arena.dupe(u8, try row.get([]const u8, 5));
     row.deinit() catch {};
+
+    var history_result = conn.query(
+        "SELECT content_hash, merged_at::text, proposal_id FROM prompt_history WHERE prompt_id = $1 ORDER BY merged_at DESC",
+        .{prompt_id},
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
+    defer history_result.deinit();
+
+    var history: std.ArrayList(HistoryEntry) = .empty;
+    while (try history_result.next()) |hrow| {
+        const h_hash = try req.arena.dupe(u8, try hrow.get([]const u8, 0));
+        const h_merged = try req.arena.dupe(u8, try hrow.get([]const u8, 1));
+        const h_proposal: ?[]const u8 = if (hrow.get([]const u8, 2)) |v|
+            try req.arena.dupe(u8, v)
+        else |_|
+            null;
+        try history.append(req.arena, .{
+            .content_hash = h_hash,
+            .merged_at = h_merged,
+            .proposal_id = h_proposal,
+        });
+    }
 
     try res.json(.{
         .prompt_id = prompt_id,
@@ -146,6 +191,8 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         .canonical_name = canonical_name,
         .content_hash = content_hash,
         .updated_at = updated_at,
+        .source = source,
+        .history = history.items,
     }, .{});
 }
 
