@@ -6,7 +6,6 @@ db_port: u16,
 db_name: []const u8,
 db_user: []const u8,
 db_password: []const u8,
-token_secret: []const u8,
 token_ttl_seconds: u32,
 
 const Config = @This();
@@ -19,7 +18,6 @@ pub fn fromEnv() Config {
         .db_name = getEnvStr("HUB_DB_NAME", "clumsies"),
         .db_user = getEnvStr("HUB_DB_USER", "clumsies"),
         .db_password = getEnvStr("HUB_DB_PASSWORD", "clumsies"),
-        .token_secret = getEnvStr("HUB_TOKEN_SECRET", "dev-secret-change-in-production"),
         .token_ttl_seconds = getEnvInt(u32, "HUB_TOKEN_TTL", 3600),
     };
 }

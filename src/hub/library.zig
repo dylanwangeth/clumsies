@@ -3,6 +3,8 @@ const httpz = @import("httpz");
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("../protocol/api_error.zig").send;
+const KvMap = @import("../protocol/manifest.zig").KvMap;
+const KvEntry = @import("../protocol/manifest.zig").KvEntry;
 
 pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -20,13 +22,15 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        const w = res.writer();
-        try w.writeAll("{\"revision\":0,\"prompts\":{}}");
+        try res.json(.{
+            .revision = @as(i32, 0),
+            .prompts = KvMap{ .entries = &.{} },
+        }, .{});
         return;
     };
-    defer rev_row.deinit() catch {};
 
     const revision = try rev_row.get(i32, 0);
+    rev_row.deinit() catch {};
 
     if (req.header("if-none-match")) |etag| {
         var etag_buf: [32]u8 = undefined;
@@ -45,25 +49,22 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     };
     defer result.deinit();
 
-    const w = res.writer();
-    try w.print("{{\"revision\":{d},\"prompts\":{{", .{revision});
-
-    var first = true;
+    var entries: std.ArrayList(KvEntry) = .empty;
     while (try result.next()) |row| {
-        if (!first) try w.writeAll(",");
-        first = false;
-        try w.writeAll("\"");
-        try w.writeAll(try row.get([]const u8, 0));
-        try w.writeAll("\":\"");
-        try w.writeAll(try row.get([]const u8, 1));
-        try w.writeAll("\"");
+        try entries.append(req.arena, .{
+            .key = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .value = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+        });
     }
 
-    try w.writeAll("}}");
-
     var etag_buf: [32]u8 = undefined;
-    const etag = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
-    res.header("ETag", etag);
+    const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
+    res.header("ETag", try req.arena.dupe(u8, etag_slice));
+
+    try res.json(.{
+        .revision = revision,
+        .prompts = KvMap{ .entries = entries.items },
+    }, .{});
 }
 
 const PromptMeta = struct {
@@ -93,19 +94,15 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer result.deinit();
 
     var list: std.ArrayList(PromptMeta) = .empty;
-    defer list.deinit(req.arena);
-
     while (try result.next()) |row| {
         try list.append(req.arena, .{
-            .prompt_id = try row.get([]const u8, 0),
-            .kind = try row.get([]const u8, 1),
-            .canonical_name = try row.get([]const u8, 2),
-            .content_hash = try row.get([]const u8, 3),
-            .updated_at = try row.get([]const u8, 4),
+            .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .kind = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+            .canonical_name = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .content_hash = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
         });
     }
 
-    try res.json(.{
-        .prompts = list.items,
-    }, .{});
+    try res.json(.{ .prompts = list.items }, .{});
 }

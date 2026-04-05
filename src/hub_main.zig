@@ -20,7 +20,7 @@ pub fn main() !void {
     var pool = try hub.db.initPool(allocator, config);
     defer pool.deinit();
 
-    try hub.db.migrate(allocator, pool);
+    try hub.db.migrate(pool);
     try log.print("database migrations applied\n", .{});
 
     var server = try hub.Server.init(allocator, config, pool);

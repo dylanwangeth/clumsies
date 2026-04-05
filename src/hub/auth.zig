@@ -40,19 +40,20 @@ pub fn handleLogin(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     } orelse {
         return apiError(res, 401, "UNAUTHORIZED", "invalid credentials");
     };
-    defer row.deinit() catch {};
 
     const stored_hash = try row.get([]const u8, 4);
     if (!verifyPassword(login.credential, stored_hash)) {
+        row.deinit() catch {};
         return apiError(res, 401, "UNAUTHORIZED", "invalid credentials");
     }
 
-    const user_id = try row.get([]const u8, 0);
+    const user_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    row.deinit() catch {};
 
-    const access_token = generateToken(conn, user_id, "access", ctx.config.token_ttl_seconds) catch {
+    const access_token = generateToken(req.arena, conn, user_id, "access", ctx.config.token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
-    const refresh_token = generateToken(conn, user_id, "refresh", ctx.config.token_ttl_seconds * 24) catch {
+    const refresh_token = generateToken(req.arena, conn, user_id, "refresh", ctx.config.token_ttl_seconds * 24) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
 
@@ -83,18 +84,18 @@ pub fn handleRefresh(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         \\  AND t.kind = 'refresh'
         \\  AND t.revoked = false
         \\  AND t.expires_at > now()
-    , .{&token_hash}) catch {
+    , .{@as([]const u8, &token_hash)}) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or expired refresh token");
     };
-    defer row.deinit() catch {};
 
-    const user_id = try row.get([]const u8, 0);
+    const user_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    row.deinit() catch {};
 
-    _ = conn.exec("UPDATE tokens SET revoked = true WHERE token_hash = $1", .{&token_hash}) catch {};
+    _ = conn.exec("UPDATE tokens SET revoked = true WHERE token_hash = $1", .{@as([]const u8, &token_hash)}) catch {};
 
-    const access_token = generateToken(conn, user_id, "access", ctx.config.token_ttl_seconds) catch {
+    const access_token = generateToken(req.arena, conn, user_id, "access", ctx.config.token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
 
@@ -127,8 +128,8 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
 
     while (try result.next()) |ws_row| {
         try ws_list.append(req.arena, .{
-            .ws_id = try ws_row.get([]const u8, 0),
-            .name = try ws_row.get([]const u8, 1),
+            .ws_id = try req.arena.dupe(u8, try ws_row.get([]const u8, 0)),
+            .name = try req.arena.dupe(u8, try ws_row.get([]const u8, 1)),
         });
     }
 
@@ -164,16 +165,17 @@ pub fn authenticate(ctx: *Server.Context, req: *httpz.Request) !AuthUser {
         \\  AND t.kind = 'access'
         \\  AND t.revoked = false
         \\  AND t.expires_at > now()
-    , .{&token_hash}) catch return error.Unauthorized;
+    , .{@as([]const u8, &token_hash)}) catch return error.Unauthorized;
 
     if (row) |*r| {
-        defer r.deinit() catch {};
-        return .{
-            .user_id = try r.get([]const u8, 0),
-            .org_id = try r.get([]const u8, 1),
-            .username = try r.get([]const u8, 2),
-            .role = try r.get([]const u8, 3),
+        const user = AuthUser{
+            .user_id = req.arena.dupe(u8, try r.get([]const u8, 0)) catch return error.Unauthorized,
+            .org_id = req.arena.dupe(u8, try r.get([]const u8, 1)) catch return error.Unauthorized,
+            .username = req.arena.dupe(u8, try r.get([]const u8, 2)) catch return error.Unauthorized,
+            .role = req.arena.dupe(u8, try r.get([]const u8, 3)) catch return error.Unauthorized,
         };
+        r.deinit() catch {};
+        return user;
     }
     return error.Unauthorized;
 }
@@ -183,7 +185,7 @@ fn verifyPassword(input: []const u8, stored_hash: []const u8) bool {
     return std.mem.eql(u8, input, stored_hash);
 }
 
-fn generateToken(conn: anytype, user_id: []const u8, kind: []const u8, ttl_seconds: u32) ![]const u8 {
+fn generateToken(allocator: std.mem.Allocator, conn: *pg.Conn, user_id: []const u8, kind: []const u8, ttl_seconds: u32) ![]const u8 {
     var rand_bytes: [32]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
 
@@ -191,13 +193,22 @@ fn generateToken(conn: anytype, user_id: []const u8, kind: []const u8, ttl_secon
     hexEncode(&rand_bytes, &token_buf);
 
     const token_hash = hashToken(&token_buf);
+    const hash_slice: []const u8 = &token_hash;
 
+    const epoch_now: f64 = @floatFromInt(std.time.timestamp());
+    const expires_epoch: f64 = epoch_now + @as(f64, @floatFromInt(ttl_seconds));
     _ = conn.exec(
-        "INSERT INTO tokens (token_hash, user_id, kind, expires_at) VALUES ($1, $2, $3, now() + make_interval(secs => $4))",
-        .{ &token_hash, user_id, kind, @as(i32, @intCast(ttl_seconds)) },
-    ) catch return error.TokenInsertFailed;
+        "INSERT INTO tokens (token_hash, user_id, kind, expires_at) VALUES ($1, $2, $3, to_timestamp($4))",
+        .{ hash_slice, user_id, kind, expires_epoch },
+    ) catch |err| {
+        std.log.err("token insert failed: {}", .{err});
+        if (conn.err) |pg_err| {
+            std.log.err("pg detail: {s}", .{pg_err.message});
+        }
+        return error.TokenInsertFailed;
+    };
 
-    return &token_buf;
+    return allocator.dupe(u8, &token_buf) catch return error.TokenInsertFailed;
 }
 
 fn hashToken(raw: []const u8) [64]u8 {
