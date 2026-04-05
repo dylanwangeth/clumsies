@@ -162,4 +162,12 @@ const migration_sql =
     \\    org_id UUID PRIMARY KEY REFERENCES orgs(org_id),
     \\    revision INTEGER NOT NULL DEFAULT 0
     \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS prompt_history (
+    \\    prompt_id TEXT NOT NULL REFERENCES prompts(prompt_id),
+    \\    content_hash TEXT NOT NULL,
+    \\    merged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    \\    proposal_id TEXT,
+    \\    PRIMARY KEY (prompt_id, content_hash)
+    \\);
 ;

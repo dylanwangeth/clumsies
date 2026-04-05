@@ -4,6 +4,8 @@ const pg = @import("pg");
 const Server = @import("server.zig");
 const apiError = @import("../protocol/api_error.zig").send;
 
+const bcrypt = std.crypto.pwhash.bcrypt;
+
 pub const AuthUser = struct {
     user_id: []const u8,
     org_id: []const u8,
@@ -20,7 +22,26 @@ const RefreshRequest = struct {
     refresh_token: []const u8,
 };
 
+pub fn handleRevokeToken(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    // Revoke all tokens for this user
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+    _ = conn.exec("UPDATE tokens SET revoked = true WHERE user_id = $1", .{user.user_id}) catch {};
+    try res.json(.{ .revoked = true }, .{});
+}
+
 pub fn handleLogin(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const client_ip = req.header("x-forwarded-for") orelse "unknown";
+    if (!ctx.auth_rate_limiter.check(client_ip)) {
+        res.status = 429;
+        return apiError(res, 429, "TOO_MANY_REQUESTS", "rate limit exceeded");
+    }
+
     const login = req.json(LoginRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
@@ -65,6 +86,12 @@ pub fn handleLogin(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
 }
 
 pub fn handleRefresh(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const client_ip = req.header("x-forwarded-for") orelse "unknown";
+    if (!ctx.auth_rate_limiter.check(client_ip)) {
+        res.status = 429;
+        return apiError(res, 429, "TOO_MANY_REQUESTS", "rate limit exceeded");
+    }
+
     const body = req.json(RefreshRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
@@ -180,9 +207,32 @@ pub fn authenticate(ctx: *Server.Context, req: *httpz.Request) !AuthUser {
     return error.Unauthorized;
 }
 
+pub fn checkWorkspaceMember(conn: anytype, ws_id: []const u8, user_id: []const u8) bool {
+    var row = conn.row(
+        "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2",
+        .{ ws_id, user_id },
+    ) catch return false;
+    if (row) |*r| {
+        r.deinit() catch {};
+        return true;
+    }
+    return false;
+}
+
 fn verifyPassword(input: []const u8, stored_hash: []const u8) bool {
-    // TODO: Implement bcrypt/argon2 for production
+    // Support both bcrypt PHC format and plain text (for dev/migration)
+    if (std.mem.startsWith(u8, stored_hash, "$2") or std.mem.startsWith(u8, stored_hash, "$bcrypt")) {
+        bcrypt.strVerify(stored_hash, input, .{ .silently_truncate_password = false }) catch return false;
+        return true;
+    }
     return std.mem.eql(u8, input, stored_hash);
+}
+
+pub fn hashPassword(password: []const u8, out: []u8) ![]const u8 {
+    return bcrypt.strHash(password, .{
+        .params = .{ .rounds_log = 10, .silently_truncate_password = false },
+        .encoding = .phc,
+    }, out);
 }
 
 fn generateToken(allocator: std.mem.Allocator, conn: *pg.Conn, user_id: []const u8, kind: []const u8, ttl_seconds: u32) ![]const u8 {

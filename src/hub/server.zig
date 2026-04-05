@@ -6,6 +6,7 @@ const workspace_handler = @import("workspace.zig");
 const library_handler = @import("library.zig");
 const trace_handler = @import("trace.zig");
 const collab_handler = @import("collab.zig");
+const RateLimiter = @import("rate_limit.zig");
 const Config = @import("config.zig");
 
 const Server = @This();
@@ -17,11 +18,25 @@ const HttpServer = httpz.Server(*Context);
 pub const Context = struct {
     pool: *pg.Pool,
     config: Config,
+    rate_limiter: *RateLimiter,
+    auth_rate_limiter: *RateLimiter,
 };
 
 pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Server {
     const ctx = try allocator.create(Context);
-    ctx.* = .{ .pool = pool, .config = config };
+
+    const rl = try allocator.create(RateLimiter);
+    rl.* = RateLimiter.init(allocator, 60, 200);
+
+    const auth_rl = try allocator.create(RateLimiter);
+    auth_rl.* = RateLimiter.init(allocator, 60, 10);
+
+    ctx.* = .{
+        .pool = pool,
+        .config = config,
+        .rate_limiter = rl,
+        .auth_rate_limiter = auth_rl,
+    };
 
     var server = try HttpServer.init(allocator, .{
         .address = .all(config.port),
@@ -33,6 +48,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.post("/api/auth/login", auth.handleLogin, .{});
     router.post("/api/auth/refresh", auth.handleRefresh, .{});
     router.get("/api/auth/me", auth.handleMe, .{});
+    router.delete("/api/auth/token", auth.handleRevokeToken, .{});
 
     // Workspaces
     router.post("/api/workspaces", workspace_handler.handleCreate, .{});
@@ -42,7 +58,6 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.post("/api/workspaces/:ws_id/prompts", workspace_handler.handleAddPrompt, .{});
     router.delete("/api/workspaces/:ws_id/prompts/:prompt_id", workspace_handler.handleRemovePrompt, .{});
     router.get("/api/workspaces/:ws_id/files", workspace_handler.handleListFiles, .{});
-    // File operations use ?path= query param because file paths contain slashes
     router.get("/api/workspaces/:ws_id/file/content", workspace_handler.handleGetFileContent, .{});
     router.put("/api/workspaces/:ws_id/file", workspace_handler.handlePutFile, .{});
     router.delete("/api/workspaces/:ws_id/file", workspace_handler.handleDeleteFile, .{});
@@ -50,7 +65,6 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     // Library
     router.get("/api/org/library/manifest", library_handler.handleGetManifest, .{});
     router.get("/api/org/library/prompts", library_handler.handleListPrompts, .{});
-    // Prompt detail/content use ?name= query param because canonical_name contains slashes
     router.get("/api/org/library/prompt", library_handler.handleGetPrompt, .{});
     router.get("/api/org/library/prompt/content", library_handler.handleGetPromptContent, .{});
     router.get("/api/org/bundles", library_handler.handleListBundles, .{});

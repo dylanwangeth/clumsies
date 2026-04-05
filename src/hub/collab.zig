@@ -74,6 +74,12 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
 
+    const qs = req.query() catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid query");
+    };
+    const status_filter = qs.get("status");
+    const prompt_filter = qs.get("prompt_id");
+
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
@@ -87,23 +93,85 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
         created_at: []const u8,
     };
 
-    var result = conn.query(
-        "SELECT proposal_id, prompt_id, status, description, created_at::text FROM proposals WHERE org_id = $1::uuid ORDER BY created_at DESC",
-        .{user.org_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-    defer result.deinit();
-
     var list: std.ArrayList(ProposalMeta) = .empty;
-    while (try result.next()) |row| {
-        try list.append(req.arena, .{
-            .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-            .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-            .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-            .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-        });
+
+    // Use separate query calls for each filter combination
+    if (status_filter) |sf| {
+        if (prompt_filter) |pf| {
+            // Both filters
+            var result = conn.query(
+                "SELECT proposal_id, prompt_id, status, description, created_at::text FROM proposals WHERE org_id = $1::uuid AND status = $2 AND prompt_id = $3 ORDER BY created_at DESC",
+                .{ user.org_id, sf, pf },
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            };
+            defer result.deinit();
+            while (try result.next()) |row| {
+                try list.append(req.arena, .{
+                    .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                    .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+                    .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+                    .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                    .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                });
+            }
+        } else {
+            // Status only
+            var result = conn.query(
+                "SELECT proposal_id, prompt_id, status, description, created_at::text FROM proposals WHERE org_id = $1::uuid AND status = $2 ORDER BY created_at DESC",
+                .{ user.org_id, sf },
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            };
+            defer result.deinit();
+            while (try result.next()) |row| {
+                try list.append(req.arena, .{
+                    .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                    .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+                    .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+                    .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                    .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                });
+            }
+        }
+    } else {
+        if (prompt_filter) |pf| {
+            // Prompt only
+            var result = conn.query(
+                "SELECT proposal_id, prompt_id, status, description, created_at::text FROM proposals WHERE org_id = $1::uuid AND prompt_id = $2 ORDER BY created_at DESC",
+                .{ user.org_id, pf },
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            };
+            defer result.deinit();
+            while (try result.next()) |row| {
+                try list.append(req.arena, .{
+                    .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                    .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+                    .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+                    .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                    .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                });
+            }
+        } else {
+            // No filters
+            var result = conn.query(
+                "SELECT proposal_id, prompt_id, status, description, created_at::text FROM proposals WHERE org_id = $1::uuid ORDER BY created_at DESC",
+                .{user.org_id},
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            };
+            defer result.deinit();
+            while (try result.next()) |row| {
+                try list.append(req.arena, .{
+                    .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                    .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+                    .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+                    .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                    .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                });
+            }
+        }
     }
 
     try res.json(.{ .proposals = list.items }, .{});
@@ -131,16 +199,76 @@ pub fn handleGetProposal(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     } orelse {
         return apiError(res, 404, "NOT_FOUND", "proposal not found");
     };
-    defer row.deinit() catch {};
+
+    const proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    const prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1));
+    const base_hash = try req.arena.dupe(u8, try row.get([]const u8, 2));
+    const status = try req.arena.dupe(u8, try row.get([]const u8, 3));
+    const proposal_content = try req.arena.dupe(u8, try row.get([]const u8, 4));
+    const description = try req.arena.dupe(u8, try row.get([]const u8, 5));
+    const created_at = try req.arena.dupe(u8, try row.get([]const u8, 6));
+    row.deinit() catch {};
+
+    // Compute trace_summary from trace_events
+    const TraceSummary = struct {
+        refer_count: i64 = 0,
+        sessions_used: i64 = 0,
+        last_referred: ?[]const u8 = null,
+    };
+    var trace_summary = TraceSummary{};
+
+    var trace_row = conn.row(
+        "SELECT count(*), count(DISTINCT session_id), max(to_timestamp(timestamp/1000))::text FROM trace_events WHERE prompt_id = $1 AND type = 'refer'",
+        .{prompt_id},
+    ) catch null;
+    if (trace_row) |*tr| {
+        trace_summary.refer_count = tr.get(i64, 0) catch 0;
+        trace_summary.sessions_used = tr.get(i64, 1) catch 0;
+        if (tr.get(?[]const u8, 2) catch null) |last_ref| {
+            trace_summary.last_referred = req.arena.dupe(u8, last_ref) catch null;
+        }
+        tr.deinit() catch {};
+    }
+
+    // Fetch base content for diff: try current prompt content first, fall back to prompt_history
+    var base_content: ?[]const u8 = null;
+    var base_row = conn.row(
+        "SELECT content, content_hash FROM prompts WHERE prompt_id = $1",
+        .{prompt_id},
+    ) catch null;
+    if (base_row) |*br| {
+        const current_hash = br.get([]const u8, 1) catch "";
+        if (std.mem.eql(u8, current_hash, base_hash)) {
+            base_content = req.arena.dupe(u8, br.get([]const u8, 0) catch "") catch null;
+        }
+        br.deinit() catch {};
+    }
+
+    // If hash doesn't match current, try prompt_history
+    if (base_content == null) {
+        var hist_row = conn.row(
+            "SELECT content FROM prompt_history WHERE prompt_id = $1 AND content_hash = $2",
+            .{ prompt_id, base_hash },
+        ) catch null;
+        if (hist_row) |*hr| {
+            base_content = req.arena.dupe(u8, hr.get([]const u8, 0) catch "") catch null;
+            hr.deinit() catch {};
+        }
+    }
 
     try res.json(.{
-        .proposal_id = try row.get([]const u8, 0),
-        .prompt_id = try row.get([]const u8, 1),
-        .base_hash = try row.get([]const u8, 2),
-        .status = try row.get([]const u8, 3),
-        .content = try row.get([]const u8, 4),
-        .description = try row.get([]const u8, 5),
-        .created_at = try row.get([]const u8, 6),
+        .proposal_id = proposal_id,
+        .prompt_id = prompt_id,
+        .base_hash = base_hash,
+        .status = status,
+        .content = proposal_content,
+        .description = description,
+        .created_at = created_at,
+        .trace_summary = trace_summary,
+        .diff = .{
+            .base = base_content,
+            .proposed = proposal_content,
+        },
     }, .{});
 }
 
@@ -230,6 +358,12 @@ pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
         _ = conn.exec(
             "UPDATE workspaces SET revision = revision + 1 WHERE ws_id IN (SELECT ws_id FROM workspace_prompts WHERE prompt_id = $1)",
             .{prompt_id},
+        ) catch {};
+
+        // Record in prompt history
+        _ = conn.exec(
+            "INSERT INTO prompt_history (prompt_id, content_hash, proposal_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            .{ prompt_id, hash_slice, id },
         ) catch {};
 
         // Bump library manifest revision
