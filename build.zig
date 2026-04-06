@@ -79,6 +79,40 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(hub);
 
+    // TUI Dashboard executable
+    const vaxis_dep = b.dependency("vaxis", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const tui_module = b.createModule(.{
+        .root_source_file = b.path("src/tui/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = options.createModule() },
+        },
+    });
+    tui_module.addImport("vaxis", vaxis_dep.module("vaxis"));
+
+    const tui_exe = b.addExecutable(.{
+        .name = "clumsies-tui",
+        .root_module = tui_module,
+    });
+    b.installArtifact(tui_exe);
+
+    const tui_run_cmd = b.addRunArtifact(tui_exe);
+    tui_run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        tui_run_cmd.addArgs(args);
+    }
+
+    const tui_build_step = b.step("tui", "Build TUI dashboard");
+    tui_build_step.dependOn(b.getInstallStep());
+
+    const tui_run_step = b.step("run-tui", "Run TUI dashboard");
+    tui_run_step.dependOn(&tui_run_cmd.step);
+
     const hub_run_cmd = b.addRunArtifact(hub);
     hub_run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
