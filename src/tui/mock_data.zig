@@ -200,16 +200,39 @@ pub const HOTSPOTS = [_]HotspotEntry{
 };
 
 pub const SAMPLE_CONTENT =
-    \\# STYLE
+    \\# Code Comments
     \\
-    \\1. Prefer explicit names over abbreviations.
-    \\2. Keep imports grouped by standard / third-party / local.
-    \\3. Sort file sections in dependency order.
-    \\4. One blank line between top-level declarations.
-    \\5. Constants at the top of the scope, mutable state below.
-    \\6. Error handling uses try; avoid manual catch unless re-wrapping.
-    \\7. Public API documented with doc comments.
-    \\8. No magic numbers; define named constants.
+    \\Code comments must be final-form text. No thinking
+    \\process or intermediate reasoning.
+    \\
+    \\## Prohibited comment types
+    \\
+    \\- Thinking process: `// Wait, let me recalculate...`
+    \\- Personal dialogue: `// Actually...`
+    \\- Vague markers: `// TODO: Fix this later`
+    \\  (must state what specifically needs fixing)
+    \\
+    \\## Allowed comment types
+    \\
+    \\- Technical notes: explain complex logic, algorithms
+    \\- Functional markers: `// TODO: Implement signature
+    \\  verification for production`
+    \\- Security warnings: `// SECURITY: Must validate
+    \\  inputs before...`
+    \\
+    \\## No decorative separators
+    \\
+    \\Do not use repeated symbols to draw separators,
+    \\borders, or decorations in comments.
+    \\
+    \\## Language
+    \\
+    \\All code comments must be in English.
+    \\
+    \\## Audience
+    \\
+    \\All code comments must assume the reader is another
+    \\developer, not a personal memo.
 ;
 
 pub const MemberEntry = struct {
