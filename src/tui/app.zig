@@ -74,14 +74,14 @@ const TopModule = enum(u8) {
     library,
     proposals,
     workspace,
-    compliance,
+    insights,
 
     fn label(self: TopModule) []const u8 {
         return switch (self) {
             .library => "Library",
             .proposals => "Proposals",
             .workspace => "Workspace",
-            .compliance => "Compliance",
+            .insights => "Insights",
         };
     }
 };
@@ -100,7 +100,7 @@ const DetailTab = enum(u8) {
     }
 };
 
-const top_tabs = [_]TopModule{ .library, .proposals, .workspace, .compliance };
+const top_tabs = [_]TopModule{ .library, .proposals, .workspace, .insights };
 const detail_tabs = [_]DetailTab{ .overview, .content, .history };
 
 pub const Dashboard = struct {
@@ -155,12 +155,12 @@ pub const Dashboard = struct {
     workspace_rows: [data.WORKSPACES.len]TableRow = undefined,
     workspace_cols: [data.WORKSPACES.len][3]Column = undefined,
 
-    // Compliance
-    compliance_period: Period = .daily,
-    compliance_scroll_bars: vxfw.ScrollBars,
-    compliance_widgets: [data.COMPLIANCE_WS.len]vxfw.Widget = undefined,
-    compliance_rows: [data.COMPLIANCE_WS.len]TableRow = undefined,
-    compliance_cols: [data.COMPLIANCE_WS.len][3]Column = undefined,
+    // Insights
+    insights_period: Period = .daily,
+    insights_scroll_bars: vxfw.ScrollBars,
+    insights_widgets: [data.INSIGHTS_WS.len]vxfw.Widget = undefined,
+    insights_rows: [data.INSIGHTS_WS.len]TableRow = undefined,
+    insights_cols: [data.INSIGHTS_WS.len][3]Column = undefined,
 
     pub fn init() Dashboard {
         return .{
@@ -170,7 +170,7 @@ pub const Dashboard = struct {
             .review_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .review_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
             .workspace_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .compliance_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .insights_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .settings_member_scroll = w.initCursorScrollBars(theme.PANEL),
         };
     }
@@ -364,7 +364,7 @@ pub const Dashboard = struct {
                 if (key.matches('1', .{})) return self.selectTab(ctx, .library);
                 if (key.matches('2', .{})) return self.selectTab(ctx, .proposals);
                 if (key.matches('3', .{})) return self.selectTab(ctx, .workspace);
-                if (key.matches('4', .{})) return self.selectTab(ctx, .compliance);
+                if (key.matches('4', .{})) return self.selectTab(ctx, .insights);
 
                 // Module-specific input
                 switch (self.selected_module) {
@@ -410,14 +410,14 @@ pub const Dashboard = struct {
                             ctx.consumeAndRedraw();
                         }
                     },
-                    .compliance => {
-                        try self.compliance_scroll_bars.scroll_view.handleEvent(ctx, event);
+                    .insights => {
+                        try self.insights_scroll_bars.scroll_view.handleEvent(ctx, event);
                         if (key.matches('t', .{})) {
-                            self.compliance_period = self.compliance_period.next();
+                            self.insights_period = self.insights_period.next();
                             ctx.consumeAndRedraw();
                         }
                         if (key.matches(vaxis.Key.enter, .{})) {
-                            const cidx = @min(@as(usize, @intCast(self.compliance_scroll_bars.scroll_view.cursor)), data.COMPLIANCE_WS.len - 1);
+                            const cidx = @min(@as(usize, @intCast(self.insights_scroll_bars.scroll_view.cursor)), data.INSIGHTS_WS.len - 1);
                             _ = cidx;
                             self.status_line = "Drill-down to workspace detail (future).";
                             ctx.consumeAndRedraw();
@@ -518,7 +518,7 @@ pub const Dashboard = struct {
             .library => self.drawLibrary(ctx),
             .proposals => self.drawProposalReview(ctx),
             .workspace => self.drawWorkspaceStatus(ctx),
-            .compliance => self.drawCompliance(ctx),
+            .insights => self.drawInsights(ctx),
         };
     }
 
@@ -538,7 +538,7 @@ pub const Dashboard = struct {
             .library => "j/k move  Enter open  S settings  1-4 switch  ? help  q quit",
             .proposals => "j/k move  a accept  x reject  S settings  ? help  q quit",
             .workspace => "h/l tab  j/k move  r sync  S settings  ? help  q quit",
-            .compliance => "j/k move  t period  S settings  ? help  q quit",
+            .insights => "j/k move  t period  S settings  ? help  q quit",
         };
         w.writeText(&surface, ctx, 1, 0, keys, theme.textOn(theme.RAIL, theme.TEXT_SOFT));
         return surface;
@@ -1080,26 +1080,26 @@ pub const Dashboard = struct {
         return panel.draw(ctx);
     }
 
-    // Compliance: workspace-first refer coverage analysis
-    fn drawCompliance(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    // Insights: workspace-first refer coverage analysis
+    fn drawInsights(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.CANVAS);
 
-        self.syncComplianceWidgets();
+        self.syncInsightsWidgets();
 
         // Org summary bar (3 rows)
         const summary_h: u16 = 3;
         var summary = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = summary_h });
         w.fillSurface(&summary, theme.PANEL);
         w.drawBorder(&summary, theme.BORDER, theme.PANEL);
-        const title = try std.fmt.allocPrint(ctx.arena, "Compliance \xe2\x94\x80 org: acme \xe2\x94\x80 period: {s}", .{self.compliance_period.label()});
+        const title = try std.fmt.allocPrint(ctx.arena, "Insights \xe2\x94\x80 org: acme \xe2\x94\x80 period: {s}", .{self.insights_period.label()});
         w.writeText(&summary, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
         w.writeRightText(&summary, ctx, 0, "t cycle period", theme.textOn(theme.PANEL, theme.MUTED));
 
         // Compute org totals from mock data
         var total_refer: u32 = 0;
-        for (data.COMPLIANCE_WS) |cw| {
+        for (data.INSIGHTS_WS) |cw| {
             var val: u32 = 0;
             for (cw.refer_count) |c| {
                 if (c >= '0' and c <= '9') {
@@ -1108,8 +1108,8 @@ pub const Dashboard = struct {
             }
             total_refer += val;
         }
-        const org_spark = try w.sparkline(ctx.arena, &data.COMPLIANCE_WS[0].trend);
-        const org_line = try std.fmt.allocPrint(ctx.arena, " workspaces {d}   prompts {d}   total refer ~{d}   org trend {s}", .{ data.COMPLIANCE_WS.len, data.PROMPTS.len, total_refer, org_spark });
+        const org_spark = try w.sparkline(ctx.arena, &data.INSIGHTS_WS[0].trend);
+        const org_line = try std.fmt.allocPrint(ctx.arena, " workspaces {d}   prompts {d}   total refer ~{d}   org trend {s}", .{ data.INSIGHTS_WS.len, data.PROMPTS.len, total_refer, org_spark });
         w.writeText(&summary, ctx, 1, 1, org_line, theme.textOn(theme.PANEL, theme.TEXT_SOFT));
 
         // Two-column: workspace rank (left) + selected detail (right)
@@ -1122,24 +1122,24 @@ pub const Dashboard = struct {
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, 3);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = summary };
-        children[1] = .{ .origin = .{ .row = summary_h, .col = 0 }, .surface = try self.drawComplianceList(l_ctx) };
-        children[2] = .{ .origin = .{ .row = summary_h, .col = left_w + 1 }, .surface = try self.drawComplianceDetail(r_ctx) };
+        children[1] = .{ .origin = .{ .row = summary_h, .col = 0 }, .surface = try self.drawInsightsList(l_ctx) };
+        children[2] = .{ .origin = .{ .row = summary_h, .col = left_w + 1 }, .surface = try self.drawInsightsDetail(r_ctx) };
         root.children = children;
         return root;
     }
 
-    fn drawComplianceList(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        self.compliance_scroll_bars.scroll_view.draw_cursor = false;
-        defer self.compliance_scroll_bars.scroll_view.draw_cursor = true;
+    fn drawInsightsList(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        self.insights_scroll_bars.scroll_view.draw_cursor = false;
+        defer self.insights_scroll_bars.scroll_view.draw_cursor = true;
 
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Workspace Coverage", .subtitle = "j/k select", .background = theme.PANEL, .border_color = theme.BORDER, .child = self.compliance_scroll_bars.widget() };
+        const panel: w.Panel = .{ .owner = self.widget(), .title = "Workspace Coverage", .subtitle = "j/k select", .background = theme.PANEL, .border_color = theme.BORDER, .child = self.insights_scroll_bars.widget() };
         var surface = try panel.draw(ctx);
-        return w.applyCursorOverlay(ctx, &surface, &self.compliance_scroll_bars.scroll_view);
+        return w.applyCursorOverlay(ctx, &surface, &self.insights_scroll_bars.scroll_view);
     }
 
-    fn drawComplianceDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const cidx = @min(@as(usize, @intCast(self.compliance_scroll_bars.scroll_view.cursor)), data.COMPLIANCE_WS.len - 1);
-        const cw = &data.COMPLIANCE_WS[cidx];
+    fn drawInsightsDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const cidx = @min(@as(usize, @intCast(self.insights_scroll_bars.scroll_view.cursor)), data.INSIGHTS_WS.len - 1);
+        const cw = &data.INSIGHTS_WS[cidx];
         const spark = try w.sparkline(ctx.arena, cw.trend[0..8]);
 
         var buf: std.ArrayList(u8) = .empty;
@@ -1574,25 +1574,25 @@ pub const Dashboard = struct {
 
     // Inner width budget: panel=36min → border=2 → inner=34.
     // Row format: 1 + 16 name + 1 + 3 pct + 1 + % + 2 + 4 count = ~29. Fits.
-    fn syncComplianceWidgets(self: *Dashboard) void {
-        self.compliance_scroll_bars.scroll_view.cursor = @min(self.compliance_scroll_bars.scroll_view.cursor, data.COMPLIANCE_WS.len - 1);
-        const sel_idx = @as(usize, @intCast(self.compliance_scroll_bars.scroll_view.cursor));
-        for (data.COMPLIANCE_WS, 0..) |cw, idx| {
+    fn syncInsightsWidgets(self: *Dashboard) void {
+        self.insights_scroll_bars.scroll_view.cursor = @min(self.insights_scroll_bars.scroll_view.cursor, data.INSIGHTS_WS.len - 1);
+        const sel_idx = @as(usize, @intCast(self.insights_scroll_bars.scroll_view.cursor));
+        for (data.INSIGHTS_WS, 0..) |cw, idx| {
             const sel = idx == sel_idx;
-            self.compliance_cols[idx] = .{
+            self.insights_cols[idx] = .{
                 .{ .text = cw.name, .flex = 1 },
-                .{ .text = std.fmt.bufPrint(&compliance_buf[idx], "{d}%", .{cw.coverage}) catch "?", .flex = 0, .alignment = .right },
+                .{ .text = std.fmt.bufPrint(&insights_buf[idx], "{d}%", .{cw.coverage}) catch "?", .flex = 0, .alignment = .right },
                 .{ .text = cw.refer_count, .flex = 0, .alignment = .right },
             };
-            self.compliance_rows[idx] = .{
-                .columns = &self.compliance_cols[idx],
+            self.insights_rows[idx] = .{
+                .columns = &self.insights_cols[idx],
                 .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
                 .gap = 2,
             };
-            self.compliance_widgets[idx] = self.compliance_rows[idx].widget();
+            self.insights_widgets[idx] = self.insights_rows[idx].widget();
         }
-        self.compliance_scroll_bars.scroll_view.children = .{ .slice = self.compliance_widgets[0..] };
-        self.compliance_scroll_bars.estimated_content_height = data.COMPLIANCE_WS.len;
+        self.insights_scroll_bars.scroll_view.children = .{ .slice = self.insights_widgets[0..] };
+        self.insights_scroll_bars.estimated_content_height = data.INSIGHTS_WS.len;
     }
 
     fn selectedProposalIdx(self: *const Dashboard) usize {
@@ -1610,7 +1610,7 @@ pub const Dashboard = struct {
             .library => "Bundle facet, prompt list, and passive preview.",
             .proposals => "Proposal queue left, diff center, review lens right.",
             .workspace => "Workspace list and sync status detail.",
-            .compliance => "Refer coverage analysis (Phase 3, API pending).",
+            .insights => "Refer coverage analysis (Phase 3, API pending).",
         };
     }
 
@@ -1650,7 +1650,7 @@ pub const Dashboard = struct {
 // Static row buffers to avoid per-frame allocation
 // Small buffers for inline-formatted column values (counts, percentages)
 var workspace_buf: [data.WORKSPACES.len][32]u8 = undefined;
-var compliance_buf: [data.COMPLIANCE_WS.len][16]u8 = undefined;
+var insights_buf: [data.INSIGHTS_WS.len][16]u8 = undefined;
 
 fn diffFg(line: []const u8) vaxis.Color {
     if (std.mem.startsWith(u8, line, "+")) return theme.OK;
