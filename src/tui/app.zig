@@ -45,6 +45,31 @@ const Period = enum(u8) {
     }
 };
 
+const SettingsTab = enum(u8) {
+    members,
+    bundles,
+    workspaces,
+    token,
+
+    fn label(self: SettingsTab) []const u8 {
+        return switch (self) {
+            .members => "Members",
+            .bundles => "Bundles",
+            .workspaces => "Workspaces",
+            .token => "Token",
+        };
+    }
+};
+
+const settings_tabs = [_]SettingsTab{ .members, .bundles, .workspaces, .token };
+
+const ConfirmAction = enum {
+    none,
+    remove_member,
+    delete_bundle,
+    delete_workspace,
+};
+
 const TopModule = enum(u8) {
     library,
     proposals,
@@ -83,9 +108,20 @@ pub const Dashboard = struct {
     selected_prompt: usize = 0,
     show_help: bool = false,
     show_detail: bool = false,
+    show_settings: bool = false,
+    show_confirm: bool = false,
+    confirm_message: []const u8 = "",
+    confirm_action: ConfirmAction = .none,
     detail_origin: TopModule = .library,
     detail_tab: DetailTab = .overview,
+    settings_tab: SettingsTab = .members,
     status_line: []const u8 = "Ready.",
+
+    // Settings
+    settings_member_scroll: vxfw.ScrollBars,
+    settings_member_widgets: [data.MEMBERS.len]vxfw.Widget = undefined,
+    settings_member_rows: [data.MEMBERS.len]TableRow = undefined,
+    settings_member_cols: [data.MEMBERS.len][3]Column = undefined,
 
     // ScrollBars for each module
     library_scroll_bars: vxfw.ScrollBars,
@@ -135,6 +171,7 @@ pub const Dashboard = struct {
             .review_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
             .workspace_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .compliance_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .settings_member_scroll = w.initCursorScrollBars(theme.PANEL),
         };
     }
 
@@ -159,6 +196,34 @@ pub const Dashboard = struct {
     fn handleEvent(self: *Dashboard, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
         switch (event) {
             .key_press => |key| {
+                // Confirm overlay absorbs all keys
+                if (self.show_confirm) {
+                    if (key.matches('y', .{})) {
+                        switch (self.confirm_action) {
+                            .remove_member => {
+                                self.status_line = "Member removed (mock).";
+                            },
+                            .delete_bundle => {
+                                self.status_line = "Bundle deleted (mock).";
+                            },
+                            .delete_workspace => {
+                                self.status_line = "Workspace deleted (mock).";
+                            },
+                            .none => {},
+                        }
+                        self.show_confirm = false;
+                        self.confirm_action = .none;
+                        ctx.consumeAndRedraw();
+                    }
+                    if (key.matches('n', .{}) or key.matches(vaxis.Key.escape, .{})) {
+                        self.show_confirm = false;
+                        self.confirm_action = .none;
+                        self.status_line = "Cancelled.";
+                        ctx.consumeAndRedraw();
+                    }
+                    return;
+                }
+
                 // Help overlay absorbs all keys
                 if (self.show_help) {
                     if (key.matches(vaxis.Key.escape, .{}) or key.matches('?', .{}) or key.matches('q', .{})) {
@@ -174,7 +239,7 @@ pub const Dashboard = struct {
                     ctx.quit = true;
                     return;
                 }
-                if (key.matches('q', .{}) and !self.show_detail) {
+                if (key.matches('q', .{}) and !self.show_detail and !self.show_settings) {
                     ctx.consumeEvent();
                     ctx.quit = true;
                     return;
@@ -183,6 +248,79 @@ pub const Dashboard = struct {
                 // Help toggle
                 if (key.matches('?', .{})) {
                     self.show_help = true;
+                    ctx.consumeAndRedraw();
+                    return;
+                }
+
+                // Settings mode
+                if (self.show_settings) {
+                    if (key.matches(vaxis.Key.escape, .{}) or key.matches('q', .{})) {
+                        self.show_settings = false;
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+                        self.shiftSettingsTab(-1);
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
+                        self.shiftSettingsTab(1);
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    if (self.settings_tab == .members) {
+                        // r: toggle role of selected member
+                        if (key.matches('r', .{})) {
+                            const sel = @min(@as(usize, @intCast(self.settings_member_scroll.scroll_view.cursor)), data.MEMBERS.len - 1);
+                            const m = &data.MEMBERS[sel];
+                            const new_role: []const u8 = if (std.mem.eql(u8, m.role, "member")) "maintainer" else "member";
+                            _ = new_role;
+                            self.status_line = "Role change requires Hub API (mock).";
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        // x: remove selected member (confirm)
+                        if (key.matches('x', .{})) {
+                            const sel = @min(@as(usize, @intCast(self.settings_member_scroll.scroll_view.cursor)), data.MEMBERS.len - 1);
+                            self.confirm_message = data.MEMBERS[sel].username;
+                            self.confirm_action = .remove_member;
+                            self.show_confirm = true;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        // a: invite (placeholder)
+                        if (key.matches('a', .{})) {
+                            self.status_line = "Invite requires TextField input (next iteration).";
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        try self.settings_member_scroll.scroll_view.handleEvent(ctx, event);
+                    }
+                    if (self.settings_tab == .bundles) {
+                        if (key.matches('x', .{})) {
+                            self.confirm_message = "selected bundle";
+                            self.confirm_action = .delete_bundle;
+                            self.show_confirm = true;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                    }
+                    if (self.settings_tab == .workspaces) {
+                        if (key.matches('x', .{})) {
+                            self.confirm_message = "selected workspace";
+                            self.confirm_action = .delete_workspace;
+                            self.show_confirm = true;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                    }
+                    return;
+                }
+
+                // Settings toggle (S key)
+                if (key.matches('S', .{})) {
+                    self.show_settings = true;
                     ctx.consumeAndRedraw();
                     return;
                 }
@@ -318,7 +456,7 @@ pub const Dashboard = struct {
         );
 
         var child_count: usize = 3;
-        if (self.show_help) child_count = 4;
+        if (self.show_help or self.show_confirm) child_count = 4;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
@@ -332,6 +470,13 @@ pub const Dashboard = struct {
             );
             children[3] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHelpOverlay(help_ctx) };
         }
+        if (self.show_confirm) {
+            const confirm_ctx = ctx.withConstraints(
+                .{ .width = size.width, .height = size.height },
+                .{ .width = size.width, .height = size.height },
+            );
+            children[3] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawConfirmOverlay(confirm_ctx) };
+        }
 
         root.children = children;
         return root;
@@ -341,9 +486,9 @@ pub const Dashboard = struct {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.HEADER);
 
-        // Row 0: Accent band with org/ws/user context
+        // Row 0: Accent band with org/ws/user/role context
         w.paintBand(&surface, 0, theme.ACCENT, theme.CANVAS);
-        w.writeText(&surface, ctx, 1, 0, "clumsies \xe2\x94\x80 org: acme \xe2\x94\x80 ws: payments-api \xe2\x94\x80 user: alice", .{
+        w.writeText(&surface, ctx, 1, 0, "clumsies \xe2\x94\x80 acme \xe2\x94\x80 payments-api \xe2\x94\x80 alice (maintainer)", .{
             .fg = theme.CANVAS,
             .bg = theme.ACCENT,
             .bold = true,
@@ -367,6 +512,7 @@ pub const Dashboard = struct {
     }
 
     fn drawBody(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        if (self.show_settings) return self.drawSettings(ctx);
         if (self.show_detail) return self.drawPromptDetail(ctx);
         return switch (self.selected_module) {
             .library => self.drawLibrary(ctx),
@@ -382,13 +528,17 @@ pub const Dashboard = struct {
 
         const keys = if (self.show_help)
             "Esc close help"
+        else if (self.show_confirm)
+            "y confirm  n cancel  Esc cancel"
+        else if (self.show_settings)
+            "h/l tab  j/k move  a add  r role  x remove  Esc back"
         else if (self.show_detail)
             "h/l tab  j/k move  Enter diff  p propose  Esc back  ? help"
         else switch (self.selected_module) {
-            .library => "j/k move  Enter open  1-4 switch  ? help  q quit",
-            .proposals => "j/k move  a accept  x reject  c comment  ? help  q quit",
-            .workspace => "h/l tab  j/k move  r sync  ? help  q quit",
-            .compliance => "j/k move  t period  ? help  q quit",
+            .library => "j/k move  Enter open  S settings  1-4 switch  ? help  q quit",
+            .proposals => "j/k move  a accept  x reject  S settings  ? help  q quit",
+            .workspace => "h/l tab  j/k move  r sync  S settings  ? help  q quit",
+            .compliance => "j/k move  t period  S settings  ? help  q quit",
         };
         w.writeText(&surface, ctx, 1, 0, keys, theme.textOn(theme.RAIL, theme.TEXT_SOFT));
         return surface;
@@ -1010,6 +1160,176 @@ pub const Dashboard = struct {
         return panel.draw(ctx);
     }
 
+    // Settings: drill-down view with inner tabs (Members/Bundles/Workspaces/Token)
+    fn drawSettings(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&root, theme.CANVAS);
+
+        // Inner tab strip
+        var tab_surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = 1 });
+        w.fillSurface(&tab_surface, theme.CANVAS);
+        var tab_col: u16 = 1;
+        for (settings_tabs) |tab| {
+            tab_col = w.drawInnerTabBadge(&tab_surface, ctx, 0, tab_col, tab.label(), tab == self.settings_tab);
+            tab_col +|= 1;
+        }
+
+        // Content area
+        const content_h = size.height -| 2;
+        const content_ctx = ctx.withConstraints(
+            .{ .width = size.width, .height = content_h },
+            .{ .width = size.width, .height = content_h },
+        );
+        const content = switch (self.settings_tab) {
+            .members => try self.drawSettingsMembers(content_ctx),
+            .bundles => try self.drawSettingsBundles(content_ctx),
+            .workspaces => try self.drawSettingsWorkspaces(content_ctx),
+            .token => try self.drawSettingsToken(content_ctx),
+        };
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = tab_surface };
+        children[1] = .{ .origin = .{ .row = 2, .col = 0 }, .surface = content };
+        root.children = children;
+        return root;
+    }
+
+    fn drawSettingsMembers(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&root, theme.CANVAS);
+
+        self.syncSettingsMemberWidgets();
+
+        const list_w: u16 = if (size.width > 100) size.width -| 32 else size.width;
+        const detail_w: u16 = if (size.width > 100) 31 else 0;
+
+        // Member list
+        self.settings_member_scroll.scroll_view.draw_cursor = false;
+        defer self.settings_member_scroll.scroll_view.draw_cursor = true;
+
+        const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
+        const panel: w.Panel = .{ .owner = self.widget(), .title = "Org Members", .subtitle = "maintainer: invite/remove", .background = theme.PANEL, .border_color = theme.BORDER, .child = self.settings_member_scroll.widget() };
+        var list_surface = try panel.draw(list_ctx);
+        list_surface = try w.applyCursorOverlay(list_ctx, &list_surface, &self.settings_member_scroll.scroll_view);
+
+        if (detail_w > 0) {
+            const sel_idx = @min(@as(usize, @intCast(self.settings_member_scroll.scroll_view.cursor)), data.MEMBERS.len - 1);
+            const m = &data.MEMBERS[sel_idx];
+            const detail_text = try std.fmt.allocPrint(ctx.arena,
+                \\User
+                \\{s}
+                \\
+                \\Role
+                \\{s}
+                \\
+                \\Joined
+                \\{s}
+                \\
+                \\Actions
+                \\PATCH role (maintainer only)
+                \\DELETE remove (maintainer only)
+            , .{ m.username, m.role, m.joined });
+            const text_widget: vxfw.Text = .{ .text = detail_text, .style = theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT), .width_basis = .parent };
+            const wrapper = try ctx.arena.create(w.WidgetBox);
+            wrapper.* = .{ .widget_ref = text_widget.widget() };
+            const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
+            const detail_panel: w.Panel = .{ .owner = self.widget(), .title = m.username, .subtitle = m.role, .background = theme.PANEL_ALT, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
+
+            const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+            children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = list_surface };
+            children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = try detail_panel.draw(detail_ctx) };
+            root.children = children;
+        } else {
+            const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+            children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = list_surface };
+            root.children = children;
+        }
+        return root;
+    }
+
+    fn drawSettingsBundles(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        var buf: std.ArrayList(u8) = .empty;
+        try buf.appendSlice(ctx.arena, "Bundle management (maintainer only)\n\n");
+        for (data.BUNDLES) |bundle| {
+            const line = try std.fmt.allocPrint(ctx.arena, "{s:<16} {d} prompts\n", .{ bundle.name, bundle.count });
+            try buf.appendSlice(ctx.arena, line);
+        }
+        try buf.appendSlice(ctx.arena, "\nActions\nPOST create  PUT update  DELETE remove");
+        const text_widget: vxfw.Text = .{ .text = try ctx.arena.dupe(u8, buf.items), .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
+        const wrapper = try ctx.arena.create(w.WidgetBox);
+        wrapper.* = .{ .widget_ref = text_widget.widget() };
+        const panel: w.Panel = .{ .owner = self.widget(), .title = "Bundles", .subtitle = "org-level groups", .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
+        return panel.draw(ctx);
+    }
+
+    fn drawSettingsWorkspaces(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        var buf: std.ArrayList(u8) = .empty;
+        try buf.appendSlice(ctx.arena, "Workspace management\n\n");
+        for (data.WORKSPACES) |ws| {
+            const line = try std.fmt.allocPrint(ctx.arena, "{s:<16} {d}p {d}c {d}o  {s}\n", .{ ws.name, ws.prompts, ws.contexts, ws.overrides, data.syncStateLabel(&ws) });
+            try buf.appendSlice(ctx.arena, line);
+        }
+        try buf.appendSlice(ctx.arena, "\nActions\nPATCH rename  DELETE remove (maintainer)\nMembers: list / add / remove");
+        const text_widget: vxfw.Text = .{ .text = try ctx.arena.dupe(u8, buf.items), .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
+        const wrapper = try ctx.arena.create(w.WidgetBox);
+        wrapper.* = .{ .widget_ref = text_widget.widget() };
+        const panel: w.Panel = .{ .owner = self.widget(), .title = "Workspaces", .subtitle = "project-level", .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
+        return panel.draw(ctx);
+    }
+
+    fn drawSettingsToken(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const t = data.CURRENT_TOKEN;
+        const text = try std.fmt.allocPrint(ctx.arena,
+            \\Current Token
+            \\
+            \\Scopes
+            \\{s}
+            \\
+            \\Expires
+            \\{s}
+            \\
+            \\Note
+            \\Token scopes limit what this session can do.
+            \\Actual permissions = min(role, scopes).
+            \\Use DELETE /api/auth/token to revoke.
+        , .{ t.scope, t.expires });
+        const text_widget: vxfw.Text = .{ .text = text, .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
+        const wrapper = try ctx.arena.create(w.WidgetBox);
+        wrapper.* = .{ .widget_ref = text_widget.widget() };
+        const panel: w.Panel = .{ .owner = self.widget(), .title = "Token", .subtitle = "current session", .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
+        return panel.draw(ctx);
+    }
+
+    fn syncSettingsMemberWidgets(self: *Dashboard) void {
+        self.settings_member_scroll.scroll_view.cursor = @min(self.settings_member_scroll.scroll_view.cursor, data.MEMBERS.len - 1);
+        const sel_idx = @as(usize, @intCast(self.settings_member_scroll.scroll_view.cursor));
+        for (data.MEMBERS, 0..) |m, idx| {
+            const sel = idx == sel_idx;
+            self.settings_member_cols[idx] = .{
+                .{ .text = m.username, .flex = 1 },
+                .{ .text = m.role, .flex = 0 },
+                .{ .text = m.joined, .flex = 0, .alignment = .right },
+            };
+            self.settings_member_rows[idx] = .{
+                .columns = &self.settings_member_cols[idx],
+                .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
+                .gap = 2,
+            };
+            self.settings_member_widgets[idx] = self.settings_member_rows[idx].widget();
+        }
+        self.settings_member_scroll.scroll_view.children = .{ .slice = self.settings_member_widgets[0..] };
+        self.settings_member_scroll.estimated_content_height = data.MEMBERS.len;
+    }
+
+    fn shiftSettingsTab(self: *Dashboard, delta: i8) void {
+        const current: i8 = @intCast(@intFromEnum(self.settings_tab));
+        const count: i8 = @intCast(settings_tabs.len);
+        const next = @mod(current + delta + count, count);
+        self.settings_tab = @enumFromInt(@as(u8, @intCast(next)));
+    }
+
     fn drawHelpOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
@@ -1074,6 +1394,60 @@ pub const Dashboard = struct {
         for (lines, 0..) |line, i| {
             w.writeText(&surface, ctx, start_col + 2, @intCast(start_row + 2 + i), line, theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT));
         }
+
+        return surface;
+    }
+
+    fn drawConfirmOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&surface, theme.CANVAS);
+
+        const box_w: u16 = 44;
+        const box_h: u16 = 7;
+        const start_col = (size.width -| box_w) / 2;
+        const start_row = (size.height -| box_h) / 2;
+
+        // Box background
+        var row: u16 = 0;
+        while (row < box_h) : (row += 1) {
+            var col: u16 = 0;
+            while (col < box_w) : (col += 1) {
+                surface.writeCell(start_col + col, start_row + row, .{
+                    .char = .{ .grapheme = " ", .width = 1 },
+                    .style = .{ .fg = theme.TEXT, .bg = theme.PANEL_ALT },
+                });
+            }
+        }
+
+        // Border
+        const s = vaxis.Style{ .fg = theme.DANGER, .bg = theme.PANEL_ALT };
+        surface.writeCell(start_col, start_row, .{ .char = .{ .grapheme = "\xe2\x95\xad", .width = 1 }, .style = s });
+        surface.writeCell(start_col + box_w - 1, start_row, .{ .char = .{ .grapheme = "\xe2\x95\xae", .width = 1 }, .style = s });
+        surface.writeCell(start_col, start_row + box_h - 1, .{ .char = .{ .grapheme = "\xe2\x95\xb0", .width = 1 }, .style = s });
+        surface.writeCell(start_col + box_w - 1, start_row + box_h - 1, .{ .char = .{ .grapheme = "\xe2\x95\xaf", .width = 1 }, .style = s });
+        var c: u16 = 1;
+        while (c < box_w - 1) : (c += 1) {
+            surface.writeCell(start_col + c, start_row, .{ .char = .{ .grapheme = "\xe2\x94\x80", .width = 1 }, .style = s });
+            surface.writeCell(start_col + c, start_row + box_h - 1, .{ .char = .{ .grapheme = "\xe2\x94\x80", .width = 1 }, .style = s });
+        }
+        var r: u16 = 1;
+        while (r < box_h - 1) : (r += 1) {
+            surface.writeCell(start_col, start_row + r, .{ .char = .{ .grapheme = "\xe2\x94\x82", .width = 1 }, .style = s });
+            surface.writeCell(start_col + box_w - 1, start_row + r, .{ .char = .{ .grapheme = "\xe2\x94\x82", .width = 1 }, .style = s });
+        }
+
+        w.writeText(&surface, ctx, start_col + 2, start_row, " Confirm ", theme.boldOn(theme.PANEL_ALT, theme.DANGER));
+
+        const action_label: []const u8 = switch (self.confirm_action) {
+            .remove_member => "Remove member:",
+            .delete_bundle => "Delete bundle:",
+            .delete_workspace => "Delete workspace:",
+            .none => "Confirm:",
+        };
+        w.writeText(&surface, ctx, start_col + 2, start_row + 2, action_label, theme.textOn(theme.PANEL_ALT, theme.TEXT));
+        w.writeText(&surface, ctx, start_col + 2, start_row + 3, self.confirm_message, theme.boldOn(theme.PANEL_ALT, theme.ACCENT));
+        w.writeText(&surface, ctx, start_col + 2, start_row + 5, "y confirm    n / Esc cancel", theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT));
 
         return surface;
     }
