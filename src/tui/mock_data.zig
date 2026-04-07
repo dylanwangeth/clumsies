@@ -195,6 +195,30 @@ pub const SAMPLE_CONTENT =
     \\8. No magic numbers; define named constants.
 ;
 
+pub const MemberEntry = struct {
+    user_id: []const u8,
+    username: []const u8,
+    role: []const u8,
+    joined: []const u8,
+};
+
+pub const MEMBERS = [_]MemberEntry{
+    .{ .user_id = "usr-001", .username = "alice", .role = "maintainer", .joined = "2026-01-15" },
+    .{ .user_id = "usr-002", .username = "bob", .role = "member", .joined = "2026-02-20" },
+    .{ .user_id = "usr-003", .username = "carol", .role = "member", .joined = "2026-03-05" },
+    .{ .user_id = "usr-004", .username = "dave", .role = "member", .joined = "2026-03-18" },
+};
+
+pub const TokenInfo = struct {
+    scope: []const u8,
+    expires: []const u8,
+};
+
+pub const CURRENT_TOKEN = TokenInfo{
+    .scope = "library:read workspace:read trace:write stats:read proposal:read proposal:write",
+    .expires = "2026-04-07T12:00:00Z",
+};
+
 pub fn syncStateLabel(ws: *const WorkspaceEntry) []const u8 {
     if (ws.local_rev == ws.remote_rev) return "synced";
     return "out-of-sync";
