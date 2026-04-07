@@ -17,6 +17,7 @@ const theme = @import("theme.zig");
 pub const Column = struct {
     text: []const u8,
     flex: u16 = 0,
+    min_width: u16 = 0,
     alignment: enum { left, right } = .left,
 };
 
@@ -24,6 +25,7 @@ pub const TableRow = struct {
     columns: []const Column,
     style: vaxis.Style = .{},
     gap: u16 = 1,
+    padding_left: u16 = 1,
 
     pub fn widget(self: *const TableRow) vxfw.Widget {
         return .{
@@ -48,13 +50,15 @@ pub const TableRow = struct {
         var total_flex: u16 = 0;
         for (self.columns, 0..) |col, i| {
             if (col.flex == 0) {
-                fixed_total += @intCast(@min(ctx.stringWidth(col.text), total_width));
+                const text_w: u16 = @intCast(@min(ctx.stringWidth(col.text), total_width));
+                fixed_total += @max(text_w, col.min_width);
             }
             total_flex += col.flex;
             if (i < self.columns.len - 1) fixed_total += self.gap;
         }
 
-        const remaining = total_width -| fixed_total;
+        const content_width = total_width -| self.padding_left;
+        const remaining = content_width -| fixed_total;
 
         // Second pass: render each column at its computed position
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{
@@ -67,11 +71,12 @@ pub const TableRow = struct {
         };
         @memset(surface.buffer, theme.blank(bg_color));
 
-        var col_x: u16 = 0;
+        var col_x: u16 = self.padding_left;
         for (self.columns, 0..) |col, i| {
-            const col_width: u16 = if (col.flex == 0)
-                @intCast(@min(ctx.stringWidth(col.text), total_width))
-            else if (i == self.columns.len - 1)
+            const col_width: u16 = if (col.flex == 0) blk: {
+                const text_w: u16 = @intCast(@min(ctx.stringWidth(col.text), total_width));
+                break :blk @max(text_w, col.min_width);
+            } else if (i == self.columns.len - 1)
                 total_width -| col_x
             else if (total_flex > 0) (remaining * col.flex) / total_flex else 0;
 

@@ -4,16 +4,26 @@ pub fn rgb(hex: u24) vaxis.Color {
     return vaxis.Color.rgbFromUint(hex);
 }
 
-pub fn style(fg: vaxis.Color, bg: vaxis.Color) vaxis.Style {
-    return .{ .fg = fg, .bg = bg };
+pub fn style(foreground: vaxis.Color, background: vaxis.Color) vaxis.Style {
+    return .{ .fg = foreground, .bg = background };
 }
 
-pub fn textOn(bg: vaxis.Color, fg: vaxis.Color) vaxis.Style {
-    return .{ .fg = fg, .bg = bg };
+pub fn textOn(background: vaxis.Color, foreground: vaxis.Color) vaxis.Style {
+    return .{ .fg = foreground, .bg = background };
 }
 
-pub fn boldOn(bg: vaxis.Color, fg: vaxis.Color) vaxis.Style {
-    return .{ .fg = fg, .bg = bg, .bold = true };
+pub fn boldOn(background: vaxis.Color, foreground: vaxis.Color) vaxis.Style {
+    return .{ .fg = foreground, .bg = background, .bold = true };
+}
+
+// Default styles: foreground color on PANEL background.
+// Use instead of raw .{ .fg = color } to prevent terminal black bg.
+pub fn fg(color: vaxis.Color) vaxis.Style {
+    return .{ .fg = color, .bg = PANEL };
+}
+
+pub fn fgBold(color: vaxis.Color) vaxis.Style {
+    return .{ .fg = color, .bg = PANEL, .bold = true };
 }
 
 // Zig-themed warm palette: amber primary on calm dark surfaces.

@@ -101,6 +101,9 @@ const DetailTab = enum(u8) {
 };
 
 const top_tabs = [_]TopModule{ .library, .proposals, .workspace, .insights };
+
+// 12 prompts + up to 12 group headers = 24 max rows in Library
+const MAX_LIBRARY_ROWS = data.PROMPTS.len + 12;
 const detail_tabs = [_]DetailTab{ .overview, .content, .history };
 
 pub const Dashboard = struct {
@@ -123,11 +126,15 @@ pub const Dashboard = struct {
     settings_member_rows: [data.MEMBERS.len]TableRow = undefined,
     settings_member_cols: [data.MEMBERS.len][3]Column = undefined,
 
-    // ScrollBars for each module
+    // Library: grouped display with bundle filter
+    library_bundle_filter: usize = 0,
     library_scroll_bars: vxfw.ScrollBars,
-    library_widgets: [data.PROMPTS.len]vxfw.Widget = undefined,
-    library_rows: [data.PROMPTS.len]TableRow = undefined,
-    library_cols: [data.PROMPTS.len][4]Column = undefined,
+    library_row_count: usize = 0,
+    library_prompt_indices: [MAX_LIBRARY_ROWS]?usize = .{null} ** MAX_LIBRARY_ROWS,
+    library_widgets: [MAX_LIBRARY_ROWS]vxfw.Widget = undefined,
+    library_text_rows: [MAX_LIBRARY_ROWS]vxfw.Text = undefined,
+    library_table_rows: [MAX_LIBRARY_ROWS]TableRow = undefined,
+    library_table_cols: [MAX_LIBRARY_ROWS][3]Column = undefined,
 
     content_scroll_bars: vxfw.ScrollBars,
     content_widget: [1]vxfw.Widget = undefined,
@@ -369,10 +376,39 @@ pub const Dashboard = struct {
                 // Module-specific input
                 switch (self.selected_module) {
                     .library => {
+                        if (key.matches('b', .{})) {
+                            self.library_bundle_filter = (self.library_bundle_filter + 1) % (data.BUNDLES.len + 1);
+                            self.library_scroll_bars.scroll_view.cursor = 0;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
                         const prev = self.library_scroll_bars.scroll_view.cursor;
                         try self.library_scroll_bars.scroll_view.handleEvent(ctx, event);
-                        if (self.library_scroll_bars.scroll_view.cursor != prev) {
-                            self.selected_prompt = @intCast(@min(self.library_scroll_bars.scroll_view.cursor, data.PROMPTS.len - 1));
+                        // If cursor landed on a group header, skip in the
+                        // direction of movement to the next prompt row.
+                        const cursor_pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
+                        if (cursor_pos < self.library_row_count) {
+                            if (self.library_prompt_indices[cursor_pos]) |pi| {
+                                self.selected_prompt = pi;
+                            } else if (self.library_scroll_bars.scroll_view.cursor != prev) {
+                                const moving_down = self.library_scroll_bars.scroll_view.cursor > prev;
+                                if (moving_down) {
+                                    if (cursor_pos + 1 < self.library_row_count) {
+                                        self.library_scroll_bars.scroll_view.cursor += 1;
+                                        if (self.library_prompt_indices[cursor_pos + 1]) |pi| {
+                                            self.selected_prompt = pi;
+                                        }
+                                    }
+                                } else {
+                                    if (cursor_pos > 0) {
+                                        self.library_scroll_bars.scroll_view.cursor -= 1;
+                                        if (self.library_prompt_indices[cursor_pos - 1]) |pi| {
+                                            self.selected_prompt = pi;
+                                        }
+                                    }
+                                }
+                                ctx.consumeAndRedraw();
+                            }
                         }
                         if (key.matches(vaxis.Key.enter, .{})) {
                             self.openDetail(ctx, self.selected_prompt, .library, .overview);
@@ -436,7 +472,7 @@ pub const Dashboard = struct {
         }
 
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.CANVAS);
+        w.fillSurface(&root, theme.PANEL);
 
         const header_h: u16 = 4;
         const footer_h: u16 = 1;
@@ -484,26 +520,18 @@ pub const Dashboard = struct {
 
     fn drawHeader(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-        w.fillSurface(&surface, theme.HEADER);
+        w.fillSurface(&surface, theme.PANEL);
 
-        // Row 0: Accent band with org/ws/user/role context
-        w.paintBand(&surface, 0, theme.ACCENT, theme.CANVAS);
-        w.writeText(&surface, ctx, 1, 0, "clumsies \xe2\x94\x80 acme \xe2\x94\x80 payments-api \xe2\x94\x80 alice (maintainer)", .{
-            .fg = theme.CANVAS,
-            .bg = theme.ACCENT,
-            .bold = true,
-        });
-        w.writeRightText(&surface, ctx, 0, "[FRESH]", .{
-            .fg = theme.CANVAS,
-            .bg = theme.ACCENT,
-            .bold = true,
-        });
+        // Row 0: App title in accent, context in muted
+        w.writeText(&surface, ctx, 1, 0, "clumsies", theme.boldOn(theme.PANEL, theme.ACCENT));
+        w.writeText(&surface, ctx, 10, 0, "\xe2\x94\x80 acme \xe2\x94\x80 payments-api \xe2\x94\x80 alice (maintainer)", theme.fg(theme.MUTED));
+        _ = w.drawFilledBadge(&surface, ctx, 0, surface.size.width -| 8, "FRESH", theme.PANEL, theme.OK);
 
         // Row 2: Tab badges (row 1 and 3 are padding)
         var col: u16 = 1;
         for (top_tabs, 0..) |tab, idx| {
             const label = try std.fmt.allocPrint(ctx.arena, "{d} {s}", .{ idx + 1, tab.label() });
-            const is_active = if (self.show_detail) false else (tab == self.selected_module);
+            const is_active = if (self.show_detail or self.show_settings) false else (tab == self.selected_module);
             col = w.drawTabBadge(&surface, ctx, 2, col, label, is_active);
             col +|= 1;
         }
@@ -524,7 +552,7 @@ pub const Dashboard = struct {
 
     fn drawFooter(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-        w.fillSurface(&surface, theme.RAIL);
+        w.fillSurface(&surface, theme.PANEL);
 
         const keys = if (self.show_help)
             "Esc close help"
@@ -535,12 +563,12 @@ pub const Dashboard = struct {
         else if (self.show_detail)
             "h/l tab  j/k move  Enter diff  p propose  Esc back  ? help"
         else switch (self.selected_module) {
-            .library => "j/k move  Enter open  S settings  1-4 switch  ? help  q quit",
+            .library => "j/k move  Enter open  b bundle  S settings  ? help  q quit",
             .proposals => "j/k move  a accept  x reject  S settings  ? help  q quit",
             .workspace => "h/l tab  j/k move  r sync  S settings  ? help  q quit",
             .insights => "j/k move  t period  S settings  ? help  q quit",
         };
-        w.writeText(&surface, ctx, 1, 0, keys, theme.textOn(theme.RAIL, theme.TEXT_SOFT));
+        w.writeText(&surface, ctx, 1, 0, keys, theme.fg(theme.MUTED));
         return surface;
     }
 
@@ -549,7 +577,7 @@ pub const Dashboard = struct {
     fn drawLibrary(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.CANVAS);
+        w.fillSurface(&root, theme.PANEL);
 
         self.syncLibraryWidgets();
 
@@ -572,10 +600,15 @@ pub const Dashboard = struct {
         self.library_scroll_bars.scroll_view.draw_cursor = false;
         defer self.library_scroll_bars.scroll_view.draw_cursor = true;
 
+        const bundle_label: []const u8 = if (self.library_bundle_filter == 0)
+            "All"
+        else
+            data.BUNDLES[self.library_bundle_filter - 1].name;
+        const subtitle = try std.fmt.allocPrint(ctx.arena, "bundle: {s}  b cycle", .{bundle_label});
         const panel: w.Panel = .{
             .owner = self.widget(),
             .title = "Library Prompts",
-            .subtitle = "bundle: All",
+            .subtitle = subtitle,
             .background = theme.PANEL,
             .border_color = theme.BORDER,
             .child = self.library_scroll_bars.widget(),
@@ -624,7 +657,7 @@ pub const Dashboard = struct {
         const p = &data.PROMPTS[self.selected_prompt];
 
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.CANVAS);
+        w.fillSurface(&root, theme.PANEL);
 
         const meta_h: u16 = 5;
         const sidebar_w: u16 = if (size.width > 118) 30 else 26;
@@ -652,13 +685,13 @@ pub const Dashboard = struct {
         w.writeRightText(&surface, ctx, 0, p.content_hash, theme.textOn(theme.PANEL, theme.MUTED));
 
         var col: u16 = 2;
-        col = w.drawFilledBadge(&surface, ctx, 1, col, p.kind, theme.CANVAS, theme.GOLD);
+        col = w.drawFilledBadge(&surface, ctx, 1, col, p.kind, theme.PANEL, theme.GOLD);
         col +|= 1;
-        _ = w.drawFilledBadge(&surface, ctx, 1, col, p.bundle_names, theme.CANVAS, theme.CYAN);
+        _ = w.drawFilledBadge(&surface, ctx, 1, col, p.bundle_names, theme.PANEL, theme.CYAN);
 
         // Row 2: override / proposal status
         var status_col: u16 = 2;
-        status_col = w.drawFilledBadge(&surface, ctx, 2, status_col, "LOCAL", theme.CANVAS, theme.WARN);
+        status_col = w.drawFilledBadge(&surface, ctx, 2, status_col, "LOCAL", theme.PANEL, theme.WARN);
         status_col +|= 1;
         _ = w.drawFilledBadge(&surface, ctx, 2, status_col, "NO PROPOSAL", theme.TEXT_SOFT, theme.PANEL_ALT);
 
@@ -684,41 +717,21 @@ pub const Dashboard = struct {
         switch (self.detail_tab) {
             .overview => {
                 const spark = try w.sparkline(ctx.arena, p.trend[0..8]);
-                const overview = try std.fmt.allocPrint(ctx.arena,
-                    \\Canonical Name
-                    \\{s}
-                    \\
-                    \\Kind
-                    \\{s}
-                    \\
-                    \\Bundles
-                    \\{s}
-                    \\
-                    \\Content Hash
-                    \\{s}
-                    \\
-                    \\Updated
-                    \\{s}
-                    \\
-                    \\Trend (last 7d)
-                    \\{s}
-                    \\
-                    \\Local Override
-                    \\Detected in ws: payments-api. Press p to propose.
-                , .{ p.canonical_name, p.kind, p.bundle_names, p.content_hash, p.updated, spark });
-
-                const text_widget: vxfw.Text = .{
-                    .text = overview,
-                    .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
-                    .width_basis = .parent,
-                };
-                const child_ctx = ctx.withConstraints(
-                    .{ .width = inner_w, .height = inner_h },
-                    .{ .width = inner_w, .height = inner_h },
-                );
-                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = 2, .col = 1 }, .surface = try text_widget.widget().draw(child_ctx) };
-                surface.children = children;
+                const kw: u16 = 12;
+                const kv_col: u16 = 2;
+                var kv_row: u16 = 3;
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "canonical", p.canonical_name, kw);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "kind", p.kind, kw);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "bundles", p.bundle_names, kw);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "hash", p.content_hash, kw);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "updated", p.updated, kw);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "constraints", try std.fmt.allocPrint(ctx.arena, "{d}", .{p.constraint_count}), kw);
+                kv_row += 1;
+                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Trend (last 7d)");
+                w.writeText(&surface, ctx, kv_col, kv_row, spark, theme.fg(theme.ACCENT));
+                kv_row += 2;
+                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Local Override");
+                w.writeText(&surface, ctx, kv_col, kv_row, "Detected in ws: payments-api. Press p to propose.", theme.fg(theme.TEXT_SOFT));
             },
             .content => {
                 self.syncContentWidget();
@@ -795,40 +808,40 @@ pub const Dashboard = struct {
 
     fn drawDetailSidebar(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
         const spark = try w.sparkline(ctx.arena, p.trend[0..8]);
-        const sidebar = try std.fmt.allocPrint(ctx.arena,
-            \\Refer Count
-            \\{s}
-            \\
-            \\Constraints
-            \\{d}
-            \\
-            \\Trend
-            \\{s}
-            \\
-            \\Workspaces
-            \\API pending
-            \\
-            \\Actions
-            \\p  propose from local override
-            \\Enter  open diff from history
-            \\Esc  back to {s}
-        , .{ p.refer_count, p.constraint_count, spark, self.detail_origin.label() });
+        const size = ctx.max.size();
+        const inner_w = size.width -| 4;
+        _ = inner_w;
 
-        const text_widget: vxfw.Text = .{
-            .text = sidebar,
-            .style = theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT),
-            .width_basis = .parent,
-        };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
+        // Build sidebar surface with structured KV
+        var sb = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = size.height });
+        w.fillSurface(&sb, theme.PANEL_ALT);
+        const kw: u16 = 11;
+        const col: u16 = 1;
+        var row: u16 = 0;
+        row = w.writeKv(&sb, ctx, col, row, "refer", p.refer_count, kw);
+        row = w.writeKv(&sb, ctx, col, row, "constraints", try std.fmt.allocPrint(ctx.arena, "{d}", .{p.constraint_count}), kw);
+        row = w.writeKv(&sb, ctx, col, row, "workspaces", "API pending", kw);
+        row += 1;
+        row = w.writeSectionHeader(&sb, ctx, col, row, "Trend");
+        w.writeText(&sb, ctx, col, row, spark, theme.fg(theme.ACCENT));
+        row += 2;
+        row = w.writeSectionHeader(&sb, ctx, col, row, "Actions");
+        w.writeText(&sb, ctx, col, row, "p  propose", theme.fg(theme.TEXT_SOFT));
+        row += 1;
+        w.writeText(&sb, ctx, col, row, "Enter  diff", theme.fg(theme.TEXT_SOFT));
+        row += 1;
+        const back_text = try std.fmt.allocPrint(ctx.arena, "Esc  back to {s}", .{self.detail_origin.label()});
+        w.writeText(&sb, ctx, col, row, back_text, theme.fg(theme.TEXT_SOFT));
+
+        const wrapper = try ctx.arena.create(w.SurfaceWidget);
+        wrapper.* = .{ .surface = sb, .widget_ref = self.widget() };
         const panel: w.Panel = .{
             .owner = self.widget(),
             .title = "Usage Summary",
-            .subtitle = "API pending",
+            .subtitle = "",
             .background = theme.PANEL_ALT,
             .border_color = theme.BORDER,
             .child = wrapper.widget(),
-            .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
         };
         return panel.draw(ctx);
     }
@@ -873,7 +886,7 @@ pub const Dashboard = struct {
     fn drawProposalReview(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.CANVAS);
+        w.fillSurface(&root, theme.PANEL);
 
         self.syncReviewWidgets();
         const proposal = &data.PROPOSALS[self.selectedProposalIdx()];
@@ -943,7 +956,7 @@ pub const Dashboard = struct {
     fn drawWorkspaceStatus(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.CANVAS);
+        w.fillSurface(&root, theme.PANEL);
 
         self.syncWorkspaceWidgets();
         const ws_idx = @min(@as(usize, @intCast(self.workspace_scroll_bars.scroll_view.cursor)), data.WORKSPACES.len - 1);
@@ -974,7 +987,7 @@ pub const Dashboard = struct {
     fn drawWsBody(self: *Dashboard, ctx: vxfw.DrawContext, ws: *const data.WorkspaceEntry) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&surface, theme.CANVAS);
+        w.fillSurface(&surface, theme.PANEL);
 
         // Inner tabs
         var tab_col: u16 = 1;
@@ -1084,7 +1097,7 @@ pub const Dashboard = struct {
     fn drawInsights(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.CANVAS);
+        w.fillSurface(&root, theme.PANEL);
 
         self.syncInsightsWidgets();
 
@@ -1164,11 +1177,11 @@ pub const Dashboard = struct {
     fn drawSettings(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.CANVAS);
+        w.fillSurface(&root, theme.PANEL);
 
         // Inner tab strip
         var tab_surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = 1 });
-        w.fillSurface(&tab_surface, theme.CANVAS);
+        w.fillSurface(&tab_surface, theme.PANEL);
         var tab_col: u16 = 1;
         for (settings_tabs) |tab| {
             tab_col = w.drawInnerTabBadge(&tab_surface, ctx, 0, tab_col, tab.label(), tab == self.settings_tab);
@@ -1198,7 +1211,7 @@ pub const Dashboard = struct {
     fn drawSettingsMembers(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.CANVAS);
+        w.fillSurface(&root, theme.PANEL);
 
         self.syncSettingsMemberWidgets();
 
@@ -1334,7 +1347,7 @@ pub const Dashboard = struct {
         const size = ctx.max.size();
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         // Semi-transparent overlay: paint dimmed background
-        w.fillSurface(&surface, theme.CANVAS);
+        w.fillSurface(&surface, theme.PANEL);
 
         const box_w: u16 = 52;
         const box_h: u16 = 19;
@@ -1401,7 +1414,7 @@ pub const Dashboard = struct {
     fn drawConfirmOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&surface, theme.CANVAS);
+        w.fillSurface(&surface, theme.PANEL);
 
         const box_w: u16 = 44;
         const box_h: u16 = 7;
@@ -1454,34 +1467,73 @@ pub const Dashboard = struct {
 
     fn drawTooSmall(self: *Dashboard, ctx: vxfw.DrawContext, size: vxfw.Size) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&surface, theme.CANVAS);
-        w.paintBand(&surface, 0, theme.ACCENT, theme.CANVAS);
-        w.writeText(&surface, ctx, 1, 0, "clumsies / prompt dashboard", .{ .fg = theme.CANVAS, .bg = theme.ACCENT, .bold = true });
-        w.writeText(&surface, ctx, 2, 2, "Terminal too small. Need at least 96x24.", theme.boldOn(theme.CANVAS, theme.TEXT));
-        w.writeText(&surface, ctx, 2, 4, "Resize the terminal, or press q / Ctrl-C to exit.", theme.textOn(theme.CANVAS, theme.TEXT_SOFT));
+        w.fillSurface(&surface, theme.PANEL);
+        w.writeText(&surface, ctx, 1, 0, "clumsies", theme.boldOn(theme.PANEL, theme.ACCENT));
+        w.writeText(&surface, ctx, 2, 2, "Terminal too small. Need at least 96x24.", theme.fgBold(theme.TEXT));
+        w.writeText(&surface, ctx, 2, 4, "Resize the terminal, or press q / Ctrl-C to exit.", theme.fg(theme.TEXT_SOFT));
         return surface;
     }
 
-    // Library rows: name (flex=1) | kind (auto) | refer (auto, right) | age (auto, right)
+    // Library: grouped by path prefix with optional bundle filter.
+    // Builds a mixed list of group headers (Text) and prompt rows (TableRow).
+    // library_prompt_indices maps each row index to the PROMPTS array index
+    // (null for group header rows, so cursor can skip them).
     fn syncLibraryWidgets(self: *Dashboard) void {
-        self.library_scroll_bars.scroll_view.cursor = @intCast(self.selected_prompt);
-        for (data.PROMPTS, 0..) |p, idx| {
-            const sel = idx == self.selected_prompt;
-            self.library_cols[idx] = .{
-                .{ .text = p.canonical_name, .flex = 1 },
-                .{ .text = p.kind, .flex = 0 },
-                .{ .text = p.refer_count, .flex = 0, .alignment = .right },
-                .{ .text = p.age, .flex = 0, .alignment = .right },
-            };
-            self.library_rows[idx] = .{
-                .columns = &self.library_cols[idx],
-                .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
-                .gap = 2,
-            };
-            self.library_widgets[idx] = self.library_rows[idx].widget();
+        const filter_name: ?[]const u8 = if (self.library_bundle_filter == 0)
+            null
+        else
+            data.BUNDLES[self.library_bundle_filter - 1].name;
+
+        var row_idx: usize = 0;
+        var last_prefix: []const u8 = "";
+
+        for (data.PROMPTS, 0..) |p, pidx| {
+            // Apply bundle filter
+            if (filter_name) |fname| {
+                if (std.mem.indexOf(u8, p.bundle_names, fname) == null) continue;
+            }
+
+            const prefix = data.pathPrefix(p.canonical_name);
+            const name = data.promptName(p.canonical_name);
+
+            // Insert group header when prefix changes
+            if (!std.mem.eql(u8, prefix, last_prefix)) {
+                if (row_idx < MAX_LIBRARY_ROWS) {
+                    // Prefix headers use static padded strings to avoid
+                    // needing an allocator in sync functions.
+                    self.library_text_rows[row_idx] = .{
+                        .text = prefixWithPad(prefix),
+                        .style = theme.boldOn(theme.PANEL, theme.ACCENT),
+                    };
+                    self.library_widgets[row_idx] = self.library_text_rows[row_idx].widget();
+                    self.library_prompt_indices[row_idx] = null;
+                    row_idx += 1;
+                }
+                last_prefix = prefix;
+            }
+
+            // Insert prompt row
+            if (row_idx < MAX_LIBRARY_ROWS) {
+                const sel = pidx == self.selected_prompt;
+                self.library_table_cols[row_idx] = .{
+                    .{ .text = name, .flex = 1 },
+                    .{ .text = p.refer_count, .flex = 0, .min_width = 4, .alignment = .right },
+                    .{ .text = p.age, .flex = 0, .min_width = 3, .alignment = .right },
+                };
+                self.library_table_rows[row_idx] = .{
+                    .columns = &self.library_table_cols[row_idx],
+                    .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
+                    .gap = 2,
+                };
+                self.library_widgets[row_idx] = self.library_table_rows[row_idx].widget();
+                self.library_prompt_indices[row_idx] = pidx;
+                row_idx += 1;
+            }
         }
-        self.library_scroll_bars.scroll_view.children = .{ .slice = self.library_widgets[0..] };
-        self.library_scroll_bars.estimated_content_height = data.PROMPTS.len;
+
+        self.library_row_count = row_idx;
+        self.library_scroll_bars.scroll_view.children = .{ .slice = self.library_widgets[0..row_idx] };
+        self.library_scroll_bars.estimated_content_height = @intCast(row_idx);
     }
 
     fn syncContentWidget(self: *Dashboard) void {
@@ -1649,6 +1701,19 @@ pub const Dashboard = struct {
 
 // Static row buffers to avoid per-frame allocation
 // Small buffers for inline-formatted column values (counts, percentages)
+fn prefixWithPad(prefix: []const u8) []const u8 {
+    // Map known path prefixes to static padded strings
+    const map = std.StaticStringMap([]const u8).initComptime(.{
+        .{ "arch", " arch" },
+        .{ "cmd", " cmd" },
+        .{ "coding", " coding" },
+        .{ "style", " style" },
+        .{ "wf", " wf" },
+        .{ "zig", " zig" },
+    });
+    return map.get(prefix) orelse prefix;
+}
+
 var workspace_buf: [data.WORKSPACES.len][32]u8 = undefined;
 var insights_buf: [data.INSIGHTS_WS.len][16]u8 = undefined;
 

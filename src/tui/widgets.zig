@@ -66,6 +66,22 @@ pub fn writeRightText(surface: *vxfw.Surface, ctx: vxfw.DrawContext, row: u16, t
     writeText(surface, ctx, surface.size.width - width - 1, row, text, s);
 }
 
+// Horizontal key-value pair: key in MUTED, value in TEXT.
+// key_width is the fixed column width for the key (left-aligned, padded).
+// Returns the next available row (row + 1).
+pub fn writeKv(surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u16, key: []const u8, value: []const u8, key_width: u16) u16 {
+    writeText(surface, ctx, col, row, key, theme.fg(theme.MUTED));
+    writeText(surface, ctx, col + key_width + 1, row, value, theme.fg(theme.TEXT));
+    return row + 1;
+}
+
+// Section header: bold accent text, used before vertical KV groups.
+// Returns the next available row (row + 1).
+pub fn writeSectionHeader(surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u16, text: []const u8) u16 {
+    writeText(surface, ctx, col, row, text, theme.fgBold(theme.ACCENT));
+    return row + 1;
+}
+
 // Draw a filled badge (pill) with background. Returns the column after the badge.
 pub fn drawFilledBadge(surface: *vxfw.Surface, ctx: vxfw.DrawContext, row: u16, col: u16, text: []const u8, fg: vaxis.Color, bg: vaxis.Color) u16 {
     const width = @as(u16, @intCast(ctx.stringWidth(text))) + 2;
@@ -88,7 +104,7 @@ pub fn drawTabBadge(surface: *vxfw.Surface, ctx: vxfw.DrawContext, row: u16, col
         row,
         col,
         text,
-        if (selected) theme.CANVAS else theme.TEXT_SOFT,
+        if (selected) theme.PANEL else theme.TEXT_SOFT,
         if (selected) theme.MINT else theme.PANEL_ALT,
     );
 }
@@ -101,7 +117,7 @@ pub fn drawInnerTabBadge(surface: *vxfw.Surface, ctx: vxfw.DrawContext, row: u16
         row,
         col,
         text,
-        if (selected) theme.CANVAS else theme.TEXT_SOFT,
+        if (selected) theme.PANEL else theme.TEXT_SOFT,
         if (selected) theme.GOLD else theme.PANEL_ALT,
     );
 }
