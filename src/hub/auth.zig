@@ -276,3 +276,222 @@ fn hexEncode(input: []const u8, output: []u8) void {
         output[i * 2 + 1] = hex[byte & 0x0f];
     }
 }
+
+// Org Member management
+
+const MemberInfo = struct {
+    user_id: []const u8,
+    username: []const u8,
+    role: []const u8,
+    joined_at: []const u8,
+};
+
+pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    var result = conn.query(
+        "SELECT user_id, username, role, created_at::text FROM users WHERE org_id = $1::uuid ORDER BY username",
+        .{user.org_id},
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
+    defer result.deinit();
+
+    var list: std.ArrayList(MemberInfo) = .empty;
+    while (try result.next()) |row| {
+        try list.append(req.arena, .{
+            .user_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .username = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+            .role = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .joined_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+        });
+    }
+
+    try res.json(.{ .members = list.items }, .{});
+}
+
+const InviteRequest = struct {
+    username: []const u8,
+    role: []const u8,
+};
+
+pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
+
+    const body = req.json(InviteRequest) catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "missing request body");
+    };
+
+    if (!std.mem.eql(u8, body.role, "member") and !std.mem.eql(u8, body.role, "maintainer")) {
+        return apiError(res, 400, "BAD_REQUEST", "role must be member or maintainer");
+    }
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    // Generate user_id
+    var rand_bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&rand_bytes);
+    var uid_buf: [36]u8 = undefined;
+    @memcpy(uid_buf[0..4], "usr-");
+    const hex = "0123456789abcdef";
+    for (rand_bytes, 0..) |byte, i| {
+        uid_buf[4 + i * 2] = hex[byte >> 4];
+        uid_buf[4 + i * 2 + 1] = hex[byte & 0x0f];
+    }
+
+    _ = conn.exec(
+        "INSERT INTO users (user_id, org_id, username, role, password_hash) VALUES ($1, $2::uuid, $3, $4, '')",
+        .{ @as([]const u8, &uid_buf), user.org_id, body.username, body.role },
+    ) catch {
+        if (conn.err) |pg_err| {
+            if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
+                std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
+            {
+                return apiError(res, 409, "CONFLICT", "user already exists in this org");
+            }
+        }
+        return apiError(res, 500, "INTERNAL_ERROR", "database insert failed");
+    };
+
+    res.status = 201;
+    try res.json(.{
+        .user_id = @as([]const u8, &uid_buf),
+        .username = body.username,
+        .role = body.role,
+    }, .{});
+}
+
+const ChangeRoleRequest = struct {
+    role: []const u8,
+};
+
+pub fn handleChangeRole(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
+
+    const target_id = req.param("user_id") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "user_id is required");
+    };
+
+    const body = req.json(ChangeRoleRequest) catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "missing request body");
+    };
+
+    if (!std.mem.eql(u8, body.role, "member") and !std.mem.eql(u8, body.role, "maintainer")) {
+        return apiError(res, 400, "BAD_REQUEST", "role must be member or maintainer");
+    }
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    // Protect last maintainer from demotion
+    if (std.mem.eql(u8, body.role, "member")) {
+        var count_row = conn.row(
+            "SELECT count(*) FROM users WHERE org_id = $1::uuid AND role = 'maintainer'",
+            .{user.org_id},
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        } orelse {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        };
+        const count = try count_row.get(i64, 0);
+        count_row.deinit() catch {};
+        if (count <= 1) {
+            return apiError(res, 400, "BAD_REQUEST", "cannot demote the last maintainer");
+        }
+    }
+
+    _ = conn.exec(
+        "UPDATE users SET role = $1 WHERE user_id = $2 AND org_id = $3::uuid",
+        .{ body.role, target_id, user.org_id },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+    };
+
+    try res.json(.{ .user_id = target_id, .role = body.role }, .{});
+}
+
+pub fn handleRemoveMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
+
+    const target_id = req.param("user_id") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "user_id is required");
+    };
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    // Check target exists and protect last maintainer
+    var target_row = conn.row(
+        "SELECT role FROM users WHERE user_id = $1 AND org_id = $2::uuid",
+        .{ target_id, user.org_id },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 404, "NOT_FOUND", "user not found");
+    };
+    const target_role = try req.arena.dupe(u8, try target_row.get([]const u8, 0));
+    target_row.deinit() catch {};
+
+    if (std.mem.eql(u8, target_role, "maintainer")) {
+        var count_row = conn.row(
+            "SELECT count(*) FROM users WHERE org_id = $1::uuid AND role = 'maintainer'",
+            .{user.org_id},
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        } orelse {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        };
+        const count = try count_row.get(i64, 0);
+        count_row.deinit() catch {};
+        if (count <= 1) {
+            return apiError(res, 400, "BAD_REQUEST", "cannot remove the last maintainer");
+        }
+    }
+
+    // Cascade: remove from all workspaces first
+    _ = conn.exec("DELETE FROM workspace_members WHERE user_id = $1", .{target_id}) catch {};
+    // Revoke tokens
+    _ = conn.exec("UPDATE tokens SET revoked = true WHERE user_id = $1", .{target_id}) catch {};
+    // Remove user
+    _ = conn.exec("DELETE FROM users WHERE user_id = $1 AND org_id = $2::uuid", .{ target_id, user.org_id }) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");
+    };
+
+    res.status = 204;
+}

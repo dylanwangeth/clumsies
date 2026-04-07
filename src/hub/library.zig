@@ -331,3 +331,201 @@ pub fn handleGetBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         .updated_at = updated_at,
     }, .{});
 }
+
+const CreateBundleRequest = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+    prompt_ids: []const []const u8,
+};
+
+pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = auth.authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
+
+    const body = req.json(CreateBundleRequest) catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "missing request body");
+    };
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    // Validate all prompt_ids exist
+    for (body.prompt_ids) |pid| {
+        var exists = conn.row(
+            "SELECT 1 FROM prompts WHERE org_id = $1::uuid AND prompt_id = $2",
+            .{ user.org_id, pid },
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        };
+        if (exists) |*r| {
+            r.deinit() catch {};
+        } else {
+            return apiError(res, 400, "BAD_REQUEST", "prompt_id not found in Library");
+        }
+    }
+
+    // Generate bundle_id
+    var rand_bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&rand_bytes);
+    var bid_buf: [38]u8 = undefined;
+    @memcpy(bid_buf[0..4], "bnd-");
+    const hex = "0123456789abcdef";
+    for (rand_bytes, 0..) |byte, i| {
+        bid_buf[4 + i * 2] = hex[byte >> 4];
+        bid_buf[4 + i * 2 + 1] = hex[byte & 0x0f];
+    }
+    const bundle_id: []const u8 = &bid_buf;
+
+    const desc = body.description orelse "";
+    _ = conn.exec(
+        "INSERT INTO bundles (bundle_id, org_id, name, description) VALUES ($1, $2::uuid, $3, $4)",
+        .{ bundle_id, user.org_id, body.name, desc },
+    ) catch {
+        if (conn.err) |pg_err| {
+            if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
+                std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
+            {
+                return apiError(res, 409, "CONFLICT", "bundle with this name already exists");
+            }
+        }
+        return apiError(res, 500, "INTERNAL_ERROR", "database insert failed");
+    };
+
+    for (body.prompt_ids) |pid| {
+        _ = conn.exec(
+            "INSERT INTO bundle_prompts (bundle_id, prompt_id) VALUES ($1, $2)",
+            .{ bundle_id, pid },
+        ) catch {};
+    }
+
+    res.status = 201;
+    try res.json(.{
+        .name = body.name,
+        .description = desc,
+        .prompt_ids = body.prompt_ids,
+    }, .{});
+}
+
+const UpdateBundleRequest = struct {
+    description: ?[]const u8 = null,
+    prompt_ids: ?[]const []const u8 = null,
+};
+
+pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = auth.authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
+
+    const name = req.param("name") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "name is required");
+    };
+
+    const body = req.json(UpdateBundleRequest) catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "missing request body");
+    };
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    // Find bundle
+    var row = conn.row(
+        "SELECT bundle_id FROM bundles WHERE org_id = $1::uuid AND name = $2",
+        .{ user.org_id, name },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 404, "NOT_FOUND", "bundle not found");
+    };
+    const bundle_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    row.deinit() catch {};
+
+    // Update description if provided
+    if (body.description) |desc| {
+        _ = conn.exec(
+            "UPDATE bundles SET description = $1, updated_at = now() WHERE bundle_id = $2",
+            .{ desc, bundle_id },
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+        };
+    }
+
+    // Replace prompt_ids if provided
+    if (body.prompt_ids) |pids| {
+        for (pids) |pid| {
+            var exists2 = conn.row(
+                "SELECT 1 FROM prompts WHERE org_id = $1::uuid AND prompt_id = $2",
+                .{ user.org_id, pid },
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            };
+            if (exists2) |*r| {
+                r.deinit() catch {};
+            } else {
+                return apiError(res, 400, "BAD_REQUEST", "prompt_id not found in Library");
+            }
+        }
+
+        _ = conn.exec("DELETE FROM bundle_prompts WHERE bundle_id = $1", .{bundle_id}) catch {};
+        for (pids) |pid| {
+            _ = conn.exec(
+                "INSERT INTO bundle_prompts (bundle_id, prompt_id) VALUES ($1, $2)",
+                .{ bundle_id, pid },
+            ) catch {};
+        }
+        _ = conn.exec(
+            "UPDATE bundles SET updated_at = now() WHERE bundle_id = $1",
+            .{bundle_id},
+        ) catch {};
+    }
+
+    try res.json(.{ .name = name, .updated = true }, .{});
+}
+
+pub fn handleDeleteBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = auth.authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
+
+    const name = req.param("name") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "name is required");
+    };
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    var row = conn.row(
+        "SELECT bundle_id FROM bundles WHERE org_id = $1::uuid AND name = $2",
+        .{ user.org_id, name },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 404, "NOT_FOUND", "bundle not found");
+    };
+    const bundle_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    row.deinit() catch {};
+
+    _ = conn.exec("DELETE FROM bundle_prompts WHERE bundle_id = $1", .{bundle_id}) catch {};
+    _ = conn.exec("DELETE FROM bundles WHERE bundle_id = $1", .{bundle_id}) catch {};
+
+    res.status = 204;
+}

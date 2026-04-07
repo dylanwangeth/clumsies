@@ -73,8 +73,9 @@ const migration_sql =
     \\);
     \\
     \\CREATE TABLE IF NOT EXISTS workspace_members (
-    \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id),
-    \\    user_id TEXT NOT NULL REFERENCES users(user_id),
+    \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
+    \\    user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    \\    level TEXT NOT NULL DEFAULT 'write' CHECK (level IN ('read', 'write', 'admin')),
     \\    joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    PRIMARY KEY (ws_id, user_id)
     \\);

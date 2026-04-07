@@ -50,10 +50,17 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.get("/api/auth/me", auth.handleMe, .{});
     router.delete("/api/auth/token", auth.handleRevokeToken, .{});
 
+    // Org Members
+    router.get("/api/org/members", auth.handleListMembers, .{});
+    router.post("/api/org/members", auth.handleInviteMember, .{});
+    router.patch("/api/org/members/:user_id", auth.handleChangeRole, .{});
+    router.delete("/api/org/members/:user_id", auth.handleRemoveMember, .{});
+
     // Workspaces
     router.post("/api/workspaces", workspace_handler.handleCreate, .{});
     router.get("/api/workspaces/:ws_id", workspace_handler.handleGet, .{});
     router.patch("/api/workspaces/:ws_id", workspace_handler.handleUpdate, .{});
+    router.delete("/api/workspaces/:ws_id", workspace_handler.handleDelete, .{});
     router.get("/api/workspaces/:ws_id/manifest", workspace_handler.handleGetManifest, .{});
     router.post("/api/workspaces/:ws_id/prompts", workspace_handler.handleAddPrompt, .{});
     router.delete("/api/workspaces/:ws_id/prompts/:prompt_id", workspace_handler.handleRemovePrompt, .{});
@@ -62,6 +69,11 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.put("/api/workspaces/:ws_id/file", workspace_handler.handlePutFile, .{});
     router.delete("/api/workspaces/:ws_id/file", workspace_handler.handleDeleteFile, .{});
 
+    // Workspace Members
+    router.get("/api/workspaces/:ws_id/members", workspace_handler.handleListMembers, .{});
+    router.post("/api/workspaces/:ws_id/members", workspace_handler.handleAddMember, .{});
+    router.delete("/api/workspaces/:ws_id/members/:user_id", workspace_handler.handleRemoveMember, .{});
+
     // Library
     router.get("/api/org/library/manifest", library_handler.handleGetManifest, .{});
     router.get("/api/org/library/prompts", library_handler.handleListPrompts, .{});
@@ -69,6 +81,9 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.get("/api/org/library/prompt/content", library_handler.handleGetPromptContent, .{});
     router.get("/api/org/bundles", library_handler.handleListBundles, .{});
     router.get("/api/org/bundles/:name", library_handler.handleGetBundle, .{});
+    router.post("/api/org/bundles", library_handler.handleCreateBundle, .{});
+    router.put("/api/org/bundles/:name", library_handler.handleUpdateBundle, .{});
+    router.delete("/api/org/bundles/:name", library_handler.handleDeleteBundle, .{});
 
     // Trace & Stats
     router.post("/api/traces", trace_handler.handleUpload, .{});
