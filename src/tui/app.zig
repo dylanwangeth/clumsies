@@ -520,12 +520,20 @@ pub const Dashboard = struct {
 
     fn drawHeader(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-        w.fillSurface(&surface, theme.PANEL);
+        w.fillSurface(&surface, theme.PANEL_ALT);
 
-        // Row 0: App title in accent, context in muted
-        w.writeText(&surface, ctx, 1, 0, "clumsies", theme.boldOn(theme.PANEL, theme.ACCENT));
-        w.writeText(&surface, ctx, 10, 0, "\xe2\x94\x80 acme \xe2\x94\x80 payments-api \xe2\x94\x80 alice (maintainer)", theme.fg(theme.MUTED));
-        _ = w.drawFilledBadge(&surface, ctx, 0, surface.size.width -| 8, "FRESH", theme.PANEL, theme.OK);
+        // Row 0: Accent band with org/ws/user context
+        w.paintBand(&surface, 0, theme.ACCENT, theme.PANEL);
+        w.writeText(&surface, ctx, 1, 0, "clumsies \xe2\x94\x80 acme \xe2\x94\x80 payments-api \xe2\x94\x80 alice (maintainer)", .{
+            .fg = theme.PANEL,
+            .bg = theme.ACCENT,
+            .bold = true,
+        });
+        w.writeRightText(&surface, ctx, 0, "[FRESH]", .{
+            .fg = theme.PANEL,
+            .bg = theme.ACCENT,
+            .bold = true,
+        });
 
         // Row 2: Tab badges (row 1 and 3 are padding)
         var col: u16 = 1;
@@ -651,7 +659,7 @@ pub const Dashboard = struct {
         return panel.draw(ctx);
     }
 
-    // Prompt Detail: meta header + inner tabs + sidebar
+    // Prompt Detail: main panel (with identity in title) + sidebar
     fn drawPromptDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         const p = &data.PROMPTS[self.selected_prompt];
@@ -659,79 +667,54 @@ pub const Dashboard = struct {
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.PANEL);
 
-        const meta_h: u16 = 5;
         const sidebar_w: u16 = if (size.width > 118) 30 else 26;
         const main_w: u16 = size.width - sidebar_w - 1;
-        const lower_h: u16 = size.height - meta_h - 1;
 
-        const meta_ctx = ctx.withConstraints(.{ .width = size.width, .height = meta_h }, .{ .width = size.width, .height = meta_h });
-        const main_ctx = ctx.withConstraints(.{ .width = main_w, .height = lower_h }, .{ .width = main_w, .height = lower_h });
-        const side_ctx = ctx.withConstraints(.{ .width = sidebar_w, .height = lower_h }, .{ .width = sidebar_w, .height = lower_h });
+        const main_ctx = ctx.withConstraints(.{ .width = main_w, .height = size.height }, .{ .width = main_w, .height = size.height });
+        const side_ctx = ctx.withConstraints(.{ .width = sidebar_w, .height = size.height }, .{ .width = sidebar_w, .height = size.height });
 
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 3);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawDetailMeta(meta_ctx, p) };
-        children[1] = .{ .origin = .{ .row = meta_h + 1, .col = 0 }, .surface = try self.drawDetailMain(main_ctx, p) };
-        children[2] = .{ .origin = .{ .row = meta_h + 1, .col = main_w + 1 }, .surface = try self.drawDetailSidebar(side_ctx, p) };
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawDetailMain(main_ctx, p) };
+        children[1] = .{ .origin = .{ .row = 0, .col = main_w + 1 }, .surface = try self.drawDetailSidebar(side_ctx, p) };
         root.children = children;
         return root;
-    }
-
-    fn drawDetailMeta(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
-        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-        w.fillSurface(&surface, theme.PANEL);
-        w.drawBorder(&surface, theme.BORDER, theme.PANEL);
-
-        w.writeText(&surface, ctx, 2, 0, p.canonical_name, theme.boldOn(theme.PANEL, theme.TEXT));
-        w.writeRightText(&surface, ctx, 0, p.content_hash, theme.textOn(theme.PANEL, theme.MUTED));
-
-        var col: u16 = 2;
-        col = w.drawFilledBadge(&surface, ctx, 1, col, p.kind, theme.PANEL, theme.GOLD);
-        col +|= 1;
-        _ = w.drawFilledBadge(&surface, ctx, 1, col, p.bundle_names, theme.PANEL, theme.CYAN);
-
-        // Row 2: override / proposal status
-        var status_col: u16 = 2;
-        status_col = w.drawFilledBadge(&surface, ctx, 2, status_col, "LOCAL", theme.PANEL, theme.WARN);
-        status_col +|= 1;
-        _ = w.drawFilledBadge(&surface, ctx, 2, status_col, "NO PROPOSAL", theme.TEXT_SOFT, theme.PANEL_ALT);
-
-        const metrics = try std.fmt.allocPrint(ctx.arena, "refer {s}   constraints {d}   bundles {d}", .{ p.refer_count, p.constraint_count, p.bundle_count });
-        w.writeText(&surface, ctx, 2, 3, metrics, theme.boldOn(theme.PANEL, theme.TEXT));
-        return surface;
     }
 
     fn drawDetailMain(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
+        w.drawBorder(&surface, theme.BORDER, theme.PANEL);
 
-        // Inner tab strip
-        var col: u16 = 0;
+        // Row 0: inner tabs (left) + canonical name (right)
+        var col: u16 = 2;
         for (detail_tabs) |tab| {
             col = w.drawInnerTabBadge(&surface, ctx, 0, col, tab.label(), tab == self.detail_tab);
             col +|= 1;
         }
+        w.writeRightText(&surface, ctx, 0, p.canonical_name, theme.textOn(theme.PANEL, theme.MUTED));
 
-        const inner_h = ctx.max.height.? -| 2;
-        const inner_w = ctx.max.width.?;
+        const inner_h = ctx.max.height.? -| 3;
+        const inner_w = ctx.max.width.? -| 2;
 
         switch (self.detail_tab) {
             .overview => {
-                const spark = try w.sparkline(ctx.arena, p.trend[0..8]);
-                const kw: u16 = 12;
                 const kv_col: u16 = 2;
-                var kv_row: u16 = 3;
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "canonical", p.canonical_name, kw);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "kind", p.kind, kw);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "bundles", p.bundle_names, kw);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "hash", p.content_hash, kw);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "updated", p.updated, kw);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "constraints", try std.fmt.allocPrint(ctx.arena, "{d}", .{p.constraint_count}), kw);
+                var kv_row: u16 = 2;
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "hash", p.content_hash, 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "updated", p.updated, 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "source", "acme", 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "override", "local (payments-api)", 8);
                 kv_row += 1;
-                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Trend (last 7d)");
-                w.writeText(&surface, ctx, kv_col, kv_row, spark, theme.fg(theme.ACCENT));
-                kv_row += 2;
+                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Top Constraints");
+                // Mock constraint ranking (real data from GET /api/stats/prompt/{id})
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "c-1", "naming clarity           3210", 5);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "c-3", "import grouping          2321", 5);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "c-5", "file ordering            1172", 5);
+                kv_row += 1;
                 kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Local Override");
-                w.writeText(&surface, ctx, kv_col, kv_row, "Detected in ws: payments-api. Press p to propose.", theme.fg(theme.TEXT_SOFT));
+                w.writeText(&surface, ctx, kv_col, kv_row, "Detected in ws: payments-api", theme.fg(theme.TEXT_SOFT));
+                kv_row += 1;
+                w.writeText(&surface, ctx, kv_col, kv_row, "Press p to propose this override", theme.fg(theme.MUTED));
             },
             .content => {
                 self.syncContentWidget();
@@ -740,7 +723,7 @@ pub const Dashboard = struct {
                     .{ .width = inner_w, .height = inner_h },
                 );
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = 2, .col = 0 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
+                children[0] = .{ .origin = .{ .row = 2, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
                 surface.children = children;
             },
             .history => {
@@ -785,101 +768,61 @@ pub const Dashboard = struct {
                 }
 
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-                children[0] = .{ .origin = .{ .row = 2, .col = 0 }, .surface = list_surface };
-                children[1] = .{ .origin = .{ .row = 2, .col = list_w + 1 }, .surface = try self.drawHistoryDetail(det_ctx) };
+                children[0] = .{ .origin = .{ .row = 2, .col = 1 }, .surface = list_surface };
+                children[1] = .{ .origin = .{ .row = 2, .col = 1 + list_w + 1 }, .surface = try self.drawHistoryDetail(det_ctx) };
                 surface.children = children;
             },
         }
 
-        // Wrap in panel
-        const sw = try ctx.arena.create(w.SurfaceWidget);
-        sw.* = .{ .surface = surface, .widget_ref = self.widget() };
-        const panel: w.Panel = .{
-            .owner = self.widget(),
-            .title = "Prompt Detail",
-            .subtitle = p.canonical_name,
-            .background = theme.PANEL,
-            .border_color = theme.BORDER,
-            .child = sw.widget(),
-            .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-        };
-        return panel.draw(ctx);
+        return surface;
     }
 
     fn drawDetailSidebar(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
         const spark = try w.sparkline(ctx.arena, p.trend[0..8]);
-        const size = ctx.max.size();
-        const inner_w = size.width -| 4;
-        _ = inner_w;
+        const bg = theme.PANEL_ALT;
 
-        // Build sidebar surface with structured KV
-        var sb = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = size.height });
-        w.fillSurface(&sb, theme.PANEL_ALT);
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
+        w.fillSurface(&surface, bg);
+        w.drawBorder(&surface, theme.BORDER, bg);
+        w.writeText(&surface, ctx, 2, 0, "Usage Summary", theme.boldOn(bg, theme.TEXT));
+
         const kw: u16 = 11;
-        const col: u16 = 1;
-        var row: u16 = 0;
-        row = w.writeKv(&sb, ctx, col, row, "refer", p.refer_count, kw);
-        row = w.writeKv(&sb, ctx, col, row, "constraints", try std.fmt.allocPrint(ctx.arena, "{d}", .{p.constraint_count}), kw);
-        row = w.writeKv(&sb, ctx, col, row, "workspaces", "API pending", kw);
+        const kv_col: u16 = 2;
+        var row: u16 = 2;
+        row = w.writeKv(&surface, ctx, kv_col, row, "refer", p.refer_count, kw);
+        row = w.writeKv(&surface, ctx, kv_col, row, "constraints", try std.fmt.allocPrint(ctx.arena, "{d}", .{p.constraint_count}), kw);
+        row = w.writeKv(&surface, ctx, kv_col, row, "workspaces", "API pending", kw);
         row += 1;
-        row = w.writeSectionHeader(&sb, ctx, col, row, "Trend");
-        w.writeText(&sb, ctx, col, row, spark, theme.fg(theme.ACCENT));
+        row = w.writeSectionHeader(&surface, ctx, kv_col, row, "Trend");
+        w.writeText(&surface, ctx, kv_col, row, spark, theme.fg(theme.ACCENT));
         row += 2;
-        row = w.writeSectionHeader(&sb, ctx, col, row, "Actions");
-        w.writeText(&sb, ctx, col, row, "p  propose", theme.fg(theme.TEXT_SOFT));
+        row = w.writeSectionHeader(&surface, ctx, kv_col, row, "Actions");
+        w.writeText(&surface, ctx, kv_col, row, "p  propose", theme.fg(theme.TEXT_SOFT));
         row += 1;
-        w.writeText(&sb, ctx, col, row, "Enter  diff", theme.fg(theme.TEXT_SOFT));
+        w.writeText(&surface, ctx, kv_col, row, "Enter  diff", theme.fg(theme.TEXT_SOFT));
         row += 1;
         const back_text = try std.fmt.allocPrint(ctx.arena, "Esc  back to {s}", .{self.detail_origin.label()});
-        w.writeText(&sb, ctx, col, row, back_text, theme.fg(theme.TEXT_SOFT));
-
-        const wrapper = try ctx.arena.create(w.SurfaceWidget);
-        wrapper.* = .{ .surface = sb, .widget_ref = self.widget() };
-        const panel: w.Panel = .{
-            .owner = self.widget(),
-            .title = "Usage Summary",
-            .subtitle = "",
-            .background = theme.PANEL_ALT,
-            .border_color = theme.BORDER,
-            .child = wrapper.widget(),
-        };
-        return panel.draw(ctx);
+        w.writeText(&surface, ctx, kv_col, row, back_text, theme.fg(theme.TEXT_SOFT));
+        return surface;
     }
 
     fn drawHistoryDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const idx = @min(@as(usize, @intCast(self.history_scroll_bars.scroll_view.cursor)), data.HISTORY.len - 1);
         const h = &data.HISTORY[idx];
-        const detail = try std.fmt.allocPrint(ctx.arena,
-            \\Date
-            \\{s}
-            \\
-            \\Hash
-            \\{s}
-            \\
-            \\Label
-            \\{s}
-            \\
-            \\Next
-            \\Enter opens a diff overlay vs current (Phase 2).
-        , .{ h.date, h.hash, h.label });
 
-        const text_widget: vxfw.Text = .{
-            .text = detail,
-            .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
-            .width_basis = .parent,
-        };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{
-            .owner = self.widget(),
-            .title = "Version Detail",
-            .subtitle = if (idx == 0) "current" else "history",
-            .background = theme.PANEL,
-            .border_color = theme.BORDER,
-            .child = wrapper.widget(),
-            .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-        };
-        return panel.draw(ctx);
+        // No border -- plain area within the main panel, avoids card-in-card
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
+        w.fillSurface(&surface, theme.PANEL);
+
+        const kv_col: u16 = 1;
+        var row: u16 = 0;
+        row = w.writeSectionHeader(&surface, ctx, kv_col, row, if (idx == 0) "current version" else "history version");
+        row = w.writeKv(&surface, ctx, kv_col, row, "date", h.date, 6);
+        row = w.writeKv(&surface, ctx, kv_col, row, "hash", h.hash, 6);
+        row = w.writeKv(&surface, ctx, kv_col, row, "label", h.label, 6);
+        row += 1;
+        w.writeText(&surface, ctx, kv_col, row, "Enter opens diff (Phase 2)", theme.fg(theme.MUTED));
+        return surface;
     }
 
     // Proposal Review: queue + diff + sidebar (three-column)
