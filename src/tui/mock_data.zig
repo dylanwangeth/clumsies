@@ -129,7 +129,7 @@ pub const WsPromptEntry = struct {
     state: []const u8,
 };
 
-pub const ComplianceWs = struct {
+pub const InsightsWs = struct {
     name: []const u8,
     coverage: u8,
     refer_count: []const u8,
@@ -166,7 +166,7 @@ pub const WS_OVERRIDES = [_]OverrideEntry{
     .{ .prompt_name = "zig/DEPRECATED_API", .base_hash = "c8d9", .current_hash = "c8d9", .status = "clean" },
 };
 
-pub const COMPLIANCE_WS = [_]ComplianceWs{
+pub const INSIGHTS_WS = [_]InsightsWs{
     .{ .name = "payments-api", .coverage = 82, .refer_count = "4.2k", .trend = .{ 2, 3, 4, 5, 6, 7, 6, 5 } },
     .{ .name = "merchant-portal", .coverage = 76, .refer_count = "3.1k", .trend = .{ 1, 2, 3, 4, 5, 5, 4, 3 } },
     .{ .name = "infra-tools", .coverage = 74, .refer_count = "2.8k", .trend = .{ 2, 2, 3, 3, 4, 4, 3, 3 } },

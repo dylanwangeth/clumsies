@@ -44,7 +44,7 @@ pub const CYAN = rgb(0xd08a3c);
 pub const ACCENT_LIBRARY = ACCENT;
 pub const ACCENT_PROPOSAL = GOLD;
 pub const ACCENT_WORKSPACE = rgb(0xb3ba73);
-pub const ACCENT_COMPLIANCE = rgb(0xe7b868);
+pub const ACCENT_INSIGHTS = rgb(0xe7b868);
 
 // Semantic status
 pub const OK = rgb(0xa9bf6f);
@@ -53,7 +53,7 @@ pub const DANGER = rgb(0xd3745a);
 pub const INFO = rgb(0xe7b868);
 
 // Sparkline block characters
-pub const SPARKLINE = [8][]const u8{ "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" };
+pub const SPARKLINE = [8][]const u8{ "\xe2\x96\x81", "\xe2\x96\x82", "\xe2\x96\x83", "\xe2\x96\x84", "\xe2\x96\x85", "\xe2\x96\x86", "\xe2\x96\x87", "\xe2\x96\x88" };
 
 pub const CANVAS_CELL: vaxis.Cell = .{
     .char = .{ .grapheme = " ", .width = 1 },
