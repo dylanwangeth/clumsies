@@ -128,6 +128,12 @@ const migration_sql =
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     \\);
     \\
+    \\CREATE TABLE IF NOT EXISTS context_pr_files (
+    \\    pr_id TEXT NOT NULL REFERENCES context_prs(pr_id) ON DELETE CASCADE,
+    \\    path TEXT NOT NULL,
+    \\    PRIMARY KEY (pr_id, path)
+    \\);
+    \\
     \\CREATE TABLE IF NOT EXISTS context_pr_comments (
     \\    comment_id TEXT PRIMARY KEY,
     \\    pr_id TEXT NOT NULL REFERENCES context_prs(pr_id) ON DELETE CASCADE,
