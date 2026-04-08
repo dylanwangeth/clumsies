@@ -10,6 +10,7 @@ pub fn handleListBranches(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -72,6 +73,7 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -126,6 +128,7 @@ pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *htt
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -169,6 +172,7 @@ pub fn handlePutFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -249,6 +253,7 @@ pub fn handleDeleteFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -296,6 +301,7 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -432,6 +438,7 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -507,6 +514,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -582,6 +590,7 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -635,7 +644,7 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
             .{ws_id},
         ) catch {};
 
-        // File-level conflict detection (spec 3.9)
+        // File-level conflict detection: reject if main diverged since branch fork
         var branch_info = conn.row(
             "SELECT base_revision FROM context_branches WHERE ws_id = $1 AND branch_name = $2",
             .{ ws_id, branch_name },
@@ -743,6 +752,7 @@ pub fn handleAddPrComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -806,6 +816,7 @@ pub fn handleRebase(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");

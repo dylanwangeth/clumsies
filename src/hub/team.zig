@@ -13,6 +13,7 @@ pub fn handleCreateTeam(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "team:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
@@ -65,6 +66,7 @@ pub fn handleListTeams(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "team:read", res)) return;
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -105,6 +107,7 @@ pub fn handleGetTeam(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "team:read", res)) return;
 
     const team_id = req.param("team_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "team_id is required");
@@ -161,6 +164,7 @@ pub fn handleDeleteTeam(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "team:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
@@ -200,6 +204,7 @@ pub fn handleAddTeamMember(ctx: *Server.Context, req: *httpz.Request, res: *http
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "team:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
@@ -264,6 +269,7 @@ pub fn handleRemoveTeamMember(ctx: *Server.Context, req: *httpz.Request, res: *h
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "team:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }

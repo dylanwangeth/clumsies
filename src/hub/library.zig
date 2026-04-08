@@ -10,6 +10,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "library:read", res)) return;
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -80,6 +81,7 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "library:read", res)) return;
 
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
@@ -132,6 +134,7 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "library:read", res)) return;
 
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
@@ -200,6 +203,7 @@ pub fn handleGetPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *h
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "library:read", res)) return;
 
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
@@ -248,6 +252,7 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "library:read", res)) return;
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -284,6 +289,7 @@ pub fn handleGetBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "library:read", res)) return;
 
     const name = req.param("name") orelse {
         return apiError(res, 400, "BAD_REQUEST", "name is required");
