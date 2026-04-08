@@ -406,8 +406,9 @@ pub fn handleDelete(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         return apiError(res, 404, "NOT_FOUND", "workspace not found");
     }
 
-    // Cascade delete: comments, prs, files, branches, members, prompt refs, then workspace
+    // Cascade delete: comments, pr_files, prs, files, branches, members, prompt refs, then workspace
     _ = conn.exec("DELETE FROM context_pr_comments WHERE pr_id IN (SELECT pr_id FROM context_prs WHERE ws_id = $1)", .{ws_id}) catch {};
+    _ = conn.exec("DELETE FROM context_pr_files WHERE pr_id IN (SELECT pr_id FROM context_prs WHERE ws_id = $1)", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_prs WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_files WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_branches WHERE ws_id = $1", .{ws_id}) catch {};

@@ -94,12 +94,13 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const FileMeta = struct {
         path: []const u8,
         hash: []const u8,
+        size: i64,
         author: []const u8,
         updated_at: []const u8,
     };
 
     var result = conn.query(
-        "SELECT path, content_hash, author, updated_at::text FROM context_files WHERE ws_id = $1 AND branch_name = $2 ORDER BY path",
+        "SELECT path, content_hash, length(content)::bigint, author, updated_at::text FROM context_files WHERE ws_id = $1 AND branch_name = $2 ORDER BY path",
         .{ ws_id, branch },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -111,8 +112,9 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         try list.append(req.arena, .{
             .path = try req.arena.dupe(u8, try row.get([]const u8, 0)),
             .hash = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-            .author = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .size = try row.get(i64, 2),
+            .author = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
         });
     }
 
@@ -316,19 +318,18 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 
     const branch = user.username;
 
-    // Check branch exists and has changes
+    // Check branch exists
     var branch_row = conn.row(
-        "SELECT base_revision FROM context_branches WHERE ws_id = $1 AND branch_name = $2",
+        "SELECT 1 FROM context_branches WHERE ws_id = $1 AND branch_name = $2",
         .{ ws_id, branch },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "no branch found, make changes first");
     };
-    const base_rev = try branch_row.get(i32, 0);
     branch_row.deinit() catch {};
 
-    // Conflict detection: check if any of the PR files were modified on main since base_revision
+    // Conflict detection: check if any of the PR files were modified on main since branch fork
     if (body.file_paths) |paths| {
         for (paths) |p| {
             var conflict_row = conn.row(
@@ -342,20 +343,43 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         }
     }
 
-    // Count files changed
-    var count_row = conn.row(
-        "SELECT count(*) FROM context_files WHERE ws_id = $1 AND branch_name = $2",
-        .{ ws_id, branch },
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    } orelse {
-        return apiError(res, 400, "BAD_REQUEST", "no changes to submit");
-    };
-    const file_count = try count_row.get(i64, 0);
-    count_row.deinit() catch {};
+    // Determine which files to include in the PR
+    // If file_paths specified, use those; otherwise use all branch files
+    var file_count: i64 = 0;
+    if (body.file_paths) |paths| {
+        file_count = @intCast(paths.len);
+        if (file_count == 0) {
+            return apiError(res, 400, "BAD_REQUEST", "no changes to submit");
+        }
+        // Verify all specified paths exist on the branch
+        for (paths) |p| {
+            var exists = conn.row(
+                "SELECT 1 FROM context_files WHERE ws_id = $1 AND branch_name = $2 AND path = $3",
+                .{ ws_id, branch, p },
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            };
+            if (exists) |*r| {
+                r.deinit() catch {};
+            } else {
+                return apiError(res, 400, "BAD_REQUEST", "file_path not found on branch");
+            }
+        }
+    } else {
+        var count_row = conn.row(
+            "SELECT count(*) FROM context_files WHERE ws_id = $1 AND branch_name = $2",
+            .{ ws_id, branch },
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        } orelse {
+            return apiError(res, 400, "BAD_REQUEST", "no changes to submit");
+        };
+        file_count = try count_row.get(i64, 0);
+        count_row.deinit() catch {};
 
-    if (file_count == 0) {
-        return apiError(res, 400, "BAD_REQUEST", "no changes to submit");
+        if (file_count == 0) {
+            return apiError(res, 400, "BAD_REQUEST", "no changes to submit");
+        }
     }
 
     // Generate PR ID
@@ -370,7 +394,6 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     }
 
     const description = body.description orelse "";
-    _ = base_rev;
 
     _ = conn.exec(
         "INSERT INTO context_prs (pr_id, ws_id, author, branch_name, description) VALUES ($1, $2, $3, $4, $5)",
@@ -378,6 +401,22 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "failed to create PR");
     };
+
+    // Record which files are included in this PR
+    if (body.file_paths) |paths| {
+        for (paths) |p| {
+            _ = conn.exec(
+                "INSERT INTO context_pr_files (pr_id, path) VALUES ($1, $2)",
+                .{ &pr_id_buf, p },
+            ) catch {};
+        }
+    } else {
+        // All branch files
+        _ = conn.exec(
+            "INSERT INTO context_pr_files (pr_id, path) SELECT $1, path FROM context_files WHERE ws_id = $2 AND branch_name = $3",
+            .{ &pr_id_buf, ws_id, branch },
+        ) catch {};
+    }
 
     res.status = 201;
     try res.json(.{
@@ -656,14 +695,15 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
             }
         }
 
-        // Copy branch files to main (upsert)
+        // Copy only PR-specified files from branch to main (upsert)
         _ = conn.exec(
             \\INSERT INTO context_files (ws_id, branch_name, path, content, content_hash, author, updated_at)
             \\SELECT ws_id, 'main', path, content, content_hash, author, now()
             \\FROM context_files WHERE ws_id = $1 AND branch_name = $2
+            \\AND path IN (SELECT path FROM context_pr_files WHERE pr_id = $3)
             \\ON CONFLICT (ws_id, branch_name, path) DO UPDATE SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, author = EXCLUDED.author, updated_at = now()
         ,
-            .{ ws_id, branch_name },
+            .{ ws_id, branch_name, pr_id },
         ) catch {
             return apiError(res, 500, "INTERNAL_ERROR", "failed to merge files to main");
         };
@@ -861,13 +901,27 @@ pub fn handleRebase(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         return;
     }
 
-    // No conflicts: update branch files from main where only main changed
+    // No conflicts: apply main changes to branch
+    // 1. Add files that exist on main but not on branch
     _ = conn.exec(
         \\INSERT INTO context_files (ws_id, branch_name, path, content, content_hash, author, updated_at)
         \\SELECT ws_id, $2, path, content, content_hash, author, updated_at
         \\FROM context_files WHERE ws_id = $1 AND branch_name = 'main'
         \\AND path NOT IN (SELECT path FROM context_files WHERE ws_id = $1 AND branch_name = $2)
-        \\ON CONFLICT (ws_id, branch_name, path) DO NOTHING
+    ,
+        .{ ws_id, branch },
+    ) catch {};
+
+    // 2. Update branch files where only main changed (branch file unchanged since fork)
+    _ = conn.exec(
+        \\UPDATE context_files bf SET
+        \\    content = mf.content, content_hash = mf.content_hash,
+        \\    author = mf.author, updated_at = mf.updated_at
+        \\FROM context_files mf
+        \\WHERE mf.ws_id = bf.ws_id AND mf.branch_name = 'main' AND mf.path = bf.path
+        \\AND bf.ws_id = $1 AND bf.branch_name = $2
+        \\AND mf.content_hash != bf.content_hash
+        \\AND mf.updated_at > bf.updated_at
     ,
         .{ ws_id, branch },
     ) catch {};
