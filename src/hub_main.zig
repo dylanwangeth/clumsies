@@ -1,5 +1,4 @@
 const std = @import("std");
-const httpz = @import("httpz");
 const build_options = @import("build_options");
 const hub = @import("hub/root.zig");
 
