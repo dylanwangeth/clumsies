@@ -8,20 +8,20 @@ const TableRow = @import("table_row.zig").TableRow;
 const Column = @import("table_row.zig").Column;
 
 const WsTab = enum(u8) {
-    prompts,
     context,
+    prompts,
     overrides,
 
     fn label(self: WsTab) []const u8 {
         return switch (self) {
-            .prompts => "Prompts",
             .context => "Context",
+            .prompts => "Prompts",
             .overrides => "Overrides",
         };
     }
 };
 
-const ws_tabs = [_]WsTab{ .prompts, .context, .overrides };
+const ws_tabs = [_]WsTab{ .context, .prompts, .overrides };
 
 const Period = enum(u8) {
     daily,
@@ -72,15 +72,15 @@ const ConfirmAction = enum {
 
 const TopModule = enum(u8) {
     library,
-    proposals,
     workspace,
+    proposals,
     insights,
 
     fn label(self: TopModule) []const u8 {
         return switch (self) {
             .library => "Library",
-            .proposals => "Proposals",
             .workspace => "Workspace",
+            .proposals => "Proposals",
             .insights => "Insights",
         };
     }
@@ -100,7 +100,7 @@ const DetailTab = enum(u8) {
     }
 };
 
-const top_tabs = [_]TopModule{ .library, .proposals, .workspace, .insights };
+const top_tabs = [_]TopModule{ .library, .workspace, .proposals, .insights };
 
 // 12 prompts + up to 12 group headers = 24 max rows
 const MAX_LIBRARY_ROWS = data.PROMPTS.len + 12;
@@ -157,7 +157,7 @@ pub const Dashboard = struct {
     review_diff_count: usize = 0,
 
     // Workspace Status
-    ws_tab: WsTab = .prompts,
+    ws_tab: WsTab = .context,
     workspace_scroll_bars: vxfw.ScrollBars,
     workspace_widgets: [data.WORKSPACES.len]vxfw.Widget = undefined,
     workspace_rows: [data.WORKSPACES.len]TableRow = undefined,
@@ -376,8 +376,8 @@ pub const Dashboard = struct {
 
                 // Top-level tab switching
                 if (key.matches('1', .{})) return self.selectTab(ctx, .library);
-                if (key.matches('2', .{})) return self.selectTab(ctx, .proposals);
-                if (key.matches('3', .{})) return self.selectTab(ctx, .workspace);
+                if (key.matches('2', .{})) return self.selectTab(ctx, .workspace);
+                if (key.matches('3', .{})) return self.selectTab(ctx, .proposals);
                 if (key.matches('4', .{})) return self.selectTab(ctx, .insights);
 
                 // Module-specific input
@@ -954,6 +954,7 @@ pub const Dashboard = struct {
     }
 
     // Workspace Status: list + detail (two-column)
+    // Workspace: master-detail. Left = workspace list, right = detail with inner tabs.
     fn drawWorkspaceStatus(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
@@ -963,135 +964,106 @@ pub const Dashboard = struct {
         const ws_idx = @min(@as(usize, @intCast(self.workspace_scroll_bars.scroll_view.cursor)), data.WORKSPACES.len - 1);
         const ws = &data.WORKSPACES[ws_idx];
 
-        // Summary bar (2 rows)
-        const summary_h: u16 = 3;
-        var summary = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = summary_h });
-        w.fillSurface(&summary, theme.PANEL);
-        w.drawBorder(&summary, theme.BORDER, theme.PANEL);
-        w.writeText(&summary, ctx, 2, 0, "Workspace Status", theme.boldOn(theme.PANEL, theme.TEXT));
-        w.writeRightText(&summary, ctx, 0, ws.name, theme.textOn(theme.PANEL, theme.MUTED));
-        const summary_text = try std.fmt.allocPrint(ctx.arena, " paths: {d}   prompts: {d}   context: {d}   overrides: {d}   rev: {d}/{d}   state: {s}", .{ ws.paths, ws.prompts, ws.contexts, ws.overrides, ws.local_rev, ws.remote_rev, data.syncStateLabel(ws) });
-        w.writeText(&summary, ctx, 1, 1, summary_text, theme.textOn(theme.PANEL, theme.TEXT_SOFT));
+        const list_w: u16 = size.width / 3;
+        const detail_w: u16 = size.width - list_w - 1;
 
-        // Inner tab strip + content area
-        const body_h = size.height - summary_h;
-        const body_ctx = ctx.withConstraints(.{ .width = size.width, .height = body_h }, .{ .width = size.width, .height = body_h });
-        const body_surface = try self.drawWsBody(body_ctx, ws);
+        const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
+        const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
+
+        // Workspace list panel
+        self.workspace_scroll_bars.scroll_view.draw_cursor = false;
+        defer self.workspace_scroll_bars.scroll_view.draw_cursor = true;
+        const list_panel: w.Panel = .{
+            .owner = self.widget(),
+            .title = "Workspaces",
+            .subtitle = "r sync",
+            .background = theme.PANEL,
+            .border_color = theme.BORDER,
+            .child = self.workspace_scroll_bars.widget(),
+        };
+        var list_surface = try list_panel.draw(list_ctx);
+        list_surface = try w.applyCursorOverlay(list_ctx, &list_surface, &self.workspace_scroll_bars.scroll_view);
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = summary };
-        children[1] = .{ .origin = .{ .row = summary_h, .col = 0 }, .surface = body_surface };
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = list_surface };
+        children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = try self.drawWsDetail(detail_ctx, ws) };
         root.children = children;
         return root;
     }
 
-    fn drawWsBody(self: *Dashboard, ctx: vxfw.DrawContext, ws: *const data.WorkspaceEntry) std.mem.Allocator.Error!vxfw.Surface {
-        const size = ctx.max.size();
-        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    // Workspace right pane: summary KV + inner tabs (Prompts/Context/Overrides)
+    fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext, ws: *const data.WorkspaceEntry) std.mem.Allocator.Error!vxfw.Surface {
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
+        w.drawBorder(&surface, theme.BORDER, theme.PANEL);
 
-        // Inner tabs
-        var tab_col: u16 = 1;
+        // Row 0: inner tabs + workspace name
+        var tab_col: u16 = 2;
         for (ws_tabs) |tab| {
             tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, tab.label(), tab == self.ws_tab);
             tab_col +|= 1;
         }
+        w.writeRightText(&surface, ctx, 0, ws.name, theme.textOn(theme.PANEL, theme.MUTED));
 
-        const content_h = size.height -| 2;
-        const left_w: u16 = if (size.width > 100) size.width -| 36 else size.width;
-        const right_w: u16 = if (size.width > 100) 35 else 0;
+        // Row 1: summary stats
+        const summary = try std.fmt.allocPrint(ctx.arena, " {d}p {d}c {d}o  rev {d}/{d}  {s}", .{ ws.prompts, ws.contexts, ws.overrides, ws.local_rev, ws.remote_rev, data.syncStateLabel(ws) });
+        w.writeText(&surface, ctx, 2, 1, summary, theme.fg(theme.TEXT_SOFT));
 
-        const left_ctx = ctx.withConstraints(.{ .width = left_w, .height = content_h }, .{ .width = left_w, .height = content_h });
-        const right_ctx = ctx.withConstraints(.{ .width = right_w, .height = content_h }, .{ .width = right_w, .height = content_h });
+        const inner_h = ctx.max.height.? -| 3;
+        const inner_w = ctx.max.width.? -| 4;
 
-        const tab_content = switch (self.ws_tab) {
-            .prompts => try self.drawWsPrompts(left_ctx),
-            .context => try self.drawWsContext(left_ctx),
-            .overrides => try self.drawWsOverrides(left_ctx),
-        };
-
-        if (right_w > 0) {
-            const detail = try self.drawWsDetail(right_ctx, ws);
-            const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-            children[0] = .{ .origin = .{ .row = 2, .col = 0 }, .surface = tab_content };
-            children[1] = .{ .origin = .{ .row = 2, .col = left_w + 1 }, .surface = detail };
-            surface.children = children;
-        } else {
-            const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-            children[0] = .{ .origin = .{ .row = 2, .col = 0 }, .surface = tab_content };
-            surface.children = children;
+        switch (self.ws_tab) {
+            .context => {
+                // Main branch files
+                var kv_row: u16 = 3;
+                kv_row = w.writeSectionHeader(&surface, ctx, 2, kv_row, try std.fmt.allocPrint(ctx.arena, "main ({d} files)", .{ws.contexts}));
+                for (data.WS_CONTEXT) |f| {
+                    kv_row = w.writeKv(&surface, ctx, 2, kv_row, f.path, f.state, 26);
+                    if (kv_row >= inner_h + 2) break;
+                }
+                // Member branches
+                kv_row += 1;
+                kv_row = w.writeSectionHeader(&surface, ctx, 2, kv_row, "Branches");
+                for (data.CONTEXT_BRANCHES) |br| {
+                    if (std.mem.eql(u8, br.name, "main")) continue;
+                    const br_info = try std.fmt.allocPrint(ctx.arena, "{d} ahead  {d} behind", .{ br.ahead, br.behind });
+                    kv_row = w.writeKv(&surface, ctx, 2, kv_row, br.name, br_info, 10);
+                    if (kv_row >= inner_h + 2) break;
+                }
+                // Open PRs
+                kv_row += 1;
+                const pr_text = try std.fmt.allocPrint(ctx.arena, "{d} open", .{ws.open_prs});
+                kv_row = w.writeKv(&surface, ctx, 2, kv_row, "Context PRs", pr_text, 12);
+                for (data.CONTEXT_PRS) |pr| {
+                    if (!std.mem.eql(u8, pr.status, "open")) continue;
+                    const pr_line = try std.fmt.allocPrint(ctx.arena, "{s}: {s}", .{ pr.author, pr.description });
+                    w.writeText(&surface, ctx, 4, kv_row, pr_line, theme.fg(theme.TEXT_SOFT));
+                    kv_row += 1;
+                    if (kv_row >= inner_h + 2) break;
+                }
+            },
+            .prompts => {
+                var kv_row: u16 = 3;
+                for (data.WS_PROMPTS) |p| {
+                    const ovr: []const u8 = if (p.has_override) "yes" else " no";
+                    const line = try std.fmt.allocPrint(ctx.arena, " {s:<18} {s:<4} {s} {s}", .{ p.name, p.kind, ovr, p.state });
+                    w.writeText(&surface, ctx, 2, kv_row, line, theme.fg(theme.TEXT_SOFT));
+                    kv_row += 1;
+                    if (kv_row >= inner_h + 3) break;
+                }
+            },
+            .overrides => {
+                var kv_row: u16 = 3;
+                for (data.WS_OVERRIDES) |o| {
+                    const line = try std.fmt.allocPrint(ctx.arena, " {s:<18} {s:<4} {s:<4} {s}", .{ o.prompt_name, o.base_hash, o.current_hash, o.status });
+                    w.writeText(&surface, ctx, 2, kv_row, line, theme.fg(theme.TEXT_SOFT));
+                    kv_row += 1;
+                    if (kv_row >= inner_h + 3) break;
+                }
+            },
         }
+        _ = inner_w;
         return surface;
-    }
-
-    fn drawWsPrompts(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        var buf: std.ArrayList(u8) = .empty;
-        try buf.appendSlice(ctx.arena, " NAME                KIND  OVR  STATE\n");
-        for (data.WS_PROMPTS) |p| {
-            const ovr: []const u8 = if (p.has_override) "yes" else " no";
-            const line = try std.fmt.allocPrint(ctx.arena, " {s:<18}  {s:<4}  {s}  {s}\n", .{ p.name, p.kind, ovr, p.state });
-            try buf.appendSlice(ctx.arena, line);
-        }
-        const text_widget: vxfw.Text = .{ .text = try ctx.arena.dupe(u8, buf.items), .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Prompts", .subtitle = "a add  x remove", .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 0, .right = 0, .top = 0, .bottom = 0 } };
-        return panel.draw(ctx);
-    }
-
-    fn drawWsContext(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        var buf: std.ArrayList(u8) = .empty;
-        try buf.appendSlice(ctx.arena, " PATH                      SIZE  STATE\n");
-        for (data.WS_CONTEXT) |f| {
-            const line = try std.fmt.allocPrint(ctx.arena, " {s:<24}  {s:<4}  {s}\n", .{ f.path, f.size, f.state });
-            try buf.appendSlice(ctx.arena, line);
-        }
-        const text_widget: vxfw.Text = .{ .text = try ctx.arena.dupe(u8, buf.items), .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Context Files", .subtitle = "read-only", .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 0, .right = 0, .top = 0, .bottom = 0 } };
-        return panel.draw(ctx);
-    }
-
-    fn drawWsOverrides(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        var buf: std.ArrayList(u8) = .empty;
-        try buf.appendSlice(ctx.arena, " PROMPT              BASE  CUR   STATUS\n");
-        for (data.WS_OVERRIDES) |o| {
-            const line = try std.fmt.allocPrint(ctx.arena, " {s:<18}  {s:<4}  {s:<4}  {s}\n", .{ o.prompt_name, o.base_hash, o.current_hash, o.status });
-            try buf.appendSlice(ctx.arena, line);
-        }
-        const text_widget: vxfw.Text = .{ .text = try ctx.arena.dupe(u8, buf.items), .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Overrides", .subtitle = "conflict detection", .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 0, .right = 0, .top = 0, .bottom = 0 } };
-        return panel.draw(ctx);
-    }
-
-    fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext, ws: *const data.WorkspaceEntry) std.mem.Allocator.Error!vxfw.Surface {
-        const detail = try std.fmt.allocPrint(ctx.arena,
-            \\Workspace
-            \\{s}
-            \\
-            \\Rev (local / remote)
-            \\{d} / {d}
-            \\
-            \\Sync State
-            \\{s}
-            \\
-            \\Bound Paths
-            \\{d}
-            \\
-            \\Actions
-            \\r  sync
-            \\a  add prompt (Phase 2)
-            \\x  remove prompt (Phase 2)
-        , .{ ws.name, ws.local_rev, ws.remote_rev, data.syncStateLabel(ws), ws.paths });
-
-        const text_widget: vxfw.Text = .{ .text = detail, .style = theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT), .width_basis = .parent };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{ .owner = self.widget(), .title = ws.name, .subtitle = data.syncStateLabel(ws), .background = theme.PANEL_ALT, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
-        return panel.draw(ctx);
     }
 
     // Insights: workspace-first refer coverage analysis
@@ -1621,10 +1593,14 @@ pub const Dashboard = struct {
         for (data.WORKSPACES, 0..) |ws, idx| {
             const sel = idx == ws_sel;
             const sync_label = data.syncStateLabel(&ws);
+            const counts = if (ws.open_prs > 0)
+                std.fmt.bufPrint(&workspace_buf[idx], "{d}pr {d}c {d}p", .{ ws.open_prs, ws.contexts, ws.prompts }) catch "?"
+            else
+                std.fmt.bufPrint(&workspace_buf[idx], "{d}c {d}p", .{ ws.contexts, ws.prompts }) catch "?";
             self.workspace_cols[idx] = .{
                 .{ .text = ws.name, .flex = 1 },
                 .{ .text = sync_label, .flex = 0 },
-                .{ .text = std.fmt.bufPrint(&workspace_buf[idx], "{d}p {d}o", .{ ws.prompts, ws.overrides }) catch "?", .flex = 0, .alignment = .right },
+                .{ .text = counts, .flex = 0, .alignment = .right },
             };
             self.workspace_rows[idx] = .{
                 .columns = &self.workspace_cols[idx],
