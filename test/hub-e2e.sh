@@ -189,6 +189,36 @@ RAW=$(call DELETE "/api/org/bundles/test-bundle")
 parse_response "$RAW"
 assert_status "delete bundle" "204" "$STATUS"
 
+# Teams
+step "Team: create"
+RAW=$(call POST "/api/org/teams" '{"name":"engineering"}')
+parse_response "$RAW"
+assert_status "create team" "201" "$STATUS"
+assert_json "returns team_id" "team_id" "$BODY"
+TEAM_ID=$(echo "$BODY" | grep -o '"team_id":"[^"]*"' | cut -d'"' -f4)
+
+step "Team: list"
+RAW=$(call GET "/api/org/teams")
+parse_response "$RAW"
+assert_status "list teams" "200" "$STATUS"
+assert_json "contains engineering" "engineering" "$BODY"
+
+step "Team: add member"
+RAW=$(call POST "/api/org/teams/$TEAM_ID/members" '{"user_id":"usr-member-001"}')
+parse_response "$RAW"
+assert_status "add team member" "201" "$STATUS"
+
+step "Team: get detail"
+RAW=$(call GET "/api/org/teams/$TEAM_ID")
+parse_response "$RAW"
+assert_status "get team" "200" "$STATUS"
+assert_json "contains bob" "bob" "$BODY"
+
+step "Team: remove member"
+RAW=$(call DELETE "/api/org/teams/$TEAM_ID/members/usr-member-001")
+parse_response "$RAW"
+assert_status "remove team member" "204" "$STATUS"
+
 # Workspaces
 step "Workspace: create"
 RAW=$(call POST "/api/workspaces" '{"name":"test-ws"}')
@@ -203,21 +233,54 @@ parse_response "$RAW"
 assert_status "get workspace" "200" "$STATUS"
 assert_json "returns name" "test-ws" "$BODY"
 
-step "Workspace: add member"
-RAW=$(call POST "/api/workspaces/$WS_ID/members" '{"user_id":"usr-member-001","level":"write"}')
+step "Workspace: grant user access"
+RAW=$(call PUT "/api/workspaces/$WS_ID/access/users/usr-member-001" '{"level":"write"}')
 parse_response "$RAW"
-assert_status "add ws member" "201" "$STATUS"
+assert_status "grant user access" "200" "$STATUS"
 
-step "Workspace: list members"
-RAW=$(call GET "/api/workspaces/$WS_ID/members")
+step "Workspace: get access"
+RAW=$(call GET "/api/workspaces/$WS_ID/access")
 parse_response "$RAW"
-assert_status "list ws members" "200" "$STATUS"
+assert_status "get access" "200" "$STATUS"
 assert_json "contains bob" "bob" "$BODY"
 
-step "Workspace: remove member"
-RAW=$(call DELETE "/api/workspaces/$WS_ID/members/usr-member-001")
+step "Workspace: revoke user access"
+RAW=$(call DELETE "/api/workspaces/$WS_ID/access/users/usr-member-001")
 parse_response "$RAW"
-assert_status "remove ws member" "204" "$STATUS"
+assert_status "revoke user access" "204" "$STATUS"
+
+step "Workspace: grant team access"
+RAW=$(call PUT "/api/workspaces/$WS_ID/access/teams/$TEAM_ID" '{"level":"write"}')
+parse_response "$RAW"
+assert_status "grant team access" "200" "$STATUS"
+
+step "Workspace: get access with team"
+RAW=$(call GET "/api/workspaces/$WS_ID/access")
+parse_response "$RAW"
+assert_status "get access with team" "200" "$STATUS"
+assert_json "contains engineering team" "engineering" "$BODY"
+
+# Add bob to team, then verify bob can access workspace via team
+RAW=$(call POST "/api/org/teams/$TEAM_ID/members" '{"user_id":"usr-member-001"}')
+parse_response "$RAW"
+
+step "Team-based access: bob can access workspace via team"
+BOB_TOKEN_TMP=$(call POST "/api/auth/login" '{"username":"bob","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+SAVED_TOKEN="$TOKEN"
+TOKEN="$BOB_TOKEN_TMP"
+RAW=$(call GET "/api/workspaces/$WS_ID")
+parse_response "$RAW"
+assert_status "bob accesses ws via team" "200" "$STATUS"
+TOKEN="$SAVED_TOKEN"
+
+step "Workspace: revoke team access"
+RAW=$(call DELETE "/api/workspaces/$WS_ID/access/teams/$TEAM_ID")
+parse_response "$RAW"
+assert_status "revoke team access" "204" "$STATUS"
+
+# Clean up: remove bob from team
+RAW=$(call DELETE "/api/org/teams/$TEAM_ID/members/usr-member-001")
+parse_response "$RAW"
 
 step "Workspace: delete"
 RAW=$(call DELETE "/api/workspaces/$WS_ID")
@@ -240,6 +303,12 @@ RAW=$(call DELETE "/api/org/bundles/nonexistent")
 parse_response "$RAW"
 assert_status "member cannot delete bundle" "403" "$STATUS"
 
+step "Team: delete (as maintainer)"
+TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+RAW=$(call DELETE "/api/org/teams/$TEAM_ID")
+parse_response "$RAW"
+assert_status "delete team" "204" "$STATUS"
+
 # Context: create workspace for context tests (as maintainer alice)
 TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 
@@ -250,9 +319,9 @@ assert_status "create workspace for context" "201" "$STATUS"
 CTX_WS=$(echo "$BODY" | grep -o '"ws_id":"[^"]*"' | cut -d'"' -f4)
 
 # Add bob as member for later permission tests
-RAW=$(call POST "/api/workspaces/$CTX_WS/members" '{"user_id":"usr-member-001","level":"write"}')
+RAW=$(call PUT "/api/workspaces/$CTX_WS/access/users/usr-member-001" '{"level":"write"}')
 parse_response "$RAW"
-assert_status "add bob to context ws" "201" "$STATUS"
+assert_status "grant bob access to context ws" "200" "$STATUS"
 
 step "Context: list branches (empty)"
 RAW=$(call GET "/api/workspaces/$CTX_WS/context/branches")

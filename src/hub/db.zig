@@ -72,11 +72,34 @@ const migration_sql =
     \\    UNIQUE(org_id, name)
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS workspace_members (
+    \\CREATE TABLE IF NOT EXISTS teams (
+    \\    team_id TEXT PRIMARY KEY,
+    \\    org_id UUID NOT NULL REFERENCES orgs(org_id),
+    \\    name TEXT NOT NULL,
+    \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    \\    UNIQUE(org_id, name)
+    \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS team_members (
+    \\    team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+    \\    user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    \\    joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    \\    PRIMARY KEY (team_id, user_id)
+    \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS workspace_team_access (
+    \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
+    \\    team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+    \\    level TEXT NOT NULL DEFAULT 'write' CHECK (level IN ('read', 'write', 'admin')),
+    \\    granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    \\    PRIMARY KEY (ws_id, team_id)
+    \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS workspace_user_access (
     \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
     \\    user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     \\    level TEXT NOT NULL DEFAULT 'write' CHECK (level IN ('read', 'write', 'admin')),
-    \\    joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    \\    granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    PRIMARY KEY (ws_id, user_id)
     \\);
     \\

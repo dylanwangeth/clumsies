@@ -4,6 +4,7 @@ const pg = @import("pg");
 const auth = @import("auth.zig");
 const workspace_handler = @import("workspace.zig");
 const context_handler = @import("context.zig");
+const team_handler = @import("team.zig");
 const library_handler = @import("library.zig");
 const trace_handler = @import("trace.zig");
 const collab_handler = @import("collab.zig");
@@ -57,6 +58,14 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.patch("/api/org/members/:user_id", auth.handleChangeRole, .{});
     router.delete("/api/org/members/:user_id", auth.handleRemoveMember, .{});
 
+    // Teams
+    router.post("/api/org/teams", team_handler.handleCreateTeam, .{});
+    router.get("/api/org/teams", team_handler.handleListTeams, .{});
+    router.get("/api/org/teams/:team_id", team_handler.handleGetTeam, .{});
+    router.delete("/api/org/teams/:team_id", team_handler.handleDeleteTeam, .{});
+    router.post("/api/org/teams/:team_id/members", team_handler.handleAddTeamMember, .{});
+    router.delete("/api/org/teams/:team_id/members/:user_id", team_handler.handleRemoveTeamMember, .{});
+
     // Workspaces
     router.post("/api/workspaces", workspace_handler.handleCreate, .{});
     router.get("/api/workspaces/:ws_id", workspace_handler.handleGet, .{});
@@ -78,10 +87,12 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.post("/api/workspaces/:ws_id/context/prs/:pr_id/comments", context_handler.handleAddPrComment, .{});
     router.post("/api/workspaces/:ws_id/context/branches/:branch/rebase", context_handler.handleRebase, .{});
 
-    // Workspace Members
-    router.get("/api/workspaces/:ws_id/members", workspace_handler.handleListMembers, .{});
-    router.post("/api/workspaces/:ws_id/members", workspace_handler.handleAddMember, .{});
-    router.delete("/api/workspaces/:ws_id/members/:user_id", workspace_handler.handleRemoveMember, .{});
+    // Workspace Access Control
+    router.get("/api/workspaces/:ws_id/access", workspace_handler.handleGetAccess, .{});
+    router.put("/api/workspaces/:ws_id/access/teams/:team_id", workspace_handler.handleGrantTeamAccess, .{});
+    router.delete("/api/workspaces/:ws_id/access/teams/:team_id", workspace_handler.handleRevokeTeamAccess, .{});
+    router.put("/api/workspaces/:ws_id/access/users/:user_id", workspace_handler.handleGrantUserAccess, .{});
+    router.delete("/api/workspaces/:ws_id/access/users/:user_id", workspace_handler.handleRevokeUserAccess, .{});
 
     // Library
     router.get("/api/org/library/manifest", library_handler.handleGetManifest, .{});
