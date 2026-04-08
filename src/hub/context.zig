@@ -625,19 +625,8 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 
     if (std.mem.eql(u8, body.action, "merge")) {
         // Only maintainer or ws:admin can merge
-        if (!std.mem.eql(u8, user.role, "maintainer")) {
-            // Check ws-level admin
-            var admin_row = conn.row(
-                "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND level = 'admin'",
-                .{ ws_id, user.user_id },
-            ) catch {
-                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-            };
-            if (admin_row) |*r| {
-                r.deinit() catch {};
-            } else {
-                return apiError(res, 403, "FORBIDDEN", "only maintainers or ws admins can merge");
-            }
+        if (!std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceAdmin(conn, ws_id, user.user_id)) {
+            return apiError(res, 403, "FORBIDDEN", "only maintainers or ws admins can merge");
         }
 
         // Ensure main branch exists

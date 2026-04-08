@@ -146,7 +146,15 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
     defer ws_list.deinit(req.arena);
 
     var result = conn.query(
-        "SELECT w.ws_id, w.name FROM workspace_members wm JOIN workspaces w ON w.ws_id = wm.ws_id WHERE wm.user_id = $1",
+        \\SELECT DISTINCT w.ws_id, w.name FROM workspaces w
+        \\WHERE w.ws_id IN (
+        \\    SELECT ws_id FROM workspace_user_access WHERE user_id = $1
+        \\    UNION
+        \\    SELECT wta.ws_id FROM workspace_team_access wta
+        \\        JOIN team_members tm ON tm.team_id = wta.team_id
+        \\        WHERE tm.user_id = $1
+        \\)
+    ,
         .{user.user_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -209,7 +217,31 @@ pub fn authenticate(ctx: *Server.Context, req: *httpz.Request) !AuthUser {
 
 pub fn checkWorkspaceMember(conn: anytype, ws_id: []const u8, user_id: []const u8) bool {
     var row = conn.row(
-        "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2",
+        \\SELECT 1 FROM workspace_user_access WHERE ws_id = $1 AND user_id = $2
+        \\UNION ALL
+        \\SELECT 1 FROM workspace_team_access wta
+        \\    JOIN team_members tm ON tm.team_id = wta.team_id
+        \\    WHERE wta.ws_id = $1 AND tm.user_id = $2
+        \\LIMIT 1
+    ,
+        .{ ws_id, user_id },
+    ) catch return false;
+    if (row) |*r| {
+        r.deinit() catch {};
+        return true;
+    }
+    return false;
+}
+
+pub fn checkWorkspaceAdmin(conn: anytype, ws_id: []const u8, user_id: []const u8) bool {
+    var row = conn.row(
+        \\SELECT 1 FROM workspace_user_access WHERE ws_id = $1 AND user_id = $2 AND level = 'admin'
+        \\UNION ALL
+        \\SELECT 1 FROM workspace_team_access wta
+        \\    JOIN team_members tm ON tm.team_id = wta.team_id
+        \\    WHERE wta.ws_id = $1 AND tm.user_id = $2 AND wta.level = 'admin'
+        \\LIMIT 1
+    ,
         .{ ws_id, user_id },
     ) catch return false;
     if (row) |*r| {
@@ -484,8 +516,9 @@ pub fn handleRemoveMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         }
     }
 
-    // Cascade: remove from all workspaces first
-    _ = conn.exec("DELETE FROM workspace_members WHERE user_id = $1", .{target_id}) catch {};
+    // Cascade: remove from all workspaces and teams
+    _ = conn.exec("DELETE FROM workspace_user_access WHERE user_id = $1", .{target_id}) catch {};
+    _ = conn.exec("DELETE FROM team_members WHERE user_id = $1", .{target_id}) catch {};
     // Revoke tokens
     _ = conn.exec("UPDATE tokens SET revoked = true WHERE user_id = $1", .{target_id}) catch {};
     // Remove user
