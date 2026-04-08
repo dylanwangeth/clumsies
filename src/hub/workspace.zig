@@ -16,6 +16,7 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const body = req.json(CreateRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
@@ -60,7 +61,9 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     _ = conn.exec(
         "INSERT INTO workspace_user_access (ws_id, user_id, level) VALUES ($1, $2, 'admin')",
         .{ &ws_id_buf, user.user_id },
-    ) catch {};
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to grant creator access");
+    };
 
     // Initialize workspace from bundle if specified
     if (body.bundle_id) |bid| {
@@ -89,6 +92,7 @@ pub fn handleGet(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -128,6 +132,7 @@ pub fn handleUpdate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -171,6 +176,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -233,6 +239,7 @@ pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -295,6 +302,7 @@ pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -391,6 +399,7 @@ pub fn handleDelete(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
@@ -451,6 +460,7 @@ pub fn handleGetAccess(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -510,6 +520,7 @@ pub fn handleGrantTeamAccess(ctx: *Server.Context, req: *httpz.Request, res: *ht
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -537,6 +548,17 @@ pub fn handleGrantTeamAccess(ctx: *Server.Context, req: *httpz.Request, res: *ht
         return apiError(res, 403, "FORBIDDEN", "ws:admin or maintainer required");
     }
 
+    // Validate team belongs to same org as workspace
+    var org_check = conn.row(
+        "SELECT 1 FROM teams t JOIN workspaces w ON w.org_id = t.org_id WHERE t.team_id = $1 AND w.ws_id = $2",
+        .{ team_id, ws_id },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "team and workspace must belong to the same org");
+    };
+    org_check.deinit() catch {};
+
     _ = conn.exec(
         \\INSERT INTO workspace_team_access (ws_id, team_id, level) VALUES ($1, $2, $3)
         \\ON CONFLICT (ws_id, team_id) DO UPDATE SET level = $3
@@ -553,6 +575,7 @@ pub fn handleRevokeTeamAccess(ctx: *Server.Context, req: *httpz.Request, res: *h
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -584,6 +607,7 @@ pub fn handleGrantUserAccess(ctx: *Server.Context, req: *httpz.Request, res: *ht
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -607,11 +631,20 @@ pub fn handleGrantUserAccess(ctx: *Server.Context, req: *httpz.Request, res: *ht
     };
     defer conn.release();
 
-    // Self-join allowed (member grants self write), otherwise need admin/maintainer
-    const is_self = std.mem.eql(u8, target_id, user.user_id);
-    if (!is_self and !std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceAdmin(conn, ws_id, user.user_id)) {
+    if (!std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceAdmin(conn, ws_id, user.user_id)) {
         return apiError(res, 403, "FORBIDDEN", "ws:admin or maintainer required");
     }
+
+    // Validate user belongs to same org as workspace
+    var org_check = conn.row(
+        "SELECT 1 FROM users u JOIN workspaces w ON w.org_id = u.org_id WHERE u.user_id = $1 AND w.ws_id = $2",
+        .{ target_id, ws_id },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "user and workspace must belong to the same org");
+    };
+    org_check.deinit() catch {};
 
     _ = conn.exec(
         \\INSERT INTO workspace_user_access (ws_id, user_id, level) VALUES ($1, $2, $3)
@@ -629,6 +662,7 @@ pub fn handleRevokeUserAccess(ctx: *Server.Context, req: *httpz.Request, res: *h
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "workspace:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");

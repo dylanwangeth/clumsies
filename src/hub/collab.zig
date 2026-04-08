@@ -15,6 +15,7 @@ pub fn handleCreateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "proposal:write", res)) return;
 
     const body = req.json(CreateProposalRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
@@ -73,6 +74,7 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "proposal:read", res)) return;
 
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query");
@@ -178,9 +180,10 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
 }
 
 pub fn handleGetProposal(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "proposal:read", res)) return;
 
     const id = req.param("id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "id is required");
@@ -192,8 +195,8 @@ pub fn handleGetProposal(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer conn.release();
 
     var row = conn.row(
-        "SELECT proposal_id, prompt_id, base_hash, status, content, description, created_at::text FROM proposals WHERE proposal_id = $1",
-        .{id},
+        "SELECT proposal_id, prompt_id, base_hash, status, content, description, created_at::text FROM proposals WHERE proposal_id = $1 AND org_id = $2::uuid",
+        .{ id, user.org_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
@@ -309,8 +312,8 @@ pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
 
     // Get proposal
     var prop_row = conn.row(
-        "SELECT prompt_id, base_hash, content, status FROM proposals WHERE proposal_id = $1",
-        .{id},
+        "SELECT prompt_id, base_hash, content, status FROM proposals WHERE proposal_id = $1 AND org_id = $2::uuid",
+        .{ id, user.org_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
@@ -364,8 +367,8 @@ pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
 
         // Record in prompt history
         _ = conn.exec(
-            "INSERT INTO prompt_history (prompt_id, content_hash, proposal_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-            .{ prompt_id, hash_slice, id },
+            "INSERT INTO prompt_history (prompt_id, content_hash, content, proposal_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+            .{ prompt_id, hash_slice, new_content, id },
         ) catch {};
 
         // Bump library manifest revision
@@ -397,6 +400,7 @@ pub fn handleAddComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "proposal:write", res)) return;
 
     const id = req.param("id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "id is required");
@@ -448,9 +452,10 @@ pub fn handleAddComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
 }
 
 pub fn handleListComments(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "proposal:read", res)) return;
 
     const id = req.param("id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "id is required");
