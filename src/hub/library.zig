@@ -375,7 +375,7 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     // Generate bundle_id
     var rand_bytes: [16]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
-    var bid_buf: [38]u8 = undefined;
+    var bid_buf: [36]u8 = undefined;
     @memcpy(bid_buf[0..4], "bnd-");
     const hex = "0123456789abcdef";
     for (rand_bytes, 0..) |byte, i| {
