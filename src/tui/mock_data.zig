@@ -46,6 +46,7 @@ pub const WorkspaceEntry = struct {
     local_rev: u16,
     remote_rev: u16,
     paths: u8,
+    open_prs: u8,
 };
 
 pub const BUNDLES = [_]BundleEntry{
@@ -119,10 +120,37 @@ pub const PROPOSALS = [_]ProposalEntry{
 };
 
 pub const WORKSPACES = [_]WorkspaceEntry{
-    .{ .name = "payments-api", .prompts = 18, .contexts = 9, .overrides = 3, .local_rev = 41, .remote_rev = 43, .paths = 2 },
-    .{ .name = "merchant-portal", .prompts = 14, .contexts = 5, .overrides = 1, .local_rev = 37, .remote_rev = 37, .paths = 1 },
-    .{ .name = "infra-tools", .prompts = 8, .contexts = 3, .overrides = 0, .local_rev = 22, .remote_rev = 22, .paths = 1 },
-    .{ .name = "release-bot", .prompts = 5, .contexts = 2, .overrides = 0, .local_rev = 15, .remote_rev = 15, .paths = 1 },
+    .{ .name = "payments-api", .prompts = 18, .contexts = 9, .overrides = 3, .local_rev = 41, .remote_rev = 43, .paths = 2, .open_prs = 2 },
+    .{ .name = "merchant-portal", .prompts = 14, .contexts = 5, .overrides = 1, .local_rev = 37, .remote_rev = 37, .paths = 1, .open_prs = 0 },
+    .{ .name = "infra-tools", .prompts = 8, .contexts = 3, .overrides = 0, .local_rev = 22, .remote_rev = 22, .paths = 1, .open_prs = 1 },
+    .{ .name = "release-bot", .prompts = 5, .contexts = 2, .overrides = 0, .local_rev = 15, .remote_rev = 15, .paths = 1, .open_prs = 0 },
+};
+
+pub const ContextBranch = struct {
+    name: []const u8,
+    file_count: u8,
+    ahead: u8,
+    behind: u8,
+};
+
+pub const ContextPR = struct {
+    id: []const u8,
+    author: []const u8,
+    status: []const u8,
+    description: []const u8,
+    files_changed: u8,
+};
+
+pub const CONTEXT_BRANCHES = [_]ContextBranch{
+    .{ .name = "main", .file_count = 9, .ahead = 0, .behind = 0 },
+    .{ .name = "alice", .file_count = 3, .ahead = 3, .behind = 0 },
+    .{ .name = "bob", .file_count = 1, .ahead = 1, .behind = 1 },
+    .{ .name = "carol", .file_count = 2, .ahead = 2, .behind = 0 },
+};
+
+pub const CONTEXT_PRS = [_]ContextPR{
+    .{ .id = "cpr-001", .author = "alice", .status = "open", .description = "Add API design spec for payments module", .files_changed = 2 },
+    .{ .id = "cpr-002", .author = "carol", .status = "open", .description = "Add observability research notes", .files_changed = 1 },
 };
 
 pub const OverrideEntry = struct {
