@@ -10,6 +10,7 @@ pub const PromptEntry = struct {
     bundle_names: []const u8,
     updated: []const u8,
     age: []const u8,
+    summary: []const u8,
     trend: [8]u8,
     content_hash: []const u8,
 };
@@ -58,18 +59,18 @@ pub const BUNDLES = [_]BundleEntry{
 
 // Sorted by path prefix for grouped display in Library
 pub const PROMPTS = [_]PromptEntry{
-    .{ .canonical_name = "arch/ADR_DOCUMENT", .kind = "rule", .refer_count = "291", .constraint_count = 6, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-25", .age = "12d", .trend = .{ 1, 1, 1, 2, 2, 2, 1, 1 }, .content_hash = "sha256:g2h3i4j5" },
-    .{ .canonical_name = "cmd/GEN_COMMIT_MSG", .kind = "wf", .refer_count = "1.1k", .constraint_count = 5, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-31", .age = "5d", .trend = .{ 2, 3, 4, 4, 5, 5, 4, 3 }, .content_hash = "sha256:e4f5g6h7" },
-    .{ .canonical_name = "coding/STYLE", .kind = "rule", .refer_count = "3.2k", .constraint_count = 8, .bundle_count = 2, .bundle_names = "frontend, default", .updated = "2026-04-04", .age = "2d", .trend = .{ 1, 2, 3, 5, 6, 8, 6, 5 }, .content_hash = "sha256:a1b2c3d4" },
-    .{ .canonical_name = "coding/API_REVIEW", .kind = "rule", .refer_count = "842", .constraint_count = 12, .bundle_count = 1, .bundle_names = "backend", .updated = "2026-04-05", .age = "1d", .trend = .{ 3, 4, 5, 6, 7, 8, 7, 6 }, .content_hash = "sha256:i8j9k0l1" },
-    .{ .canonical_name = "coding/COMPATIBILITY", .kind = "rule", .refer_count = "520", .constraint_count = 8, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-03", .age = "3d", .trend = .{ 2, 2, 3, 3, 4, 4, 3, 3 }, .content_hash = "sha256:q6r7s8t9" },
-    .{ .canonical_name = "coding/CODE_COMMENTS", .kind = "rule", .refer_count = "488", .constraint_count = 9, .bundle_count = 2, .bundle_names = "frontend, backend", .updated = "2026-04-02", .age = "4d", .trend = .{ 1, 2, 2, 3, 3, 4, 3, 3 }, .content_hash = "sha256:u0v1w2x3" },
-    .{ .canonical_name = "style/UIUX_DESIGN", .kind = "rule", .refer_count = "178", .constraint_count = 7, .bundle_count = 1, .bundle_names = "frontend", .updated = "2026-03-31", .age = "5d", .trend = .{ 0, 1, 1, 2, 2, 3, 2, 2 }, .content_hash = "sha256:k6l7m8n9" },
-    .{ .canonical_name = "wf/RELEASE_CHECKLIST", .kind = "wf", .refer_count = "611", .constraint_count = 4, .bundle_count = 2, .bundle_names = "release, ops", .updated = "2026-03-28", .age = "8d", .trend = .{ 1, 1, 2, 2, 3, 3, 2, 2 }, .content_hash = "sha256:m2n3o4p5" },
-    .{ .canonical_name = "wf/GEN_GITIGNORE", .kind = "wf", .refer_count = "145", .constraint_count = 3, .bundle_count = 1, .bundle_names = "ops", .updated = "2026-03-23", .age = "14d", .trend = .{ 1, 1, 1, 1, 2, 1, 1, 1 }, .content_hash = "sha256:o0p1q2r3" },
-    .{ .canonical_name = "wf/GEN_PR", .kind = "wf", .refer_count = "102", .constraint_count = 4, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-28", .age = "8d", .trend = .{ 0, 1, 1, 1, 2, 2, 1, 1 }, .content_hash = "sha256:s4t5u6v7" },
-    .{ .canonical_name = "zig/ZIG_STYLE", .kind = "rule", .refer_count = "412", .constraint_count = 11, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-04", .age = "2d", .trend = .{ 3, 3, 4, 5, 5, 6, 5, 4 }, .content_hash = "sha256:y4z5a6b7" },
-    .{ .canonical_name = "zig/DEPRECATED_API", .kind = "rule", .refer_count = "387", .constraint_count = 59, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-05", .age = "1d", .trend = .{ 2, 3, 4, 5, 6, 7, 6, 5 }, .content_hash = "sha256:c8d9e0f1" },
+    .{ .canonical_name = "arch/ADR_DOCUMENT", .kind = "rule", .refer_count = "291", .constraint_count = 6, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-25", .age = "12d", .summary = "Conventions for writing architecture decision records", .trend = .{ 1, 1, 1, 2, 2, 2, 1, 1 }, .content_hash = "sha256:g2h3i4j5" },
+    .{ .canonical_name = "cmd/GEN_COMMIT_MSG", .kind = "wf", .refer_count = "1.1k", .constraint_count = 5, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-31", .age = "5d", .summary = "Review git changes and suggest a commit message", .trend = .{ 2, 3, 4, 4, 5, 5, 4, 3 }, .content_hash = "sha256:e4f5g6h7" },
+    .{ .canonical_name = "coding/STYLE", .kind = "rule", .refer_count = "3.2k", .constraint_count = 8, .bundle_count = 2, .bundle_names = "frontend, default", .updated = "2026-04-04", .age = "2d", .summary = "Naming, imports, formatting, and code organization rules", .trend = .{ 1, 2, 3, 5, 6, 8, 6, 5 }, .content_hash = "sha256:a1b2c3d4" },
+    .{ .canonical_name = "coding/API_REVIEW", .kind = "rule", .refer_count = "842", .constraint_count = 12, .bundle_count = 1, .bundle_names = "backend", .updated = "2026-04-05", .age = "1d", .summary = "API design review checklist for consistency and safety", .trend = .{ 3, 4, 5, 6, 7, 8, 7, 6 }, .content_hash = "sha256:i8j9k0l1" },
+    .{ .canonical_name = "coding/COMPATIBILITY", .kind = "rule", .refer_count = "520", .constraint_count = 8, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-03", .age = "3d", .summary = "Breaking changes happen freely, no compatibility layers", .trend = .{ 2, 2, 3, 3, 4, 4, 3, 3 }, .content_hash = "sha256:q6r7s8t9" },
+    .{ .canonical_name = "coding/CODE_COMMENTS", .kind = "rule", .refer_count = "488", .constraint_count = 9, .bundle_count = 2, .bundle_names = "frontend, backend", .updated = "2026-04-02", .age = "4d", .summary = "Comments must be final-form text, no thinking process", .trend = .{ 1, 2, 2, 3, 3, 4, 3, 3 }, .content_hash = "sha256:u0v1w2x3" },
+    .{ .canonical_name = "style/UIUX_DESIGN", .kind = "rule", .refer_count = "178", .constraint_count = 7, .bundle_count = 1, .bundle_names = "frontend", .updated = "2026-03-31", .age = "5d", .summary = "UI/UX design method with pressure-testing and smoke checks", .trend = .{ 0, 1, 1, 2, 2, 3, 2, 2 }, .content_hash = "sha256:k6l7m8n9" },
+    .{ .canonical_name = "wf/RELEASE_CHECKLIST", .kind = "wf", .refer_count = "611", .constraint_count = 4, .bundle_count = 2, .bundle_names = "release, ops", .updated = "2026-03-28", .age = "8d", .summary = "Pre-release verification steps for branch and CI", .trend = .{ 1, 1, 2, 2, 3, 3, 2, 2 }, .content_hash = "sha256:m2n3o4p5" },
+    .{ .canonical_name = "wf/GEN_GITIGNORE", .kind = "wf", .refer_count = "145", .constraint_count = 3, .bundle_count = 1, .bundle_names = "ops", .updated = "2026-03-23", .age = "14d", .summary = "Generate .gitignore based on project type and toolchain", .trend = .{ 1, 1, 1, 1, 2, 1, 1, 1 }, .content_hash = "sha256:o0p1q2r3" },
+    .{ .canonical_name = "wf/GEN_PR", .kind = "wf", .refer_count = "102", .constraint_count = 4, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-28", .age = "8d", .summary = "Create pull request with summary and test plan", .trend = .{ 0, 1, 1, 1, 2, 2, 1, 1 }, .content_hash = "sha256:s4t5u6v7" },
+    .{ .canonical_name = "zig/ZIG_STYLE", .kind = "rule", .refer_count = "412", .constraint_count = 11, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-04", .age = "2d", .summary = "Zig naming conventions, error handling, and memory management", .trend = .{ 3, 3, 4, 5, 5, 6, 5, 4 }, .content_hash = "sha256:y4z5a6b7" },
+    .{ .canonical_name = "zig/DEPRECATED_API", .kind = "rule", .refer_count = "387", .constraint_count = 59, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-05", .age = "1d", .summary = "Zig 0.15 removed and renamed APIs with replacements", .trend = .{ 2, 3, 4, 5, 6, 7, 6, 5 }, .content_hash = "sha256:c8d9e0f1" },
 };
 
 pub fn pathPrefix(canonical_name: []const u8) []const u8 {
