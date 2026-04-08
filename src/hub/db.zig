@@ -97,13 +97,43 @@ const migration_sql =
     \\    PRIMARY KEY (ws_id, prompt_id)
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS workspace_files (
-    \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id),
+    \\CREATE TABLE IF NOT EXISTS context_branches (
+    \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
+    \\    branch_name TEXT NOT NULL,
+    \\    base_revision INTEGER NOT NULL DEFAULT 0,
+    \\    revision INTEGER NOT NULL DEFAULT 0,
+    \\    PRIMARY KEY (ws_id, branch_name)
+    \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS context_files (
+    \\    ws_id TEXT NOT NULL,
+    \\    branch_name TEXT NOT NULL,
     \\    path TEXT NOT NULL,
-    \\    content BYTEA NOT NULL DEFAULT '',
-    \\    content_hash TEXT NOT NULL DEFAULT '',
+    \\    content TEXT NOT NULL,
+    \\    content_hash TEXT NOT NULL,
+    \\    author TEXT NOT NULL,
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    \\    PRIMARY KEY (ws_id, path)
+    \\    PRIMARY KEY (ws_id, branch_name, path),
+    \\    FOREIGN KEY (ws_id, branch_name) REFERENCES context_branches(ws_id, branch_name) ON DELETE CASCADE
+    \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS context_prs (
+    \\    pr_id TEXT PRIMARY KEY,
+    \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
+    \\    author TEXT NOT NULL,
+    \\    branch_name TEXT NOT NULL,
+    \\    description TEXT NOT NULL DEFAULT '',
+    \\    status TEXT NOT NULL DEFAULT 'open'
+    \\        CHECK (status IN ('open', 'merged', 'closed', 'conflict')),
+    \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS context_pr_comments (
+    \\    comment_id TEXT PRIMARY KEY,
+    \\    pr_id TEXT NOT NULL REFERENCES context_prs(pr_id) ON DELETE CASCADE,
+    \\    author TEXT NOT NULL,
+    \\    body TEXT NOT NULL,
+    \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     \\);
     \\
     \\CREATE TABLE IF NOT EXISTS bundles (
