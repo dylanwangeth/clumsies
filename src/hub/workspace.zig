@@ -9,6 +9,7 @@ const KvEntry = @import("../protocol/manifest.zig").KvEntry;
 const CreateRequest = struct {
     name: []const u8,
     bundle_id: ?[]const u8 = null,
+    team_ids: ?[]const []const u8 = null,
 };
 
 pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -64,6 +65,16 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     // Initialize workspace from bundle if specified
     if (body.bundle_id) |bid| {
         initFromBundle(conn, &ws_id_buf, bid);
+    }
+
+    // Grant initial team access if specified
+    if (body.team_ids) |tids| {
+        for (tids) |tid| {
+            _ = conn.exec(
+                "INSERT INTO workspace_team_access (ws_id, team_id, level) VALUES ($1, $2, 'write') ON CONFLICT DO NOTHING",
+                .{ &ws_id_buf, tid },
+            ) catch {};
+        }
     }
 
     res.status = 201;

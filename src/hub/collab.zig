@@ -268,6 +268,7 @@ pub fn handleGetProposal(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         .diff = .{
             .base = base_content,
             .proposed = proposal_content,
+            .summary = computeDiffSummary(req.arena, base_content orelse "", proposal_content),
         },
     }, .{});
 }
@@ -281,6 +282,7 @@ pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "proposal:merge", res)) return;
 
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "only maintainers can accept or reject proposals");
@@ -485,4 +487,30 @@ pub fn handleListComments(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     }
 
     try res.json(.{ .comments = list.items }, .{});
+}
+
+fn computeDiffSummary(arena: std.mem.Allocator, base: []const u8, proposed: []const u8) []const u8 {
+    var added: usize = 0;
+    var removed: usize = 0;
+
+    var base_lines: usize = 0;
+    var proposed_lines: usize = 0;
+
+    for (base) |c| {
+        if (c == '\n') base_lines += 1;
+    }
+    if (base.len > 0 and base[base.len - 1] != '\n') base_lines += 1;
+
+    for (proposed) |c| {
+        if (c == '\n') proposed_lines += 1;
+    }
+    if (proposed.len > 0 and proposed[proposed.len - 1] != '\n') proposed_lines += 1;
+
+    if (proposed_lines > base_lines) {
+        added = proposed_lines - base_lines;
+    } else {
+        removed = base_lines - proposed_lines;
+    }
+
+    return std.fmt.allocPrint(arena, "+{d} -{d} lines", .{ added, removed }) catch "diff unavailable";
 }
