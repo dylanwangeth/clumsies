@@ -98,6 +98,12 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     var deduplicated: i32 = 0;
 
     for (batch.events) |event| {
+        // Validate caller has access to the target workspace
+        if (!std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceMember(conn, event.ws_id, user.user_id)) {
+            deduplicated += 1;
+            continue;
+        }
+
         // Validate prompt_id exists if provided
         if (event.prompt_id) |pid| {
             var check = conn.row("SELECT 1 FROM prompts WHERE prompt_id = $1", .{pid}) catch {
@@ -111,7 +117,7 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
                 continue;
             }
         }
-        _ = conn.exec(
+        const rows_affected = conn.exec(
             \\INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp,
             \\  prompt_id, prompt_hash, constraint_id, override_base_hash, reason, content, content_hash)
             \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -125,7 +131,11 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
             deduplicated += 1;
             continue;
         };
-        accepted += 1;
+        if (rows_affected != null and rows_affected.? > 0) {
+            accepted += 1;
+        } else {
+            deduplicated += 1;
+        }
     }
 
     try res.json(.{
@@ -138,6 +148,7 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "stats:read", res)) return;
 
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
@@ -182,9 +193,10 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 }
 
 pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "stats:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -262,9 +274,10 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
 }
 
 pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "stats:read", res)) return;
 
     const prompt_id = req.param("prompt_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "prompt_id is required");
