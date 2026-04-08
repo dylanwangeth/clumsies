@@ -102,7 +102,7 @@ const DetailTab = enum(u8) {
 
 const top_tabs = [_]TopModule{ .library, .proposals, .workspace, .insights };
 
-// 12 prompts + up to 12 group headers = 24 max rows in Library
+// 12 prompts + up to 12 group headers = 24 max rows
 const MAX_LIBRARY_ROWS = data.PROMPTS.len + 12;
 const detail_tabs = [_]DetailTab{ .overview, .content, .history };
 
@@ -117,6 +117,7 @@ pub const Dashboard = struct {
     confirm_action: ConfirmAction = .none,
     detail_origin: TopModule = .library,
     detail_tab: DetailTab = .overview,
+    detail_focus_content: bool = false,
     settings_tab: SettingsTab = .members,
     status_line: []const u8 = "Ready.",
 
@@ -332,22 +333,17 @@ pub const Dashboard = struct {
                     return;
                 }
 
-                // Detail mode: Esc returns to origin
+                // Detail mode: two-pane with Tab focus switching
                 if (self.show_detail) {
                     if (key.matches(vaxis.Key.escape, .{}) or key.matches('q', .{})) {
                         self.show_detail = false;
+                        self.detail_focus_content = false;
                         self.selected_module = self.detail_origin;
-                        self.status_line = "Returned.";
                         ctx.consumeAndRedraw();
                         return;
                     }
-                    if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-                        self.shiftDetailTab(-1);
-                        ctx.consumeAndRedraw();
-                        return;
-                    }
-                    if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-                        self.shiftDetailTab(1);
+                    if (key.matches(vaxis.Key.tab, .{})) {
+                        self.detail_focus_content = !self.detail_focus_content;
                         ctx.consumeAndRedraw();
                         return;
                     }
@@ -356,13 +352,24 @@ pub const Dashboard = struct {
                         ctx.consumeAndRedraw();
                         return;
                     }
-                    if (self.detail_tab == .content) {
+                    if (self.detail_focus_content) {
+                        // Content pane has focus: j/k scrolls content
                         try self.content_scroll_bars.scroll_view.handleEvent(ctx, event);
-                        return;
-                    }
-                    if (self.detail_tab == .history) {
-                        try self.history_scroll_bars.scroll_view.handleEvent(ctx, event);
-                        return;
+                    } else {
+                        // Info pane has focus: h/l switches tabs, j/k for history
+                        if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+                            self.shiftDetailTab(-1);
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
+                            self.shiftDetailTab(1);
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        if (self.detail_tab == .history) {
+                            try self.history_scroll_bars.scroll_view.handleEvent(ctx, event);
+                        }
                     }
                     return;
                 }
@@ -382,36 +389,64 @@ pub const Dashboard = struct {
                             ctx.consumeAndRedraw();
                             return;
                         }
+                        // Tab toggles focus between list and detail pane
+                        if (key.matches(vaxis.Key.tab, .{})) {
+                            self.detail_focus_content = !self.detail_focus_content;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        // Enter from list: focus detail pane
+                        if (!self.detail_focus_content and key.matches(vaxis.Key.enter, .{})) {
+                            self.detail_focus_content = true;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        if (self.detail_focus_content) {
+                            // Detail pane has focus
+                            if (key.matches(vaxis.Key.escape, .{})) {
+                                self.detail_focus_content = false;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+                                self.shiftDetailTab(-1);
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
+                                self.shiftDetailTab(1);
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (self.detail_tab == .content) {
+                                try self.content_scroll_bars.scroll_view.handleEvent(ctx, event);
+                            }
+                            if (self.detail_tab == .history) {
+                                try self.history_scroll_bars.scroll_view.handleEvent(ctx, event);
+                            }
+                            return;
+                        }
+                        // List pane: j/k moves through prompts, skipping group headers.
                         const prev = self.library_scroll_bars.scroll_view.cursor;
                         try self.library_scroll_bars.scroll_view.handleEvent(ctx, event);
-                        // If cursor landed on a group header, skip in the
-                        // direction of movement to the next prompt row.
-                        const cursor_pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
-                        if (cursor_pos < self.library_row_count) {
-                            if (self.library_prompt_indices[cursor_pos]) |pi| {
-                                self.selected_prompt = pi;
-                            } else if (self.library_scroll_bars.scroll_view.cursor != prev) {
-                                const moving_down = self.library_scroll_bars.scroll_view.cursor > prev;
-                                if (moving_down) {
-                                    if (cursor_pos + 1 < self.library_row_count) {
-                                        self.library_scroll_bars.scroll_view.cursor += 1;
-                                        if (self.library_prompt_indices[cursor_pos + 1]) |pi| {
-                                            self.selected_prompt = pi;
-                                        }
-                                    }
-                                } else {
-                                    if (cursor_pos > 0) {
-                                        self.library_scroll_bars.scroll_view.cursor -= 1;
-                                        if (self.library_prompt_indices[cursor_pos - 1]) |pi| {
-                                            self.selected_prompt = pi;
-                                        }
-                                    }
-                                }
-                                ctx.consumeAndRedraw();
+                        if (self.library_row_count == 0) return;
+
+                        var pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
+                        if (pos >= self.library_row_count) pos = self.library_row_count - 1;
+
+                        // If landed on a group header, skip one row in direction of movement
+                        if (self.library_prompt_indices[pos] == null and self.library_scroll_bars.scroll_view.cursor != prev) {
+                            const moving_down = self.library_scroll_bars.scroll_view.cursor > prev;
+                            if (moving_down and pos + 1 < self.library_row_count) {
+                                pos += 1;
+                            } else if (!moving_down and pos > 0) {
+                                pos -= 1;
                             }
+                            self.library_scroll_bars.scroll_view.cursor = @intCast(pos);
+                            ctx.consumeAndRedraw();
                         }
-                        if (key.matches(vaxis.Key.enter, .{})) {
-                            self.openDetail(ctx, self.selected_prompt, .library, .overview);
+                        if (self.library_prompt_indices[pos]) |pi| {
+                            self.selected_prompt = pi;
                         }
                     },
                     .proposals => {
@@ -568,10 +603,12 @@ pub const Dashboard = struct {
             "y confirm  n cancel  Esc cancel"
         else if (self.show_settings)
             "h/l tab  j/k move  a add  r role  x remove  Esc back"
+        else if (self.show_detail and self.detail_focus_content)
+            "j/k scroll  g/G jump  Tab info pane  Esc back  ? help"
         else if (self.show_detail)
-            "h/l tab  j/k move  Enter diff  p propose  Esc back  ? help"
+            "h/l tab  j/k move  Tab content pane  p propose  Esc back  ? help"
         else switch (self.selected_module) {
-            .library => "j/k move  Enter open  b bundle  S settings  ? help  q quit",
+            .library => if (self.detail_focus_content) "h/l tab  j/k scroll  Esc list  ? help" else "j/k move  Enter detail  b bundle  S settings  ? help  q quit",
             .proposals => "j/k move  a accept  x reject  S settings  ? help  q quit",
             .workspace => "h/l tab  j/k move  r sync  S settings  ? help  q quit",
             .insights => "j/k move  t period  S settings  ? help  q quit",
@@ -580,8 +617,8 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    // Library: two-column (prompt list + preview sidebar).
-    // Bundle facet deferred to Phase 2 when filter interaction is implemented.
+    // Library: master-detail. Left = grouped prompt list, right = selected prompt detail.
+    // Enter / Tab switches focus between list and detail pane.
     fn drawLibrary(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
@@ -589,15 +626,16 @@ pub const Dashboard = struct {
 
         self.syncLibraryWidgets();
 
-        const preview_w: u16 = if (size.width > 118) 30 else 26;
-        const list_w: u16 = size.width - preview_w - 1;
+        const list_w: u16 = size.width / 3;
+        const detail_w: u16 = size.width - list_w - 1;
+        const p = &data.PROMPTS[self.selected_prompt];
 
         const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
-        const preview_ctx = ctx.withConstraints(.{ .width = preview_w, .height = size.height }, .{ .width = preview_w, .height = size.height });
+        const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawPromptTable(list_ctx) };
-        children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = try self.drawPromptPreview(preview_ctx) };
+        children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = try self.drawLibraryDetail(detail_ctx, p) };
         root.children = children;
         return root;
     }
@@ -612,54 +650,99 @@ pub const Dashboard = struct {
             "All"
         else
             data.BUNDLES[self.library_bundle_filter - 1].name;
-        const subtitle = try std.fmt.allocPrint(ctx.arena, "bundle: {s}  b cycle", .{bundle_label});
+        const subtitle = try std.fmt.allocPrint(ctx.arena, "{d} prompts  bundle: {s}  / search  b filter", .{ data.PROMPTS.len, bundle_label });
+        const list_border = if (!self.detail_focus_content) theme.ACCENT else theme.BORDER;
         const panel: w.Panel = .{
             .owner = self.widget(),
-            .title = "Library Prompts",
+            .title = "Library",
             .subtitle = subtitle,
             .background = theme.PANEL,
-            .border_color = theme.BORDER,
+            .border_color = list_border,
             .child = self.library_scroll_bars.widget(),
         };
         var surface = try panel.draw(ctx);
         return w.applyCursorOverlay(ctx, &surface, &self.library_scroll_bars.scroll_view);
     }
 
-    // Preview shows only info NOT in the main table:
-    // sparkline trend, constraint count, bundle membership, action hint.
-    fn drawPromptPreview(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const p = &data.PROMPTS[self.selected_prompt];
-        const spark = try w.sparkline(ctx.arena, p.trend[0..8]);
-        const preview = try std.fmt.allocPrint(ctx.arena,
-            \\last 7d
-            \\{s}
-            \\
-            \\constraints  {d}
-            \\bundles      {s}
-            \\
-            \\Enter  open detail
-        , .{ spark, p.constraint_count, p.bundle_names });
+    // Library right pane: detail for selected prompt with Overview/Content/History tabs.
+    fn drawLibraryDetail(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
+        const border_color = if (self.detail_focus_content) theme.ACCENT else theme.BORDER;
+        w.fillSurface(&surface, theme.PANEL);
+        w.drawBorder(&surface, border_color, theme.PANEL);
 
-        const text_widget: vxfw.Text = .{
-            .text = preview,
-            .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
-            .width_basis = .parent,
-        };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{
-            .owner = self.widget(),
-            .title = "Selected",
-            .subtitle = "",
-            .background = theme.PANEL,
-            .border_color = theme.BORDER,
-            .child = wrapper.widget(),
-            .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-        };
-        return panel.draw(ctx);
+        // Row 0: inner tabs + prompt name
+        var tab_col: u16 = 2;
+        for (detail_tabs) |tab| {
+            tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, tab.label(), tab == self.detail_tab);
+            tab_col +|= 1;
+        }
+        w.writeRightText(&surface, ctx, 0, p.canonical_name, theme.textOn(theme.PANEL, theme.MUTED));
+
+        const inner_h = ctx.max.height.? -| 2;
+        const inner_w = ctx.max.width.? -| 4;
+
+        switch (self.detail_tab) {
+            .overview => {
+                const kv_col: u16 = 2;
+                var kv_row: u16 = 2;
+                w.writeText(&surface, ctx, kv_col, kv_row, p.summary, theme.fg(theme.TEXT_SOFT));
+                kv_row += 2;
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "hash", p.content_hash, 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "updated", p.updated, 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "source", "acme", 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "refer", p.refer_count, 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "override", "local (payments-api)", 8);
+                kv_row += 1;
+                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Top Constraints");
+                const top_n = @min(p.constraint_count, 3);
+                var ci: u8 = 0;
+                while (ci < top_n) : (ci += 1) {
+                    const cid = try std.fmt.allocPrint(ctx.arena, "c-{d}", .{ci + 1});
+                    kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, cid, "(mock refer data)", 5);
+                }
+                if (p.constraint_count > 3) {
+                    w.writeText(&surface, ctx, kv_col, kv_row, try std.fmt.allocPrint(ctx.arena, "... +{d} more", .{p.constraint_count - 3}), theme.fg(theme.MUTED));
+                }
+            },
+            .content => {
+                self.syncContentWidget();
+                const child_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
+                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+                children[0] = .{ .origin = .{ .row = 2, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
+                surface.children = children;
+            },
+            .history => {
+                self.syncHistoryWidgets();
+                const list_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
+                self.history_scroll_bars.scroll_view.draw_cursor = false;
+                defer self.history_scroll_bars.scroll_view.draw_cursor = true;
+
+                var list_surface = try self.history_scroll_bars.widget().draw(list_ctx);
+                const sv = &self.history_scroll_bars.scroll_view;
+                if (sv.cursor >= sv.scroll.top) {
+                    const vis_row = sv.cursor - sv.scroll.top;
+                    const crow: i17 = @intCast(vis_row);
+                    if (crow < list_surface.size.height) {
+                        const cbuf = try ctx.arena.alloc(vaxis.Cell, 1);
+                        cbuf[0] = .{ .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 }, .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL } };
+                        const csurface: vxfw.Surface = .{ .size = .{ .width = 1, .height = 1 }, .widget = list_surface.widget, .buffer = cbuf, .children = &.{} };
+                        const old = list_surface.children;
+                        const new_ch = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
+                        @memcpy(new_ch[0..old.len], old);
+                        new_ch[old.len] = .{ .origin = .{ .col = 0, .row = crow }, .surface = csurface, .z_index = 1 };
+                        list_surface.children = new_ch;
+                    }
+                }
+                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+                children[0] = .{ .origin = .{ .row = 2, .col = 1 }, .surface = list_surface };
+                surface.children = children;
+            },
+        }
+        return surface;
     }
 
-    // Prompt Detail: main panel (with identity in title) + sidebar
+    // Old Prompt Detail (kept for non-Library drill-down from other modules)
     fn drawPromptDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         const p = &data.PROMPTS[self.selected_prompt];
@@ -667,31 +750,31 @@ pub const Dashboard = struct {
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.PANEL);
 
-        const sidebar_w: u16 = if (size.width > 118) 30 else 26;
-        const main_w: u16 = size.width - sidebar_w - 1;
+        const info_w: u16 = size.width / 3;
+        const content_w: u16 = size.width - info_w - 1;
 
-        const main_ctx = ctx.withConstraints(.{ .width = main_w, .height = size.height }, .{ .width = main_w, .height = size.height });
-        const side_ctx = ctx.withConstraints(.{ .width = sidebar_w, .height = size.height }, .{ .width = sidebar_w, .height = size.height });
+        const info_ctx = ctx.withConstraints(.{ .width = info_w, .height = size.height }, .{ .width = info_w, .height = size.height });
+        const content_ctx = ctx.withConstraints(.{ .width = content_w, .height = size.height }, .{ .width = content_w, .height = size.height });
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawDetailMain(main_ctx, p) };
-        children[1] = .{ .origin = .{ .row = 0, .col = main_w + 1 }, .surface = try self.drawDetailSidebar(side_ctx, p) };
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawDetailInfo(info_ctx, p) };
+        children[1] = .{ .origin = .{ .row = 0, .col = info_w + 1 }, .surface = try self.drawDetailContent(content_ctx, p) };
         root.children = children;
         return root;
     }
 
-    fn drawDetailMain(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawDetailInfo(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
-        w.drawBorder(&surface, theme.BORDER, theme.PANEL);
+        const info_border = if (!self.detail_focus_content) theme.ACCENT else theme.BORDER;
+        w.drawBorder(&surface, info_border, theme.PANEL);
 
-        // Row 0: inner tabs (left) + canonical name (right)
+        // Row 0: inner tabs
         var col: u16 = 2;
         for (detail_tabs) |tab| {
             col = w.drawInnerTabBadge(&surface, ctx, 0, col, tab.label(), tab == self.detail_tab);
             col +|= 1;
         }
-        w.writeRightText(&surface, ctx, 0, p.canonical_name, theme.textOn(theme.PANEL, theme.MUTED));
 
         const inner_h = ctx.max.height.? -| 3;
         const inner_w = ctx.max.width.? -| 2;
@@ -704,12 +787,22 @@ pub const Dashboard = struct {
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "updated", p.updated, 8);
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "source", "acme", 8);
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "override", "local (payments-api)", 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "refer", p.refer_count, 8);
                 kv_row += 1;
                 kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Top Constraints");
-                // Mock constraint ranking (real data from GET /api/stats/prompt/{id})
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "c-1", "naming clarity           3210", 5);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "c-3", "import grouping          2321", 5);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "c-5", "file ordering            1172", 5);
+                // Mock: show constraint count, real data from GET /api/stats/prompt/{id}
+                const ccount = p.constraint_count;
+                const top_n = @min(ccount, 3);
+                var ci: u8 = 0;
+                while (ci < top_n) : (ci += 1) {
+                    const cid = try std.fmt.allocPrint(ctx.arena, "c-{d}", .{ci + 1});
+                    const cval = try std.fmt.allocPrint(ctx.arena, "(mock refer data)", .{});
+                    kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, cid, cval, 5);
+                }
+                if (ccount > 3) {
+                    w.writeText(&surface, ctx, kv_col, kv_row, try std.fmt.allocPrint(ctx.arena, "... +{d} more", .{ccount - 3}), theme.fg(theme.MUTED));
+                    kv_row += 1;
+                }
                 kv_row += 1;
                 kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Local Override");
                 w.writeText(&surface, ctx, kv_col, kv_row, "Detected in ws: payments-api", theme.fg(theme.TEXT_SOFT));
@@ -718,27 +811,19 @@ pub const Dashboard = struct {
             },
             .content => {
                 self.syncContentWidget();
-                const child_ctx = ctx.withConstraints(
-                    .{ .width = inner_w, .height = inner_h },
-                    .{ .width = inner_w, .height = inner_h },
-                );
+                const child_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
                 children[0] = .{ .origin = .{ .row = 2, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
                 surface.children = children;
             },
             .history => {
                 self.syncHistoryWidgets();
-                const list_w: u16 = if (inner_w > 76) 34 else inner_w / 2;
-                const detail_w = inner_w - list_w - 1;
-
-                const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = inner_h }, .{ .width = list_w, .height = inner_h });
-                const det_ctx = ctx.withConstraints(.{ .width = detail_w, .height = inner_h }, .{ .width = detail_w, .height = inner_h });
+                const list_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
 
                 self.history_scroll_bars.scroll_view.draw_cursor = false;
                 defer self.history_scroll_bars.scroll_view.draw_cursor = true;
 
                 var list_surface = try self.history_scroll_bars.widget().draw(list_ctx);
-                // No Panel border here, so cursor overlay targets row directly
                 const sv = &self.history_scroll_bars.scroll_view;
                 if (sv.cursor >= sv.scroll.top) {
                     const vis_row = sv.cursor - sv.scroll.top;
@@ -746,7 +831,7 @@ pub const Dashboard = struct {
                     if (crow < list_surface.size.height) {
                         const cbuf = try ctx.arena.alloc(vaxis.Cell, 1);
                         cbuf[0] = .{
-                            .char = .{ .grapheme = "▌", .width = 1 },
+                            .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
                             .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
                         };
                         const csurface: vxfw.Surface = .{
@@ -756,20 +841,19 @@ pub const Dashboard = struct {
                             .children = &.{},
                         };
                         const old = list_surface.children;
-                        const new = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
-                        @memcpy(new[0..old.len], old);
-                        new[old.len] = .{
+                        const new_children = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
+                        @memcpy(new_children[0..old.len], old);
+                        new_children[old.len] = .{
                             .origin = .{ .col = 0, .row = crow },
                             .surface = csurface,
                             .z_index = 1,
                         };
-                        list_surface.children = new;
+                        list_surface.children = new_children;
                     }
                 }
 
-                const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
                 children[0] = .{ .origin = .{ .row = 2, .col = 1 }, .surface = list_surface };
-                children[1] = .{ .origin = .{ .row = 2, .col = 1 + list_w + 1 }, .surface = try self.drawHistoryDetail(det_ctx) };
                 surface.children = children;
             },
         }
@@ -777,51 +861,25 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn drawDetailSidebar(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
-        const spark = try w.sparkline(ctx.arena, p.trend[0..8]);
-        const bg = theme.PANEL_ALT;
-
-        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-        w.fillSurface(&surface, bg);
-        w.drawBorder(&surface, theme.BORDER, bg);
-        w.writeText(&surface, ctx, 2, 0, "Usage Summary", theme.boldOn(bg, theme.TEXT));
-
-        const kw: u16 = 11;
-        const kv_col: u16 = 2;
-        var row: u16 = 2;
-        row = w.writeKv(&surface, ctx, kv_col, row, "refer", p.refer_count, kw);
-        row = w.writeKv(&surface, ctx, kv_col, row, "constraints", try std.fmt.allocPrint(ctx.arena, "{d}", .{p.constraint_count}), kw);
-        row = w.writeKv(&surface, ctx, kv_col, row, "workspaces", "API pending", kw);
-        row += 1;
-        row = w.writeSectionHeader(&surface, ctx, kv_col, row, "Trend");
-        w.writeText(&surface, ctx, kv_col, row, spark, theme.fg(theme.ACCENT));
-        row += 2;
-        row = w.writeSectionHeader(&surface, ctx, kv_col, row, "Actions");
-        w.writeText(&surface, ctx, kv_col, row, "p  propose", theme.fg(theme.TEXT_SOFT));
-        row += 1;
-        w.writeText(&surface, ctx, kv_col, row, "Enter  diff", theme.fg(theme.TEXT_SOFT));
-        row += 1;
-        const back_text = try std.fmt.allocPrint(ctx.arena, "Esc  back to {s}", .{self.detail_origin.label()});
-        w.writeText(&surface, ctx, kv_col, row, back_text, theme.fg(theme.TEXT_SOFT));
-        return surface;
-    }
-
-    fn drawHistoryDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const idx = @min(@as(usize, @intCast(self.history_scroll_bars.scroll_view.cursor)), data.HISTORY.len - 1);
-        const h = &data.HISTORY[idx];
-
-        // No border -- plain area within the main panel, avoids card-in-card
+    // Right pane: always-visible prompt content with border.
+    // Border highlight indicates focus state.
+    fn drawDetailContent(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
+        const border_color = if (self.detail_focus_content) theme.ACCENT else theme.BORDER;
+        w.drawBorder(&surface, border_color, theme.PANEL);
+        w.writeText(&surface, ctx, 2, 0, p.canonical_name, theme.boldOn(theme.PANEL, theme.TEXT));
 
-        const kv_col: u16 = 1;
-        var row: u16 = 0;
-        row = w.writeSectionHeader(&surface, ctx, kv_col, row, if (idx == 0) "current version" else "history version");
-        row = w.writeKv(&surface, ctx, kv_col, row, "date", h.date, 6);
-        row = w.writeKv(&surface, ctx, kv_col, row, "hash", h.hash, 6);
-        row = w.writeKv(&surface, ctx, kv_col, row, "label", h.label, 6);
-        row += 1;
-        w.writeText(&surface, ctx, kv_col, row, "Enter opens diff (Phase 2)", theme.fg(theme.MUTED));
+        self.syncContentWidget();
+        const inner_w = ctx.max.width.? -| 4;
+        const inner_h = ctx.max.height.? -| 2;
+        const child_ctx = ctx.withConstraints(
+            .{ .width = inner_w, .height = inner_h },
+            .{ .width = inner_w, .height = inner_h },
+        );
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+        children[0] = .{ .origin = .{ .row = 1, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
+        surface.children = children;
         return surface;
     }
 
@@ -1455,7 +1513,7 @@ pub const Dashboard = struct {
                 last_prefix = prefix;
             }
 
-            // Insert prompt row
+            // Insert prompt row (name + stats)
             if (row_idx < MAX_LIBRARY_ROWS) {
                 const sel = pidx == self.selected_prompt;
                 self.library_table_cols[row_idx] = .{
@@ -1477,6 +1535,18 @@ pub const Dashboard = struct {
         self.library_row_count = row_idx;
         self.library_scroll_bars.scroll_view.children = .{ .slice = self.library_widgets[0..row_idx] };
         self.library_scroll_bars.estimated_content_height = @intCast(row_idx);
+
+        // Ensure cursor is on a prompt row, not a group header or summary
+        var cur = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
+        while (cur < row_idx and self.library_prompt_indices[cur] == null) {
+            cur += 1;
+        }
+        self.library_scroll_bars.scroll_view.cursor = @intCast(cur);
+        if (cur < row_idx) {
+            if (self.library_prompt_indices[cur]) |pi| {
+                self.selected_prompt = pi;
+            }
+        }
     }
 
     fn syncContentWidget(self: *Dashboard) void {
