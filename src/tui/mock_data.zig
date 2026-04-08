@@ -1,4 +1,4 @@
-// Mock data matching the real clumsies data model (spec s1-0 through s2-3).
+// Mock data for the TUI dashboard, matching the Hub Server data model.
 // No invented fields: only what the Hub Server API actually provides.
 
 pub const PromptEntry = struct {
@@ -38,6 +38,20 @@ pub const ProposalEntry = struct {
     trace_sessions: u8,
 };
 
+pub const AccessLevel = enum {
+    read,
+    write,
+    admin,
+
+    pub fn badge(self: AccessLevel) []const u8 {
+        return switch (self) {
+            .read => "r",
+            .write => "w",
+            .admin => "a",
+        };
+    }
+};
+
 pub const WorkspaceEntry = struct {
     name: []const u8,
     prompts: u8,
@@ -48,6 +62,7 @@ pub const WorkspaceEntry = struct {
     paths: u8,
     open_prs: u8,
     last_sync: []const u8,
+    access_level: AccessLevel,
 };
 
 pub const BUNDLES = [_]BundleEntry{
@@ -121,14 +136,14 @@ pub const PROPOSALS = [_]ProposalEntry{
 };
 
 pub const WORKSPACES = [_]WorkspaceEntry{
-    .{ .name = "payments-api", .prompts = 18, .contexts = 9, .overrides = 3, .local_rev = 41, .remote_rev = 43, .paths = 2, .open_prs = 2, .last_sync = "1h ago" },
-    .{ .name = "merchant-portal", .prompts = 14, .contexts = 5, .overrides = 1, .local_rev = 37, .remote_rev = 37, .paths = 1, .open_prs = 0, .last_sync = "2 min ago" },
-    .{ .name = "infra-tools", .prompts = 8, .contexts = 3, .overrides = 0, .local_rev = 22, .remote_rev = 22, .paths = 1, .open_prs = 1, .last_sync = "5 min ago" },
-    .{ .name = "release-bot", .prompts = 5, .contexts = 2, .overrides = 0, .local_rev = 15, .remote_rev = 15, .paths = 1, .open_prs = 0, .last_sync = "3 min ago" },
-    .{ .name = "docs-site", .prompts = 6, .contexts = 4, .overrides = 0, .local_rev = 10, .remote_rev = 10, .paths = 1, .open_prs = 0, .last_sync = "10 min ago" },
-    .{ .name = "mobile-app", .prompts = 12, .contexts = 7, .overrides = 2, .local_rev = 28, .remote_rev = 30, .paths = 2, .open_prs = 1, .last_sync = "30 min ago" },
-    .{ .name = "data-pipeline", .prompts = 9, .contexts = 6, .overrides = 0, .local_rev = 19, .remote_rev = 19, .paths = 1, .open_prs = 0, .last_sync = "8 min ago" },
-    .{ .name = "admin-dashboard", .prompts = 11, .contexts = 4, .overrides = 1, .local_rev = 25, .remote_rev = 25, .paths = 1, .open_prs = 2, .last_sync = "15 min ago" },
+    .{ .name = "payments-api", .prompts = 18, .contexts = 9, .overrides = 3, .local_rev = 41, .remote_rev = 43, .paths = 2, .open_prs = 2, .last_sync = "1h ago", .access_level = .admin },
+    .{ .name = "merchant-portal", .prompts = 14, .contexts = 5, .overrides = 1, .local_rev = 37, .remote_rev = 37, .paths = 1, .open_prs = 0, .last_sync = "2 min ago", .access_level = .write },
+    .{ .name = "infra-tools", .prompts = 8, .contexts = 3, .overrides = 0, .local_rev = 22, .remote_rev = 22, .paths = 1, .open_prs = 1, .last_sync = "5 min ago", .access_level = .read },
+    .{ .name = "release-bot", .prompts = 5, .contexts = 2, .overrides = 0, .local_rev = 15, .remote_rev = 15, .paths = 1, .open_prs = 0, .last_sync = "3 min ago", .access_level = .write },
+    .{ .name = "docs-site", .prompts = 6, .contexts = 4, .overrides = 0, .local_rev = 10, .remote_rev = 10, .paths = 1, .open_prs = 0, .last_sync = "10 min ago", .access_level = .read },
+    .{ .name = "mobile-app", .prompts = 12, .contexts = 7, .overrides = 2, .local_rev = 28, .remote_rev = 30, .paths = 2, .open_prs = 1, .last_sync = "30 min ago", .access_level = .admin },
+    .{ .name = "data-pipeline", .prompts = 9, .contexts = 6, .overrides = 0, .local_rev = 19, .remote_rev = 19, .paths = 1, .open_prs = 0, .last_sync = "8 min ago", .access_level = .write },
+    .{ .name = "admin-dashboard", .prompts = 11, .contexts = 4, .overrides = 1, .local_rev = 25, .remote_rev = 25, .paths = 1, .open_prs = 2, .last_sync = "15 min ago", .access_level = .admin },
 };
 
 pub const ContextBranch = struct {
@@ -333,22 +348,120 @@ pub const MemberEntry = struct {
     username: []const u8,
     role: []const u8,
     joined: []const u8,
+    teams: []const u8, // comma-separated team names
 };
 
 pub const MEMBERS = [_]MemberEntry{
-    .{ .user_id = "usr-001", .username = "alice", .role = "maintainer", .joined = "2026-01-15" },
-    .{ .user_id = "usr-002", .username = "bob", .role = "member", .joined = "2026-02-20" },
-    .{ .user_id = "usr-003", .username = "carol", .role = "member", .joined = "2026-03-05" },
-    .{ .user_id = "usr-004", .username = "dave", .role = "member", .joined = "2026-03-18" },
+    .{ .user_id = "usr-001", .username = "alice", .role = "maintainer", .joined = "2026-01-15", .teams = "platform, ops" },
+    .{ .user_id = "usr-002", .username = "bob", .role = "member", .joined = "2026-02-20", .teams = "platform, frontend" },
+    .{ .user_id = "usr-003", .username = "carol", .role = "member", .joined = "2026-03-05", .teams = "frontend" },
+    .{ .user_id = "usr-004", .username = "dave", .role = "member", .joined = "2026-03-18", .teams = "platform, ops" },
+};
+
+// Mirrors GET /api/auth/me response
+pub const WsAccess = struct {
+    name: []const u8,
+    level: AccessLevel,
+};
+
+pub const CurrentUser = struct {
+    user_id: []const u8,
+    username: []const u8,
+    role: []const u8,
+    scopes: []const []const u8,
+    workspaces: []const WsAccess,
+};
+
+const my_scopes = [_][]const u8{
+    "library:read",
+    "workspace:read",
+    "workspace:write",
+    "trace:write",
+    "stats:read",
+    "proposal:read",
+    "proposal:write",
+    "members:read",
+};
+
+// Token scope definitions for the Hub Server permission model
+pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
+    .{ .name = "library:read", .description = "Read prompts and bundles" },
+    .{ .name = "library:write", .description = "Create proposals" },
+    .{ .name = "bundle:write", .description = "Bundle CRUD" },
+    .{ .name = "workspace:read", .description = "Read workspace manifest/files" },
+    .{ .name = "workspace:write", .description = "Write context, create overrides" },
+    .{ .name = "trace:write", .description = "Upload trace events" },
+    .{ .name = "stats:read", .description = "Read statistics" },
+    .{ .name = "members:read", .description = "List org/workspace members" },
+    .{ .name = "members:write", .description = "Manage org/workspace members" },
+    .{ .name = "team:read", .description = "List teams and members" },
+    .{ .name = "team:write", .description = "Manage teams" },
+    .{ .name = "proposal:read", .description = "Read proposals and comments" },
+    .{ .name = "proposal:write", .description = "Create/comment on proposals" },
+    .{ .name = "proposal:merge", .description = "Accept/reject proposals" },
+};
+
+const my_workspaces = [_]WsAccess{
+    .{ .name = "payments-api", .level = .admin },
+    .{ .name = "merchant-portal", .level = .write },
+    .{ .name = "infra-tools", .level = .read },
+    .{ .name = "release-bot", .level = .write },
+    .{ .name = "docs-site", .level = .read },
+    .{ .name = "mobile-app", .level = .admin },
+    .{ .name = "data-pipeline", .level = .write },
+    .{ .name = "admin-dashboard", .level = .admin },
+};
+
+pub const CURRENT_USER = CurrentUser{
+    .user_id = "usr-0001",
+    .username = "alice",
+    .role = "maintainer",
+    .scopes = &my_scopes,
+    .workspaces = &my_workspaces,
 };
 
 pub const TokenInfo = struct {
-    scope: []const u8,
+    scopes: []const []const u8,
     expires: []const u8,
 };
 
+pub const TeamEntry = struct {
+    name: []const u8,
+    member_usernames: []const []const u8,
+};
+
+const platform_members = [_][]const u8{ "alice", "bob", "dave" };
+const frontend_members = [_][]const u8{ "bob", "carol" };
+const ops_members = [_][]const u8{ "alice", "dave" };
+
+pub const TEAMS = [_]TeamEntry{
+    .{ .name = "platform", .member_usernames = &platform_members },
+    .{ .name = "frontend", .member_usernames = &frontend_members },
+    .{ .name = "ops", .member_usernames = &ops_members },
+};
+
+pub const WsTeamAccess = struct {
+    team_name: []const u8,
+    level: AccessLevel,
+};
+
+pub const WsUserAccess = struct {
+    username: []const u8,
+    level: AccessLevel,
+};
+
+// Access rules for the "selected" workspace (payments-api)
+pub const WS_TEAM_ACCESS = [_]WsTeamAccess{
+    .{ .team_name = "platform", .level = .admin },
+    .{ .team_name = "frontend", .level = .write },
+};
+
+pub const WS_USER_ACCESS = [_]WsUserAccess{
+    .{ .username = "carol", .level = .read },
+};
+
 pub const CURRENT_TOKEN = TokenInfo{
-    .scope = "library:read workspace:read trace:write stats:read proposal:read proposal:write",
+    .scopes = &my_scopes,
     .expires = "2026-04-07T12:00:00Z",
 };
 
