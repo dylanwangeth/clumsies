@@ -85,7 +85,16 @@ pub fn handleLogin(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
 
     // Determine scopes: use requested scopes if provided, otherwise default for role
     const default_scopes = if (std.mem.eql(u8, role, "maintainer")) MAINTAINER_SCOPES else MEMBER_SCOPES;
-    const scopes = login.scopes orelse default_scopes;
+    const scopes = if (login.scopes) |requested| blk: {
+        // Validate each requested scope is in the role's allowed set
+        var it = std.mem.splitScalar(u8, requested, ',');
+        while (it.next()) |s| {
+            if (std.mem.indexOf(u8, default_scopes, s) == null) {
+                return apiError(res, 400, "BAD_REQUEST", "requested scope not allowed for this role");
+            }
+        }
+        break :blk requested;
+    } else default_scopes;
 
     const access_token = generateToken(req.arena, conn, user_id, "access", scopes, ctx.config.token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
@@ -271,6 +280,8 @@ pub fn checkWorkspaceAdmin(conn: anytype, ws_id: []const u8, user_id: []const u8
 }
 
 fn verifyPassword(input: []const u8, stored_hash: []const u8) bool {
+    // Reject placeholder hashes (invited users who haven't set a password)
+    if (std.mem.startsWith(u8, stored_hash, "!")) return false;
     // Support both bcrypt PHC format and plain text (for dev/migration)
     if (std.mem.startsWith(u8, stored_hash, "$2") or std.mem.startsWith(u8, stored_hash, "$bcrypt")) {
         bcrypt.strVerify(stored_hash, input, .{ .silently_truncate_password = false }) catch return false;
@@ -341,6 +352,7 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const user = authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!requireScope(user, "members:read", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
@@ -380,6 +392,7 @@ pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const user = authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!requireScope(user, "members:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
@@ -411,7 +424,7 @@ pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     }
 
     _ = conn.exec(
-        "INSERT INTO users (user_id, org_id, username, role, password_hash) VALUES ($1, $2::uuid, $3, $4, '')",
+        "INSERT INTO users (user_id, org_id, username, role, password_hash) VALUES ($1, $2::uuid, $3, $4, '!invited')",
         .{ @as([]const u8, &uid_buf), user.org_id, body.username, body.role },
     ) catch {
         if (conn.err) |pg_err| {
@@ -440,6 +453,7 @@ pub fn handleChangeRole(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     const user = authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!requireScope(user, "members:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
@@ -494,6 +508,7 @@ pub fn handleRemoveMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const user = authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!requireScope(user, "members:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }

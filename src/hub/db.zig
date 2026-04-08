@@ -51,7 +51,8 @@ const migration_sql =
     \\    password_hash TEXT NOT NULL,
     \\    role TEXT NOT NULL CHECK (role IN ('member', 'maintainer')),
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    \\    UNIQUE(org_id, username)
+    \\    UNIQUE(org_id, username),
+    \\    UNIQUE(username)
     \\);
     \\
     \\CREATE TABLE IF NOT EXISTS tokens (
@@ -126,6 +127,7 @@ const migration_sql =
     \\    branch_name TEXT NOT NULL,
     \\    base_revision INTEGER NOT NULL DEFAULT 0,
     \\    revision INTEGER NOT NULL DEFAULT 0,
+    \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    PRIMARY KEY (ws_id, branch_name)
     \\);
     \\
@@ -227,6 +229,7 @@ const migration_sql =
     \\CREATE TABLE IF NOT EXISTS prompt_history (
     \\    prompt_id TEXT NOT NULL REFERENCES prompts(prompt_id),
     \\    content_hash TEXT NOT NULL,
+    \\    content TEXT NOT NULL DEFAULT '',
     \\    merged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    proposal_id TEXT,
     \\    PRIMARY KEY (prompt_id, content_hash)
