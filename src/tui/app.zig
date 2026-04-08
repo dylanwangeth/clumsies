@@ -46,22 +46,20 @@ const Period = enum(u8) {
 };
 
 const SettingsTab = enum(u8) {
-    members,
-    bundles,
-    workspaces,
+    account,
+    organization,
     token,
 
     fn label(self: SettingsTab) []const u8 {
         return switch (self) {
-            .members => "Members",
-            .bundles => "Bundles",
-            .workspaces => "Workspaces",
+            .account => "Account",
+            .organization => "Organization",
             .token => "Token",
         };
     }
 };
 
-const settings_tabs = [_]SettingsTab{ .members, .bundles, .workspaces, .token };
+const settings_tabs = [_]SettingsTab{ .account, .organization, .token };
 
 const ConfirmAction = enum {
     none,
@@ -118,14 +116,10 @@ pub const Dashboard = struct {
     detail_origin: TopModule = .library,
     detail_tab: DetailTab = .overview,
     detail_focus_content: bool = false,
-    settings_tab: SettingsTab = .members,
+    settings_tab: SettingsTab = .account,
+    settings_focus: enum { sidebar, content } = .sidebar,
+    settings_content_sel: usize = 0, // cursor within content (members/teams/workspaces list)
     status_line: []const u8 = "Ready.",
-
-    // Settings
-    settings_member_scroll: vxfw.ScrollBars,
-    settings_member_widgets: [data.MEMBERS.len]vxfw.Widget = undefined,
-    settings_member_rows: [data.MEMBERS.len]TableRow = undefined,
-    settings_member_cols: [data.MEMBERS.len][3]Column = undefined,
 
     // Library: grouped display with bundle filter
     library_bundle_filter: usize = 0,
@@ -180,7 +174,6 @@ pub const Dashboard = struct {
             .review_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
             // workspace uses manual grid, no ScrollBars
             .insights_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .settings_member_scroll = w.initCursorScrollBars(theme.PANEL),
         };
     }
 
@@ -210,13 +203,13 @@ pub const Dashboard = struct {
                     if (key.matches('y', .{})) {
                         switch (self.confirm_action) {
                             .remove_member => {
-                                self.status_line = "Member removed (mock).";
+                                self.status_line = "Member removed (not yet implemented)";
                             },
                             .delete_bundle => {
-                                self.status_line = "Bundle deleted (mock).";
+                                self.status_line = "Bundle deleted (not yet implemented)";
                             },
                             .delete_workspace => {
-                                self.status_line = "Workspace deleted (mock).";
+                                self.status_line = "Workspace deleted (not yet implemented)";
                             },
                             .none => {},
                         }
@@ -263,65 +256,147 @@ pub const Dashboard = struct {
 
                 // Settings mode
                 if (self.show_settings) {
-                    if (key.matches(vaxis.Key.escape, .{}) or key.matches('q', .{})) {
+                    if (key.matches('q', .{})) {
                         self.show_settings = false;
+                        self.settings_focus = .sidebar;
                         ctx.consumeAndRedraw();
                         return;
                     }
-                    if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-                        self.shiftSettingsTab(-1);
-                        ctx.consumeAndRedraw();
-                        return;
-                    }
-                    if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-                        self.shiftSettingsTab(1);
-                        ctx.consumeAndRedraw();
-                        return;
-                    }
-                    if (self.settings_tab == .members) {
-                        // r: toggle role of selected member
-                        if (key.matches('r', .{})) {
-                            const sel = @min(@as(usize, @intCast(self.settings_member_scroll.scroll_view.cursor)), data.MEMBERS.len - 1);
-                            const m = &data.MEMBERS[sel];
-                            const new_role: []const u8 = if (std.mem.eql(u8, m.role, "member")) "maintainer" else "member";
-                            _ = new_role;
-                            self.status_line = "Role change requires Hub API (mock).";
+                    if (self.settings_focus == .sidebar) {
+                        if (key.matches(vaxis.Key.escape, .{})) {
+                            self.show_settings = false;
                             ctx.consumeAndRedraw();
                             return;
                         }
-                        // x: remove selected member (confirm)
-                        if (key.matches('x', .{})) {
-                            const sel = @min(@as(usize, @intCast(self.settings_member_scroll.scroll_view.cursor)), data.MEMBERS.len - 1);
-                            self.confirm_message = data.MEMBERS[sel].username;
-                            self.confirm_action = .remove_member;
-                            self.show_confirm = true;
+                        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+                            self.shiftSettingsTab(1);
+                            self.settings_content_sel = 0;
                             ctx.consumeAndRedraw();
                             return;
                         }
-                        // a: invite (placeholder)
-                        if (key.matches('a', .{})) {
-                            self.status_line = "Invite requires TextField input (next iteration).";
+                        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+                            self.shiftSettingsTab(-1);
+                            self.settings_content_sel = 0;
                             ctx.consumeAndRedraw();
                             return;
                         }
-                        try self.settings_member_scroll.scroll_view.handleEvent(ctx, event);
-                    }
-                    if (self.settings_tab == .bundles) {
-                        if (key.matches('x', .{})) {
-                            self.confirm_message = "selected bundle";
-                            self.confirm_action = .delete_bundle;
-                            self.show_confirm = true;
+                        if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{}) or key.matches(vaxis.Key.enter, .{})) {
+                            self.settings_focus = .content;
+                            self.settings_content_sel = 0;
                             ctx.consumeAndRedraw();
                             return;
                         }
-                    }
-                    if (self.settings_tab == .workspaces) {
-                        if (key.matches('x', .{})) {
-                            self.confirm_message = "selected workspace";
-                            self.confirm_action = .delete_workspace;
-                            self.show_confirm = true;
+                    } else {
+                        // Content focus
+                        if (key.matches(vaxis.Key.escape, .{}) or key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+                            self.settings_focus = .sidebar;
                             ctx.consumeAndRedraw();
                             return;
+                        }
+                        const max_items: usize = switch (self.settings_tab) {
+                            .account => data.CURRENT_USER.workspaces.len,
+                            .organization => data.MEMBERS.len + data.TEAMS.len,
+                            .token => data.ALL_SCOPES.len,
+                        };
+                        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+                            if (self.settings_content_sel + 1 < max_items)
+                                self.settings_content_sel += 1;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+                            if (self.settings_content_sel > 0)
+                                self.settings_content_sel -= 1;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        // Action keys per section
+                        if (self.settings_tab == .account) {
+                            if (key.matches('c', .{})) {
+                                self.status_line = "Password change (not yet implemented)";
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches(vaxis.Key.enter, .{})) {
+                                const sel = @min(self.settings_content_sel, data.CURRENT_USER.workspaces.len - 1);
+                                self.ws_sel = sel;
+                                self.show_settings = false;
+                                self.settings_focus = .sidebar;
+                                self.selected_module = .workspace;
+                                self.ws_focus = .list;
+                                self.ws_list_sel = 0;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches('x', .{})) {
+                                self.confirm_message = "sign out";
+                                self.confirm_action = .remove_member; // reuse for sign out
+                                self.show_confirm = true;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                        }
+                        if (self.settings_tab == .organization) {
+                            const on_member = self.settings_content_sel < data.MEMBERS.len;
+                            if (on_member) {
+                                if (key.matches('r', .{})) {
+                                    self.status_line = "Role change (not yet implemented)";
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('x', .{})) {
+                                    const sel = @min(self.settings_content_sel, data.MEMBERS.len - 1);
+                                    self.confirm_message = data.MEMBERS[sel].username;
+                                    self.confirm_action = .remove_member;
+                                    self.show_confirm = true;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('a', .{})) {
+                                    self.status_line = "Invite member (not yet implemented)";
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                            } else {
+                                if (key.matches('a', .{})) {
+                                    self.status_line = "Create team (not yet implemented)";
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('=', .{})) {
+                                    self.status_line = "Add member to team (not yet implemented)";
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('-', .{})) {
+                                    self.status_line = "Remove member from team (not yet implemented)";
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('x', .{})) {
+                                    const team_idx = self.settings_content_sel - data.MEMBERS.len;
+                                    const team_sel = @min(team_idx, data.TEAMS.len - 1);
+                                    self.confirm_message = data.TEAMS[team_sel].name;
+                                    self.confirm_action = .delete_bundle;
+                                    self.show_confirm = true;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                            }
+                        }
+                        if (self.settings_tab == .token) {
+                            if (key.matches('r', .{})) {
+                                self.status_line = "Token refresh (not yet implemented)";
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches('x', .{})) {
+                                self.confirm_message = "current token";
+                                self.confirm_action = .remove_member; // reuse for revoke
+                                self.show_confirm = true;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
                         }
                     }
                     return;
@@ -349,7 +424,7 @@ pub const Dashboard = struct {
                         return;
                     }
                     if (key.matches('p', .{})) {
-                        self.status_line = "Propose: disabled until Hub contracts land (Phase 2).";
+                        self.status_line = "Propose (not yet implemented)";
                         ctx.consumeAndRedraw();
                         return;
                     }
@@ -457,11 +532,11 @@ pub const Dashboard = struct {
                             self.status_line = "Proposal selected.";
                         }
                         if (key.matches('a', .{})) {
-                            self.status_line = "Accept: maintainer-only, disabled until Hub API.";
+                            self.status_line = "Accept proposal (not yet implemented)";
                             ctx.consumeAndRedraw();
                         }
                         if (key.matches('x', .{})) {
-                            self.status_line = "Reject: maintainer-only, disabled until Hub API.";
+                            self.status_line = "Reject proposal (not yet implemented)";
                             ctx.consumeAndRedraw();
                         }
                     },
@@ -565,7 +640,7 @@ pub const Dashboard = struct {
                             },
                         }
                         if (key.matches('r', .{})) {
-                            self.status_line = "Sync: requires Hub client core.";
+                            self.status_line = "Sync (not yet implemented)";
                             ctx.consumeAndRedraw();
                         }
                     },
@@ -578,7 +653,7 @@ pub const Dashboard = struct {
                         if (key.matches(vaxis.Key.enter, .{})) {
                             const cidx = @min(@as(usize, @intCast(self.insights_scroll_bars.scroll_view.cursor)), data.INSIGHTS_WS.len - 1);
                             _ = cidx;
-                            self.status_line = "Drill-down to workspace detail (future).";
+                            self.status_line = "Workspace detail (not yet implemented)";
                             ctx.consumeAndRedraw();
                         }
                     },
@@ -689,8 +764,18 @@ pub const Dashboard = struct {
             "Esc close help"
         else if (self.show_confirm)
             "y confirm  n cancel  Esc cancel"
+        else if (self.show_settings and self.settings_focus == .sidebar)
+            "j/k section  l open  q close"
+        else if (self.show_settings and self.settings_tab == .account)
+            "j/k move  c change password  Enter go to workspace  x sign out  h back  q close"
+        else if (self.show_settings and self.settings_tab == .organization and self.settings_content_sel < data.MEMBERS.len)
+            "j/k move  a invite  r role  x remove  h back  q close"
+        else if (self.show_settings and self.settings_tab == .organization)
+            "j/k move  a create  = add member  - remove member  x delete  h back  q close"
+        else if (self.show_settings and self.settings_tab == .token)
+            "j/k move  r refresh  x revoke  h back  q close"
         else if (self.show_settings)
-            "h/l tab  j/k move  a add  r role  x remove  Esc back"
+            "j/k move  h back  q close"
         else if (self.show_detail and self.detail_focus_content)
             "j/k scroll  g/G jump  Tab info pane  Esc back  ? help"
         else if (self.show_detail)
@@ -706,6 +791,16 @@ pub const Dashboard = struct {
             .insights => "j/k move  t period  S settings  ? help  q quit",
         };
         w.writeText(&surface, ctx, 1, 0, keys, theme.fg(theme.MUTED));
+
+        // Status line on the right side of footer
+        if (!std.mem.eql(u8, self.status_line, "Ready.")) {
+            const sw: u16 = @intCast(ctx.stringWidth(self.status_line));
+            if (ctx.max.width) |max_w| {
+                if (sw + 2 < max_w) {
+                    w.writeText(&surface, ctx, max_w - sw - 1, 0, self.status_line, theme.fg(theme.ACCENT_SOFT));
+                }
+            }
+        }
         return surface;
     }
 
@@ -1087,12 +1182,20 @@ pub const Dashboard = struct {
             }
 
             const name_x = x + 2;
-            const label = try std.fmt.allocPrint(ctx.arena, "{s} ({s})", .{ wsi.name, data.syncStateLabel(&wsi) });
+            const needs_sync = wsi.local_rev != wsi.remote_rev;
+            const label = if (needs_sync)
+                try std.fmt.allocPrint(ctx.arena, "{s} *", .{wsi.name})
+            else
+                wsi.name;
 
             if (is_sel) {
                 w.writeText(&bar, ctx, name_x, y, label, theme.boldOn(theme.PANEL, theme.TEXT));
             } else {
-                w.writeText(&bar, ctx, name_x, y, label, theme.fg(theme.TEXT_SOFT));
+                w.writeText(&bar, ctx, name_x, y, wsi.name, theme.fg(theme.TEXT_SOFT));
+                if (needs_sync) {
+                    const nw: u16 = @intCast(ctx.stringWidth(wsi.name));
+                    w.writeText(&bar, ctx, name_x + nw + 1, y, "*", theme.fg(theme.WARN));
+                }
             }
         }
 
@@ -1378,167 +1481,256 @@ pub const Dashboard = struct {
         return panel.draw(ctx);
     }
 
-    // Settings: drill-down view with inner tabs (Members/Bundles/Workspaces/Token)
+    // Settings: vertical sidebar + content pane (web-style layout)
     fn drawSettings(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.PANEL);
 
-        // Inner tab strip
-        var tab_surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = 1 });
-        w.fillSurface(&tab_surface, theme.PANEL);
-        var tab_col: u16 = 1;
+        // Sidebar (fixed width)
+        const sidebar_w: u16 = 18;
+        const sidebar_border = if (self.settings_focus == .sidebar) theme.ACCENT else theme.BORDER;
+        var sidebar = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = sidebar_w, .height = size.height });
+        w.fillSurface(&sidebar, theme.PANEL);
+        w.drawBorder(&sidebar, sidebar_border, theme.PANEL);
+        w.writeText(&sidebar, ctx, 2, 0, "Settings", theme.boldOn(theme.PANEL, theme.TEXT));
+
+        var row: u16 = 2;
         for (settings_tabs) |tab| {
-            tab_col = w.drawInnerTabBadge(&tab_surface, ctx, 0, tab_col, tab.label(), tab == self.settings_tab);
-            tab_col +|= 1;
+            const is_sel = tab == self.settings_tab;
+            if (is_sel) {
+                sidebar.writeCell(1, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+            const style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+            w.writeText(&sidebar, ctx, 3, row, tab.label(), style);
+            row += 1;
         }
 
-        // Content area
-        const content_h = size.height -| 2;
+        // Content pane
+        const content_w = size.width -| sidebar_w -| 1;
         const content_ctx = ctx.withConstraints(
-            .{ .width = size.width, .height = content_h },
-            .{ .width = size.width, .height = content_h },
+            .{ .width = content_w, .height = size.height },
+            .{ .width = content_w, .height = size.height },
         );
         const content = switch (self.settings_tab) {
-            .members => try self.drawSettingsMembers(content_ctx),
-            .bundles => try self.drawSettingsBundles(content_ctx),
-            .workspaces => try self.drawSettingsWorkspaces(content_ctx),
+            .account => try self.drawSettingsAccount(content_ctx),
+            .organization => try self.drawSettingsOrg(content_ctx),
             .token => try self.drawSettingsToken(content_ctx),
         };
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = tab_surface };
-        children[1] = .{ .origin = .{ .row = 2, .col = 0 }, .surface = content };
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = sidebar };
+        children[1] = .{ .origin = .{ .row = 0, .col = sidebar_w + 1 }, .surface = content };
         root.children = children;
         return root;
     }
 
-    fn drawSettingsMembers(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawSettingsAccount(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
-        var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.PANEL);
+        const focused = self.settings_focus == .content;
+        const user = data.CURRENT_USER;
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&surface, theme.PANEL);
+        w.drawBorder(&surface, if (focused) theme.ACCENT else theme.BORDER, theme.PANEL);
+        w.writeText(&surface, ctx, 2, 0, "Account", theme.boldOn(theme.PANEL, theme.TEXT));
 
-        self.syncSettingsMemberWidgets();
+        var row: u16 = 2;
+        // Profile section
+        row = w.writeSectionHeader(&surface, ctx, 2, row, "Profile");
+        row = w.writeKv(&surface, ctx, 4, row, "Username", user.username, 14);
+        row = w.writeKv(&surface, ctx, 4, row, "User ID", user.user_id, 14);
+        const role_color = if (std.mem.eql(u8, user.role, "maintainer")) theme.ACCENT else theme.TEXT_SOFT;
+        w.writeText(&surface, ctx, 4, row, "Role", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 19, row, user.role, theme.fg(role_color));
+        row += 2;
 
-        const list_w: u16 = if (size.width > 100) size.width -| 32 else size.width;
-        const detail_w: u16 = if (size.width > 100) 31 else 0;
+        // Security section
+        row = w.writeSectionHeader(&surface, ctx, 2, row, "Security");
+        w.writeText(&surface, ctx, 4, row, "Password", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 19, row, "********", theme.fg(theme.TEXT_SOFT));
+        w.writeText(&surface, ctx, 30, row, "[ Change ]", theme.fg(theme.ACCENT_SOFT));
+        row += 1;
+        w.writeText(&surface, ctx, 4, row, "Sessions", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 19, row, "1 active", theme.fg(theme.OK));
+        row += 2;
 
-        // Member list
-        self.settings_member_scroll.scroll_view.draw_cursor = false;
-        defer self.settings_member_scroll.scroll_view.draw_cursor = true;
-
-        const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Org Members", .subtitle = "maintainer: invite/remove", .background = theme.PANEL, .border_color = theme.BORDER, .child = self.settings_member_scroll.widget() };
-        var list_surface = try panel.draw(list_ctx);
-        list_surface = try w.applyCursorOverlay(list_ctx, &list_surface, &self.settings_member_scroll.scroll_view);
-
-        if (detail_w > 0) {
-            const sel_idx = @min(@as(usize, @intCast(self.settings_member_scroll.scroll_view.cursor)), data.MEMBERS.len - 1);
-            const m = &data.MEMBERS[sel_idx];
-            const detail_text = try std.fmt.allocPrint(ctx.arena,
-                \\User
-                \\{s}
-                \\
-                \\Role
-                \\{s}
-                \\
-                \\Joined
-                \\{s}
-                \\
-                \\Actions
-                \\PATCH role (maintainer only)
-                \\DELETE remove (maintainer only)
-            , .{ m.username, m.role, m.joined });
-            const text_widget: vxfw.Text = .{ .text = detail_text, .style = theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT), .width_basis = .parent };
-            const wrapper = try ctx.arena.create(w.WidgetBox);
-            wrapper.* = .{ .widget_ref = text_widget.widget() };
-            const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
-            const detail_panel: w.Panel = .{ .owner = self.widget(), .title = m.username, .subtitle = m.role, .background = theme.PANEL_ALT, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
-
-            const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-            children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = list_surface };
-            children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = try detail_panel.draw(detail_ctx) };
-            root.children = children;
-        } else {
-            const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-            children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = list_surface };
-            root.children = children;
+        // My Workspaces
+        row = w.writeSectionHeader(&surface, ctx, 2, row, try std.fmt.allocPrint(ctx.arena, "My Workspaces ({d})", .{user.workspaces.len}));
+        const sel = @min(self.settings_content_sel, user.workspaces.len - 1);
+        for (user.workspaces, 0..) |ws_access, i| {
+            const is_sel = i == sel and focused;
+            if (is_sel) {
+                surface.writeCell(1, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+            const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+            w.writeText(&surface, ctx, 4, row, ws_access.name, name_style);
+            const badge_fg = switch (ws_access.level) {
+                .read => theme.MUTED,
+                .write => theme.OK,
+                .admin => theme.ACCENT,
+            };
+            const level_label = switch (ws_access.level) {
+                .read => "read",
+                .write => "write",
+                .admin => "admin",
+            };
+            w.writeText(&surface, ctx, 24, row, level_label, theme.fg(badge_fg));
+            row += 1;
+            if (row >= size.height -| 3) break;
         }
-        return root;
+        row += 1;
+
+        // Danger zone
+        if (row + 2 < size.height) {
+            row = w.writeSectionHeader(&surface, ctx, 2, row, "Danger Zone");
+            w.writeText(&surface, ctx, 4, row, "[ Sign Out ]", theme.fg(theme.DANGER));
+            w.writeText(&surface, ctx, 19, row, "Revoke current token and exit", theme.fg(theme.MUTED));
+        }
+        return surface;
     }
 
-    fn drawSettingsBundles(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        var buf: std.ArrayList(u8) = .empty;
-        try buf.appendSlice(ctx.arena, "Bundle management (maintainer only)\n\n");
-        for (data.BUNDLES) |bundle| {
-            const line = try std.fmt.allocPrint(ctx.arena, "{s:<16} {d} prompts\n", .{ bundle.name, bundle.count });
-            try buf.appendSlice(ctx.arena, line);
-        }
-        try buf.appendSlice(ctx.arena, "\nActions\nPOST create  PUT update  DELETE remove");
-        const text_widget: vxfw.Text = .{ .text = try ctx.arena.dupe(u8, buf.items), .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Bundles", .subtitle = "org-level groups", .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
-        return panel.draw(ctx);
-    }
+    fn drawSettingsOrg(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        const focused = self.settings_focus == .content;
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&surface, theme.PANEL);
+        w.drawBorder(&surface, if (focused) theme.ACCENT else theme.BORDER, theme.PANEL);
+        w.writeText(&surface, ctx, 2, 0, "Organization", theme.boldOn(theme.PANEL, theme.TEXT));
 
-    fn drawSettingsWorkspaces(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        var buf: std.ArrayList(u8) = .empty;
-        try buf.appendSlice(ctx.arena, "Workspace management\n\n");
-        for (data.WORKSPACES) |ws| {
-            const line = try std.fmt.allocPrint(ctx.arena, "{s:<16} {d}p {d}c {d}o  {s}\n", .{ ws.name, ws.prompts, ws.contexts, ws.overrides, data.syncStateLabel(&ws) });
-            try buf.appendSlice(ctx.arena, line);
+        var row: u16 = 2;
+        const sel = self.settings_content_sel;
+
+        // Members section
+        var maintainer_count: u16 = 0;
+        for (data.MEMBERS) |m| {
+            if (std.mem.eql(u8, m.role, "maintainer")) maintainer_count += 1;
         }
-        try buf.appendSlice(ctx.arena, "\nActions\nPATCH rename  DELETE remove (maintainer)\nMembers: list / add / remove");
-        const text_widget: vxfw.Text = .{ .text = try ctx.arena.dupe(u8, buf.items), .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Workspaces", .subtitle = "project-level", .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
-        return panel.draw(ctx);
+        const members_title = try std.fmt.allocPrint(ctx.arena, "Members ({d}  {d} maintainer, {d} member)", .{ data.MEMBERS.len, maintainer_count, data.MEMBERS.len - maintainer_count });
+        row = w.writeSectionHeader(&surface, ctx, 2, row, members_title);
+
+        w.writeText(&surface, ctx, 4, row, "USERNAME", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 18, row, "ROLE", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 30, row, "TEAMS", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 52, row, "JOINED", theme.fg(theme.MUTED));
+        row += 1;
+
+        for (data.MEMBERS, 0..) |m, i| {
+            const is_sel = i == sel and focused;
+            if (is_sel) {
+                surface.writeCell(1, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+            const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+            w.writeText(&surface, ctx, 4, row, m.username, name_style);
+            const role_color = if (std.mem.eql(u8, m.role, "maintainer")) theme.ACCENT else theme.TEXT_SOFT;
+            w.writeText(&surface, ctx, 18, row, m.role, theme.fg(role_color));
+            w.writeText(&surface, ctx, 30, row, m.teams, theme.fg(theme.TEXT_SOFT));
+            w.writeText(&surface, ctx, 52, row, m.joined, theme.fg(theme.MUTED));
+            row += 1;
+            if (row >= size.height -| 10) break;
+        }
+        row += 1;
+
+        // Teams section
+        const teams_title = try std.fmt.allocPrint(ctx.arena, "Teams ({d})", .{data.TEAMS.len});
+        row = w.writeSectionHeader(&surface, ctx, 2, row, teams_title);
+
+        w.writeText(&surface, ctx, 4, row, "NAME", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 18, row, "MEMBERS", theme.fg(theme.MUTED));
+        row += 1;
+
+        for (data.TEAMS, 0..) |team, i| {
+            const team_idx = data.MEMBERS.len + i;
+            const is_sel = team_idx == sel and focused;
+            if (is_sel) {
+                surface.writeCell(1, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+            const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+            w.writeText(&surface, ctx, 4, row, team.name, name_style);
+            var names_buf: std.ArrayList(u8) = .empty;
+            for (team.member_usernames, 0..) |username, mi| {
+                try names_buf.appendSlice(ctx.arena, username);
+                if (mi + 1 < team.member_usernames.len) try names_buf.appendSlice(ctx.arena, ", ");
+            }
+            w.writeText(&surface, ctx, 18, row, try ctx.arena.dupe(u8, names_buf.items), theme.fg(theme.MUTED));
+            row += 1;
+        }
+        row += 1;
+
+        return surface;
     }
 
     fn drawSettingsToken(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        const focused = self.settings_focus == .content;
         const t = data.CURRENT_TOKEN;
-        const text = try std.fmt.allocPrint(ctx.arena,
-            \\Current Token
-            \\
-            \\Scopes
-            \\{s}
-            \\
-            \\Expires
-            \\{s}
-            \\
-            \\Note
-            \\Token scopes limit what this session can do.
-            \\Actual permissions = min(role, scopes).
-            \\Use DELETE /api/auth/token to revoke.
-        , .{ t.scope, t.expires });
-        const text_widget: vxfw.Text = .{ .text = text, .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Token", .subtitle = "current session", .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
-        return panel.draw(ctx);
-    }
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&surface, theme.PANEL);
+        w.drawBorder(&surface, if (focused) theme.ACCENT else theme.BORDER, theme.PANEL);
+        w.writeText(&surface, ctx, 2, 0, "Token", theme.boldOn(theme.PANEL, theme.TEXT));
 
-    fn syncSettingsMemberWidgets(self: *Dashboard) void {
-        self.settings_member_scroll.scroll_view.cursor = @min(self.settings_member_scroll.scroll_view.cursor, data.MEMBERS.len - 1);
-        const sel_idx = @as(usize, @intCast(self.settings_member_scroll.scroll_view.cursor));
-        for (data.MEMBERS, 0..) |m, idx| {
-            const sel = idx == sel_idx;
-            self.settings_member_cols[idx] = .{
-                .{ .text = m.username, .flex = 1 },
-                .{ .text = m.role, .flex = 0 },
-                .{ .text = m.joined, .flex = 0, .alignment = .right },
-            };
-            self.settings_member_rows[idx] = .{
-                .columns = &self.settings_member_cols[idx],
-                .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
-                .gap = 2,
-            };
-            self.settings_member_widgets[idx] = self.settings_member_rows[idx].widget();
+        var row: u16 = 2;
+        // Token info
+        var active_count: u16 = 0;
+        for (data.ALL_SCOPES) |scope_def| {
+            for (t.scopes) |active| {
+                if (std.mem.eql(u8, scope_def.name, active)) {
+                    active_count += 1;
+                    break;
+                }
+            }
         }
-        self.settings_member_scroll.scroll_view.children = .{ .slice = self.settings_member_widgets[0..] };
-        self.settings_member_scroll.estimated_content_height = data.MEMBERS.len;
+        row = w.writeKv(&surface, ctx, 2, row, "Expires", t.expires, 14);
+        const scope_summary = try std.fmt.allocPrint(ctx.arena, "{d} / {d} scopes active", .{ active_count, data.ALL_SCOPES.len });
+        row = w.writeKv(&surface, ctx, 2, row, "Permissions", scope_summary, 14);
+        row += 1;
+
+        // Scope permission matrix
+        row = w.writeSectionHeader(&surface, ctx, 2, row, "Scope Permissions");
+        const sel = @min(self.settings_content_sel, data.ALL_SCOPES.len - 1);
+        for (data.ALL_SCOPES, 0..) |scope_def, i| {
+            if (row >= size.height -| 5) break;
+            const is_sel = i == sel and focused;
+            if (is_sel) {
+                surface.writeCell(1, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+            // Check if this scope is active
+            var is_active = false;
+            for (t.scopes) |active| {
+                if (std.mem.eql(u8, scope_def.name, active)) {
+                    is_active = true;
+                    break;
+                }
+            }
+            const check = if (is_active) "\xe2\x9c\x93" else "\xe2\x94\x80";
+            const check_color = if (is_active) theme.OK else theme.MUTED;
+            w.writeText(&surface, ctx, 4, row, check, theme.fg(check_color));
+            const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else if (is_active) theme.fg(theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+            w.writeText(&surface, ctx, 6, row, scope_def.name, name_style);
+            w.writeText(&surface, ctx, 24, row, scope_def.description, theme.fg(if (is_active) theme.TEXT_SOFT else theme.MUTED));
+            row += 1;
+        }
+        row += 1;
+
+        // Info note
+        if (row + 1 < size.height) {
+            w.writeText(&surface, ctx, 2, row, "Effective permissions = min(org role, token scopes)", theme.fg(theme.MUTED));
+        }
+        return surface;
     }
 
     fn shiftSettingsTab(self: *Dashboard, delta: i8) void {
