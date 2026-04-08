@@ -303,6 +303,28 @@ RAW=$(call DELETE "/api/org/bundles/nonexistent")
 parse_response "$RAW"
 assert_status "member cannot delete bundle" "403" "$STATUS"
 
+# Scope enforcement tests
+step "Scope: login with limited scopes"
+RAW=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass","scopes":"library:read,stats:read"}')
+parse_response "$RAW"
+assert_status "limited scope login" "200" "$STATUS"
+LIMITED_TOKEN=$(echo "$BODY" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+step "Scope: me shows scopes"
+TOKEN="$LIMITED_TOKEN"
+RAW=$(call GET "/api/auth/me")
+parse_response "$RAW"
+assert_status "me with scopes" "200" "$STATUS"
+assert_json "scopes field present" "library:read" "$BODY"
+
+step "Scope: limited token cannot create bundle"
+RAW=$(call POST "/api/org/bundles" '{"name":"scope-test","description":"test","prompt_ids":[]}')
+parse_response "$RAW"
+assert_status "limited scope blocked" "403" "$STATUS"
+
+# Restore full token
+TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
 step "Team: delete (as maintainer)"
 TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 RAW=$(call DELETE "/api/org/teams/$TEAM_ID")

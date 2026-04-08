@@ -69,9 +69,15 @@ fn queryTrend(
 }
 
 pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    _ = auth.authenticate(ctx, req) catch {
+    const client_ip = req.header("x-forwarded-for") orelse "unknown";
+    if (!ctx.rate_limiter.check(client_ip)) {
+        return apiError(res, 429, "TOO_MANY_REQUESTS", "rate limit exceeded");
+    }
+
+    const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "trace:write", res)) return;
 
     const batch = req.json(BatchRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
@@ -92,6 +98,19 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     var deduplicated: i32 = 0;
 
     for (batch.events) |event| {
+        // Validate prompt_id exists if provided
+        if (event.prompt_id) |pid| {
+            var check = conn.row("SELECT 1 FROM prompts WHERE prompt_id = $1", .{pid}) catch {
+                deduplicated += 1;
+                continue;
+            };
+            if (check) |*c| {
+                c.deinit() catch {};
+            } else {
+                deduplicated += 1;
+                continue;
+            }
+        }
         _ = conn.exec(
             \\INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp,
             \\  prompt_id, prompt_hash, constraint_id, override_base_hash, reason, content, content_hash)
