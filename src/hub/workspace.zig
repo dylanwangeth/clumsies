@@ -198,7 +198,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 
     const prompts = try collectKvMap(req.arena, conn, "SELECT wp.prompt_id, p.content_hash FROM workspace_prompts wp JOIN prompts p ON p.prompt_id = wp.prompt_id WHERE wp.ws_id = $1", .{ws_id});
 
-    const context = try collectKvMap(req.arena, conn, "SELECT path, content_hash FROM workspace_files WHERE ws_id = $1", .{ws_id});
+    const context = try collectKvMap(req.arena, conn, "SELECT path, content_hash FROM context_files WHERE ws_id = $1 AND branch_name = 'main'", .{ws_id});
 
     var etag_buf: [32]u8 = undefined;
     const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
@@ -327,203 +327,6 @@ pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     try res.json(.{ .revision = new_rev }, .{});
 }
 
-pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-
-    const ws_id = req.param("ws_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
-    };
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
-    }
-
-    const FileMeta = struct {
-        path: []const u8,
-        hash: []const u8,
-    };
-
-    var result = conn.query(
-        "SELECT path, content_hash FROM workspace_files WHERE ws_id = $1 ORDER BY path",
-        .{ws_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-    defer result.deinit();
-
-    var list: std.ArrayList(FileMeta) = .empty;
-    while (try result.next()) |row| {
-        try list.append(req.arena, .{
-            .path = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-            .hash = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-        });
-    }
-
-    try res.json(.{ .files = list.items }, .{});
-}
-
-pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-
-    const ws_id = req.param("ws_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
-    };
-    const qs = req.query() catch {
-        return apiError(res, 400, "BAD_REQUEST", "invalid query string");
-    };
-    const path = qs.get("path") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "path query parameter is required");
-    };
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
-    }
-
-    var row = conn.row(
-        "SELECT content FROM workspace_files WHERE ws_id = $1 AND path = $2",
-        .{ ws_id, path },
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    } orelse {
-        return apiError(res, 404, "NOT_FOUND", "file not found");
-    };
-
-    const content = try req.arena.dupe(u8, try row.get([]const u8, 0));
-    row.deinit() catch {};
-
-    res.header("Content-Type", "application/octet-stream");
-    res.body = content;
-}
-
-pub fn handlePutFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-
-    const ws_id = req.param("ws_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
-    };
-    const qs = req.query() catch {
-        return apiError(res, 400, "BAD_REQUEST", "invalid query string");
-    };
-    const path = qs.get("path") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "path query parameter is required");
-    };
-
-    const body = req.body() orelse {
-        return apiError(res, 400, "BAD_REQUEST", "missing request body");
-    };
-
-    const max_file_size = 10 * 1024 * 1024; // 10MB
-    if (body.len > max_file_size) {
-        return apiError(res, 413, "PAYLOAD_TOO_LARGE", "file exceeds 10MB limit");
-    }
-
-    const hash = @import("../protocol/hash.zig").ContentHash.compute(body);
-    const hash_slice: []const u8 = &hash;
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
-    }
-
-    if (!try checkIfMatch(conn, req, res, ws_id)) return;
-
-    _ = conn.exec(
-        \\INSERT INTO workspace_files (ws_id, path, content, content_hash, updated_at)
-        \\VALUES ($1, $2, $3, $4, now())
-        \\ON CONFLICT (ws_id, path) DO UPDATE SET content = $3, content_hash = $4, updated_at = now()
-    ,
-        .{ ws_id, path, body, hash_slice },
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to write file");
-    };
-
-    var rev_row = conn.row(
-        "UPDATE workspaces SET revision = revision + 1 WHERE ws_id = $1 RETURNING revision",
-        .{ws_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to update revision");
-    } orelse {
-        return apiError(res, 404, "NOT_FOUND", "workspace not found");
-    };
-    const new_rev = try rev_row.get(i32, 0);
-    rev_row.deinit() catch {};
-
-    try res.json(.{
-        .revision = new_rev,
-        .hash = hash_slice,
-    }, .{});
-}
-
-pub fn handleDeleteFile(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-
-    const ws_id = req.param("ws_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
-    };
-    const qs = req.query() catch {
-        return apiError(res, 400, "BAD_REQUEST", "invalid query string");
-    };
-    const path = qs.get("path") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "path query parameter is required");
-    };
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
-    }
-
-    if (!try checkIfMatch(conn, req, res, ws_id)) return;
-
-    const deleted = conn.exec(
-        "DELETE FROM workspace_files WHERE ws_id = $1 AND path = $2",
-        .{ ws_id, path },
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-
-    if (deleted == null or deleted.? == 0) {
-        return apiError(res, 404, "NOT_FOUND", "file not found");
-    }
-
-    var rev_row = conn.row(
-        "UPDATE workspaces SET revision = revision + 1 WHERE ws_id = $1 RETURNING revision",
-        .{ws_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to update revision");
-    } orelse {
-        return apiError(res, 404, "NOT_FOUND", "workspace not found");
-    };
-    const new_rev = try rev_row.get(i32, 0);
-    rev_row.deinit() catch {};
-
-    try res.json(.{ .revision = new_rev }, .{});
-}
 
 fn initFromBundle(conn: anytype, ws_id: []const u8, bundle_id: []const u8) void {
     var result = conn.query(
@@ -603,9 +406,12 @@ pub fn handleDelete(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         return apiError(res, 404, "NOT_FOUND", "workspace not found");
     }
 
-    // Cascade delete: members, files, prompt refs, then workspace
+    // Cascade delete: comments, prs, files, branches, members, prompt refs, then workspace
+    _ = conn.exec("DELETE FROM context_pr_comments WHERE pr_id IN (SELECT pr_id FROM context_prs WHERE ws_id = $1)", .{ws_id}) catch {};
+    _ = conn.exec("DELETE FROM context_prs WHERE ws_id = $1", .{ws_id}) catch {};
+    _ = conn.exec("DELETE FROM context_files WHERE ws_id = $1", .{ws_id}) catch {};
+    _ = conn.exec("DELETE FROM context_branches WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM workspace_members WHERE ws_id = $1", .{ws_id}) catch {};
-    _ = conn.exec("DELETE FROM workspace_files WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM workspace_prompts WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM workspaces WHERE ws_id = $1", .{ws_id}) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");

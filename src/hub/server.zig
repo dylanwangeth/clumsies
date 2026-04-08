@@ -3,6 +3,7 @@ const httpz = @import("httpz");
 const pg = @import("pg");
 const auth = @import("auth.zig");
 const workspace_handler = @import("workspace.zig");
+const context_handler = @import("context.zig");
 const library_handler = @import("library.zig");
 const trace_handler = @import("trace.zig");
 const collab_handler = @import("collab.zig");
@@ -64,10 +65,18 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.get("/api/workspaces/:ws_id/manifest", workspace_handler.handleGetManifest, .{});
     router.post("/api/workspaces/:ws_id/prompts", workspace_handler.handleAddPrompt, .{});
     router.delete("/api/workspaces/:ws_id/prompts/:prompt_id", workspace_handler.handleRemovePrompt, .{});
-    router.get("/api/workspaces/:ws_id/files", workspace_handler.handleListFiles, .{});
-    router.get("/api/workspaces/:ws_id/file/content", workspace_handler.handleGetFileContent, .{});
-    router.put("/api/workspaces/:ws_id/file", workspace_handler.handlePutFile, .{});
-    router.delete("/api/workspaces/:ws_id/file", workspace_handler.handleDeleteFile, .{});
+    // Context
+    router.get("/api/workspaces/:ws_id/context/branches", context_handler.handleListBranches, .{});
+    router.get("/api/workspaces/:ws_id/context/files", context_handler.handleListFiles, .{});
+    router.get("/api/workspaces/:ws_id/context/file/content", context_handler.handleGetFileContent, .{});
+    router.put("/api/workspaces/:ws_id/context/file", context_handler.handlePutFile, .{});
+    router.delete("/api/workspaces/:ws_id/context/file", context_handler.handleDeleteFile, .{});
+    router.post("/api/workspaces/:ws_id/context/prs", context_handler.handleCreatePr, .{});
+    router.get("/api/workspaces/:ws_id/context/prs", context_handler.handleListPrs, .{});
+    router.get("/api/workspaces/:ws_id/context/prs/:pr_id", context_handler.handleGetPr, .{});
+    router.put("/api/workspaces/:ws_id/context/prs/:pr_id", context_handler.handleUpdatePr, .{});
+    router.post("/api/workspaces/:ws_id/context/prs/:pr_id/comments", context_handler.handleAddPrComment, .{});
+    router.post("/api/workspaces/:ws_id/context/branches/:branch/rebase", context_handler.handleRebase, .{});
 
     // Workspace Members
     router.get("/api/workspaces/:ws_id/members", workspace_handler.handleListMembers, .{});

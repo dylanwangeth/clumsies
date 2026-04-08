@@ -103,9 +103,9 @@ parse_response() {
     STATUS=$(echo "$raw" | tail -1)
 }
 
-# Setup
-seed_db
+# Setup: start hub first (runs migrations), then seed
 start_hub
+seed_db
 
 # Auth: login as maintainer
 step "Auth: login"
@@ -239,6 +239,149 @@ step "Permission: member cannot delete bundle"
 RAW=$(call DELETE "/api/org/bundles/nonexistent")
 parse_response "$RAW"
 assert_status "member cannot delete bundle" "403" "$STATUS"
+
+# Context: create workspace for context tests (as maintainer alice)
+TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+step "Context setup: create workspace"
+RAW=$(call POST "/api/workspaces" '{"name":"ctx-test-ws"}')
+parse_response "$RAW"
+assert_status "create workspace for context" "201" "$STATUS"
+CTX_WS=$(echo "$BODY" | grep -o '"ws_id":"[^"]*"' | cut -d'"' -f4)
+
+# Add bob as member for later permission tests
+RAW=$(call POST "/api/workspaces/$CTX_WS/members" '{"user_id":"usr-member-001","level":"write"}')
+parse_response "$RAW"
+assert_status "add bob to context ws" "201" "$STATUS"
+
+step "Context: list branches (empty)"
+RAW=$(call GET "/api/workspaces/$CTX_WS/context/branches")
+parse_response "$RAW"
+assert_status "list branches" "200" "$STATUS"
+assert_json "returns branches array" "branches" "$BODY"
+
+step "Context: write file (creates member branch)"
+RAW=$(curl -s -w "\n%{http_code}" -X PUT "$BASE/api/workspaces/$CTX_WS/context/file?path=spec/API.md" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    -d "# API Design")
+parse_response "$RAW"
+assert_status "write context file" "200" "$STATUS"
+assert_json "returns branch name" "alice" "$BODY"
+assert_json "returns path" "spec/API.md" "$BODY"
+assert_json "returns hash" "hash" "$BODY"
+
+step "Context: list files on member branch"
+RAW=$(call GET "/api/workspaces/$CTX_WS/context/files?branch=alice")
+parse_response "$RAW"
+assert_status "list files on branch" "200" "$STATUS"
+assert_json "contains spec/API.md" "spec/API.md" "$BODY"
+
+step "Context: list files on main (empty)"
+RAW=$(call GET "/api/workspaces/$CTX_WS/context/files")
+parse_response "$RAW"
+assert_status "list files on main" "200" "$STATUS"
+
+step "Context: read file content"
+RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?path=spec/API.md&branch=alice" \
+    -H "Authorization: Bearer $TOKEN")
+parse_response "$RAW"
+assert_status "read file content" "200" "$STATUS"
+assert_json "content matches" "API Design" "$BODY"
+
+step "Context: read nonexistent file"
+RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?path=nope.md&branch=alice" \
+    -H "Authorization: Bearer $TOKEN")
+parse_response "$RAW"
+assert_status "nonexistent file returns 404" "404" "$STATUS"
+
+step "Context: create PR"
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add API spec"}')
+parse_response "$RAW"
+assert_status "create context PR" "201" "$STATUS"
+assert_json "returns pr_id" "pr_id" "$BODY"
+assert_json "status is open" "open" "$BODY"
+PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
+
+step "Context: list PRs"
+RAW=$(call GET "/api/workspaces/$CTX_WS/context/prs")
+parse_response "$RAW"
+assert_status "list PRs" "200" "$STATUS"
+assert_json "contains PR" "$PR_ID" "$BODY"
+
+step "Context: list PRs with status filter"
+RAW=$(call GET "/api/workspaces/$CTX_WS/context/prs?status=open")
+parse_response "$RAW"
+assert_status "list open PRs" "200" "$STATUS"
+assert_json "contains open PR" "$PR_ID" "$BODY"
+
+step "Context: get PR detail"
+RAW=$(call GET "/api/workspaces/$CTX_WS/context/prs/$PR_ID")
+parse_response "$RAW"
+assert_status "get PR detail" "200" "$STATUS"
+assert_json "has description" "Add API spec" "$BODY"
+assert_json "has files" "spec/API.md" "$BODY"
+
+step "Context: add PR comment"
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs/$PR_ID/comments" '{"body":"LGTM"}')
+parse_response "$RAW"
+assert_status "add PR comment" "201" "$STATUS"
+assert_json "returns comment_id" "comment_id" "$BODY"
+
+step "Context: merge PR (maintainer)"
+RAW=$(call PUT "/api/workspaces/$CTX_WS/context/prs/$PR_ID" '{"action":"merge"}')
+parse_response "$RAW"
+assert_status "merge PR" "200" "$STATUS"
+assert_json "merged is true" "true" "$BODY"
+
+step "Context: file now on main after merge"
+RAW=$(call GET "/api/workspaces/$CTX_WS/context/files")
+parse_response "$RAW"
+assert_status "list main after merge" "200" "$STATUS"
+assert_json "main has spec/API.md" "spec/API.md" "$BODY"
+
+step "Context: manifest reflects context"
+RAW=$(call GET "/api/workspaces/$CTX_WS/manifest")
+parse_response "$RAW"
+assert_status "get manifest" "200" "$STATUS"
+assert_json "manifest has context" "spec/API.md" "$BODY"
+
+step "Context: member cannot merge"
+TOKEN="$BOB_TOKEN"
+# Bob writes a file first
+curl -s -X PUT "$BASE/api/workspaces/$CTX_WS/context/file?path=research/notes.md" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    -d "# Research Notes" > /dev/null
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add research"}')
+parse_response "$RAW"
+BOB_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
+RAW=$(call PUT "/api/workspaces/$CTX_WS/context/prs/$BOB_PR_ID" '{"action":"merge"}')
+parse_response "$RAW"
+assert_status "member cannot merge" "403" "$STATUS"
+
+step "Context: rebase branch"
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/branches/bob/rebase")
+parse_response "$RAW"
+assert_status "rebase succeeds" "200" "$STATUS"
+assert_json "status is rebased" "rebased" "$BODY"
+
+step "Context: cannot rebase main"
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/branches/main/rebase")
+parse_response "$RAW"
+assert_status "cannot rebase main" "400" "$STATUS"
+
+step "Context: delete file on branch"
+RAW=$(curl -s -w "\n%{http_code}" -X DELETE "$BASE/api/workspaces/$CTX_WS/context/file?path=research/notes.md" \
+    -H "Authorization: Bearer $TOKEN")
+parse_response "$RAW"
+assert_status "delete file" "200" "$STATUS"
+
+# Cleanup: delete context test workspace (as maintainer)
+TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+RAW=$(call DELETE "/api/workspaces/$CTX_WS")
+parse_response "$RAW"
+assert_status "cleanup: delete context ws" "204" "$STATUS"
 
 # Summary
 printf "\n=== Results: %d passed, %d failed ===\n" "$PASS" "$FAIL"
