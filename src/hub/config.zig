@@ -23,10 +23,10 @@ pub fn fromEnv() Config {
 }
 
 fn getEnvStr(key: []const u8, default: []const u8) []const u8 {
-    return std.posix.getenv(key) orelse default;
+    return std.process.getEnvVarOwned(std.heap.page_allocator, key) catch return default;
 }
 
 fn getEnvInt(comptime T: type, key: []const u8, default: T) T {
-    const val = std.posix.getenv(key) orelse return default;
+    const val = std.process.getEnvVarOwned(std.heap.page_allocator, key) catch return default;
     return std.fmt.parseInt(T, val, 10) catch default;
 }

@@ -339,7 +339,6 @@ pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     try res.json(.{ .revision = new_rev }, .{});
 }
 
-
 fn initFromBundle(conn: anytype, ws_id: []const u8, bundle_id: []const u8) void {
     var result = conn.query(
         "SELECT prompt_id FROM bundle_prompts WHERE bundle_id = $1",
