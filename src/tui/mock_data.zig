@@ -47,6 +47,7 @@ pub const WorkspaceEntry = struct {
     remote_rev: u16,
     paths: u8,
     open_prs: u8,
+    last_sync: []const u8,
 };
 
 pub const BUNDLES = [_]BundleEntry{
@@ -120,10 +121,14 @@ pub const PROPOSALS = [_]ProposalEntry{
 };
 
 pub const WORKSPACES = [_]WorkspaceEntry{
-    .{ .name = "payments-api", .prompts = 18, .contexts = 9, .overrides = 3, .local_rev = 41, .remote_rev = 43, .paths = 2, .open_prs = 2 },
-    .{ .name = "merchant-portal", .prompts = 14, .contexts = 5, .overrides = 1, .local_rev = 37, .remote_rev = 37, .paths = 1, .open_prs = 0 },
-    .{ .name = "infra-tools", .prompts = 8, .contexts = 3, .overrides = 0, .local_rev = 22, .remote_rev = 22, .paths = 1, .open_prs = 1 },
-    .{ .name = "release-bot", .prompts = 5, .contexts = 2, .overrides = 0, .local_rev = 15, .remote_rev = 15, .paths = 1, .open_prs = 0 },
+    .{ .name = "payments-api", .prompts = 18, .contexts = 9, .overrides = 3, .local_rev = 41, .remote_rev = 43, .paths = 2, .open_prs = 2, .last_sync = "1h ago" },
+    .{ .name = "merchant-portal", .prompts = 14, .contexts = 5, .overrides = 1, .local_rev = 37, .remote_rev = 37, .paths = 1, .open_prs = 0, .last_sync = "2 min ago" },
+    .{ .name = "infra-tools", .prompts = 8, .contexts = 3, .overrides = 0, .local_rev = 22, .remote_rev = 22, .paths = 1, .open_prs = 1, .last_sync = "5 min ago" },
+    .{ .name = "release-bot", .prompts = 5, .contexts = 2, .overrides = 0, .local_rev = 15, .remote_rev = 15, .paths = 1, .open_prs = 0, .last_sync = "3 min ago" },
+    .{ .name = "docs-site", .prompts = 6, .contexts = 4, .overrides = 0, .local_rev = 10, .remote_rev = 10, .paths = 1, .open_prs = 0, .last_sync = "10 min ago" },
+    .{ .name = "mobile-app", .prompts = 12, .contexts = 7, .overrides = 2, .local_rev = 28, .remote_rev = 30, .paths = 2, .open_prs = 1, .last_sync = "30 min ago" },
+    .{ .name = "data-pipeline", .prompts = 9, .contexts = 6, .overrides = 0, .local_rev = 19, .remote_rev = 19, .paths = 1, .open_prs = 0, .last_sync = "8 min ago" },
+    .{ .name = "admin-dashboard", .prompts = 11, .contexts = 4, .overrides = 1, .local_rev = 25, .remote_rev = 25, .paths = 1, .open_prs = 2, .last_sync = "15 min ago" },
 };
 
 pub const ContextBranch = struct {
@@ -165,6 +170,8 @@ pub const ContextFile = struct {
     size: []const u8,
     hash: []const u8,
     state: []const u8,
+    modified: bool, // true = your branch differs from main
+    branch_diff: []const []const u8, // your branch diff vs main
 };
 
 pub const WsPromptEntry = struct {
@@ -173,6 +180,7 @@ pub const WsPromptEntry = struct {
     has_override: bool,
     hash: []const u8,
     state: []const u8,
+    override_diff: []const []const u8,
 };
 
 pub const InsightsWs = struct {
@@ -188,22 +196,78 @@ pub const HotspotEntry = struct {
     prompt_idx: usize,
 };
 
+// Context branch diffs (member branch vs main)
+const ctx_api_diff = [_][]const u8{
+    "  # API Design Spec",
+    "  ",
+    "  ## Authentication",
+    "- All endpoints require Bearer token.",
+    "+ All endpoints require Bearer token or API key.",
+    "+ API keys are scoped per-workspace.",
+    "  ",
+    "  ## Rate Limiting",
+    "  Default: 100 req/min per token.",
+    "+ Added: burst allowance of 20 req/s for batch ops.",
+    "  ",
+    "  ## Error Format",
+    "  All errors return JSON with `code` and `message`.",
+    "+ Added: `request_id` field for tracing.",
+    "+ Added: `retry_after` header on 429 responses.",
+};
+const ctx_audit_diff = [_][]const u8{
+    "  # Audit Journal 05",
+    "  ",
+    "- ## Findings: 3 issues identified",
+    "+ ## Findings: 5 issues identified",
+    "  ",
+    "  1. Token rotation not enforced",
+    "  2. Stale sessions not cleaned up",
+    "  3. Missing rate limit on /sync endpoint",
+    "+ 4. Webhook secrets stored in plaintext",
+    "+ 5. No audit log for permission changes",
+    "  ",
+    "  ## Recommendations",
+    "- Schedule fix for Q2.",
+    "+ Schedule fix for Q2. Items 4-5 are P0.",
+};
+const ctx_empty_diff = [_][]const u8{};
+
+const style_diff = [_][]const u8{
+    "  # STYLE",
+    "- 1. Prefer short names.",
+    "+ 1. Prefer explicit names over abbreviations.",
+    "+ 2. Group imports by scope.",
+    "  3. Sort file sections in dependency order.",
+};
+const api_diff = [_][]const u8{
+    "  # API_REVIEW",
+    "+ Added: validate response schemas against OpenAPI spec.",
+    "  Check error codes match documentation.",
+};
+const zig_diff = [_][]const u8{
+    "  # DEPRECATED_API",
+    "- std.heap.GeneralPurposeAllocator",
+    "+ std.heap.DebugAllocator",
+    "  Target version: 0.15.1",
+};
+const empty_diff = [_][]const u8{};
+
 pub const WS_PROMPTS = [_]WsPromptEntry{
-    .{ .name = "coding/STYLE", .kind = "rule", .has_override = true, .hash = "a1b2", .state = "stale" },
-    .{ .name = "cmd/GEN_COMMIT_MSG", .kind = "wf", .has_override = false, .hash = "e4f5", .state = "fresh" },
-    .{ .name = "coding/API_REVIEW", .kind = "rule", .has_override = true, .hash = "bcdd", .state = "local" },
-    .{ .name = "wf/RELEASE_CHECKLIST", .kind = "wf", .has_override = false, .hash = "91ab", .state = "fresh" },
-    .{ .name = "coding/COMPATIBILITY", .kind = "rule", .has_override = false, .hash = "q6r7", .state = "fresh" },
-    .{ .name = "coding/CODE_COMMENTS", .kind = "rule", .has_override = false, .hash = "u0v1", .state = "fresh" },
-    .{ .name = "zig/ZIG_STYLE", .kind = "rule", .has_override = false, .hash = "y4z5", .state = "fresh" },
-    .{ .name = "zig/DEPRECATED_API", .kind = "rule", .has_override = true, .hash = "c8d9", .state = "stale" },
+    .{ .name = "coding/STYLE", .kind = "rule", .has_override = true, .hash = "a1b2", .state = "stale", .override_diff = &style_diff },
+    .{ .name = "cmd/GEN_COMMIT_MSG", .kind = "wf", .has_override = false, .hash = "e4f5", .state = "fresh", .override_diff = &empty_diff },
+    .{ .name = "coding/API_REVIEW", .kind = "rule", .has_override = true, .hash = "bcdd", .state = "local", .override_diff = &api_diff },
+    .{ .name = "wf/RELEASE_CHECKLIST", .kind = "wf", .has_override = false, .hash = "91ab", .state = "fresh", .override_diff = &empty_diff },
+    .{ .name = "coding/COMPATIBILITY", .kind = "rule", .has_override = false, .hash = "q6r7", .state = "fresh", .override_diff = &empty_diff },
+    .{ .name = "coding/CODE_COMMENTS", .kind = "rule", .has_override = false, .hash = "u0v1", .state = "fresh", .override_diff = &empty_diff },
+    .{ .name = "zig/ZIG_STYLE", .kind = "rule", .has_override = false, .hash = "y4z5", .state = "fresh", .override_diff = &empty_diff },
+    .{ .name = "zig/DEPRECATED_API", .kind = "rule", .has_override = true, .hash = "c8d9", .state = "stale", .override_diff = &zig_diff },
 };
 
 pub const WS_CONTEXT = [_]ContextFile{
-    .{ .path = "spec/API_DESIGN.md", .size = "2.0k", .hash = "x1y2", .state = "fresh" },
-    .{ .path = "research/competitor.md", .size = "1.0k", .hash = "m7n8", .state = "fresh" },
-    .{ .path = "journal/05_AUDIT.md", .size = "3.2k", .hash = "p9q0", .state = "local" },
-    .{ .path = "thesis/T0-observability.md", .size = "4.1k", .hash = "r3s4", .state = "fresh" },
+    .{ .path = "spec/API_DESIGN.md", .size = "2.0k", .hash = "x1y2", .state = "fresh", .modified = true, .branch_diff = &ctx_api_diff },
+    .{ .path = "research/competitor.md", .size = "1.0k", .hash = "m7n8", .state = "fresh", .modified = false, .branch_diff = &ctx_empty_diff },
+    .{ .path = "journal/05_AUDIT.md", .size = "3.2k", .hash = "p9q0", .state = "local", .modified = true, .branch_diff = &ctx_audit_diff },
+    .{ .path = "thesis/T0-observability.md", .size = "4.1k", .hash = "r3s4", .state = "fresh", .modified = false, .branch_diff = &ctx_empty_diff },
 };
 
 pub const WS_OVERRIDES = [_]OverrideEntry{
@@ -289,8 +353,8 @@ pub const CURRENT_TOKEN = TokenInfo{
 };
 
 pub fn syncStateLabel(ws: *const WorkspaceEntry) []const u8 {
-    if (ws.local_rev == ws.remote_rev) return "synced";
-    return "out-of-sync";
+    if (ws.local_rev == ws.remote_rev) return "up to date";
+    return "behind";
 }
 
 pub fn syncStateColor(ws: *const WorkspaceEntry) @import("theme.zig").Color {
