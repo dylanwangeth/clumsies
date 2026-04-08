@@ -10,18 +10,18 @@ const Column = @import("table_row.zig").Column;
 const WsTab = enum(u8) {
     context,
     prompts,
-    overrides,
 
     fn label(self: WsTab) []const u8 {
         return switch (self) {
             .context => "Context",
             .prompts => "Prompts",
-            .overrides => "Overrides",
         };
     }
 };
 
-const ws_tabs = [_]WsTab{ .context, .prompts, .overrides };
+const ws_tabs = [_]WsTab{ .context, .prompts };
+
+const WsFocus = enum { bar, list, content };
 
 const Period = enum(u8) {
     daily,
@@ -158,10 +158,11 @@ pub const Dashboard = struct {
 
     // Workspace Status
     ws_tab: WsTab = .context,
-    workspace_scroll_bars: vxfw.ScrollBars,
-    workspace_widgets: [data.WORKSPACES.len]vxfw.Widget = undefined,
-    workspace_rows: [data.WORKSPACES.len]TableRow = undefined,
-    workspace_cols: [data.WORKSPACES.len][3]Column = undefined,
+    ws_focus: WsFocus = .bar,
+    ws_sel: usize = 0,
+    ws_list_sel: usize = 0,
+    ws_grid_cols: u16 = 3,
+    // Workspace uses manual grid + list rendering, no ScrollBars
 
     // Insights
     insights_period: Period = .daily,
@@ -177,7 +178,7 @@ pub const Dashboard = struct {
             .history_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .review_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .review_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
-            .workspace_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            // workspace uses manual grid, no ScrollBars
             .insights_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .settings_member_scroll = w.initCursorScrollBars(theme.PANEL),
         };
@@ -465,19 +466,106 @@ pub const Dashboard = struct {
                         }
                     },
                     .workspace => {
-                        if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-                            self.shiftWsTab(-1);
+                        // Tab cycles focus: bar -> list -> content -> bar
+                        if (key.matches(vaxis.Key.tab, .{})) {
+                            self.ws_focus = switch (self.ws_focus) {
+                                .bar => .list,
+                                .list => .content,
+                                .content => .bar,
+                            };
                             ctx.consumeAndRedraw();
                             return;
                         }
-                        if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-                            self.shiftWsTab(1);
-                            ctx.consumeAndRedraw();
-                            return;
+                        switch (self.ws_focus) {
+                            .bar => {
+                                const ws_count = data.WORKSPACES.len;
+                                const cols = self.ws_grid_cols;
+                                if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
+                                    if (self.ws_sel + 1 < ws_count) {
+                                        self.ws_sel += 1;
+                                        ctx.consumeAndRedraw();
+                                    }
+                                    return;
+                                }
+                                if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+                                    if (self.ws_sel > 0) {
+                                        self.ws_sel -= 1;
+                                        ctx.consumeAndRedraw();
+                                    }
+                                    return;
+                                }
+                                if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+                                    if (self.ws_sel + cols < ws_count) {
+                                        self.ws_sel += cols;
+                                        ctx.consumeAndRedraw();
+                                    }
+                                    return;
+                                }
+                                if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+                                    if (self.ws_sel >= cols) {
+                                        self.ws_sel -= cols;
+                                        ctx.consumeAndRedraw();
+                                    }
+                                    return;
+                                }
+                                if (key.matches(vaxis.Key.enter, .{})) {
+                                    self.ws_focus = .list;
+                                    ctx.consumeAndRedraw();
+                                }
+                            },
+                            .list => {
+                                if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+                                    self.shiftWsTab(-1);
+                                    self.ws_list_sel = 0;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
+                                    self.shiftWsTab(1);
+                                    self.ws_list_sel = 0;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+                                    const max_items: usize = switch (self.ws_tab) {
+                                        .context => data.WS_CONTEXT.len,
+                                        .prompts => data.WS_PROMPTS.len,
+                                    };
+                                    if (self.ws_list_sel + 1 < max_items) {
+                                        self.ws_list_sel += 1;
+                                        ctx.consumeAndRedraw();
+                                    }
+                                    return;
+                                }
+                                if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+                                    if (self.ws_list_sel > 0) {
+                                        self.ws_list_sel -= 1;
+                                        ctx.consumeAndRedraw();
+                                    }
+                                    return;
+                                }
+                                if (key.matches(vaxis.Key.enter, .{})) {
+                                    self.ws_focus = .content;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches(vaxis.Key.escape, .{})) {
+                                    self.ws_focus = .bar;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                            },
+                            .content => {
+                                if (key.matches(vaxis.Key.escape, .{})) {
+                                    self.ws_focus = .list;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                // j/k scrolls content (future: ScrollView)
+                            },
                         }
-                        try self.workspace_scroll_bars.scroll_view.handleEvent(ctx, event);
                         if (key.matches('r', .{})) {
-                            self.status_line = "Sync: requires Hub client core (Phase 2).";
+                            self.status_line = "Sync: requires Hub client core.";
                             ctx.consumeAndRedraw();
                         }
                     },
@@ -610,7 +698,11 @@ pub const Dashboard = struct {
         else switch (self.selected_module) {
             .library => if (self.detail_focus_content) "h/l tab  j/k scroll  Esc list  ? help" else "j/k move  Enter detail  b bundle  S settings  ? help  q quit",
             .proposals => "j/k move  a accept  x reject  S settings  ? help  q quit",
-            .workspace => "h/l tab  j/k move  r sync  S settings  ? help  q quit",
+            .workspace => switch (self.ws_focus) {
+                .bar => "j/k select workspace  Tab list  r sync  ? help  q quit",
+                .list => "h/l tab  j/k move  Enter content  Esc bar  ? help",
+                .content => "j/k scroll  Esc list  ? help",
+            },
             .insights => "j/k move  t period  S settings  ? help  q quit",
         };
         w.writeText(&surface, ctx, 1, 0, keys, theme.fg(theme.MUTED));
@@ -953,116 +1045,256 @@ pub const Dashboard = struct {
         return panel.draw(ctx);
     }
 
-    // Workspace Status: list + detail (two-column)
-    // Workspace: master-detail. Left = workspace list, right = detail with inner tabs.
+    // Workspace: top workspace bar + bottom master-detail (list | content).
+    // Tab cycles focus: workspace bar -> list -> content -> bar.
     fn drawWorkspaceStatus(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.PANEL);
 
-        self.syncWorkspaceWidgets();
-        const ws_idx = @min(@as(usize, @intCast(self.workspace_scroll_bars.scroll_view.cursor)), data.WORKSPACES.len - 1);
+        const ws_idx = @min(self.ws_sel, data.WORKSPACES.len - 1);
         const ws = &data.WORKSPACES[ws_idx];
 
+        // Top: workspace bar with grid layout (each card = 2 rows: name + status)
+        // Fixed height: border(1) + 2 content rows per grid row + border(1)
+        const inner_w = size.width -| 2;
+        const cols: u16 = if (inner_w >= 120) 4 else if (inner_w >= 80) 3 else 2;
+        self.ws_grid_cols = cols;
+        const card_w: u16 = inner_w / cols;
+        const ws_count: u16 = @intCast(data.WORKSPACES.len);
+        const grid_rows: u16 = (ws_count + cols - 1) / cols;
+        const bar_h: u16 = 1 + grid_rows + 1; // border + rows + border
+
+        const bar_border = if (self.ws_focus == .bar) theme.ACCENT else theme.BORDER;
+        var bar = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = bar_h });
+        w.fillSurface(&bar, theme.PANEL);
+        w.drawBorder(&bar, bar_border, theme.PANEL);
+        w.writeText(&bar, ctx, 2, 0, "Workspaces", theme.boldOn(theme.PANEL, theme.TEXT));
+
+        for (data.WORKSPACES, 0..) |wsi, i| {
+            const is_sel = i == ws_idx;
+            const grid_col: u16 = @intCast(i % cols);
+            const grid_row: u16 = @intCast(i / cols);
+            const x = 1 + grid_col * card_w;
+            const y = 1 + grid_row;
+
+            // Cursor indicator (same style as Library)
+            if (is_sel) {
+                bar.writeCell(x, y, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+
+            const name_x = x + 2;
+            const label = try std.fmt.allocPrint(ctx.arena, "{s} ({s})", .{ wsi.name, data.syncStateLabel(&wsi) });
+
+            if (is_sel) {
+                w.writeText(&bar, ctx, name_x, y, label, theme.boldOn(theme.PANEL, theme.TEXT));
+            } else {
+                w.writeText(&bar, ctx, name_x, y, label, theme.fg(theme.TEXT_SOFT));
+            }
+        }
+
+        // Bottom: master-detail (list | content)
+        const body_h = size.height - bar_h;
         const list_w: u16 = size.width / 3;
         const detail_w: u16 = size.width - list_w - 1;
 
-        const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
-        const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
+        const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = body_h }, .{ .width = list_w, .height = body_h });
+        const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = body_h }, .{ .width = detail_w, .height = body_h });
 
-        // Workspace list panel
-        self.workspace_scroll_bars.scroll_view.draw_cursor = false;
-        defer self.workspace_scroll_bars.scroll_view.draw_cursor = true;
-        const list_panel: w.Panel = .{
-            .owner = self.widget(),
-            .title = "Workspaces",
-            .subtitle = "r sync",
-            .background = theme.PANEL,
-            .border_color = theme.BORDER,
-            .child = self.workspace_scroll_bars.widget(),
-        };
-        var list_surface = try list_panel.draw(list_ctx);
-        list_surface = try w.applyCursorOverlay(list_ctx, &list_surface, &self.workspace_scroll_bars.scroll_view);
+        const list_surface = try self.drawWsList(list_ctx);
+        const detail_surface = try self.drawWsDetail(detail_ctx, ws);
 
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = list_surface };
-        children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = try self.drawWsDetail(detail_ctx, ws) };
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 3);
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = bar };
+        children[1] = .{ .origin = .{ .row = bar_h, .col = 0 }, .surface = list_surface };
+        children[2] = .{ .origin = .{ .row = bar_h, .col = list_w + 1 }, .surface = detail_surface };
         root.children = children;
         return root;
     }
 
-    // Workspace right pane: summary KV + inner tabs (Prompts/Context/Overrides)
-    fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext, ws: *const data.WorkspaceEntry) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawWsList(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        // Context/Prompts/Overrides item list with inner tabs
+        const list_border = if (self.ws_focus == .list) theme.ACCENT else theme.BORDER;
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
-        w.drawBorder(&surface, theme.BORDER, theme.PANEL);
+        w.drawBorder(&surface, list_border, theme.PANEL);
 
-        // Row 0: inner tabs + workspace name
+        // Row 0: inner tabs
         var tab_col: u16 = 2;
         for (ws_tabs) |tab| {
             tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, tab.label(), tab == self.ws_tab);
             tab_col +|= 1;
         }
-        w.writeRightText(&surface, ctx, 0, ws.name, theme.textOn(theme.PANEL, theme.MUTED));
 
-        // Row 1: summary stats
-        const summary = try std.fmt.allocPrint(ctx.arena, " {d}p {d}c {d}o  rev {d}/{d}  {s}", .{ ws.prompts, ws.contexts, ws.overrides, ws.local_rev, ws.remote_rev, data.syncStateLabel(ws) });
-        w.writeText(&surface, ctx, 2, 1, summary, theme.fg(theme.TEXT_SOFT));
-
-        const inner_h = ctx.max.height.? -| 3;
-        const inner_w = ctx.max.width.? -| 4;
+        const inner_h = ctx.max.height.? -| 2;
 
         switch (self.ws_tab) {
             .context => {
-                // Main branch files
-                var kv_row: u16 = 3;
-                kv_row = w.writeSectionHeader(&surface, ctx, 2, kv_row, try std.fmt.allocPrint(ctx.arena, "main ({d} files)", .{ws.contexts}));
-                for (data.WS_CONTEXT) |f| {
-                    kv_row = w.writeKv(&surface, ctx, 2, kv_row, f.path, f.state, 26);
-                    if (kv_row >= inner_h + 2) break;
-                }
-                // Member branches
-                kv_row += 1;
-                kv_row = w.writeSectionHeader(&surface, ctx, 2, kv_row, "Branches");
-                for (data.CONTEXT_BRANCHES) |br| {
-                    if (std.mem.eql(u8, br.name, "main")) continue;
-                    const br_info = try std.fmt.allocPrint(ctx.arena, "{d} ahead  {d} behind", .{ br.ahead, br.behind });
-                    kv_row = w.writeKv(&surface, ctx, 2, kv_row, br.name, br_info, 10);
-                    if (kv_row >= inner_h + 2) break;
-                }
-                // Open PRs
-                kv_row += 1;
-                const pr_text = try std.fmt.allocPrint(ctx.arena, "{d} open", .{ws.open_prs});
-                kv_row = w.writeKv(&surface, ctx, 2, kv_row, "Context PRs", pr_text, 12);
-                for (data.CONTEXT_PRS) |pr| {
-                    if (!std.mem.eql(u8, pr.status, "open")) continue;
-                    const pr_line = try std.fmt.allocPrint(ctx.arena, "{s}: {s}", .{ pr.author, pr.description });
-                    w.writeText(&surface, ctx, 4, kv_row, pr_line, theme.fg(theme.TEXT_SOFT));
+                var kv_row: u16 = 2;
+                for (data.WS_CONTEXT, 0..) |f, i| {
+                    const sel = i == self.ws_list_sel;
+                    const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                    if (sel) {
+                        surface.writeCell(1, kv_row, .{
+                            .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                            .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                        });
+                    }
+                    // Name + (modified) inline marker
+                    const label = if (f.modified)
+                        try std.fmt.allocPrint(ctx.arena, "{s} (modified)", .{f.path})
+                    else
+                        f.path;
+                    w.writeText(&surface, ctx, 3, kv_row, label, name_style);
+                    if (f.modified) {
+                        // Color just the "(modified)" part
+                        const path_w: u16 = @intCast(ctx.stringWidth(f.path));
+                        w.writeText(&surface, ctx, 3 + path_w + 1, kv_row, "(modified)", theme.fg(theme.WARN));
+                    }
+                    // Right side: always show size
+                    if (ctx.max.width) |max_w| {
+                        const sw: u16 = @intCast(ctx.stringWidth(f.size));
+                        if (sw + 3 < max_w) w.writeText(&surface, ctx, max_w - sw - 2, kv_row, f.size, theme.fg(theme.MUTED));
+                    }
                     kv_row += 1;
                     if (kv_row >= inner_h + 2) break;
                 }
             },
             .prompts => {
-                var kv_row: u16 = 3;
-                for (data.WS_PROMPTS) |p| {
-                    const ovr: []const u8 = if (p.has_override) "yes" else " no";
-                    const line = try std.fmt.allocPrint(ctx.arena, " {s:<18} {s:<4} {s} {s}", .{ p.name, p.kind, ovr, p.state });
-                    w.writeText(&surface, ctx, 2, kv_row, line, theme.fg(theme.TEXT_SOFT));
+                var kv_row: u16 = 2;
+                for (data.WS_PROMPTS, 0..) |p, i| {
+                    const sel = i == self.ws_list_sel;
+                    const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                    if (sel) {
+                        surface.writeCell(1, kv_row, .{
+                            .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                            .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                        });
+                    }
+                    // Name + (modified) inline marker
+                    const label = if (p.has_override)
+                        try std.fmt.allocPrint(ctx.arena, "{s} (modified)", .{p.name})
+                    else
+                        p.name;
+                    w.writeText(&surface, ctx, 3, kv_row, label, name_style);
+                    if (p.has_override) {
+                        const name_w: u16 = @intCast(ctx.stringWidth(p.name));
+                        w.writeText(&surface, ctx, 3 + name_w + 1, kv_row, "(modified)", theme.fg(theme.WARN));
+                    }
+                    // Right side: always show state
+                    if (ctx.max.width) |max_w| {
+                        const sw: u16 = @intCast(ctx.stringWidth(p.state));
+                        if (sw + 3 < max_w) w.writeText(&surface, ctx, max_w - sw - 2, kv_row, p.state, theme.fg(theme.MUTED));
+                    }
                     kv_row += 1;
-                    if (kv_row >= inner_h + 3) break;
-                }
-            },
-            .overrides => {
-                var kv_row: u16 = 3;
-                for (data.WS_OVERRIDES) |o| {
-                    const line = try std.fmt.allocPrint(ctx.arena, " {s:<18} {s:<4} {s:<4} {s}", .{ o.prompt_name, o.base_hash, o.current_hash, o.status });
-                    w.writeText(&surface, ctx, 2, kv_row, line, theme.fg(theme.TEXT_SOFT));
-                    kv_row += 1;
-                    if (kv_row >= inner_h + 3) break;
+                    if (kv_row >= inner_h + 2) break;
                 }
             },
         }
-        _ = inner_w;
+        return surface;
+    }
+
+    // Workspace content pane: shows selected item's content
+    fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext, ws: *const data.WorkspaceEntry) std.mem.Allocator.Error!vxfw.Surface {
+        _ = ws;
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
+        const content_border = if (self.ws_focus == .content) theme.ACCENT else theme.BORDER;
+        w.fillSurface(&surface, theme.PANEL);
+        w.drawBorder(&surface, content_border, theme.PANEL);
+
+        const sel = self.ws_list_sel;
+
+        // Title: selected item name
+        const title: []const u8 = switch (self.ws_tab) {
+            .context => if (sel < data.WS_CONTEXT.len) data.WS_CONTEXT[sel].path else "no files",
+            .prompts => if (sel < data.WS_PROMPTS.len) data.WS_PROMPTS[sel].name else "no prompts",
+        };
+        // Title with diff marker (context branch or prompt override)
+        const has_diff = switch (self.ws_tab) {
+            .context => sel < data.WS_CONTEXT.len and data.WS_CONTEXT[sel].modified,
+            .prompts => sel < data.WS_PROMPTS.len and data.WS_PROMPTS[sel].has_override,
+        };
+        if (has_diff) {
+            const marker = try std.fmt.allocPrint(ctx.arena, "{s} (modified)", .{title});
+            w.writeText(&surface, ctx, 2, 0, marker, theme.boldOn(theme.PANEL, theme.WARN));
+        } else {
+            w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
+        }
+
+        var kv_row: u16 = 2;
+        const max_row = ctx.max.height.? -| 1;
+
+        switch (self.ws_tab) {
+            .context => {
+                if (sel < data.WS_CONTEXT.len) {
+                    const f = &data.WS_CONTEXT[sel];
+                    if (f.modified and f.branch_diff.len > 0) {
+                        // Show branch diff (same GitHub-style as prompts)
+                        for (f.branch_diff) |line| {
+                            if (kv_row >= max_row) break;
+                            const line_color = if (std.mem.startsWith(u8, line, "+"))
+                                theme.OK
+                            else if (std.mem.startsWith(u8, line, "-"))
+                                theme.DANGER
+                            else
+                                theme.TEXT_SOFT;
+                            const line_bg = if (std.mem.startsWith(u8, line, "+"))
+                                theme.rgb(0x1d2617)
+                            else if (std.mem.startsWith(u8, line, "-"))
+                                theme.rgb(0x2a1b18)
+                            else
+                                theme.PANEL;
+                            w.writeText(&surface, ctx, 2, kv_row, line, .{ .fg = line_color, .bg = line_bg });
+                            kv_row += 1;
+                        }
+                    } else {
+                        // No branch changes - show file content
+                        var line_iter = std.mem.splitScalar(u8, data.SAMPLE_CONTENT, '\n');
+                        while (line_iter.next()) |line| {
+                            if (kv_row >= max_row) break;
+                            w.writeText(&surface, ctx, 2, kv_row, line, theme.fg(theme.TEXT_SOFT));
+                            kv_row += 1;
+                        }
+                    }
+                }
+            },
+            .prompts => {
+                if (sel < data.WS_PROMPTS.len) {
+                    const p = &data.WS_PROMPTS[sel];
+                    if (p.has_override and p.override_diff.len > 0) {
+                        // Show diff (GitHub-style colored lines)
+                        for (p.override_diff) |line| {
+                            if (kv_row >= max_row) break;
+                            const line_color = if (std.mem.startsWith(u8, line, "+"))
+                                theme.OK
+                            else if (std.mem.startsWith(u8, line, "-"))
+                                theme.DANGER
+                            else
+                                theme.TEXT_SOFT;
+                            const line_bg = if (std.mem.startsWith(u8, line, "+"))
+                                theme.rgb(0x1d2617)
+                            else if (std.mem.startsWith(u8, line, "-"))
+                                theme.rgb(0x2a1b18)
+                            else
+                                theme.PANEL;
+                            w.writeText(&surface, ctx, 2, kv_row, line, .{ .fg = line_color, .bg = line_bg });
+                            kv_row += 1;
+                        }
+                    } else {
+                        // Show prompt body (no override)
+                        var line_iter = std.mem.splitScalar(u8, data.SAMPLE_CONTENT, '\n');
+                        while (line_iter.next()) |line| {
+                            if (kv_row >= max_row) break;
+                            w.writeText(&surface, ctx, 2, kv_row, line, theme.fg(theme.TEXT_SOFT));
+                            kv_row += 1;
+                        }
+                    }
+                }
+            },
+        }
         return surface;
     }
 
@@ -1587,31 +1819,7 @@ pub const Dashboard = struct {
         self.review_diff_scroll_bars.estimated_content_height = @intCast(self.review_diff_count);
     }
 
-    fn syncWorkspaceWidgets(self: *Dashboard) void {
-        self.workspace_scroll_bars.scroll_view.cursor = @min(self.workspace_scroll_bars.scroll_view.cursor, data.WORKSPACES.len - 1);
-        const ws_sel = @as(usize, @intCast(self.workspace_scroll_bars.scroll_view.cursor));
-        for (data.WORKSPACES, 0..) |ws, idx| {
-            const sel = idx == ws_sel;
-            const sync_label = data.syncStateLabel(&ws);
-            const counts = if (ws.open_prs > 0)
-                std.fmt.bufPrint(&workspace_buf[idx], "{d}pr {d}c {d}p", .{ ws.open_prs, ws.contexts, ws.prompts }) catch "?"
-            else
-                std.fmt.bufPrint(&workspace_buf[idx], "{d}c {d}p", .{ ws.contexts, ws.prompts }) catch "?";
-            self.workspace_cols[idx] = .{
-                .{ .text = ws.name, .flex = 1 },
-                .{ .text = sync_label, .flex = 0 },
-                .{ .text = counts, .flex = 0, .alignment = .right },
-            };
-            self.workspace_rows[idx] = .{
-                .columns = &self.workspace_cols[idx],
-                .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
-                .gap = 1,
-            };
-            self.workspace_widgets[idx] = self.workspace_rows[idx].widget();
-        }
-        self.workspace_scroll_bars.scroll_view.children = .{ .slice = self.workspace_widgets[0..] };
-        self.workspace_scroll_bars.estimated_content_height = data.WORKSPACES.len;
-    }
+    // Workspace grid uses manual rendering, no sync function needed
 
     // Inner width budget: panel=36min → border=2 → inner=34.
     // Row format: 1 + 16 name + 1 + 3 pct + 1 + % + 2 + 4 count = ~29. Fits.
@@ -1703,7 +1911,7 @@ fn prefixWithPad(prefix: []const u8) []const u8 {
     return map.get(prefix) orelse prefix;
 }
 
-var workspace_buf: [data.WORKSPACES.len][32]u8 = undefined;
+// workspace_buf removed: workspace uses manual grid rendering
 var insights_buf: [data.INSIGHTS_WS.len][16]u8 = undefined;
 
 fn diffFg(line: []const u8) vaxis.Color {
