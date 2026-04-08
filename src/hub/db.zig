@@ -58,6 +58,7 @@ const migration_sql =
     \\    token_hash TEXT PRIMARY KEY,
     \\    user_id TEXT NOT NULL REFERENCES users(user_id),
     \\    kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+    \\    scopes TEXT NOT NULL DEFAULT '',
     \\    expires_at TIMESTAMPTZ NOT NULL,
     \\    revoked BOOLEAN NOT NULL DEFAULT false,
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now()

@@ -342,6 +342,7 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "bundle:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
@@ -423,6 +424,7 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "bundle:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
@@ -500,6 +502,7 @@ pub fn handleDeleteBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
+    if (!auth.requireScope(user, "bundle:write", res)) return;
     if (!std.mem.eql(u8, user.role, "maintainer")) {
         return apiError(res, 403, "FORBIDDEN", "maintainer role required");
     }
