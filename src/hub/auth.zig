@@ -11,11 +11,22 @@ pub const AuthUser = struct {
     org_id: []const u8,
     username: []const u8,
     role: []const u8,
+    scopes: []const u8,
 };
+
+const MEMBER_SCOPES = "library:read,workspace:read,workspace:write,trace:write,stats:read,members:read,proposal:read,proposal:write,team:read";
+const MAINTAINER_SCOPES = "library:read,library:write,bundle:write,workspace:read,workspace:write,trace:write,stats:read,members:read,members:write,proposal:read,proposal:write,proposal:merge,team:read,team:write";
+
+pub fn requireScope(user: AuthUser, scope: []const u8, res: anytype) bool {
+    if (std.mem.indexOf(u8, user.scopes, scope) != null) return true;
+    apiError(res, 403, "FORBIDDEN", "token missing required scope") catch {};
+    return false;
+}
 
 const LoginRequest = struct {
     username: []const u8,
     credential: []const u8,
+    scopes: ?[]const u8 = null,
 };
 
 const RefreshRequest = struct {
@@ -69,12 +80,17 @@ pub fn handleLogin(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     }
 
     const user_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    const role = try req.arena.dupe(u8, try row.get([]const u8, 3));
     row.deinit() catch {};
 
-    const access_token = generateToken(req.arena, conn, user_id, "access", ctx.config.token_ttl_seconds) catch {
+    // Determine scopes: use requested scopes if provided, otherwise default for role
+    const default_scopes = if (std.mem.eql(u8, role, "maintainer")) MAINTAINER_SCOPES else MEMBER_SCOPES;
+    const scopes = login.scopes orelse default_scopes;
+
+    const access_token = generateToken(req.arena, conn, user_id, "access", scopes, ctx.config.token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
-    const refresh_token = generateToken(req.arena, conn, user_id, "refresh", ctx.config.token_ttl_seconds * 24) catch {
+    const refresh_token = generateToken(req.arena, conn, user_id, "refresh", scopes, ctx.config.token_ttl_seconds * 24) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
 
@@ -106,7 +122,7 @@ pub fn handleRefresh(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     const token_hash = hashToken(body.refresh_token);
 
     var row = conn.row(
-        \\SELECT t.user_id FROM tokens t
+        \\SELECT t.user_id, t.scopes FROM tokens t
         \\WHERE t.token_hash = $1
         \\  AND t.kind = 'refresh'
         \\  AND t.revoked = false
@@ -118,11 +134,12 @@ pub fn handleRefresh(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     };
 
     const user_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    const scopes = try req.arena.dupe(u8, try row.get([]const u8, 1));
     row.deinit() catch {};
 
     _ = conn.exec("UPDATE tokens SET revoked = true WHERE token_hash = $1", .{@as([]const u8, &token_hash)}) catch {};
 
-    const access_token = generateToken(req.arena, conn, user_id, "access", ctx.config.token_ttl_seconds) catch {
+    const access_token = generateToken(req.arena, conn, user_id, "access", scopes, ctx.config.token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
 
@@ -172,6 +189,7 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
         .user_id = user.user_id,
         .username = user.username,
         .role = user.role,
+        .scopes = user.scopes,
         .workspaces = ws_list.items,
     }, .{});
 }
@@ -194,7 +212,7 @@ pub fn authenticate(ctx: *Server.Context, req: *httpz.Request) !AuthUser {
     defer conn.release();
 
     var row = conn.row(
-        \\SELECT u.user_id, u.org_id::text, u.username, u.role
+        \\SELECT u.user_id, u.org_id::text, u.username, u.role, t.scopes
         \\FROM tokens t JOIN users u ON u.user_id = t.user_id
         \\WHERE t.token_hash = $1
         \\  AND t.kind = 'access'
@@ -208,6 +226,7 @@ pub fn authenticate(ctx: *Server.Context, req: *httpz.Request) !AuthUser {
             .org_id = req.arena.dupe(u8, try r.get([]const u8, 1)) catch return error.Unauthorized,
             .username = req.arena.dupe(u8, try r.get([]const u8, 2)) catch return error.Unauthorized,
             .role = req.arena.dupe(u8, try r.get([]const u8, 3)) catch return error.Unauthorized,
+            .scopes = req.arena.dupe(u8, try r.get([]const u8, 4)) catch return error.Unauthorized,
         };
         r.deinit() catch {};
         return user;
@@ -267,7 +286,7 @@ pub fn hashPassword(password: []const u8, out: []u8) ![]const u8 {
     }, out);
 }
 
-fn generateToken(allocator: std.mem.Allocator, conn: *pg.Conn, user_id: []const u8, kind: []const u8, ttl_seconds: u32) ![]const u8 {
+fn generateToken(allocator: std.mem.Allocator, conn: *pg.Conn, user_id: []const u8, kind: []const u8, scopes: []const u8, ttl_seconds: u32) ![]const u8 {
     var rand_bytes: [32]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
 
@@ -280,8 +299,8 @@ fn generateToken(allocator: std.mem.Allocator, conn: *pg.Conn, user_id: []const 
     const epoch_now: f64 = @floatFromInt(std.time.timestamp());
     const expires_epoch: f64 = epoch_now + @as(f64, @floatFromInt(ttl_seconds));
     _ = conn.exec(
-        "INSERT INTO tokens (token_hash, user_id, kind, expires_at) VALUES ($1, $2, $3, to_timestamp($4))",
-        .{ hash_slice, user_id, kind, expires_epoch },
+        "INSERT INTO tokens (token_hash, user_id, kind, scopes, expires_at) VALUES ($1, $2, $3, $4, to_timestamp($5))",
+        .{ hash_slice, user_id, kind, scopes, expires_epoch },
     ) catch |err| {
         std.log.err("token insert failed: {}", .{err});
         if (conn.err) |pg_err| {
