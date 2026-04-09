@@ -82,6 +82,7 @@ try {
 
 } catch {
     Write-Host "Error: $_"
+    $script:Fail++
 } finally {
     Remove-Item -Recurse -Force $TmpBase -ErrorAction SilentlyContinue
 }
