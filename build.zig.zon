@@ -11,6 +11,10 @@
             .url = "git+https://github.com/karlseguin/pg.zig#e58b318b7867ef065b3135983f829219c5eef891",
             .hash = "pg-0.0.0-Wp_7gXFoBgD0fQ72WICKa-bxLga03AXXQ3BbIsjjohQ3",
         },
+        .toml = .{
+            .url = "git+https://github.com/sam701/zig-toml#a73c9423d88ed413204b39638fab7e9bccdb83fd",
+            .hash = "toml-0.3.0-bV14Be6EAQDr0fkyURz4jYFyTAMPcwlNN0FEPVjDnXTR",
+        },
     },
     .paths = .{
         "build.zig",
