@@ -173,7 +173,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 }
 
 fn ensureDir(path: []const u8) void {
-    std.fs.makeDirAbsolute(path) catch {};
+    std.fs.makeDirAbsolute(path) catch |err| {
+        if (err != error.PathAlreadyExists) {
+            std.log.warn("failed to create directory {s}: {}", .{ path, err });
+        }
+    };
 }
 
 fn isPathSafe(name: []const u8) bool {

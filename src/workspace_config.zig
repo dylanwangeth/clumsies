@@ -24,7 +24,7 @@ pub fn resolveWorkspace(allocator: std.mem.Allocator, cwd: []const u8) !Workspac
 
     for (cfg.workspaces) |ws| {
         for (ws.paths) |p| {
-            if (std.mem.startsWith(u8, cwd, p)) {
+            if (std.mem.startsWith(u8, cwd, p) and (cwd.len == p.len or cwd[p.len] == std.fs.path.sep)) {
                 return .{
                     .ws_id = ws.ws_id,
                     .name = ws.name,
@@ -128,7 +128,7 @@ fn writeWorkspaceBlock(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), na
     try buf.appendSlice(allocator, "paths = [\n");
     for (paths) |p| {
         try buf.appendSlice(allocator, "  \"");
-        try buf.appendSlice(allocator, p);
+        try appendTomlEscaped(allocator, buf, p);
         try buf.appendSlice(allocator, "\",\n");
     }
     try buf.appendSlice(allocator, "]\n\n");
@@ -139,9 +139,22 @@ fn appendLine(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), line: []con
     try buf.append(allocator, '\n');
 }
 
+fn appendTomlEscaped(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: []const u8) !void {
+    for (value) |byte| {
+        switch (byte) {
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            else => try buf.append(allocator, byte),
+        }
+    }
+}
+
 fn appendKv(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: []const u8) !void {
     try buf.appendSlice(allocator, key);
     try buf.appendSlice(allocator, " = \"");
-    try buf.appendSlice(allocator, value);
+    try appendTomlEscaped(allocator, buf, value);
     try buf.appendSlice(allocator, "\"\n");
 }
