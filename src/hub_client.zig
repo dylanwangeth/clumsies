@@ -59,6 +59,7 @@ pub const HubClient = struct {
 
         // Create an Io.Writer backed by an ArrayList for capturing response body
         var response_writer = std.Io.Writer.Allocating.init(self.allocator);
+        errdefer response_writer.deinit();
 
         const result = try client.fetch(.{
             .location = .{ .url = url },
