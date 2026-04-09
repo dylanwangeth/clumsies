@@ -160,10 +160,13 @@ pub const Dashboard = struct {
 
     // Insights
     insights_period: Period = .daily,
-    insights_scroll_bars: vxfw.ScrollBars,
-    insights_widgets: [data.INSIGHTS_WS.len]vxfw.Widget = undefined,
-    insights_rows: [data.INSIGHTS_WS.len]TableRow = undefined,
-    insights_cols: [data.INSIGHTS_WS.len][3]Column = undefined,
+    breathing_phase: u8 = 0, // 0-20 for breathing animation cycle
+    insights_focus: enum { chart, prompts, team } = .chart,
+    insights_prompt_cursor: usize = 0,
+    insights_member_cursor: usize = 0,
+    insights_expanded_prompt: ?usize = null,
+    insights_show_member_detail: bool = false,
+    chart_offset: u16 = 0,
 
     pub fn init() Dashboard {
         return .{
@@ -173,7 +176,6 @@ pub const Dashboard = struct {
             .review_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .review_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
             // workspace uses manual grid, no ScrollBars
-            .insights_scroll_bars = w.initCursorScrollBars(theme.PANEL),
         };
     }
 
@@ -645,19 +647,108 @@ pub const Dashboard = struct {
                         }
                     },
                     .insights => {
-                        try self.insights_scroll_bars.scroll_view.handleEvent(ctx, event);
+                        const ins = &data.INSIGHTS;
                         if (key.matches('t', .{})) {
                             self.insights_period = self.insights_period.next();
+                            self.status_line = switch (self.insights_period) {
+                                .daily => "Period: daily (30d).",
+                                .weekly => "Period: weekly (8w).",
+                                .monthly => "Period: monthly (12m).",
+                            };
                             ctx.consumeAndRedraw();
                         }
-                        if (key.matches(vaxis.Key.enter, .{})) {
-                            const cidx = @min(@as(usize, @intCast(self.insights_scroll_bars.scroll_view.cursor)), data.INSIGHTS_WS.len - 1);
-                            _ = cidx;
-                            self.status_line = "Workspace detail (not yet implemented)";
+                        if (key.matches(vaxis.Key.tab, .{})) {
+                            self.insights_focus = switch (self.insights_focus) {
+                                .chart => .prompts,
+                                .prompts => .team,
+                                .team => .chart,
+                            };
+                            self.insights_expanded_prompt = null;
+                            self.insights_show_member_detail = false;
                             ctx.consumeAndRedraw();
+                        }
+                        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+                            switch (self.insights_focus) {
+                                .prompts => {
+                                    if (self.insights_prompt_cursor < ins.prompts.len - 1)
+                                        self.insights_prompt_cursor += 1;
+                                    ctx.consumeAndRedraw();
+                                },
+                                .team => {
+                                    if (self.insights_member_cursor < ins.members.len - 1)
+                                        self.insights_member_cursor += 1;
+                                    ctx.consumeAndRedraw();
+                                },
+                                else => {},
+                            }
+                        }
+                        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+                            switch (self.insights_focus) {
+                                .prompts => {
+                                    self.insights_prompt_cursor -|= 1;
+                                    ctx.consumeAndRedraw();
+                                },
+                                .team => {
+                                    self.insights_member_cursor -|= 1;
+                                    ctx.consumeAndRedraw();
+                                },
+                                else => {},
+                            }
+                        }
+                        if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+                            if (self.insights_focus == .chart) {
+                                self.status_line = "Chart scroll requires Hub API (mock: fixed 30d window).";
+                                ctx.consumeAndRedraw();
+                            }
+                        }
+                        if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
+                            if (self.insights_focus == .chart) {
+                                self.status_line = "Chart scroll requires Hub API (mock: fixed 30d window).";
+                                ctx.consumeAndRedraw();
+                            }
+                        }
+                        if (key.matches(vaxis.Key.enter, .{})) {
+                            switch (self.insights_focus) {
+                                .prompts => {
+                                    // Toggle per-constraint detail expansion
+                                    if (self.insights_expanded_prompt == self.insights_prompt_cursor) {
+                                        self.insights_expanded_prompt = null;
+                                    } else {
+                                        self.insights_expanded_prompt = self.insights_prompt_cursor;
+                                    }
+                                    ctx.consumeAndRedraw();
+                                },
+                                .team => {
+                                    self.insights_show_member_detail = !self.insights_show_member_detail;
+                                    ctx.consumeAndRedraw();
+                                },
+                                else => {},
+                            }
+                        }
+                        if (key.matches(vaxis.Key.escape, .{})) {
+                            if (self.insights_expanded_prompt != null) {
+                                self.insights_expanded_prompt = null;
+                                ctx.consumeAndRedraw();
+                            } else if (self.insights_show_member_detail) {
+                                self.insights_show_member_detail = false;
+                                ctx.consumeAndRedraw();
+                            } else {
+                                self.insights_focus = .prompts;
+                                ctx.consumeAndRedraw();
+                            }
                         }
                     },
                 }
+            },
+            .init => {
+                // Start breathing animation
+                try ctx.tick(100, self.widget());
+            },
+            .tick => {
+                // Advance breathing cycle: 0→20→0 (2 seconds at 100ms intervals)
+                self.breathing_phase = (self.breathing_phase + 1) % 21;
+                ctx.redraw = true;
+                try ctx.tick(100, self.widget());
             },
             else => {},
         }
@@ -788,7 +879,11 @@ pub const Dashboard = struct {
                 .list => "h/l tab  j/k move  Enter content  Esc bar  ? help",
                 .content => "j/k scroll  Esc list  ? help",
             },
-            .insights => "j/k move  t period  S settings  ? help  q quit",
+            .insights => switch (self.insights_focus) {
+                .chart => "h/l scroll  Tab focus  t period  ? help  q quit",
+                .prompts => "j/k move  Enter expand  Tab focus  t period  ? help  q quit",
+                .team => "j/k move  Enter detail  Tab focus  t period  ? help  q quit",
+            },
         };
         w.writeText(&surface, ctx, 1, 0, keys, theme.fg(theme.MUTED));
 
@@ -1401,85 +1496,311 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    // Insights: workspace-first refer coverage analysis
+    // Insights: multi-panel signal-ratio dashboard
     fn drawInsights(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.PANEL);
+        w.fillSurface(&root, theme.CANVAS);
 
-        self.syncInsightsWidgets();
+        const ins = &data.INSIGHTS;
 
-        // Org summary bar (3 rows)
-        const summary_h: u16 = 3;
-        var summary = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = summary_h });
-        w.fillSurface(&summary, theme.PANEL);
-        w.drawBorder(&summary, theme.BORDER, theme.PANEL);
-        const title = try std.fmt.allocPrint(ctx.arena, "Insights \xe2\x94\x80 org: acme \xe2\x94\x80 period: {s}", .{self.insights_period.label()});
-        w.writeText(&summary, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
-        w.writeRightText(&summary, ctx, 0, "t cycle period", theme.textOn(theme.PANEL, theme.MUTED));
-
-        // Compute org totals from mock data
-        var total_refer: u32 = 0;
-        for (data.INSIGHTS_WS) |cw| {
-            var val: u32 = 0;
-            for (cw.refer_count) |c| {
-                if (c >= '0' and c <= '9') {
-                    val = val * 10 + (c - '0');
-                }
-            }
-            total_refer += val;
-        }
-        const org_spark = try w.sparkline(ctx.arena, &data.INSIGHTS_WS[0].trend);
-        const org_line = try std.fmt.allocPrint(ctx.arena, " workspaces {d}   prompts {d}   total refer ~{d}   org trend {s}", .{ data.INSIGHTS_WS.len, data.PROMPTS.len, total_refer, org_spark });
-        w.writeText(&summary, ctx, 1, 1, org_line, theme.textOn(theme.PANEL, theme.TEXT_SOFT));
-
-        // Two-column: workspace rank (left) + selected detail (right)
-        const body_h = size.height - summary_h;
-        const left_w: u16 = if (size.width > 108) 44 else 36;
-        const right_w: u16 = size.width - left_w - 1;
-
-        const l_ctx = ctx.withConstraints(.{ .width = left_w, .height = body_h }, .{ .width = left_w, .height = body_h });
-        const r_ctx = ctx.withConstraints(.{ .width = right_w, .height = body_h }, .{ .width = right_w, .height = body_h });
+        // Layout: chart(top, full width) + prompts|team (bottom, side by side)
+        const chart_h: u16 = if (size.height > 40) 10 else 8;
+        const body_h: u16 = size.height -| chart_h;
+        const team_w: u16 = 18; // narrow sidebar: border(2) + padding(2) + grid(5×2) + gaps
+        const prompts_w: u16 = size.width -| team_w;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, 3);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = summary };
-        children[1] = .{ .origin = .{ .row = summary_h, .col = 0 }, .surface = try self.drawInsightsList(l_ctx) };
-        children[2] = .{ .origin = .{ .row = summary_h, .col = left_w + 1 }, .surface = try self.drawInsightsDetail(r_ctx) };
+
+        // Panel 1: Signal Trend chart (hero, full width)
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawInsightsChart(ctx, size.width, chart_h, ins) };
+        // Panel 2: Prompts Rank (or Member Detail if active)
+        const main_surface = if (self.insights_show_member_detail)
+            try self.drawMemberDetail(ctx, prompts_w, body_h, ins)
+        else
+            try self.drawInsightsPrompts(ctx, prompts_w, body_h, ins);
+        children[1] = .{ .origin = .{ .row = chart_h, .col = 0 }, .surface = main_surface };
+        // Panel 3: Team Activity sidebar (narrow, right side)
+        children[2] = .{ .origin = .{ .row = chart_h, .col = prompts_w }, .surface = try self.drawInsightsTeam(ctx, team_w, body_h, ins) };
+
         root.children = children;
         return root;
     }
 
-    fn drawInsightsList(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        self.insights_scroll_bars.scroll_view.draw_cursor = false;
-        defer self.insights_scroll_bars.scroll_view.draw_cursor = true;
+    fn drawInsightsChart(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+        const border_color = if (self.insights_focus == .chart) theme.ACCENT else theme.BORDER;
+        var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        w.fillSurface(&s, theme.PANEL);
+        w.drawBorder(&s, border_color, theme.PANEL);
 
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Workspace Coverage", .subtitle = "j/k select", .background = theme.PANEL, .border_color = theme.BORDER, .child = self.insights_scroll_bars.widget() };
-        var surface = try panel.draw(ctx);
-        return w.applyCursorOverlay(ctx, &surface, &self.insights_scroll_bars.scroll_view);
+        // Title bar: ● Signal Trend ── key metrics
+        // Breathing ● : phase 0-10 = dim→bright, 10-20 = bright→dim
+        const breath_t: f32 = blk: {
+            const p = self.breathing_phase;
+            const half: f32 = if (p <= 10) @as(f32, @floatFromInt(p)) / 10.0 else @as(f32, @floatFromInt(20 - p)) / 10.0;
+            break :blk 0.3 + half * 0.7; // range 0.3 to 1.0
+        };
+        const dark_green = theme.rgb(0x2d4a1f);
+        const dot_color = theme.lerpColor(dark_green, theme.OK, breath_t);
+        w.writeText(&s, ctx, 2, 0, "\u{25cf}", .{ .fg = dot_color, .bg = theme.PANEL });
+        w.writeText(&s, ctx, 4, 0, "Signal Trend", theme.boldOn(theme.PANEL, theme.TEXT));
+        const metrics_txt = try std.fmt.allocPrint(ctx.arena, "signal {d}%", .{ins.signal_ratio});
+        w.writeText(&s, ctx, 18, 0, metrics_txt, theme.fg(theme.ACCENT_SOFT));
+        w.writeRightText(&s, ctx, 0, "t period", theme.fg(theme.MUTED));
+
+        const chart_x: u16 = 1;
+        const chart_w: u16 = width -| 2;
+        const chart_rows: u16 = height -| 3;
+        w.drawBrailleAreaChart(&s, ctx.arena, &ins.refer_trend, chart_x, 1, chart_w, chart_rows);
+
+        // X-axis: minimal endpoints
+        w.writeText(&s, ctx, chart_x, height -| 2, "30d ago", theme.fg(theme.DIM));
+        w.writeRightText(&s, ctx, height -| 2, "today", theme.fg(theme.DIM));
+
+        return s;
     }
 
-    fn drawInsightsDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const cidx = @min(@as(usize, @intCast(self.insights_scroll_bars.scroll_view.cursor)), data.INSIGHTS_WS.len - 1);
-        const cw = &data.INSIGHTS_WS[cidx];
-        const spark = try w.sparkline(ctx.arena, cw.trend[0..8]);
+    fn drawInsightsPrompts(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+        const border_color = if (self.insights_focus == .prompts) theme.ACCENT else theme.BORDER;
+        var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        w.fillSurface(&s, theme.PANEL);
+        w.drawBorder(&s, border_color, theme.PANEL);
 
-        var buf: std.ArrayList(u8) = .empty;
-        // Selected workspace detail
-        try buf.appendSlice(ctx.arena, try std.fmt.allocPrint(ctx.arena, "Workspace\n{s}\n\nCoverage\n{d}%\n\nRefer Count\n{s}\n\nTrend\n{s}\n\n", .{ cw.name, cw.coverage, cw.refer_count, spark }));
+        w.writeText(&s, ctx, 3, 0, "Prompts Rank", theme.boldOn(theme.PANEL, theme.TEXT));
+        // Right-aligned column headers (with right padding)
+        const col_rate: u16 = width -| 24;
+        const col_delta: u16 = width -| 16;
+        const col_sig: u16 = width -| 9;
+        w.writeText(&s, ctx, col_rate, 0, "rate", theme.fg(theme.MUTED));
+        w.writeText(&s, ctx, col_delta, 0, "\u{0394}7d", theme.fg(theme.MUTED));
+        w.writeText(&s, ctx, col_sig, 0, "signal", theme.fg(theme.MUTED));
 
-        // Hotspots section
-        try buf.appendSlice(ctx.arena, "Prompt Hotspots\n");
-        for (data.HOTSPOTS) |h| {
-            try buf.appendSlice(ctx.arena, try std.fmt.allocPrint(ctx.arena, " {s:<24} {s}\n", .{ h.name, h.refer_count }));
+        // Find max refer count for bar scaling
+        var max_refer: u32 = 1;
+        for (ins.prompts) |p| {
+            if (p.refer_count > max_refer) max_refer = p.refer_count;
         }
-        try buf.appendSlice(ctx.arena, "\nMember Grouping\nAPI pending (s1-4 expansion needed)");
 
-        const text_widget: vxfw.Text = .{ .text = try ctx.arena.dupe(u8, buf.items), .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT), .width_basis = .parent };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{ .owner = self.widget(), .title = cw.name, .subtitle = try std.fmt.allocPrint(ctx.arena, "coverage {d}%", .{cw.coverage}), .background = theme.PANEL, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
-        return panel.draw(ctx);
+        const name_w: u16 = 21;
+        const bar_start: u16 = name_w + 2;
+        const bar_end: u16 = col_rate -| 2;
+        const bar_max_w: u16 = bar_end -| bar_start;
+
+        const focused = self.insights_focus == .prompts;
+        var row: u16 = 1;
+        for (ins.prompts, 0..) |p, pi| {
+            if (row >= height -| 1) break;
+            const is_idle = p.refer_count == 0;
+            const is_sel = pi == self.insights_prompt_cursor and focused;
+
+            // Cursor indicator
+            if (is_sel) {
+                s.writeCell(1, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+
+            if (is_idle) {
+                // Same layout as active prompts, just name in red
+                const name_style: vaxis.Style = if (is_sel) theme.boldOn(theme.PANEL, theme.DANGER) else .{ .fg = theme.DANGER, .bg = theme.PANEL };
+                w.writeText(&s, ctx, 3, row, p.name, name_style);
+                w.writeText(&s, ctx, col_rate, row, "0/d", theme.fg(theme.MUTED));
+                w.writeText(&s, ctx, col_delta, row, " 0%", theme.fg(theme.MUTED));
+                const sig_txt = try std.fmt.allocPrint(ctx.arena, "0/{d}", .{p.constraint_count});
+                w.writeText(&s, ctx, col_sig, row, sig_txt, theme.fg(theme.MUTED));
+            } else {
+                const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                w.writeText(&s, ctx, 3, row, p.name, name_style);
+
+                const bar_w: u16 = @intCast(@as(u32, bar_max_w) * p.refer_count / max_refer);
+                for (0..bar_w) |offset| {
+                    const bc: u16 = bar_start + @as(u16, @intCast(offset));
+                    if (bc >= bar_end) break;
+                    const t: f32 = if (bar_w > 1) @as(f32, @floatFromInt(offset)) / @as(f32, @floatFromInt(bar_w - 1)) else 0.5;
+                    s.writeCell(bc, row, .{
+                        .char = .{ .grapheme = "\xe2\x96\x88", .width = 1 },
+                        .style = .{ .fg = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, t), .bg = theme.PANEL },
+                    });
+                }
+                const ref_text = try std.fmt.allocPrint(ctx.arena, " {d}", .{p.refer_count});
+                const ref_col: u16 = bar_start + bar_w;
+                if (ref_col + @as(u16, @intCast(ctx.stringWidth(ref_text))) < col_rate) {
+                    w.writeText(&s, ctx, ref_col, row, ref_text, theme.fg(theme.TEXT));
+                }
+                const rate = try std.fmt.allocPrint(ctx.arena, "{d}/d", .{p.rate_per_day});
+                w.writeText(&s, ctx, col_rate, row, rate, theme.fg(theme.MUTED));
+                w.writeDelta(&s, ctx, col_delta, row, p.delta_pct);
+                const sig_txt = try std.fmt.allocPrint(ctx.arena, "{d}/{d}", .{ p.active_constraint_count, p.constraint_count });
+                w.writeText(&s, ctx, col_sig, row, sig_txt, theme.fg(theme.MUTED));
+            }
+            row += 1;
+
+            // Expanded per-constraint detail
+            if (self.insights_expanded_prompt == pi) {
+                var c_max: u32 = 1;
+                for (p.constraints) |c| {
+                    if (c.refer_count > c_max) c_max = c.refer_count;
+                }
+                for (p.constraints, 0..) |c, ci| {
+                    if (row >= height -| 1) break;
+                    const is_c_idle = c.refer_count == 0;
+                    const is_last = ci + 1 == p.constraints.len;
+                    const tree_char: []const u8 = if (is_last) "\xe2\x94\x94" else "\xe2\x94\x9c"; // └ or ├
+                    w.writeText(&s, ctx, 5, row, tree_char, theme.fg(theme.DIM));
+                    w.writeText(&s, ctx, 7, row, c.id, theme.fg(theme.MUTED));
+                    w.writeText(&s, ctx, 12, row, c.label, if (is_c_idle) theme.fg(theme.DANGER) else theme.fg(theme.TEXT_SOFT));
+                    if (!is_c_idle) {
+                        const c_bar_w: u16 = @intCast(@min(@as(u32, bar_max_w / 2) * c.refer_count / c_max, bar_max_w / 2));
+                        for (0..c_bar_w) |offset| {
+                            const bc: u16 = 32 + @as(u16, @intCast(offset));
+                            if (bc >= col_rate -| 2) break;
+                            const t: f32 = if (c_bar_w > 1) @as(f32, @floatFromInt(offset)) / @as(f32, @floatFromInt(c_bar_w - 1)) else 0.5;
+                            s.writeCell(bc, row, .{
+                                .char = .{ .grapheme = "\xe2\x96\x88", .width = 1 },
+                                .style = .{ .fg = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, t), .bg = theme.PANEL },
+                            });
+                        }
+                        const c_ref = try std.fmt.allocPrint(ctx.arena, " {d}", .{c.refer_count});
+                        w.writeText(&s, ctx, col_rate, row, c_ref, theme.fg(theme.MUTED));
+                    } else {
+                        const idle_txt = if (c.idle_days) |d|
+                            try std.fmt.allocPrint(ctx.arena, "idle {d}d \xe2\x9a\xa0", .{d})
+                        else
+                            "idle \xe2\x9a\xa0";
+                        w.writeText(&s, ctx, col_rate, row, idle_txt, .{ .fg = theme.DANGER, .bg = theme.PANEL });
+                    }
+                    row += 1;
+                }
+            }
+        }
+
+        return s;
     }
+
+    fn drawInsightsTeam(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+        const border_color = if (self.insights_focus == .team) theme.ACCENT else theme.BORDER;
+        var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        w.fillSurface(&s, theme.PANEL);
+        w.drawBorder(&s, border_color, theme.PANEL);
+
+        w.writeText(&s, ctx, 2, 0, "Team Activity", theme.boldOn(theme.PANEL, theme.TEXT));
+
+        // Find team max for color scaling
+        var team_max: u16 = 1;
+        for (ins.members) |member| {
+            for (member.trend) |v| {
+                if (v > team_max) team_max = v;
+            }
+        }
+
+        var row: u16 = 1;
+        const num_weeks: u16 = (30 + 6) / 7; // 5 weeks
+        const grid_col: u16 = 2;
+
+        for (ins.members, 0..) |member, mi| {
+            if (row + 8 >= height) break;
+            // Member name with cursor indicator
+            const is_sel = mi == self.insights_member_cursor and self.insights_focus == .team;
+            if (is_sel) {
+                s.writeCell(1, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+            const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+            w.writeText(&s, ctx, 2, row, member.username, name_style);
+            row += 1;
+
+            // 5×7 grid: 5 rows (weeks) × 7 cols (days of week)
+            var week: u16 = 0;
+            while (week < num_weeks) : (week += 1) {
+                if (row >= height -| 1) break;
+                var day: u16 = 0;
+                while (day < 7) : (day += 1) {
+                    const data_idx = week * 7 + day;
+                    if (data_idx >= 30) break;
+                    const val = member.trend[data_idx];
+                    const max_f: f32 = @floatFromInt(@max(team_max, 1));
+                    const fg = if (val == 0)
+                        theme.rgb(0xffe8b8) // pale cream, lighter than ACCENT_SOFT
+                    else
+                        theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, @as(f32, @floatFromInt(val)) / max_f);
+                    const col = grid_col + day * 2; // 1 char cell + 1 gap
+                    if (col < width -| 1) {
+                        s.writeCell(col, row, .{
+                            .char = .{ .grapheme = "\xe2\x96\xa0", .width = 1 }, // ■
+                            .style = .{ .fg = fg, .bg = theme.PANEL },
+                        });
+                    }
+                }
+                row += 1;
+            }
+            row += 1; // gap between members
+        }
+
+        return s;
+    }
+
+    fn drawMemberDetail(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+        const member_idx = @min(self.insights_member_cursor, ins.members.len - 1);
+        const member = &ins.members[member_idx];
+        var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        w.fillSurface(&s, theme.PANEL);
+        w.drawBorder(&s, theme.ACCENT, theme.PANEL);
+
+        const title = try std.fmt.allocPrint(ctx.arena, "{s}'s Activity", .{member.username});
+        w.writeText(&s, ctx, 3, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
+        w.writeRightText(&s, ctx, 0, "Esc back", theme.fg(theme.MUTED));
+
+        var row: u16 = 2;
+        // Summary
+        const summary = try std.fmt.allocPrint(ctx.arena, "{d} refs  {d}d active", .{ member.refer_count, member.active_days });
+        w.writeText(&s, ctx, 3, row, summary, theme.fg(theme.TEXT));
+        row += 2;
+
+        // Top prompts with bars
+        w.writeText(&s, ctx, 3, row, "Top Prompts", theme.fgBold(theme.TEXT));
+        row += 1;
+        var max_ref: u32 = 1;
+        for (member.top_prompts) |tp| {
+            if (tp.refer_count > max_ref) max_ref = tp.refer_count;
+        }
+        const bar_start: u16 = 24;
+        const bar_end: u16 = width -| 12;
+        const bar_max_w: u16 = bar_end -| bar_start;
+        for (member.top_prompts) |tp| {
+            if (row >= height -| 5) break;
+            w.writeText(&s, ctx, 5, row, tp.name, theme.fg(theme.TEXT_SOFT));
+            const bar_w: u16 = @intCast(@as(u32, bar_max_w) * tp.refer_count / max_ref);
+            for (0..bar_w) |offset| {
+                const bc: u16 = bar_start + @as(u16, @intCast(offset));
+                if (bc >= bar_end) break;
+                const t: f32 = if (bar_w > 1) @as(f32, @floatFromInt(offset)) / @as(f32, @floatFromInt(bar_w - 1)) else 0.5;
+                s.writeCell(bc, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x88", .width = 1 },
+                    .style = .{ .fg = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, t), .bg = theme.PANEL },
+                });
+            }
+            const ref_txt = try std.fmt.allocPrint(ctx.arena, " {d}", .{tp.refer_count});
+            w.writeText(&s, ctx, bar_start + bar_w, row, ref_txt, theme.fg(theme.MUTED));
+            row += 1;
+        }
+
+        // Models
+        row += 1;
+        w.writeText(&s, ctx, 3, row, "Models", theme.fgBold(theme.TEXT));
+        row += 1;
+        for (member.models) |model| {
+            if (row >= height -| 1) break;
+            const mtxt = try std.fmt.allocPrint(ctx.arena, "{s}  \u{00d7}{d} ({d}%)", .{ model.model_id, model.refer_count, model.pct });
+            w.writeText(&s, ctx, 5, row, mtxt, theme.fg(theme.TEXT_SOFT));
+            row += 1;
+        }
+
+        return s;
+    }
+
 
     // Settings: vertical sidebar + content pane (web-style layout)
     fn drawSettings(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -2041,28 +2362,6 @@ pub const Dashboard = struct {
 
     // Workspace grid uses manual rendering, no sync function needed
 
-    // Inner width budget: panel=36min → border=2 → inner=34.
-    // Row format: 1 + 16 name + 1 + 3 pct + 1 + % + 2 + 4 count = ~29. Fits.
-    fn syncInsightsWidgets(self: *Dashboard) void {
-        self.insights_scroll_bars.scroll_view.cursor = @min(self.insights_scroll_bars.scroll_view.cursor, data.INSIGHTS_WS.len - 1);
-        const sel_idx = @as(usize, @intCast(self.insights_scroll_bars.scroll_view.cursor));
-        for (data.INSIGHTS_WS, 0..) |cw, idx| {
-            const sel = idx == sel_idx;
-            self.insights_cols[idx] = .{
-                .{ .text = cw.name, .flex = 1 },
-                .{ .text = std.fmt.bufPrint(&insights_buf[idx], "{d}%", .{cw.coverage}) catch "?", .flex = 0, .alignment = .right },
-                .{ .text = cw.refer_count, .flex = 0, .alignment = .right },
-            };
-            self.insights_rows[idx] = .{
-                .columns = &self.insights_cols[idx],
-                .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
-                .gap = 2,
-            };
-            self.insights_widgets[idx] = self.insights_rows[idx].widget();
-        }
-        self.insights_scroll_bars.scroll_view.children = .{ .slice = self.insights_widgets[0..] };
-        self.insights_scroll_bars.estimated_content_height = data.INSIGHTS_WS.len;
-    }
 
     fn selectedProposalIdx(self: *const Dashboard) usize {
         return @min(@as(usize, @intCast(self.review_scroll_bars.scroll_view.cursor)), data.PROPOSALS.len - 1);
@@ -2132,7 +2431,6 @@ fn prefixWithPad(prefix: []const u8) []const u8 {
 }
 
 // workspace_buf removed: workspace uses manual grid rendering
-var insights_buf: [data.INSIGHTS_WS.len][16]u8 = undefined;
 
 fn diffFg(line: []const u8) vaxis.Color {
     if (std.mem.startsWith(u8, line, "+")) return theme.OK;

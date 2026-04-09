@@ -198,17 +198,88 @@ pub const WsPromptEntry = struct {
     override_diff: []const []const u8,
 };
 
-pub const InsightsWs = struct {
-    name: []const u8,
-    coverage: u8,
-    refer_count: []const u8,
-    trend: [8]u8,
+// ── Insights data model (aligned with s1-4 signal_ratio spec) ──
+
+pub const ConstraintStat = struct {
+    id: []const u8,
+    label: []const u8,
+    refer_count: u32,
+    idle_days: ?u16, // null = active
 };
 
-pub const HotspotEntry = struct {
+pub const MemberPromptStat = struct {
     name: []const u8,
-    refer_count: []const u8,
-    prompt_idx: usize,
+    refer_count: u32,
+};
+
+pub const InsightsPrompt = struct {
+    name: []const u8,
+    constraint_count: u8,
+    active_constraint_count: u8,
+    idle_constraint_count: u8,
+    signal_ratio: u8, // 0-100, displayed as percentage
+    refer_count: u32,
+    rate_per_day: u16,
+    delta_pct: i8,
+    last_referred_days_ago: ?u16, // null = never referred
+    trend: [30]u16,
+    constraints: []const ConstraintStat,
+};
+
+pub const InsightsMember = struct {
+    username: []const u8,
+    refer_count: u32,
+    active_days: u8,
+    trend: [30]u16, // daily refer counts (30d), used for contribution heatmap
+    top_prompts: []const MemberPromptStat,
+    models: []const InsightsModel,
+};
+
+pub const InsightsModel = struct {
+    model_id: []const u8,
+    refer_count: u32,
+    pct: u8, // percentage of total
+};
+
+pub const AlertLevel = enum {
+    prune, // idle constraints, needs pruning
+    declining, // refer rate dropping
+    healthy, // all good
+
+    pub fn icon(self: AlertLevel) []const u8 {
+        return switch (self) {
+            .prune => "\xe2\x9a\xa0", // ⚠
+            .declining => "\xe2\x86\x93", // ↓
+            .healthy => "\xe2\x9c\x93", // ✓
+        };
+    }
+};
+
+pub const InsightsAlert = struct {
+    prompt_name: []const u8,
+    level: AlertLevel,
+    message: []const u8,
+};
+
+pub const InsightsData = struct {
+    // Header
+    constraint_count: u32,
+    active_constraint_count: u32,
+    idle_constraint_count: u32,
+    signal_ratio: u8, // 0-100
+    refers_per_hour: u16,
+    today_delta_pct: i8,
+    last_event_minutes_ago: u16,
+    // Chart
+    refer_trend: [30]u16, // daily refer counts (30d)
+    // Prompts
+    prompts: []const InsightsPrompt,
+    // Members
+    members: []const InsightsMember,
+    // Models
+    models: []const InsightsModel,
+    // Alerts
+    alerts: []const InsightsAlert,
 };
 
 // Context branch diffs (member branch vs main)
@@ -291,20 +362,99 @@ pub const WS_OVERRIDES = [_]OverrideEntry{
     .{ .prompt_name = "zig/DEPRECATED_API", .base_hash = "c8d9", .current_hash = "c8d9", .status = "clean" },
 };
 
-pub const INSIGHTS_WS = [_]InsightsWs{
-    .{ .name = "payments-api", .coverage = 82, .refer_count = "4.2k", .trend = .{ 2, 3, 4, 5, 6, 7, 6, 5 } },
-    .{ .name = "merchant-portal", .coverage = 76, .refer_count = "3.1k", .trend = .{ 1, 2, 3, 4, 5, 5, 4, 3 } },
-    .{ .name = "infra-tools", .coverage = 74, .refer_count = "2.8k", .trend = .{ 2, 2, 3, 3, 4, 4, 3, 3 } },
-    .{ .name = "release-bot", .coverage = 63, .refer_count = "1.1k", .trend = .{ 1, 1, 2, 2, 3, 3, 2, 2 } },
-    .{ .name = "docs-site", .coverage = 61, .refer_count = "0.9k", .trend = .{ 0, 1, 1, 2, 2, 3, 2, 2 } },
+const style_constraints = [_]ConstraintStat{
+    .{ .id = "c-1", .label = "naming conventions", .refer_count = 1280, .idle_days = null },
+    .{ .id = "c-2", .label = "import ordering", .refer_count = 890, .idle_days = null },
+    .{ .id = "c-3", .label = "formatting rules", .refer_count = 720, .idle_days = null },
+    .{ .id = "c-4", .label = "code organization", .refer_count = 180, .idle_days = null },
+    .{ .id = "c-5", .label = "file structure", .refer_count = 80, .idle_days = null },
+    .{ .id = "c-6", .label = "error handling", .refer_count = 40, .idle_days = null },
+    .{ .id = "c-7", .label = "test conventions", .refer_count = 20, .idle_days = null },
+    .{ .id = "c-8", .label = "unused rule", .refer_count = 0, .idle_days = 14 },
 };
 
-pub const HOTSPOTS = [_]HotspotEntry{
-    .{ .name = "coding/STYLE", .refer_count = "3210", .prompt_idx = 0 },
-    .{ .name = "coding/API_REVIEW", .refer_count = "990", .prompt_idx = 2 },
-    .{ .name = "wf/RELEASE_CHECKLIST", .refer_count = "611", .prompt_idx = 3 },
-    .{ .name = "coding/CODE_COMMENTS", .refer_count = "488", .prompt_idx = 5 },
-    .{ .name = "zig/ZIG_STYLE", .refer_count = "412", .prompt_idx = 6 },
+const empty_constraints = [_]ConstraintStat{};
+
+const alice_prompts = [_]MemberPromptStat{
+    .{ .name = "coding/STYLE", .refer_count = 68 },
+    .{ .name = "zig/ZIG_STYLE", .refer_count = 32 },
+    .{ .name = "coding/API_REVIEW", .refer_count = 24 },
+};
+const bob_prompts = [_]MemberPromptStat{
+    .{ .name = "coding/STYLE", .refer_count = 42 },
+    .{ .name = "zig/DEPRECATED", .refer_count = 28 },
+};
+const carol_prompts = [_]MemberPromptStat{
+    .{ .name = "coding/COMMENTS", .refer_count = 35 },
+    .{ .name = "coding/STYLE", .refer_count = 22 },
+};
+const dave_prompts = [_]MemberPromptStat{
+    .{ .name = "wf/RELEASE", .refer_count = 18 },
+};
+
+const alice_models = [_]InsightsModel{
+    .{ .model_id = "claude-opus", .refer_count = 138, .pct = 97 },
+    .{ .model_id = "gpt-4o", .refer_count = 4, .pct = 3 },
+};
+const bob_models = [_]InsightsModel{
+    .{ .model_id = "claude-opus", .refer_count = 95, .pct = 97 },
+    .{ .model_id = "gpt-4o", .refer_count = 3, .pct = 3 },
+};
+const single_model = [_]InsightsModel{
+    .{ .model_id = "claude-opus", .refer_count = 67, .pct = 100 },
+};
+
+// @zig-fmt: off
+const insights_prompts = [_]InsightsPrompt{
+    .{ .name = "coding/STYLE",      .constraint_count = 8,  .active_constraint_count = 7,  .idle_constraint_count = 1, .signal_ratio = 87,  .refer_count = 3210, .rate_per_day = 42, .delta_pct = 8,   .last_referred_days_ago = 0,  .trend = .{ 85, 90, 95, 88, 102, 108, 112, 98, 105, 115, 120, 110, 118, 125, 130, 122, 128, 135, 140, 132, 138, 142, 148, 140, 145, 150, 155, 148, 152, 158 }, .constraints = &style_constraints },
+    .{ .name = "coding/API_REVIEW", .constraint_count = 12, .active_constraint_count = 10, .idle_constraint_count = 2, .signal_ratio = 83,  .refer_count = 842,  .rate_per_day = 12, .delta_pct = 14,  .last_referred_days_ago = 0,  .trend = .{ 18, 20, 22, 25, 24, 28, 30, 26, 32, 35, 28, 30, 34, 38, 36, 40, 42, 38, 35, 40, 45, 42, 48, 44, 40, 46, 50, 48, 52, 55 }, .constraints = &empty_constraints },
+    .{ .name = "wf/RELEASE",        .constraint_count = 4,  .active_constraint_count = 4,  .idle_constraint_count = 0, .signal_ratio = 100, .refer_count = 611,  .rate_per_day = 8,  .delta_pct = -2,  .last_referred_days_ago = 1,  .trend = .{ 25, 28, 30, 32, 28, 26, 24, 22, 25, 28, 30, 26, 24, 22, 20, 22, 24, 26, 22, 20, 18, 20, 22, 24, 20, 18, 16, 18, 20, 18 }, .constraints = &empty_constraints },
+    .{ .name = "coding/COMMENTS",   .constraint_count = 9,  .active_constraint_count = 7,  .idle_constraint_count = 2, .signal_ratio = 77,  .refer_count = 488,  .rate_per_day = 6,  .delta_pct = 5,   .last_referred_days_ago = 0,  .trend = .{ 12, 14, 15, 16, 14, 18, 20, 16, 18, 20, 22, 18, 20, 22, 24, 20, 22, 24, 26, 22, 24, 26, 28, 24, 26, 28, 30, 26, 28, 30 }, .constraints = &empty_constraints },
+    .{ .name = "zig/ZIG_STYLE",     .constraint_count = 11, .active_constraint_count = 8,  .idle_constraint_count = 3, .signal_ratio = 72,  .refer_count = 412,  .rate_per_day = 5,  .delta_pct = 3,   .last_referred_days_ago = 0,  .trend = .{ 10, 12, 14, 12, 15, 16, 14, 18, 16, 14, 18, 20, 16, 18, 20, 22, 18, 16, 20, 22, 18, 20, 22, 24, 20, 18, 22, 24, 20, 22 }, .constraints = &empty_constraints },
+    .{ .name = "zig/DEPRECATED",    .constraint_count = 59, .active_constraint_count = 52, .idle_constraint_count = 7, .signal_ratio = 88,  .refer_count = 387,  .rate_per_day = 5,  .delta_pct = 11,  .last_referred_days_ago = 0,  .trend = .{ 5, 6, 8, 10, 8, 12, 14, 10, 12, 15, 18, 14, 16, 18, 20, 16, 18, 22, 24, 18, 20, 22, 25, 20, 22, 25, 28, 22, 25, 28 }, .constraints = &empty_constraints },
+    .{ .name = "coding/COMPAT",     .constraint_count = 8,  .active_constraint_count = 8,  .idle_constraint_count = 0, .signal_ratio = 100, .refer_count = 198,  .rate_per_day = 3,  .delta_pct = 1,   .last_referred_days_ago = 1,  .trend = .{ 5, 6, 6, 7, 6, 7, 8, 6, 7, 8, 6, 7, 8, 7, 6, 7, 8, 7, 6, 7, 8, 7, 6, 7, 8, 7, 6, 7, 8, 7 }, .constraints = &empty_constraints },
+    .{ .name = "wf/GEN_PR",         .constraint_count = 4,  .active_constraint_count = 4,  .idle_constraint_count = 0, .signal_ratio = 100, .refer_count = 102,  .rate_per_day = 1,  .delta_pct = -5,  .last_referred_days_ago = 2,  .trend = .{ 6, 5, 5, 4, 5, 4, 4, 3, 4, 3, 4, 3, 3, 4, 3, 3, 2, 3, 3, 2, 3, 2, 2, 3, 2, 2, 1, 2, 2, 1 }, .constraints = &empty_constraints },
+    .{ .name = "arch/ADR_DOC",      .constraint_count = 6,  .active_constraint_count = 6,  .idle_constraint_count = 0, .signal_ratio = 100, .refer_count = 58,   .rate_per_day = 1,  .delta_pct = 0,   .last_referred_days_ago = 3,  .trend = .{ 2, 2, 2, 2, 1, 2, 2, 2, 1, 2, 2, 2, 2, 1, 2, 2, 2, 1, 2, 2, 2, 2, 1, 2, 2, 2, 1, 2, 2, 2 }, .constraints = &empty_constraints },
+    .{ .name = "style/UIUX",        .constraint_count = 7,  .active_constraint_count = 0,  .idle_constraint_count = 7, .signal_ratio = 0,   .refer_count = 0,    .rate_per_day = 0,  .delta_pct = 0,   .last_referred_days_ago = 14, .trend = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .constraints = &empty_constraints },
+    .{ .name = "wf/GITIGNORE",      .constraint_count = 3,  .active_constraint_count = 0,  .idle_constraint_count = 3, .signal_ratio = 0,   .refer_count = 0,    .rate_per_day = 0,  .delta_pct = 0,   .last_referred_days_ago = null, .trend = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .constraints = &empty_constraints },
+    .{ .name = "cmd/GEN_ISSUE",     .constraint_count = 4,  .active_constraint_count = 0,  .idle_constraint_count = 4, .signal_ratio = 0,   .refer_count = 0,    .rate_per_day = 0,  .delta_pct = 0,   .last_referred_days_ago = 21, .trend = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .constraints = &empty_constraints },
+};
+
+const insights_members = [_]InsightsMember{
+    .{ .username = "alice", .refer_count = 142, .active_days = 22, .trend = .{ 4, 6, 5, 8, 7, 0, 0, 5, 7, 6, 9, 8, 1, 0, 6, 8, 7, 10, 9, 2, 0, 7, 9, 8, 11, 10, 3, 1, 8, 10 }, .top_prompts = &alice_prompts, .models = &alice_models },
+    .{ .username = "bob",   .refer_count = 98,  .active_days = 18, .trend = .{ 3, 4, 0, 5, 6, 0, 0, 4, 3, 0, 6, 7, 2, 0, 3, 5, 0, 7, 8, 0, 0, 4, 6, 0, 8, 7, 1, 0, 5, 7 }, .top_prompts = &bob_prompts, .models = &bob_models },
+    .{ .username = "carol", .refer_count = 67,  .active_days = 15, .trend = .{ 0, 3, 4, 2, 0, 0, 0, 0, 4, 5, 3, 0, 0, 0, 0, 5, 6, 4, 0, 0, 0, 0, 6, 5, 3, 0, 0, 0, 5, 4 }, .top_prompts = &carol_prompts, .models = &single_model },
+    .{ .username = "dave",  .refer_count = 31,  .active_days = 8,  .trend = .{ 2, 0, 0, 3, 2, 0, 0, 0, 0, 0, 4, 3, 0, 0, 0, 0, 0, 5, 2, 0, 0, 0, 0, 0, 4, 3, 0, 0, 0, 2 }, .top_prompts = &dave_prompts, .models = &single_model },
+};
+// @zig-fmt: on
+
+const insights_models = [_]InsightsModel{
+    .{ .model_id = "claude-opus", .refer_count = 3800, .pct = 90 },
+    .{ .model_id = "gpt-4o", .refer_count = 400, .pct = 10 },
+};
+
+const insights_alerts = [_]InsightsAlert{
+    .{ .prompt_name = "style/UIUX", .level = .prune, .message = "7 idle constraints \u{2014} consider pruning" },
+    .{ .prompt_name = "wf/GITIGNORE", .level = .prune, .message = "3 idle \u{2014} never referred" },
+    .{ .prompt_name = "cmd/GEN_ISSUE", .level = .prune, .message = "4 idle for 21d" },
+    .{ .prompt_name = "wf/GEN_PR", .level = .declining, .message = "refer rate -5% this week" },
+    .{ .prompt_name = "wf/RELEASE", .level = .declining, .message = "refer rate -2% this week" },
+    .{ .prompt_name = "coding/STYLE", .level = .healthy, .message = "signal 7/8, +8% this week" },
+};
+
+pub const INSIGHTS: InsightsData = .{
+    .constraint_count = 380,
+    .active_constraint_count = 312,
+    .idle_constraint_count = 68,
+    .signal_ratio = 82,
+    .refers_per_hour = 42,
+    .today_delta_pct = 12,
+    .last_event_minutes_ago = 2,
+    .refer_trend = .{ 145, 160, 155, 172, 168, 42, 28, 158, 175, 168, 192, 188, 48, 32, 172, 190, 182, 210, 205, 55, 35, 185, 205, 195, 225, 218, 62, 38, 198, 215 },
+    .prompts = &insights_prompts,
+    .members = &insights_members,
+    .models = &insights_models,
+    .alerts = &insights_alerts,
 };
 
 pub const SAMPLE_CONTENT =
