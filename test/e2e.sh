@@ -4,6 +4,12 @@ set -euo pipefail
 CLUMSIES_RAW="${CLUMSIES:-./zig-out/bin/clumsies}"
 CLUMSIES="$(cd "$(dirname "$CLUMSIES_RAW")" && pwd)/$(basename "$CLUMSIES_RAW")"
 
+TMPBASE=$(mktemp -d)
+trap 'rm -rf "$TMPBASE"' EXIT
+HOME_DIR="$TMPBASE/home"
+export HOME="$HOME_DIR"
+mkdir -p "$HOME_DIR"
+
 PASS=0
 FAIL=0
 

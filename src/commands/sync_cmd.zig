@@ -243,3 +243,41 @@ fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Sync workspace prompts and context files from Hub to local cache.\n", .{P});
     try out.print("{s}Requires workspace binding (run {s}clumsies init{s} first).\n", .{ P, Color.cyan, Color.reset });
 }
+
+const testing = std.testing;
+
+test "isPathSafe rejects traversal" {
+    try testing.expect(!isPathSafe("../etc/passwd"));
+    try testing.expect(!isPathSafe("foo/../../etc/passwd"));
+    try testing.expect(!isPathSafe(".."));
+}
+
+test "isPathSafe rejects absolute paths" {
+    try testing.expect(!isPathSafe("/etc/passwd"));
+    try testing.expect(!isPathSafe("/absolute/path"));
+}
+
+test "isPathSafe rejects empty" {
+    try testing.expect(!isPathSafe(""));
+}
+
+test "isPathSafe accepts valid relative paths" {
+    try testing.expect(isPathSafe("rule/coding/STYLE.md"));
+    try testing.expect(isPathSafe("context/readme.md"));
+    try testing.expect(isPathSafe("file.md"));
+    try testing.expect(isPathSafe("a/b/c/d.txt"));
+}
+
+test "percentEncode encodes special characters" {
+    const allocator = testing.allocator;
+    const result = try percentEncode(allocator, "hello world/foo&bar");
+    defer allocator.free(result);
+    try testing.expectEqualStrings("hello%20world%2Ffoo%26bar", result);
+}
+
+test "percentEncode passes unreserved characters" {
+    const allocator = testing.allocator;
+    const result = try percentEncode(allocator, "hello-world_v1.0~beta");
+    defer allocator.free(result);
+    try testing.expectEqualStrings("hello-world_v1.0~beta", result);
+}

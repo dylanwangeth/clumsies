@@ -158,3 +158,33 @@ fn appendKv(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const 
     try appendTomlEscaped(allocator, buf, value);
     try buf.appendSlice(allocator, "\"\n");
 }
+
+const testing = std.testing;
+
+test "appendTomlEscaped handles special characters" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try appendTomlEscaped(testing.allocator, &buf, "hello \"world\" \\ \n");
+    try testing.expectEqualStrings("hello \\\"world\\\" \\\\ \\n", buf.items);
+}
+
+test "appendTomlEscaped passes plain text" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try appendTomlEscaped(testing.allocator, &buf, "/home/user/workspace");
+    try testing.expectEqualStrings("/home/user/workspace", buf.items);
+}
+
+test "pathMatchBoundary" {
+    // Simulate the path matching logic from resolveWorkspace
+    const match = struct {
+        fn check(cwd: []const u8, p: []const u8) bool {
+            return std.mem.startsWith(u8, cwd, p) and (cwd.len == p.len or cwd[p.len] == std.fs.path.sep);
+        }
+    }.check;
+
+    try testing.expect(match("/home/me/ws", "/home/me/ws"));
+    try testing.expect(match("/home/me/ws/sub", "/home/me/ws"));
+    try testing.expect(!match("/home/me/ws2", "/home/me/ws"));
+    try testing.expect(!match("/home/me/ws2/sub", "/home/me/ws"));
+}
