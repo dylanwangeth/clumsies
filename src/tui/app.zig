@@ -1532,13 +1532,15 @@ pub const Dashboard = struct {
         const size = ctx.max.size();
         const focused = self.settings_focus == .content;
         const user = data.CURRENT_USER;
+        const cfg = data.CLIENT_CONFIG;
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&surface, theme.PANEL);
         w.drawBorder(&surface, if (focused) theme.ACCENT else theme.BORDER, theme.PANEL);
         w.writeText(&surface, ctx, 2, 0, "Account", theme.boldOn(theme.PANEL, theme.TEXT));
 
         var row: u16 = 2;
-        // Profile section
+
+        // Profile
         row = w.writeSectionHeader(&surface, ctx, 2, row, "Profile");
         row = w.writeKv(&surface, ctx, 4, row, "Username", user.username, 14);
         row = w.writeKv(&surface, ctx, 4, row, "User ID", user.user_id, 14);
@@ -1547,7 +1549,17 @@ pub const Dashboard = struct {
         w.writeText(&surface, ctx, 19, row, user.role, theme.fg(role_color));
         row += 2;
 
-        // Security section
+        // Connection
+        row = w.writeSectionHeader(&surface, ctx, 2, row, "Connection");
+        row = w.writeKv(&surface, ctx, 4, row, "Server", cfg.server_url, 14);
+        row = w.writeKv(&surface, ctx, 4, row, "Sync", cfg.sync_strategy, 14);
+        w.writeText(&surface, ctx, 4, row, "Token", theme.fg(theme.MUTED));
+        const token_color = if (std.mem.eql(u8, cfg.token_status, "active")) theme.OK else theme.DANGER;
+        const token_info = try std.fmt.allocPrint(ctx.arena, "{s}, expires {s}", .{ cfg.token_status, cfg.token_expires });
+        w.writeText(&surface, ctx, 19, row, token_info, theme.fg(token_color));
+        row += 2;
+
+        // Security
         row = w.writeSectionHeader(&surface, ctx, 2, row, "Security");
         w.writeText(&surface, ctx, 4, row, "Password", theme.fg(theme.MUTED));
         w.writeText(&surface, ctx, 19, row, "********", theme.fg(theme.TEXT_SOFT));
@@ -1557,10 +1569,11 @@ pub const Dashboard = struct {
         w.writeText(&surface, ctx, 19, row, "1 active", theme.fg(theme.OK));
         row += 2;
 
-        // My Workspaces
+        // My Workspaces with tree-expanded paths
         row = w.writeSectionHeader(&surface, ctx, 2, row, try std.fmt.allocPrint(ctx.arena, "My Workspaces ({d})", .{user.workspaces.len}));
         const sel = @min(self.settings_content_sel, user.workspaces.len - 1);
         for (user.workspaces, 0..) |ws_access, i| {
+            if (row >= size.height -| 4) break;
             const is_sel = i == sel and focused;
             if (is_sel) {
                 surface.writeCell(1, row, .{
@@ -1582,7 +1595,22 @@ pub const Dashboard = struct {
             };
             w.writeText(&surface, ctx, 24, row, level_label, theme.fg(badge_fg));
             row += 1;
-            if (row >= size.height -| 3) break;
+
+            // Expand paths for selected workspace
+            if (is_sel and ws_access.paths.len > 0) {
+                for (ws_access.paths, 0..) |path, pi| {
+                    if (row >= size.height -| 4) break;
+                    const is_last = pi + 1 == ws_access.paths.len;
+                    const connector = if (is_last) "\xe2\x94\x94" else "\xe2\x94\x9c"; // └ or ├
+                    w.writeText(&surface, ctx, 6, row, connector, theme.fg(theme.BORDER));
+                    w.writeText(&surface, ctx, 8, row, path, theme.fg(theme.MUTED));
+                    row += 1;
+                }
+            } else if (is_sel and ws_access.paths.len == 0) {
+                w.writeText(&surface, ctx, 6, row, "\xe2\x94\x94", theme.fg(theme.BORDER)); // └
+                w.writeText(&surface, ctx, 8, row, "(no local paths)", theme.fg(theme.MUTED));
+                row += 1;
+            }
         }
         row += 1;
 
