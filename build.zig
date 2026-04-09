@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
-    const enable_keychain = builtin.os.tag == .macos;
+    const enable_keychain = target.result.os.tag == .macos;
     options.addOption(bool, "enable_keychain", enable_keychain);
 
     const lib = b.addModule("clumsies_lib", .{
@@ -89,16 +89,22 @@ pub fn build(b: *std.Build) void {
     hub_run_step.dependOn(&hub_run_cmd.step);
 
     // CLI tests
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = options.createModule() },
+            .{ .name = "clumsies_lib", .module = lib },
+            .{ .name = "toml", .module = toml_dep.module("toml") },
+        },
+    });
+    if (enable_keychain) {
+        test_module.linkFramework("Security", .{});
+        test_module.linkFramework("CoreFoundation", .{});
+    }
     const unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "build_options", .module = options.createModule() },
-                .{ .name = "clumsies_lib", .module = lib },
-            },
-        }),
+        .root_module = test_module,
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);

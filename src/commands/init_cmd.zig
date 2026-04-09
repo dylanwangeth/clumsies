@@ -102,7 +102,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         ws_name = parsed.value.name;
     }
 
-    // Add workspace binding to ~/.clumsies/config.json
+    // Add workspace binding to ~/.clumsies/config.toml
     const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd_path);
 
