@@ -1,5 +1,6 @@
 const std = @import("std");
-const builtin = @import("builtin");
+const build_options = @import("build_options");
+const enable_keychain = build_options.enable_keychain;
 
 pub const AuthInfo = struct {
     hub_url: []const u8,
@@ -20,7 +21,7 @@ pub fn saveAuth(allocator: std.mem.Allocator, hub_url: []const u8, username: []c
     const json = try std.fmt.allocPrint(allocator, "{{\"hub_url\":\"{s}\",\"username\":\"{s}\",\"access_token\":\"{s}\",\"refresh_token\":\"{s}\"}}", .{ hub_url, username, access_token, refresh_token });
     defer allocator.free(json);
 
-    if (comptime builtin.os.tag == .macos) {
+    if (comptime enable_keychain) {
         try keychainStore(json);
     } else {
         try fileFallbackStore(allocator, json);
@@ -28,7 +29,7 @@ pub fn saveAuth(allocator: std.mem.Allocator, hub_url: []const u8, username: []c
 }
 
 pub fn loadAuth(allocator: std.mem.Allocator) !AuthInfo {
-    const json = if (comptime builtin.os.tag == .macos)
+    const json = if (comptime enable_keychain)
         keychainLookup(allocator) catch return error.NotAuthenticated
     else
         fileFallbackLoad(allocator) catch return error.NotAuthenticated;
@@ -51,13 +52,13 @@ const AuthJson = struct {
 };
 
 // macOS Keychain via Security framework
-const c = if (builtin.os.tag == .macos) @cImport({
+const c = if (enable_keychain) @cImport({
     @cInclude("Security/Security.h");
     @cInclude("CoreFoundation/CoreFoundation.h");
 }) else struct {};
 
 fn cfString(s: []const u8) ?*anyopaque {
-    if (comptime builtin.os.tag != .macos) return null;
+    if (comptime !enable_keychain) return null;
     return @ptrCast(@constCast(c.CFStringCreateWithBytes(null, s.ptr, @intCast(s.len), c.kCFStringEncodingUTF8, 0)));
 }
 
