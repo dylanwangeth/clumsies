@@ -70,6 +70,25 @@ pub const CANVAS_CELL: vaxis.Cell = .{
     .style = style(TEXT, CANVAS),
 };
 
+pub fn lerpColor(a: vaxis.Color, b: vaxis.Color, t: f32) vaxis.Color {
+    const a_rgb = switch (a) {
+        .rgb => |v| v,
+        else => [3]u8{ 0, 0, 0 },
+    };
+    const b_rgb = switch (b) {
+        .rgb => |v| v,
+        else => [3]u8{ 0, 0, 0 },
+    };
+    const inv = 1.0 - t;
+    return .{
+        .rgb = .{
+            @intFromFloat(@as(f32, @floatFromInt(a_rgb[0])) * inv + @as(f32, @floatFromInt(b_rgb[0])) * t),
+            @intFromFloat(@as(f32, @floatFromInt(a_rgb[1])) * inv + @as(f32, @floatFromInt(b_rgb[1])) * t),
+            @intFromFloat(@as(f32, @floatFromInt(a_rgb[2])) * inv + @as(f32, @floatFromInt(b_rgb[2])) * t),
+        },
+    };
+}
+
 pub fn blank(bg: vaxis.Color) vaxis.Cell {
     return .{
         .char = .{ .grapheme = " ", .width = 1 },

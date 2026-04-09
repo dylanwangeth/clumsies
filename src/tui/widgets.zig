@@ -137,6 +137,158 @@ pub fn sparkline(allocator: std.mem.Allocator, values: []const u8) ![]const u8 {
     return try list.toOwnedSlice(allocator);
 }
 
+// Draw a braille area chart with gradient coloring (btop-style).
+// Area is filled from the data line down to the bottom, creating
+// a solid "mountain" shape. Gradient: ACCENT_SOFT (bottom) → OK (top).
+pub fn drawBrailleAreaChart(surface: *vxfw.Surface, allocator: std.mem.Allocator, trend: []const u16, x: u16, y: u16, width: u16, height: u16) void {
+    if (width == 0 or height == 0 or trend.len == 0) return;
+
+    var max_val: u16 = 1;
+    var min_val: u16 = std.math.maxInt(u16);
+    for (trend) |v| {
+        if (v > max_val) max_val = v;
+        if (v < min_val) min_val = v;
+    }
+    const padding: u16 = @max(max_val / 10, 1);
+    min_val = min_val -| padding;
+    max_val = max_val + padding;
+
+    const braille_h: u32 = @as(u32, height) * 4;
+    const cols: u32 = @min(@as(u32, width) * 2, 512);
+    const rows: u32 = @min(braille_h, 128);
+
+    var dots: [512][128]bool = undefined;
+    for (&dots) |*r| @memset(r, false);
+
+    // Plot data and fill area below each point
+    for (0..cols) |col_idx| {
+        const data_idx: usize = col_idx * (trend.len - 1) / @max(cols - 1, 1);
+        const val = trend[@min(data_idx, trend.len - 1)];
+        const clamped = @max(val, min_val) - min_val;
+        const normalized: u32 = @as(u32, clamped) * (rows - 1) / @as(u32, max_val - min_val);
+        const dot_y: u32 = rows - 1 - normalized;
+
+        // Fill from dot_y down to bottom (area fill)
+        var fill_y = dot_y;
+        while (fill_y < rows) : (fill_y += 1) {
+            dots[col_idx][fill_y] = true;
+        }
+    }
+
+    // Render braille characters with vertical gradient
+    const char_cols = (cols + 1) / 2;
+    const char_rows = (rows + 3) / 4;
+
+    for (0..char_rows) |cr| {
+        for (0..char_cols) |cc| {
+            var cp: u21 = 0x2800;
+            const dx = cc * 2;
+            const dy = cr * 4;
+
+            if (dx < cols) {
+                if (dy + 0 < rows and dots[dx][dy + 0]) cp |= 0x01;
+                if (dy + 1 < rows and dots[dx][dy + 1]) cp |= 0x02;
+                if (dy + 2 < rows and dots[dx][dy + 2]) cp |= 0x04;
+                if (dy + 3 < rows and dots[dx][dy + 3]) cp |= 0x40;
+            }
+            if (dx + 1 < cols) {
+                if (dy + 0 < rows and dots[dx + 1][dy + 0]) cp |= 0x08;
+                if (dy + 1 < rows and dots[dx + 1][dy + 1]) cp |= 0x10;
+                if (dy + 2 < rows and dots[dx + 1][dy + 2]) cp |= 0x20;
+                if (dy + 3 < rows and dots[dx + 1][dy + 3]) cp |= 0x80;
+            }
+
+            if (cp == 0x2800) continue;
+
+            // Vertical gradient: top rows = ACCENT (deep amber), bottom rows = ACCENT_SOFT (light amber)
+            const vert_t: f32 = if (char_rows > 1) 1.0 - @as(f32, @floatFromInt(cr)) / @as(f32, @floatFromInt(char_rows - 1)) else 0.5;
+            const color = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, vert_t);
+
+            var tmp: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(cp, &tmp) catch continue;
+            const grapheme = allocator.dupe(u8, tmp[0..len]) catch continue;
+
+            const col: u16 = x + @as(u16, @intCast(cc));
+            const row: u16 = y + @as(u16, @intCast(cr));
+            if (col < surface.size.width and row < surface.size.height) {
+                surface.writeCell(col, row, .{
+                    .char = .{ .grapheme = grapheme, .width = 1 },
+                    .style = .{ .fg = color, .bg = theme.PANEL },
+                });
+            }
+        }
+    }
+}
+
+// Draw a signal gauge: ███████░░ active/total
+pub fn drawSignalGauge(surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u16, active: u8, total: u8, max_width: u16) void {
+    if (total == 0) return;
+    const gauge_w: u16 = @min(@as(u16, total), max_width);
+    const active_w: u16 = @min(@as(u16, active) * gauge_w / @as(u16, total), gauge_w);
+
+    var c = col;
+    // Active part (bright)
+    for (0..active_w) |_| {
+        if (c >= surface.size.width) break;
+        surface.writeCell(c, row, .{
+            .char = .{ .grapheme = "\xe2\x96\x88", .width = 1 },
+            .style = .{ .fg = theme.ACCENT, .bg = theme.PANEL },
+        });
+        c += 1;
+    }
+    // Idle part (dim)
+    for (0..gauge_w - active_w) |_| {
+        if (c >= surface.size.width) break;
+        surface.writeCell(c, row, .{
+            .char = .{ .grapheme = "\xe2\x96\x91", .width = 1 },
+            .style = .{ .fg = theme.DIM, .bg = theme.PANEL },
+        });
+        c += 1;
+    }
+    // Label
+    const label = std.fmt.allocPrint(ctx.arena, " {d}/{d}", .{ active, total }) catch return;
+    writeText(surface, ctx, c + 1, row, label, .{ .fg = theme.MUTED, .bg = theme.PANEL });
+}
+
+// Draw a GitHub contribution graph style heatmap row.
+// Uses ■ (U+25A0, centered square) — naturally small and centered in the cell.
+// 1-char gap between cells, 2-char gap between weeks.
+// Returns the column after the last cell (for positioning totals).
+pub fn drawHeatmapRow(surface: *vxfw.Surface, col: u16, row: u16, values: []const u16, team_max: u16) u16 {
+    const max_f: f32 = @floatFromInt(@max(team_max, 1));
+    var c: u16 = col;
+    for (values, 0..) |val, i| {
+        if (i > 0 and i % 7 == 0) c += 2 // week gap
+        else if (i > 0) c += 1; // cell gap
+        if (c >= surface.size.width -| 1) break;
+        const fg = if (val == 0)
+            theme.PANEL_ALT
+        else
+            theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, @as(f32, @floatFromInt(val)) / max_f);
+        surface.writeCell(c, row, .{
+            .char = .{ .grapheme = "\xe2\x96\xa0", .width = 1 }, // ■ centered square
+            .style = .{ .fg = fg, .bg = theme.PANEL },
+        });
+        c += 1;
+    }
+    return c;
+}
+
+// Write a delta percentage with directional arrow and color.
+pub fn writeDelta(surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u16, delta_pct: i8) void {
+    if (delta_pct == 0) {
+        writeText(surface, ctx, col, row, " 0%", .{ .fg = theme.MUTED, .bg = theme.PANEL });
+        return;
+    }
+    const is_positive = delta_pct > 0;
+    const abs_val: u8 = if (is_positive) @intCast(delta_pct) else @intCast(-delta_pct);
+    const sign: []const u8 = if (is_positive) "+" else "-";
+    const arrow: []const u8 = if (is_positive) " \xe2\x86\x91" else " \xe2\x86\x93";
+    const color = if (is_positive) theme.OK else theme.DANGER;
+    const text = std.fmt.allocPrint(ctx.arena, "{s}{d}%{s}", .{ sign, abs_val, arrow }) catch return;
+    writeText(surface, ctx, col, row, text, .{ .fg = color, .bg = theme.PANEL });
+}
+
 // Initialize ScrollBars for selectable lists. draw_cursor is set to true
 // so that j/k keys trigger nextItem/prevItem (cursor movement) rather
 // than bare viewport scrolling. However, draw_cursor=true also activates
