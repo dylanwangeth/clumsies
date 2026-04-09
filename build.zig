@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -28,9 +29,9 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // macOS keychain integration
+    // macOS keychain integration (native builds only, not cross-compile)
     if (cli_module.resolved_target) |t| {
-        if (t.result.os.tag == .macos) {
+        if (t.result.os.tag == .macos and builtin.os.tag == .macos) {
             cli_module.linkFramework("Security", .{});
             cli_module.linkFramework("CoreFoundation", .{});
         }
