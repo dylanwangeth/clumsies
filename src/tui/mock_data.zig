@@ -358,10 +358,18 @@ pub const MEMBERS = [_]MemberEntry{
     .{ .user_id = "usr-004", .username = "dave", .role = "member", .joined = "2026-03-18", .teams = "platform, ops" },
 };
 
-// Mirrors GET /api/auth/me response
+// Mirrors GET /api/auth/me + config.toml workspace bindings
 pub const WsAccess = struct {
     name: []const u8,
     level: AccessLevel,
+    paths: []const []const u8,
+};
+
+pub const ClientConfig = struct {
+    server_url: []const u8,
+    sync_strategy: []const u8,
+    token_status: []const u8,
+    token_expires: []const u8,
 };
 
 pub const CurrentUser = struct {
@@ -401,15 +409,31 @@ pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
     .{ .name = "proposal:merge", .description = "Accept/reject proposals" },
 };
 
+const payments_paths = [_][]const u8{ "~/work/payments", "~/work/payments-v2" };
+const merchant_paths = [_][]const u8{ "~/work/merchant", "~/projects/merchant-staging" };
+const infra_paths = [_][]const u8{"~/work/infra-tools"};
+const bot_paths = [_][]const u8{"~/work/release-bot"};
+const docs_paths = [_][]const u8{"~/work/docs-site"};
+const mobile_paths = [_][]const u8{ "~/work/mobile", "~/projects/mobile-beta" };
+const pipeline_paths = [_][]const u8{"~/work/data-pipeline"};
+const empty_paths = [_][]const u8{};
+
 const my_workspaces = [_]WsAccess{
-    .{ .name = "payments-api", .level = .admin },
-    .{ .name = "merchant-portal", .level = .write },
-    .{ .name = "infra-tools", .level = .read },
-    .{ .name = "release-bot", .level = .write },
-    .{ .name = "docs-site", .level = .read },
-    .{ .name = "mobile-app", .level = .admin },
-    .{ .name = "data-pipeline", .level = .write },
-    .{ .name = "admin-dashboard", .level = .admin },
+    .{ .name = "payments-api", .level = .admin, .paths = &payments_paths },
+    .{ .name = "merchant-portal", .level = .write, .paths = &merchant_paths },
+    .{ .name = "infra-tools", .level = .read, .paths = &infra_paths },
+    .{ .name = "release-bot", .level = .write, .paths = &bot_paths },
+    .{ .name = "docs-site", .level = .read, .paths = &docs_paths },
+    .{ .name = "mobile-app", .level = .admin, .paths = &mobile_paths },
+    .{ .name = "data-pipeline", .level = .write, .paths = &pipeline_paths },
+    .{ .name = "admin-dashboard", .level = .admin, .paths = &empty_paths },
+};
+
+pub const CLIENT_CONFIG = ClientConfig{
+    .server_url = "https://hub.acme.io",
+    .sync_strategy = "session",
+    .token_status = "active",
+    .token_expires = "2026-04-07T12:00:00Z",
 };
 
 pub const CURRENT_USER = CurrentUser{
