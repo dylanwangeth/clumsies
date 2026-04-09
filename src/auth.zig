@@ -7,13 +7,23 @@ pub const AuthInfo = struct {
     username: []const u8,
     access_token: []const u8,
     refresh_token: []const u8,
+
+    pub fn deinit(self: AuthInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.hub_url);
+        allocator.free(self.username);
+        allocator.free(self.access_token);
+        allocator.free(self.refresh_token);
+    }
 };
 
 const SERVICE_NAME = "clumsies";
 const ACCOUNT_NAME = "hub-auth";
 
 pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return error.HomeNotSet;
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
+        return error.HomeNotSet;
+    defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }
 
@@ -39,14 +49,16 @@ pub fn loadAuth(allocator: std.mem.Allocator) !AuthInfo {
         keychainLookup(allocator) catch return error.NotAuthenticated
     else
         fileFallbackLoad(allocator) catch return error.NotAuthenticated;
+    defer allocator.free(json);
 
     const parsed = std.json.parseFromSlice(AuthJson, allocator, json, .{ .allocate = .alloc_always }) catch return error.NotAuthenticated;
+    defer parsed.deinit();
 
     return .{
-        .hub_url = parsed.value.hub_url,
-        .username = parsed.value.username,
-        .access_token = parsed.value.access_token,
-        .refresh_token = parsed.value.refresh_token,
+        .hub_url = try allocator.dupe(u8, parsed.value.hub_url),
+        .username = try allocator.dupe(u8, parsed.value.username),
+        .access_token = try allocator.dupe(u8, parsed.value.access_token),
+        .refresh_token = try allocator.dupe(u8, parsed.value.refresh_token),
     };
 }
 
@@ -121,7 +133,9 @@ fn keychainLookup(allocator: std.mem.Allocator) ![]const u8 {
 // File fallback for non-macOS (Linux CI etc)
 fn fileFallbackStore(allocator: std.mem.Allocator, data: []const u8) !void {
     const base = try getBasePath(allocator);
+    defer allocator.free(base);
     const path = try std.fs.path.join(allocator, &.{ base, "auth.json" });
+    defer allocator.free(path);
     std.fs.makeDirAbsolute(base) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
@@ -132,7 +146,9 @@ fn fileFallbackStore(allocator: std.mem.Allocator, data: []const u8) !void {
 
 fn fileFallbackLoad(allocator: std.mem.Allocator) ![]const u8 {
     const base = try getBasePath(allocator);
+    defer allocator.free(base);
     const path = try std.fs.path.join(allocator, &.{ base, "auth.json" });
+    defer allocator.free(path);
     const file = std.fs.openFileAbsolute(path, .{}) catch return error.NotAuthenticated;
     defer file.close();
     var buf: [64 * 1024]u8 = undefined;

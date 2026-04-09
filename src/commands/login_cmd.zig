@@ -60,6 +60,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     // POST /api/auth/login
     var client = HubClient.init(allocator, hub_url, null);
     const response = try client.post("/api/auth/login", body);
+    defer response.deinit();
 
     if (response.status != .ok) {
         try stderr.print("{s}{s}{s}Error:{s} Login failed (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, @intFromEnum(response.status) });
@@ -70,7 +71,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }
 
     // Parse response JSON for access_token and refresh_token
-    const parsed = std.json.parseFromSlice(LoginResponse, allocator, response.body, .{}) catch {
+    const parsed = std.json.parseFromSlice(LoginResponse, allocator, response.body, .{ .allocate = .alloc_always }) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to parse login response\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
