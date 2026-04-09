@@ -1,6 +1,5 @@
 const std = @import("std");
 const testing = std.testing;
-const config = @import("config.zig");
 const prompt = @import("prompt.zig");
 
 pub const PromptKind = enum {
