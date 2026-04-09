@@ -139,7 +139,7 @@ fn fileFallbackStore(allocator: std.mem.Allocator, data: []const u8) !void {
     std.fs.makeDirAbsolute(base) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
-    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
     defer file.close();
     _ = try file.write(data);
 }
@@ -152,6 +152,12 @@ fn fileFallbackLoad(allocator: std.mem.Allocator) ![]const u8 {
     const file = std.fs.openFileAbsolute(path, .{}) catch return error.NotAuthenticated;
     defer file.close();
     var buf: [64 * 1024]u8 = undefined;
-    const n = file.read(&buf) catch return error.NotAuthenticated;
-    return try allocator.dupe(u8, buf[0..n]);
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = file.read(buf[total..]) catch return error.NotAuthenticated;
+        if (n == 0) break;
+        total += n;
+    }
+    if (total == 0) return error.NotAuthenticated;
+    return try allocator.dupe(u8, buf[0..total]);
 }

@@ -38,6 +38,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         try stderr.print("{s}{s}{s}Error:{s} No workspace bound to this directory. Run {s}clumsies init{s} first.\n", .{ P, Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
         return;
     };
+    defer allocator.free(binding.ws_id);
+    defer allocator.free(binding.name);
     const ws_id = binding.ws_id;
 
     // Load auth
@@ -67,7 +69,13 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
     defer manifest_parsed.deinit();
 
-    const manifest = manifest_parsed.value;
+    const manifest = switch (manifest_parsed.value) {
+        .object => manifest_parsed.value,
+        else => {
+            try stderr.print("{s}{s}{s}Error:{s} Manifest is not a JSON object\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        },
+    };
 
     // Set up cache directory
     const cache_dir = try ws_config.getCachePath(allocator, ws_id);
@@ -107,8 +115,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
                 const prompt_parsed = std.json.parseFromSlice(std.json.Value, allocator, response.body, .{}) catch continue;
                 defer prompt_parsed.deinit();
 
-                const prompt_obj = prompt_parsed.value;
-                const canonical_name = if (prompt_obj.object.get("canonical_name")) |v| switch (v) {
+                const prompt_obj = switch (prompt_parsed.value) {
+                    .object => |obj| obj,
+                    else => continue,
+                };
+                const canonical_name = if (prompt_obj.get("canonical_name")) |v| switch (v) {
                     .string => |s| s,
                     else => continue,
                 } else continue;

@@ -87,6 +87,8 @@ pub fn main() !void {
             try cmd_setup.run(stdout_writer, stderr_writer, allocator);
         } else {
             try stderr_writer.print("{s}{s}{s}Error:{s} unknown agent command: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
+            stderr_file_writer.interface.flush() catch {};
+            std.process.exit(1);
         }
         return;
     }
@@ -105,6 +107,8 @@ pub fn main() !void {
                 // Unknown command
                 try stderr_writer.print("{s}{s}{s}Error:{s} unknown command '{s}'\n\n", .{ P, Color.bold, Color.red, Color.reset, args[1] });
                 try cmd_help.run(stderr_writer);
+                stderr_file_writer.interface.flush() catch {};
+                std.process.exit(1);
             } else {
                 // No args — TUI placeholder
                 try stdout_writer.print("{s}{s}{s}clumsies{s} {s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, version });
