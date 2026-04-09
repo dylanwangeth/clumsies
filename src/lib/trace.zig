@@ -1,9 +1,16 @@
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("encoding.zig");
-const config = @import("config.zig");
 
 pub const LOG_DIR = "log";
+
+fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
+        return error.HomeNotSet;
+    defer allocator.free(home);
+    return std.fs.path.join(allocator, &.{ home, ".clumsies" });
+}
 
 pub const EventType = enum {
     setup,
@@ -41,7 +48,7 @@ pub fn workspaceId(allocator: std.mem.Allocator, workspace_root: []const u8) ![]
 
 /// Get the trace file path: ~/.clumsies/log/{workspace_id}.jsonl
 pub fn traceFilePath(allocator: std.mem.Allocator, workspace_root: []const u8) ![]const u8 {
-    const base = try config.getBasePath(allocator);
+    const base = try getBasePath(allocator);
     defer allocator.free(base);
     const ws_id = try workspaceId(allocator, workspace_root);
     defer allocator.free(ws_id);
@@ -52,7 +59,7 @@ pub fn traceFilePath(allocator: std.mem.Allocator, workspace_root: []const u8) !
 
 /// Ensure ~/.clumsies/log/ directory exists.
 pub fn ensureLogDir(allocator: std.mem.Allocator) !void {
-    const base = try config.getBasePath(allocator);
+    const base = try getBasePath(allocator);
     defer allocator.free(base);
 
     std.fs.makeDirAbsolute(base) catch |err| switch (err) {
