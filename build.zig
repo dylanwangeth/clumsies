@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
-    const enable_keychain = target.result.os.tag == .macos;
+    const enable_keychain = target.result.os.tag == .macos and builtin.os.tag == .macos;
     options.addOption(bool, "enable_keychain", enable_keychain);
 
     const lib = b.addModule("clumsies_lib", .{
