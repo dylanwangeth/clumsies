@@ -49,6 +49,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         try stderr.print("{s}{s}{s}Error:{s} Not logged in. Run {s}clumsies login{s} first.\n", .{ P, Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
         return;
     };
+    defer auth_info.deinit(allocator);
 
     var client = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
 
@@ -62,6 +63,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         defer allocator.free(body);
 
         const response = try client.post("/api/workspaces", body);
+        defer response.deinit();
         if (response.status != .ok and response.status != .created) {
             try stderr.print("{s}{s}{s}Error:{s} Failed to create workspace (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, @intFromEnum(response.status) });
             if (response.body.len > 0) {
@@ -70,7 +72,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             return;
         }
 
-        const parsed = std.json.parseFromSlice(WorkspaceResponse, allocator, response.body, .{}) catch {
+        const parsed = std.json.parseFromSlice(WorkspaceResponse, allocator, response.body, .{ .allocate = .alloc_always }) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to parse workspace response\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
@@ -84,12 +86,13 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         defer allocator.free(path);
 
         const response = try client.get(path);
+        defer response.deinit();
         if (response.status != .ok) {
             try stderr.print("{s}{s}{s}Error:{s} Cannot access workspace {s} (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, id, @intFromEnum(response.status) });
             return;
         }
 
-        const parsed = std.json.parseFromSlice(WorkspaceResponse, allocator, response.body, .{}) catch {
+        const parsed = std.json.parseFromSlice(WorkspaceResponse, allocator, response.body, .{ .allocate = .alloc_always }) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to parse workspace response\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };

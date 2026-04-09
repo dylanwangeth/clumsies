@@ -45,6 +45,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         try stderr.print("{s}{s}{s}Error:{s} Not logged in. Run {s}clumsies login{s} first.\n", .{ P, Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
         return;
     };
+    defer auth_info.deinit(allocator);
 
     var client = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
 
@@ -53,6 +54,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(manifest_path);
 
     const manifest_response = try client.get(manifest_path);
+    defer manifest_response.deinit();
     if (manifest_response.status != .ok) {
         try stderr.print("{s}{s}{s}Error:{s} Failed to fetch manifest (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, @intFromEnum(manifest_response.status) });
         return;
@@ -98,6 +100,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
                 defer allocator.free(api_path);
 
                 const response = client.get(api_path) catch continue;
+                defer response.deinit();
                 if (response.status != .ok) continue;
 
                 // Parse to get canonical_name and kind for directory placement
@@ -117,6 +120,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
                 defer allocator.free(content_path);
 
                 const content_response = client.get(content_path) catch continue;
+                defer content_response.deinit();
                 if (content_response.status != .ok) continue;
 
                 // canonical_name is like "rule/coding/STYLE" or "workflow/cmd/COMMIT"
@@ -142,6 +146,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
                 defer allocator.free(api_path);
 
                 const response = client.get(api_path) catch continue;
+                defer response.deinit();
                 if (response.status != .ok) continue;
 
                 writeToCache(allocator, cache_dir, "context", path, response.body) catch continue;

@@ -4,6 +4,11 @@ const http = std.http;
 pub const Response = struct {
     status: http.Status,
     body: []const u8,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: Response) void {
+        self.allocator.free(self.body);
+    }
 };
 
 pub const HubClient = struct {
@@ -68,6 +73,7 @@ pub const HubClient = struct {
         return .{
             .status = result.status,
             .body = body,
+            .allocator = self.allocator,
         };
     }
 };

@@ -39,13 +39,16 @@ pub fn resolveWorkspace(allocator: std.mem.Allocator, cwd: []const u8) !Workspac
 /// Get the cache directory for a workspace.
 pub fn getCachePath(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
     const base = try auth.getBasePath(allocator);
+    defer allocator.free(base);
     return std.fs.path.join(allocator, &.{ base, "workspaces", ws_id, "cache" });
 }
 
 /// Add a workspace binding to config.toml.
 pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: []const u8, ws_id: []const u8, path: []const u8) !void {
     const base = try auth.getBasePath(allocator);
+    defer allocator.free(base);
     const config_path = try std.fs.path.join(allocator, &.{ base, "config.toml" });
+    defer allocator.free(config_path);
 
     std.fs.makeDirAbsolute(base) catch |err| {
         if (err != error.PathAlreadyExists) return err;
@@ -53,6 +56,7 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
 
     // Read existing config to preserve other workspaces
     var existing_workspaces: std.ArrayList(TomlWorkspaceOut) = .empty;
+    defer existing_workspaces.deinit(allocator);
     var existing_server_url: []const u8 = server_url;
 
     if (loadConfig(allocator)) |cfg| {
@@ -91,7 +95,9 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
 
 fn loadConfig(allocator: std.mem.Allocator) !Config {
     const base = try auth.getBasePath(allocator);
+    defer allocator.free(base);
     const config_path = try std.fs.path.join(allocator, &.{ base, "config.toml" });
+    defer allocator.free(config_path);
 
     const file = std.fs.openFileAbsolute(config_path, .{}) catch {
         return error.NoConfigFound;
