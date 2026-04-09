@@ -16,17 +16,29 @@ pub fn build(b: *std.Build) void {
     });
 
     // CLI artifact
+    const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
+    const cli_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = options.createModule() },
+            .{ .name = "clumsies_lib", .module = lib },
+            .{ .name = "toml", .module = toml_dep.module("toml") },
+        },
+    });
+
+    // macOS keychain integration
+    if (cli_module.resolved_target) |t| {
+        if (t.result.os.tag == .macos) {
+            cli_module.linkFramework("Security", .{});
+            cli_module.linkFramework("CoreFoundation", .{});
+        }
+    }
+
     const exe = b.addExecutable(.{
         .name = "clumsies",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "build_options", .module = options.createModule() },
-                .{ .name = "clumsies_lib", .module = lib },
-            },
-        }),
+        .root_module = cli_module,
     });
 
     b.installArtifact(exe);
