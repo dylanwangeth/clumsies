@@ -89,7 +89,7 @@ pub const MpfResult = struct {
 };
 
 pub fn loadMpf(allocator: std.mem.Allocator, workspace_root: []const u8, known_hash: ?[]const u8) !MpfResult {
-    const mpf_path = try std.fs.path.join(allocator, &.{ workspace_root, ".prompts", "META_PROMPT.md" });
+    const mpf_path = try std.fs.path.join(allocator, &.{ workspace_root, "META_PROMPT.md" });
     defer allocator.free(mpf_path);
 
     const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return .{ .content = null, .hash = null };
@@ -128,13 +128,12 @@ pub fn deinitPromptItems(allocator: std.mem.Allocator, items: *std.ArrayList(Pro
     items.deinit(allocator);
 }
 
-/// Discover all prompts in the .prompts/ directory, organized by kind.
+/// Discover all prompts in the workspace cache directory, organized by kind.
 pub fn discoverAll(allocator: std.mem.Allocator, workspace_root: []const u8) !std.ArrayList(PromptItem) {
     var items: std.ArrayList(PromptItem) = .empty;
     errdefer deinitPromptItems(allocator, &items);
 
-    const prompts_root = try std.fs.path.join(allocator, &.{ workspace_root, ".prompts" });
-    defer allocator.free(prompts_root);
+    const prompts_root = workspace_root;
 
     for (kind_dirs) |kd| {
         try scanKindDirectory(allocator, prompts_root, kd.dir, kd.kind, &items);
@@ -149,8 +148,7 @@ pub fn discoverSearchable(allocator: std.mem.Allocator, workspace_root: []const 
     var items: std.ArrayList(PromptItem) = .empty;
     errdefer deinitPromptItems(allocator, &items);
 
-    const prompts_root = try std.fs.path.join(allocator, &.{ workspace_root, ".prompts" });
-    defer allocator.free(prompts_root);
+    const prompts_root = workspace_root;
 
     const searchable_kinds = [_]struct { dir: []const u8, kind: PromptKind }{
         .{ .dir = "rule", .kind = .rule },
@@ -227,7 +225,7 @@ fn scanKindDirectory(
         errdefer allocator.free(id);
 
         // path = relative to workspace root
-        const rel_path = try std.fmt.allocPrint(allocator, ".prompts/{s}/{s}", .{ dir_name, entry.path });
+        const rel_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_name, entry.path });
         errdefer allocator.free(rel_path);
 
         // group = first subdirectory under the kind directory, or null
@@ -590,13 +588,13 @@ test "discoverAll: finds rules workflows and data by kind directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".prompts/rule/coding");
-    try tmp.dir.makePath(".prompts/workflow");
-    try tmp.dir.makePath(".prompts/context/research");
+    try tmp.dir.makePath("rule/coding");
+    try tmp.dir.makePath("workflow");
+    try tmp.dir.makePath("context/research");
 
-    try writeFile(tmp.dir, ".prompts/rule/coding/00_COMPAT.md", "compat rule");
-    try writeFile(tmp.dir, ".prompts/workflow/00_GEN_COMMIT.md", "commit workflow");
-    try writeFile(tmp.dir, ".prompts/context/research/R1-0.md", "research data");
+    try writeFile(tmp.dir, "rule/coding/00_COMPAT.md", "compat rule");
+    try writeFile(tmp.dir, "workflow/00_GEN_COMMIT.md", "commit workflow");
+    try writeFile(tmp.dir, "context/research/R1-0.md", "research data");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
@@ -633,7 +631,7 @@ test "loadMpf: returns content and hash" {
     defer tmp.cleanup();
 
     try tmp.dir.makePath(".prompts");
-    try writeFile(tmp.dir, ".prompts/META_PROMPT.md", "bootstrap rules");
+    try writeFile(tmp.dir, "META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
@@ -651,7 +649,7 @@ test "loadMpf: delta when hash matches" {
     defer tmp.cleanup();
 
     try tmp.dir.makePath(".prompts");
-    try writeFile(tmp.dir, ".prompts/META_PROMPT.md", "bootstrap rules");
+    try writeFile(tmp.dir, "META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
@@ -690,13 +688,13 @@ test "discoverSearchable: filters by kind and group" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".prompts/rule/coding");
-    try tmp.dir.makePath(".prompts/rule/zig");
-    try tmp.dir.makePath(".prompts/workflow");
+    try tmp.dir.makePath("rule/coding");
+    try tmp.dir.makePath("rule/zig");
+    try tmp.dir.makePath("workflow");
 
-    try writeFile(tmp.dir, ".prompts/rule/coding/00_COMPAT.md", "compat");
-    try writeFile(tmp.dir, ".prompts/rule/zig/00_STYLE.md", "style");
-    try writeFile(tmp.dir, ".prompts/workflow/00_COMMIT.md", "commit");
+    try writeFile(tmp.dir, "rule/coding/00_COMPAT.md", "compat");
+    try writeFile(tmp.dir, "rule/zig/00_STYLE.md", "style");
+    try writeFile(tmp.dir, "workflow/00_COMMIT.md", "commit");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
@@ -717,8 +715,8 @@ test "loadPrompts: loads by id with delta" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".prompts/rule");
-    try writeFile(tmp.dir, ".prompts/rule/00_STYLE.md", "style content");
+    try tmp.dir.makePath("rule");
+    try writeFile(tmp.dir, "rule/00_STYLE.md", "style content");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
