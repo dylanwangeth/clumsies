@@ -9,6 +9,8 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
+    const enable_keychain = builtin.os.tag == .macos;
+    options.addOption(bool, "enable_keychain", enable_keychain);
 
     const lib = b.addModule("clumsies_lib", .{
         .root_source_file = b.path("src/lib/root.zig"),
@@ -29,12 +31,10 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // macOS keychain integration (native builds only, not cross-compile)
-    if (cli_module.resolved_target) |t| {
-        if (t.result.os.tag == .macos and builtin.os.tag == .macos) {
-            cli_module.linkFramework("Security", .{});
-            cli_module.linkFramework("CoreFoundation", .{});
-        }
+    // macOS keychain integration (native macOS builds only)
+    if (enable_keychain) {
+        cli_module.linkFramework("Security", .{});
+        cli_module.linkFramework("CoreFoundation", .{});
     }
 
     const exe = b.addExecutable(.{

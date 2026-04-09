@@ -100,6 +100,10 @@ fn readLine(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn readPassword(allocator: std.mem.Allocator) ![]const u8 {
+    const builtin = @import("builtin");
+    if (comptime builtin.os.tag == .windows) {
+        return readLine(allocator);
+    }
     const stdin_fd = std.fs.File.stdin().handle;
     const old_termios = std.posix.tcgetattr(stdin_fd) catch {
         return readLine(allocator);
