@@ -10,10 +10,13 @@ pub const State = struct {
 };
 
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, version: []const u8) !void {
-    _ = stderr;
-
     const workspace_root = try std.process.getCwdAlloc(allocator);
     defer allocator.free(workspace_root);
+    try runWithRoot(stdout, stderr, allocator, version, workspace_root);
+}
+
+pub fn runWithRoot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, version: []const u8, workspace_root: []const u8) !void {
+    _ = stderr;
 
     var state: State = .{
         .workspace_root = workspace_root,
@@ -140,5 +143,8 @@ test "processLine: initialize then tools list" {
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}",
     )).?;
     defer testing.allocator.free(tools_response);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.activate\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.setup\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.search\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.load\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.refer\"") != null);
 }
