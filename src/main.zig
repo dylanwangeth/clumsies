@@ -7,6 +7,7 @@ const cmd_login = @import("commands/login_cmd.zig");
 const cmd_init = @import("commands/init_cmd.zig");
 const cmd_sync = @import("commands/sync_cmd.zig");
 const cmd_mcp = @import("commands/mcp_cmd.zig");
+const cmd_setup = @import("commands/setup_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const Color = styles.Color;
@@ -62,6 +63,7 @@ pub fn main() !void {
     var cmd: Command = .none;
     var cmd_args_start: usize = 1;
 
+    var is_agent_cmd = false;
     for (args[1..], 1..) |arg, i| {
         if (command_map.get(arg)) |matched_cmd| {
             cmd = matched_cmd;
@@ -70,9 +72,24 @@ pub fn main() !void {
             }
             break;
         }
+        if (std.mem.eql(u8, arg, "_agent")) {
+            is_agent_cmd = true;
+            cmd_args_start = i + 1;
+            break;
+        }
     }
 
     const cmd_args = args[cmd_args_start..];
+
+    if (is_agent_cmd) {
+        const subcmd = if (cmd_args.len > 0) cmd_args[0] else "";
+        if (std.mem.eql(u8, subcmd, "setup")) {
+            try cmd_setup.run(stdout_writer, stderr_writer, allocator);
+        } else {
+            try stderr_writer.print("{s}{s}{s}Error:{s} unknown agent command: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
+        }
+        return;
+    }
 
     switch (cmd) {
         .version => {
