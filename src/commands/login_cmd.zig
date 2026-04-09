@@ -98,7 +98,8 @@ fn readLine(allocator: std.mem.Allocator) ![]const u8 {
         line_buf[len] = byte[0];
         len += 1;
     }
-    return try allocator.dupe(u8, line_buf[0..len]);
+    const line_len = if (len > 0 and line_buf[len - 1] == '\r') len - 1 else len;
+    return try allocator.dupe(u8, line_buf[0..line_len]);
 }
 
 fn readPassword(allocator: std.mem.Allocator) ![]const u8 {

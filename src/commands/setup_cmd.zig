@@ -13,6 +13,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     const cache_path = blk: {
         const binding = ws_config.resolveWorkspace(allocator, cwd) catch break :blk null;
+        defer allocator.free(binding.ws_id);
+        defer allocator.free(binding.name);
         break :blk ws_config.getCachePath(allocator, binding.ws_id) catch null;
     };
 
