@@ -3,6 +3,13 @@ $ErrorActionPreference = "Stop"
 $ClumiesRaw = if ($env:CLUMSIES) { $env:CLUMSIES } else { ".\zig-out\bin\clumsies.exe" }
 $Clumsies = (Resolve-Path $ClumiesRaw).Path
 
+$TmpBase = Join-Path ([System.IO.Path]::GetTempPath()) ("clumsies-e2e-" + [guid]::NewGuid().ToString("N").Substring(0,8))
+New-Item -ItemType Directory -Path $TmpBase -Force | Out-Null
+$HomeDir = Join-Path $TmpBase "home"
+New-Item -ItemType Directory -Path $HomeDir -Force | Out-Null
+$env:HOME = $HomeDir
+$env:USERPROFILE = $HomeDir
+
 $Pass = 0
 $Fail = 0
 
@@ -75,6 +82,8 @@ try {
 
 } catch {
     Write-Host "Error: $_"
+} finally {
+    Remove-Item -Recurse -Force $TmpBase -ErrorAction SilentlyContinue
 }
 
 Write-Host "`n=== Results: $Pass passed, $Fail failed ==="
