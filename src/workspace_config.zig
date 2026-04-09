@@ -119,7 +119,14 @@ fn loadConfig(allocator: std.mem.Allocator) !ParsedConfig {
     defer file.close();
 
     var buf: [64 * 1024]u8 = undefined;
-    const n = file.read(&buf) catch return error.NoConfigFound;
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = file.read(buf[total..]) catch return error.NoConfigFound;
+        if (n == 0) break;
+        total += n;
+    }
+    if (total == 0) return error.NoConfigFound;
+    const n = total;
 
     var parser = toml.Parser(Config).init(allocator);
     errdefer parser.deinit();

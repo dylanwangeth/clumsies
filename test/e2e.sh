@@ -62,17 +62,20 @@ step "3. version"
 OUTPUT=$("$CLUMSIES" --version 2>&1)
 assert_output "version shown" "clumsies" "$OUTPUT"
 
-# 4. Unknown command
+# 4. Unknown command (exit non-zero)
 step "4. unknown command"
+assert_exit "add exits non-zero" 1 "$CLUMSIES" add
 OUTPUT=$("$CLUMSIES" add 2>&1 || true)
 assert_output "unknown command error" "unknown command" "$OUTPUT"
 
+assert_exit "push exits non-zero" 1 "$CLUMSIES" push
 OUTPUT=$("$CLUMSIES" push 2>&1 || true)
 assert_output "old command rejected" "unknown command" "$OUTPUT"
 
-# 5. Old commands all rejected
+# 5. Old commands all rejected (exit non-zero)
 step "5. old commands rejected"
 for cmd in remote pull clone status log ls rm show set get pub stats config upgrade; do
+    assert_exit "old command '$cmd' exits non-zero" 1 "$CLUMSIES" "$cmd"
     OUTPUT=$("$CLUMSIES" "$cmd" 2>&1 || true)
     assert_output "old command '$cmd' rejected" "unknown command" "$OUTPUT"
 done
