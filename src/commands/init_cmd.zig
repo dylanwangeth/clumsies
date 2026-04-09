@@ -57,10 +57,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     if (create_name) |name| {
         // POST /api/workspaces to create a new workspace
-        const body = if (bundle_id) |bid|
-            try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"bundle_id\":\"{s}\"}}", .{ name, bid })
-        else
-            try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\"}}", .{name});
+        const CreateBody = struct { name: []const u8, bundle_id: ?[]const u8 = null };
+        const body = std.json.Stringify.valueAlloc(allocator, CreateBody{ .name = name, .bundle_id = bundle_id }, .{}) catch return error.OutOfMemory;
         defer allocator.free(body);
 
         const response = try client.post("/api/workspaces", body);

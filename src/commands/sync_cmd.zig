@@ -92,7 +92,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             while (iter.next()) |entry| {
                 const prompt_id = entry.key_ptr.*;
                 // Fetch prompt content by ID
-                const api_path = try std.fmt.allocPrint(allocator, "/api/org/library/prompt?name={s}", .{prompt_id});
+                const encoded_prompt_id = try percentEncode(allocator, prompt_id);
+                defer allocator.free(encoded_prompt_id);
+                const api_path = try std.fmt.allocPrint(allocator, "/api/org/library/prompt?name={s}", .{encoded_prompt_id});
                 defer allocator.free(api_path);
 
                 const response = client.get(api_path) catch continue;
@@ -109,7 +111,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
                 } else continue;
 
                 // Fetch actual content
-                const content_path = try std.fmt.allocPrint(allocator, "/api/org/library/prompt/content?name={s}", .{canonical_name});
+                const encoded_canonical = try percentEncode(allocator, canonical_name);
+                defer allocator.free(encoded_canonical);
+                const content_path = try std.fmt.allocPrint(allocator, "/api/org/library/prompt/content?name={s}", .{encoded_canonical});
                 defer allocator.free(content_path);
 
                 const content_response = client.get(content_path) catch continue;
@@ -132,7 +136,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             var iter = context_val.object.iterator();
             while (iter.next()) |entry| {
                 const path = entry.key_ptr.*;
-                const api_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/context/file/content?path={s}", .{ ws_id, path });
+                const encoded_path = try percentEncode(allocator, path);
+                defer allocator.free(encoded_path);
+                const api_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/context/file/content?path={s}", .{ ws_id, encoded_path });
                 defer allocator.free(api_path);
 
                 const response = client.get(api_path) catch continue;
@@ -165,7 +171,24 @@ fn ensureDir(path: []const u8) void {
     std.fs.makeDirAbsolute(path) catch {};
 }
 
+fn isPathSafe(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.fs.path.isAbsolute(name)) return false;
+    var it = std.mem.splitScalar(u8, name, std.fs.path.sep);
+    while (it.next()) |component| {
+        if (std.mem.eql(u8, component, "..")) return false;
+    }
+    if (std.fs.path.sep != '/') {
+        var it2 = std.mem.splitScalar(u8, name, '/');
+        while (it2.next()) |component| {
+            if (std.mem.eql(u8, component, "..")) return false;
+        }
+    }
+    return true;
+}
+
 fn writeToCache(allocator: std.mem.Allocator, ws_cache_dir: []const u8, sub_dir: []const u8, name: []const u8, content: []const u8) !void {
+    if (!isPathSafe(name)) return error.UnsafePath;
     const dir_path = try std.fs.path.join(allocator, &.{ ws_cache_dir, sub_dir });
     defer allocator.free(dir_path);
     ensureDir(dir_path);
@@ -188,6 +211,22 @@ fn writeToCache(allocator: std.mem.Allocator, ws_cache_dir: []const u8, sub_dir:
     var w = std.fs.File.Writer.init(file, &buf);
     try w.interface.writeAll(content);
     try w.interface.flush();
+}
+
+fn percentEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    const HEX = "0123456789ABCDEF";
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    for (input) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '~') {
+            try buf.append(allocator, byte);
+        } else {
+            try buf.append(allocator, '%');
+            try buf.append(allocator, HEX[byte >> 4]);
+            try buf.append(allocator, HEX[byte & 0x0f]);
+        }
+    }
+    return buf.toOwnedSlice(allocator);
 }
 
 fn printHelp(out: *std.Io.Writer) !void {

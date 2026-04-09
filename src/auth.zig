@@ -18,7 +18,13 @@ pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 pub fn saveAuth(allocator: std.mem.Allocator, hub_url: []const u8, username: []const u8, access_token: []const u8, refresh_token: []const u8) !void {
-    const json = try std.fmt.allocPrint(allocator, "{{\"hub_url\":\"{s}\",\"username\":\"{s}\",\"access_token\":\"{s}\",\"refresh_token\":\"{s}\"}}", .{ hub_url, username, access_token, refresh_token });
+    const payload = AuthJson{
+        .hub_url = hub_url,
+        .username = username,
+        .access_token = access_token,
+        .refresh_token = refresh_token,
+    };
+    const json = std.json.Stringify.valueAlloc(allocator, payload, .{}) catch return error.SerializationFailed;
     defer allocator.free(json);
 
     if (comptime enable_keychain) {

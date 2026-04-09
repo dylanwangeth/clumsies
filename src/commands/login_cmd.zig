@@ -53,7 +53,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     try stderr.print("\n", .{});
 
     // Build JSON body
-    const body = try std.fmt.allocPrint(allocator, "{{\"username\":\"{s}\",\"credential\":\"{s}\"}}", .{ username, password });
+    const LoginBody = struct { username: []const u8, credential: []const u8 };
+    const body = std.json.Stringify.valueAlloc(allocator, LoginBody{ .username = username, .credential = password }, .{}) catch return error.OutOfMemory;
     defer allocator.free(body);
 
     // POST /api/auth/login
