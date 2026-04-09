@@ -20,14 +20,15 @@ const WorkspaceEntry = struct {
 
 /// Find the workspace that contains the given directory path.
 pub fn resolveWorkspace(allocator: std.mem.Allocator, cwd: []const u8) !WorkspaceBinding {
-    const cfg = try loadConfig(allocator);
+    var parsed = try loadConfig(allocator);
+    defer parsed.deinit();
 
-    for (cfg.workspaces) |ws| {
+    for (parsed.value.workspaces) |ws| {
         for (ws.paths) |p| {
             if (std.mem.startsWith(u8, cwd, p) and (cwd.len == p.len or cwd[p.len] == std.fs.path.sep)) {
                 return .{
-                    .ws_id = ws.ws_id,
-                    .name = ws.name,
+                    .ws_id = try allocator.dupe(u8, ws.ws_id),
+                    .name = try allocator.dupe(u8, ws.name),
                 };
             }
         }
@@ -59,9 +60,13 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
     defer existing_workspaces.deinit(allocator);
     var existing_server_url: []const u8 = server_url;
 
-    if (loadConfig(allocator)) |cfg| {
-        existing_server_url = cfg.server.url;
-        for (cfg.workspaces) |ws| {
+    var parsed_config: ?ParsedConfig = null;
+    defer if (parsed_config) |*pc| pc.deinit();
+
+    if (loadConfig(allocator)) |parsed| {
+        parsed_config = parsed;
+        existing_server_url = parsed_config.?.value.server.url;
+        for (parsed_config.?.value.workspaces) |ws| {
             if (std.mem.eql(u8, ws.ws_id, ws_id)) continue;
             try existing_workspaces.append(allocator, .{
                 .name = ws.name,
@@ -93,7 +98,16 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
     _ = try file.write(buf.items);
 }
 
-fn loadConfig(allocator: std.mem.Allocator) !Config {
+const ParsedConfig = struct {
+    value: Config,
+    parser: toml.Parser(Config),
+
+    pub fn deinit(self: *ParsedConfig) void {
+        self.parser.deinit();
+    }
+};
+
+fn loadConfig(allocator: std.mem.Allocator) !ParsedConfig {
     const base = try auth.getBasePath(allocator);
     defer allocator.free(base);
     const config_path = try std.fs.path.join(allocator, &.{ base, "config.toml" });
@@ -108,10 +122,10 @@ fn loadConfig(allocator: std.mem.Allocator) !Config {
     const n = file.read(&buf) catch return error.NoConfigFound;
 
     var parser = toml.Parser(Config).init(allocator);
-    defer parser.deinit();
+    errdefer parser.deinit();
 
     const result = parser.parseString(buf[0..n]) catch return error.NoConfigFound;
-    return result.value;
+    return .{ .value = result.value, .parser = parser };
 }
 
 const TomlWorkspaceOut = struct {

@@ -53,6 +53,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     var client = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
 
+    var ws_id_owned: ?[]const u8 = null;
+    defer if (ws_id_owned) |o| allocator.free(o);
+    var ws_name_owned: ?[]const u8 = null;
+    defer if (ws_name_owned) |o| allocator.free(o);
+
     var ws_id: []const u8 = undefined;
     var ws_name: []const u8 = undefined;
 
@@ -78,7 +83,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         };
         defer parsed.deinit();
 
-        ws_id = parsed.value.ws_id;
+        ws_id_owned = try allocator.dupe(u8, parsed.value.ws_id);
+        ws_id = ws_id_owned.?;
         ws_name = name;
     } else if (ws_id_flag) |id| {
         // GET /api/workspaces/{ws_id} to verify access
@@ -99,7 +105,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         defer parsed.deinit();
 
         ws_id = id;
-        ws_name = parsed.value.name;
+        ws_name_owned = try allocator.dupe(u8, parsed.value.name);
+        ws_name = ws_name_owned.?;
     }
 
     // Add workspace binding to ~/.clumsies/config.toml
