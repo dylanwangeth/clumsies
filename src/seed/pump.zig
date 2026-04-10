@@ -19,8 +19,10 @@ pub fn run(pool: *pg.Pool, interval_ms: u64) !void {
     var faker = Faker.init(std.heap.page_allocator);
     var tick: u64 = 0;
 
+    const sleep_ns = std.math.mul(u64, interval_ms, std.time.ns_per_ms) catch std.math.maxInt(u64);
+
     while (true) {
-        std.Thread.sleep(interval_ms * std.time.ns_per_ms);
+        std.Thread.sleep(sleep_ns);
 
         const conn = pool.acquire() catch {
             log.warn("failed to acquire connection, retrying...", .{});

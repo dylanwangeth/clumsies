@@ -185,7 +185,9 @@ fn seedTeamMembers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO team_members (team_id, user_id) VALUES ($1, $2)",
                 .{ state.teamId(ti), state.userId(ui) },
-            ) catch {};
+            ) catch |err| {
+                log.warn("team_member insert failed: {}", .{err});
+            };
         }
     }
 }
@@ -193,24 +195,48 @@ fn seedTeamMembers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 fn seedPrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding {d} prompts...", .{data.PROMPT_COUNT});
 
+    var used_names: [data.PROMPT_COUNT][80]u8 = undefined;
+    var used_name_lens: [data.PROMPT_COUNT]usize = .{0} ** data.PROMPT_COUNT;
+    var used_count: usize = 0;
+
     for (0..data.PROMPT_COUNT) |i| {
         const id = faker.hexId(&state.prompt_ids[i], "p-");
-        const hash = faker.hexId(&state.prompt_hashes[i], "sha:");
+        const hash = faker.hexId(&state.prompt_hashes[i], "sha256:");
 
+        // Generate unique canonical_name
         var name_buf: [80]u8 = undefined;
-        const canonical_name = faker.promptCanonicalName(&name_buf);
+        var canonical_name: []const u8 = undefined;
+        var attempts: usize = 0;
+        while (attempts < 50) : (attempts += 1) {
+            canonical_name = faker.promptCanonicalName(&name_buf);
+            var duplicate = false;
+            for (0..used_count) |j| {
+                if (std.mem.eql(u8, used_names[j][0..used_name_lens[j]], canonical_name)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) break;
+        }
+        @memcpy(used_names[used_count][0..canonical_name.len], canonical_name);
+        used_name_lens[used_count] = canonical_name.len;
+        used_count += 1;
+
         const kind = faker.promptKind();
         state.prompt_kinds[i] = kind;
 
         var content_buf: [512]u8 = undefined;
         const content = faker.promptContent(&content_buf, kind, canonical_name);
 
-        state.prompt_count = i + 1;
-
         _ = conn.exec(
-            "INSERT INTO prompts (prompt_id, org_id, canonical_name, kind, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5, $6) ON CONFLICT (org_id, canonical_name) DO NOTHING",
+            "INSERT INTO prompts (prompt_id, org_id, canonical_name, kind, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5, $6)",
             .{ id, data.ORG_ID, canonical_name, kind, content, hash },
-        ) catch {};
+        ) catch |err| {
+            log.warn("prompt insert failed: {}", .{err});
+            continue;
+        };
+
+        state.prompt_count = i + 1;
     }
 }
 
@@ -226,7 +252,9 @@ fn seedBundles(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         _ = conn.exec(
             "INSERT INTO bundles (bundle_id, org_id, name, description) VALUES ($1, $2::uuid, $3, $4) ON CONFLICT (org_id, name) DO NOTHING",
             .{ id, data.ORG_ID, name, desc },
-        ) catch {};
+        ) catch |err| {
+            log.warn("seed: {}", .{err});
+        };
 
         // Each bundle gets 3-6 random prompts
         const prompt_count = faker.intRange(usize, 3, @min(7, state.prompt_count + 1));
@@ -241,7 +269,9 @@ fn seedBundles(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO bundle_prompts (bundle_id, prompt_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                 .{ &state.bundle_ids[i], state.promptId(pi) },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
     }
 }
@@ -263,7 +293,7 @@ fn seedPromptHistory(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         const history_count = faker.intRange(usize, 1, 4);
         for (0..history_count) |h| {
             var hash_buf: [24]u8 = undefined;
-            const hash = faker.hexId(&hash_buf, "sha:");
+            const hash = faker.hexId(&hash_buf, "sha256:");
             var interval_buf: [64]u8 = undefined;
             const interval = faker.pastInterval(&interval_buf, 30 - @as(u32, @intCast(h * 7)));
 
@@ -273,7 +303,9 @@ fn seedPromptHistory(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO prompt_history (prompt_id, content_hash, content, merged_at) VALUES ($1, $2, $3, now() - $4::interval) ON CONFLICT DO NOTHING",
                 .{ state.promptId(i), hash, content, interval },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
     }
 }
@@ -291,7 +323,9 @@ fn seedWorkspaces(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         _ = conn.exec(
             "INSERT INTO workspaces (ws_id, org_id, name, revision) VALUES ($1, $2::uuid, $3, $4) ON CONFLICT (org_id, name) DO NOTHING",
             .{ id, data.ORG_ID, name, revision },
-        ) catch {};
+        ) catch |err| {
+            log.warn("seed: {}", .{err});
+        };
     }
 }
 
@@ -310,7 +344,9 @@ fn seedWorkspacePrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void 
             _ = conn.exec(
                 "INSERT INTO workspace_prompts (ws_id, prompt_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                 .{ state.wsId(wi), state.promptId(pi) },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
     }
 }
@@ -325,7 +361,9 @@ fn seedWorkspaceAccess(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO workspace_team_access (ws_id, team_id, level) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                 .{ state.wsId(wi), state.teamId(ti), level },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
     }
 
@@ -337,7 +375,9 @@ fn seedWorkspaceAccess(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         _ = conn.exec(
             "INSERT INTO workspace_user_access (ws_id, user_id, level) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
             .{ state.wsId(wi), state.userId(ui), level },
-        ) catch {};
+        ) catch |err| {
+            log.warn("seed: {}", .{err});
+        };
     }
 }
 
@@ -349,7 +389,9 @@ fn seedContextBranches(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         _ = conn.exec(
             "INSERT INTO context_branches (ws_id, branch_name, base_revision, revision) VALUES ($1, 'main', 0, $2) ON CONFLICT DO NOTHING",
             .{ state.wsId(wi), faker.intRange(i32, 1, 5) },
-        ) catch {};
+        ) catch |err| {
+            log.warn("seed: {}", .{err});
+        };
 
         // 1-2 feature branches
         const branch_count = faker.intRange(usize, 1, 3);
@@ -359,7 +401,9 @@ fn seedContextBranches(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO context_branches (ws_id, branch_name, base_revision, revision) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
                 .{ state.wsId(wi), branch_name, faker.intRange(i32, 0, 3), faker.intRange(i32, 1, 6) },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
     }
 }
@@ -380,7 +424,9 @@ fn seedContextFiles(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO context_files (ws_id, branch_name, path, content, content_hash, author) VALUES ($1, 'main', $2, $3, md5($3), $4) ON CONFLICT DO NOTHING",
                 .{ state.wsId(wi), path, content, author },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
     }
 }
@@ -401,7 +447,9 @@ fn seedContextPrs(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         _ = conn.exec(
             "INSERT INTO context_prs (pr_id, ws_id, author, branch_name, description, status) VALUES ($1, $2, $3, $4, $5, $6)",
             .{ pr_id, state.wsId(wi), author, branch, desc, status },
-        ) catch {};
+        ) catch |err| {
+            log.warn("seed: {}", .{err});
+        };
 
         // 1-3 files per PR
         const file_count = faker.intRange(usize, 1, 4);
@@ -411,7 +459,9 @@ fn seedContextPrs(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO context_pr_files (pr_id, path) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                 .{ pr_id, path },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
 
         // 0-3 comments per PR
@@ -425,7 +475,9 @@ fn seedContextPrs(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO context_pr_comments (comment_id, pr_id, author, body) VALUES ($1, $2, $3, $4)",
                 .{ cmt_id, pr_id, cmt_author, body },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
     }
 }
@@ -448,7 +500,9 @@ fn seedPromptPrs(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         _ = conn.exec(
             "INSERT INTO prompt_prs (pr_id, org_id, prompt_id, author_id, base_hash, content, description, status) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8)",
             .{ pr_id, data.ORG_ID, state.promptId(pi), state.userId(author_idx), state.promptHash(pi), content, desc, status },
-        ) catch {};
+        ) catch |err| {
+            log.warn("seed: {}", .{err});
+        };
 
         // 0-3 review comments
         const comment_count = faker.intRange(usize, 0, 4);
@@ -461,7 +515,9 @@ fn seedPromptPrs(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO prompt_pr_comments (comment_id, pr_id, author_id, body) VALUES ($1, $2, $3, $4)",
                 .{ cmt_id, pr_id, state.userId(reviewer_idx), body },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
     }
 }
@@ -490,7 +546,9 @@ fn seedTraceEvents(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             _ = conn.exec(
                 "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id) VALUES ($1, $2, $3, $4, (extract(epoch from (now() - $5::interval)) * 1000)::bigint, $6) ON CONFLICT DO NOTHING",
                 .{ state.wsId(wi), session_id, event_id, event_type, interval, prompt_id },
-            ) catch {};
+            ) catch |err| {
+                log.warn("seed: {}", .{err});
+            };
         }
     }
 }
