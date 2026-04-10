@@ -111,13 +111,13 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.get("/api/stats/workspace/:ws_id", trace_handler.handleWorkspaceStats, .{});
     router.get("/api/stats/prompt/:prompt_id", trace_handler.handlePromptStats, .{});
 
-    // Collaboration
-    router.post("/api/org/proposals", collab_handler.handleCreateProposal, .{});
-    router.get("/api/org/proposals", collab_handler.handleListProposals, .{});
-    router.get("/api/org/proposals/:id", collab_handler.handleGetProposal, .{});
-    router.put("/api/org/proposals/:id", collab_handler.handleUpdateProposal, .{});
-    router.post("/api/org/proposals/:id/comments", collab_handler.handleAddComment, .{});
-    router.get("/api/org/proposals/:id/comments", collab_handler.handleListComments, .{});
+    // Prompt PRs
+    router.post("/api/org/prompt-prs", collab_handler.handleCreatePr, .{});
+    router.get("/api/org/prompt-prs", collab_handler.handleListPrs, .{});
+    router.get("/api/org/prompt-prs/:id", collab_handler.handleGetPr, .{});
+    router.put("/api/org/prompt-prs/:id", collab_handler.handleUpdatePr, .{});
+    router.post("/api/org/prompt-prs/:id/comments", collab_handler.handleAddComment, .{});
+    router.get("/api/org/prompt-prs/:id/comments", collab_handler.handleListComments, .{});
 
     return .{ .http = server };
 }
