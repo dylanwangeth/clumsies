@@ -127,7 +127,7 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 const HistoryEntry = struct {
     content_hash: []const u8,
     merged_at: []const u8,
-    proposal_id: ?[]const u8,
+    pr_id: ?[]const u8,
 };
 
 pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -166,7 +166,7 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     row.deinit() catch {};
 
     var history_result = conn.query(
-        "SELECT content_hash, merged_at::text, proposal_id FROM prompt_history WHERE prompt_id = $1 ORDER BY merged_at DESC",
+        "SELECT content_hash, merged_at::text, pr_id FROM prompt_history WHERE prompt_id = $1 ORDER BY merged_at DESC",
         .{prompt_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -177,14 +177,14 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     while (try history_result.next()) |hrow| {
         const h_hash = try req.arena.dupe(u8, try hrow.get([]const u8, 0));
         const h_merged = try req.arena.dupe(u8, try hrow.get([]const u8, 1));
-        const h_proposal: ?[]const u8 = if (hrow.get([]const u8, 2)) |v|
+        const h_pr_id: ?[]const u8 = if (hrow.get([]const u8, 2)) |v|
             try req.arena.dupe(u8, v)
         else |_|
             null;
         try history.append(req.arena, .{
             .content_hash = h_hash,
             .merged_at = h_merged,
-            .proposal_id = h_proposal,
+            .pr_id = h_pr_id,
         });
     }
 

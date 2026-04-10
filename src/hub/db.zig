@@ -184,8 +184,8 @@ const migration_sql =
     \\    PRIMARY KEY (bundle_id, prompt_id)
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS proposals (
-    \\    proposal_id TEXT PRIMARY KEY,
+    \\CREATE TABLE IF NOT EXISTS prompt_prs (
+    \\    pr_id TEXT PRIMARY KEY,
     \\    org_id UUID NOT NULL REFERENCES orgs(org_id),
     \\    prompt_id TEXT NOT NULL REFERENCES prompts(prompt_id),
     \\    author_id TEXT NOT NULL REFERENCES users(user_id),
@@ -197,9 +197,9 @@ const migration_sql =
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS proposal_comments (
+    \\CREATE TABLE IF NOT EXISTS prompt_pr_comments (
     \\    comment_id TEXT PRIMARY KEY,
-    \\    proposal_id TEXT NOT NULL REFERENCES proposals(proposal_id),
+    \\    pr_id TEXT NOT NULL REFERENCES prompt_prs(pr_id),
     \\    author_id TEXT NOT NULL REFERENCES users(user_id),
     \\    body TEXT NOT NULL,
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -231,7 +231,7 @@ const migration_sql =
     \\    content_hash TEXT NOT NULL,
     \\    content TEXT NOT NULL DEFAULT '',
     \\    merged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    \\    proposal_id TEXT,
+    \\    pr_id TEXT,
     \\    PRIMARY KEY (prompt_id, content_hash)
     \\);
 ;

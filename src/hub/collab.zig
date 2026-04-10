@@ -4,20 +4,20 @@ const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("../protocol/api_error.zig").send;
 
-const CreateProposalRequest = struct {
+const CreatePrRequest = struct {
     prompt_id: []const u8,
     base_hash: []const u8,
     content: []const u8,
     description: []const u8,
 };
 
-pub fn handleCreateProposal(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "proposal:write", res)) return;
+    if (!auth.requireScope(user, "pr:write", res)) return;
 
-    const body = req.json(CreateProposalRequest) catch {
+    const body = req.json(CreatePrRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
@@ -45,36 +45,36 @@ pub fn handleCreateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
         return apiError(res, 409, "CONFLICT", "base_hash does not match current Library version");
     }
 
-    // Generate proposal_id
+    // Generate pr_id
     var rand_bytes: [8]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
-    var id_buf: [21]u8 = undefined;
-    @memcpy(id_buf[0..5], "prop-");
+    var id_buf: [20]u8 = undefined;
+    @memcpy(id_buf[0..4], "ppr-");
     const hex_chars = "0123456789abcdef";
     for (rand_bytes, 0..) |byte, i| {
-        id_buf[5 + i * 2] = hex_chars[byte >> 4];
-        id_buf[5 + i * 2 + 1] = hex_chars[byte & 0x0f];
+        id_buf[4 + i * 2] = hex_chars[byte >> 4];
+        id_buf[4 + i * 2 + 1] = hex_chars[byte & 0x0f];
     }
 
     _ = conn.exec(
-        \\INSERT INTO proposals (proposal_id, org_id, prompt_id, author_id, base_hash, content, description)
+        \\INSERT INTO prompt_prs (pr_id, org_id, prompt_id, author_id, base_hash, content, description)
         \\VALUES ($1, $2::uuid, $3, $4, $5, $6, $7)
     , .{ &id_buf, user.org_id, body.prompt_id, user.user_id, body.base_hash, body.content, body.description }) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to create proposal");
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to create prompt PR");
     };
 
     res.status = 201;
     try res.json(.{
-        .proposal_id = &id_buf,
+        .pr_id = &id_buf,
         .status = "open",
     }, .{});
 }
 
-pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "proposal:read", res)) return;
+    if (!auth.requireScope(user, "pr:read", res)) return;
 
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query");
@@ -87,22 +87,21 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
     };
     defer conn.release();
 
-    const ProposalMeta = struct {
-        proposal_id: []const u8,
+    const PrMeta = struct {
+        pr_id: []const u8,
         prompt_id: []const u8,
         status: []const u8,
         description: []const u8,
         created_at: []const u8,
     };
 
-    var list: std.ArrayList(ProposalMeta) = .empty;
+    var list: std.ArrayList(PrMeta) = .empty;
 
     // Use separate query calls for each filter combination
     if (status_filter) |sf| {
         if (prompt_filter) |pf| {
-            // Both filters
             var result = conn.query(
-                "SELECT proposal_id, prompt_id, status, description, created_at::text FROM proposals WHERE org_id = $1::uuid AND status = $2 AND prompt_id = $3 ORDER BY created_at DESC",
+                "SELECT pr_id, prompt_id, status, description, created_at::text FROM prompt_prs WHERE org_id = $1::uuid AND status = $2 AND prompt_id = $3 ORDER BY created_at DESC",
                 .{ user.org_id, sf, pf },
             ) catch {
                 return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -110,7 +109,7 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
             defer result.deinit();
             while (try result.next()) |row| {
                 try list.append(req.arena, .{
-                    .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                    .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                     .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                     .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                     .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
@@ -118,9 +117,8 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
                 });
             }
         } else {
-            // Status only
             var result = conn.query(
-                "SELECT proposal_id, prompt_id, status, description, created_at::text FROM proposals WHERE org_id = $1::uuid AND status = $2 ORDER BY created_at DESC",
+                "SELECT pr_id, prompt_id, status, description, created_at::text FROM prompt_prs WHERE org_id = $1::uuid AND status = $2 ORDER BY created_at DESC",
                 .{ user.org_id, sf },
             ) catch {
                 return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -128,7 +126,7 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
             defer result.deinit();
             while (try result.next()) |row| {
                 try list.append(req.arena, .{
-                    .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                    .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                     .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                     .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                     .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
@@ -138,9 +136,8 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
         }
     } else {
         if (prompt_filter) |pf| {
-            // Prompt only
             var result = conn.query(
-                "SELECT proposal_id, prompt_id, status, description, created_at::text FROM proposals WHERE org_id = $1::uuid AND prompt_id = $2 ORDER BY created_at DESC",
+                "SELECT pr_id, prompt_id, status, description, created_at::text FROM prompt_prs WHERE org_id = $1::uuid AND prompt_id = $2 ORDER BY created_at DESC",
                 .{ user.org_id, pf },
             ) catch {
                 return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -148,7 +145,7 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
             defer result.deinit();
             while (try result.next()) |row| {
                 try list.append(req.arena, .{
-                    .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                    .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                     .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                     .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                     .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
@@ -156,9 +153,8 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
                 });
             }
         } else {
-            // No filters
             var result = conn.query(
-                "SELECT proposal_id, prompt_id, status, description, created_at::text FROM proposals WHERE org_id = $1::uuid ORDER BY created_at DESC",
+                "SELECT pr_id, prompt_id, status, description, created_at::text FROM prompt_prs WHERE org_id = $1::uuid ORDER BY created_at DESC",
                 .{user.org_id},
             ) catch {
                 return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -166,7 +162,7 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
             defer result.deinit();
             while (try result.next()) |row| {
                 try list.append(req.arena, .{
-                    .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                    .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                     .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                     .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                     .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
@@ -176,14 +172,14 @@ pub fn handleListProposals(ctx: *Server.Context, req: *httpz.Request, res: *http
         }
     }
 
-    try res.json(.{ .proposals = list.items }, .{});
+    try res.json(.{ .prs = list.items }, .{});
 }
 
-pub fn handleGetProposal(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "proposal:read", res)) return;
+    if (!auth.requireScope(user, "pr:read", res)) return;
 
     const id = req.param("id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "id is required");
@@ -195,19 +191,19 @@ pub fn handleGetProposal(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer conn.release();
 
     var row = conn.row(
-        "SELECT proposal_id, prompt_id, base_hash, status, content, description, created_at::text FROM proposals WHERE proposal_id = $1 AND org_id = $2::uuid",
+        "SELECT pr_id, prompt_id, base_hash, status, content, description, created_at::text FROM prompt_prs WHERE pr_id = $1 AND org_id = $2::uuid",
         .{ id, user.org_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        return apiError(res, 404, "NOT_FOUND", "proposal not found");
+        return apiError(res, 404, "NOT_FOUND", "prompt PR not found");
     };
 
-    const proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    const pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     const prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 1));
     const base_hash = try req.arena.dupe(u8, try row.get([]const u8, 2));
     const status = try req.arena.dupe(u8, try row.get([]const u8, 3));
-    const proposal_content = try req.arena.dupe(u8, try row.get([]const u8, 4));
+    const pr_content = try req.arena.dupe(u8, try row.get([]const u8, 4));
     const description = try req.arena.dupe(u8, try row.get([]const u8, 5));
     const created_at = try req.arena.dupe(u8, try row.get([]const u8, 6));
     row.deinit() catch {};
@@ -260,18 +256,18 @@ pub fn handleGetProposal(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     }
 
     try res.json(.{
-        .proposal_id = proposal_id,
+        .pr_id = pr_id,
         .prompt_id = prompt_id,
         .base_hash = base_hash,
         .status = status,
-        .content = proposal_content,
+        .content = pr_content,
         .description = description,
         .created_at = created_at,
         .trace_summary = trace_summary,
         .diff = .{
             .base = base_content,
-            .proposed = proposal_content,
-            .summary = computeDiffSummary(req.arena, base_content orelse "", proposal_content),
+            .proposed = pr_content,
+            .summary = computeDiffSummary(req.arena, base_content orelse "", pr_content),
         },
     }, .{});
 }
@@ -281,14 +277,14 @@ const ActionRequest = struct {
     reason: ?[]const u8 = null,
 };
 
-pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "proposal:merge", res)) return;
+    if (!auth.requireScope(user, "pr:merge", res)) return;
 
     if (!std.mem.eql(u8, user.role, "maintainer")) {
-        return apiError(res, 403, "FORBIDDEN", "only maintainers can accept or reject proposals");
+        return apiError(res, 403, "FORBIDDEN", "only maintainers can accept or reject prompt PRs");
     }
 
     const id = req.param("id") orelse {
@@ -310,14 +306,13 @@ pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
     };
     defer conn.release();
 
-    // Get proposal
     var prop_row = conn.row(
-        "SELECT prompt_id, base_hash, content, status FROM proposals WHERE proposal_id = $1 AND org_id = $2::uuid",
+        "SELECT prompt_id, base_hash, content, status FROM prompt_prs WHERE pr_id = $1 AND org_id = $2::uuid",
         .{ id, user.org_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        return apiError(res, 404, "NOT_FOUND", "proposal not found");
+        return apiError(res, 404, "NOT_FOUND", "prompt PR not found");
     };
 
     const prompt_id = try req.arena.dupe(u8, try prop_row.get([]const u8, 0));
@@ -327,7 +322,7 @@ pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
     prop_row.deinit() catch {};
 
     if (!std.mem.eql(u8, status, "open")) {
-        return apiError(res, 400, "BAD_REQUEST", "proposal is not open");
+        return apiError(res, 400, "BAD_REQUEST", "prompt PR is not open");
     }
 
     if (std.mem.eql(u8, body.action, "accept")) {
@@ -345,7 +340,7 @@ pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
         check_row.deinit() catch {};
 
         if (!std.mem.eql(u8, current_hash, base_hash)) {
-            return apiError(res, 409, "CONFLICT", "Library has changed since proposal was created");
+            return apiError(res, 409, "CONFLICT", "Library has changed since prompt PR was created");
         }
 
         // Compute new hash and update prompt
@@ -367,7 +362,7 @@ pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
 
         // Record in prompt history
         _ = conn.exec(
-            "INSERT INTO prompt_history (prompt_id, content_hash, content, proposal_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+            "INSERT INTO prompt_history (prompt_id, content_hash, content, pr_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
             .{ prompt_id, hash_slice, new_content, id },
         ) catch {};
 
@@ -378,16 +373,16 @@ pub fn handleUpdateProposal(ctx: *Server.Context, req: *httpz.Request, res: *htt
         ) catch {};
     }
 
-    // Update proposal status
+    // Update prompt PR status
     _ = conn.exec(
-        "UPDATE proposals SET status = $1, updated_at = now() WHERE proposal_id = $2",
+        "UPDATE prompt_prs SET status = $1, updated_at = now() WHERE pr_id = $2",
         .{ if (std.mem.eql(u8, body.action, "accept")) @as([]const u8, "accepted") else @as([]const u8, "rejected"), id },
     ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to update proposal");
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to update prompt PR");
     };
 
     try res.json(.{
-        .proposal_id = id,
+        .pr_id = id,
         .status = if (std.mem.eql(u8, body.action, "accept")) @as([]const u8, "accepted") else @as([]const u8, "rejected"),
     }, .{});
 }
@@ -400,7 +395,7 @@ pub fn handleAddComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "proposal:write", res)) return;
+    if (!auth.requireScope(user, "pr:write", res)) return;
 
     const id = req.param("id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "id is required");
@@ -417,13 +412,13 @@ pub fn handleAddComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     };
     defer conn.release();
 
-    // Verify proposal exists
-    var prop_row = conn.row("SELECT proposal_id FROM proposals WHERE proposal_id = $1", .{id}) catch {
+    // Verify prompt PR exists
+    var pr_row = conn.row("SELECT pr_id FROM prompt_prs WHERE pr_id = $1", .{id}) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        return apiError(res, 404, "NOT_FOUND", "proposal not found");
+        return apiError(res, 404, "NOT_FOUND", "prompt PR not found");
     };
-    prop_row.deinit() catch {};
+    pr_row.deinit() catch {};
 
     var rand_bytes: [8]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
@@ -436,7 +431,7 @@ pub fn handleAddComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     }
 
     _ = conn.exec(
-        "INSERT INTO proposal_comments (comment_id, proposal_id, author_id, body) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO prompt_pr_comments (comment_id, pr_id, author_id, body) VALUES ($1, $2, $3, $4)",
         .{ &cmt_id_buf, id, user.user_id, comment.body },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "failed to add comment");
@@ -445,7 +440,7 @@ pub fn handleAddComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     res.status = 201;
     try res.json(.{
         .comment_id = &cmt_id_buf,
-        .proposal_id = id,
+        .pr_id = id,
         .author = user.username,
         .body = comment.body,
     }, .{});
@@ -455,7 +450,7 @@ pub fn handleListComments(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "proposal:read", res)) return;
+    if (!auth.requireScope(user, "pr:read", res)) return;
 
     const id = req.param("id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "id is required");
@@ -474,7 +469,7 @@ pub fn handleListComments(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     };
 
     var result = conn.query(
-        "SELECT comment_id, author_id, body, created_at::text FROM proposal_comments WHERE proposal_id = $1 ORDER BY created_at",
+        "SELECT comment_id, author_id, body, created_at::text FROM prompt_pr_comments WHERE pr_id = $1 ORDER BY created_at",
         .{id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");

@@ -14,8 +14,8 @@ pub const AuthUser = struct {
     scopes: []const u8,
 };
 
-const MEMBER_SCOPES = "library:read,workspace:read,workspace:write,trace:write,stats:read,members:read,proposal:read,proposal:write,team:read";
-const MAINTAINER_SCOPES = "library:read,library:write,bundle:write,workspace:read,workspace:write,trace:write,stats:read,members:read,members:write,proposal:read,proposal:write,proposal:merge,team:read,team:write";
+const MEMBER_SCOPES = "library:read,workspace:read,workspace:write,trace:write,stats:read,members:read,pr:read,pr:write,team:read";
+const MAINTAINER_SCOPES = "library:read,library:write,bundle:write,workspace:read,workspace:write,trace:write,stats:read,members:read,members:write,pr:read,pr:write,pr:merge,team:read,team:write";
 
 pub fn requireScope(user: AuthUser, scope: []const u8, res: anytype) bool {
     if (std.mem.indexOf(u8, user.scopes, scope) != null) return true;
