@@ -364,7 +364,9 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         _ = conn.exec(
             "INSERT INTO prompt_history (prompt_id, content_hash, content, pr_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
             .{ prompt_id, hash_slice, new_content, id },
-        ) catch {};
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "failed to record prompt history");
+        };
 
         // Bump library manifest revision
         _ = conn.exec(
@@ -412,8 +414,8 @@ pub fn handleAddComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     };
     defer conn.release();
 
-    // Verify prompt PR exists
-    var pr_row = conn.row("SELECT pr_id FROM prompt_prs WHERE pr_id = $1", .{id}) catch {
+    // Verify prompt PR exists and belongs to user's org
+    var pr_row = conn.row("SELECT pr_id FROM prompt_prs WHERE pr_id = $1 AND org_id = $2::uuid", .{ id, user.org_id }) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
         return apiError(res, 404, "NOT_FOUND", "prompt PR not found");
@@ -467,6 +469,14 @@ pub fn handleListComments(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         body: []const u8,
         created_at: []const u8,
     };
+
+    // Verify prompt PR belongs to user's org
+    var pr_check = conn.row("SELECT pr_id FROM prompt_prs WHERE pr_id = $1 AND org_id = $2::uuid", .{ id, user.org_id }) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 404, "NOT_FOUND", "prompt PR not found");
+    };
+    pr_check.deinit() catch {};
 
     var result = conn.query(
         "SELECT comment_id, author_id, body, created_at::text FROM prompt_pr_comments WHERE pr_id = $1 ORDER BY created_at",
