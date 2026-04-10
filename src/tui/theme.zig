@@ -52,7 +52,7 @@ pub const CYAN = rgb(0xd08a3c);
 
 // Module accents
 pub const ACCENT_LIBRARY = ACCENT;
-pub const ACCENT_PROPOSAL = GOLD;
+pub const ACCENT_PR = GOLD;
 pub const ACCENT_WORKSPACE = rgb(0xb3ba73);
 pub const ACCENT_INSIGHTS = rgb(0xe7b868);
 
