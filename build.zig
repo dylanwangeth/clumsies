@@ -88,6 +88,30 @@ pub fn build(b: *std.Build) void {
     const hub_run_step = b.step("hub", "Run clumsies Hub Server");
     hub_run_step.dependOn(&hub_run_cmd.step);
 
+    // Seed / data pump artifact
+    const seed_exe = b.addExecutable(.{
+        .name = "clumsies-seed",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/seed/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pg", .module = pg.module("pg") },
+            },
+        }),
+    });
+
+    b.installArtifact(seed_exe);
+
+    const seed_run_cmd = b.addRunArtifact(seed_exe);
+    seed_run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        seed_run_cmd.addArgs(args);
+    }
+
+    const seed_step = b.step("seed", "Run data seed / pump tool");
+    seed_step.dependOn(&seed_run_cmd.step);
+
     // CLI tests
     const test_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
