@@ -69,17 +69,37 @@ const ConfirmAction = enum {
 };
 
 const TopModule = enum(u8) {
-    library,
-    workspace,
-    proposals,
     insights,
+    workspace,
+    library,
 
     fn label(self: TopModule) []const u8 {
         return switch (self) {
-            .library => "Library",
-            .workspace => "Workspace",
-            .proposals => "Proposals",
             .insights => "Insights",
+            .workspace => "Workspace",
+            .library => "Library",
+        };
+    }
+};
+
+const PrFilter = enum {
+    open,
+    all,
+    closed,
+
+    fn label(self: PrFilter) []const u8 {
+        return switch (self) {
+            .open => "open",
+            .all => "all",
+            .closed => "closed",
+        };
+    }
+
+    fn next(self: PrFilter) PrFilter {
+        return switch (self) {
+            .open => .all,
+            .all => .closed,
+            .closed => .open,
         };
     }
 };
@@ -87,25 +107,25 @@ const TopModule = enum(u8) {
 const DetailTab = enum(u8) {
     overview,
     content,
-    history,
+    pull_requests,
 
     fn label(self: DetailTab) []const u8 {
         return switch (self) {
             .overview => "Overview",
             .content => "Content",
-            .history => "History",
+            .pull_requests => "Pull Requests",
         };
     }
 };
 
-const top_tabs = [_]TopModule{ .library, .workspace, .proposals, .insights };
+const top_tabs = [_]TopModule{ .insights, .workspace, .library };
 
 // 12 prompts + up to 12 group headers = 24 max rows
 const MAX_LIBRARY_ROWS = data.PROMPTS.len + 12;
-const detail_tabs = [_]DetailTab{ .overview, .content, .history };
+const detail_tabs = [_]DetailTab{ .overview, .content, .pull_requests };
 
 pub const Dashboard = struct {
-    selected_module: TopModule = .library,
+    selected_module: TopModule = .insights,
     selected_prompt: usize = 0,
     show_help: bool = false,
     show_detail: bool = false,
@@ -129,26 +149,32 @@ pub const Dashboard = struct {
     library_widgets: [MAX_LIBRARY_ROWS]vxfw.Widget = undefined,
     library_text_rows: [MAX_LIBRARY_ROWS]vxfw.Text = undefined,
     library_table_rows: [MAX_LIBRARY_ROWS]TableRow = undefined,
-    library_table_cols: [MAX_LIBRARY_ROWS][3]Column = undefined,
+    library_table_cols: [MAX_LIBRARY_ROWS][4]Column = undefined,
 
     content_scroll_bars: vxfw.ScrollBars,
     content_widget: [1]vxfw.Widget = undefined,
     content_text: vxfw.Text = .{ .text = "" },
 
-    history_scroll_bars: vxfw.ScrollBars,
-    history_widgets: [data.HISTORY.len]vxfw.Widget = undefined,
-    history_rows: [data.HISTORY.len]TableRow = undefined,
-    history_cols: [data.HISTORY.len][3]Column = undefined,
-
-    review_scroll_bars: vxfw.ScrollBars,
-    review_widgets: [data.PROPOSALS.len]vxfw.Widget = undefined,
-    review_rows: [data.PROPOSALS.len]TableRow = undefined,
-    review_cols: [data.PROPOSALS.len][2]Column = undefined,
-
-    review_diff_scroll_bars: vxfw.ScrollBars,
-    review_diff_widgets: [8]vxfw.Widget = undefined,
-    review_diff_rows: [8]vxfw.Text = undefined,
-    review_diff_count: usize = 0,
+    // PR list within Prompt Detail
+    pr_filter: PrFilter = .open,
+    pr_scroll_bars: vxfw.ScrollBars,
+    pr_widgets: [data.PULL_REQUESTS.len * 2]vxfw.Widget = undefined,
+    pr_table_rows: [data.PULL_REQUESTS.len]TableRow = undefined,
+    pr_table_cols: [data.PULL_REQUESTS.len][4]Column = undefined,
+    pr_text_rows: [data.PULL_REQUESTS.len]vxfw.Text = undefined,
+    pr_indices: [data.PULL_REQUESTS.len * 2]?usize = .{null} ** (data.PULL_REQUESTS.len * 2),
+    pr_row_count: usize = 0,
+    // PR drill-down state
+    show_pr_diff: bool = false,
+    selected_pr_idx: usize = 0,
+    pr_diff_scroll_bars: vxfw.ScrollBars,
+    pr_diff_widgets: [32]vxfw.Widget = undefined,
+    pr_diff_rows: [32]vxfw.Text = undefined,
+    pr_diff_count: usize = 0,
+    // Comment editor state
+    show_comment_editor: bool = false,
+    comment_input_buf: [256]u8 = .{0} ** 256,
+    comment_input_len: usize = 0,
 
     // Workspace Status
     ws_tab: WsTab = .context,
@@ -172,9 +198,8 @@ pub const Dashboard = struct {
         return .{
             .library_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .content_scroll_bars = w.initPlainScrollBars(theme.PANEL, 3),
-            .history_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .review_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .review_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
+            .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
             // workspace uses manual grid, no ScrollBars
         };
     }
@@ -233,6 +258,33 @@ pub const Dashboard = struct {
                     if (key.matches(vaxis.Key.escape, .{}) or key.matches('?', .{}) or key.matches('q', .{})) {
                         self.show_help = false;
                         ctx.consumeAndRedraw();
+                    }
+                    return;
+                }
+
+                // Comment editor absorbs all keys
+                if (self.show_comment_editor) {
+                    if (key.matches(vaxis.Key.escape, .{})) {
+                        self.show_comment_editor = false;
+                        self.comment_input_len = 0;
+                        ctx.consumeAndRedraw();
+                    } else if (key.matches(vaxis.Key.enter, .{})) {
+                        self.status_line = if (self.comment_input_len > 0) "Comment submitted." else "Empty comment discarded.";
+                        self.show_comment_editor = false;
+                        self.comment_input_len = 0;
+                        ctx.consumeAndRedraw();
+                    } else if (key.matches(vaxis.Key.backspace, .{})) {
+                        if (self.comment_input_len > 0) {
+                            self.comment_input_len -= 1;
+                            ctx.consumeAndRedraw();
+                        }
+                    } else if (key.text) |text| {
+                        const remaining = self.comment_input_buf.len - self.comment_input_len;
+                        if (text.len > 0 and text.len <= remaining) {
+                            @memcpy(self.comment_input_buf[self.comment_input_len .. self.comment_input_len + text.len], text);
+                            self.comment_input_len += text.len;
+                            ctx.consumeAndRedraw();
+                        }
                     }
                     return;
                 }
@@ -426,7 +478,7 @@ pub const Dashboard = struct {
                         return;
                     }
                     if (key.matches('p', .{})) {
-                        self.status_line = "Propose (not yet implemented)";
+                        self.status_line = "Create PR (not yet implemented)";
                         ctx.consumeAndRedraw();
                         return;
                     }
@@ -434,7 +486,35 @@ pub const Dashboard = struct {
                         // Content pane has focus: j/k scrolls content
                         try self.content_scroll_bars.scroll_view.handleEvent(ctx, event);
                     } else {
-                        // Info pane has focus: h/l switches tabs, j/k for history
+                        // Info pane has focus: h/l switches tabs, j/k for PRs
+                        if (self.detail_tab == .pull_requests and self.show_pr_diff) {
+                            // PR diff drill-down: Esc goes back, j/k scrolls diff
+                            if (key.matches(vaxis.Key.escape, .{})) {
+                                self.show_pr_diff = false;
+                                self.show_comment_editor = false;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches('a', .{})) {
+                                self.status_line = "Accept PR (not yet implemented)";
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches('x', .{})) {
+                                self.status_line = "Reject PR (not yet implemented)";
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches('c', .{})) {
+                                self.show_comment_editor = true;
+                                self.comment_input_len = 0;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (self.pr_diff_count == 0) return;
+                            try self.pr_diff_scroll_bars.scroll_view.handleEvent(ctx, event);
+                            return;
+                        }
                         if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
                             self.shiftDetailTab(-1);
                             ctx.consumeAndRedraw();
@@ -445,18 +525,53 @@ pub const Dashboard = struct {
                             ctx.consumeAndRedraw();
                             return;
                         }
-                        if (self.detail_tab == .history) {
-                            try self.history_scroll_bars.scroll_view.handleEvent(ctx, event);
+                        if (self.detail_tab == .pull_requests) {
+                            if (key.matches('f', .{})) {
+                                self.pr_filter = self.pr_filter.next();
+                                self.pr_scroll_bars.scroll_view.cursor = 0;
+                                self.selected_pr_idx = 0;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches(vaxis.Key.enter, .{})) {
+                                self.show_pr_diff = true;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            self.syncPrWidgets();
+                            if (self.pr_row_count == 0) return;
+
+                            const prev = self.pr_scroll_bars.scroll_view.cursor;
+                            try self.pr_scroll_bars.scroll_view.handleEvent(ctx, event);
+
+                            var pos = @as(usize, @intCast(self.pr_scroll_bars.scroll_view.cursor));
+                            if (pos >= self.pr_row_count) pos = if (self.pr_row_count > 0) self.pr_row_count - 1 else 0;
+
+                            // Skip description rows (null index). Try next row, if still null revert.
+                            if (pos < self.pr_row_count and self.pr_indices[pos] == null) {
+                                const moving_down = self.pr_scroll_bars.scroll_view.cursor > prev;
+                                if (moving_down and pos + 1 < self.pr_row_count and self.pr_indices[pos + 1] != null) {
+                                    pos += 1;
+                                } else {
+                                    // Can't skip forward, revert to prev
+                                    pos = @intCast(prev);
+                                }
+                            }
+                            self.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
+                            if (pos < self.pr_row_count) {
+                                if (self.pr_indices[pos]) |pi| {
+                                    self.selected_pr_idx = pi;
+                                }
+                            }
                         }
                     }
                     return;
                 }
 
                 // Top-level tab switching
-                if (key.matches('1', .{})) return self.selectTab(ctx, .library);
+                if (key.matches('1', .{})) return self.selectTab(ctx, .insights);
                 if (key.matches('2', .{})) return self.selectTab(ctx, .workspace);
-                if (key.matches('3', .{})) return self.selectTab(ctx, .proposals);
-                if (key.matches('4', .{})) return self.selectTab(ctx, .insights);
+                if (key.matches('3', .{})) return self.selectTab(ctx, .library);
 
                 // Module-specific input
                 switch (self.selected_module) {
@@ -481,6 +596,33 @@ pub const Dashboard = struct {
                         }
                         if (self.detail_focus_content) {
                             // Detail pane has focus
+                            if (self.detail_tab == .pull_requests and self.show_pr_diff) {
+                                if (key.matches(vaxis.Key.escape, .{})) {
+                                    self.show_pr_diff = false;
+                                    self.show_comment_editor = false;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('a', .{})) {
+                                    self.status_line = "Accept PR (not yet implemented)";
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('x', .{})) {
+                                    self.status_line = "Reject PR (not yet implemented)";
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('c', .{})) {
+                                    self.show_comment_editor = true;
+                                    self.comment_input_len = 0;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (self.pr_diff_count == 0) return;
+                                try self.pr_diff_scroll_bars.scroll_view.handleEvent(ctx, event);
+                                return;
+                            }
                             if (key.matches(vaxis.Key.escape, .{})) {
                                 self.detail_focus_content = false;
                                 ctx.consumeAndRedraw();
@@ -499,8 +641,46 @@ pub const Dashboard = struct {
                             if (self.detail_tab == .content) {
                                 try self.content_scroll_bars.scroll_view.handleEvent(ctx, event);
                             }
-                            if (self.detail_tab == .history) {
-                                try self.history_scroll_bars.scroll_view.handleEvent(ctx, event);
+                            if (self.detail_tab == .pull_requests) {
+                                if (key.matches('f', .{})) {
+                                    self.pr_filter = self.pr_filter.next();
+                                    self.pr_scroll_bars.scroll_view.cursor = 0;
+                                    self.selected_pr_idx = 0;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches(vaxis.Key.enter, .{})) {
+                                    self.show_pr_diff = true;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                self.syncPrWidgets();
+                                if (self.pr_row_count == 0) return;
+
+                                const prev = self.pr_scroll_bars.scroll_view.cursor;
+                                try self.pr_scroll_bars.scroll_view.handleEvent(ctx, event);
+
+                                var pos = @as(usize, @intCast(self.pr_scroll_bars.scroll_view.cursor));
+                                if (pos >= self.pr_row_count) pos = if (self.pr_row_count > 0) self.pr_row_count - 1 else 0;
+
+                                // Skip description rows (null index). Try next row, if still null revert.
+                                if (pos < self.pr_row_count and self.pr_indices[pos] == null) {
+                                    const moving_down = self.pr_scroll_bars.scroll_view.cursor > prev;
+                                    if (moving_down and pos + 1 < self.pr_row_count and self.pr_indices[pos + 1] != null) {
+                                        pos += 1;
+                                    } else {
+                                        pos = @intCast(prev);
+                                    }
+                                }
+                                self.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
+                                if (pos < self.pr_row_count) {
+                                    if (self.pr_indices[pos]) |pi| {
+                                        self.selected_pr_idx = pi;
+                                    }
+                                }
+                                if (self.pr_indices[pos]) |pi| {
+                                    self.selected_pr_idx = pi;
+                                }
                             }
                             return;
                         }
@@ -524,22 +704,14 @@ pub const Dashboard = struct {
                             ctx.consumeAndRedraw();
                         }
                         if (self.library_prompt_indices[pos]) |pi| {
-                            self.selected_prompt = pi;
-                        }
-                    },
-                    .proposals => {
-                        const prev = self.review_scroll_bars.scroll_view.cursor;
-                        try self.review_scroll_bars.scroll_view.handleEvent(ctx, event);
-                        if (self.review_scroll_bars.scroll_view.cursor != prev) {
-                            self.status_line = "Proposal selected.";
-                        }
-                        if (key.matches('a', .{})) {
-                            self.status_line = "Accept proposal (not yet implemented)";
-                            ctx.consumeAndRedraw();
-                        }
-                        if (key.matches('x', .{})) {
-                            self.status_line = "Reject proposal (not yet implemented)";
-                            ctx.consumeAndRedraw();
+                            if (self.selected_prompt != pi) {
+                                self.selected_prompt = pi;
+                                self.show_pr_diff = false;
+                                self.show_comment_editor = false;
+                                self.selected_pr_idx = 0;
+                                self.pr_scroll_bars.scroll_view.cursor = 0;
+                                self.pr_filter = .open;
+                            }
                         }
                     },
                     .workspace => {
@@ -781,7 +953,7 @@ pub const Dashboard = struct {
         );
 
         var child_count: usize = 3;
-        if (self.show_help or self.show_confirm) child_count = 4;
+        if (self.show_help or self.show_confirm or self.show_comment_editor) child_count = 4;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
@@ -801,6 +973,17 @@ pub const Dashboard = struct {
                 .{ .width = size.width, .height = size.height },
             );
             children[3] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawConfirmOverlay(confirm_ctx) };
+        }
+        if (self.show_comment_editor) {
+            const box_w: u16 = 42;
+            const box_h: u16 = 8;
+            const box_col = size.width -| (box_w + 2);
+            const box_row = size.height -| (box_h + 2);
+            const comment_ctx = ctx.withConstraints(
+                .{ .width = box_w, .height = box_h },
+                .{ .width = box_w, .height = box_h },
+            );
+            children[3] = .{ .origin = .{ .row = box_row, .col = box_col }, .surface = try self.drawCommentEditorOverlay(comment_ctx) };
         }
 
         root.children = children;
@@ -841,7 +1024,6 @@ pub const Dashboard = struct {
         if (self.show_detail) return self.drawPromptDetail(ctx);
         return switch (self.selected_module) {
             .library => self.drawLibrary(ctx),
-            .proposals => self.drawProposalReview(ctx),
             .workspace => self.drawWorkspaceStatus(ctx),
             .insights => self.drawInsights(ctx),
         };
@@ -867,13 +1049,25 @@ pub const Dashboard = struct {
             "j/k move  r refresh  x revoke  h back  q close"
         else if (self.show_settings)
             "j/k move  h back  q close"
+        else if (self.show_comment_editor)
+            "Enter send  Esc cancel"
+        else if (self.show_detail and self.detail_tab == .pull_requests and self.show_pr_diff)
+            "j/k scroll  a accept  x reject  c comment  Esc back"
+        else if (self.show_detail and self.detail_tab == .pull_requests)
+            "j/k move  Enter view diff  h/l tab  Esc back  ? help"
         else if (self.show_detail and self.detail_focus_content)
             "j/k scroll  g/G jump  Tab info pane  Esc back  ? help"
         else if (self.show_detail)
-            "h/l tab  j/k move  Tab content pane  p propose  Esc back  ? help"
+            "h/l tab  j/k move  Tab content pane  p create PR  Esc back  ? help"
         else switch (self.selected_module) {
-            .library => if (self.detail_focus_content) "h/l tab  j/k scroll  Esc list  ? help" else "j/k move  Enter detail  b bundle  S settings  ? help  q quit",
-            .proposals => "j/k move  a accept  x reject  S settings  ? help  q quit",
+            .library => if (self.detail_focus_content and self.detail_tab == .pull_requests and self.show_pr_diff)
+                "j/k scroll  a accept  x reject  c comment  Esc back"
+            else if (self.detail_focus_content and self.detail_tab == .pull_requests)
+                "j/k move  Enter view diff  Esc back  ? help"
+            else if (self.detail_focus_content)
+                "h/l tab  j/k scroll  Esc list  ? help"
+            else
+                "j/k move  Enter detail  b bundle  S settings  ? help  q quit",
             .workspace => switch (self.ws_focus) {
                 .bar => "j/k select workspace  Tab list  r sync  ? help  q quit",
                 .list => "h/l tab  j/k move  Enter content  Esc bar  ? help",
@@ -946,7 +1140,7 @@ pub const Dashboard = struct {
         return w.applyCursorOverlay(ctx, &surface, &self.library_scroll_bars.scroll_view);
     }
 
-    // Library right pane: detail for selected prompt with Overview/Content/History tabs.
+    // Library right pane: detail for selected prompt with Overview/Content/Pull Requests tabs.
     fn drawLibraryDetail(self: *Dashboard, ctx: vxfw.DrawContext, p: *const data.PromptEntry) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         const border_color = if (self.detail_focus_content) theme.ACCENT else theme.BORDER;
@@ -959,7 +1153,11 @@ pub const Dashboard = struct {
             tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, tab.label(), tab == self.detail_tab);
             tab_col +|= 1;
         }
-        w.writeRightText(&surface, ctx, 0, p.canonical_name, theme.textOn(theme.PANEL, theme.MUTED));
+        if (self.detail_tab == .pull_requests) {
+            w.writeRightText(&surface, ctx, 0, "f filter", theme.textOn(theme.PANEL, theme.MUTED));
+        } else {
+            w.writeRightText(&surface, ctx, 0, p.canonical_name, theme.textOn(theme.PANEL, theme.MUTED));
+        }
 
         const inner_h = ctx.max.height.? -| 2;
         const inner_w = ctx.max.width.? -| 4;
@@ -974,7 +1172,7 @@ pub const Dashboard = struct {
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "updated", p.updated, 8);
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "source", "acme", 8);
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "refer", p.refer_count, 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "override", "local (payments-api)", 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "local edit", "yes (payments-api)", 8);
                 kv_row += 1;
                 kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Top Constraints");
                 const top_n = @min(p.constraint_count, 3);
@@ -994,31 +1192,50 @@ pub const Dashboard = struct {
                 children[0] = .{ .origin = .{ .row = 2, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
                 surface.children = children;
             },
-            .history => {
-                self.syncHistoryWidgets();
-                const list_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
-                self.history_scroll_bars.scroll_view.draw_cursor = false;
-                defer self.history_scroll_bars.scroll_view.draw_cursor = true;
+            .pull_requests => {
+                const prs = data.prsForPrompt(p.canonical_name);
+                if (prs.len == 0) {
+                    w.writeText(&surface, ctx, 2, 2, "No pull requests for this prompt.", theme.fg(theme.MUTED));
+                } else if (self.show_pr_diff) {
+                    // Diff drill-down view
+                    const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
+                    const pr = &prs[pr_idx];
+                    const title = try std.fmt.allocPrint(ctx.arena, "{s} \xe2\x94\x80 {s} \xe2\x94\x80 {s} \xe2\x94\x80 {s} \xe2\x94\x80 refer:{d}", .{ pr.id, pr.prompt_name, pr.author, pr.status, pr.trace_refers });
+                    w.writeText(&surface, ctx, 2, 2, title, theme.boldOn(theme.PANEL, theme.TEXT));
 
-                var list_surface = try self.history_scroll_bars.widget().draw(list_ctx);
-                const sv = &self.history_scroll_bars.scroll_view;
-                if (sv.cursor >= sv.scroll.top) {
-                    const vis_row = sv.cursor - sv.scroll.top;
-                    const crow: i17 = @intCast(vis_row);
-                    if (crow < list_surface.size.height) {
-                        const cbuf = try ctx.arena.alloc(vaxis.Cell, 1);
-                        cbuf[0] = .{ .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 }, .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL } };
-                        const csurface: vxfw.Surface = .{ .size = .{ .width = 1, .height = 1 }, .widget = list_surface.widget, .buffer = cbuf, .children = &.{} };
-                        const old = list_surface.children;
-                        const new_ch = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
-                        @memcpy(new_ch[0..old.len], old);
-                        new_ch[old.len] = .{ .origin = .{ .col = 0, .row = crow }, .surface = csurface, .z_index = 1 };
-                        list_surface.children = new_ch;
+                    self.syncPrDiffAndComments(ctx.arena);
+                    const diff_h = inner_h -| 2;
+                    const diff_ctx = ctx.withConstraints(.{ .width = inner_w, .height = diff_h }, .{ .width = inner_w, .height = diff_h });
+                    const diff_children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+                    diff_children[0] = .{ .origin = .{ .row = 4, .col = 2 }, .surface = try self.pr_diff_scroll_bars.widget().draw(diff_ctx) };
+                    surface.children = diff_children;
+                } else {
+                    // PR list view
+                    self.syncPrWidgets();
+                    const list_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
+                    self.pr_scroll_bars.scroll_view.draw_cursor = false;
+                    defer self.pr_scroll_bars.scroll_view.draw_cursor = true;
+
+                    var list_surface = try self.pr_scroll_bars.widget().draw(list_ctx);
+                    const sv = &self.pr_scroll_bars.scroll_view;
+                    if (sv.cursor >= sv.scroll.top) {
+                        const vis_row = sv.cursor - sv.scroll.top;
+                        const crow: i17 = @intCast(vis_row);
+                        if (crow < list_surface.size.height) {
+                            const cbuf = try ctx.arena.alloc(vaxis.Cell, 1);
+                            cbuf[0] = .{ .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 }, .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL } };
+                            const csurface: vxfw.Surface = .{ .size = .{ .width = 1, .height = 1 }, .widget = list_surface.widget, .buffer = cbuf, .children = &.{} };
+                            const old = list_surface.children;
+                            const new_ch = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
+                            @memcpy(new_ch[0..old.len], old);
+                            new_ch[old.len] = .{ .origin = .{ .col = 0, .row = crow }, .surface = csurface, .z_index = 1 };
+                            list_surface.children = new_ch;
+                        }
                     }
+                    const pr_children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+                    pr_children[0] = .{ .origin = .{ .row = 2, .col = 1 }, .surface = list_surface };
+                    surface.children = pr_children;
                 }
-                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = 2, .col = 1 }, .surface = list_surface };
-                surface.children = children;
             },
         }
         return surface;
@@ -1051,11 +1268,14 @@ pub const Dashboard = struct {
         const info_border = if (!self.detail_focus_content) theme.ACCENT else theme.BORDER;
         w.drawBorder(&surface, info_border, theme.PANEL);
 
-        // Row 0: inner tabs
+        // Row 0: inner tabs + right hint
         var col: u16 = 2;
         for (detail_tabs) |tab| {
             col = w.drawInnerTabBadge(&surface, ctx, 0, col, tab.label(), tab == self.detail_tab);
             col +|= 1;
+        }
+        if (self.detail_tab == .pull_requests) {
+            w.writeRightText(&surface, ctx, 0, "f filter", theme.textOn(theme.PANEL, theme.MUTED));
         }
 
         const inner_h = ctx.max.height.? -| 3;
@@ -1068,7 +1288,7 @@ pub const Dashboard = struct {
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "hash", p.content_hash, 8);
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "updated", p.updated, 8);
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "source", "acme", 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "override", "local (payments-api)", 8);
+                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "local edit", "yes (payments-api)", 8);
                 kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "refer", p.refer_count, 8);
                 kv_row += 1;
                 kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Top Constraints");
@@ -1086,10 +1306,10 @@ pub const Dashboard = struct {
                     kv_row += 1;
                 }
                 kv_row += 1;
-                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Local Override");
+                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Local Edit");
                 w.writeText(&surface, ctx, kv_col, kv_row, "Detected in ws: payments-api", theme.fg(theme.TEXT_SOFT));
                 kv_row += 1;
-                w.writeText(&surface, ctx, kv_col, kv_row, "Press p to propose this override", theme.fg(theme.MUTED));
+                w.writeText(&surface, ctx, kv_col, kv_row, "Press p to create PR from this edit", theme.fg(theme.MUTED));
             },
             .content => {
                 self.syncContentWidget();
@@ -1098,45 +1318,60 @@ pub const Dashboard = struct {
                 children[0] = .{ .origin = .{ .row = 2, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
                 surface.children = children;
             },
-            .history => {
-                self.syncHistoryWidgets();
-                const list_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
+            .pull_requests => {
+                const prs = data.prsForPrompt(p.canonical_name);
+                if (prs.len == 0) {
+                    w.writeText(&surface, ctx, 2, 2, "No pull requests for this prompt.", theme.fg(theme.MUTED));
+                } else if (self.show_pr_diff) {
+                    const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
+                    const pr = &prs[pr_idx];
+                    const title = try std.fmt.allocPrint(ctx.arena, "{s} \xe2\x94\x80 {s} \xe2\x94\x80 {s} \xe2\x94\x80 {s} \xe2\x94\x80 refer:{d}", .{ pr.id, pr.prompt_name, pr.author, pr.status, pr.trace_refers });
+                    w.writeText(&surface, ctx, 2, 2, title, theme.boldOn(theme.PANEL, theme.TEXT));
 
-                self.history_scroll_bars.scroll_view.draw_cursor = false;
-                defer self.history_scroll_bars.scroll_view.draw_cursor = true;
+                    self.syncPrDiffAndComments(ctx.arena);
+                    const diff_h = inner_h -| 2;
+                    const diff_ctx = ctx.withConstraints(.{ .width = inner_w, .height = diff_h }, .{ .width = inner_w, .height = diff_h });
+                    const diff_children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+                    diff_children[0] = .{ .origin = .{ .row = 4, .col = 2 }, .surface = try self.pr_diff_scroll_bars.widget().draw(diff_ctx) };
+                    surface.children = diff_children;
+                } else {
+                    self.syncPrWidgets();
+                    const list_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
+                    self.pr_scroll_bars.scroll_view.draw_cursor = false;
+                    defer self.pr_scroll_bars.scroll_view.draw_cursor = true;
 
-                var list_surface = try self.history_scroll_bars.widget().draw(list_ctx);
-                const sv = &self.history_scroll_bars.scroll_view;
-                if (sv.cursor >= sv.scroll.top) {
-                    const vis_row = sv.cursor - sv.scroll.top;
-                    const crow: i17 = @intCast(vis_row);
-                    if (crow < list_surface.size.height) {
-                        const cbuf = try ctx.arena.alloc(vaxis.Cell, 1);
-                        cbuf[0] = .{
-                            .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                            .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                        };
-                        const csurface: vxfw.Surface = .{
-                            .size = .{ .width = 1, .height = 1 },
-                            .widget = list_surface.widget,
-                            .buffer = cbuf,
-                            .children = &.{},
-                        };
-                        const old = list_surface.children;
-                        const new_children = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
-                        @memcpy(new_children[0..old.len], old);
-                        new_children[old.len] = .{
-                            .origin = .{ .col = 0, .row = crow },
-                            .surface = csurface,
-                            .z_index = 1,
-                        };
-                        list_surface.children = new_children;
+                    var list_surface = try self.pr_scroll_bars.widget().draw(list_ctx);
+                    const sv = &self.pr_scroll_bars.scroll_view;
+                    if (sv.cursor >= sv.scroll.top) {
+                        const vis_row = sv.cursor - sv.scroll.top;
+                        const crow: i17 = @intCast(vis_row);
+                        if (crow < list_surface.size.height) {
+                            const cbuf = try ctx.arena.alloc(vaxis.Cell, 1);
+                            cbuf[0] = .{
+                                .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                            };
+                            const csurface: vxfw.Surface = .{
+                                .size = .{ .width = 1, .height = 1 },
+                                .widget = list_surface.widget,
+                                .buffer = cbuf,
+                                .children = &.{},
+                            };
+                            const old = list_surface.children;
+                            const new_ch = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
+                            @memcpy(new_ch[0..old.len], old);
+                            new_ch[old.len] = .{
+                                .origin = .{ .col = 0, .row = crow },
+                                .surface = csurface,
+                                .z_index = 1,
+                            };
+                            list_surface.children = new_ch;
+                        }
                     }
+                    const pr_children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+                    pr_children[0] = .{ .origin = .{ .row = 2, .col = 1 }, .surface = list_surface };
+                    surface.children = pr_children;
                 }
-
-                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = 2, .col = 1 }, .surface = list_surface };
-                surface.children = children;
             },
         }
 
@@ -1163,76 +1398,6 @@ pub const Dashboard = struct {
         children[0] = .{ .origin = .{ .row = 1, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
         surface.children = children;
         return surface;
-    }
-
-    // Proposal Review: queue + diff + sidebar (three-column)
-    fn drawProposalReview(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const size = ctx.max.size();
-        var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-        w.fillSurface(&root, theme.PANEL);
-
-        self.syncReviewWidgets();
-        const proposal = &data.PROPOSALS[self.selectedProposalIdx()];
-        self.syncDiffWidgets(proposal);
-
-        const queue_w: u16 = if (size.width > 112) 28 else 24;
-        const side_w: u16 = if (size.width > 112) 28 else 24;
-        const diff_w: u16 = size.width - queue_w - side_w - 2;
-
-        const q_ctx = ctx.withConstraints(.{ .width = queue_w, .height = size.height }, .{ .width = queue_w, .height = size.height });
-        const d_ctx = ctx.withConstraints(.{ .width = diff_w, .height = size.height }, .{ .width = diff_w, .height = size.height });
-        const s_ctx = ctx.withConstraints(.{ .width = side_w, .height = size.height }, .{ .width = side_w, .height = size.height });
-
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 3);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawReviewQueue(q_ctx) };
-        children[1] = .{ .origin = .{ .row = 0, .col = queue_w + 1 }, .surface = try self.drawReviewDiff(d_ctx, proposal) };
-        children[2] = .{ .origin = .{ .row = 0, .col = queue_w + diff_w + 2 }, .surface = try self.drawReviewSidebar(s_ctx, proposal) };
-        root.children = children;
-        return root;
-    }
-
-    fn drawReviewQueue(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        self.review_scroll_bars.scroll_view.draw_cursor = false;
-        defer self.review_scroll_bars.scroll_view.draw_cursor = true;
-
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Proposal Queue", .subtitle = "status: open", .background = theme.PANEL, .border_color = theme.BORDER, .child = self.review_scroll_bars.widget() };
-        var surface = try panel.draw(ctx);
-        return w.applyCursorOverlay(ctx, &surface, &self.review_scroll_bars.scroll_view);
-    }
-
-    fn drawReviewDiff(self: *Dashboard, ctx: vxfw.DrawContext, proposal: *const data.ProposalEntry) std.mem.Allocator.Error!vxfw.Surface {
-        const panel: w.Panel = .{ .owner = self.widget(), .title = proposal.prompt_name, .subtitle = proposal.id, .background = theme.PANEL, .border_color = theme.BORDER, .child = self.review_diff_scroll_bars.widget() };
-        return panel.draw(ctx);
-    }
-
-    fn drawReviewSidebar(self: *Dashboard, ctx: vxfw.DrawContext, proposal: *const data.ProposalEntry) std.mem.Allocator.Error!vxfw.Surface {
-        const sidebar = try std.fmt.allocPrint(ctx.arena,
-            \\Status
-            \\{s}
-            \\
-            \\Author
-            \\{s}
-            \\
-            \\Created
-            \\{s}
-            \\
-            \\Base Hash
-            \\{s}
-            \\
-            \\Trace Summary
-            \\refer {d}   sessions {d}
-            \\
-            \\Actions
-            \\a  accept (maintainer only)
-            \\x  reject (maintainer only)
-            \\c  comment (Phase 2)
-        , .{ proposal.status, proposal.author, proposal.created, proposal.base_hash, proposal.trace_refers, proposal.trace_sessions });
-
-        const text_widget: vxfw.Text = .{ .text = sidebar, .style = theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT), .width_basis = .parent };
-        const wrapper = try ctx.arena.create(w.WidgetBox);
-        wrapper.* = .{ .widget_ref = text_widget.widget() };
-        const panel: w.Panel = .{ .owner = self.widget(), .title = "Review Lens", .subtitle = proposal.author, .background = theme.PANEL_ALT, .border_color = theme.BORDER, .child = wrapper.widget(), .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 } };
-        return panel.draw(ctx);
     }
 
     // Workspace: top workspace bar + bottom master-detail (list | content).
@@ -1314,7 +1479,7 @@ pub const Dashboard = struct {
     }
 
     fn drawWsList(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        // Context/Prompts/Overrides item list with inner tabs
+        // Context/Prompts/Local Edits item list with inner tabs
         const list_border = if (self.ws_focus == .list) theme.ACCENT else theme.BORDER;
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
@@ -1410,7 +1575,7 @@ pub const Dashboard = struct {
             .context => if (sel < data.WS_CONTEXT.len) data.WS_CONTEXT[sel].path else "no files",
             .prompts => if (sel < data.WS_PROMPTS.len) data.WS_PROMPTS[sel].name else "no prompts",
         };
-        // Title with diff marker (context branch or prompt override)
+        // Title with diff marker (context branch or prompt local edit)
         const has_diff = switch (self.ws_tab) {
             .context => sel < data.WS_CONTEXT.len and data.WS_CONTEXT[sel].modified,
             .prompts => sel < data.WS_PROMPTS.len and data.WS_PROMPTS[sel].has_override,
@@ -2133,7 +2298,7 @@ pub const Dashboard = struct {
         w.writeText(&surface, ctx, start_col + 2, start_row, " Keyboard Reference ", theme.boldOn(theme.PANEL_ALT, theme.ACCENT));
 
         const lines = [_][]const u8{
-            "1-4            Switch top-level module",
+            "1-3            Switch top-level module",
             "j / \xe2\x86\x93           Move down / next row",
             "k / \xe2\x86\x91           Move up / previous row",
             "h / \xe2\x86\x90           Previous tab / region",
@@ -2142,11 +2307,8 @@ pub const Dashboard = struct {
             "Esc            Back / close overlay",
             "g              Jump to first row",
             "G              Jump to last row",
-            "a              Accept proposal (maintainer)",
-            "x              Reject proposal (maintainer)",
             "r              Refresh / sync",
             "w              Workspace switcher (future)",
-            "p              Propose from override",
             "?              Toggle this help",
             "q / Ctrl+C     Quit",
         };
@@ -2211,6 +2373,36 @@ pub const Dashboard = struct {
         return surface;
     }
 
+    fn drawCommentEditorOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        const bg = theme.PANEL_ALT;
+        w.fillSurface(&surface, bg);
+        w.drawBorder(&surface, theme.ACCENT, bg);
+
+        // Title: show reply context or "New Comment"
+        const p = &data.PROMPTS[self.selected_prompt];
+        const prs = data.prsForPrompt(p.canonical_name);
+        const title = if (prs.len > 0 and self.selected_pr_idx < prs.len)
+            try std.fmt.allocPrint(ctx.arena, " Comment on {s} ", .{prs[self.selected_pr_idx].id})
+        else
+            " New Comment ";
+        w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(bg, theme.ACCENT));
+
+        // Input text with cursor
+        const input_text = self.comment_input_buf[0..self.comment_input_len];
+        const max_visible: usize = @as(usize, size.width -| 4);
+        const visible_start = if (input_text.len > max_visible) input_text.len - max_visible else 0;
+        const visible = input_text[visible_start..];
+        const display = try std.fmt.allocPrint(ctx.arena, "{s}_", .{visible});
+        w.writeText(&surface, ctx, 2, 2, display, theme.textOn(bg, theme.TEXT));
+
+        // Hint
+        w.writeText(&surface, ctx, 2, size.height -| 2, "Enter send  Esc cancel", theme.textOn(bg, theme.TEXT_SOFT));
+
+        return surface;
+    }
+
     fn drawTooSmall(self: *Dashboard, ctx: vxfw.DrawContext, size: vxfw.Size) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&surface, theme.PANEL);
@@ -2261,8 +2453,16 @@ pub const Dashboard = struct {
             // Insert prompt row (name + stats)
             if (row_idx < MAX_LIBRARY_ROWS) {
                 const sel = pidx == self.selected_prompt;
+                const pr_label: []const u8 = switch (p.open_pr_count) {
+                    0 => "",
+                    1 => "\xe2\x80\xa21",
+                    2 => "\xe2\x80\xa22",
+                    3 => "\xe2\x80\xa23",
+                    else => "\xe2\x80\xa2+",
+                };
                 self.library_table_cols[row_idx] = .{
                     .{ .text = name, .flex = 1 },
+                    .{ .text = pr_label, .flex = 0, .min_width = 2 },
                     .{ .text = p.refer_count, .flex = 0, .min_width = 4, .alignment = .right },
                     .{ .text = p.age, .flex = 0, .min_width = 3, .alignment = .right },
                 };
@@ -2304,79 +2504,142 @@ pub const Dashboard = struct {
         self.content_scroll_bars.estimated_content_height = @intCast(@max(w.countLines(data.SAMPLE_CONTENT), 24));
     }
 
-    fn syncHistoryWidgets(self: *Dashboard) void {
-        for (data.HISTORY, 0..) |h, idx| {
-            const sel = idx == @as(usize, @intCast(self.history_scroll_bars.scroll_view.cursor));
-            self.history_cols[idx] = .{
-                .{ .text = h.date, .flex = 0 },
-                .{ .text = h.hash, .flex = 0 },
-                .{ .text = h.label, .flex = 1 },
+    fn syncPrWidgets(self: *Dashboard) void {
+        const p = &data.PROMPTS[self.selected_prompt];
+        const prs = data.prsForPrompt(p.canonical_name);
+        var row_idx: usize = 0;
+        for (prs, 0..) |pr, pi| {
+            if (row_idx + 1 >= self.pr_widgets.len) break;
+            const show = switch (self.pr_filter) {
+                .open => std.mem.eql(u8, pr.status, "open"),
+                .closed => !std.mem.eql(u8, pr.status, "open"),
+                .all => true,
             };
-            self.history_rows[idx] = .{
-                .columns = &self.history_cols[idx],
+            if (!show) continue;
+            const sel = pi == self.selected_pr_idx;
+            // Row 1: id, status, author, created
+            self.pr_table_cols[pi] = .{
+                .{ .text = pr.id, .flex = 0 },
+                .{ .text = pr.status, .flex = 0 },
+                .{ .text = pr.author, .flex = 0 },
+                .{ .text = pr.created, .flex = 1, .alignment = .right },
+            };
+            self.pr_table_rows[pi] = .{
+                .columns = &self.pr_table_cols[pi],
                 .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
                 .gap = 2,
             };
-            self.history_widgets[idx] = self.history_rows[idx].widget();
+            self.pr_widgets[row_idx] = self.pr_table_rows[pi].widget();
+            self.pr_indices[row_idx] = pi;
+            row_idx += 1;
+            // Row 2: description (muted)
+            self.pr_text_rows[pi] = .{
+                .text = pr.description,
+                .style = theme.textOn(theme.PANEL, theme.MUTED),
+            };
+            self.pr_widgets[row_idx] = self.pr_text_rows[pi].widget();
+            self.pr_indices[row_idx] = null; // skip on cursor
+            row_idx += 1;
         }
-        self.history_scroll_bars.scroll_view.children = .{ .slice = self.history_widgets[0..data.HISTORY.len] };
-        self.history_scroll_bars.estimated_content_height = data.HISTORY.len;
+        self.pr_row_count = row_idx;
+        self.pr_scroll_bars.scroll_view.children = .{ .slice = self.pr_widgets[0..row_idx] };
+        self.pr_scroll_bars.estimated_content_height = @intCast(row_idx);
+        // Ensure cursor is on a TableRow, not a description
+        var cur = @as(usize, @intCast(self.pr_scroll_bars.scroll_view.cursor));
+        while (cur < row_idx and self.pr_indices[cur] == null) cur += 1;
+        self.pr_scroll_bars.scroll_view.cursor = @intCast(cur);
+        if (cur < row_idx) {
+            if (self.pr_indices[cur]) |pi| self.selected_pr_idx = pi;
+        }
     }
 
-    // Inner width budget: panel=24min → border=2 → inner=22.
-    // Row format: 1 + 9 id + 1 + 6 status + 1 = 18 fixed + truncated name. Fits.
-    fn syncReviewWidgets(self: *Dashboard) void {
-        self.review_scroll_bars.scroll_view.cursor = @min(self.review_scroll_bars.scroll_view.cursor, data.PROPOSALS.len - 1);
-        const sel_idx = self.selectedProposalIdx();
-        for (data.PROPOSALS, 0..) |p, idx| {
-            const sel = idx == sel_idx;
-            self.review_cols[idx] = .{
-                .{ .text = p.id, .flex = 0 },
-                .{ .text = p.status, .flex = 1 },
-            };
-            self.review_rows[idx] = .{
-                .columns = &self.review_cols[idx],
-                .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
-                .gap = 2,
-            };
-            self.review_widgets[idx] = self.review_rows[idx].widget();
+    fn syncPrDiffAndComments(self: *Dashboard, allocator: std.mem.Allocator) void {
+        const p = &data.PROMPTS[self.selected_prompt];
+        const prs = data.prsForPrompt(p.canonical_name);
+        if (prs.len == 0) {
+            self.pr_diff_count = 0;
+            return;
         }
-        self.review_scroll_bars.scroll_view.children = .{ .slice = self.review_widgets[0..] };
-        self.review_scroll_bars.estimated_content_height = data.PROPOSALS.len;
-    }
-
-    fn syncDiffWidgets(self: *Dashboard, proposal: *const data.ProposalEntry) void {
-        self.review_diff_count = @min(proposal.diff.len, self.review_diff_widgets.len);
-        for (0..self.review_diff_count) |idx| {
-            const line = proposal.diff[idx];
-            self.review_diff_rows[idx] = .{
+        const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
+        const pr = &prs[pr_idx];
+        var count: usize = 0;
+        for (pr.diff) |line| {
+            if (count >= self.pr_diff_rows.len) break;
+            self.pr_diff_rows[count] = .{
                 .text = line,
-                .style = theme.textOn(diffBg(line), diffFg(line)),
-                .softwrap = false,
+                .style = .{ .fg = diffFg(line), .bg = diffBg(line) },
             };
-            self.review_diff_widgets[idx] = self.review_diff_rows[idx].widget();
+            self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+            count += 1;
         }
-        self.review_diff_scroll_bars.scroll_view.children = .{ .slice = self.review_diff_widgets[0..self.review_diff_count] };
-        self.review_diff_scroll_bars.estimated_content_height = @intCast(self.review_diff_count);
+        // Comment section
+        if (pr.comments.len > 0) {
+            if (count < self.pr_diff_rows.len) {
+                self.pr_diff_rows[count] = .{
+                    .text = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Comments \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",
+                    .style = theme.fg(theme.MUTED),
+                };
+                self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+                count += 1;
+            }
+            for (pr.comments) |comment| {
+                // Header: "author · created"
+                if (count < self.pr_diff_rows.len) {
+                    const header = std.fmt.allocPrint(allocator, "{s} \xc2\xb7 {s}", .{ comment.author, comment.created }) catch "??";
+                    self.pr_diff_rows[count] = .{
+                        .text = header,
+                        .style = theme.fgBold(theme.TEXT_SOFT),
+                    };
+                    self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+                    count += 1;
+                }
+                // Body
+                if (count < self.pr_diff_rows.len) {
+                    self.pr_diff_rows[count] = .{
+                        .text = comment.body,
+                        .style = theme.fg(theme.TEXT_SOFT),
+                    };
+                    self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+                    count += 1;
+                }
+                // Blank line for spacing
+                if (count < self.pr_diff_rows.len) {
+                    self.pr_diff_rows[count] = .{
+                        .text = " ",
+                        .style = theme.fg(theme.MUTED),
+                    };
+                    self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+                    count += 1;
+                }
+            }
+        }
+        self.pr_diff_count = count;
+        self.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.pr_diff_widgets[0..count] };
+        self.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
     }
 
-    // Workspace grid uses manual rendering, no sync function needed
+    fn diffBg(line: []const u8) vaxis.Color {
+        if (std.mem.startsWith(u8, line, "+")) return theme.rgb(0x1d2617);
+        if (std.mem.startsWith(u8, line, "-")) return theme.rgb(0x2a1b18);
+        return theme.PANEL;
+    }
 
-
-    fn selectedProposalIdx(self: *const Dashboard) usize {
-        return @min(@as(usize, @intCast(self.review_scroll_bars.scroll_view.cursor)), data.PROPOSALS.len - 1);
+    fn diffFg(line: []const u8) vaxis.Color {
+        if (std.mem.startsWith(u8, line, "+")) return theme.OK;
+        if (std.mem.startsWith(u8, line, "-")) return theme.DANGER;
+        if (std.mem.startsWith(u8, line, "@@")) return theme.INFO;
+        return theme.TEXT_SOFT;
     }
 
     fn contextHint(self: *const Dashboard) []const u8 {
         if (self.show_help) return "Keyboard reference overlay.";
         if (self.show_detail) return switch (self.detail_tab) {
-            .overview => "Prompt metadata, usage summary, and override status.",
+            .overview => "Prompt metadata, usage summary, and local edit status.",
             .content => "Full prompt body. j/k to scroll.",
-            .history => "Revision list left, version detail right.",
+            .pull_requests => if (self.show_pr_diff) "PR diff view. j/k scroll, a/x/c actions." else "j/k move  f filter  Enter view  c comment  Esc back",
         };
         return switch (self.selected_module) {
             .library => "Bundle facet, prompt list, and passive preview.",
-            .proposals => "Proposal queue left, diff center, review lens right.",
             .workspace => "Workspace list and sync status detail.",
             .insights => "Refer coverage analysis (Phase 3, API pending).",
         };
@@ -2392,7 +2655,7 @@ pub const Dashboard = struct {
     fn openDetail(self: *Dashboard, ctx: *vxfw.EventContext, prompt_idx: usize, origin: TopModule, initial_tab: DetailTab) void {
         self.selected_prompt = @min(prompt_idx, data.PROMPTS.len - 1);
         self.library_scroll_bars.scroll_view.cursor = @intCast(self.selected_prompt);
-        self.history_scroll_bars.scroll_view.cursor = 0;
+        self.pr_filter = .open;
         self.detail_origin = origin;
         self.detail_tab = initial_tab;
         self.show_detail = true;
@@ -2405,6 +2668,10 @@ pub const Dashboard = struct {
         const count: i8 = @intCast(detail_tabs.len);
         const next = @mod(current + delta + count, count);
         self.detail_tab = @enumFromInt(@as(u8, @intCast(next)));
+        // Reset PR drill-down state when leaving PR tab
+        self.show_pr_diff = false;
+        self.show_comment_editor = false;
+        self.pr_filter = .open;
     }
 
     fn shiftWsTab(self: *Dashboard, delta: i8) void {
@@ -2432,16 +2699,3 @@ fn prefixWithPad(prefix: []const u8) []const u8 {
 
 // workspace_buf removed: workspace uses manual grid rendering
 
-fn diffFg(line: []const u8) vaxis.Color {
-    if (std.mem.startsWith(u8, line, "+")) return theme.OK;
-    if (std.mem.startsWith(u8, line, "-")) return theme.DANGER;
-    if (std.mem.startsWith(u8, line, "@@")) return theme.GOLD;
-    return theme.TEXT_SOFT;
-}
-
-fn diffBg(line: []const u8) vaxis.Color {
-    if (std.mem.startsWith(u8, line, "+")) return theme.rgb(0x1d2617);
-    if (std.mem.startsWith(u8, line, "-")) return theme.rgb(0x2a1b18);
-    if (std.mem.startsWith(u8, line, "@@")) return theme.PANEL_ALT;
-    return theme.PANEL;
-}

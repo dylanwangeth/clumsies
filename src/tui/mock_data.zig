@@ -13,6 +13,7 @@ pub const PromptEntry = struct {
     summary: []const u8,
     trend: [8]u8,
     content_hash: []const u8,
+    open_pr_count: u8 = 0,
 };
 
 pub const BundleEntry = struct {
@@ -26,14 +27,23 @@ pub const HistoryEntry = struct {
     label: []const u8,
 };
 
-pub const ProposalEntry = struct {
+pub const CommentEntry = struct {
+    id: []const u8,
+    author: []const u8,
+    body: []const u8,
+    created: []const u8,
+};
+
+pub const PullRequestEntry = struct {
     id: []const u8,
     prompt_name: []const u8,
     status: []const u8,
     author: []const u8,
     created: []const u8,
+    description: []const u8,
     base_hash: []const u8,
     diff: []const []const u8,
+    comments: []const CommentEntry = &.{},
     trace_refers: u16,
     trace_sessions: u8,
 };
@@ -77,16 +87,16 @@ pub const BUNDLES = [_]BundleEntry{
 // Sorted by path prefix for grouped display in Library
 pub const PROMPTS = [_]PromptEntry{
     .{ .canonical_name = "arch/ADR_DOCUMENT", .kind = "rule", .refer_count = "291", .constraint_count = 6, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-25", .age = "12d", .summary = "Conventions for writing architecture decision records", .trend = .{ 1, 1, 1, 2, 2, 2, 1, 1 }, .content_hash = "sha256:g2h3i4j5" },
-    .{ .canonical_name = "cmd/GEN_COMMIT_MSG", .kind = "wf", .refer_count = "1.1k", .constraint_count = 5, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-31", .age = "5d", .summary = "Review git changes and suggest a commit message", .trend = .{ 2, 3, 4, 4, 5, 5, 4, 3 }, .content_hash = "sha256:e4f5g6h7" },
-    .{ .canonical_name = "coding/STYLE", .kind = "rule", .refer_count = "3.2k", .constraint_count = 8, .bundle_count = 2, .bundle_names = "frontend, default", .updated = "2026-04-04", .age = "2d", .summary = "Naming, imports, formatting, and code organization rules", .trend = .{ 1, 2, 3, 5, 6, 8, 6, 5 }, .content_hash = "sha256:a1b2c3d4" },
-    .{ .canonical_name = "coding/API_REVIEW", .kind = "rule", .refer_count = "842", .constraint_count = 12, .bundle_count = 1, .bundle_names = "backend", .updated = "2026-04-05", .age = "1d", .summary = "API design review checklist for consistency and safety", .trend = .{ 3, 4, 5, 6, 7, 8, 7, 6 }, .content_hash = "sha256:i8j9k0l1" },
+    .{ .canonical_name = "cmd/GEN_COMMIT_MSG", .kind = "wf", .refer_count = "1.1k", .constraint_count = 5, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-31", .age = "5d", .summary = "Review git changes and suggest a commit message", .trend = .{ 2, 3, 4, 4, 5, 5, 4, 3 }, .content_hash = "sha256:e4f5g6h7", .open_pr_count = 1 },
+    .{ .canonical_name = "coding/STYLE", .kind = "rule", .refer_count = "3.2k", .constraint_count = 8, .bundle_count = 2, .bundle_names = "frontend, default", .updated = "2026-04-04", .age = "2d", .summary = "Naming, imports, formatting, and code organization rules", .trend = .{ 1, 2, 3, 5, 6, 8, 6, 5 }, .content_hash = "sha256:a1b2c3d4", .open_pr_count = 1 },
+    .{ .canonical_name = "coding/API_REVIEW", .kind = "rule", .refer_count = "842", .constraint_count = 12, .bundle_count = 1, .bundle_names = "backend", .updated = "2026-04-05", .age = "1d", .summary = "API design review checklist for consistency and safety", .trend = .{ 3, 4, 5, 6, 7, 8, 7, 6 }, .content_hash = "sha256:i8j9k0l1", .open_pr_count = 1 },
     .{ .canonical_name = "coding/COMPATIBILITY", .kind = "rule", .refer_count = "520", .constraint_count = 8, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-03", .age = "3d", .summary = "Breaking changes happen freely, no compatibility layers", .trend = .{ 2, 2, 3, 3, 4, 4, 3, 3 }, .content_hash = "sha256:q6r7s8t9" },
     .{ .canonical_name = "coding/CODE_COMMENTS", .kind = "rule", .refer_count = "488", .constraint_count = 9, .bundle_count = 2, .bundle_names = "frontend, backend", .updated = "2026-04-02", .age = "4d", .summary = "Comments must be final-form text, no thinking process", .trend = .{ 1, 2, 2, 3, 3, 4, 3, 3 }, .content_hash = "sha256:u0v1w2x3" },
     .{ .canonical_name = "style/UIUX_DESIGN", .kind = "rule", .refer_count = "178", .constraint_count = 7, .bundle_count = 1, .bundle_names = "frontend", .updated = "2026-03-31", .age = "5d", .summary = "UI/UX design method with pressure-testing and smoke checks", .trend = .{ 0, 1, 1, 2, 2, 3, 2, 2 }, .content_hash = "sha256:k6l7m8n9" },
-    .{ .canonical_name = "wf/RELEASE_CHECKLIST", .kind = "wf", .refer_count = "611", .constraint_count = 4, .bundle_count = 2, .bundle_names = "release, ops", .updated = "2026-03-28", .age = "8d", .summary = "Pre-release verification steps for branch and CI", .trend = .{ 1, 1, 2, 2, 3, 3, 2, 2 }, .content_hash = "sha256:m2n3o4p5" },
+    .{ .canonical_name = "wf/RELEASE_CHECKLIST", .kind = "wf", .refer_count = "611", .constraint_count = 4, .bundle_count = 2, .bundle_names = "release, ops", .updated = "2026-03-28", .age = "8d", .summary = "Pre-release verification steps for branch and CI", .trend = .{ 1, 1, 2, 2, 3, 3, 2, 2 }, .content_hash = "sha256:m2n3o4p5", .open_pr_count = 1 },
     .{ .canonical_name = "wf/GEN_GITIGNORE", .kind = "wf", .refer_count = "145", .constraint_count = 3, .bundle_count = 1, .bundle_names = "ops", .updated = "2026-03-23", .age = "14d", .summary = "Generate .gitignore based on project type and toolchain", .trend = .{ 1, 1, 1, 1, 2, 1, 1, 1 }, .content_hash = "sha256:o0p1q2r3" },
     .{ .canonical_name = "wf/GEN_PR", .kind = "wf", .refer_count = "102", .constraint_count = 4, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-28", .age = "8d", .summary = "Create pull request with summary and test plan", .trend = .{ 0, 1, 1, 1, 2, 2, 1, 1 }, .content_hash = "sha256:s4t5u6v7" },
-    .{ .canonical_name = "zig/ZIG_STYLE", .kind = "rule", .refer_count = "412", .constraint_count = 11, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-04", .age = "2d", .summary = "Zig naming conventions, error handling, and memory management", .trend = .{ 3, 3, 4, 5, 5, 6, 5, 4 }, .content_hash = "sha256:y4z5a6b7" },
+    .{ .canonical_name = "zig/ZIG_STYLE", .kind = "rule", .refer_count = "412", .constraint_count = 11, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-04", .age = "2d", .summary = "Zig naming conventions, error handling, and memory management", .trend = .{ 3, 3, 4, 5, 5, 6, 5, 4 }, .content_hash = "sha256:y4z5a6b7", .open_pr_count = 1 },
     .{ .canonical_name = "zig/DEPRECATED_API", .kind = "rule", .refer_count = "387", .constraint_count = 59, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-05", .age = "1d", .summary = "Zig 0.15 removed and renamed APIs with replacements", .trend = .{ 2, 3, 4, 5, 6, 7, 6, 5 }, .content_hash = "sha256:c8d9e0f1" },
 };
 
@@ -104,35 +114,118 @@ pub fn promptName(canonical_name: []const u8) []const u8 {
     return canonical_name;
 }
 
+pub fn prsForPrompt(canonical_name: []const u8) []const PullRequestEntry {
+    // Return a slice of PULL_REQUESTS matching the given prompt name.
+    // Since mock data is static and small, we scan the full array each time.
+    var start: usize = 0;
+    var end: usize = 0;
+    var found_start = false;
+    for (PULL_REQUESTS, 0..) |pr, i| {
+        if (std.mem.eql(u8, pr.prompt_name, canonical_name)) {
+            if (!found_start) {
+                start = i;
+                found_start = true;
+            }
+            end = i + 1;
+        }
+    }
+    if (!found_start) return &.{};
+    return PULL_REQUESTS[start..end];
+}
+
 const std = @import("std");
 
 pub const HISTORY = [_]HistoryEntry{
     .{ .date = "2026-04-04", .hash = "sha256:a1b2c3d4", .label = "current" },
-    .{ .date = "2026-03-28", .hash = "sha256:x9y8z7w6", .label = "prop-0042" },
-    .{ .date = "2026-03-10", .hash = "sha256:l3m4n5o6", .label = "prop-0038" },
+    .{ .date = "2026-03-28", .hash = "sha256:x9y8z7w6", .label = "pr-0042" },
+    .{ .date = "2026-03-10", .hash = "sha256:l3m4n5o6", .label = "pr-0038" },
     .{ .date = "2026-02-14", .hash = "sha256:q1r2s3t4", .label = "seed" },
 };
 
-pub const PROPOSALS = [_]ProposalEntry{
-    .{ .id = "prop-0051", .prompt_name = "coding/STYLE", .status = "open", .author = "alice", .created = "2026-04-05 10:00", .base_hash = "sha256:a1b2c3d4", .diff = &.{
+pub const PULL_REQUESTS = [_]PullRequestEntry{
+    // coding/STYLE: 3 PRs (open, rejected, accepted)
+    .{ .id = "pr-0051", .prompt_name = "coding/STYLE", .status = "open", .author = "alice", .created = "2026-04-05 10:00", .description = "Prefer explicit names over abbreviations, add import grouping rule", .base_hash = "sha256:a1b2c3d4", .diff = &.{
         "@@ -1,3 +1,5 @@",
         " # STYLE",
         "-1. Prefer short names.",
         "+1. Prefer explicit names over abbreviations.",
         "+2. Group imports by scope.",
         " 3. Sort file sections in dependency order.",
+    }, .comments = &.{
+        .{ .id = "cmt-0012", .author = "bob", .body = "Naming convention looks good, but consider keeping short names for loop variables.", .created = "2026-04-05 11:30" },
+        .{ .id = "cmt-0013", .author = "carol", .body = "Agreed with the import grouping rule. Should we also sort by scope?", .created = "2026-04-05 14:00" },
+        .{ .id = "cmt-0014", .author = "alice", .body = "Good point Bob. I'll add a note about loop variable exemptions.", .created = "2026-04-05 15:20" },
     }, .trace_refers = 42, .trace_sessions = 12 },
-    .{ .id = "prop-0050", .prompt_name = "cmd/GEN_COMMIT_MSG", .status = "open", .author = "bob", .created = "2026-04-05 09:12", .base_hash = "sha256:e4f5g6h7", .diff = &.{
+    .{ .id = "pr-0048", .prompt_name = "coding/STYLE", .status = "rejected", .author = "dave", .created = "2026-04-03 14:00", .description = "Remove all formatting rules and rely on zig fmt only", .base_hash = "sha256:a1b2c3d4", .diff = &.{
+        "@@ -1,5 +1,2 @@",
+        " # STYLE",
+        "-1. Prefer short names.",
+        "-2. Sort file sections in dependency order.",
+        "-3. Keep line length under 120.",
+        "+1. Use zig fmt for all formatting.",
+    }, .comments = &.{
+        .{ .id = "cmt-0010", .author = "carol", .body = "zig fmt doesn't cover naming conventions. We still need manual rules for those.", .created = "2026-04-03 15:00" },
+        .{ .id = "cmt-0011", .author = "bob", .body = "Agreed, rejecting. Formatting is only part of style.", .created = "2026-04-03 16:30" },
+    }, .trace_refers = 42, .trace_sessions = 12 },
+    .{ .id = "pr-0045", .prompt_name = "coding/STYLE", .status = "accepted", .author = "bob", .created = "2026-03-28 09:00", .description = "Add line length constraint and section ordering rule", .base_hash = "sha256:x9y8z7w6", .diff = &.{
+        "@@ -2,1 +2,3 @@",
+        " 1. Prefer short names.",
+        "+2. Sort file sections in dependency order.",
+        "+3. Keep line length under 120.",
+    }, .trace_refers = 38, .trace_sessions = 10 },
+    // cmd/GEN_COMMIT_MSG: 2 PRs (open, accepted)
+    .{ .id = "pr-0050", .prompt_name = "cmd/GEN_COMMIT_MSG", .status = "open", .author = "bob", .created = "2026-04-05 09:12", .description = "Use conventional commit prefixes for consistency", .base_hash = "sha256:e4f5g6h7", .diff = &.{
         "@@ -1,2 +1,3 @@",
         " # GEN_COMMIT_MSG",
         "+Use conventional commit prefixes.",
         " Keep message under 72 chars.",
+    }, .comments = &.{
+        .{ .id = "cmt-0015", .author = "alice", .body = "Which prefixes? feat/fix/chore? Please list them explicitly.", .created = "2026-04-05 10:30" },
     }, .trace_refers = 18, .trace_sessions = 5 },
-    .{ .id = "prop-0049", .prompt_name = "wf/RELEASE_CHECKLIST", .status = "accepted", .author = "carol", .created = "2026-04-04 16:30", .base_hash = "sha256:m2n3o4p5", .diff = &.{
+    .{ .id = "pr-0044", .prompt_name = "cmd/GEN_COMMIT_MSG", .status = "accepted", .author = "carol", .created = "2026-03-25 11:00", .description = "Enforce 72-char subject line limit", .base_hash = "sha256:e4f5g6h7", .diff = &.{
+        "@@ -1,1 +1,2 @@",
+        " # GEN_COMMIT_MSG",
+        "+Keep message under 72 chars.",
+    }, .trace_refers = 15, .trace_sessions = 4 },
+    // wf/RELEASE_CHECKLIST: 2 PRs (open, accepted)
+    .{ .id = "pr-0052", .prompt_name = "wf/RELEASE_CHECKLIST", .status = "open", .author = "dave", .created = "2026-04-06 08:30", .description = "Add rollback procedure and hotfix branch policy", .base_hash = "sha256:m2n3o4p5", .diff = &.{
+        "@@ -5,0 +5,3 @@",
+        " 5. Verify CI green before merge.",
+        "+6. Prepare rollback plan for critical paths.",
+        "+7. Hotfix branches must be named hotfix/<issue-id>.",
+        "+8. Post-release smoke test within 30 minutes.",
+    }, .comments = &.{
+        .{ .id = "cmt-0016", .author = "alice", .body = "30 minutes seems tight for large deployments. Can we make it configurable?", .created = "2026-04-06 09:00" },
+        .{ .id = "cmt-0017", .author = "dave", .body = "Fair point. Changed to 'within the agreed SLA window'.", .created = "2026-04-06 09:45" },
+    }, .trace_refers = 31, .trace_sessions = 8 },
+    .{ .id = "pr-0049", .prompt_name = "wf/RELEASE_CHECKLIST", .status = "accepted", .author = "carol", .created = "2026-04-04 16:30", .description = "Add CI green verification step before merge", .base_hash = "sha256:m2n3o4p5", .diff = &.{
         "@@ -4,1 +4,2 @@",
         " 4. Tag release branch.",
         "+5. Verify CI green before merge.",
     }, .trace_refers = 31, .trace_sessions = 8 },
+    // coding/API_REVIEW: 1 PR (open)
+    .{ .id = "pr-0053", .prompt_name = "coding/API_REVIEW", .status = "open", .author = "carol", .created = "2026-04-06 11:00", .description = "Add rate limiting and pagination requirements to API review checklist", .base_hash = "sha256:i8j9k0l1", .diff = &.{
+        "@@ -10,0 +10,4 @@",
+        " 10. Validate error response schema.",
+        "+11. All list endpoints must support cursor-based pagination.",
+        "+12. Rate limiting headers (X-RateLimit-*) required on all public endpoints.",
+        "+13. Batch endpoints must document max items per request.",
+        "+14. Breaking changes require deprecation notice in previous release.",
+    }, .comments = &.{
+        .{ .id = "cmt-0018", .author = "bob", .body = "Should we also require idempotency keys for POST endpoints?", .created = "2026-04-06 12:00" },
+        .{ .id = "cmt-0019", .author = "carol", .body = "Good idea, adding that as item 15.", .created = "2026-04-06 12:30" },
+        .{ .id = "cmt-0020", .author = "alice", .body = "The deprecation notice rule should reference our versioning policy doc.", .created = "2026-04-06 14:00" },
+    }, .trace_refers = 55, .trace_sessions = 9 },
+    // zig/ZIG_STYLE: 1 PR (open)
+    .{ .id = "pr-0054", .prompt_name = "zig/ZIG_STYLE", .status = "open", .author = "alice", .created = "2026-04-07 09:00", .description = "Clarify comptime function naming and add allocator passing conventions", .base_hash = "sha256:y4z5a6b7", .diff = &.{
+        "@@ -5,2 +5,5 @@",
+        " - Comptime functions that return types use PascalCase",
+        "+- Functions accepting allocator must take it as first parameter",
+        "+- Prefer arena allocator for request-scoped work",
+        "+- Use errdefer to free on error paths, not manual cleanup",
+        " ",
+        " ## Formatting",
+    }, .trace_refers = 28, .trace_sessions = 7 },
 };
 
 pub const WORKSPACES = [_]WorkspaceEntry{
@@ -536,27 +629,27 @@ const my_scopes = [_][]const u8{
     "workspace:write",
     "trace:write",
     "stats:read",
-    "proposal:read",
-    "proposal:write",
+    "pr:read",
+    "pr:write",
     "members:read",
 };
 
 // Token scope definitions for the Hub Server permission model
 pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
     .{ .name = "library:read", .description = "Read prompts and bundles" },
-    .{ .name = "library:write", .description = "Create proposals" },
+    .{ .name = "library:write", .description = "Create pull requests" },
     .{ .name = "bundle:write", .description = "Bundle CRUD" },
     .{ .name = "workspace:read", .description = "Read workspace manifest/files" },
-    .{ .name = "workspace:write", .description = "Write context, create overrides" },
+    .{ .name = "workspace:write", .description = "Write context, create local edits" },
     .{ .name = "trace:write", .description = "Upload trace events" },
     .{ .name = "stats:read", .description = "Read statistics" },
     .{ .name = "members:read", .description = "List org/workspace members" },
     .{ .name = "members:write", .description = "Manage org/workspace members" },
     .{ .name = "team:read", .description = "List teams and members" },
     .{ .name = "team:write", .description = "Manage teams" },
-    .{ .name = "proposal:read", .description = "Read proposals and comments" },
-    .{ .name = "proposal:write", .description = "Create/comment on proposals" },
-    .{ .name = "proposal:merge", .description = "Accept/reject proposals" },
+    .{ .name = "pr:read", .description = "Read pull requests and comments" },
+    .{ .name = "pr:write", .description = "Create/comment on pull requests" },
+    .{ .name = "pr:merge", .description = "Accept/reject pull requests" },
 };
 
 const payments_paths = [_][]const u8{ "~/work/payments", "~/work/payments-v2" };
