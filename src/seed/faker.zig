@@ -83,15 +83,16 @@ pub fn chance(self: *Self, weight: u8) bool {
 // Names
 
 const FIRST_NAMES = [_][]const u8{
-    "alice", "bob", "carol", "dave", "eve", "frank",
-    "grace", "henry", "iris", "jack", "kate", "liam",
-    "maya", "noah", "olivia", "peter", "quinn", "rose",
-    "sam", "tara", "victor", "wendy", "xander", "yuki", "zara",
+    "alice", "bob",   "carol",  "dave",  "eve",    "frank",
+    "grace", "henry", "iris",   "jack",  "kate",   "liam",
+    "maya",  "noah",  "olivia", "peter", "quinn",  "rose",
+    "sam",   "tara",  "victor", "wendy", "xander", "yuki",
+    "zara",
 };
 
 const TEAM_NAMES = [_][]const u8{
-    "frontend", "backend", "infra", "platform", "mobile",
-    "data", "security", "devops", "design", "qa",
+    "frontend", "backend",  "infra",  "platform", "mobile",
+    "data",     "security", "devops", "design",   "qa",
 };
 
 pub fn firstName(self: *Self) []const u8 {
@@ -109,15 +110,15 @@ const RULE_GROUPS = [_][]const u8{
 };
 
 const RULE_NAMES = [_][]const u8{
-    "STYLE", "COMMENTS", "COMPATIBILITY", "DEPENDENCIES", "NAMING",
-    "ERROR_HANDLING", "MEMORY_SAFETY", "CONCURRENCY", "LOGGING",
-    "AUTH", "INPUT_VALIDATION", "RATE_LIMITING", "E2E", "UNIT_TEST",
-    "BENCHMARKS", "UIUX", "ACCESSIBILITY", "DEPRECATED_API",
+    "STYLE",            "COMMENTS",      "COMPATIBILITY",  "DEPENDENCIES", "NAMING",
+    "ERROR_HANDLING",   "MEMORY_SAFETY", "CONCURRENCY",    "LOGGING",      "AUTH",
+    "INPUT_VALIDATION", "RATE_LIMITING", "E2E",            "UNIT_TEST",    "BENCHMARKS",
+    "UIUX",             "ACCESSIBILITY", "DEPRECATED_API",
 };
 
 const WORKFLOW_NAMES = [_][]const u8{
-    "CODING", "RELEASE", "GEN_COMMIT_MSG", "GEN_PR", "JOURNAL",
-    "CODE_REVIEW", "DEPLOY", "ROLLBACK", "INCIDENT_RESPONSE",
+    "CODING",      "RELEASE", "GEN_COMMIT_MSG", "GEN_PR",            "JOURNAL",
+    "CODE_REVIEW", "DEPLOY",  "ROLLBACK",       "INCIDENT_RESPONSE",
 };
 
 pub fn promptCanonicalName(self: *Self, buf: *[80]u8) []const u8 {
@@ -147,10 +148,9 @@ const WORKFLOW_CONTENT_TEMPLATES = [_][]const u8{
 };
 
 const TOPICS = [_][]const u8{
-    "error handling", "memory management", "API design", "testing",
-    "code organization", "dependency management", "security",
-    "performance optimization", "logging and observability",
-    "database operations", "authentication", "input validation",
+    "error handling",            "memory management",     "API design",     "testing",
+    "code organization",         "dependency management", "security",       "performance optimization",
+    "logging and observability", "database operations",   "authentication", "input validation",
 };
 
 pub fn promptContent(self: *Self, buf: *[512]u8, kind: []const u8, name: []const u8) []const u8 {
@@ -243,10 +243,10 @@ const CONTEXT_DIRS = [_][]const u8{
 };
 
 const CONTEXT_FILES = [_][]const u8{
-    "overview.md", "implementation.md", "api-design.md", "data-model.md",
-    "deploy.toml", "monitoring.toml", "auth-flow.md", "sync-protocol.md",
-    "dashboard-layout.md", "library-view.md", "error-handling.md",
-    "performance-audit.md", "security-review.md", "migration-plan.md",
+    "overview.md",         "implementation.md", "api-design.md",     "data-model.md",
+    "deploy.toml",         "monitoring.toml",   "auth-flow.md",      "sync-protocol.md",
+    "dashboard-layout.md", "library-view.md",   "error-handling.md", "performance-audit.md",
+    "security-review.md",  "migration-plan.md",
 };
 
 pub fn contextPath(self: *Self, buf: *[80]u8) []const u8 {
@@ -279,8 +279,8 @@ pub fn workspaceName(self: *Self, buf: *[40]u8) []const u8 {
 // Bundle names
 
 const BUNDLE_NAMES = [_][]const u8{
-    "zig-coding", "full-stack", "workflows", "security-hardening",
-    "api-design", "testing-suite", "onboarding", "code-review",
+    "zig-coding",  "full-stack",     "workflows",  "security-hardening",
+    "api-design",  "testing-suite",  "onboarding", "code-review",
     "performance", "infrastructure",
 };
 
@@ -312,9 +312,9 @@ const BRANCH_PREFIXES = [_][]const u8{
 };
 
 const BRANCH_TOPICS = [_][]const u8{
-    "api-docs", "error-handling", "auth-flow", "layout-fix",
-    "sync-protocol", "rate-limiting", "readme", "test-coverage",
-    "perf-tuning", "schema-update", "logging", "monitoring",
+    "api-docs",      "error-handling", "auth-flow", "layout-fix",
+    "sync-protocol", "rate-limiting",  "readme",    "test-coverage",
+    "perf-tuning",   "schema-update",  "logging",   "monitoring",
 };
 
 pub fn branchName(self: *Self, buf: *[40]u8) []const u8 {
