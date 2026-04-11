@@ -24,11 +24,6 @@ pub const BundleEntry = struct {
     count: u16,
 };
 
-pub const HistoryEntry = struct {
-    date: []const u8,
-    hash: []const u8,
-    label: []const u8,
-};
 
 pub const CommentEntry = struct {
     id: []const u8,
@@ -138,13 +133,6 @@ pub fn prsForPrompt(canonical_name: []const u8) []const PullRequestEntry {
 
 const std = @import("std");
 
-pub const HISTORY = [_]HistoryEntry{
-    .{ .date = "2026-04-04", .hash = "sha256:a1b2c3d4", .label = "current" },
-    .{ .date = "2026-03-28", .hash = "sha256:x9y8z7w6", .label = "pr-0042" },
-    .{ .date = "2026-03-10", .hash = "sha256:l3m4n5o6", .label = "pr-0038" },
-    .{ .date = "2026-02-14", .hash = "sha256:q1r2s3t4", .label = "seed" },
-};
-
 pub const PULL_REQUESTS = [_]PullRequestEntry{
     // coding/STYLE: 3 PRs (open, rejected, accepted)
     .{ .id = "pr-0051", .prompt_name = "coding/STYLE", .status = "open", .author = "alice", .created = "2026-04-05 10:00", .description = "Prefer explicit names over abbreviations, add import grouping rule", .base_hash = "sha256:a1b2c3d4", .diff = &.{
@@ -242,39 +230,6 @@ pub const WORKSPACES = [_]WorkspaceEntry{
     .{ .name = "admin-dashboard", .prompts = 11, .contexts = 4, .overrides = 1, .local_rev = 25, .remote_rev = 25, .paths = 1, .open_prs = 2, .last_sync = "15 min ago", .access_level = .admin },
 };
 
-pub const ContextBranch = struct {
-    name: []const u8,
-    file_count: u8,
-    ahead: u8,
-    behind: u8,
-};
-
-pub const ContextPR = struct {
-    id: []const u8,
-    author: []const u8,
-    status: []const u8,
-    description: []const u8,
-    files_changed: u8,
-};
-
-pub const CONTEXT_BRANCHES = [_]ContextBranch{
-    .{ .name = "main", .file_count = 9, .ahead = 0, .behind = 0 },
-    .{ .name = "alice", .file_count = 3, .ahead = 3, .behind = 0 },
-    .{ .name = "bob", .file_count = 1, .ahead = 1, .behind = 1 },
-    .{ .name = "carol", .file_count = 2, .ahead = 2, .behind = 0 },
-};
-
-pub const CONTEXT_PRS = [_]ContextPR{
-    .{ .id = "cpr-001", .author = "alice", .status = "open", .description = "Add API design spec for payments module", .files_changed = 2 },
-    .{ .id = "cpr-002", .author = "carol", .status = "open", .description = "Add observability research notes", .files_changed = 1 },
-};
-
-pub const OverrideEntry = struct {
-    prompt_name: []const u8,
-    base_hash: []const u8,
-    current_hash: []const u8,
-    status: []const u8,
-};
 
 pub const ContextFile = struct {
     path: []const u8,
@@ -452,11 +407,6 @@ pub const WS_CONTEXT = [_]ContextFile{
     .{ .path = "thesis/T0-observability.md", .size = "4.1k", .hash = "r3s4", .state = "fresh", .modified = false, .branch_diff = &ctx_empty_diff },
 };
 
-pub const WS_OVERRIDES = [_]OverrideEntry{
-    .{ .prompt_name = "coding/STYLE", .base_hash = "a1b2", .current_hash = "c3d4", .status = "conflict" },
-    .{ .prompt_name = "coding/API_REVIEW", .base_hash = "f1e2", .current_hash = "f1e2", .status = "clean" },
-    .{ .prompt_name = "zig/DEPRECATED_API", .base_hash = "c8d9", .current_hash = "c8d9", .status = "clean" },
-};
 
 const style_constraints = [_]ConstraintStat{
     .{ .id = "c-1", .label = "naming conventions", .refer_count = 1280, .idle_days = null },
@@ -710,25 +660,6 @@ pub const TEAMS = [_]TeamEntry{
     .{ .name = "ops", .member_usernames = &ops_members },
 };
 
-pub const WsTeamAccess = struct {
-    team_name: []const u8,
-    level: AccessLevel,
-};
-
-pub const WsUserAccess = struct {
-    username: []const u8,
-    level: AccessLevel,
-};
-
-// Access rules for the "selected" workspace (payments-api)
-pub const WS_TEAM_ACCESS = [_]WsTeamAccess{
-    .{ .team_name = "platform", .level = .admin },
-    .{ .team_name = "frontend", .level = .write },
-};
-
-pub const WS_USER_ACCESS = [_]WsUserAccess{
-    .{ .username = "carol", .level = .read },
-};
 
 pub const CURRENT_TOKEN = TokenInfo{
     .scopes = &my_scopes,
