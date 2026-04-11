@@ -14,6 +14,9 @@ pub const PromptEntry = struct {
     trend: [8]u8,
     content_hash: []const u8,
     open_pr_count: u8 = 0,
+    workspace_count: u8 = 0,
+    workspace_names: []const u8 = "",
+    revision: u16 = 1,
 };
 
 pub const BundleEntry = struct {
@@ -87,9 +90,9 @@ pub const BUNDLES = [_]BundleEntry{
 // Sorted by path prefix for grouped display in Library
 pub const PROMPTS = [_]PromptEntry{
     .{ .canonical_name = "arch/ADR_DOCUMENT", .kind = "rule", .refer_count = "291", .constraint_count = 6, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-25", .age = "12d", .summary = "Conventions for writing architecture decision records", .trend = .{ 1, 1, 1, 2, 2, 2, 1, 1 }, .content_hash = "sha256:g2h3i4j5" },
-    .{ .canonical_name = "cmd/GEN_COMMIT_MSG", .kind = "wf", .refer_count = "1.1k", .constraint_count = 5, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-31", .age = "5d", .summary = "Review git changes and suggest a commit message", .trend = .{ 2, 3, 4, 4, 5, 5, 4, 3 }, .content_hash = "sha256:e4f5g6h7", .open_pr_count = 1 },
-    .{ .canonical_name = "coding/STYLE", .kind = "rule", .refer_count = "3.2k", .constraint_count = 8, .bundle_count = 2, .bundle_names = "frontend, default", .updated = "2026-04-04", .age = "2d", .summary = "Naming, imports, formatting, and code organization rules", .trend = .{ 1, 2, 3, 5, 6, 8, 6, 5 }, .content_hash = "sha256:a1b2c3d4", .open_pr_count = 1 },
-    .{ .canonical_name = "coding/API_REVIEW", .kind = "rule", .refer_count = "842", .constraint_count = 12, .bundle_count = 1, .bundle_names = "backend", .updated = "2026-04-05", .age = "1d", .summary = "API design review checklist for consistency and safety", .trend = .{ 3, 4, 5, 6, 7, 8, 7, 6 }, .content_hash = "sha256:i8j9k0l1", .open_pr_count = 1 },
+    .{ .canonical_name = "cmd/GEN_COMMIT_MSG", .kind = "wf", .refer_count = "1.1k", .constraint_count = 5, .bundle_count = 1, .bundle_names = "default", .updated = "2026-03-31", .age = "5d", .summary = "Review git changes and suggest a commit message", .trend = .{ 2, 3, 4, 4, 5, 5, 4, 3 }, .content_hash = "sha256:e4f5g6h7", .open_pr_count = 1, .workspace_count = 8, .workspace_names = "payments-api \xc2\xb7 merchant-portal \xc2\xb7 infra-tools \xc2\xb7 release-bot \xc2\xb7 docs-site \xc2\xb7 mobile-app \xc2\xb7 data-pipeline \xc2\xb7 admin-dashboard", .revision = 15 },
+    .{ .canonical_name = "coding/STYLE", .kind = "rule", .refer_count = "3.2k", .constraint_count = 8, .bundle_count = 2, .bundle_names = "frontend, default", .updated = "2026-04-04", .age = "2d", .summary = "Naming, imports, formatting, and code organization rules", .trend = .{ 1, 2, 3, 5, 6, 8, 6, 5 }, .content_hash = "sha256:a1b2c3d4", .open_pr_count = 1, .workspace_count = 6, .workspace_names = "payments-api \xc2\xb7 merchant-portal \xc2\xb7 infra-tools \xc2\xb7 release-bot \xc2\xb7 docs-site \xc2\xb7 mobile-app", .revision = 42 },
+    .{ .canonical_name = "coding/API_REVIEW", .kind = "rule", .refer_count = "842", .constraint_count = 12, .bundle_count = 1, .bundle_names = "backend", .updated = "2026-04-05", .age = "1d", .summary = "API design review checklist for consistency and safety", .trend = .{ 3, 4, 5, 6, 7, 8, 7, 6 }, .content_hash = "sha256:i8j9k0l1", .open_pr_count = 1, .workspace_count = 3, .workspace_names = "payments-api \xc2\xb7 merchant-portal \xc2\xb7 infra-tools", .revision = 18 },
     .{ .canonical_name = "coding/COMPATIBILITY", .kind = "rule", .refer_count = "520", .constraint_count = 8, .bundle_count = 1, .bundle_names = "default", .updated = "2026-04-03", .age = "3d", .summary = "Breaking changes happen freely, no compatibility layers", .trend = .{ 2, 2, 3, 3, 4, 4, 3, 3 }, .content_hash = "sha256:q6r7s8t9" },
     .{ .canonical_name = "coding/CODE_COMMENTS", .kind = "rule", .refer_count = "488", .constraint_count = 9, .bundle_count = 2, .bundle_names = "frontend, backend", .updated = "2026-04-02", .age = "4d", .summary = "Comments must be final-form text, no thinking process", .trend = .{ 1, 2, 2, 3, 3, 4, 3, 3 }, .content_hash = "sha256:u0v1w2x3" },
     .{ .canonical_name = "style/UIUX_DESIGN", .kind = "rule", .refer_count = "178", .constraint_count = 7, .bundle_count = 1, .bundle_names = "frontend", .updated = "2026-03-31", .age = "5d", .summary = "UI/UX design method with pressure-testing and smoke checks", .trend = .{ 0, 1, 1, 2, 2, 3, 2, 2 }, .content_hash = "sha256:k6l7m8n9" },
@@ -432,14 +435,14 @@ const zig_diff = [_][]const u8{
 const empty_diff = [_][]const u8{};
 
 pub const WS_PROMPTS = [_]WsPromptEntry{
-    .{ .name = "coding/STYLE", .kind = "rule", .has_override = true, .hash = "a1b2", .state = "stale", .override_diff = &style_diff },
     .{ .name = "cmd/GEN_COMMIT_MSG", .kind = "wf", .has_override = false, .hash = "e4f5", .state = "fresh", .override_diff = &empty_diff },
     .{ .name = "coding/API_REVIEW", .kind = "rule", .has_override = true, .hash = "bcdd", .state = "local", .override_diff = &api_diff },
-    .{ .name = "wf/RELEASE_CHECKLIST", .kind = "wf", .has_override = false, .hash = "91ab", .state = "fresh", .override_diff = &empty_diff },
-    .{ .name = "coding/COMPATIBILITY", .kind = "rule", .has_override = false, .hash = "q6r7", .state = "fresh", .override_diff = &empty_diff },
     .{ .name = "coding/CODE_COMMENTS", .kind = "rule", .has_override = false, .hash = "u0v1", .state = "fresh", .override_diff = &empty_diff },
-    .{ .name = "zig/ZIG_STYLE", .kind = "rule", .has_override = false, .hash = "y4z5", .state = "fresh", .override_diff = &empty_diff },
+    .{ .name = "coding/COMPATIBILITY", .kind = "rule", .has_override = false, .hash = "q6r7", .state = "fresh", .override_diff = &empty_diff },
+    .{ .name = "coding/STYLE", .kind = "rule", .has_override = true, .hash = "a1b2", .state = "stale", .override_diff = &style_diff },
+    .{ .name = "wf/RELEASE_CHECKLIST", .kind = "wf", .has_override = false, .hash = "91ab", .state = "fresh", .override_diff = &empty_diff },
     .{ .name = "zig/DEPRECATED_API", .kind = "rule", .has_override = true, .hash = "c8d9", .state = "stale", .override_diff = &zig_diff },
+    .{ .name = "zig/ZIG_STYLE", .kind = "rule", .has_override = false, .hash = "y4z5", .state = "fresh", .override_diff = &empty_diff },
 };
 
 pub const WS_CONTEXT = [_]ContextFile{
