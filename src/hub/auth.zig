@@ -578,8 +578,8 @@ pub fn handleRemoveMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
 
     // Cascade: remove from all workspaces
     _ = conn.exec("DELETE FROM workspace_members WHERE user_id = $1", .{target_id}) catch {};
-    // Revoke tokens
-    _ = conn.exec("UPDATE tokens SET revoked = true WHERE user_id = $1", .{target_id}) catch {};
+    // Delete tokens (FK on users has no CASCADE, must remove before user)
+    _ = conn.exec("DELETE FROM tokens WHERE user_id = $1", .{target_id}) catch {};
     // Remove user
     _ = conn.exec("DELETE FROM users WHERE user_id = $1 AND org_id = $2::uuid", .{ target_id, user.org_id }) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");
@@ -598,7 +598,7 @@ const ActivateRequest = struct {
 
 pub fn handleActivate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const client_ip = req.header("x-forwarded-for") orelse "unknown";
-    if (!ctx.rate_limiter.check(client_ip)) {
+    if (!ctx.auth_rate_limiter.check(client_ip)) {
         return apiError(res, 429, "TOO_MANY_REQUESTS", "rate limit exceeded");
     }
 
@@ -645,10 +645,16 @@ pub fn handleActivate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         return apiError(res, 401, "UNAUTHORIZED", "invitation has expired");
     }
 
-    // Verify invite token
+    // Verify invite token (constant-time comparison to prevent timing side-channel)
     const input_hash = hashInviteToken(body.invite_token);
-    const input_hash_slice: []const u8 = &input_hash;
-    if (!std.mem.eql(u8, input_hash_slice, stored_hash)) {
+    const match = if (stored_hash.len == input_hash.len) blk: {
+        var diff: u8 = 0;
+        for (&input_hash, stored_hash[0..input_hash.len]) |a, b| {
+            diff |= a ^ b;
+        }
+        break :blk diff == 0;
+    } else false;
+    if (!match) {
         row.deinit() catch {};
         return apiError(res, 401, "UNAUTHORIZED", "invalid activation credentials");
     }

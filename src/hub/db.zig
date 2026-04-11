@@ -38,9 +38,10 @@ pub fn migrate(pool: *Pool) !void {
 }
 
 pub fn bootstrap(pool: *Pool) !void {
-    const username = std.posix.getenv("HUB_BOOTSTRAP_USERNAME") orelse return;
-    const password = std.posix.getenv("HUB_BOOTSTRAP_PASSWORD") orelse return;
-    const org_name = std.posix.getenv("HUB_BOOTSTRAP_ORG") orelse "default";
+    const alloc = std.heap.page_allocator;
+    const username = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_USERNAME") catch return;
+    const password = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_PASSWORD") catch return;
+    const org_name = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_ORG") catch "default";
 
     const conn = try pool.acquire();
     defer conn.release();
@@ -64,12 +65,18 @@ pub fn bootstrap(pool: *Pool) !void {
         return;
     };
 
-    // Get org_id
+    // Get org_id — copy into stable buffer before row deinit
     var org_row = conn.row("SELECT org_id::text FROM orgs WHERE name = $1", .{org_name}) catch return;
-    const org_id = if (org_row) |*or_| blk: {
-        const val = or_.get([]const u8, 0) catch return;
-        defer or_.deinit() catch {};
-        break :blk val;
+    var org_id_buf: [64]u8 = undefined;
+    const org_id: []const u8 = if (org_row) |*or_| blk: {
+        const val = or_.get([]const u8, 0) catch {
+            or_.deinit() catch {};
+            return;
+        };
+        const len = @min(val.len, org_id_buf.len);
+        @memcpy(org_id_buf[0..len], val[0..len]);
+        or_.deinit() catch {};
+        break :blk org_id_buf[0..len];
     } else return;
 
     // Hash password
