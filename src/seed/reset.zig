@@ -339,7 +339,7 @@ fn seedWorkspacePrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void 
 
 fn seedWorkspaceMembers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     for (0..state.ws_count) |wi| {
-        // First user is always the workspace creator (admin)
+        // Choose a random user as the workspace creator (admin)
         const creator = faker.intRange(usize, 0, state.user_count);
         _ = conn.exec(
             "INSERT INTO workspace_members (ws_id, user_id, role) VALUES ($1, $2, 'admin') ON CONFLICT DO NOTHING",

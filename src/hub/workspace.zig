@@ -588,13 +588,18 @@ pub fn handleChangeMemberRole(ctx: *Server.Context, req: *httpz.Request, res: *h
         } orelse {
             return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
         };
-        const count = admin_count.get(i64, 0) catch 0;
+        const count = admin_count.get(i64, 0) catch {
+            admin_count.deinit() catch {};
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        };
         admin_count.deinit() catch {};
         if (count <= 1) {
             var is_target_admin = conn.row(
                 "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND role = 'admin'",
                 .{ ws_id, target_id },
-            ) catch null;
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            };
             if (is_target_admin) |*r| {
                 r.deinit() catch {};
                 return apiError(res, 400, "BAD_REQUEST", "cannot downgrade the last admin");
@@ -644,15 +649,22 @@ pub fn handleRemoveWsMember(ctx: *Server.Context, req: *httpz.Request, res: *htt
     var admin_check = conn.row(
         "SELECT count(*) FROM workspace_members WHERE ws_id = $1 AND role = 'admin'",
         .{ws_id},
-    ) catch null;
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
     if (admin_check) |*ac| {
-        const count = ac.get(i64, 0) catch 0;
+        const count = ac.get(i64, 0) catch {
+            ac.deinit() catch {};
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        };
         ac.deinit() catch {};
         if (count <= 1) {
             var is_target_admin = conn.row(
                 "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND role = 'admin'",
                 .{ ws_id, target_id },
-            ) catch null;
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            };
             if (is_target_admin) |*r| {
                 r.deinit() catch {};
                 return apiError(res, 400, "BAD_REQUEST", "cannot remove the last admin");
