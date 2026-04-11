@@ -57,6 +57,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.post("/api/org/members", auth.handleInviteMember, .{});
     router.patch("/api/org/members/:user_id", auth.handleChangeRole, .{});
     router.delete("/api/org/members/:user_id", auth.handleRemoveMember, .{});
+    router.get("/api/org/directory", team_handler.handleDirectory, .{});
 
     // Teams
     router.post("/api/org/teams", team_handler.handleCreateTeam, .{});
