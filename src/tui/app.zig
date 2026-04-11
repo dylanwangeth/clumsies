@@ -1792,7 +1792,7 @@ pub const Dashboard = struct {
         var live_insights: ?data.InsightsData = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
-            if (self.api_state.org_stats) |stats| break :blk api.insightsFromStats(ctx.arena, stats, self.api_state.prompts);
+            if (self.api_state.org_stats) |stats| break :blk api.insightsFromStats(ctx.arena, stats, self.api_state.prompts, self.api_state.ws_stats_members, self.api_state.ws_stats_models);
             break :blk null;
         };
         const ins: *const data.InsightsData = if (live_insights) |*li| li else &data.INSIGHTS;
