@@ -36,6 +36,14 @@ pub const HubClient = struct {
         return self.doFetch(.PUT, path, body);
     }
 
+    pub fn delete(self: *HubClient, path: []const u8) !Response {
+        return self.doFetch(.DELETE, path, null);
+    }
+
+    pub fn patch(self: *HubClient, path: []const u8, body: []const u8) !Response {
+        return self.doFetch(.PATCH, path, body);
+    }
+
     fn doFetch(self: *HubClient, method: http.Method, path: []const u8, payload: ?[]const u8) !Response {
         var client: http.Client = .{ .allocator = self.allocator };
         defer client.deinit();
