@@ -95,6 +95,11 @@ pub fn build(b: *std.Build) void {
     });
     tui_module.addImport("vaxis", vaxis_dep.module("vaxis"));
 
+    if (enable_keychain) {
+        tui_module.linkFramework("Security", .{});
+        tui_module.linkFramework("CoreFoundation", .{});
+    }
+
     const tui_exe = b.addExecutable(.{
         .name = "clumsies-tui",
         .root_module = tui_module,
