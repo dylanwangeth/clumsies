@@ -1257,7 +1257,7 @@ pub const Dashboard = struct {
                 surface.children = children;
             },
             .pull_requests => {
-                const prs = data.prsForPrompt(p.canonical_name);
+                const prs = self.getPrsForPrompt(p.canonical_name);
                 if (prs.len == 0) {
                     w.writeText(&surface, ctx, 2, 2, "No pull requests for this prompt.", theme.fg(theme.MUTED));
                 } else if (self.show_pr_diff) {
@@ -1372,7 +1372,7 @@ pub const Dashboard = struct {
                 surface.children = children;
             },
             .pull_requests => {
-                const prs = data.prsForPrompt(p.canonical_name);
+                const prs = self.getPrsForPrompt(p.canonical_name);
                 if (prs.len == 0) {
                     w.writeText(&surface, ctx, 2, 2, "No pull requests for this prompt.", theme.fg(theme.MUTED));
                 } else if (self.show_pr_diff) {
@@ -2377,9 +2377,15 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    // Get PRs for a prompt. Uses mock data (API PRs have different shape for diff/comments).
     fn getPrsForPrompt(self: *Dashboard, canonical_name: []const u8) []const data.PullRequestEntry {
-        _ = self;
+        self.api_state.mutex.lock();
+        const live_prs = self.api_state.prompt_prs;
+        const lib = self.api_state.prompts;
+        self.api_state.mutex.unlock();
+        if (live_prs) |prs| {
+            const alloc = self.api_state.arena.allocator();
+            return api.toPrEntries(alloc, prs, canonical_name, lib);
+        }
         return data.prsForPrompt(canonical_name);
     }
 
@@ -2538,7 +2544,7 @@ pub const Dashboard = struct {
         const all_prompts = self.getPrompts();
         const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
         const p = if (all_prompts.len > 0) &all_prompts[sel_idx] else &data.PROMPTS[0];
-        const prs = data.prsForPrompt(p.canonical_name);
+        const prs = self.getPrsForPrompt(p.canonical_name);
         const title = if (prs.len > 0 and self.selected_pr_idx < prs.len)
             try std.fmt.allocPrint(ctx.arena, " Comment on {s} ", .{prs[self.selected_pr_idx].id})
         else
@@ -2692,7 +2698,7 @@ pub const Dashboard = struct {
         const all_prompts = self.getPrompts();
         const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
         const p = if (all_prompts.len > 0) &all_prompts[sel_idx] else &data.PROMPTS[0];
-        const prs = data.prsForPrompt(p.canonical_name);
+        const prs = self.getPrsForPrompt(p.canonical_name);
         var row_idx: usize = 0;
         for (prs, 0..) |pr, pi| {
             if (row_idx + 1 >= self.pr_widgets.len) break;
@@ -2743,7 +2749,7 @@ pub const Dashboard = struct {
         const all_prompts = self.getPrompts();
         const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
         const p = if (all_prompts.len > 0) &all_prompts[sel_idx] else &data.PROMPTS[0];
-        const prs = data.prsForPrompt(p.canonical_name);
+        const prs = self.getPrsForPrompt(p.canonical_name);
         if (prs.len == 0) {
             self.pr_diff_count = 0;
             return;
