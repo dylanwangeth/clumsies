@@ -12,9 +12,6 @@ const SeedState = struct {
     user_roles: [data.USER_COUNT][]const u8 = undefined,
     user_count: usize = 0,
 
-    team_ids: [data.TEAM_COUNT][24]u8 = undefined,
-    team_count: usize = 0,
-
     prompt_ids: [data.PROMPT_COUNT][24]u8 = undefined,
     prompt_hashes: [data.PROMPT_COUNT][24]u8 = undefined,
     prompt_kinds: [data.PROMPT_COUNT][]const u8 = undefined,
@@ -28,10 +25,6 @@ const SeedState = struct {
 
     fn userId(self: *const SeedState, idx: usize) []const u8 {
         return &self.user_ids[idx];
-    }
-
-    fn teamId(self: *const SeedState, idx: usize) []const u8 {
-        return &self.team_ids[idx];
     }
 
     fn promptId(self: *const SeedState, idx: usize) []const u8 {
@@ -56,8 +49,7 @@ pub fn run(pool: *pg.Pool) !void {
 
     log.info("truncating all tables...", .{});
     _ = conn.exec(
-        \\TRUNCATE orgs, users, tokens, workspaces, teams, team_members,
-        \\  workspace_team_access, workspace_user_access, prompts, workspace_prompts,
+        \\TRUNCATE orgs, users, tokens, workspaces, workspace_members, prompts, workspace_prompts,
         \\  context_branches, context_files, context_prs, context_pr_files, context_pr_comments,
         \\  bundles, bundle_prompts, prompt_prs, prompt_pr_comments,
         \\  trace_events, library_manifest, prompt_history
@@ -69,15 +61,13 @@ pub fn run(pool: *pg.Pool) !void {
 
     try seedOrg(conn);
     try seedUsers(conn, &faker, &state);
-    try seedTeams(conn, &faker, &state);
-    try seedTeamMembers(conn, &faker, &state);
     try seedPrompts(conn, &faker, &state);
     try seedBundles(conn, &faker, &state);
     try seedLibraryManifest(conn);
     try seedPromptHistory(conn, &faker, &state);
     try seedWorkspaces(conn, &faker, &state);
     try seedWorkspacePrompts(conn, &faker, &state);
-    try seedWorkspaceAccess(conn, &faker, &state);
+    try seedWorkspaceMembers(conn, &faker, &state);
     try seedContextBranches(conn, &faker, &state);
     try seedContextFiles(conn, &faker, &state);
     try seedContextPrs(conn, &faker, &state);
@@ -133,62 +123,6 @@ fn seedUsers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             "INSERT INTO users (user_id, org_id, username, password_hash, role) VALUES ($1, $2::uuid, $3, $4, $5)",
             .{ id, data.ORG_ID, name, password, role },
         );
-    }
-}
-
-fn seedTeams(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
-    log.info("seeding {d} teams...", .{data.TEAM_COUNT});
-
-    var used_names: [data.TEAM_COUNT][]const u8 = undefined;
-    var used_count: usize = 0;
-
-    for (0..data.TEAM_COUNT) |i| {
-        var name: []const u8 = undefined;
-        var attempts: usize = 0;
-        while (attempts < 50) : (attempts += 1) {
-            name = faker.teamName();
-            var duplicate = false;
-            for (used_names[0..used_count]) |used| {
-                if (std.mem.eql(u8, used, name)) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (!duplicate) break;
-        }
-        used_names[used_count] = name;
-        used_count += 1;
-
-        const id = faker.hexId(&state.team_ids[i], "tm-");
-        state.team_count = i + 1;
-
-        _ = try conn.exec(
-            "INSERT INTO teams (team_id, org_id, name) VALUES ($1, $2::uuid, $3)",
-            .{ id, data.ORG_ID, name },
-        );
-    }
-}
-
-fn seedTeamMembers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
-    // Each team gets 2-4 random members
-    for (0..state.team_count) |ti| {
-        const member_count = faker.intRange(usize, 2, @min(5, state.user_count));
-        var added: [data.USER_COUNT]bool = .{false} ** data.USER_COUNT;
-        var count: usize = 0;
-
-        while (count < member_count) {
-            const ui = faker.intRange(usize, 0, state.user_count);
-            if (added[ui]) continue;
-            added[ui] = true;
-            count += 1;
-
-            _ = conn.exec(
-                "INSERT INTO team_members (team_id, user_id) VALUES ($1, $2)",
-                .{ state.teamId(ti), state.userId(ui) },
-            ) catch |err| {
-                log.warn("team_member insert failed: {}", .{err});
-            };
-        }
     }
 }
 
@@ -403,33 +337,37 @@ fn seedWorkspacePrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void 
     }
 }
 
-fn seedWorkspaceAccess(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
-    // Grant teams access to workspaces
+fn seedWorkspaceMembers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     for (0..state.ws_count) |wi| {
-        const team_grants = faker.intRange(usize, 1, @min(3, state.team_count + 1));
-        for (0..team_grants) |ti| {
-            if (ti >= state.team_count) break;
-            const level = faker.pick([]const u8, &data.ACCESS_LEVELS);
+        // First user is always the workspace creator (admin)
+        const creator = faker.intRange(usize, 0, state.user_count);
+        _ = conn.exec(
+            "INSERT INTO workspace_members (ws_id, user_id, role) VALUES ($1, $2, 'admin') ON CONFLICT DO NOTHING",
+            .{ state.wsId(wi), state.userId(creator) },
+        ) catch |err| {
+            log.warn("seed: {}", .{err});
+        };
+
+        // Add 2-4 random members
+        const member_count = faker.intRange(usize, 2, @min(5, state.user_count));
+        var added: [data.USER_COUNT]bool = .{false} ** data.USER_COUNT;
+        added[creator] = true;
+        var count: usize = 0;
+
+        while (count < member_count) {
+            const ui = faker.intRange(usize, 0, state.user_count);
+            if (added[ui]) continue;
+            added[ui] = true;
+            count += 1;
+
+            const role = faker.pick([]const u8, &data.WS_MEMBER_ROLES);
             _ = conn.exec(
-                "INSERT INTO workspace_team_access (ws_id, team_id, level) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-                .{ state.wsId(wi), state.teamId(ti), level },
+                "INSERT INTO workspace_members (ws_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                .{ state.wsId(wi), state.userId(ui), role },
             ) catch |err| {
                 log.warn("seed: {}", .{err});
             };
         }
-    }
-
-    // Grant some individual users direct access
-    for (0..state.ws_count) |wi| {
-        if (!faker.chance(60)) continue;
-        const ui = faker.intRange(usize, 0, state.user_count);
-        const level = faker.pick([]const u8, &data.ACCESS_LEVELS);
-        _ = conn.exec(
-            "INSERT INTO workspace_user_access (ws_id, user_id, level) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-            .{ state.wsId(wi), state.userId(ui), level },
-        ) catch |err| {
-            log.warn("seed: {}", .{err});
-        };
     }
 }
 

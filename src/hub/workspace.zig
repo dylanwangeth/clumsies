@@ -9,7 +9,6 @@ const KvEntry = @import("../protocol/manifest.zig").KvEntry;
 const CreateRequest = struct {
     name: []const u8,
     bundle_id: ?[]const u8 = null,
-    team_ids: ?[]const []const u8 = null,
 };
 
 pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -57,27 +56,17 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         return apiError(res, 500, "INTERNAL_ERROR", "failed to create workspace");
     };
 
-    // Creator gets admin access
+    // Creator becomes workspace admin
     _ = conn.exec(
-        "INSERT INTO workspace_user_access (ws_id, user_id, level) VALUES ($1, $2, 'admin')",
+        "INSERT INTO workspace_members (ws_id, user_id, role) VALUES ($1, $2, 'admin')",
         .{ &ws_id_buf, user.user_id },
     ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to grant creator access");
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to add creator as admin");
     };
 
     // Initialize workspace from bundle if specified
     if (body.bundle_id) |bid| {
         initFromBundle(conn, &ws_id_buf, bid);
-    }
-
-    // Grant initial team access if specified
-    if (body.team_ids) |tids| {
-        for (tids) |tid| {
-            _ = conn.exec(
-                "INSERT INTO workspace_team_access (ws_id, team_id, level) VALUES ($1, $2, 'write') ON CONFLICT DO NOTHING",
-                .{ &ws_id_buf, tid },
-            ) catch {};
-        }
     }
 
     res.status = 201;
@@ -432,8 +421,7 @@ pub fn handleDelete(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     _ = conn.exec("DELETE FROM context_prs WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_files WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_branches WHERE ws_id = $1", .{ws_id}) catch {};
-    _ = conn.exec("DELETE FROM workspace_team_access WHERE ws_id = $1", .{ws_id}) catch {};
-    _ = conn.exec("DELETE FROM workspace_user_access WHERE ws_id = $1", .{ws_id}) catch {};
+    _ = conn.exec("DELETE FROM workspace_members WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM workspace_prompts WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM workspaces WHERE ws_id = $1", .{ws_id}) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");
@@ -442,25 +430,20 @@ pub fn handleDelete(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     res.status = 204;
 }
 
-// Workspace access control
+// Workspace membership management
 
-const TeamAccessInfo = struct {
-    team_id: []const u8,
-    name: []const u8,
-    level: []const u8,
-};
-
-const UserAccessInfo = struct {
+const MemberInfo = struct {
     user_id: []const u8,
     username: []const u8,
-    level: []const u8,
+    role: []const u8,
+    joined_at: []const u8,
 };
 
-pub fn handleGetAccess(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "workspace:read", res)) return;
+    if (!auth.requireScope(user, "members:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -475,68 +458,51 @@ pub fn handleGetAccess(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
     }
 
-    var team_result = conn.query(
-        "SELECT wta.team_id, t.name, wta.level FROM workspace_team_access wta JOIN teams t ON t.team_id = wta.team_id WHERE wta.ws_id = $1 ORDER BY t.name",
-        .{ws_id},
-    ) catch {
+    var result = conn.query(
+        \\SELECT wm.user_id, u.username, wm.role, wm.joined_at::text
+        \\FROM workspace_members wm JOIN users u ON u.user_id = wm.user_id
+        \\WHERE wm.ws_id = $1 ORDER BY u.username
+    , .{ws_id}) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
-    defer team_result.deinit();
+    defer result.deinit();
 
-    var teams: std.ArrayList(TeamAccessInfo) = .empty;
-    while (try team_result.next()) |row| {
-        try teams.append(req.arena, .{
-            .team_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-            .name = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-            .level = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-        });
-    }
-
-    var user_result = conn.query(
-        "SELECT wua.user_id, u.username, wua.level FROM workspace_user_access wua JOIN users u ON u.user_id = wua.user_id WHERE wua.ws_id = $1 ORDER BY u.username",
-        .{ws_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-    defer user_result.deinit();
-
-    var users: std.ArrayList(UserAccessInfo) = .empty;
-    while (try user_result.next()) |row| {
-        try users.append(req.arena, .{
+    var list: std.ArrayList(MemberInfo) = .empty;
+    while (try result.next()) |row| {
+        try list.append(req.arena, .{
             .user_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
             .username = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-            .level = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .role = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .joined_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
         });
     }
 
-    try res.json(.{ .teams = teams.items, .users = users.items }, .{});
+    try res.json(.{ .members = list.items }, .{});
 }
 
-const GrantRequest = struct {
-    level: []const u8,
+const InviteRequest = struct {
+    user_id: []const u8,
+    role: []const u8 = "member",
 };
 
-pub fn handleGrantTeamAccess(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "workspace:write", res)) return;
+    if (!auth.requireScope(user, "members:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
     };
-    const team_id = req.param("team_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "team_id is required");
-    };
 
-    const body = req.json(GrantRequest) catch {
+    const body = req.json(InviteRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
     };
 
-    if (!std.mem.eql(u8, body.level, "read") and !std.mem.eql(u8, body.level, "write") and !std.mem.eql(u8, body.level, "admin")) {
-        return apiError(res, 400, "BAD_REQUEST", "level must be read, write, or admin");
+    if (!std.mem.eql(u8, body.role, "member") and !std.mem.eql(u8, body.role, "admin")) {
+        return apiError(res, 400, "BAD_REQUEST", "role must be member or admin");
     }
 
     const conn = ctx.pool.acquire() catch {
@@ -548,66 +514,43 @@ pub fn handleGrantTeamAccess(ctx: *Server.Context, req: *httpz.Request, res: *ht
         return apiError(res, 403, "FORBIDDEN", "ws:admin or maintainer required");
     }
 
-    // Validate team belongs to same org as workspace
     var org_check = conn.row(
-        "SELECT 1 FROM teams t JOIN workspaces w ON w.org_id = t.org_id WHERE t.team_id = $1 AND w.ws_id = $2",
-        .{ team_id, ws_id },
+        "SELECT 1 FROM users u JOIN workspaces w ON w.org_id = u.org_id WHERE u.user_id = $1 AND w.ws_id = $2",
+        .{ body.user_id, ws_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        return apiError(res, 400, "BAD_REQUEST", "team and workspace must belong to the same org");
+        return apiError(res, 404, "NOT_FOUND", "user not found in org");
     };
     org_check.deinit() catch {};
 
     _ = conn.exec(
-        \\INSERT INTO workspace_team_access (ws_id, team_id, level) VALUES ($1, $2, $3)
-        \\ON CONFLICT (ws_id, team_id) DO UPDATE SET level = $3
-    ,
-        .{ ws_id, team_id, body.level },
+        "INSERT INTO workspace_members (ws_id, user_id, role) VALUES ($1, $2, $3)",
+        .{ ws_id, body.user_id, body.role },
     ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to grant access");
+        if (conn.err) |pg_err| {
+            if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
+                std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
+            {
+                return apiError(res, 409, "CONFLICT", "user is already a member");
+            }
+        }
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to add member");
     };
 
-    try res.json(.{ .team_id = team_id, .level = body.level }, .{});
+    res.status = 201;
+    try res.json(.{ .user_id = body.user_id, .role = body.role }, .{});
 }
 
-pub fn handleRevokeTeamAccess(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+const RoleChangeRequest = struct {
+    role: []const u8,
+};
+
+pub fn handleChangeMemberRole(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "workspace:write", res)) return;
-
-    const ws_id = req.param("ws_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
-    };
-    const team_id = req.param("team_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "team_id is required");
-    };
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    if (!std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceAdmin(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "ws:admin or maintainer required");
-    }
-
-    _ = conn.exec(
-        "DELETE FROM workspace_team_access WHERE ws_id = $1 AND team_id = $2",
-        .{ ws_id, team_id },
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");
-    };
-
-    res.status = 204;
-}
-
-pub fn handleGrantUserAccess(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-    if (!auth.requireScope(user, "workspace:write", res)) return;
+    if (!auth.requireScope(user, "members:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -616,14 +559,14 @@ pub fn handleGrantUserAccess(ctx: *Server.Context, req: *httpz.Request, res: *ht
         return apiError(res, 400, "BAD_REQUEST", "user_id is required");
     };
 
-    const body = req.json(GrantRequest) catch {
+    const body = req.json(RoleChangeRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
     };
 
-    if (!std.mem.eql(u8, body.level, "read") and !std.mem.eql(u8, body.level, "write") and !std.mem.eql(u8, body.level, "admin")) {
-        return apiError(res, 400, "BAD_REQUEST", "level must be read, write, or admin");
+    if (!std.mem.eql(u8, body.role, "member") and !std.mem.eql(u8, body.role, "admin")) {
+        return apiError(res, 400, "BAD_REQUEST", "role must be member or admin");
     }
 
     const conn = ctx.pool.acquire() catch {
@@ -635,34 +578,49 @@ pub fn handleGrantUserAccess(ctx: *Server.Context, req: *httpz.Request, res: *ht
         return apiError(res, 403, "FORBIDDEN", "ws:admin or maintainer required");
     }
 
-    // Validate user belongs to same org as workspace
-    var org_check = conn.row(
-        "SELECT 1 FROM users u JOIN workspaces w ON w.org_id = u.org_id WHERE u.user_id = $1 AND w.ws_id = $2",
-        .{ target_id, ws_id },
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    } orelse {
-        return apiError(res, 400, "BAD_REQUEST", "user and workspace must belong to the same org");
-    };
-    org_check.deinit() catch {};
+    // Prevent downgrading the last admin
+    if (std.mem.eql(u8, body.role, "member")) {
+        var admin_count = conn.row(
+            "SELECT count(*) FROM workspace_members WHERE ws_id = $1 AND role = 'admin'",
+            .{ws_id},
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        } orelse {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        };
+        const count = admin_count.get(i64, 0) catch 0;
+        admin_count.deinit() catch {};
+        if (count <= 1) {
+            var is_target_admin = conn.row(
+                "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND role = 'admin'",
+                .{ ws_id, target_id },
+            ) catch null;
+            if (is_target_admin) |*r| {
+                r.deinit() catch {};
+                return apiError(res, 400, "BAD_REQUEST", "cannot downgrade the last admin");
+            }
+        }
+    }
 
-    _ = conn.exec(
-        \\INSERT INTO workspace_user_access (ws_id, user_id, level) VALUES ($1, $2, $3)
-        \\ON CONFLICT (ws_id, user_id) DO UPDATE SET level = $3
-    ,
-        .{ ws_id, target_id, body.level },
+    const updated = conn.exec(
+        "UPDATE workspace_members SET role = $3 WHERE ws_id = $1 AND user_id = $2",
+        .{ ws_id, target_id, body.role },
     ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to grant access");
+        return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
     };
 
-    try res.json(.{ .user_id = target_id, .level = body.level }, .{});
+    if (updated == null or updated.? == 0) {
+        return apiError(res, 404, "NOT_FOUND", "member not found");
+    }
+
+    try res.json(.{ .user_id = target_id, .role = body.role }, .{});
 }
 
-pub fn handleRevokeUserAccess(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleRemoveWsMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "workspace:write", res)) return;
+    if (!auth.requireScope(user, "members:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -682,8 +640,28 @@ pub fn handleRevokeUserAccess(ctx: *Server.Context, req: *httpz.Request, res: *h
         return apiError(res, 403, "FORBIDDEN", "ws:admin or maintainer required");
     }
 
+    // Prevent removing the last admin
+    var admin_check = conn.row(
+        "SELECT count(*) FROM workspace_members WHERE ws_id = $1 AND role = 'admin'",
+        .{ws_id},
+    ) catch null;
+    if (admin_check) |*ac| {
+        const count = ac.get(i64, 0) catch 0;
+        ac.deinit() catch {};
+        if (count <= 1) {
+            var is_target_admin = conn.row(
+                "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND role = 'admin'",
+                .{ ws_id, target_id },
+            ) catch null;
+            if (is_target_admin) |*r| {
+                r.deinit() catch {};
+                return apiError(res, 400, "BAD_REQUEST", "cannot remove the last admin");
+            }
+        }
+    }
+
     _ = conn.exec(
-        "DELETE FROM workspace_user_access WHERE ws_id = $1 AND user_id = $2",
+        "DELETE FROM workspace_members WHERE ws_id = $1 AND user_id = $2",
         .{ ws_id, target_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");

@@ -5,14 +5,13 @@ pub const ORG_ID = "a0000000-0000-0000-0000-000000000001";
 pub const ORG_NAME = "acme";
 
 pub const ROLES = [_][]const u8{ "maintainer", "member" };
-pub const ACCESS_LEVELS = [_][]const u8{ "read", "write", "admin" };
+pub const WS_MEMBER_ROLES = [_][]const u8{ "member", "admin" };
 pub const PROMPT_PR_STATUSES = [_][]const u8{ "open", "accepted", "rejected" };
 pub const CONTEXT_PR_STATUSES = [_][]const u8{ "open", "merged", "closed", "conflict" };
 pub const TRACE_EVENT_TYPES = [_][]const u8{ "setup", "begin", "refer", "refer", "complete" };
 
 // Counts for reset mode
 pub const USER_COUNT: usize = 8;
-pub const TEAM_COUNT: usize = 3;
 pub const PROMPT_COUNT: usize = 15;
 pub const BUNDLE_COUNT: usize = 3;
 pub const WORKSPACE_COUNT: usize = 4;
