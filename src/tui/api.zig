@@ -1,5 +1,6 @@
 const std = @import("std");
 const HubClient = @import("hub_client.zig").HubClient;
+const data = @import("mock_data.zig");
 
 pub const ConnectionStatus = enum {
     disconnected,
@@ -397,4 +398,88 @@ fn parsePromptPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const PromptPr 
         }) catch continue;
     }
     return list.items;
+}
+
+// Convert API LibraryPrompts to mock-compatible PromptEntry slice.
+// This lets syncLibraryWidgets work unchanged with live data.
+pub fn toPromptEntries(alloc: std.mem.Allocator, prompts: []const LibraryPrompt) []const data.PromptEntry {
+    var list: std.ArrayList(data.PromptEntry) = .empty;
+    for (prompts) |p| {
+        const refer_str = formatCount(alloc, p.refer_count) catch "";
+        list.append(alloc, .{
+            .canonical_name = p.canonical_name,
+            .kind = p.kind,
+            .refer_count = refer_str,
+            .constraint_count = @intCast(@min(p.active_constraint_count, 255)),
+            .bundle_count = @intCast(@min(p.bundle_count, 255)),
+            .bundle_names = "",
+            .updated = p.updated_at,
+            .age = "",
+            .summary = "",
+            .trend = .{0} ** 8,
+            .content_hash = p.content_hash,
+            .open_pr_count = @intCast(@min(p.open_pr_count, 255)),
+            .workspace_count = @intCast(@min(p.workspace_count, 255)),
+            .workspace_names = "",
+            .revision = 0,
+        }) catch continue;
+    }
+    return list.items;
+}
+
+fn formatCount(alloc: std.mem.Allocator, n: i64) ![]const u8 {
+    if (n >= 1000) {
+        const k = @as(f64, @floatFromInt(n)) / 1000.0;
+        return std.fmt.allocPrint(alloc, "{d:.1}k", .{k});
+    }
+    return std.fmt.allocPrint(alloc, "{d}", .{n});
+}
+
+// Convert API BundleData to mock-compatible BundleEntry slice.
+pub fn toBundleEntries(alloc: std.mem.Allocator, bundles: []const BundleData) []const data.BundleEntry {
+    var list: std.ArrayList(data.BundleEntry) = .empty;
+    for (bundles) |b| {
+        list.append(alloc, .{
+            .name = b.name,
+            .count = @intCast(@min(b.prompt_count, std.math.maxInt(u16))),
+        }) catch continue;
+    }
+    return list.items;
+}
+
+// Build InsightsData from OrgStats for chart header.
+// Prompts/members/models/alerts fall back to mock data.
+pub fn insightsFromStats(stats: OrgStats) data.InsightsData {
+    var trend: [30]u16 = .{0} ** 30;
+    const count = @min(stats.trend.len, 30);
+    for (0..count) |i| {
+        const idx = if (stats.trend.len > 30) stats.trend.len - 30 + i else i;
+        trend[i] = @intCast(@min(stats.trend[idx].refer_count, std.math.maxInt(u16)));
+    }
+
+    const ratio_pct: u8 = @intCast(@min(@as(u64, @intFromFloat(stats.signal_ratio * 100)), 100));
+    const idle: u32 = @intCast(@max(stats.idle_constraint_count, 0));
+    const active: u32 = @intCast(@max(stats.active_constraint_count, 0));
+    const total: u32 = @intCast(@max(stats.constraint_count, 0));
+
+    var refers_per_hour: u16 = 0;
+    if (count > 0) {
+        const last_day = stats.trend[stats.trend.len - 1].refer_count;
+        refers_per_hour = @intCast(@min(@divTrunc(@max(last_day, 0), 24), std.math.maxInt(u16)));
+    }
+
+    return .{
+        .constraint_count = total,
+        .active_constraint_count = active,
+        .idle_constraint_count = idle,
+        .signal_ratio = ratio_pct,
+        .refers_per_hour = refers_per_hour,
+        .today_delta_pct = 0,
+        .last_event_minutes_ago = 0,
+        .refer_trend = trend,
+        .prompts = data.INSIGHTS.prompts,
+        .members = data.INSIGHTS.members,
+        .models = data.INSIGHTS.models,
+        .alerts = data.INSIGHTS.alerts,
+    };
 }

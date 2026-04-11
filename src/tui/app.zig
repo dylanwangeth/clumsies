@@ -120,8 +120,8 @@ const DetailTab = enum(u8) {
 
 const top_tabs = [_]TopModule{ .insights, .workspace, .library };
 
-// 12 prompts + up to 12 group headers = 24 max rows
-const MAX_LIBRARY_ROWS = data.PROMPTS.len + 12;
+const MAX_LIBRARY_ROWS = 128;
+const MAX_PR_ROWS = 64;
 const detail_tabs = [_]DetailTab{ .content, .pull_requests };
 
 pub const Dashboard = struct {
@@ -159,11 +159,11 @@ pub const Dashboard = struct {
     // PR list within Prompt Detail
     pr_filter: PrFilter = .open,
     pr_scroll_bars: vxfw.ScrollBars,
-    pr_widgets: [data.PULL_REQUESTS.len * 2]vxfw.Widget = undefined,
-    pr_table_rows: [data.PULL_REQUESTS.len]TableRow = undefined,
-    pr_table_cols: [data.PULL_REQUESTS.len][4]Column = undefined,
-    pr_text_rows: [data.PULL_REQUESTS.len]vxfw.Text = undefined,
-    pr_indices: [data.PULL_REQUESTS.len * 2]?usize = .{null} ** (data.PULL_REQUESTS.len * 2),
+    pr_widgets: [MAX_PR_ROWS * 2]vxfw.Widget = undefined,
+    pr_table_rows: [MAX_PR_ROWS]TableRow = undefined,
+    pr_table_cols: [MAX_PR_ROWS][4]Column = undefined,
+    pr_text_rows: [MAX_PR_ROWS]vxfw.Text = undefined,
+    pr_indices: [MAX_PR_ROWS * 2]?usize = .{null} ** (MAX_PR_ROWS * 2),
     pr_row_count: usize = 0,
     // PR drill-down state
     show_pr_diff: bool = false,
@@ -595,7 +595,13 @@ pub const Dashboard = struct {
                 switch (self.selected_module) {
                     .library => {
                         if (key.matches('b', .{})) {
-                            self.library_bundle_filter = (self.library_bundle_filter + 1) % (data.BUNDLES.len + 1);
+                            const bundle_count = blk: {
+                                self.api_state.mutex.lock();
+                                defer self.api_state.mutex.unlock();
+                                if (self.api_state.bundles) |lb| break :blk lb.len;
+                                break :blk data.BUNDLES.len;
+                            };
+                            self.library_bundle_filter = (self.library_bundle_filter + 1) % (bundle_count + 1);
                             self.library_scroll_bars.scroll_view.cursor = 0;
                             ctx.consumeAndRedraw();
                             return;
@@ -1171,7 +1177,17 @@ pub const Dashboard = struct {
 
         const list_w: u16 = size.width / 3;
         const detail_w: u16 = size.width - list_w - 1;
-        const p = &data.PROMPTS[self.selected_prompt];
+        const prompts: []const data.PromptEntry = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            if (self.api_state.prompts) |lp| {
+                const alloc = self.api_state.arena.allocator();
+                break :blk api.toPromptEntries(alloc, lp);
+            }
+            break :blk &data.PROMPTS;
+        };
+        const sel_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
+        const p = if (prompts.len > 0) &prompts[sel_idx] else &data.PROMPTS[0];
 
         const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
         const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
@@ -1189,11 +1205,28 @@ pub const Dashboard = struct {
         self.library_scroll_bars.scroll_view.draw_cursor = false;
         defer self.library_scroll_bars.scroll_view.draw_cursor = true;
 
+        const bundles_list: []const data.BundleEntry = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            if (self.api_state.bundles) |lb| {
+                const a = self.api_state.arena.allocator();
+                break :blk api.toBundleEntries(a, lb);
+            }
+            break :blk &data.BUNDLES;
+        };
         const bundle_label: []const u8 = if (self.library_bundle_filter == 0)
             "All"
+        else if (self.library_bundle_filter - 1 < bundles_list.len)
+            bundles_list[self.library_bundle_filter - 1].name
         else
-            data.BUNDLES[self.library_bundle_filter - 1].name;
-        const subtitle = try std.fmt.allocPrint(ctx.arena, "{d} prompts  bundle: {s}  / search  b filter", .{ data.PROMPTS.len, bundle_label });
+            "All";
+        const prompt_count: usize = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            if (self.api_state.prompts) |p| break :blk p.len;
+            break :blk data.PROMPTS.len;
+        };
+        const subtitle = try std.fmt.allocPrint(ctx.arena, "{d} prompts  bundle: {s}  / search  b filter", .{ prompt_count, bundle_label });
         const list_border = if (!self.detail_focus_content) theme.ACCENT else theme.BORDER;
         const panel: w.Panel = .{
             .owner = self.widget(),
@@ -1305,7 +1338,9 @@ pub const Dashboard = struct {
     // Old Prompt Detail (kept for non-Library drill-down from other modules)
     fn drawPromptDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
-        const p = &data.PROMPTS[self.selected_prompt];
+        const prompts = self.getPrompts();
+        const sel_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
+        const p = if (prompts.len > 0) &prompts[sel_idx] else &data.PROMPTS[0];
 
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.PANEL);
@@ -1727,7 +1762,14 @@ pub const Dashboard = struct {
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.CANVAS);
 
-        const ins = &data.INSIGHTS;
+        // Use live stats for chart header if available, mock for everything else
+        var live_insights: ?data.InsightsData = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            if (self.api_state.org_stats) |stats| break :blk api.insightsFromStats(stats);
+            break :blk null;
+        };
+        const ins: *const data.InsightsData = if (live_insights) |*li| li else &data.INSIGHTS;
 
         // Layout: chart(top, full width) + prompts|team (bottom, side by side)
         const chart_h: u16 = if (size.height > 40) 10 else 8;
@@ -2410,6 +2452,16 @@ pub const Dashboard = struct {
         return surface;
     }
 
+    fn getPrompts(self: *Dashboard) []const data.PromptEntry {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.prompts) |lp| {
+            const alloc = self.api_state.arena.allocator();
+            return api.toPromptEntries(alloc, lp);
+        }
+        return &data.PROMPTS;
+    }
+
     fn orgMemberCount(self: *Dashboard) usize {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
@@ -2552,7 +2604,9 @@ pub const Dashboard = struct {
         w.drawBorder(&surface, theme.ACCENT, bg);
 
         // Title: show reply context or "New Comment"
-        const p = &data.PROMPTS[self.selected_prompt];
+        const all_prompts = self.getPrompts();
+        const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
+        const p = if (all_prompts.len > 0) &all_prompts[sel_idx] else &data.PROMPTS[0];
         const prs = data.prsForPrompt(p.canonical_name);
         const title = if (prs.len > 0 and self.selected_pr_idx < prs.len)
             try std.fmt.allocPrint(ctx.arena, " Comment on {s} ", .{prs[self.selected_pr_idx].id})
@@ -2588,16 +2642,38 @@ pub const Dashboard = struct {
     // library_prompt_indices maps each row index to the PROMPTS array index
     // (null for group header rows, so cursor can skip them).
     fn syncLibraryWidgets(self: *Dashboard) void {
+        // Use live prompts if available, else mock
+        const prompts: []const data.PromptEntry = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            if (self.api_state.prompts) |lp| {
+                const alloc = self.api_state.arena.allocator();
+                break :blk api.toPromptEntries(alloc, lp);
+            }
+            break :blk &data.PROMPTS;
+        };
+
+        const bundles: []const data.BundleEntry = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            if (self.api_state.bundles) |lb| {
+                const alloc = self.api_state.arena.allocator();
+                break :blk api.toBundleEntries(alloc, lb);
+            }
+            break :blk &data.BUNDLES;
+        };
+
         const filter_name: ?[]const u8 = if (self.library_bundle_filter == 0)
             null
+        else if (self.library_bundle_filter - 1 < bundles.len)
+            bundles[self.library_bundle_filter - 1].name
         else
-            data.BUNDLES[self.library_bundle_filter - 1].name;
+            null;
 
         var row_idx: usize = 0;
         var last_prefix: []const u8 = "";
 
-        for (data.PROMPTS, 0..) |p, pidx| {
-            // Apply bundle filter
+        for (prompts, 0..) |p, pidx| {
             if (filter_name) |fname| {
                 if (std.mem.indexOf(u8, p.bundle_names, fname) == null) continue;
             }
@@ -2605,11 +2681,8 @@ pub const Dashboard = struct {
             const prefix = data.pathPrefix(p.canonical_name);
             const name = data.promptName(p.canonical_name);
 
-            // Insert group header when prefix changes
             if (!std.mem.eql(u8, prefix, last_prefix)) {
                 if (row_idx < MAX_LIBRARY_ROWS) {
-                    // Prefix headers use static padded strings to avoid
-                    // needing an allocator in sync functions.
                     self.library_text_rows[row_idx] = .{
                         .text = prefixWithPad(prefix),
                         .style = theme.boldOn(theme.PANEL, theme.ACCENT),
@@ -2621,7 +2694,6 @@ pub const Dashboard = struct {
                 last_prefix = prefix;
             }
 
-            // Insert prompt row (name + stats)
             if (row_idx < MAX_LIBRARY_ROWS) {
                 const sel = pidx == self.selected_prompt;
                 const pr_label: []const u8 = switch (p.open_pr_count) {
@@ -2650,7 +2722,6 @@ pub const Dashboard = struct {
         self.library_scroll_bars.scroll_view.children = .{ .slice = self.library_widgets[0..row_idx] };
         self.library_scroll_bars.estimated_content_height = @intCast(row_idx);
 
-        // Ensure cursor is on a prompt row, not a group header or summary
         var cur = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
         while (cur < row_idx and self.library_prompt_indices[cur] == null) {
             cur += 1;
@@ -2674,7 +2745,9 @@ pub const Dashboard = struct {
     }
 
     fn syncPrWidgets(self: *Dashboard) void {
-        const p = &data.PROMPTS[self.selected_prompt];
+        const all_prompts = self.getPrompts();
+        const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
+        const p = if (all_prompts.len > 0) &all_prompts[sel_idx] else &data.PROMPTS[0];
         const prs = data.prsForPrompt(p.canonical_name);
         var row_idx: usize = 0;
         for (prs, 0..) |pr, pi| {
@@ -2723,7 +2796,9 @@ pub const Dashboard = struct {
     }
 
     fn syncPrDiffAndComments(self: *Dashboard, allocator: std.mem.Allocator) void {
-        const p = &data.PROMPTS[self.selected_prompt];
+        const all_prompts = self.getPrompts();
+        const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
+        const p = if (all_prompts.len > 0) &all_prompts[sel_idx] else &data.PROMPTS[0];
         const prs = data.prsForPrompt(p.canonical_name);
         if (prs.len == 0) {
             self.pr_diff_count = 0;
@@ -2821,7 +2896,11 @@ pub const Dashboard = struct {
     }
 
     fn openDetail(self: *Dashboard, ctx: *vxfw.EventContext, prompt_idx: usize, origin: TopModule, initial_tab: DetailTab) void {
-        self.selected_prompt = @min(prompt_idx, data.PROMPTS.len - 1);
+        const max_prompt = blk: {
+            const p = self.getPrompts();
+            break :blk if (p.len > 0) p.len - 1 else 0;
+        };
+        self.selected_prompt = @min(prompt_idx, max_prompt);
         self.library_scroll_bars.scroll_view.cursor = @intCast(self.selected_prompt);
         self.pr_filter = .open;
         self.detail_origin = origin;
