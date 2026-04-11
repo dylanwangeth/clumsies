@@ -454,6 +454,16 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     };
     defer conn.release();
 
+    // Verify workspace exists
+    var ws_check = conn.row("SELECT 1 FROM workspaces WHERE ws_id = $1", .{ws_id}) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
+    if (ws_check) |*wc| {
+        wc.deinit() catch {};
+    } else {
+        return apiError(res, 404, "NOT_FOUND", "workspace not found");
+    }
+
     if (!std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
         return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
     }
