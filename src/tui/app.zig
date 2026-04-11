@@ -67,6 +67,7 @@ const ConfirmAction = enum {
     remove_member,
     delete_bundle,
     delete_workspace,
+    revoke_token,
     quit,
 };
 
@@ -240,6 +241,17 @@ pub const Dashboard = struct {
                             .delete_workspace => {
                                 self.status_line = "Workspace deleted (not yet implemented)";
                             },
+                            .revoke_token => {
+                                const alloc = self.api_state.arena.allocator();
+                                _ = api.postAction(self.api_state, alloc, .DELETE, "/api/auth/token", null) catch {
+                                    self.status_line = "Token revoke failed";
+                                    self.show_confirm = false;
+                                    self.confirm_action = .none;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                };
+                                self.status_line = "Token revoked. Please re-login.";
+                            },
                             .quit => {
                                 ctx.consumeEvent();
                                 ctx.quit = true;
@@ -276,7 +288,11 @@ pub const Dashboard = struct {
                         self.comment_input_len = 0;
                         ctx.consumeAndRedraw();
                     } else if (key.matches(vaxis.Key.enter, .{})) {
-                        self.status_line = if (self.comment_input_len > 0) "Comment submitted." else "Empty comment discarded.";
+                        if (self.comment_input_len > 0) {
+                            self.submitComment();
+                        } else {
+                            self.status_line = "Empty comment discarded.";
+                        }
                         self.show_comment_editor = false;
                         self.comment_input_len = 0;
                         ctx.consumeAndRedraw();
@@ -401,7 +417,7 @@ pub const Dashboard = struct {
                         }
                         if (self.settings_tab == .organization) {
                             if (key.matches('r', .{})) {
-                                self.status_line = "Role change (not yet implemented)";
+                                self.status_line = "Role change (requires input dialog)";
                                 ctx.consumeAndRedraw();
                                 return;
                             }
@@ -413,7 +429,7 @@ pub const Dashboard = struct {
                                 return;
                             }
                             if (key.matches('a', .{})) {
-                                self.status_line = "Invite member (not yet implemented)";
+                                self.status_line = "Invite member (requires input dialog)";
                                 ctx.consumeAndRedraw();
                                 return;
                             }
@@ -426,7 +442,7 @@ pub const Dashboard = struct {
                             }
                             if (key.matches('x', .{})) {
                                 self.confirm_message = "current token";
-                                self.confirm_action = .remove_member; // reuse for revoke
+                                self.confirm_action = .revoke_token;
                                 self.show_confirm = true;
                                 ctx.consumeAndRedraw();
                                 return;
@@ -476,12 +492,12 @@ pub const Dashboard = struct {
                                 return;
                             }
                             if (key.matches('a', .{})) {
-                                self.status_line = "Accept PR (not yet implemented)";
+                                self.doPrAction("accept");
                                 ctx.consumeAndRedraw();
                                 return;
                             }
                             if (key.matches('x', .{})) {
-                                self.status_line = "Reject PR (not yet implemented)";
+                                self.doPrAction("reject");
                                 ctx.consumeAndRedraw();
                                 return;
                             }
@@ -515,6 +531,14 @@ pub const Dashboard = struct {
                             }
                             if (key.matches(vaxis.Key.enter, .{})) {
                                 self.show_pr_diff = true;
+                                // Trigger PR detail fetch for diff/comments
+                                const all_p = self.getPrompts();
+                                const si = @min(self.selected_prompt, if (all_p.len > 0) all_p.len - 1 else 0);
+                                if (all_p.len > 0) {
+                                    const prs_for = self.getPrsForPrompt(all_p[si].canonical_name);
+                                    const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
+                                    if (prs_for.len > 0) api.fetchPrDetailAsync(self.api_state, prs_for[pri].id);
+                                }
                                 ctx.consumeAndRedraw();
                                 return;
                             }
@@ -590,12 +614,12 @@ pub const Dashboard = struct {
                                     return;
                                 }
                                 if (key.matches('a', .{})) {
-                                    self.status_line = "Accept PR (not yet implemented)";
+                                    self.doPrAction("accept");
                                     ctx.consumeAndRedraw();
                                     return;
                                 }
                                 if (key.matches('x', .{})) {
-                                    self.status_line = "Reject PR (not yet implemented)";
+                                    self.doPrAction("reject");
                                     ctx.consumeAndRedraw();
                                     return;
                                 }
@@ -2379,12 +2403,12 @@ pub const Dashboard = struct {
 
     fn getPrsForPrompt(self: *Dashboard, canonical_name: []const u8) []const data.PullRequestEntry {
         self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
         const live_prs = self.api_state.prompt_prs;
         const lib = self.api_state.prompts;
-        self.api_state.mutex.unlock();
         if (live_prs) |prs| {
             const alloc = self.api_state.arena.allocator();
-            return api.toPrEntries(alloc, prs, canonical_name, lib);
+            return api.toPrEntries(alloc, prs, canonical_name, lib, self.api_state);
         }
         return data.prsForPrompt(canonical_name);
     }
@@ -2397,6 +2421,57 @@ pub const Dashboard = struct {
             return api.toPromptEntries(alloc, lp);
         }
         return &data.PROMPTS;
+    }
+
+    fn submitComment(self: *Dashboard) void {
+        const all_p = self.getPrompts();
+        const si = @min(self.selected_prompt, if (all_p.len > 0) all_p.len - 1 else 0);
+        if (all_p.len == 0) return;
+        const prs_for = self.getPrsForPrompt(all_p[si].canonical_name);
+        const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
+        if (prs_for.len == 0) return;
+
+        const alloc = self.api_state.arena.allocator();
+        const path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{prs_for[pri].id}) catch {
+            self.status_line = "Failed to submit comment";
+            return;
+        };
+        const comment_text = self.comment_input_buf[0..self.comment_input_len];
+        const body = std.fmt.allocPrint(alloc, "{{\"body\":\"{s}\"}}", .{comment_text}) catch {
+            self.status_line = "Failed to submit comment";
+            return;
+        };
+        _ = api.postAction(self.api_state, alloc, .POST, path, body) catch {
+            self.status_line = "Comment submission failed";
+            return;
+        };
+        self.status_line = "Comment submitted.";
+    }
+
+    fn doPrAction(self: *Dashboard, action: []const u8) void {
+        const all_p = self.getPrompts();
+        const si = @min(self.selected_prompt, if (all_p.len > 0) all_p.len - 1 else 0);
+        if (all_p.len == 0) return;
+        const prs_for = self.getPrsForPrompt(all_p[si].canonical_name);
+        const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
+        if (prs_for.len == 0) return;
+        const pr_id = prs_for[pri].id;
+
+        const alloc = self.api_state.arena.allocator();
+        const path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}", .{pr_id}) catch {
+            self.status_line = "Failed to build request";
+            return;
+        };
+        const body = std.fmt.allocPrint(alloc, "{{\"action\":\"{s}\"}}", .{action}) catch {
+            self.status_line = "Failed to build request";
+            return;
+        };
+        _ = api.postAction(self.api_state, alloc, .PUT, path, body) catch {
+            self.status_line = if (std.mem.eql(u8, action, "accept")) "Accept failed" else "Reject failed";
+            return;
+        };
+        self.status_line = if (std.mem.eql(u8, action, "accept")) "PR accepted" else "PR rejected";
+        self.show_pr_diff = false;
     }
 
     fn orgMemberCount(self: *Dashboard) usize {
@@ -2523,6 +2598,7 @@ pub const Dashboard = struct {
             .remove_member => "Remove member:",
             .delete_bundle => "Delete bundle:",
             .delete_workspace => "Delete workspace:",
+            .revoke_token => "Revoke token?",
             .quit => "Quit clumsies?",
             .none => "Confirm:",
         };
