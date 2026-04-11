@@ -105,13 +105,11 @@ const PrFilter = enum {
 };
 
 const DetailTab = enum(u8) {
-    overview,
     content,
     pull_requests,
 
     fn label(self: DetailTab) []const u8 {
         return switch (self) {
-            .overview => "Overview",
             .content => "Content",
             .pull_requests => "Pull Requests",
         };
@@ -122,7 +120,7 @@ const top_tabs = [_]TopModule{ .insights, .workspace, .library };
 
 // 12 prompts + up to 12 group headers = 24 max rows
 const MAX_LIBRARY_ROWS = data.PROMPTS.len + 12;
-const detail_tabs = [_]DetailTab{ .overview, .content, .pull_requests };
+const detail_tabs = [_]DetailTab{ .content, .pull_requests };
 
 pub const Dashboard = struct {
     selected_module: TopModule = .insights,
@@ -134,7 +132,7 @@ pub const Dashboard = struct {
     confirm_message: []const u8 = "",
     confirm_action: ConfirmAction = .none,
     detail_origin: TopModule = .library,
-    detail_tab: DetailTab = .overview,
+    detail_tab: DetailTab = .content,
     detail_focus_content: bool = false,
     settings_tab: SettingsTab = .account,
     settings_focus: enum { sidebar, content } = .sidebar,
@@ -149,7 +147,7 @@ pub const Dashboard = struct {
     library_widgets: [MAX_LIBRARY_ROWS]vxfw.Widget = undefined,
     library_text_rows: [MAX_LIBRARY_ROWS]vxfw.Text = undefined,
     library_table_rows: [MAX_LIBRARY_ROWS]TableRow = undefined,
-    library_table_cols: [MAX_LIBRARY_ROWS][4]Column = undefined,
+    library_table_cols: [MAX_LIBRARY_ROWS][2]Column = undefined,
 
     content_scroll_bars: vxfw.ScrollBars,
     content_widget: [1]vxfw.Widget = undefined,
@@ -182,6 +180,7 @@ pub const Dashboard = struct {
     ws_sel: usize = 0,
     ws_list_sel: usize = 0,
     ws_grid_cols: u16 = 3,
+    ws_show_diff: bool = false,
     // Workspace uses manual grid + list rendering, no ScrollBars
 
     // Insights
@@ -782,6 +781,7 @@ pub const Dashboard = struct {
                                     };
                                     if (self.ws_list_sel + 1 < max_items) {
                                         self.ws_list_sel += 1;
+                                        self.ws_show_diff = false;
                                         ctx.consumeAndRedraw();
                                     }
                                     return;
@@ -789,6 +789,7 @@ pub const Dashboard = struct {
                                 if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
                                     if (self.ws_list_sel > 0) {
                                         self.ws_list_sel -= 1;
+                                        self.ws_show_diff = false;
                                         ctx.consumeAndRedraw();
                                     }
                                     return;
@@ -807,6 +808,11 @@ pub const Dashboard = struct {
                             .content => {
                                 if (key.matches(vaxis.Key.escape, .{})) {
                                     self.ws_focus = .list;
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches('d', .{})) {
+                                    self.ws_show_diff = !self.ws_show_diff;
                                     ctx.consumeAndRedraw();
                                     return;
                                 }
@@ -1071,7 +1077,7 @@ pub const Dashboard = struct {
             .workspace => switch (self.ws_focus) {
                 .bar => "j/k select workspace  Tab list  r sync  ? help  q quit",
                 .list => "h/l tab  j/k move  Enter content  Esc bar  ? help",
-                .content => "j/k scroll  Esc list  ? help",
+                .content => "j/k scroll  d toggle diff  Esc list  ? help",
             },
             .insights => switch (self.insights_focus) {
                 .chart => "h/l scroll  Tab focus  t period  ? help  q quit",
@@ -1090,6 +1096,29 @@ pub const Dashboard = struct {
                 }
             }
         }
+
+        // Right-aligned contextual hint for workspace items
+        if (!self.show_help and !self.show_confirm and !self.show_settings and
+            !self.show_comment_editor and !self.show_detail and
+            self.selected_module == .workspace)
+        {
+            const hint: []const u8 = if (self.ws_focus == .content)
+                (if (self.ws_show_diff) "d content" else "d diff")
+            else if (self.ws_focus == .bar) blk: {
+                const ws_idx = @min(self.ws_sel, data.WORKSPACES.len - 1);
+                const wsi = &data.WORKSPACES[ws_idx];
+                break :blk if (wsi.local_rev != wsi.remote_rev) "New version available, press r to sync" else "Up to date";
+            } else blk: {
+                const ws_sel = self.ws_list_sel;
+                const is_modified = switch (self.ws_tab) {
+                    .context => ws_sel < data.WS_CONTEXT.len and data.WS_CONTEXT[ws_sel].modified,
+                    .prompts => ws_sel < data.WS_PROMPTS.len and data.WS_PROMPTS[ws_sel].has_override,
+                };
+                break :blk if (is_modified) "New version available, press r to sync" else "Up to date";
+            };
+            w.writeRightText(&surface, ctx, 0, hint, theme.fg(theme.TEXT_SOFT));
+        }
+
         return surface;
     }
 
@@ -1163,33 +1192,27 @@ pub const Dashboard = struct {
         const inner_w = ctx.max.width.? -| 4;
 
         switch (self.detail_tab) {
-            .overview => {
-                const kv_col: u16 = 2;
-                var kv_row: u16 = 2;
-                w.writeText(&surface, ctx, kv_col, kv_row, p.summary, theme.fg(theme.TEXT_SOFT));
-                kv_row += 2;
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "hash", p.content_hash, 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "updated", p.updated, 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "source", "acme", 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "refer", p.refer_count, 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "local edit", "yes (payments-api)", 8);
-                kv_row += 1;
-                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Top Constraints");
-                const top_n = @min(p.constraint_count, 3);
-                var ci: u8 = 0;
-                while (ci < top_n) : (ci += 1) {
-                    const cid = try std.fmt.allocPrint(ctx.arena, "c-{d}", .{ci + 1});
-                    kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, cid, "(mock refer data)", 5);
-                }
-                if (p.constraint_count > 3) {
-                    w.writeText(&surface, ctx, kv_col, kv_row, try std.fmt.allocPrint(ctx.arena, "... +{d} more", .{p.constraint_count - 3}), theme.fg(theme.MUTED));
-                }
-            },
             .content => {
+                // Meta header row
+                var header_rows: u16 = 1;
+                const meta_line = try std.fmt.allocPrint(ctx.arena, "rev.{d}  \xc2\xb7{d} PR  {d} constraints  {s}", .{ p.revision, p.open_pr_count, p.constraint_count, p.updated });
+                w.writeText(&surface, ctx, 2, 2, meta_line, theme.fg(theme.MUTED));
+
+                // Workspace names (if present)
+                if (p.workspace_names.len > 0) {
+                    header_rows += 1;
+                    w.writeText(&surface, ctx, 2, 3, p.workspace_names, theme.fg(theme.TEXT_SOFT));
+                }
+
+                // Spacing row
+                header_rows += 1;
+                const content_origin_row: u16 = 2 + header_rows;
+                const content_h = inner_h -| header_rows;
+
                 self.syncContentWidget();
-                const child_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
+                const child_ctx = ctx.withConstraints(.{ .width = inner_w, .height = content_h }, .{ .width = inner_w, .height = content_h });
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = 2, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
+                children[0] = .{ .origin = .{ .row = content_origin_row, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
                 surface.children = children;
             },
             .pull_requests => {
@@ -1282,40 +1305,27 @@ pub const Dashboard = struct {
         const inner_w = ctx.max.width.? -| 2;
 
         switch (self.detail_tab) {
-            .overview => {
-                const kv_col: u16 = 2;
-                var kv_row: u16 = 2;
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "hash", p.content_hash, 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "updated", p.updated, 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "source", "acme", 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "local edit", "yes (payments-api)", 8);
-                kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, "refer", p.refer_count, 8);
-                kv_row += 1;
-                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Top Constraints");
-                // Mock: show constraint count, real data from GET /api/stats/prompt/{id}
-                const ccount = p.constraint_count;
-                const top_n = @min(ccount, 3);
-                var ci: u8 = 0;
-                while (ci < top_n) : (ci += 1) {
-                    const cid = try std.fmt.allocPrint(ctx.arena, "c-{d}", .{ci + 1});
-                    const cval = try std.fmt.allocPrint(ctx.arena, "(mock refer data)", .{});
-                    kv_row = w.writeKv(&surface, ctx, kv_col, kv_row, cid, cval, 5);
-                }
-                if (ccount > 3) {
-                    w.writeText(&surface, ctx, kv_col, kv_row, try std.fmt.allocPrint(ctx.arena, "... +{d} more", .{ccount - 3}), theme.fg(theme.MUTED));
-                    kv_row += 1;
-                }
-                kv_row += 1;
-                kv_row = w.writeSectionHeader(&surface, ctx, kv_col, kv_row, "Local Edit");
-                w.writeText(&surface, ctx, kv_col, kv_row, "Detected in ws: payments-api", theme.fg(theme.TEXT_SOFT));
-                kv_row += 1;
-                w.writeText(&surface, ctx, kv_col, kv_row, "Press p to create PR from this edit", theme.fg(theme.MUTED));
-            },
             .content => {
+                // Meta header row
+                var header_rows2: u16 = 1;
+                const meta_line2 = try std.fmt.allocPrint(ctx.arena, "rev.{d}  \xc2\xb7{d} PR  {d} constraints  {s}", .{ p.revision, p.open_pr_count, p.constraint_count, p.updated });
+                w.writeText(&surface, ctx, 2, 2, meta_line2, theme.fg(theme.MUTED));
+
+                // Workspace names (if present)
+                if (p.workspace_names.len > 0) {
+                    header_rows2 += 1;
+                    w.writeText(&surface, ctx, 2, 3, p.workspace_names, theme.fg(theme.TEXT_SOFT));
+                }
+
+                // Spacing row
+                header_rows2 += 1;
+                const content_origin_row2: u16 = 2 + header_rows2;
+                const content_h2 = inner_h -| header_rows2;
+
                 self.syncContentWidget();
-                const child_ctx = ctx.withConstraints(.{ .width = inner_w, .height = inner_h }, .{ .width = inner_w, .height = inner_h });
+                const child_ctx = ctx.withConstraints(.{ .width = inner_w, .height = content_h2 }, .{ .width = inner_w, .height = content_h2 });
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = 2, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
+                children[0] = .{ .origin = .{ .row = content_origin_row2, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
                 surface.children = children;
             },
             .pull_requests => {
@@ -1441,7 +1451,7 @@ pub const Dashboard = struct {
                 });
             }
 
-            const name_x = x + 2;
+            const name_x = x + 1;
             const needs_sync = wsi.local_rev != wsi.remote_rev;
             const label = if (needs_sync)
                 try std.fmt.allocPrint(ctx.arena, "{s} *", .{wsi.name})
@@ -1497,7 +1507,16 @@ pub const Dashboard = struct {
         switch (self.ws_tab) {
             .context => {
                 var kv_row: u16 = 2;
+                var last_prefix: []const u8 = "";
                 for (data.WS_CONTEXT, 0..) |f, i| {
+                    if (kv_row >= inner_h + 2) break;
+                    const prefix = data.pathPrefix(f.path);
+                    if (!std.mem.eql(u8, prefix, last_prefix)) {
+                        w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
+                        kv_row += 1;
+                        last_prefix = prefix;
+                        if (kv_row >= inner_h + 2) break;
+                    }
                     const sel = i == self.ws_list_sel;
                     const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
                     if (sel) {
@@ -1506,29 +1525,27 @@ pub const Dashboard = struct {
                             .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
                         });
                     }
-                    // Name + (modified) inline marker
-                    const label = if (f.modified)
-                        try std.fmt.allocPrint(ctx.arena, "{s} (modified)", .{f.path})
-                    else
-                        f.path;
-                    w.writeText(&surface, ctx, 3, kv_row, label, name_style);
+                    const fname = data.promptName(f.path);
+                    w.writeText(&surface, ctx, 2, kv_row, fname, name_style);
                     if (f.modified) {
-                        // Color just the "(modified)" part
-                        const path_w: u16 = @intCast(ctx.stringWidth(f.path));
-                        w.writeText(&surface, ctx, 3 + path_w + 1, kv_row, "(modified)", theme.fg(theme.WARN));
-                    }
-                    // Right side: always show size
-                    if (ctx.max.width) |max_w| {
-                        const sw: u16 = @intCast(ctx.stringWidth(f.size));
-                        if (sw + 3 < max_w) w.writeText(&surface, ctx, max_w - sw - 2, kv_row, f.size, theme.fg(theme.MUTED));
+                        const nw: u16 = @intCast(ctx.stringWidth(fname));
+                        w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
                     }
                     kv_row += 1;
-                    if (kv_row >= inner_h + 2) break;
                 }
             },
             .prompts => {
                 var kv_row: u16 = 2;
+                var last_prefix: []const u8 = "";
                 for (data.WS_PROMPTS, 0..) |p, i| {
+                    if (kv_row >= inner_h + 2) break;
+                    const prefix = data.pathPrefix(p.name);
+                    if (!std.mem.eql(u8, prefix, last_prefix)) {
+                        w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
+                        kv_row += 1;
+                        last_prefix = prefix;
+                        if (kv_row >= inner_h + 2) break;
+                    }
                     const sel = i == self.ws_list_sel;
                     const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
                     if (sel) {
@@ -1537,23 +1554,13 @@ pub const Dashboard = struct {
                             .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
                         });
                     }
-                    // Name + (modified) inline marker
-                    const label = if (p.has_override)
-                        try std.fmt.allocPrint(ctx.arena, "{s} (modified)", .{p.name})
-                    else
-                        p.name;
-                    w.writeText(&surface, ctx, 3, kv_row, label, name_style);
+                    const fname = data.promptName(p.name);
+                    w.writeText(&surface, ctx, 2, kv_row, fname, name_style);
                     if (p.has_override) {
-                        const name_w: u16 = @intCast(ctx.stringWidth(p.name));
-                        w.writeText(&surface, ctx, 3 + name_w + 1, kv_row, "(modified)", theme.fg(theme.WARN));
-                    }
-                    // Right side: always show state
-                    if (ctx.max.width) |max_w| {
-                        const sw: u16 = @intCast(ctx.stringWidth(p.state));
-                        if (sw + 3 < max_w) w.writeText(&surface, ctx, max_w - sw - 2, kv_row, p.state, theme.fg(theme.MUTED));
+                        const nw: u16 = @intCast(ctx.stringWidth(fname));
+                        w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
                     }
                     kv_row += 1;
-                    if (kv_row >= inner_h + 2) break;
                 }
             },
         }
@@ -1580,11 +1587,18 @@ pub const Dashboard = struct {
             .context => sel < data.WS_CONTEXT.len and data.WS_CONTEXT[sel].modified,
             .prompts => sel < data.WS_PROMPTS.len and data.WS_PROMPTS[sel].has_override,
         };
-        if (has_diff) {
-            const marker = try std.fmt.allocPrint(ctx.arena, "{s} (modified)", .{title});
-            w.writeText(&surface, ctx, 2, 0, marker, theme.boldOn(theme.PANEL, theme.WARN));
-        } else {
-            w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
+        w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, if (has_diff) theme.WARN else theme.TEXT));
+        {
+            var marker_col: u16 = 2 + @as(u16, @intCast(ctx.stringWidth(title)));
+            if (has_diff) {
+                marker_col += 1;
+                w.writeText(&surface, ctx, marker_col, 0, "*", theme.boldOn(theme.PANEL, theme.WARN));
+                marker_col += 1;
+            }
+            if (self.ws_show_diff) {
+                marker_col += 1;
+                w.writeText(&surface, ctx, marker_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
+            }
         }
 
         var kv_row: u16 = 2;
@@ -1594,27 +1608,31 @@ pub const Dashboard = struct {
             .context => {
                 if (sel < data.WS_CONTEXT.len) {
                     const f = &data.WS_CONTEXT[sel];
-                    if (f.modified and f.branch_diff.len > 0) {
-                        // Show branch diff (same GitHub-style as prompts)
-                        for (f.branch_diff) |line| {
-                            if (kv_row >= max_row) break;
-                            const line_color = if (std.mem.startsWith(u8, line, "+"))
-                                theme.OK
-                            else if (std.mem.startsWith(u8, line, "-"))
-                                theme.DANGER
-                            else
-                                theme.TEXT_SOFT;
-                            const line_bg = if (std.mem.startsWith(u8, line, "+"))
-                                theme.rgb(0x1d2617)
-                            else if (std.mem.startsWith(u8, line, "-"))
-                                theme.rgb(0x2a1b18)
-                            else
-                                theme.PANEL;
-                            w.writeText(&surface, ctx, 2, kv_row, line, .{ .fg = line_color, .bg = line_bg });
-                            kv_row += 1;
+                    if (self.ws_show_diff) {
+                        if (f.branch_diff.len > 0) {
+                            // Show branch diff (GitHub-style colored lines)
+                            for (f.branch_diff) |line| {
+                                if (kv_row >= max_row) break;
+                                const line_color = if (std.mem.startsWith(u8, line, "+"))
+                                    theme.OK
+                                else if (std.mem.startsWith(u8, line, "-"))
+                                    theme.DANGER
+                                else
+                                    theme.TEXT_SOFT;
+                                const line_bg = if (std.mem.startsWith(u8, line, "+"))
+                                    theme.rgb(0x1d2617)
+                                else if (std.mem.startsWith(u8, line, "-"))
+                                    theme.rgb(0x2a1b18)
+                                else
+                                    theme.PANEL;
+                                w.writeText(&surface, ctx, 2, kv_row, line, .{ .fg = line_color, .bg = line_bg });
+                                kv_row += 1;
+                            }
+                        } else {
+                            w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
                         }
                     } else {
-                        // No branch changes - show file content
+                        // Show file content
                         var line_iter = std.mem.splitScalar(u8, data.SAMPLE_CONTENT, '\n');
                         while (line_iter.next()) |line| {
                             if (kv_row >= max_row) break;
@@ -1627,27 +1645,31 @@ pub const Dashboard = struct {
             .prompts => {
                 if (sel < data.WS_PROMPTS.len) {
                     const p = &data.WS_PROMPTS[sel];
-                    if (p.has_override and p.override_diff.len > 0) {
-                        // Show diff (GitHub-style colored lines)
-                        for (p.override_diff) |line| {
-                            if (kv_row >= max_row) break;
-                            const line_color = if (std.mem.startsWith(u8, line, "+"))
-                                theme.OK
-                            else if (std.mem.startsWith(u8, line, "-"))
-                                theme.DANGER
-                            else
-                                theme.TEXT_SOFT;
-                            const line_bg = if (std.mem.startsWith(u8, line, "+"))
-                                theme.rgb(0x1d2617)
-                            else if (std.mem.startsWith(u8, line, "-"))
-                                theme.rgb(0x2a1b18)
-                            else
-                                theme.PANEL;
-                            w.writeText(&surface, ctx, 2, kv_row, line, .{ .fg = line_color, .bg = line_bg });
-                            kv_row += 1;
+                    if (self.ws_show_diff) {
+                        if (p.override_diff.len > 0) {
+                            // Show diff (GitHub-style colored lines)
+                            for (p.override_diff) |line| {
+                                if (kv_row >= max_row) break;
+                                const line_color = if (std.mem.startsWith(u8, line, "+"))
+                                    theme.OK
+                                else if (std.mem.startsWith(u8, line, "-"))
+                                    theme.DANGER
+                                else
+                                    theme.TEXT_SOFT;
+                                const line_bg = if (std.mem.startsWith(u8, line, "+"))
+                                    theme.rgb(0x1d2617)
+                                else if (std.mem.startsWith(u8, line, "-"))
+                                    theme.rgb(0x2a1b18)
+                                else
+                                    theme.PANEL;
+                                w.writeText(&surface, ctx, 2, kv_row, line, .{ .fg = line_color, .bg = line_bg });
+                                kv_row += 1;
+                            }
+                        } else {
+                            w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
                         }
                     } else {
-                        // Show prompt body (no override)
+                        // Show prompt body
                         var line_iter = std.mem.splitScalar(u8, data.SAMPLE_CONTENT, '\n');
                         while (line_iter.next()) |line| {
                             if (kv_row >= max_row) break;
@@ -2462,9 +2484,7 @@ pub const Dashboard = struct {
                 };
                 self.library_table_cols[row_idx] = .{
                     .{ .text = name, .flex = 1 },
-                    .{ .text = pr_label, .flex = 0, .min_width = 2 },
-                    .{ .text = p.refer_count, .flex = 0, .min_width = 4, .alignment = .right },
-                    .{ .text = p.age, .flex = 0, .min_width = 3, .alignment = .right },
+                    .{ .text = pr_label, .flex = 0, .min_width = 2, .alignment = .right },
                 };
                 self.library_table_rows[row_idx] = .{
                     .columns = &self.library_table_cols[row_idx],
@@ -2634,7 +2654,6 @@ pub const Dashboard = struct {
     fn contextHint(self: *const Dashboard) []const u8 {
         if (self.show_help) return "Keyboard reference overlay.";
         if (self.show_detail) return switch (self.detail_tab) {
-            .overview => "Prompt metadata, usage summary, and local edit status.",
             .content => "Full prompt body. j/k to scroll.",
             .pull_requests => if (self.show_pr_diff) "PR diff view. j/k scroll, a/x/c actions." else "j/k move  f filter  Enter view  c comment  Esc back",
         };
