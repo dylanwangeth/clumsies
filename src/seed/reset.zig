@@ -111,17 +111,19 @@ fn seedUsers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         used_count += 1;
 
         const id = faker.hexId(&state.user_ids[i], "usr-");
-        // First 2 users are maintainers, rest are members, last one is invited
+        // First 2 users are maintainers, rest are members; last 2 are invited
         const role: []const u8 = if (i < 2) "maintainer" else "member";
-        const password: []const u8 = if (i == data.USER_COUNT - 1) "!invited" else "testpass";
+        const is_invited = i >= data.USER_COUNT - 2;
+        const status: []const u8 = if (is_invited) "invited" else "active";
+        const password: []const u8 = if (is_invited) "" else "testpass";
 
         state.user_names[i] = name;
         state.user_roles[i] = role;
         state.user_count = i + 1;
 
         _ = try conn.exec(
-            "INSERT INTO users (user_id, org_id, username, password_hash, role) VALUES ($1, $2::uuid, $3, $4, $5)",
-            .{ id, data.ORG_ID, name, password, role },
+            "INSERT INTO users (user_id, org_id, username, password_hash, role, status) VALUES ($1, $2::uuid, $3, $4, $5, $6)",
+            .{ id, data.ORG_ID, name, password, role, status },
         );
     }
 }

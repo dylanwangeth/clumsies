@@ -62,28 +62,68 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const response = try client.post("/api/auth/login", body);
     defer response.deinit();
 
-    if (response.status != .ok) {
+    if (response.status == .ok) {
+        const parsed = std.json.parseFromSlice(LoginResponse, allocator, response.body, .{ .allocate = .alloc_always }) catch {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to parse login response\n", .{ P, Color.bold, Color.red, Color.reset });
+            return;
+        };
+        defer parsed.deinit();
+        try auth_mod.saveAuth(allocator, hub_url, username, parsed.value.access_token, parsed.value.refresh_token);
+        try stdout.print("{s}{s}{s}Logged in{s} as {s}{s}{s}\n", .{ P, Color.bold, Color.green, Color.reset, Color.cyan, username, Color.reset });
+        return;
+    }
+
+    if (response.status != .unauthorized) {
         try stderr.print("{s}{s}{s}Error:{s} Login failed (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, @intFromEnum(response.status) });
-        if (response.body.len > 0) {
-            try stderr.print("{s}{s}\n", .{ P, response.body });
+        return;
+    }
+
+    // 401: might be wrong password or invited user needing activation
+    try stderr.print("{s}Login failed. If you were invited, enter your invitation token to activate.\n", .{P});
+    try stderr.print("{s}Invitation token (or press Enter to abort): ", .{P});
+    try stderr.flush();
+    const invite_token = try readLine(allocator);
+    defer allocator.free(invite_token);
+
+    if (invite_token.len == 0) {
+        try stderr.print("{s}{s}{s}Error:{s} Login failed\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    }
+
+    // Collect new password for activation
+    try stderr.print("{s}Set password: ", .{P});
+    try stderr.flush();
+    const new_password = try readPassword(allocator);
+    defer allocator.free(new_password);
+    try stderr.print("\n", .{});
+
+    // Build activate body
+    const ActivateBody = struct { username: []const u8, invite_token: []const u8, credential: []const u8 };
+    const activate_body = std.json.Stringify.valueAlloc(allocator, ActivateBody{
+        .username = username,
+        .invite_token = invite_token,
+        .credential = new_password,
+    }, .{}) catch return error.OutOfMemory;
+    defer allocator.free(activate_body);
+
+    const activate_resp = try client.post("/api/auth/activate", activate_body);
+    defer activate_resp.deinit();
+
+    if (activate_resp.status != .ok) {
+        try stderr.print("{s}{s}{s}Error:{s} Activation failed (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, @intFromEnum(activate_resp.status) });
+        if (activate_resp.body.len > 0) {
+            try stderr.print("{s}{s}\n", .{ P, activate_resp.body });
         }
         return;
     }
 
-    // Parse response JSON for access_token and refresh_token
-    const parsed = std.json.parseFromSlice(LoginResponse, allocator, response.body, .{ .allocate = .alloc_always }) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse login response\n", .{ P, Color.bold, Color.red, Color.reset });
+    const parsed = std.json.parseFromSlice(LoginResponse, allocator, activate_resp.body, .{ .allocate = .alloc_always }) catch {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to parse activation response\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
-
-    const access_token = parsed.value.access_token;
-    const refresh_token = parsed.value.refresh_token;
-
-    // Save auth
-    try auth_mod.saveAuth(allocator, hub_url, username, access_token, refresh_token);
-
-    try stdout.print("{s}{s}{s}Logged in{s} as {s}{s}{s}\n", .{ P, Color.bold, Color.green, Color.reset, Color.cyan, username, Color.reset });
+    try auth_mod.saveAuth(allocator, hub_url, username, parsed.value.access_token, parsed.value.refresh_token);
+    try stdout.print("{s}{s}{s}Account activated and logged in{s} as {s}{s}{s}\n", .{ P, Color.bold, Color.green, Color.reset, Color.cyan, username, Color.reset });
 }
 
 fn readLine(allocator: std.mem.Allocator) ![]const u8 {

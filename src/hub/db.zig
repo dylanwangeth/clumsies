@@ -1,6 +1,7 @@
 const std = @import("std");
 const pg = @import("pg");
 const Config = @import("config.zig");
+const bcrypt = std.crypto.pwhash.bcrypt;
 
 pub const Pool = pg.Pool;
 
@@ -36,6 +37,79 @@ pub fn migrate(pool: *Pool) !void {
     };
 }
 
+pub fn bootstrap(pool: *Pool) !void {
+    const username = std.posix.getenv("HUB_BOOTSTRAP_USERNAME") orelse return;
+    const password = std.posix.getenv("HUB_BOOTSTRAP_PASSWORD") orelse return;
+    const org_name = std.posix.getenv("HUB_BOOTSTRAP_ORG") orelse "default";
+
+    const conn = try pool.acquire();
+    defer conn.release();
+
+    // Only bootstrap if no users exist
+    var count_row = conn.row("SELECT count(*) FROM users", .{}) catch return;
+    if (count_row) |*cr| {
+        const count = cr.get(i64, 0) catch 0;
+        cr.deinit() catch {};
+        if (count > 0) return;
+    }
+
+    const log = std.log.scoped(.bootstrap);
+
+    // Create org
+    _ = conn.exec(
+        "INSERT INTO orgs (name) VALUES ($1) ON CONFLICT DO NOTHING",
+        .{org_name},
+    ) catch |err| {
+        log.err("bootstrap org failed: {}", .{err});
+        return;
+    };
+
+    // Get org_id
+    var org_row = conn.row("SELECT org_id::text FROM orgs WHERE name = $1", .{org_name}) catch return;
+    const org_id = if (org_row) |*or_| blk: {
+        const val = or_.get([]const u8, 0) catch return;
+        defer or_.deinit() catch {};
+        break :blk val;
+    } else return;
+
+    // Hash password
+    var hash_buf: [128]u8 = undefined;
+    const password_hash = bcrypt.strHash(password, .{
+        .params = .{ .rounds_log = 10, .silently_truncate_password = false },
+        .encoding = .phc,
+    }, &hash_buf) catch {
+        log.err("bootstrap password hash failed", .{});
+        return;
+    };
+
+    // Generate user_id
+    var rand_bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&rand_bytes);
+    var uid_buf: [36]u8 = undefined;
+    @memcpy(uid_buf[0..4], "usr-");
+    const hex = "0123456789abcdef";
+    for (rand_bytes, 0..) |byte, i| {
+        uid_buf[4 + i * 2] = hex[byte >> 4];
+        uid_buf[4 + i * 2 + 1] = hex[byte & 0x0f];
+    }
+
+    _ = conn.exec(
+        \\INSERT INTO users (user_id, org_id, username, password_hash, role, status)
+        \\VALUES ($1, $2::uuid, $3, $4, 'maintainer', 'active')
+    , .{ @as([]const u8, &uid_buf), org_id, username, password_hash }) catch |err| {
+        log.err("bootstrap user failed: {}", .{err});
+        return;
+    };
+
+    // Create library manifest
+    _ = conn.exec(
+        "INSERT INTO library_manifest (org_id, revision) VALUES ($1::uuid, 0) ON CONFLICT DO NOTHING",
+        .{org_id},
+    ) catch {};
+
+    log.info("bootstrapped org '{s}' with maintainer '{s}'", .{ org_name, username });
+}
+
 const migration_sql =
     \\CREATE TABLE IF NOT EXISTS orgs (
     \\    org_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -48,8 +122,11 @@ const migration_sql =
     \\    user_id TEXT PRIMARY KEY,
     \\    org_id UUID NOT NULL REFERENCES orgs(org_id),
     \\    username TEXT NOT NULL,
-    \\    password_hash TEXT NOT NULL,
+    \\    password_hash TEXT NOT NULL DEFAULT '',
     \\    role TEXT NOT NULL CHECK (role IN ('member', 'maintainer')),
+    \\    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('invited', 'active')),
+    \\    invite_token_hash TEXT,
+    \\    invite_expires_at TIMESTAMPTZ,
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    UNIQUE(org_id, username),
     \\    UNIQUE(username)
