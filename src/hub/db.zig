@@ -81,6 +81,8 @@ const migration_sql =
     \\    joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    PRIMARY KEY (ws_id, user_id)
     \\);
+    \\CREATE INDEX IF NOT EXISTS workspace_members_user_id_idx
+    \\    ON workspace_members(user_id);
     \\
     \\CREATE TABLE IF NOT EXISTS prompts (
     \\    prompt_id TEXT PRIMARY KEY,
