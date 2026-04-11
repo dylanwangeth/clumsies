@@ -145,6 +145,11 @@ pub const ApiState = struct {
     ws_stats_models: ?[]const WsStatsModel = null,
     prompt_content: ?[]const u8 = null,
     prompt_content_name: ?[]const u8 = null,
+    // PR detail (on-demand)
+    pr_detail_id: ?[]const u8 = null,
+    pr_detail_diff: ?[]const []const u8 = null,
+    pr_detail_comments: ?[]const data.CommentEntry = null,
+    pr_detail_trace_refers: u16 = 0,
     // Fetch coordination
     hub_url: ?[]const u8 = null,
     access_token: ?[]const u8 = null,
@@ -298,6 +303,190 @@ fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8)
     api_state.ws_stats_models = ws_models;
     api_state.status = .connected;
     api_state.mutex.unlock();
+}
+
+// Fetch PR detail (diff + comments) on demand
+pub fn fetchPrDetailAsync(api_state: *ApiState, pr_id: []const u8) void {
+    api_state.mutex.lock();
+    if (api_state.fetch_busy or api_state.hub_url == null) {
+        api_state.mutex.unlock();
+        return;
+    }
+    if (api_state.pr_detail_id) |cached| {
+        if (std.mem.eql(u8, cached, pr_id)) {
+            api_state.mutex.unlock();
+            return;
+        }
+    }
+    api_state.fetch_busy = true;
+    api_state.mutex.unlock();
+
+    const alloc = api_state.arena.allocator();
+    const id_copy = alloc.dupe(u8, pr_id) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    _ = std.Thread.spawn(.{}, fetchPrDetail, .{ api_state, id_copy }) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    };
+}
+
+fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
+    const alloc = api_state.arena.allocator();
+    api_state.mutex.lock();
+    const hub_url = api_state.hub_url orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const token = api_state.access_token orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    api_state.mutex.unlock();
+
+    var client = HubClient.init(alloc, hub_url, token);
+
+    // GET /api/org/prompt-prs/{id}
+    const detail_path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}", .{pr_id}) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const detail_resp = client.get(detail_path) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    defer detail_resp.deinit();
+
+    var diff_lines: ?[]const []const u8 = null;
+    var trace_refers: u16 = 0;
+    if (detail_resp.status == .ok) {
+        const DetailJson = struct {
+            diff: ?struct {
+                base: []const u8 = "",
+                proposed: []const u8 = "",
+            } = null,
+            trace_summary: ?struct {
+                refer_count: i64 = 0,
+            } = null,
+        };
+        const parsed = std.json.parseFromSlice(DetailJson, alloc, detail_resp.body, .{ .allocate = .alloc_always }) catch null;
+        if (parsed) |p| {
+            defer p.deinit();
+            if (p.value.diff) |d| {
+                diff_lines = computeDiffLines(alloc, d.base, d.proposed);
+            }
+            if (p.value.trace_summary) |ts| {
+                trace_refers = @intCast(@min(ts.refer_count, std.math.maxInt(u16)));
+            }
+        }
+    }
+
+    // GET /api/org/prompt-prs/{id}/comments
+    const comments_path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{pr_id}) catch null;
+    var comments: ?[]const data.CommentEntry = null;
+    if (comments_path) |cpath| {
+        const c_resp = client.get(cpath) catch null;
+        if (c_resp) |resp| {
+            defer resp.deinit();
+            if (resp.status == .ok) {
+                comments = parseComments(alloc, resp.body);
+            }
+        }
+    }
+
+    api_state.mutex.lock();
+    api_state.pr_detail_id = pr_id;
+    api_state.pr_detail_diff = diff_lines;
+    api_state.pr_detail_comments = comments;
+    api_state.pr_detail_trace_refers = trace_refers;
+    api_state.fetch_busy = false;
+    api_state.mutex.unlock();
+}
+
+fn computeDiffLines(alloc: std.mem.Allocator, base: []const u8, proposed: []const u8) []const []const u8 {
+    // Simple line-level diff: lines in base but not proposed get "-", new lines get "+"
+    var lines: std.ArrayList([]const u8) = .empty;
+    var base_it = std.mem.splitScalar(u8, base, '\n');
+    var prop_it = std.mem.splitScalar(u8, proposed, '\n');
+
+    while (true) {
+        const b = base_it.next();
+        const p = prop_it.next();
+        if (b == null and p == null) break;
+        if (b != null and p != null and std.mem.eql(u8, b.?, p.?)) {
+            lines.append(alloc, std.fmt.allocPrint(alloc, "  {s}", .{b.?}) catch continue) catch continue;
+        } else {
+            if (b) |bl| {
+                lines.append(alloc, std.fmt.allocPrint(alloc, "- {s}", .{bl}) catch continue) catch continue;
+            }
+            if (p) |pl| {
+                lines.append(alloc, std.fmt.allocPrint(alloc, "+ {s}", .{pl}) catch continue) catch continue;
+            }
+        }
+    }
+    return lines.items;
+}
+
+fn parseComments(alloc: std.mem.Allocator, body: []const u8) ?[]const data.CommentEntry {
+    const Json = struct {
+        comment_id: []const u8 = "",
+        body: []const u8 = "",
+        author: []const u8 = "",
+        created_at: []const u8 = "",
+    };
+    // Response is an array of comments
+    const parsed = std.json.parseFromSlice([]const Json, alloc, body, .{ .allocate = .alloc_always }) catch return null;
+    defer parsed.deinit();
+
+    var list: std.ArrayList(data.CommentEntry) = .empty;
+    for (parsed.value) |c| {
+        list.append(alloc, .{
+            .id = alloc.dupe(u8, c.comment_id) catch continue,
+            .author = alloc.dupe(u8, c.author) catch continue,
+            .body = alloc.dupe(u8, c.body) catch continue,
+            .created = alloc.dupe(u8, c.created_at) catch continue,
+        }) catch continue;
+    }
+    return list.items;
+}
+
+// Write operations
+pub fn postAction(api_state: *ApiState, alloc: std.mem.Allocator, method: std.http.Method, path: []const u8, body: ?[]const u8) ![]const u8 {
+    api_state.mutex.lock();
+    const hub_url = api_state.hub_url orelse {
+        api_state.mutex.unlock();
+        return error.NotConnected;
+    };
+    const token = api_state.access_token orelse {
+        api_state.mutex.unlock();
+        return error.NotConnected;
+    };
+    api_state.mutex.unlock();
+
+    var client = HubClient.init(alloc, hub_url, token);
+    const resp = switch (method) {
+        .POST => try client.post(path, body orelse "{}"),
+        .PUT => try client.put(path, body orelse "{}"),
+        .PATCH => try client.patch(path, body orelse "{}"),
+        .DELETE => try client.delete(path),
+        else => return error.UnsupportedMethod,
+    };
+    defer resp.deinit();
+
+    if (resp.status == .ok or resp.status == .created or resp.status == .no_content) {
+        return alloc.dupe(u8, resp.body);
+    }
+    return error.RequestFailed;
 }
 
 fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
@@ -757,9 +946,9 @@ pub fn toBundleEntries(alloc: std.mem.Allocator, bundles: []const BundleData) []
     return list.items;
 }
 
-// Convert API PromptPr to mock-compatible PullRequestEntry slice,
-// filtered by canonical_name. Diff/comments are empty (need PR detail fetch).
-pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, canonical_name: []const u8, library: ?[]const LibraryPrompt) []const data.PullRequestEntry {
+// Convert API PromptPr to mock-compatible PullRequestEntry slice.
+// If pr_detail is available for a PR, its diff/comments are populated.
+pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, canonical_name: []const u8, library: ?[]const LibraryPrompt, api_state: *ApiState) []const data.PullRequestEntry {
     // Find prompt_id for the given canonical_name
     const target_id: ?[]const u8 = if (library) |lib| blk: {
         for (lib) |lp| {
@@ -776,6 +965,18 @@ pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, canonical_na
             if (!std.mem.eql(u8, pr.prompt_id, tid)) continue;
         } else continue;
 
+        // Populate diff/comments from cached PR detail if matching
+        var diff: []const []const u8 = &.{};
+        var comments: []const data.CommentEntry = &.{};
+        var trace_refers: u16 = 0;
+        if (api_state.pr_detail_id) |cached_id| {
+            if (std.mem.eql(u8, cached_id, pr.pr_id)) {
+                diff = api_state.pr_detail_diff orelse &.{};
+                comments = api_state.pr_detail_comments orelse &.{};
+                trace_refers = api_state.pr_detail_trace_refers;
+            }
+        }
+
         list.append(alloc, .{
             .id = pr.pr_id,
             .prompt_name = canonical_name,
@@ -784,9 +985,9 @@ pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, canonical_na
             .created = pr.created_at,
             .description = pr.description,
             .base_hash = "",
-            .diff = &.{},
-            .comments = &.{},
-            .trace_refers = 0,
+            .diff = diff,
+            .comments = comments,
+            .trace_refers = trace_refers,
             .trace_sessions = 0,
         }) catch continue;
     }
