@@ -64,7 +64,7 @@ fn queryTrend(
     bind: anytype,
     max_days: u32,
 ) []const TrendEntry {
-    const days_filter = std.fmt.allocPrint(arena, " AND timestamp >= (extract(epoch from now()) * 1000 - {d} * 86400000)", .{max_days}) catch "";
+    const days_filter = std.fmt.allocPrint(arena, " AND timestamp >= (extract(epoch from now()) * 1000 - {d}::bigint * 86400000)", .{max_days}) catch "";
 
     const query = std.fmt.allocPrint(
         arena,
@@ -176,7 +176,15 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     const sql_trunc = parsePeriod(period) orelse {
         return apiError(res, 400, "BAD_REQUEST", "invalid period; use daily, weekly, or monthly");
     };
-    const max_days: u32 = if (qs.get("days")) |ds| std.fmt.parseInt(u32, ds, 10) catch defaultDays(period) else defaultDays(period);
+    const max_days: u32 = if (qs.get("days")) |ds| blk: {
+        const d = std.fmt.parseInt(u32, ds, 10) catch {
+            return apiError(res, 400, "BAD_REQUEST", "invalid days parameter; must be a positive integer");
+        };
+        if (d == 0 or d > 3650) {
+            return apiError(res, 400, "BAD_REQUEST", "days must be between 1 and 3650");
+        }
+        break :blk d;
+    } else defaultDays(period);
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -283,7 +291,15 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     const sql_trunc = parsePeriod(period) orelse {
         return apiError(res, 400, "BAD_REQUEST", "invalid period; use daily, weekly, or monthly");
     };
-    const max_days: u32 = if (qs.get("days")) |ds| std.fmt.parseInt(u32, ds, 10) catch defaultDays(period) else defaultDays(period);
+    const max_days: u32 = if (qs.get("days")) |ds| blk: {
+        const d = std.fmt.parseInt(u32, ds, 10) catch {
+            return apiError(res, 400, "BAD_REQUEST", "invalid days parameter; must be a positive integer");
+        };
+        if (d == 0 or d > 3650) {
+            return apiError(res, 400, "BAD_REQUEST", "days must be between 1 and 3650");
+        }
+        break :blk d;
+    } else defaultDays(period);
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -365,7 +381,15 @@ pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const sql_trunc = parsePeriod(period) orelse {
         return apiError(res, 400, "BAD_REQUEST", "invalid period; use daily, weekly, or monthly");
     };
-    const max_days: u32 = if (qs.get("days")) |ds| std.fmt.parseInt(u32, ds, 10) catch defaultDays(period) else defaultDays(period);
+    const max_days: u32 = if (qs.get("days")) |ds| blk: {
+        const d = std.fmt.parseInt(u32, ds, 10) catch {
+            return apiError(res, 400, "BAD_REQUEST", "invalid days parameter; must be a positive integer");
+        };
+        if (d == 0 or d > 3650) {
+            return apiError(res, 400, "BAD_REQUEST", "days must be between 1 and 3650");
+        }
+        break :blk d;
+    } else defaultDays(period);
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
