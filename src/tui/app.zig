@@ -1991,6 +1991,13 @@ pub const Dashboard = struct {
     }
 
     fn drawMemberDetail(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+        if (ins.members.len == 0) {
+            var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+            w.fillSurface(&s, theme.PANEL);
+            w.drawBorder(&s, theme.BORDER, theme.PANEL);
+            w.writeText(&s, ctx, 2, 2, "No member data available.", theme.fg(theme.MUTED));
+            return s;
+        }
         const member_idx = @min(self.insights_member_cursor, ins.members.len - 1);
         const member = &ins.members[member_idx];
         var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
@@ -2154,6 +2161,10 @@ pub const Dashboard = struct {
 
         // My Workspaces with tree-expanded paths
         row = w.writeSectionHeader(&surface, ctx, 2, row, try std.fmt.allocPrint(ctx.arena, "My Workspaces ({d})", .{user.workspaces.len}));
+        if (user.workspaces.len == 0) {
+            w.writeText(&surface, ctx, 4, row, "No workspaces", theme.fg(theme.MUTED));
+            return surface;
+        }
         const sel = @min(self.settings_content_sel, user.workspaces.len - 1);
         for (user.workspaces, 0..) |ws_access, i| {
             if (row >= size.height -| 4) break;
