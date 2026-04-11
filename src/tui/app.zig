@@ -315,6 +315,11 @@ pub const Dashboard = struct {
                         ctx.consumeAndRedraw();
                         return;
                     }
+                    if (key.matches(vaxis.Key.tab, .{})) {
+                        self.settings_focus = if (self.settings_focus == .sidebar) .content else .sidebar;
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
                     if (self.settings_focus == .sidebar) {
                         if (key.matches(vaxis.Key.escape, .{})) {
                             self.show_settings = false;
@@ -333,7 +338,7 @@ pub const Dashboard = struct {
                             ctx.consumeAndRedraw();
                             return;
                         }
-                        if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{}) or key.matches(vaxis.Key.enter, .{})) {
+                        if (key.matches(vaxis.Key.enter, .{})) {
                             self.settings_focus = .content;
                             self.settings_content_sel = 0;
                             ctx.consumeAndRedraw();
@@ -341,7 +346,7 @@ pub const Dashboard = struct {
                         }
                     } else {
                         // Content focus
-                        if (key.matches(vaxis.Key.escape, .{}) or key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+                        if (key.matches(vaxis.Key.escape, .{})) {
                             self.settings_focus = .sidebar;
                             ctx.consumeAndRedraw();
                             return;
@@ -1769,7 +1774,7 @@ pub const Dashboard = struct {
         }
 
         const name_w: u16 = 21;
-        const bar_start: u16 = name_w + 2;
+        const bar_start: u16 = name_w + 1;
         const bar_end: u16 = col_rate -| 2;
         const bar_max_w: u16 = bar_end -| bar_start;
 
@@ -1791,14 +1796,14 @@ pub const Dashboard = struct {
             if (is_idle) {
                 // Same layout as active prompts, just name in red
                 const name_style: vaxis.Style = if (is_sel) theme.boldOn(theme.PANEL, theme.DANGER) else .{ .fg = theme.DANGER, .bg = theme.PANEL };
-                w.writeText(&s, ctx, 3, row, p.name, name_style);
+                w.writeText(&s, ctx, 2, row, p.name, name_style);
                 w.writeText(&s, ctx, col_rate, row, "0/d", theme.fg(theme.MUTED));
                 w.writeText(&s, ctx, col_delta, row, " 0%", theme.fg(theme.MUTED));
                 const sig_txt = try std.fmt.allocPrint(ctx.arena, "0/{d}", .{p.constraint_count});
                 w.writeText(&s, ctx, col_sig, row, sig_txt, theme.fg(theme.MUTED));
             } else {
                 const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                w.writeText(&s, ctx, 3, row, p.name, name_style);
+                w.writeText(&s, ctx, 2, row, p.name, name_style);
 
                 const bar_w: u16 = @intCast(@as(u32, bar_max_w) * p.refer_count / max_refer);
                 for (0..bar_w) |offset| {
@@ -2013,7 +2018,7 @@ pub const Dashboard = struct {
                 });
             }
             const style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-            w.writeText(&sidebar, ctx, 3, row, tab.label(), style);
+            w.writeText(&sidebar, ctx, 2, row, tab.label(), style);
             row += 1;
         }
 
