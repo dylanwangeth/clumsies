@@ -93,6 +93,19 @@ pub const TrendPoint = struct {
     refer_count: i64,
 };
 
+// Workspace stats (members + models from /api/stats/workspace/{id})
+pub const WsStatsMember = struct {
+    username: []const u8,
+    refer_count: i64,
+    active_days: i64,
+    trend: []const i64,
+};
+
+pub const WsStatsModel = struct {
+    model_id: []const u8,
+    refer_count: i64,
+};
+
 // Workspace-specific data (fetched on demand)
 pub const WsDetail = struct {
     ws_id: []const u8,
@@ -127,6 +140,9 @@ pub const ApiState = struct {
     org_stats: ?OrgStats = null,
     // Workspace detail (on-demand)
     ws_detail: ?WsDetail = null,
+    // Workspace stats (for Insights team activity)
+    ws_stats_members: ?[]const WsStatsMember = null,
+    ws_stats_models: ?[]const WsStatsModel = null,
     prompt_content: ?[]const u8 = null,
     prompt_content_name: ?[]const u8 = null,
     // Fetch coordination
@@ -253,6 +269,24 @@ fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8)
     // GET /api/org/prompt-prs
     const prs = doFetchParse(&client, alloc, "/api/org/prompt-prs", []const PromptPr, parsePromptPrs);
 
+    // GET /api/stats/workspace/{first_ws_id}?period=daily&days=30
+    var ws_members: ?[]const WsStatsMember = null;
+    var ws_models: ?[]const WsStatsModel = null;
+    if (user.workspaces.len > 0) {
+        const ws_stats_path = std.fmt.allocPrint(alloc, "/api/stats/workspace/{s}?period=daily&days=30", .{user.workspaces[0].ws_id}) catch null;
+        if (ws_stats_path) |path| {
+            const ws_resp = client.get(path) catch null;
+            if (ws_resp) |resp| {
+                defer resp.deinit();
+                if (resp.status == .ok) {
+                    const result = parseWsStats(alloc, resp.body);
+                    ws_members = result.members;
+                    ws_models = result.models;
+                }
+            }
+        }
+    }
+
     api_state.mutex.lock();
     api_state.current_user = user;
     api_state.directory = directory;
@@ -260,6 +294,8 @@ fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8)
     api_state.bundles = bundles;
     api_state.prompt_prs = prs;
     api_state.org_stats = org_stats;
+    api_state.ws_stats_members = ws_members;
+    api_state.ws_stats_models = ws_models;
     api_state.status = .connected;
     api_state.mutex.unlock();
 }
@@ -413,6 +449,55 @@ fn parseManifestPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const WsP
         }) catch continue;
     }
     return list.items;
+}
+
+const WsStatsResult = struct {
+    members: ?[]const WsStatsMember,
+    models: ?[]const WsStatsModel,
+};
+
+fn parseWsStats(alloc: std.mem.Allocator, body: []const u8) WsStatsResult {
+    const Json = struct {
+        members: []const struct {
+            username: []const u8 = "",
+            refer_count: i64 = 0,
+            active_days: i64 = 0,
+            trend: []const i64 = &.{},
+        } = &.{},
+        models: []const struct {
+            model_id: []const u8 = "",
+            refer_count: i64 = 0,
+        } = &.{},
+    };
+    const parsed = std.json.parseFromSlice(Json, alloc, body, .{ .allocate = .alloc_always }) catch return .{ .members = null, .models = null };
+    defer parsed.deinit();
+
+    var members: std.ArrayList(WsStatsMember) = .empty;
+    for (parsed.value.members) |m| {
+        var trend_copy: std.ArrayList(i64) = .empty;
+        for (m.trend) |t| {
+            trend_copy.append(alloc, t) catch continue;
+        }
+        members.append(alloc, .{
+            .username = alloc.dupe(u8, m.username) catch continue,
+            .refer_count = m.refer_count,
+            .active_days = m.active_days,
+            .trend = trend_copy.items,
+        }) catch continue;
+    }
+
+    var models: std.ArrayList(WsStatsModel) = .empty;
+    for (parsed.value.models) |m| {
+        models.append(alloc, .{
+            .model_id = alloc.dupe(u8, m.model_id) catch continue,
+            .refer_count = m.refer_count,
+        }) catch continue;
+    }
+
+    return .{
+        .members = members.items,
+        .models = models.items,
+    };
 }
 
 fn setStatus(api_state: *ApiState, status: ConnectionStatus) void {
@@ -708,9 +793,44 @@ pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, canonical_na
     return list.items;
 }
 
+fn toInsightsMembers(alloc: std.mem.Allocator, members: []const WsStatsMember) []const data.InsightsMember {
+    var list: std.ArrayList(data.InsightsMember) = .empty;
+    for (members) |m| {
+        var trend30: [30]u16 = .{0} ** 30;
+        const count = @min(m.trend.len, 30);
+        for (0..count) |i| {
+            trend30[i] = @intCast(@min(@max(m.trend[i], 0), std.math.maxInt(u16)));
+        }
+        list.append(alloc, .{
+            .username = m.username,
+            .refer_count = @intCast(@min(m.refer_count, std.math.maxInt(u32))),
+            .active_days = @intCast(@min(m.active_days, 255)),
+            .trend = trend30,
+            .top_prompts = &.{},
+            .models = &.{},
+        }) catch continue;
+    }
+    return list.items;
+}
+
+fn toInsightsModels(alloc: std.mem.Allocator, models: []const WsStatsModel) []const data.InsightsModel {
+    var total: i64 = 0;
+    for (models) |m| total += m.refer_count;
+    var list: std.ArrayList(data.InsightsModel) = .empty;
+    for (models) |m| {
+        const pct: u8 = if (total > 0) @intCast(@min(@divTrunc(m.refer_count * 100, total), 100)) else 0;
+        list.append(alloc, .{
+            .model_id = m.model_id,
+            .refer_count = @intCast(@min(m.refer_count, std.math.maxInt(u32))),
+            .pct = pct,
+        }) catch continue;
+    }
+    return list.items;
+}
+
 // Build InsightsData from OrgStats.
 // Members/models/alerts fall back to mock (need workspace-level stats).
-pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]const LibraryPrompt) data.InsightsData {
+pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]const LibraryPrompt, ws_members: ?[]const WsStatsMember, ws_models: ?[]const WsStatsModel) data.InsightsData {
     var trend: [30]u16 = .{0} ** 30;
     const tcount = @min(stats.trend.len, 30);
     for (0..tcount) |i| {
@@ -770,8 +890,8 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
         .last_event_minutes_ago = 0,
         .refer_trend = trend,
         .prompts = prompts_list.items,
-        .members = data.INSIGHTS.members,
-        .models = data.INSIGHTS.models,
+        .members = if (ws_members) |wm| toInsightsMembers(alloc, wm) else data.INSIGHTS.members,
+        .models = if (ws_models) |wmod| toInsightsModels(alloc, wmod) else data.INSIGHTS.models,
         .alerts = data.INSIGHTS.alerts,
     };
 }
