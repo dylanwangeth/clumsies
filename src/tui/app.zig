@@ -1726,7 +1726,7 @@ pub const Dashboard = struct {
         var live_insights: ?data.InsightsData = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
-            if (self.api_state.org_stats) |stats| break :blk api.insightsFromStats(stats);
+            if (self.api_state.org_stats) |stats| break :blk api.insightsFromStats(ctx.arena, stats, self.api_state.prompts);
             break :blk null;
         };
         const ins: *const data.InsightsData = if (live_insights) |*li| li else &data.INSIGHTS;
@@ -2309,6 +2309,12 @@ pub const Dashboard = struct {
             w.writeText(&surface, ctx, 2, row, "Effective permissions = min(org role, token scopes)", theme.fg(theme.MUTED));
         }
         return surface;
+    }
+
+    // Get PRs for a prompt. Uses mock data (API PRs have different shape for diff/comments).
+    fn getPrsForPrompt(self: *Dashboard, canonical_name: []const u8) []const data.PullRequestEntry {
+        _ = self;
+        return data.prsForPrompt(canonical_name);
     }
 
     fn getPrompts(self: *Dashboard) []const data.PromptEntry {
