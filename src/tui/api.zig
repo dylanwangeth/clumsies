@@ -66,6 +66,15 @@ pub const PromptPr = struct {
 };
 
 // Stats / Insights data
+pub const PromptStats = struct {
+    prompt_id: []const u8,
+    refer_count: i64,
+    active_constraint_count: i64,
+    workspace_count: i64,
+    bundle_count: i64,
+    open_pr_count: i64,
+};
+
 pub const OrgStats = struct {
     total_refer_count: i64,
     workspace_count: i64,
@@ -76,6 +85,7 @@ pub const OrgStats = struct {
     signal_ratio: f64 = 0,
     last_event_at: ?i64 = null,
     trend: []const TrendPoint,
+    prompts: []const PromptStats = &.{},
 };
 
 pub const TrendPoint = struct {
@@ -302,6 +312,18 @@ fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?OrgStats {
         }) catch continue;
     }
 
+    var prompt_stats: std.ArrayList(PromptStats) = .empty;
+    for (v.prompts) |p| {
+        prompt_stats.append(alloc, .{
+            .prompt_id = alloc.dupe(u8, p.prompt_id) catch continue,
+            .refer_count = p.refer_count,
+            .active_constraint_count = p.active_constraint_count,
+            .workspace_count = p.workspace_count,
+            .bundle_count = p.bundle_count,
+            .open_pr_count = p.open_pr_count,
+        }) catch continue;
+    }
+
     return .{
         .total_refer_count = v.total_refer_count,
         .workspace_count = v.workspace_count,
@@ -312,6 +334,7 @@ fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?OrgStats {
         .signal_ratio = v.signal_ratio,
         .last_event_at = v.last_event_at,
         .trend = trend_list.items,
+        .prompts = prompt_stats.items,
     };
 }
 
@@ -413,12 +436,12 @@ pub fn toBundleEntries(alloc: std.mem.Allocator, bundles: []const BundleData) []
     return list.items;
 }
 
-// Build InsightsData from OrgStats for chart header.
-// Prompts/members/models/alerts fall back to mock data.
-pub fn insightsFromStats(stats: OrgStats) data.InsightsData {
+// Build InsightsData from OrgStats.
+// Members/models/alerts fall back to mock (need workspace-level stats).
+pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]const LibraryPrompt) data.InsightsData {
     var trend: [30]u16 = .{0} ** 30;
-    const count = @min(stats.trend.len, 30);
-    for (0..count) |i| {
+    const tcount = @min(stats.trend.len, 30);
+    for (0..tcount) |i| {
         const idx = if (stats.trend.len > 30) stats.trend.len - 30 + i else i;
         trend[i] = @intCast(@min(stats.trend[idx].refer_count, std.math.maxInt(u16)));
     }
@@ -429,9 +452,40 @@ pub fn insightsFromStats(stats: OrgStats) data.InsightsData {
     const total: u32 = @intCast(@max(stats.constraint_count, 0));
 
     var refers_per_hour: u16 = 0;
-    if (count > 0) {
+    if (tcount > 0) {
         const last_day = stats.trend[stats.trend.len - 1].refer_count;
         refers_per_hour = @intCast(@min(@divTrunc(@max(last_day, 0), 24), std.math.maxInt(u16)));
+    }
+
+    // Build InsightsPrompt from per-prompt stats
+    var prompts_list: std.ArrayList(data.InsightsPrompt) = .empty;
+    for (stats.prompts) |ps| {
+        const name = if (library) |lib| blk: {
+            for (lib) |lp| {
+                if (std.mem.eql(u8, lp.prompt_id, ps.prompt_id))
+                    break :blk lp.canonical_name;
+            }
+            break :blk ps.prompt_id;
+        } else ps.prompt_id;
+
+        const c_total: u8 = @intCast(@min(ps.active_constraint_count, 255));
+        const c_idle: u8 = 0;
+        const sig: u8 = if (c_total > 0) @intCast(@min(@divTrunc(ps.active_constraint_count * 100, @max(c_total, 1)), 100)) else 0;
+        const rate: u16 = @intCast(@min(@divTrunc(@max(ps.refer_count, 0), @max(@as(i64, @intCast(tcount)), 1)), std.math.maxInt(u16)));
+
+        prompts_list.append(alloc, .{
+            .name = name,
+            .constraint_count = c_total,
+            .active_constraint_count = c_total,
+            .idle_constraint_count = c_idle,
+            .signal_ratio = sig,
+            .refer_count = @intCast(@min(ps.refer_count, std.math.maxInt(u32))),
+            .rate_per_day = rate,
+            .delta_pct = 0,
+            .last_referred_days_ago = 0,
+            .trend = .{0} ** 30,
+            .constraints = &.{},
+        }) catch continue;
     }
 
     return .{
@@ -443,7 +497,7 @@ pub fn insightsFromStats(stats: OrgStats) data.InsightsData {
         .today_delta_pct = 0,
         .last_event_minutes_ago = 0,
         .refer_trend = trend,
-        .prompts = data.INSIGHTS.prompts,
+        .prompts = prompts_list.items,
         .members = data.INSIGHTS.members,
         .models = data.INSIGHTS.models,
         .alerts = data.INSIGHTS.alerts,
