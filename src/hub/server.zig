@@ -59,14 +59,6 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.delete("/api/org/members/:user_id", auth.handleRemoveMember, .{});
     router.get("/api/org/directory", team_handler.handleDirectory, .{});
 
-    // Teams
-    router.post("/api/org/teams", team_handler.handleCreateTeam, .{});
-    router.get("/api/org/teams", team_handler.handleListTeams, .{});
-    router.get("/api/org/teams/:team_id", team_handler.handleGetTeam, .{});
-    router.delete("/api/org/teams/:team_id", team_handler.handleDeleteTeam, .{});
-    router.post("/api/org/teams/:team_id/members", team_handler.handleAddTeamMember, .{});
-    router.delete("/api/org/teams/:team_id/members/:user_id", team_handler.handleRemoveTeamMember, .{});
-
     // Workspaces
     router.post("/api/workspaces", workspace_handler.handleCreate, .{});
     router.get("/api/workspaces/:ws_id", workspace_handler.handleGet, .{});
@@ -88,12 +80,11 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.post("/api/workspaces/:ws_id/context/prs/:pr_id/comments", context_handler.handleAddPrComment, .{});
     router.post("/api/workspaces/:ws_id/context/branches/:branch/rebase", context_handler.handleRebase, .{});
 
-    // Workspace Access Control
-    router.get("/api/workspaces/:ws_id/access", workspace_handler.handleGetAccess, .{});
-    router.put("/api/workspaces/:ws_id/access/teams/:team_id", workspace_handler.handleGrantTeamAccess, .{});
-    router.delete("/api/workspaces/:ws_id/access/teams/:team_id", workspace_handler.handleRevokeTeamAccess, .{});
-    router.put("/api/workspaces/:ws_id/access/users/:user_id", workspace_handler.handleGrantUserAccess, .{});
-    router.delete("/api/workspaces/:ws_id/access/users/:user_id", workspace_handler.handleRevokeUserAccess, .{});
+    // Workspace Members
+    router.get("/api/workspaces/:ws_id/members", workspace_handler.handleListMembers, .{});
+    router.post("/api/workspaces/:ws_id/members", workspace_handler.handleInviteMember, .{});
+    router.patch("/api/workspaces/:ws_id/members/:user_id", workspace_handler.handleChangeMemberRole, .{});
+    router.delete("/api/workspaces/:ws_id/members/:user_id", workspace_handler.handleRemoveWsMember, .{});
 
     // Library
     router.get("/api/org/library/manifest", library_handler.handleGetManifest, .{});
