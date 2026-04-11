@@ -22,6 +22,7 @@ pub const UserData = struct {
 pub const WsData = struct {
     ws_id: []const u8,
     name: []const u8,
+    role: []const u8 = "",
 };
 
 pub const DirectoryMember = struct {
@@ -29,18 +30,10 @@ pub const DirectoryMember = struct {
     username: []const u8,
     role: []const u8,
     joined_at: []const u8,
-    team_ids: []const []const u8,
-};
-
-pub const DirectoryTeam = struct {
-    team_id: []const u8,
-    name: []const u8,
-    member_ids: []const []const u8,
 };
 
 pub const DirectoryData = struct {
     members: []const DirectoryMember,
-    teams: []const DirectoryTeam,
 };
 
 // Library data
@@ -195,7 +188,7 @@ fn parseUser(alloc: std.mem.Allocator, body: []const u8) ?UserData {
         username: []const u8,
         role: []const u8,
         scopes: []const u8,
-        workspaces: []const struct { ws_id: []const u8, name: []const u8 },
+        workspaces: []const struct { ws_id: []const u8, name: []const u8, role: []const u8 = "" },
     };
     const parsed = std.json.parseFromSlice(MeJson, alloc, body, .{ .allocate = .alloc_always }) catch return null;
     defer parsed.deinit();
@@ -206,6 +199,7 @@ fn parseUser(alloc: std.mem.Allocator, body: []const u8) ?UserData {
         ws_list.append(alloc, .{
             .ws_id = alloc.dupe(u8, ws.ws_id) catch continue,
             .name = alloc.dupe(u8, ws.name) catch continue,
+            .role = alloc.dupe(u8, ws.role) catch continue,
         }) catch continue;
     }
 
@@ -225,50 +219,22 @@ fn parseDirectory(alloc: std.mem.Allocator, body: []const u8) ?DirectoryData {
             username: []const u8,
             role: []const u8,
             joined_at: []const u8,
-            team_ids: []const []const u8,
-        },
-        teams: []const struct {
-            team_id: []const u8,
-            name: []const u8,
-            member_ids: []const []const u8,
         },
     };
     const parsed = std.json.parseFromSlice(DirJson, alloc, body, .{ .allocate = .alloc_always }) catch return null;
     defer parsed.deinit();
-    const v = parsed.value;
 
     var members: std.ArrayList(DirectoryMember) = .empty;
-    for (v.members) |m| {
-        var tids: std.ArrayList([]const u8) = .empty;
-        for (m.team_ids) |tid| {
-            tids.append(alloc, alloc.dupe(u8, tid) catch continue) catch continue;
-        }
+    for (parsed.value.members) |m| {
         members.append(alloc, .{
             .user_id = alloc.dupe(u8, m.user_id) catch continue,
             .username = alloc.dupe(u8, m.username) catch continue,
             .role = alloc.dupe(u8, m.role) catch continue,
             .joined_at = alloc.dupe(u8, m.joined_at) catch continue,
-            .team_ids = tids.items,
         }) catch continue;
     }
 
-    var teams: std.ArrayList(DirectoryTeam) = .empty;
-    for (v.teams) |t| {
-        var mids: std.ArrayList([]const u8) = .empty;
-        for (t.member_ids) |mid| {
-            mids.append(alloc, alloc.dupe(u8, mid) catch continue) catch continue;
-        }
-        teams.append(alloc, .{
-            .team_id = alloc.dupe(u8, t.team_id) catch continue,
-            .name = alloc.dupe(u8, t.name) catch continue,
-            .member_ids = mids.items,
-        }) catch continue;
-    }
-
-    return .{
-        .members = members.items,
-        .teams = teams.items,
-    };
+    return .{ .members = members.items };
 }
 
 fn parseLibraryPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const LibraryPrompt {

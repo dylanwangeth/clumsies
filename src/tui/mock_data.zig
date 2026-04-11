@@ -47,14 +47,12 @@ pub const PullRequestEntry = struct {
 };
 
 pub const AccessLevel = enum {
-    read,
-    write,
+    member,
     admin,
 
     pub fn badge(self: AccessLevel) []const u8 {
         return switch (self) {
-            .read => "r",
-            .write => "w",
+            .member => "m",
             .admin => "a",
         };
     }
@@ -221,12 +219,12 @@ pub const PULL_REQUESTS = [_]PullRequestEntry{
 
 pub const WORKSPACES = [_]WorkspaceEntry{
     .{ .name = "payments-api", .prompts = 18, .contexts = 9, .overrides = 3, .local_rev = 41, .remote_rev = 43, .paths = 2, .open_prs = 2, .last_sync = "1h ago", .access_level = .admin },
-    .{ .name = "merchant-portal", .prompts = 14, .contexts = 5, .overrides = 1, .local_rev = 37, .remote_rev = 37, .paths = 1, .open_prs = 0, .last_sync = "2 min ago", .access_level = .write },
-    .{ .name = "infra-tools", .prompts = 8, .contexts = 3, .overrides = 0, .local_rev = 22, .remote_rev = 22, .paths = 1, .open_prs = 1, .last_sync = "5 min ago", .access_level = .read },
-    .{ .name = "release-bot", .prompts = 5, .contexts = 2, .overrides = 0, .local_rev = 15, .remote_rev = 15, .paths = 1, .open_prs = 0, .last_sync = "3 min ago", .access_level = .write },
-    .{ .name = "docs-site", .prompts = 6, .contexts = 4, .overrides = 0, .local_rev = 10, .remote_rev = 10, .paths = 1, .open_prs = 0, .last_sync = "10 min ago", .access_level = .read },
+    .{ .name = "merchant-portal", .prompts = 14, .contexts = 5, .overrides = 1, .local_rev = 37, .remote_rev = 37, .paths = 1, .open_prs = 0, .last_sync = "2 min ago", .access_level = .member },
+    .{ .name = "infra-tools", .prompts = 8, .contexts = 3, .overrides = 0, .local_rev = 22, .remote_rev = 22, .paths = 1, .open_prs = 1, .last_sync = "5 min ago", .access_level = .member },
+    .{ .name = "release-bot", .prompts = 5, .contexts = 2, .overrides = 0, .local_rev = 15, .remote_rev = 15, .paths = 1, .open_prs = 0, .last_sync = "3 min ago", .access_level = .member },
+    .{ .name = "docs-site", .prompts = 6, .contexts = 4, .overrides = 0, .local_rev = 10, .remote_rev = 10, .paths = 1, .open_prs = 0, .last_sync = "10 min ago", .access_level = .member },
     .{ .name = "mobile-app", .prompts = 12, .contexts = 7, .overrides = 2, .local_rev = 28, .remote_rev = 30, .paths = 2, .open_prs = 1, .last_sync = "30 min ago", .access_level = .admin },
-    .{ .name = "data-pipeline", .prompts = 9, .contexts = 6, .overrides = 0, .local_rev = 19, .remote_rev = 19, .paths = 1, .open_prs = 0, .last_sync = "8 min ago", .access_level = .write },
+    .{ .name = "data-pipeline", .prompts = 9, .contexts = 6, .overrides = 0, .local_rev = 19, .remote_rev = 19, .paths = 1, .open_prs = 0, .last_sync = "8 min ago", .access_level = .member },
     .{ .name = "admin-dashboard", .prompts = 11, .contexts = 4, .overrides = 1, .local_rev = 25, .remote_rev = 25, .paths = 1, .open_prs = 2, .last_sync = "15 min ago", .access_level = .admin },
 };
 
@@ -544,20 +542,19 @@ pub const MemberEntry = struct {
     username: []const u8,
     role: []const u8,
     joined: []const u8,
-    teams: []const u8, // comma-separated team names
 };
 
 pub const MEMBERS = [_]MemberEntry{
-    .{ .user_id = "usr-001", .username = "alice", .role = "maintainer", .joined = "2026-01-15", .teams = "platform, ops" },
-    .{ .user_id = "usr-002", .username = "bob", .role = "member", .joined = "2026-02-20", .teams = "platform, frontend" },
-    .{ .user_id = "usr-003", .username = "carol", .role = "member", .joined = "2026-03-05", .teams = "frontend" },
-    .{ .user_id = "usr-004", .username = "dave", .role = "member", .joined = "2026-03-18", .teams = "platform, ops" },
+    .{ .user_id = "usr-001", .username = "alice", .role = "maintainer", .joined = "2026-01-15" },
+    .{ .user_id = "usr-002", .username = "bob", .role = "member", .joined = "2026-02-20" },
+    .{ .user_id = "usr-003", .username = "carol", .role = "member", .joined = "2026-03-05" },
+    .{ .user_id = "usr-004", .username = "dave", .role = "member", .joined = "2026-03-18" },
 };
 
 // Mirrors GET /api/auth/me + config.toml workspace bindings
 pub const WsAccess = struct {
     name: []const u8,
-    level: AccessLevel,
+    role: AccessLevel,
     paths: []const []const u8,
 };
 
@@ -598,8 +595,6 @@ pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
     .{ .name = "stats:read", .description = "Read statistics" },
     .{ .name = "members:read", .description = "List org/workspace members" },
     .{ .name = "members:write", .description = "Manage org/workspace members" },
-    .{ .name = "team:read", .description = "List teams and members" },
-    .{ .name = "team:write", .description = "Manage teams" },
     .{ .name = "pr:read", .description = "Read pull requests and comments" },
     .{ .name = "pr:write", .description = "Create/comment on pull requests" },
     .{ .name = "pr:merge", .description = "Accept/reject pull requests" },
@@ -615,14 +610,14 @@ const pipeline_paths = [_][]const u8{"~/work/data-pipeline"};
 const empty_paths = [_][]const u8{};
 
 const my_workspaces = [_]WsAccess{
-    .{ .name = "payments-api", .level = .admin, .paths = &payments_paths },
-    .{ .name = "merchant-portal", .level = .write, .paths = &merchant_paths },
-    .{ .name = "infra-tools", .level = .read, .paths = &infra_paths },
-    .{ .name = "release-bot", .level = .write, .paths = &bot_paths },
-    .{ .name = "docs-site", .level = .read, .paths = &docs_paths },
-    .{ .name = "mobile-app", .level = .admin, .paths = &mobile_paths },
-    .{ .name = "data-pipeline", .level = .write, .paths = &pipeline_paths },
-    .{ .name = "admin-dashboard", .level = .admin, .paths = &empty_paths },
+    .{ .name = "payments-api", .role = .admin, .paths = &payments_paths },
+    .{ .name = "merchant-portal", .role = .member, .paths = &merchant_paths },
+    .{ .name = "infra-tools", .role = .member, .paths = &infra_paths },
+    .{ .name = "release-bot", .role = .member, .paths = &bot_paths },
+    .{ .name = "docs-site", .role = .member, .paths = &docs_paths },
+    .{ .name = "mobile-app", .role = .admin, .paths = &mobile_paths },
+    .{ .name = "data-pipeline", .role = .member, .paths = &pipeline_paths },
+    .{ .name = "admin-dashboard", .role = .admin, .paths = &empty_paths },
 };
 
 pub const CLIENT_CONFIG = ClientConfig{
@@ -643,21 +638,6 @@ pub const CURRENT_USER = CurrentUser{
 pub const TokenInfo = struct {
     scopes: []const []const u8,
     expires: []const u8,
-};
-
-pub const TeamEntry = struct {
-    name: []const u8,
-    member_usernames: []const []const u8,
-};
-
-const platform_members = [_][]const u8{ "alice", "bob", "dave" };
-const frontend_members = [_][]const u8{ "bob", "carol" };
-const ops_members = [_][]const u8{ "alice", "dave" };
-
-pub const TEAMS = [_]TeamEntry{
-    .{ .name = "platform", .member_usernames = &platform_members },
-    .{ .name = "frontend", .member_usernames = &frontend_members },
-    .{ .name = "ops", .member_usernames = &ops_members },
 };
 
 

@@ -358,13 +358,7 @@ pub const Dashboard = struct {
                         }
                         const max_items: usize = switch (self.settings_tab) {
                             .account => data.CURRENT_USER.workspaces.len,
-                            .organization => blk: {
-                                self.api_state.mutex.lock();
-                                defer self.api_state.mutex.unlock();
-                                if (self.api_state.directory) |dir|
-                                    break :blk dir.members.len + dir.teams.len;
-                                break :blk data.MEMBERS.len + data.TEAMS.len;
-                            },
+                            .organization => self.orgMemberCount(),
                             .token => data.ALL_SCOPES.len,
                         };
                         if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
@@ -406,54 +400,22 @@ pub const Dashboard = struct {
                             }
                         }
                         if (self.settings_tab == .organization) {
-                            const member_count = blk: {
-                                self.api_state.mutex.lock();
-                                defer self.api_state.mutex.unlock();
-                                if (self.api_state.directory) |dir| break :blk dir.members.len;
-                                break :blk data.MEMBERS.len;
-                            };
-                            const on_member = self.settings_content_sel < member_count;
-                            if (on_member) {
-                                if (key.matches('r', .{})) {
-                                    self.status_line = "Role change (not yet implemented)";
-                                    ctx.consumeAndRedraw();
-                                    return;
-                                }
-                                if (key.matches('x', .{})) {
-                                    self.confirm_message = "selected member";
-                                    self.confirm_action = .remove_member;
-                                    self.show_confirm = true;
-                                    ctx.consumeAndRedraw();
-                                    return;
-                                }
-                                if (key.matches('a', .{})) {
-                                    self.status_line = "Invite member (not yet implemented)";
-                                    ctx.consumeAndRedraw();
-                                    return;
-                                }
-                            } else {
-                                if (key.matches('a', .{})) {
-                                    self.status_line = "Create team (not yet implemented)";
-                                    ctx.consumeAndRedraw();
-                                    return;
-                                }
-                                if (key.matches('=', .{})) {
-                                    self.status_line = "Add member to team (not yet implemented)";
-                                    ctx.consumeAndRedraw();
-                                    return;
-                                }
-                                if (key.matches('-', .{})) {
-                                    self.status_line = "Remove member from team (not yet implemented)";
-                                    ctx.consumeAndRedraw();
-                                    return;
-                                }
-                                if (key.matches('x', .{})) {
-                                    self.confirm_message = "selected team";
-                                    self.confirm_action = .delete_bundle;
-                                    self.show_confirm = true;
-                                    ctx.consumeAndRedraw();
-                                    return;
-                                }
+                            if (key.matches('r', .{})) {
+                                self.status_line = "Role change (not yet implemented)";
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches('x', .{})) {
+                                self.confirm_message = "selected member";
+                                self.confirm_action = .remove_member;
+                                self.show_confirm = true;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                            if (key.matches('a', .{})) {
+                                self.status_line = "Invite member (not yet implemented)";
+                                ctx.consumeAndRedraw();
+                                return;
                             }
                         }
                         if (self.settings_tab == .token) {
@@ -1091,10 +1053,8 @@ pub const Dashboard = struct {
             "j/k section  Enter open  Tab focus  Esc close"
         else if (self.show_settings and self.settings_tab == .account)
             "j/k move  c change password  Enter go to workspace  x sign out  Esc back"
-        else if (self.show_settings and self.settings_tab == .organization and self.settings_content_sel < self.orgMemberCount())
-            "j/k move  a invite  r role  x remove  Esc back"
         else if (self.show_settings and self.settings_tab == .organization)
-            "j/k move  a create  = add member  - remove member  x delete  Esc back"
+            "j/k move  a invite  r role  x remove  Esc back"
         else if (self.show_settings and self.settings_tab == .token)
             "j/k move  r refresh  x revoke  Esc back"
         else if (self.show_settings)
@@ -2178,14 +2138,12 @@ pub const Dashboard = struct {
             }
             const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
             w.writeText(&surface, ctx, 4, row, ws_access.name, name_style);
-            const badge_fg = switch (ws_access.level) {
-                .read => theme.MUTED,
-                .write => theme.OK,
+            const badge_fg = switch (ws_access.role) {
+                .member => theme.OK,
                 .admin => theme.ACCENT,
             };
-            const level_label = switch (ws_access.level) {
-                .read => "read",
-                .write => "write",
+            const level_label = switch (ws_access.role) {
+                .member => "member",
                 .admin => "admin",
             };
             w.writeText(&surface, ctx, 24, row, level_label, theme.fg(badge_fg));
@@ -2229,151 +2187,52 @@ pub const Dashboard = struct {
         var row: u16 = 2;
         const sel = self.settings_content_sel;
 
-        // Check for live directory data
+        // Use live directory or mock members
         self.api_state.mutex.lock();
         const live_dir = self.api_state.directory;
         self.api_state.mutex.unlock();
 
+        const MemberView = struct { username: []const u8, role: []const u8, joined: []const u8 };
+        var member_views: std.ArrayList(MemberView) = .empty;
+
         if (live_dir) |dir| {
-            // Live data path
-            var maintainer_count: u16 = 0;
             for (dir.members) |m| {
-                if (std.mem.eql(u8, m.role, "maintainer")) maintainer_count += 1;
-            }
-            const members_title = try std.fmt.allocPrint(ctx.arena, "Members ({d}  {d} maintainer, {d} member)", .{ dir.members.len, maintainer_count, dir.members.len - maintainer_count });
-            row = w.writeSectionHeader(&surface, ctx, 2, row, members_title);
-
-            w.writeText(&surface, ctx, 4, row, "USERNAME", theme.fg(theme.MUTED));
-            w.writeText(&surface, ctx, 18, row, "ROLE", theme.fg(theme.MUTED));
-            w.writeText(&surface, ctx, 30, row, "TEAMS", theme.fg(theme.MUTED));
-            w.writeText(&surface, ctx, 52, row, "JOINED", theme.fg(theme.MUTED));
-            row += 1;
-
-            for (dir.members, 0..) |m, i| {
-                const is_sel = i == sel and focused;
-                if (is_sel) {
-                    surface.writeCell(1, row, .{
-                        .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                    });
-                }
-                const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                w.writeText(&surface, ctx, 4, row, m.username, name_style);
-                const role_color = if (std.mem.eql(u8, m.role, "maintainer")) theme.ACCENT else theme.TEXT_SOFT;
-                w.writeText(&surface, ctx, 18, row, m.role, theme.fg(role_color));
-                // Resolve team_ids to team names
-                var teams_buf: std.ArrayList(u8) = .empty;
-                for (m.team_ids, 0..) |tid, ti| {
-                    for (dir.teams) |t| {
-                        if (std.mem.eql(u8, t.team_id, tid)) {
-                            try teams_buf.appendSlice(ctx.arena, t.name);
-                            break;
-                        }
-                    }
-                    if (ti + 1 < m.team_ids.len) try teams_buf.appendSlice(ctx.arena, ", ");
-                }
-                w.writeText(&surface, ctx, 30, row, try ctx.arena.dupe(u8, teams_buf.items), theme.fg(theme.TEXT_SOFT));
-                w.writeText(&surface, ctx, 52, row, m.joined_at, theme.fg(theme.MUTED));
-                row += 1;
-                if (row >= size.height -| 10) break;
-            }
-            row += 1;
-
-            // Teams section
-            const teams_title = try std.fmt.allocPrint(ctx.arena, "Teams ({d})", .{dir.teams.len});
-            row = w.writeSectionHeader(&surface, ctx, 2, row, teams_title);
-
-            w.writeText(&surface, ctx, 4, row, "NAME", theme.fg(theme.MUTED));
-            w.writeText(&surface, ctx, 18, row, "MEMBERS", theme.fg(theme.MUTED));
-            row += 1;
-
-            for (dir.teams, 0..) |team, i| {
-                const team_idx = dir.members.len + i;
-                const is_sel = team_idx == sel and focused;
-                if (is_sel) {
-                    surface.writeCell(1, row, .{
-                        .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                    });
-                }
-                const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                w.writeText(&surface, ctx, 4, row, team.name, name_style);
-                // Resolve member_ids to usernames
-                var names_buf: std.ArrayList(u8) = .empty;
-                for (team.member_ids, 0..) |mid, mi| {
-                    for (dir.members) |m| {
-                        if (std.mem.eql(u8, m.user_id, mid)) {
-                            try names_buf.appendSlice(ctx.arena, m.username);
-                            break;
-                        }
-                    }
-                    if (mi + 1 < team.member_ids.len) try names_buf.appendSlice(ctx.arena, ", ");
-                }
-                w.writeText(&surface, ctx, 18, row, try ctx.arena.dupe(u8, names_buf.items), theme.fg(theme.MUTED));
-                row += 1;
+                try member_views.append(ctx.arena, .{ .username = m.username, .role = m.role, .joined = m.joined_at });
             }
         } else {
-            // Fallback to mock data
-            var maintainer_count: u16 = 0;
             for (data.MEMBERS) |m| {
-                if (std.mem.eql(u8, m.role, "maintainer")) maintainer_count += 1;
-            }
-            const members_title = try std.fmt.allocPrint(ctx.arena, "Members ({d}  {d} maintainer, {d} member)", .{ data.MEMBERS.len, maintainer_count, data.MEMBERS.len - maintainer_count });
-            row = w.writeSectionHeader(&surface, ctx, 2, row, members_title);
-
-            w.writeText(&surface, ctx, 4, row, "USERNAME", theme.fg(theme.MUTED));
-            w.writeText(&surface, ctx, 18, row, "ROLE", theme.fg(theme.MUTED));
-            w.writeText(&surface, ctx, 30, row, "TEAMS", theme.fg(theme.MUTED));
-            w.writeText(&surface, ctx, 52, row, "JOINED", theme.fg(theme.MUTED));
-            row += 1;
-
-            for (data.MEMBERS, 0..) |m, i| {
-                const is_sel = i == sel and focused;
-                if (is_sel) {
-                    surface.writeCell(1, row, .{
-                        .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                    });
-                }
-                const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                w.writeText(&surface, ctx, 4, row, m.username, name_style);
-                const role_color = if (std.mem.eql(u8, m.role, "maintainer")) theme.ACCENT else theme.TEXT_SOFT;
-                w.writeText(&surface, ctx, 18, row, m.role, theme.fg(role_color));
-                w.writeText(&surface, ctx, 30, row, m.teams, theme.fg(theme.TEXT_SOFT));
-                w.writeText(&surface, ctx, 52, row, m.joined, theme.fg(theme.MUTED));
-                row += 1;
-                if (row >= size.height -| 10) break;
-            }
-            row += 1;
-
-            const teams_title = try std.fmt.allocPrint(ctx.arena, "Teams ({d})", .{data.TEAMS.len});
-            row = w.writeSectionHeader(&surface, ctx, 2, row, teams_title);
-
-            w.writeText(&surface, ctx, 4, row, "NAME", theme.fg(theme.MUTED));
-            w.writeText(&surface, ctx, 18, row, "MEMBERS", theme.fg(theme.MUTED));
-            row += 1;
-
-            for (data.TEAMS, 0..) |team, i| {
-                const team_idx = data.MEMBERS.len + i;
-                const is_sel = team_idx == sel and focused;
-                if (is_sel) {
-                    surface.writeCell(1, row, .{
-                        .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                    });
-                }
-                const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                w.writeText(&surface, ctx, 4, row, team.name, name_style);
-                var names_buf: std.ArrayList(u8) = .empty;
-                for (team.member_usernames, 0..) |username, mi| {
-                    try names_buf.appendSlice(ctx.arena, username);
-                    if (mi + 1 < team.member_usernames.len) try names_buf.appendSlice(ctx.arena, ", ");
-                }
-                w.writeText(&surface, ctx, 18, row, try ctx.arena.dupe(u8, names_buf.items), theme.fg(theme.MUTED));
-                row += 1;
+                try member_views.append(ctx.arena, .{ .username = m.username, .role = m.role, .joined = m.joined });
             }
         }
+
+        var maintainer_count: u16 = 0;
+        for (member_views.items) |m| {
+            if (std.mem.eql(u8, m.role, "maintainer")) maintainer_count += 1;
+        }
+        const members_title = try std.fmt.allocPrint(ctx.arena, "Members ({d}  {d} maintainer, {d} member)", .{ member_views.items.len, maintainer_count, member_views.items.len - maintainer_count });
+        row = w.writeSectionHeader(&surface, ctx, 2, row, members_title);
+
+        w.writeText(&surface, ctx, 4, row, "USERNAME", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 18, row, "ROLE", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 30, row, "JOINED", theme.fg(theme.MUTED));
         row += 1;
+
+        for (member_views.items, 0..) |m, i| {
+            const is_sel = i == sel and focused;
+            if (is_sel) {
+                surface.writeCell(1, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+            const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+            w.writeText(&surface, ctx, 4, row, m.username, name_style);
+            const role_color = if (std.mem.eql(u8, m.role, "maintainer")) theme.ACCENT else theme.TEXT_SOFT;
+            w.writeText(&surface, ctx, 18, row, m.role, theme.fg(role_color));
+            w.writeText(&surface, ctx, 30, row, m.joined, theme.fg(theme.MUTED));
+            row += 1;
+            if (row >= size.height -| 4) break;
+        }
 
         return surface;
     }
