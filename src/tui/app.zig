@@ -745,6 +745,16 @@ pub const Dashboard = struct {
                                 }
                                 if (key.matches(vaxis.Key.enter, .{})) {
                                     self.ws_focus = .list;
+                                    // Trigger workspace detail fetch
+                                    self.api_state.mutex.lock();
+                                    const ws_list = if (self.api_state.current_user) |u| u.workspaces else &.{};
+                                    if (self.ws_sel < ws_list.len) {
+                                        const ws_id = ws_list[self.ws_sel].ws_id;
+                                        self.api_state.mutex.unlock();
+                                        api.fetchWorkspaceAsync(self.api_state, ws_id);
+                                    } else {
+                                        self.api_state.mutex.unlock();
+                                    }
                                     ctx.consumeAndRedraw();
                                 }
                             },
@@ -1537,63 +1547,119 @@ pub const Dashboard = struct {
 
         const inner_h = ctx.max.height.? -| 2;
 
+        // Check for live workspace detail
+        self.api_state.mutex.lock();
+        const live_ws = self.api_state.ws_detail;
+        self.api_state.mutex.unlock();
+
         switch (self.ws_tab) {
             .context => {
                 var kv_row: u16 = 2;
                 var last_prefix: []const u8 = "";
-                for (data.WS_CONTEXT, 0..) |f, i| {
-                    if (kv_row >= inner_h + 2) break;
-                    const prefix = data.pathPrefix(f.path);
-                    if (!std.mem.eql(u8, prefix, last_prefix)) {
-                        w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
-                        kv_row += 1;
-                        last_prefix = prefix;
+                if (live_ws) |ws_d| {
+                    for (ws_d.context_files, 0..) |f, i| {
                         if (kv_row >= inner_h + 2) break;
+                        const prefix = data.pathPrefix(f.path);
+                        if (!std.mem.eql(u8, prefix, last_prefix)) {
+                            w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
+                            kv_row += 1;
+                            last_prefix = prefix;
+                            if (kv_row >= inner_h + 2) break;
+                        }
+                        const sel = i == self.ws_list_sel;
+                        const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                        if (sel) {
+                            surface.writeCell(1, kv_row, .{
+                                .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                            });
+                        }
+                        w.writeText(&surface, ctx, 2, kv_row, data.promptName(f.path), name_style);
+                        kv_row += 1;
                     }
-                    const sel = i == self.ws_list_sel;
-                    const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                    if (sel) {
-                        surface.writeCell(1, kv_row, .{
-                            .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                            .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                        });
+                } else {
+                    for (data.WS_CONTEXT, 0..) |f, i| {
+                        if (kv_row >= inner_h + 2) break;
+                        const prefix = data.pathPrefix(f.path);
+                        if (!std.mem.eql(u8, prefix, last_prefix)) {
+                            w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
+                            kv_row += 1;
+                            last_prefix = prefix;
+                            if (kv_row >= inner_h + 2) break;
+                        }
+                        const sel = i == self.ws_list_sel;
+                        const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                        if (sel) {
+                            surface.writeCell(1, kv_row, .{
+                                .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                            });
+                        }
+                        const fname = data.promptName(f.path);
+                        w.writeText(&surface, ctx, 2, kv_row, fname, name_style);
+                        if (f.modified) {
+                            const nw: u16 = @intCast(ctx.stringWidth(fname));
+                            w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
+                        }
+                        kv_row += 1;
                     }
-                    const fname = data.promptName(f.path);
-                    w.writeText(&surface, ctx, 2, kv_row, fname, name_style);
-                    if (f.modified) {
-                        const nw: u16 = @intCast(ctx.stringWidth(fname));
-                        w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
-                    }
-                    kv_row += 1;
                 }
             },
             .prompts => {
                 var kv_row: u16 = 2;
                 var last_prefix: []const u8 = "";
-                for (data.WS_PROMPTS, 0..) |p, i| {
-                    if (kv_row >= inner_h + 2) break;
-                    const prefix = data.pathPrefix(p.name);
-                    if (!std.mem.eql(u8, prefix, last_prefix)) {
-                        w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
-                        kv_row += 1;
-                        last_prefix = prefix;
+                if (live_ws) |ws_d| {
+                    // Live: cross-ref prompt_id with library for canonical_name
+                    const lib_prompts = self.getPrompts();
+                    for (ws_d.ws_prompts, 0..) |wp, i| {
                         if (kv_row >= inner_h + 2) break;
+                        const name = for (lib_prompts) |lp| {
+                            if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.canonical_name;
+                        } else wp.prompt_id;
+                        const prefix = data.pathPrefix(name);
+                        if (!std.mem.eql(u8, prefix, last_prefix)) {
+                            w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
+                            kv_row += 1;
+                            last_prefix = prefix;
+                            if (kv_row >= inner_h + 2) break;
+                        }
+                        const sel = i == self.ws_list_sel;
+                        const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                        if (sel) {
+                            surface.writeCell(1, kv_row, .{
+                                .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                            });
+                        }
+                        w.writeText(&surface, ctx, 2, kv_row, data.promptName(name), name_style);
+                        kv_row += 1;
                     }
-                    const sel = i == self.ws_list_sel;
-                    const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                    if (sel) {
-                        surface.writeCell(1, kv_row, .{
-                            .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                            .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                        });
+                } else {
+                    for (data.WS_PROMPTS, 0..) |p, i| {
+                        if (kv_row >= inner_h + 2) break;
+                        const prefix = data.pathPrefix(p.name);
+                        if (!std.mem.eql(u8, prefix, last_prefix)) {
+                            w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
+                            kv_row += 1;
+                            last_prefix = prefix;
+                            if (kv_row >= inner_h + 2) break;
+                        }
+                        const sel = i == self.ws_list_sel;
+                        const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                        if (sel) {
+                            surface.writeCell(1, kv_row, .{
+                                .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                            });
+                        }
+                        const fname = data.promptName(p.name);
+                        w.writeText(&surface, ctx, 2, kv_row, fname, name_style);
+                        if (p.has_override) {
+                            const nw: u16 = @intCast(ctx.stringWidth(fname));
+                            w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
+                        }
+                        kv_row += 1;
                     }
-                    const fname = data.promptName(p.name);
-                    w.writeText(&surface, ctx, 2, kv_row, fname, name_style);
-                    if (p.has_override) {
-                        const nw: u16 = @intCast(ctx.stringWidth(fname));
-                        w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
-                    }
-                    kv_row += 1;
                 }
             },
         }
@@ -2600,13 +2666,26 @@ pub const Dashboard = struct {
     }
 
     fn syncContentWidget(self: *Dashboard) void {
+        // Use live prompt content if available, else mock
+        const content: []const u8 = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            if (self.api_state.prompt_content) |c| break :blk c;
+            break :blk data.SAMPLE_CONTENT;
+        };
         self.content_text = .{
-            .text = data.SAMPLE_CONTENT,
+            .text = content,
             .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
         };
         self.content_widget[0] = self.content_text.widget();
         self.content_scroll_bars.scroll_view.children = .{ .slice = self.content_widget[0..1] };
-        self.content_scroll_bars.estimated_content_height = @intCast(@max(w.countLines(data.SAMPLE_CONTENT), 24));
+        self.content_scroll_bars.estimated_content_height = @intCast(@max(w.countLines(content), 24));
+
+        // Trigger fetch for the selected prompt content
+        const prompts = self.getPrompts();
+        if (self.selected_prompt < prompts.len) {
+            api.fetchPromptContentAsync(self.api_state, prompts[self.selected_prompt].canonical_name);
+        }
     }
 
     fn syncPrWidgets(self: *Dashboard) void {
