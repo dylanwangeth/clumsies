@@ -243,24 +243,49 @@ fn seedPrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 fn seedBundles(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding {d} bundles...", .{data.BUNDLE_COUNT});
 
+    var used_names: [data.BUNDLE_COUNT][]const u8 = undefined;
+    var used_count: usize = 0;
+
     for (0..data.BUNDLE_COUNT) |i| {
         const id = faker.hexId(&state.bundle_ids[i], "bnd-");
-        const name = faker.bundleName();
+
+        // Generate unique bundle name
+        var name: []const u8 = undefined;
+        var attempts: usize = 0;
+        while (attempts < 50) : (attempts += 1) {
+            name = faker.bundleName();
+            var duplicate = false;
+            for (used_names[0..used_count]) |used| {
+                if (std.mem.eql(u8, used, name)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) break;
+        }
+        used_names[used_count] = name;
+        used_count += 1;
+
         const desc = faker.bundleDescription();
-        state.bundle_count = i + 1;
 
         _ = conn.exec(
-            "INSERT INTO bundles (bundle_id, org_id, name, description) VALUES ($1, $2::uuid, $3, $4) ON CONFLICT (org_id, name) DO NOTHING",
+            "INSERT INTO bundles (bundle_id, org_id, name, description) VALUES ($1, $2::uuid, $3, $4)",
             .{ id, data.ORG_ID, name, desc },
         ) catch |err| {
-            log.warn("seed: {}", .{err});
+            log.warn("bundle insert failed: {}", .{err});
+            continue;
         };
 
+        state.bundle_count = i + 1;
+
         // Each bundle gets 3-6 random prompts
-        const prompt_count = faker.intRange(usize, 3, @min(7, state.prompt_count + 1));
+        if (state.prompt_count < 1) continue;
+        const max_prompts = @min(7, state.prompt_count + 1);
+        const min_prompts = @min(3, state.prompt_count);
+        const target = if (min_prompts >= max_prompts) min_prompts else faker.intRange(usize, min_prompts, max_prompts);
         var added: [data.PROMPT_COUNT]bool = .{false} ** data.PROMPT_COUNT;
         var count: usize = 0;
-        while (count < prompt_count) {
+        while (count < target) {
             const pi = faker.intRange(usize, 0, state.prompt_count);
             if (added[pi]) continue;
             added[pi] = true;
@@ -313,26 +338,53 @@ fn seedPromptHistory(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 fn seedWorkspaces(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding {d} workspaces...", .{data.WORKSPACE_COUNT});
 
+    var used_names: [data.WORKSPACE_COUNT][40]u8 = undefined;
+    var used_name_lens: [data.WORKSPACE_COUNT]usize = .{0} ** data.WORKSPACE_COUNT;
+    var used_count: usize = 0;
+
     for (0..data.WORKSPACE_COUNT) |i| {
         const id = faker.hexId(&state.ws_ids[i], "ws-");
+
+        // Generate unique workspace name
         var name_buf: [40]u8 = undefined;
-        const name = faker.workspaceName(&name_buf);
+        var name: []const u8 = undefined;
+        var attempts: usize = 0;
+        while (attempts < 50) : (attempts += 1) {
+            name = faker.workspaceName(&name_buf);
+            var duplicate = false;
+            for (0..used_count) |j| {
+                if (std.mem.eql(u8, used_names[j][0..used_name_lens[j]], name)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) break;
+        }
+        @memcpy(used_names[used_count][0..name.len], name);
+        used_name_lens[used_count] = name.len;
+        used_count += 1;
+
         const revision = faker.intRange(i32, 1, 20);
-        state.ws_count = i + 1;
 
         _ = conn.exec(
-            "INSERT INTO workspaces (ws_id, org_id, name, revision) VALUES ($1, $2::uuid, $3, $4) ON CONFLICT (org_id, name) DO NOTHING",
+            "INSERT INTO workspaces (ws_id, org_id, name, revision) VALUES ($1, $2::uuid, $3, $4)",
             .{ id, data.ORG_ID, name, revision },
         ) catch |err| {
-            log.warn("seed: {}", .{err});
+            log.warn("workspace insert failed: {}", .{err});
+            continue;
         };
+
+        state.ws_count = i + 1;
     }
 }
 
 fn seedWorkspacePrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
+    if (state.prompt_count < 1) return;
     // Each workspace gets 3-6 random prompts
     for (0..state.ws_count) |wi| {
-        const count = faker.intRange(usize, 3, @min(7, state.prompt_count + 1));
+        const max_p = @min(7, state.prompt_count + 1);
+        const min_p = @min(3, state.prompt_count);
+        const count = if (min_p >= max_p) min_p else faker.intRange(usize, min_p, max_p);
         var added: [data.PROMPT_COUNT]bool = .{false} ** data.PROMPT_COUNT;
         var n: usize = 0;
         while (n < count) {
