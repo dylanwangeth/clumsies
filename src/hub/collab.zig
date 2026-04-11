@@ -93,6 +93,7 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         status: []const u8,
         description: []const u8,
         created_at: []const u8,
+        author: []const u8,
     };
 
     var list: std.ArrayList(PrMeta) = .empty;
@@ -101,9 +102,11 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     if (status_filter) |sf| {
         if (prompt_filter) |pf| {
             var result = conn.query(
-                "SELECT pr_id, prompt_id, status, description, created_at::text FROM prompt_prs WHERE org_id = $1::uuid AND status = $2 AND prompt_id = $3 ORDER BY created_at DESC",
-                .{ user.org_id, sf, pf },
-            ) catch {
+                \\SELECT pp.pr_id, pp.prompt_id, pp.status, pp.description, pp.created_at::text, u.username
+                \\FROM prompt_prs pp JOIN users u ON u.user_id = pp.author_id
+                \\WHERE pp.org_id = $1::uuid AND pp.status = $2 AND pp.prompt_id = $3
+                \\ORDER BY pp.created_at DESC
+            , .{ user.org_id, sf, pf }) catch {
                 return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
             };
             defer result.deinit();
@@ -114,13 +117,16 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                     .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                     .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
                     .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                    .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
                 });
             }
         } else {
             var result = conn.query(
-                "SELECT pr_id, prompt_id, status, description, created_at::text FROM prompt_prs WHERE org_id = $1::uuid AND status = $2 ORDER BY created_at DESC",
-                .{ user.org_id, sf },
-            ) catch {
+                \\SELECT pp.pr_id, pp.prompt_id, pp.status, pp.description, pp.created_at::text, u.username
+                \\FROM prompt_prs pp JOIN users u ON u.user_id = pp.author_id
+                \\WHERE pp.org_id = $1::uuid AND pp.status = $2
+                \\ORDER BY pp.created_at DESC
+            , .{ user.org_id, sf }) catch {
                 return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
             };
             defer result.deinit();
@@ -131,15 +137,18 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                     .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                     .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
                     .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                    .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
                 });
             }
         }
     } else {
         if (prompt_filter) |pf| {
             var result = conn.query(
-                "SELECT pr_id, prompt_id, status, description, created_at::text FROM prompt_prs WHERE org_id = $1::uuid AND prompt_id = $2 ORDER BY created_at DESC",
-                .{ user.org_id, pf },
-            ) catch {
+                \\SELECT pp.pr_id, pp.prompt_id, pp.status, pp.description, pp.created_at::text, u.username
+                \\FROM prompt_prs pp JOIN users u ON u.user_id = pp.author_id
+                \\WHERE pp.org_id = $1::uuid AND pp.prompt_id = $2
+                \\ORDER BY pp.created_at DESC
+            , .{ user.org_id, pf }) catch {
                 return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
             };
             defer result.deinit();
@@ -150,13 +159,16 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                     .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                     .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
                     .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                    .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
                 });
             }
         } else {
             var result = conn.query(
-                "SELECT pr_id, prompt_id, status, description, created_at::text FROM prompt_prs WHERE org_id = $1::uuid ORDER BY created_at DESC",
-                .{user.org_id},
-            ) catch {
+                \\SELECT pp.pr_id, pp.prompt_id, pp.status, pp.description, pp.created_at::text, u.username
+                \\FROM prompt_prs pp JOIN users u ON u.user_id = pp.author_id
+                \\WHERE pp.org_id = $1::uuid
+                \\ORDER BY pp.created_at DESC
+            , .{user.org_id}) catch {
                 return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
             };
             defer result.deinit();
@@ -167,6 +179,7 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                     .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                     .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
                     .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                    .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
                 });
             }
         }
