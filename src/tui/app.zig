@@ -66,6 +66,7 @@ const ConfirmAction = enum {
     remove_member,
     delete_bundle,
     delete_workspace,
+    quit,
 };
 
 const TopModule = enum(u8) {
@@ -237,6 +238,11 @@ pub const Dashboard = struct {
                             .delete_workspace => {
                                 self.status_line = "Workspace deleted (not yet implemented)";
                             },
+                            .quit => {
+                                ctx.consumeEvent();
+                                ctx.quit = true;
+                                return;
+                            },
                             .none => {},
                         }
                         self.show_confirm = false;
@@ -254,7 +260,7 @@ pub const Dashboard = struct {
 
                 // Help overlay absorbs all keys
                 if (self.show_help) {
-                    if (key.matches(vaxis.Key.escape, .{}) or key.matches('?', .{}) or key.matches('q', .{})) {
+                    if (key.matches(vaxis.Key.escape, .{}) or key.matches('?', .{})) {
                         self.show_help = false;
                         ctx.consumeAndRedraw();
                     }
@@ -294,9 +300,11 @@ pub const Dashboard = struct {
                     ctx.quit = true;
                     return;
                 }
-                if (key.matches('q', .{}) and !self.show_detail and !self.show_settings) {
-                    ctx.consumeEvent();
-                    ctx.quit = true;
+                if (key.matches('q', .{})) {
+                    self.confirm_message = "";
+                    self.confirm_action = .quit;
+                    self.show_confirm = true;
+                    ctx.consumeAndRedraw();
                     return;
                 }
 
@@ -309,7 +317,7 @@ pub const Dashboard = struct {
 
                 // Settings mode
                 if (self.show_settings) {
-                    if (key.matches('q', .{})) {
+                    if (key.matches(vaxis.Key.escape, .{})) {
                         self.show_settings = false;
                         self.settings_focus = .sidebar;
                         ctx.consumeAndRedraw();
@@ -321,11 +329,6 @@ pub const Dashboard = struct {
                         return;
                     }
                     if (self.settings_focus == .sidebar) {
-                        if (key.matches(vaxis.Key.escape, .{})) {
-                            self.show_settings = false;
-                            ctx.consumeAndRedraw();
-                            return;
-                        }
                         if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
                             self.shiftSettingsTab(1);
                             self.settings_content_sel = 0;
@@ -469,7 +472,7 @@ pub const Dashboard = struct {
 
                 // Detail mode: two-pane with Tab focus switching
                 if (self.show_detail) {
-                    if (key.matches(vaxis.Key.escape, .{}) or key.matches('q', .{})) {
+                    if (key.matches(vaxis.Key.escape, .{})) {
                         self.show_detail = false;
                         self.detail_focus_content = false;
                         self.selected_module = self.detail_origin;
@@ -1005,14 +1008,21 @@ pub const Dashboard = struct {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL_ALT);
 
-        // Row 0: Accent band with org/ws/user context
+        // Row 0: Accent band with org/user context
         w.paintBand(&surface, 0, theme.ACCENT, theme.PANEL);
-        w.writeText(&surface, ctx, 1, 0, "clumsies \xe2\x94\x80 acme \xe2\x94\x80 payments-api \xe2\x94\x80 alice (maintainer)", .{
+        const user = data.CURRENT_USER;
+        const header_left = try std.fmt.allocPrint(ctx.arena, "{s} \xe2\x94\x80 {s} ({s})", .{ "acme", user.username, user.role });
+        w.writeText(&surface, ctx, 1, 0, header_left, .{
             .fg = theme.PANEL,
             .bg = theme.ACCENT,
             .bold = true,
         });
-        w.writeRightText(&surface, ctx, 0, "[FRESH]", .{
+        const minutes = data.INSIGHTS.last_event_minutes_ago;
+        const sync_label = if (minutes == 0)
+            "\xe2\x9c\x93 Synced"
+        else
+            try std.fmt.allocPrint(ctx.arena, "\xe2\x9c\x93 Synced {d}m ago", .{minutes});
+        w.writeRightText(&surface, ctx, 0, sync_label, .{
             .fg = theme.PANEL,
             .bg = theme.ACCENT,
             .bold = true,
@@ -1049,17 +1059,17 @@ pub const Dashboard = struct {
         else if (self.show_confirm)
             "y confirm  n cancel  Esc cancel"
         else if (self.show_settings and self.settings_focus == .sidebar)
-            "j/k section  l open  q close"
+            "j/k section  Enter open  Tab focus  Esc close"
         else if (self.show_settings and self.settings_tab == .account)
-            "j/k move  c change password  Enter go to workspace  x sign out  h back  q close"
+            "j/k move  c change password  Enter go to workspace  x sign out  Esc back"
         else if (self.show_settings and self.settings_tab == .organization and self.settings_content_sel < data.MEMBERS.len)
-            "j/k move  a invite  r role  x remove  h back  q close"
+            "j/k move  a invite  r role  x remove  Esc back"
         else if (self.show_settings and self.settings_tab == .organization)
-            "j/k move  a create  = add member  - remove member  x delete  h back  q close"
+            "j/k move  a create  = add member  - remove member  x delete  Esc back"
         else if (self.show_settings and self.settings_tab == .token)
-            "j/k move  r refresh  x revoke  h back  q close"
+            "j/k move  r refresh  x revoke  Esc back"
         else if (self.show_settings)
-            "j/k move  h back  q close"
+            "j/k move  Esc back"
         else if (self.show_comment_editor)
             "Enter send  Esc cancel"
         else if (self.show_detail and self.detail_tab == .pull_requests and self.show_pr_diff)
@@ -2391,6 +2401,7 @@ pub const Dashboard = struct {
             .remove_member => "Remove member:",
             .delete_bundle => "Delete bundle:",
             .delete_workspace => "Delete workspace:",
+            .quit => "Quit clumsies?",
             .none => "Confirm:",
         };
         w.writeText(&surface, ctx, start_col + 2, start_row + 2, action_label, theme.textOn(theme.PANEL_ALT, theme.TEXT));
