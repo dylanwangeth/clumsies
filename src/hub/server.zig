@@ -48,6 +48,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
 
     // Auth
     router.post("/api/auth/login", auth.handleLogin, .{});
+    router.post("/api/auth/activate", auth.handleActivate, .{});
     router.post("/api/auth/refresh", auth.handleRefresh, .{});
     router.get("/api/auth/me", auth.handleMe, .{});
     router.delete("/api/auth/token", auth.handleRevokeToken, .{});
@@ -57,6 +58,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.post("/api/org/members", auth.handleInviteMember, .{});
     router.patch("/api/org/members/:user_id", auth.handleChangeRole, .{});
     router.delete("/api/org/members/:user_id", auth.handleRemoveMember, .{});
+    router.post("/api/org/members/:user_id/reissue-invite", auth.handleReissueInvite, .{});
     router.get("/api/org/directory", team_handler.handleDirectory, .{});
 
     // Workspaces

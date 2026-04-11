@@ -14,8 +14,8 @@ pub const AuthUser = struct {
     scopes: []const u8,
 };
 
-const MEMBER_SCOPES = "library:read,workspace:read,workspace:write,trace:write,stats:read,members:read,pr:read,pr:write,team:read";
-const MAINTAINER_SCOPES = "library:read,library:write,bundle:write,workspace:read,workspace:write,trace:write,stats:read,members:read,members:write,pr:read,pr:write,pr:merge,team:read,team:write";
+const MEMBER_SCOPES = "library:read,workspace:read,workspace:write,trace:write,stats:read,members:read,pr:read,pr:write";
+const MAINTAINER_SCOPES = "library:read,library:write,bundle:write,workspace:read,workspace:write,trace:write,stats:read,members:read,members:write,pr:read,pr:write,pr:merge";
 
 pub fn requireScope(user: AuthUser, scope: []const u8, res: anytype) bool {
     if (std.mem.indexOf(u8, user.scopes, scope) != null) return true;
@@ -65,13 +65,20 @@ pub fn handleLogin(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     defer conn.release();
 
     var row = conn.row(
-        "SELECT user_id, org_id, username, role, password_hash FROM users WHERE username = $1",
+        "SELECT user_id, org_id, username, role, password_hash, status FROM users WHERE username = $1",
         .{login.username},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
         return apiError(res, 401, "UNAUTHORIZED", "invalid credentials");
     };
+
+    // Reject invited users with the same 401 to avoid username enumeration
+    const status = try row.get([]const u8, 5);
+    if (std.mem.eql(u8, status, "invited")) {
+        row.deinit() catch {};
+        return apiError(res, 401, "UNAUTHORIZED", "invalid credentials");
+    }
 
     const stored_hash = try row.get([]const u8, 4);
     if (!verifyPassword(login.credential, stored_hash)) {
@@ -275,6 +282,18 @@ fn verifyPassword(input: []const u8, stored_hash: []const u8) bool {
     return std.mem.eql(u8, input, stored_hash);
 }
 
+fn generateInviteToken(buf: *[68]u8) []const u8 {
+    var rand_bytes: [32]u8 = undefined;
+    std.crypto.random.bytes(&rand_bytes);
+    @memcpy(buf[0..4], "inv_");
+    hexEncode(&rand_bytes, buf[4..68]);
+    return buf;
+}
+
+fn hashInviteToken(token: []const u8) [64]u8 {
+    return hashToken(token);
+}
+
 pub fn hashPassword(password: []const u8, out: []u8) ![]const u8 {
     return bcrypt.strHash(password, .{
         .params = .{ .rounds_log = 10, .silently_truncate_password = false },
@@ -330,6 +349,7 @@ const MemberInfo = struct {
     user_id: []const u8,
     username: []const u8,
     role: []const u8,
+    status: []const u8,
     joined_at: []const u8,
 };
 
@@ -348,7 +368,7 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer conn.release();
 
     var result = conn.query(
-        "SELECT user_id, username, role, created_at::text FROM users WHERE org_id = $1::uuid ORDER BY username",
+        "SELECT user_id, username, role, status, created_at::text FROM users WHERE org_id = $1::uuid ORDER BY username",
         .{user.org_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -361,7 +381,8 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
             .user_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
             .username = try req.arena.dupe(u8, try row.get([]const u8, 1)),
             .role = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            .joined_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .status = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .joined_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
         });
     }
 
@@ -408,10 +429,16 @@ pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         uid_buf[4 + i * 2 + 1] = hex[byte & 0x0f];
     }
 
+    // Generate invite token
+    var invite_buf: [68]u8 = undefined;
+    const invite_token = generateInviteToken(&invite_buf);
+    const invite_hash = hashInviteToken(invite_token);
+    const invite_hash_slice: []const u8 = &invite_hash;
+
     _ = conn.exec(
-        "INSERT INTO users (user_id, org_id, username, role, password_hash) VALUES ($1, $2::uuid, $3, $4, '!invited')",
-        .{ @as([]const u8, &uid_buf), user.org_id, body.username, body.role },
-    ) catch {
+        \\INSERT INTO users (user_id, org_id, username, role, status, invite_token_hash, invite_expires_at)
+        \\VALUES ($1, $2::uuid, $3, $4, 'invited', $5, now() + interval '7 days')
+    , .{ @as([]const u8, &uid_buf), user.org_id, body.username, body.role, invite_hash_slice }) catch {
         if (conn.err) |pg_err| {
             if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
                 std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
@@ -422,11 +449,25 @@ pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         return apiError(res, 500, "INTERNAL_ERROR", "database insert failed");
     };
 
+    // Read back invite_expires_at for response
+    var exp_row = conn.row(
+        "SELECT invite_expires_at::text FROM users WHERE user_id = $1",
+        .{@as([]const u8, &uid_buf)},
+    ) catch null;
+    const expires_at = if (exp_row) |*er| blk: {
+        const val = req.arena.dupe(u8, er.get([]const u8, 0) catch "") catch "";
+        er.deinit() catch {};
+        break :blk val;
+    } else "";
+
     res.status = 201;
     try res.json(.{
         .user_id = @as([]const u8, &uid_buf),
         .username = body.username,
         .role = body.role,
+        .status = "invited",
+        .invite_token = invite_token,
+        .invite_expires_at = expires_at,
     }, .{});
 }
 
@@ -545,4 +586,173 @@ pub fn handleRemoveMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     };
 
     res.status = 204;
+}
+
+// Invite activation
+
+const ActivateRequest = struct {
+    username: []const u8,
+    invite_token: []const u8,
+    credential: []const u8,
+};
+
+pub fn handleActivate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const client_ip = req.header("x-forwarded-for") orelse "unknown";
+    if (!ctx.rate_limiter.check(client_ip)) {
+        return apiError(res, 429, "TOO_MANY_REQUESTS", "rate limit exceeded");
+    }
+
+    const body = req.json(ActivateRequest) catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "missing request body");
+    };
+
+    if (body.credential.len == 0) {
+        return apiError(res, 400, "BAD_REQUEST", "credential is required");
+    }
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    var row = conn.row(
+        "SELECT user_id, org_id, role, status, invite_token_hash, invite_expires_at > now() as not_expired FROM users WHERE username = $1",
+        .{body.username},
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid activation credentials");
+    };
+
+    const status = row.get([]const u8, 3) catch {
+        row.deinit() catch {};
+        return apiError(res, 401, "UNAUTHORIZED", "invalid activation credentials");
+    };
+    if (!std.mem.eql(u8, status, "invited")) {
+        row.deinit() catch {};
+        return apiError(res, 401, "UNAUTHORIZED", "invalid activation credentials");
+    }
+
+    const stored_hash = row.get([]const u8, 4) catch {
+        row.deinit() catch {};
+        return apiError(res, 401, "UNAUTHORIZED", "invalid activation credentials");
+    };
+    const not_expired = row.get(bool, 5) catch false;
+    if (!not_expired) {
+        row.deinit() catch {};
+        return apiError(res, 401, "UNAUTHORIZED", "invitation has expired");
+    }
+
+    // Verify invite token
+    const input_hash = hashInviteToken(body.invite_token);
+    const input_hash_slice: []const u8 = &input_hash;
+    if (!std.mem.eql(u8, input_hash_slice, stored_hash)) {
+        row.deinit() catch {};
+        return apiError(res, 401, "UNAUTHORIZED", "invalid activation credentials");
+    }
+
+    const user_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    const org_id = try req.arena.dupe(u8, try row.get([]const u8, 1));
+    const role = try req.arena.dupe(u8, try row.get([]const u8, 2));
+    row.deinit() catch {};
+
+    // Hash the new password and activate
+    var hash_buf: [128]u8 = undefined;
+    const password_hash = hashPassword(body.credential, &hash_buf) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "password hashing failed");
+    };
+
+    _ = conn.exec(
+        \\UPDATE users SET password_hash = $2, status = 'active',
+        \\  invite_token_hash = NULL, invite_expires_at = NULL
+        \\WHERE user_id = $1
+    , .{ user_id, password_hash }) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+    };
+
+    // Issue token pair (same as login)
+    const default_scopes = if (std.mem.eql(u8, role, "maintainer")) MAINTAINER_SCOPES else MEMBER_SCOPES;
+    const ttl = ctx.config.token_ttl_seconds;
+
+    const access_token = generateToken(req.arena, conn, user_id, "access", default_scopes, ttl) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
+    };
+    const refresh_token = generateToken(req.arena, conn, user_id, "refresh", default_scopes, ttl * 24) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
+    };
+
+    _ = org_id; // Used for token scope validation in future
+
+    try res.json(.{
+        .access_token = access_token,
+        .refresh_token = refresh_token,
+        .expires_in = ttl,
+    }, .{});
+}
+
+pub fn handleReissueInvite(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!requireScope(user, "members:write", res)) return;
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
+
+    const target_id = req.param("user_id") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "user_id is required");
+    };
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    var row = conn.row(
+        "SELECT status FROM users WHERE user_id = $1 AND org_id = $2::uuid",
+        .{ target_id, user.org_id },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 404, "NOT_FOUND", "user not found");
+    };
+
+    const status = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    row.deinit() catch {};
+
+    if (!std.mem.eql(u8, status, "invited")) {
+        return apiError(res, 400, "BAD_REQUEST", "user is already active");
+    }
+
+    // Generate new invite token (old one is overwritten)
+    var invite_buf: [68]u8 = undefined;
+    const invite_token = generateInviteToken(&invite_buf);
+    const invite_hash = hashInviteToken(invite_token);
+    const invite_hash_slice: []const u8 = &invite_hash;
+
+    _ = conn.exec(
+        "UPDATE users SET invite_token_hash = $2, invite_expires_at = now() + interval '7 days' WHERE user_id = $1",
+        .{ target_id, invite_hash_slice },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+    };
+
+    var exp_row = conn.row(
+        "SELECT invite_expires_at::text FROM users WHERE user_id = $1",
+        .{target_id},
+    ) catch null;
+    const expires_at = if (exp_row) |*er| blk: {
+        const val = req.arena.dupe(u8, er.get([]const u8, 0) catch "") catch "";
+        er.deinit() catch {};
+        break :blk val;
+    } else "";
+
+    try res.json(.{
+        .user_id = target_id,
+        .status = "invited",
+        .invite_token = invite_token,
+        .invite_expires_at = expires_at,
+    }, .{});
 }

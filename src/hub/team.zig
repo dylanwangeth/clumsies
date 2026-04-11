@@ -23,12 +23,13 @@ pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         user_id: []const u8,
         username: []const u8,
         role: []const u8,
+        status: []const u8,
         joined_at: []const u8,
     };
 
     var members: std.ArrayList(DirectoryMember) = .empty;
     var result = conn.query(
-        "SELECT user_id, username, role, created_at::text FROM users WHERE org_id = $1::uuid ORDER BY username",
+        "SELECT user_id, username, role, status, created_at::text FROM users WHERE org_id = $1::uuid ORDER BY username",
         .{user.org_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -40,7 +41,8 @@ pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
             .user_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
             .username = try req.arena.dupe(u8, try row.get([]const u8, 1)),
             .role = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            .joined_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .status = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .joined_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
         });
     }
 

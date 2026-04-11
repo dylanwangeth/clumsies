@@ -42,11 +42,11 @@ seed_db() {
     PGPASSWORD=clumsies psql -h 127.0.0.1 -U clumsies -d clumsies -q <<'SQL'
 INSERT INTO orgs (org_id, name) VALUES ('a0000000-0000-0000-0000-000000000001', 'acme')
   ON CONFLICT DO NOTHING;
-INSERT INTO users (user_id, org_id, username, password_hash, role) VALUES
-  ('usr-maintainer-001', 'a0000000-0000-0000-0000-000000000001', 'alice', 'testpass', 'maintainer')
+INSERT INTO users (user_id, org_id, username, password_hash, role, status) VALUES
+  ('usr-maintainer-001', 'a0000000-0000-0000-0000-000000000001', 'alice', 'testpass', 'maintainer', 'active')
   ON CONFLICT DO NOTHING;
-INSERT INTO users (user_id, org_id, username, password_hash, role) VALUES
-  ('usr-member-001', 'a0000000-0000-0000-0000-000000000001', 'bob', 'testpass', 'member')
+INSERT INTO users (user_id, org_id, username, password_hash, role, status) VALUES
+  ('usr-member-001', 'a0000000-0000-0000-0000-000000000001', 'bob', 'testpass', 'member', 'active')
   ON CONFLICT DO NOTHING;
 INSERT INTO library_manifest (org_id, revision) VALUES ('a0000000-0000-0000-0000-000000000001', 0)
   ON CONFLICT DO NOTHING;
@@ -134,7 +134,37 @@ RAW=$(call POST "/api/org/members" '{"username":"carol","role":"member"}')
 parse_response "$RAW"
 assert_status "invite member" "201" "$STATUS"
 assert_json "returns carol" "carol" "$BODY"
+assert_json "returns invite_token" "invite_token" "$BODY"
+assert_json "status is invited" "invited" "$BODY"
 CAROL_ID=$(echo "$BODY" | grep -o '"user_id":"[^"]*"' | cut -d'"' -f4)
+INVITE_TOKEN=$(echo "$BODY" | grep -o '"invite_token":"[^"]*"' | cut -d'"' -f4)
+
+step "Invite: login as invited user fails"
+RAW=$(call POST "/api/auth/login" '{"username":"carol","credential":"anypass"}')
+parse_response "$RAW"
+assert_status "invited user cannot login" "401" "$STATUS"
+
+step "Invite: activate with token"
+RAW=$(call POST "/api/auth/activate" "{\"username\":\"carol\",\"invite_token\":\"$INVITE_TOKEN\",\"credential\":\"carolpass\"}")
+parse_response "$RAW"
+assert_status "activate succeeds" "200" "$STATUS"
+assert_json "returns access_token" "access_token" "$BODY"
+
+step "Invite: login after activation"
+RAW=$(call POST "/api/auth/login" '{"username":"carol","credential":"carolpass"}')
+parse_response "$RAW"
+assert_status "activated user can login" "200" "$STATUS"
+
+step "Invite: reissue fails for active user"
+RAW=$(call POST "/api/org/members/$CAROL_ID/reissue-invite" '{}')
+parse_response "$RAW"
+assert_status "reissue fails for active" "400" "$STATUS"
+
+step "Org Members: list shows status"
+RAW=$(call GET "/api/org/members")
+parse_response "$RAW"
+assert_status "list members with status" "200" "$STATUS"
+assert_json "contains status field" "status" "$BODY"
 
 step "Org Members: change role"
 RAW=$(call PATCH "/api/org/members/$CAROL_ID" '{"role":"maintainer"}')
