@@ -373,7 +373,7 @@ pub const Dashboard = struct {
                             return;
                         }
                         const max_items: usize = switch (self.settings_tab) {
-                            .account => data.CURRENT_USER.workspaces.len,
+                            .account => self.accountWorkspaceCount(),
                             .organization => self.orgMemberCount(),
                             .token => data.ALL_SCOPES.len,
                         };
@@ -397,7 +397,9 @@ pub const Dashboard = struct {
                                 return;
                             }
                             if (key.matches(vaxis.Key.enter, .{})) {
-                                const sel = @min(self.settings_content_sel, data.CURRENT_USER.workspaces.len - 1);
+                                const ws_count = self.accountWorkspaceCount();
+                                if (ws_count == 0) return;
+                                const sel = @min(self.settings_content_sel, ws_count - 1);
                                 self.ws_sel = sel;
                                 self.show_settings = false;
                                 self.settings_focus = .sidebar;
@@ -585,7 +587,7 @@ pub const Dashboard = struct {
                                 self.api_state.mutex.lock();
                                 defer self.api_state.mutex.unlock();
                                 if (self.api_state.bundles) |lb| break :blk lb.len;
-                                break :blk data.BUNDLES.len;
+                                break :blk 0;
                             };
                             self.library_bundle_filter = (self.library_bundle_filter + 1) % (bundle_count + 1);
                             self.library_scroll_bars.scroll_view.cursor = 0;
@@ -737,7 +739,7 @@ pub const Dashboard = struct {
                         }
                         switch (self.ws_focus) {
                             .bar => {
-                                const ws_count = data.WORKSPACES.len;
+                                const ws_count = self.wsCount();
                                 const cols = self.ws_grid_cols;
                                 if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
                                     if (self.ws_sel + 1 < ws_count) {
@@ -797,8 +799,8 @@ pub const Dashboard = struct {
                                 }
                                 if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
                                     const max_items: usize = switch (self.ws_tab) {
-                                        .context => data.WS_CONTEXT.len,
-                                        .prompts => data.WS_PROMPTS.len,
+                                        .context => self.wsContextCount(),
+                                        .prompts => self.wsPromptsCount(),
                                     };
                                     if (self.ws_list_sel + 1 < max_items) {
                                         self.ws_list_sel += 1;
@@ -846,7 +848,7 @@ pub const Dashboard = struct {
                         }
                     },
                     .insights => {
-                        const ins = &data.INSIGHTS;
+                        const ins_counts = self.getInsightsCounts();
                         if (key.matches('t', .{})) {
                             self.insights_period = self.insights_period.next();
                             self.status_line = switch (self.insights_period) {
@@ -869,12 +871,12 @@ pub const Dashboard = struct {
                         if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
                             switch (self.insights_focus) {
                                 .prompts => {
-                                    if (self.insights_prompt_cursor < ins.prompts.len - 1)
+                                    if (ins_counts.prompt_count > 0 and self.insights_prompt_cursor < ins_counts.prompt_count - 1)
                                         self.insights_prompt_cursor += 1;
                                     ctx.consumeAndRedraw();
                                 },
                                 .team => {
-                                    if (self.insights_member_cursor < ins.members.len - 1)
+                                    if (ins_counts.member_count > 0 and self.insights_member_cursor < ins_counts.member_count - 1)
                                         self.insights_member_cursor += 1;
                                     ctx.consumeAndRedraw();
                                 },
@@ -1029,7 +1031,7 @@ pub const Dashboard = struct {
             defer self.api_state.mutex.unlock();
             if (self.api_state.current_user) |u|
                 break :blk .{ .username = u.username, .role = u.role };
-            break :blk .{ .username = data.CURRENT_USER.username, .role = data.CURRENT_USER.role };
+            break :blk .{ .username = "\xe2\x80\x94", .role = "\xe2\x80\x94" };
         };
         const header_left = try std.fmt.allocPrint(ctx.arena, "{s} \xe2\x94\x80 {s} ({s})", .{ "acme", header_info.username, header_info.role });
         w.writeText(&surface, ctx, 1, 0, header_left, .{
@@ -1143,16 +1145,13 @@ pub const Dashboard = struct {
             const hint: []const u8 = if (self.ws_focus == .content)
                 (if (self.ws_show_diff) "d content" else "d diff")
             else if (self.ws_focus == .bar) blk: {
-                const ws_idx = @min(self.ws_sel, data.WORKSPACES.len - 1);
-                const wsi = &data.WORKSPACES[ws_idx];
+                const wss = self.getWorkspaces();
+                if (wss.len == 0) break :blk "No workspaces";
+                const ws_idx = @min(self.ws_sel, wss.len - 1);
+                const wsi = &wss[ws_idx];
                 break :blk if (wsi.local_rev != wsi.remote_rev) "New version available, press r to sync" else "Up to date";
             } else blk: {
-                const ws_sel = self.ws_list_sel;
-                const is_modified = switch (self.ws_tab) {
-                    .context => ws_sel < data.WS_CONTEXT.len and data.WS_CONTEXT[ws_sel].modified,
-                    .prompts => ws_sel < data.WS_PROMPTS.len and data.WS_PROMPTS[ws_sel].has_override,
-                };
-                break :blk if (is_modified) "New version available, press r to sync" else "Up to date";
+                break :blk "Up to date";
             };
             w.writeRightText(&surface, ctx, 0, hint, theme.fg(theme.TEXT_SOFT));
         }
@@ -1171,24 +1170,19 @@ pub const Dashboard = struct {
 
         const list_w: u16 = size.width / 3;
         const detail_w: u16 = size.width - list_w - 1;
-        const prompts: []const data.PromptEntry = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            if (self.api_state.prompts) |lp| {
-                const alloc = self.api_state.arena.allocator();
-                break :blk api.toPromptEntries(alloc, lp);
-            }
-            break :blk &data.PROMPTS;
-        };
+        const prompts = self.getPrompts();
         const sel_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
-        const p = if (prompts.len > 0) &prompts[sel_idx] else &data.PROMPTS[0];
 
         const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
         const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawPromptTable(list_ctx) };
-        children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = try self.drawLibraryDetail(detail_ctx, p) };
+        if (prompts.len > 0) {
+            children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = try self.drawLibraryDetail(detail_ctx, &prompts[sel_idx]) };
+        } else {
+            children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = try self.drawEmptyDetail(detail_ctx) };
+        }
         root.children = children;
         return root;
     }
@@ -1206,7 +1200,7 @@ pub const Dashboard = struct {
                 const a = self.api_state.arena.allocator();
                 break :blk api.toBundleEntries(a, lb);
             }
-            break :blk &data.BUNDLES;
+            break :blk &.{};
         };
         const bundle_label: []const u8 = if (self.library_bundle_filter == 0)
             "All"
@@ -1218,7 +1212,7 @@ pub const Dashboard = struct {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
             if (self.api_state.prompts) |p| break :blk p.len;
-            break :blk data.PROMPTS.len;
+            break :blk 0;
         };
         const subtitle = try std.fmt.allocPrint(ctx.arena, "{d} prompts  bundle: {s}  / search  b filter", .{ prompt_count, bundle_label });
         const list_border = if (!self.detail_focus_content) theme.ACCENT else theme.BORDER;
@@ -1334,10 +1328,15 @@ pub const Dashboard = struct {
         const size = ctx.max.size();
         const prompts = self.getPrompts();
         const sel_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
-        const p = if (prompts.len > 0) &prompts[sel_idx] else &data.PROMPTS[0];
 
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.PANEL);
+
+        if (prompts.len == 0) {
+            w.writeText(&root, ctx, 2, 1, "No prompts loaded.", theme.fg(theme.MUTED));
+            return root;
+        }
+        const p = &prompts[sel_idx];
 
         const info_w: u16 = size.width / 3;
         const content_w: u16 = size.width - info_w - 1;
@@ -1484,8 +1483,8 @@ pub const Dashboard = struct {
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.PANEL);
 
-        const ws_idx = @min(self.ws_sel, data.WORKSPACES.len - 1);
-        const ws = &data.WORKSPACES[ws_idx];
+        const wss = self.getWorkspaces();
+        const ws_count_raw = wss.len;
 
         // Top: workspace bar with grid layout (each card = 2 rows: name + status)
         // Fixed height: border(1) + 2 content rows per grid row + border(1)
@@ -1493,7 +1492,7 @@ pub const Dashboard = struct {
         const cols: u16 = if (inner_w >= 120) 4 else if (inner_w >= 80) 3 else 2;
         self.ws_grid_cols = cols;
         const card_w: u16 = inner_w / cols;
-        const ws_count: u16 = @intCast(data.WORKSPACES.len);
+        const ws_count: u16 = @intCast(if (ws_count_raw > 0) ws_count_raw else 1);
         const grid_rows: u16 = (ws_count + cols - 1) / cols;
         const bar_h: u16 = 1 + grid_rows + 1; // border + rows + border
 
@@ -1503,7 +1502,12 @@ pub const Dashboard = struct {
         w.drawBorder(&bar, bar_border, theme.PANEL);
         w.writeText(&bar, ctx, 2, 0, "Workspaces", theme.boldOn(theme.PANEL, theme.TEXT));
 
-        for (data.WORKSPACES, 0..) |wsi, i| {
+        if (wss.len == 0) {
+            w.writeText(&bar, ctx, 2, 1, "No workspaces loaded.", theme.fg(theme.MUTED));
+        }
+
+        const ws_idx = if (wss.len > 0) @min(self.ws_sel, wss.len - 1) else 0;
+        for (wss, 0..) |wsi, i| {
             const is_sel = i == ws_idx;
             const grid_col: u16 = @intCast(i % cols);
             const grid_row: u16 = @intCast(i / cols);
@@ -1545,7 +1549,8 @@ pub const Dashboard = struct {
         const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = body_h }, .{ .width = detail_w, .height = body_h });
 
         const list_surface = try self.drawWsList(list_ctx);
-        const detail_surface = try self.drawWsDetail(detail_ctx, ws);
+        const ws_ptr: ?*const data.WorkspaceEntry = if (wss.len > 0) &wss[ws_idx] else null;
+        const detail_surface = try self.drawWsDetail(detail_ctx, ws_ptr);
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, 3);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = bar };
@@ -1602,31 +1607,7 @@ pub const Dashboard = struct {
                         kv_row += 1;
                     }
                 } else {
-                    for (data.WS_CONTEXT, 0..) |f, i| {
-                        if (kv_row >= inner_h + 2) break;
-                        const prefix = data.pathPrefix(f.path);
-                        if (!std.mem.eql(u8, prefix, last_prefix)) {
-                            w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
-                            kv_row += 1;
-                            last_prefix = prefix;
-                            if (kv_row >= inner_h + 2) break;
-                        }
-                        const sel = i == self.ws_list_sel;
-                        const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                        if (sel) {
-                            surface.writeCell(1, kv_row, .{
-                                .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                            });
-                        }
-                        const fname = data.promptName(f.path);
-                        w.writeText(&surface, ctx, 2, kv_row, fname, name_style);
-                        if (f.modified) {
-                            const nw: u16 = @intCast(ctx.stringWidth(fname));
-                            w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
-                        }
-                        kv_row += 1;
-                    }
+                    w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
                 }
             },
             .prompts => {
@@ -1659,31 +1640,7 @@ pub const Dashboard = struct {
                         kv_row += 1;
                     }
                 } else {
-                    for (data.WS_PROMPTS, 0..) |p, i| {
-                        if (kv_row >= inner_h + 2) break;
-                        const prefix = data.pathPrefix(p.name);
-                        if (!std.mem.eql(u8, prefix, last_prefix)) {
-                            w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
-                            kv_row += 1;
-                            last_prefix = prefix;
-                            if (kv_row >= inner_h + 2) break;
-                        }
-                        const sel = i == self.ws_list_sel;
-                        const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                        if (sel) {
-                            surface.writeCell(1, kv_row, .{
-                                .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                            });
-                        }
-                        const fname = data.promptName(p.name);
-                        w.writeText(&surface, ctx, 2, kv_row, fname, name_style);
-                        if (p.has_override) {
-                            const nw: u16 = @intCast(ctx.stringWidth(fname));
-                            w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
-                        }
-                        kv_row += 1;
-                    }
+                    w.writeText(&surface, ctx, 2, kv_row, "No workspace prompts.", theme.fg(theme.MUTED));
                 }
             },
         }
@@ -1691,37 +1648,37 @@ pub const Dashboard = struct {
     }
 
     // Workspace content pane: shows selected item's content
-    fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext, ws: *const data.WorkspaceEntry) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext, ws: ?*const data.WorkspaceEntry) std.mem.Allocator.Error!vxfw.Surface {
         _ = ws;
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         const content_border = if (self.ws_focus == .content) theme.ACCENT else theme.BORDER;
         w.fillSurface(&surface, theme.PANEL);
         w.drawBorder(&surface, content_border, theme.PANEL);
 
+        // Check for live workspace detail data
+        self.api_state.mutex.lock();
+        const live_ws = self.api_state.ws_detail;
+        self.api_state.mutex.unlock();
+
+        if (live_ws == null) {
+            w.writeText(&surface, ctx, 2, 0, "Content", theme.boldOn(theme.PANEL, theme.TEXT));
+            w.writeText(&surface, ctx, 2, 2, "No workspace data loaded.", theme.fg(theme.MUTED));
+            return surface;
+        }
+        const ws_d = live_ws.?;
         const sel = self.ws_list_sel;
 
         // Title: selected item name
         const title: []const u8 = switch (self.ws_tab) {
-            .context => if (sel < data.WS_CONTEXT.len) data.WS_CONTEXT[sel].path else "no files",
-            .prompts => if (sel < data.WS_PROMPTS.len) data.WS_PROMPTS[sel].name else "no prompts",
+            .context => if (sel < ws_d.context_files.len) ws_d.context_files[sel].path else "no files",
+            .prompts => if (sel < ws_d.ws_prompts.len) ws_d.ws_prompts[sel].prompt_id else "no prompts",
         };
-        // Title with diff marker (context branch or prompt local edit)
-        const has_diff = switch (self.ws_tab) {
-            .context => sel < data.WS_CONTEXT.len and data.WS_CONTEXT[sel].modified,
-            .prompts => sel < data.WS_PROMPTS.len and data.WS_PROMPTS[sel].has_override,
-        };
+        // Title with diff marker
+        const has_diff: bool = false; // Live data does not yet track diff state
         w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, if (has_diff) theme.WARN else theme.TEXT));
-        {
-            var marker_col: u16 = 2 + @as(u16, @intCast(ctx.stringWidth(title)));
-            if (has_diff) {
-                marker_col += 1;
-                w.writeText(&surface, ctx, marker_col, 0, "*", theme.boldOn(theme.PANEL, theme.WARN));
-                marker_col += 1;
-            }
-            if (self.ws_show_diff) {
-                marker_col += 1;
-                w.writeText(&surface, ctx, marker_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
-            }
+        if (self.ws_show_diff) {
+            const tw: u16 = @intCast(ctx.stringWidth(title));
+            w.writeText(&surface, ctx, 2 + tw + 2, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
         }
 
         var kv_row: u16 = 2;
@@ -1729,77 +1686,37 @@ pub const Dashboard = struct {
 
         switch (self.ws_tab) {
             .context => {
-                if (sel < data.WS_CONTEXT.len) {
-                    const f = &data.WS_CONTEXT[sel];
+                if (sel < ws_d.context_files.len) {
+                    const f = &ws_d.context_files[sel];
                     if (self.ws_show_diff) {
-                        if (f.branch_diff.len > 0) {
-                            // Show branch diff (GitHub-style colored lines)
-                            for (f.branch_diff) |line| {
-                                if (kv_row >= max_row) break;
-                                const line_color = if (std.mem.startsWith(u8, line, "+"))
-                                    theme.OK
-                                else if (std.mem.startsWith(u8, line, "-"))
-                                    theme.DANGER
-                                else
-                                    theme.TEXT_SOFT;
-                                const line_bg = if (std.mem.startsWith(u8, line, "+"))
-                                    theme.rgb(0x1d2617)
-                                else if (std.mem.startsWith(u8, line, "-"))
-                                    theme.rgb(0x2a1b18)
-                                else
-                                    theme.PANEL;
-                                w.writeText(&surface, ctx, 2, kv_row, line, .{ .fg = line_color, .bg = line_bg });
-                                kv_row += 1;
-                            }
-                        } else {
-                            w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
-                        }
+                        w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
                     } else {
-                        // Show file content
-                        var line_iter = std.mem.splitScalar(u8, data.SAMPLE_CONTENT, '\n');
-                        while (line_iter.next()) |line| {
-                            if (kv_row >= max_row) break;
-                            w.writeText(&surface, ctx, 2, kv_row, line, theme.fg(theme.TEXT_SOFT));
-                            kv_row += 1;
+                        w.writeText(&surface, ctx, 2, kv_row, f.path, theme.fg(theme.TEXT_SOFT));
+                        kv_row += 1;
+                        if (kv_row < max_row) {
+                            const size_label = try std.fmt.allocPrint(ctx.arena, "hash: {s}", .{f.hash});
+                            w.writeText(&surface, ctx, 2, kv_row, size_label, theme.fg(theme.MUTED));
                         }
                     }
+                } else {
+                    w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
                 }
             },
             .prompts => {
-                if (sel < data.WS_PROMPTS.len) {
-                    const p = &data.WS_PROMPTS[sel];
+                if (sel < ws_d.ws_prompts.len) {
+                    const p = &ws_d.ws_prompts[sel];
                     if (self.ws_show_diff) {
-                        if (p.override_diff.len > 0) {
-                            // Show diff (GitHub-style colored lines)
-                            for (p.override_diff) |line| {
-                                if (kv_row >= max_row) break;
-                                const line_color = if (std.mem.startsWith(u8, line, "+"))
-                                    theme.OK
-                                else if (std.mem.startsWith(u8, line, "-"))
-                                    theme.DANGER
-                                else
-                                    theme.TEXT_SOFT;
-                                const line_bg = if (std.mem.startsWith(u8, line, "+"))
-                                    theme.rgb(0x1d2617)
-                                else if (std.mem.startsWith(u8, line, "-"))
-                                    theme.rgb(0x2a1b18)
-                                else
-                                    theme.PANEL;
-                                w.writeText(&surface, ctx, 2, kv_row, line, .{ .fg = line_color, .bg = line_bg });
-                                kv_row += 1;
-                            }
-                        } else {
-                            w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
-                        }
+                        w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
                     } else {
-                        // Show prompt body
-                        var line_iter = std.mem.splitScalar(u8, data.SAMPLE_CONTENT, '\n');
-                        while (line_iter.next()) |line| {
-                            if (kv_row >= max_row) break;
-                            w.writeText(&surface, ctx, 2, kv_row, line, theme.fg(theme.TEXT_SOFT));
-                            kv_row += 1;
+                        w.writeText(&surface, ctx, 2, kv_row, p.prompt_id, theme.fg(theme.TEXT_SOFT));
+                        kv_row += 1;
+                        if (kv_row < max_row) {
+                            const hash_label = try std.fmt.allocPrint(ctx.arena, "hash: {s}", .{p.content_hash});
+                            w.writeText(&surface, ctx, 2, kv_row, hash_label, theme.fg(theme.MUTED));
                         }
                     }
+                } else {
+                    w.writeText(&surface, ctx, 2, kv_row, "No workspace prompts.", theme.fg(theme.MUTED));
                 }
             },
         }
@@ -1812,14 +1729,28 @@ pub const Dashboard = struct {
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.CANVAS);
 
-        // Use live stats for chart header if available, mock for everything else
+        // Use live stats if available, otherwise zero-initialized defaults
         var live_insights: ?data.InsightsData = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
             if (self.api_state.org_stats) |stats| break :blk api.insightsFromStats(ctx.arena, stats, self.api_state.prompts, self.api_state.ws_stats_members, self.api_state.ws_stats_models);
             break :blk null;
         };
-        const ins: *const data.InsightsData = if (live_insights) |*li| li else &data.INSIGHTS;
+        var empty_insights: data.InsightsData = .{
+            .constraint_count = 0,
+            .active_constraint_count = 0,
+            .idle_constraint_count = 0,
+            .signal_ratio = 0,
+            .refers_per_hour = 0,
+            .today_delta_pct = 0,
+            .last_event_minutes_ago = 0,
+            .refer_trend = .{0} ** 30,
+            .prompts = &.{},
+            .members = &.{},
+            .models = &.{},
+            .alerts = &.{},
+        };
+        const ins: *const data.InsightsData = if (live_insights) |*li| li else &empty_insights;
 
         // Layout: chart(top, full width) + prompts|team (bottom, side by side)
         const chart_h: u16 = if (size.height > 40) 10 else 8;
@@ -2175,9 +2106,16 @@ pub const Dashboard = struct {
             defer self.api_state.mutex.unlock();
             if (self.api_state.current_user) |u|
                 break :blk .{ .user_id = u.user_id, .username = u.username, .role = u.role, .workspaces = &.{} };
-            break :blk .{ .user_id = data.CURRENT_USER.user_id, .username = data.CURRENT_USER.username, .role = data.CURRENT_USER.role, .workspaces = data.CURRENT_USER.workspaces };
+            break :blk .{ .user_id = "\xe2\x80\x94", .username = "\xe2\x80\x94", .role = "\xe2\x80\x94", .workspaces = &.{} };
         };
-        const cfg = data.CLIENT_CONFIG;
+        const cfg: data.ClientConfig = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            const url = if (self.api_state.hub_url) |u| u else "\xe2\x80\x94";
+            if (self.api_state.current_user) |_|
+                break :blk .{ .server_url = url, .sync_strategy = "session", .token_status = "active", .token_expires = "\xe2\x80\x94" };
+            break :blk .{ .server_url = url, .sync_strategy = "\xe2\x80\x94", .token_status = "\xe2\x80\x94", .token_expires = "\xe2\x80\x94" };
+        };
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&surface, theme.PANEL);
         w.drawBorder(&surface, if (focused) theme.ACCENT else theme.BORDER, theme.PANEL);
@@ -2289,11 +2227,8 @@ pub const Dashboard = struct {
             for (dir.members) |m| {
                 try member_views.append(ctx.arena, .{ .username = m.username, .role = m.role, .joined = m.joined_at });
             }
-        } else {
-            for (data.MEMBERS) |m| {
-                try member_views.append(ctx.arena, .{ .username = m.username, .role = m.role, .joined = m.joined });
-            }
         }
+        // No fallback: empty list when not connected
 
         var maintainer_count: u16 = 0;
         for (member_views.items) |m| {
@@ -2337,7 +2272,7 @@ pub const Dashboard = struct {
             if (self.api_state.current_user) |u| break :blk u.scopes;
             break :blk null;
         };
-        const t = data.CURRENT_TOKEN;
+        const t: data.TokenInfo = .{ .scopes = &.{}, .expires = "\xe2\x80\x94" };
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&surface, theme.PANEL);
         w.drawBorder(&surface, if (focused) theme.ACCENT else theme.BORDER, theme.PANEL);
@@ -2410,7 +2345,7 @@ pub const Dashboard = struct {
             const alloc = self.api_state.arena.allocator();
             return api.toPrEntries(alloc, prs, canonical_name, lib, self.api_state);
         }
-        return data.prsForPrompt(canonical_name);
+        return &.{};
     }
 
     fn getPrompts(self: *Dashboard) []const data.PromptEntry {
@@ -2420,7 +2355,7 @@ pub const Dashboard = struct {
             const alloc = self.api_state.arena.allocator();
             return api.toPromptEntries(alloc, lp);
         }
-        return &data.PROMPTS;
+        return &.{};
     }
 
     fn submitComment(self: *Dashboard) void {
@@ -2478,7 +2413,84 @@ pub const Dashboard = struct {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.directory) |dir| return dir.members.len;
-        return data.MEMBERS.len;
+        return 0;
+    }
+
+    fn accountWorkspaceCount(self: *Dashboard) usize {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.current_user) |u| return u.workspaces.len;
+        return 0;
+    }
+
+    fn wsCount(self: *Dashboard) usize {
+        return self.getWorkspaces().len;
+    }
+
+    fn getWorkspaces(self: *Dashboard) []const data.WorkspaceEntry {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.current_user) |u| {
+            const alloc = self.api_state.arena.allocator();
+            var list: std.ArrayList(data.WorkspaceEntry) = .empty;
+            for (u.workspaces) |ws| {
+                const al: data.AccessLevel = if (std.mem.eql(u8, ws.role, "admin")) .admin else .member;
+                list.append(alloc, .{
+                    .name = ws.name,
+                    .prompts = 0,
+                    .contexts = 0,
+                    .overrides = 0,
+                    .local_rev = 0,
+                    .remote_rev = 0,
+                    .paths = 0,
+                    .open_prs = 0,
+                    .last_sync = "\xe2\x80\x94",
+                    .access_level = al,
+                }) catch continue;
+            }
+            return list.toOwnedSlice(alloc) catch &.{};
+        }
+        return &.{};
+    }
+
+    fn wsContextCount(self: *Dashboard) usize {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.ws_detail) |ws_d| return ws_d.context_files.len;
+        return 0;
+    }
+
+    fn wsPromptsCount(self: *Dashboard) usize {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.ws_detail) |ws_d| return ws_d.ws_prompts.len;
+        return 0;
+    }
+
+    const InsightsCounts = struct { prompt_count: usize, member_count: usize };
+
+    fn getInsightsCounts(self: *Dashboard) InsightsCounts {
+        // Returns counts of prompts and members for bounds checking in event handler.
+        // Uses live org_stats prompt/member counts if available, else 0.
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.org_stats) |stats| {
+            return .{
+                .prompt_count = stats.prompts.len,
+                .member_count = if (self.api_state.ws_stats_members) |m| m.len else 0,
+            };
+        }
+        return .{ .prompt_count = 0, .member_count = 0 };
+    }
+
+    fn drawEmptyDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
+        const border_color = if (self.detail_focus_content) theme.ACCENT else theme.BORDER;
+        w.fillSurface(&surface, theme.PANEL);
+        w.drawBorder(&surface, border_color, theme.PANEL);
+        w.writeText(&surface, ctx, 2, 0, "Detail", theme.boldOn(theme.PANEL, theme.TEXT));
+        w.writeText(&surface, ctx, 2, 2, "No prompts loaded.", theme.fg(theme.MUTED));
+        return surface;
     }
 
     fn shiftSettingsTab(self: *Dashboard, delta: i8) void {
@@ -2619,12 +2631,14 @@ pub const Dashboard = struct {
         // Title: show reply context or "New Comment"
         const all_prompts = self.getPrompts();
         const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
-        const p = if (all_prompts.len > 0) &all_prompts[sel_idx] else &data.PROMPTS[0];
-        const prs = self.getPrsForPrompt(p.canonical_name);
-        const title = if (prs.len > 0 and self.selected_pr_idx < prs.len)
-            try std.fmt.allocPrint(ctx.arena, " Comment on {s} ", .{prs[self.selected_pr_idx].id})
-        else
-            " New Comment ";
+        const title = if (all_prompts.len > 0) blk: {
+            const p = &all_prompts[sel_idx];
+            const prs = self.getPrsForPrompt(p.canonical_name);
+            break :blk if (prs.len > 0 and self.selected_pr_idx < prs.len)
+                try std.fmt.allocPrint(ctx.arena, " Comment on {s} ", .{prs[self.selected_pr_idx].id})
+            else
+                @as([]const u8, " New Comment ");
+        } else @as([]const u8, " New Comment ");
         w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(bg, theme.ACCENT));
 
         // Input text with cursor
@@ -2655,16 +2669,8 @@ pub const Dashboard = struct {
     // library_prompt_indices maps each row index to the PROMPTS array index
     // (null for group header rows, so cursor can skip them).
     fn syncLibraryWidgets(self: *Dashboard) void {
-        // Use live prompts if available, else mock
-        const prompts: []const data.PromptEntry = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            if (self.api_state.prompts) |lp| {
-                const alloc = self.api_state.arena.allocator();
-                break :blk api.toPromptEntries(alloc, lp);
-            }
-            break :blk &data.PROMPTS;
-        };
+        // Use live prompts if available, else empty
+        const prompts = self.getPrompts();
 
         const bundles: []const data.BundleEntry = blk: {
             self.api_state.mutex.lock();
@@ -2673,7 +2679,7 @@ pub const Dashboard = struct {
                 const alloc = self.api_state.arena.allocator();
                 break :blk api.toBundleEntries(alloc, lb);
             }
-            break :blk &data.BUNDLES;
+            break :blk &.{};
         };
 
         const filter_name: ?[]const u8 = if (self.library_bundle_filter == 0)
@@ -2748,12 +2754,12 @@ pub const Dashboard = struct {
     }
 
     fn syncContentWidget(self: *Dashboard) void {
-        // Use live prompt content if available, else mock
+        // Use live prompt content if available, else empty
         const content: []const u8 = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
             if (self.api_state.prompt_content) |c| break :blk c;
-            break :blk data.SAMPLE_CONTENT;
+            break :blk "";
         };
         self.content_text = .{
             .text = content,
@@ -2772,8 +2778,14 @@ pub const Dashboard = struct {
 
     fn syncPrWidgets(self: *Dashboard) void {
         const all_prompts = self.getPrompts();
-        const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
-        const p = if (all_prompts.len > 0) &all_prompts[sel_idx] else &data.PROMPTS[0];
+        if (all_prompts.len == 0) {
+            self.pr_row_count = 0;
+            self.pr_scroll_bars.scroll_view.children = .{ .slice = self.pr_widgets[0..0] };
+            self.pr_scroll_bars.estimated_content_height = 0;
+            return;
+        }
+        const sel_idx = @min(self.selected_prompt, all_prompts.len - 1);
+        const p = &all_prompts[sel_idx];
         const prs = self.getPrsForPrompt(p.canonical_name);
         var row_idx: usize = 0;
         for (prs, 0..) |pr, pi| {
@@ -2823,8 +2835,12 @@ pub const Dashboard = struct {
 
     fn syncPrDiffAndComments(self: *Dashboard, allocator: std.mem.Allocator) void {
         const all_prompts = self.getPrompts();
-        const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
-        const p = if (all_prompts.len > 0) &all_prompts[sel_idx] else &data.PROMPTS[0];
+        if (all_prompts.len == 0) {
+            self.pr_diff_count = 0;
+            return;
+        }
+        const sel_idx = @min(self.selected_prompt, all_prompts.len - 1);
+        const p = &all_prompts[sel_idx];
         const prs = self.getPrsForPrompt(p.canonical_name);
         if (prs.len == 0) {
             self.pr_diff_count = 0;

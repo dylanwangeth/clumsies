@@ -1091,8 +1091,8 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
         .last_event_minutes_ago = 0,
         .refer_trend = trend,
         .prompts = prompts_list.items,
-        .members = if (ws_members) |wm| toInsightsMembers(alloc, wm) else data.INSIGHTS.members,
-        .models = if (ws_models) |wmod| toInsightsModels(alloc, wmod) else data.INSIGHTS.models,
-        .alerts = data.INSIGHTS.alerts,
+        .members = if (ws_members) |wm| toInsightsMembers(alloc, wm) else &.{},
+        .models = if (ws_models) |wmod| toInsightsModels(alloc, wmod) else &.{},
+        .alerts = &.{},
     };
 }
