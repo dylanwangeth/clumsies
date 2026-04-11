@@ -264,6 +264,96 @@ pub fn handleAddTeamMember(ctx: *Server.Context, req: *httpz.Request, res: *http
     try res.json(.{ .team_id = team_id, .user_id = body.user_id }, .{});
 }
 
+// GET /api/org/directory
+pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = auth.authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!auth.requireScope(user, "members:read", res)) return;
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    const DirectoryMember = struct {
+        user_id: []const u8,
+        username: []const u8,
+        role: []const u8,
+        joined_at: []const u8,
+        team_ids: []const []const u8,
+    };
+
+    const DirectoryTeam = struct {
+        team_id: []const u8,
+        name: []const u8,
+        member_ids: []const []const u8,
+    };
+
+    // Members with team_ids as CSV via string_agg
+    var members: std.ArrayList(DirectoryMember) = .empty;
+    const member_result = conn.query(
+        \\SELECT u.user_id, u.username, u.role, u.created_at::text,
+        \\  COALESCE(string_agg(tm.team_id, ',' ORDER BY tm.team_id), '')
+        \\FROM users u
+        \\LEFT JOIN team_members tm ON tm.user_id = u.user_id
+        \\WHERE u.org_id = $1::uuid
+        \\GROUP BY u.user_id, u.username, u.role, u.created_at
+        \\ORDER BY u.username
+    , .{user.org_id}) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
+    defer member_result.deinit();
+    while (member_result.next() catch null) |row| {
+        const csv = row.get([]const u8, 4) catch "";
+        members.append(req.arena, .{
+            .user_id = req.arena.dupe(u8, row.get([]const u8, 0) catch continue) catch continue,
+            .username = req.arena.dupe(u8, row.get([]const u8, 1) catch continue) catch continue,
+            .role = req.arena.dupe(u8, row.get([]const u8, 2) catch continue) catch continue,
+            .joined_at = req.arena.dupe(u8, row.get([]const u8, 3) catch continue) catch continue,
+            .team_ids = splitCsv(req.arena, csv),
+        }) catch continue;
+    }
+
+    // Teams with member_ids as CSV via string_agg
+    var teams: std.ArrayList(DirectoryTeam) = .empty;
+    const team_result = conn.query(
+        \\SELECT t.team_id, t.name,
+        \\  COALESCE(string_agg(tm.user_id, ',' ORDER BY tm.user_id), '')
+        \\FROM teams t
+        \\LEFT JOIN team_members tm ON tm.team_id = t.team_id
+        \\WHERE t.org_id = $1::uuid
+        \\GROUP BY t.team_id, t.name
+        \\ORDER BY t.name
+    , .{user.org_id}) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
+    defer team_result.deinit();
+    while (team_result.next() catch null) |row| {
+        const csv = row.get([]const u8, 2) catch "";
+        teams.append(req.arena, .{
+            .team_id = req.arena.dupe(u8, row.get([]const u8, 0) catch continue) catch continue,
+            .name = req.arena.dupe(u8, row.get([]const u8, 1) catch continue) catch continue,
+            .member_ids = splitCsv(req.arena, csv),
+        }) catch continue;
+    }
+
+    try res.json(.{
+        .members = members.items,
+        .teams = teams.items,
+    }, .{});
+}
+
+fn splitCsv(arena: std.mem.Allocator, csv: []const u8) []const []const u8 {
+    if (csv.len == 0) return &.{};
+    var list: std.ArrayList([]const u8) = .empty;
+    var iter = std.mem.splitScalar(u8, csv, ',');
+    while (iter.next()) |part| {
+        list.append(arena, arena.dupe(u8, part) catch continue) catch continue;
+    }
+    return list.items;
+}
+
 // DELETE /api/org/teams/:team_id/members/:user_id
 pub fn handleRemoveTeamMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
