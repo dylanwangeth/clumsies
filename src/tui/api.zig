@@ -672,6 +672,42 @@ pub fn toBundleEntries(alloc: std.mem.Allocator, bundles: []const BundleData) []
     return list.items;
 }
 
+// Convert API PromptPr to mock-compatible PullRequestEntry slice,
+// filtered by canonical_name. Diff/comments are empty (need PR detail fetch).
+pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, canonical_name: []const u8, library: ?[]const LibraryPrompt) []const data.PullRequestEntry {
+    // Find prompt_id for the given canonical_name
+    const target_id: ?[]const u8 = if (library) |lib| blk: {
+        for (lib) |lp| {
+            if (std.mem.eql(u8, lp.canonical_name, canonical_name))
+                break :blk lp.prompt_id;
+        }
+        break :blk null;
+    } else null;
+
+    var list: std.ArrayList(data.PullRequestEntry) = .empty;
+    for (prs) |pr| {
+        // Filter by prompt_id if we found one, otherwise skip
+        if (target_id) |tid| {
+            if (!std.mem.eql(u8, pr.prompt_id, tid)) continue;
+        } else continue;
+
+        list.append(alloc, .{
+            .id = pr.pr_id,
+            .prompt_name = canonical_name,
+            .status = pr.status,
+            .author = pr.author,
+            .created = pr.created_at,
+            .description = pr.description,
+            .base_hash = "",
+            .diff = &.{},
+            .comments = &.{},
+            .trace_refers = 0,
+            .trace_sessions = 0,
+        }) catch continue;
+    }
+    return list.items;
+}
+
 // Build InsightsData from OrgStats.
 // Members/models/alerts fall back to mock (need workspace-level stats).
 pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]const LibraryPrompt) data.InsightsData {
