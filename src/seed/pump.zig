@@ -106,7 +106,9 @@ fn traceSession(faker: *Faker, conn: *pg.Conn) void {
         _ = conn.exec(
             "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id) VALUES ($1, $2, $3, $4, (extract(epoch from now()) * 1000)::bigint, $5) ON CONFLICT DO NOTHING",
             .{ ws_id, session_id, @as(i64, @intCast(ei)), event_type, prompt_id },
-        ) catch {};
+        ) catch |err| {
+            log.warn("pump: {}", .{err});
+        };
     }
 }
 
@@ -139,7 +141,9 @@ fn contextFileEdit(faker: *Faker, conn: *pg.Conn) void {
     _ = conn.exec(
         "INSERT INTO context_branches (ws_id, branch_name, base_revision, revision) VALUES ($1, $2, 0, 1) ON CONFLICT (ws_id, branch_name) DO UPDATE SET revision = context_branches.revision + 1",
         .{ ws_id, branch },
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 
     var path_buf: [80]u8 = undefined;
     const path = faker.contextPath(&path_buf);
@@ -149,7 +153,9 @@ fn contextFileEdit(faker: *Faker, conn: *pg.Conn) void {
     _ = conn.exec(
         "INSERT INTO context_files (ws_id, branch_name, path, content, content_hash, author) VALUES ($1, $2, $3, $4, md5($4), $5) ON CONFLICT (ws_id, branch_name, path) DO UPDATE SET content = $4, content_hash = md5($4), updated_at = now()",
         .{ ws_id, branch, path, content, author },
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 }
 
 fn reviewComment(faker: *Faker, conn: *pg.Conn) void {
@@ -185,7 +191,9 @@ fn reviewComment(faker: *Faker, conn: *pg.Conn) void {
         _ = conn.exec(
             "INSERT INTO context_pr_comments (comment_id, pr_id, author, body) VALUES ($1, $2, $3, $4)",
             .{ cmt_id, pr_id, cmt_author, body },
-        ) catch {};
+        ) catch |err| {
+            log.warn("pump: {}", .{err});
+        };
     } else {
         // Comment on a prompt PR
         var pr_buf: [64]u8 = undefined;
@@ -216,7 +224,9 @@ fn reviewComment(faker: *Faker, conn: *pg.Conn) void {
         _ = conn.exec(
             "INSERT INTO prompt_pr_comments (comment_id, pr_id, author_id, body) VALUES ($1, $2, $3, $4)",
             .{ cmt_id, pr_id, author_id, body },
-        ) catch {};
+        ) catch |err| {
+            log.warn("pump: {}", .{err});
+        };
     }
 }
 
@@ -264,7 +274,9 @@ fn openPromptPr(faker: *Faker, conn: *pg.Conn) void {
     _ = conn.exec(
         "INSERT INTO prompt_prs (pr_id, org_id, prompt_id, author_id, base_hash, content, description, status) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, 'open')",
         .{ pr_id, data.ORG_ID, prompt_id, author_id, base_hash, content, desc },
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 }
 
 fn resolvePromptPr(faker: *Faker, conn: *pg.Conn) void {
@@ -284,7 +296,9 @@ fn resolvePromptPr(faker: *Faker, conn: *pg.Conn) void {
     _ = conn.exec(
         "UPDATE prompt_prs SET status = $1, updated_at = now() WHERE pr_id = $2",
         .{ new_status, pr_id },
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 }
 
 fn cleanup(conn: *pg.Conn) void {
@@ -294,47 +308,65 @@ fn cleanup(conn: *pg.Conn) void {
     _ = conn.exec(
         "DELETE FROM trace_events WHERE (ws_id, session_id, event_id) IN (SELECT ws_id, session_id, event_id FROM trace_events ORDER BY timestamp ASC LIMIT GREATEST(0, (SELECT count(*) FROM trace_events) - $1))",
         .{data.CAP_TRACE_EVENTS},
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 
     _ = conn.exec(
         "DELETE FROM context_pr_comments WHERE comment_id IN (SELECT comment_id FROM context_pr_comments ORDER BY created_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM context_pr_comments) - $1))",
         .{data.CAP_CONTEXT_PR_COMMENTS},
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 
     _ = conn.exec(
         "DELETE FROM prompt_pr_comments WHERE comment_id IN (SELECT comment_id FROM prompt_pr_comments ORDER BY created_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM prompt_pr_comments) - $1))",
         .{data.CAP_PROMPT_PR_COMMENTS},
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 
     _ = conn.exec(
         "DELETE FROM prompt_prs WHERE pr_id IN (SELECT pr_id FROM prompt_prs WHERE status != 'open' ORDER BY created_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM prompt_prs) - $1))",
         .{data.CAP_PROMPT_PRS},
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 
     _ = conn.exec(
         "DELETE FROM context_prs WHERE pr_id IN (SELECT pr_id FROM context_prs WHERE status NOT IN ('open') ORDER BY created_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM context_prs) - $1))",
         .{data.CAP_CONTEXT_PRS},
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 
     _ = conn.exec(
         "DELETE FROM context_files WHERE (ws_id, branch_name, path) IN (SELECT ws_id, branch_name, path FROM context_files ORDER BY updated_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM context_files) - $1))",
         .{data.CAP_CONTEXT_FILES},
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 
     _ = conn.exec(
         "DELETE FROM context_branches WHERE (ws_id, branch_name) IN (SELECT ws_id, branch_name FROM context_branches WHERE branch_name != 'main' ORDER BY created_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM context_branches) - $1))",
         .{data.CAP_CONTEXT_BRANCHES},
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 }
 
 fn bumpRevision(conn: *pg.Conn) void {
     _ = conn.exec(
         "UPDATE workspaces SET revision = revision + 1 WHERE ws_id = (SELECT ws_id FROM workspaces ORDER BY random() LIMIT 1)",
         .{},
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 
     _ = conn.exec(
         "UPDATE library_manifest SET revision = revision + 1 WHERE org_id = $1::uuid",
         .{data.ORG_ID},
-    ) catch {};
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
 }

@@ -47,6 +47,10 @@ pub fn main() !void {
             do_pump = true;
         } else if (std.mem.startsWith(u8, arg, "--interval=")) {
             interval_ms = std.fmt.parseInt(u64, arg["--interval=".len..], 10) catch 3000;
+            if (interval_ms < 100) {
+                log.err("--interval must be at least 100ms", .{});
+                std.process.exit(1);
+            }
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printUsage();
             return;
