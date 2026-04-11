@@ -270,6 +270,9 @@ pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
     if (!auth.requireScope(user, "members:read", res)) return;
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -281,13 +284,13 @@ pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         username: []const u8,
         role: []const u8,
         joined_at: []const u8,
-        team_ids: []const []const u8,
+        team_ids: []const []const u8 = &.{},
     };
 
     const DirectoryTeam = struct {
         team_id: []const u8,
         name: []const u8,
-        member_ids: []const []const u8,
+        member_ids: []const []const u8 = &.{},
     };
 
     // Members with team_ids as CSV via string_agg
@@ -304,15 +307,15 @@ pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
     defer member_result.deinit();
-    while (member_result.next() catch null) |row| {
-        const csv = row.get([]const u8, 4) catch "";
-        members.append(req.arena, .{
-            .user_id = req.arena.dupe(u8, row.get([]const u8, 0) catch continue) catch continue,
-            .username = req.arena.dupe(u8, row.get([]const u8, 1) catch continue) catch continue,
-            .role = req.arena.dupe(u8, row.get([]const u8, 2) catch continue) catch continue,
-            .joined_at = req.arena.dupe(u8, row.get([]const u8, 3) catch continue) catch continue,
-            .team_ids = splitCsv(req.arena, csv),
-        }) catch continue;
+    while (try member_result.next()) |row| {
+        const csv = try row.get([]const u8, 4);
+        try members.append(req.arena, .{
+            .user_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .username = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+            .role = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .joined_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .team_ids = try splitCsv(req.arena, csv),
+        });
     }
 
     // Teams with member_ids as CSV via string_agg
@@ -329,13 +332,13 @@ pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
     defer team_result.deinit();
-    while (team_result.next() catch null) |row| {
-        const csv = row.get([]const u8, 2) catch "";
-        teams.append(req.arena, .{
-            .team_id = req.arena.dupe(u8, row.get([]const u8, 0) catch continue) catch continue,
-            .name = req.arena.dupe(u8, row.get([]const u8, 1) catch continue) catch continue,
-            .member_ids = splitCsv(req.arena, csv),
-        }) catch continue;
+    while (try team_result.next()) |row| {
+        const csv = try row.get([]const u8, 2);
+        try teams.append(req.arena, .{
+            .team_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .name = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+            .member_ids = try splitCsv(req.arena, csv),
+        });
     }
 
     try res.json(.{
@@ -344,12 +347,12 @@ pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     }, .{});
 }
 
-fn splitCsv(arena: std.mem.Allocator, csv: []const u8) []const []const u8 {
+fn splitCsv(arena: std.mem.Allocator, csv: []const u8) ![]const []const u8 {
     if (csv.len == 0) return &.{};
     var list: std.ArrayList([]const u8) = .empty;
     var iter = std.mem.splitScalar(u8, csv, ',');
     while (iter.next()) |part| {
-        list.append(arena, arena.dupe(u8, part) catch continue) catch continue;
+        try list.append(arena, try arena.dupe(u8, part));
     }
     return list.items;
 }
