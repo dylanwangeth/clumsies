@@ -33,6 +33,15 @@ const TrendEntry = struct {
     refer_count: i64,
 };
 
+const OrgPromptStats = struct {
+    prompt_id: []const u8,
+    refer_count: i64,
+    active_constraint_count: i64,
+    workspace_count: i64,
+    bundle_count: i64,
+    open_pr_count: i64,
+};
+
 fn parsePeriod(period: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, period, "daily")) return "day";
     if (std.mem.eql(u8, period, "weekly")) return "week";
@@ -46,13 +55,19 @@ fn queryTrend(
     sql_trunc: []const u8,
     where_clause: []const u8,
     bind: anytype,
+    max_days: ?u32,
 ) []const TrendEntry {
+    const days_filter = if (max_days) |d|
+        std.fmt.allocPrint(arena, " AND timestamp >= (extract(epoch from now()) * 1000 - {d} * 86400000)", .{d}) catch ""
+    else
+        "";
+
     const query = std.fmt.allocPrint(
         arena,
         "SELECT date_trunc('{s}', to_timestamp(timestamp/1000))::date::text as date, count(*) as refer_count" ++
-            " FROM trace_events WHERE {s} AND type = 'refer'" ++
+            " FROM trace_events WHERE {s} AND type = 'refer'{s}" ++
             " GROUP BY 1 ORDER BY 1",
-        .{ sql_trunc, where_clause },
+        .{ sql_trunc, where_clause, days_filter },
     ) catch return &.{};
 
     var result = conn.query(query, bind) catch return &.{};
@@ -157,6 +172,7 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     const sql_trunc = parsePeriod(period) orelse {
         return apiError(res, 400, "BAD_REQUEST", "invalid period; use daily, weekly, or monthly");
     };
+    const max_days: ?u32 = if (qs.get("days")) |ds| std.fmt.parseInt(u32, ds, 10) catch null else null;
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -171,10 +187,62 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     , .{user.org_id}) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        try res.json(.{ .total_refer_count = @as(i64, 0), .workspace_count = @as(i64, 0), .prompt_count = @as(i64, 0), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
+        try res.json(.{ .total_refer_count = @as(i64, 0), .workspace_count = @as(i64, 0), .prompt_count = @as(i64, 0), .prompts = @as([]const OrgPromptStats, &.{}), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
         return;
     };
     defer row.deinit() catch {};
+
+    // Per-prompt aggregated stats via LEFT JOINs
+    var prompt_list: std.ArrayList(OrgPromptStats) = .empty;
+    const prompt_result = conn.query(
+        \\SELECT p.prompt_id,
+        \\  COALESCE(te_stats.refer_count, 0),
+        \\  COALESCE(te_stats.active_constraints, 0),
+        \\  COALESCE(ws_stats.workspace_count, 0),
+        \\  COALESCE(bp_stats.bundle_count, 0),
+        \\  COALESCE(pr_stats.open_pr_count, 0)
+        \\FROM prompts p
+        \\LEFT JOIN (
+        \\  SELECT te.prompt_id, count(*) as refer_count,
+        \\    count(DISTINCT te.constraint_id) as active_constraints
+        \\  FROM trace_events te JOIN workspaces w ON w.ws_id = te.ws_id
+        \\  WHERE w.org_id = $1::uuid AND te.type = 'refer' AND te.prompt_id IS NOT NULL
+        \\  GROUP BY te.prompt_id
+        \\) te_stats ON te_stats.prompt_id = p.prompt_id
+        \\LEFT JOIN (
+        \\  SELECT wp.prompt_id, count(DISTINCT wp.ws_id) as workspace_count
+        \\  FROM workspace_prompts wp JOIN workspaces w ON w.ws_id = wp.ws_id
+        \\  WHERE w.org_id = $1::uuid
+        \\  GROUP BY wp.prompt_id
+        \\) ws_stats ON ws_stats.prompt_id = p.prompt_id
+        \\LEFT JOIN (
+        \\  SELECT bp.prompt_id, count(*) as bundle_count
+        \\  FROM bundle_prompts bp JOIN bundles b ON b.bundle_id = bp.bundle_id
+        \\  WHERE b.org_id = $1::uuid
+        \\  GROUP BY bp.prompt_id
+        \\) bp_stats ON bp_stats.prompt_id = p.prompt_id
+        \\LEFT JOIN (
+        \\  SELECT pr.prompt_id, count(*) as open_pr_count
+        \\  FROM prompt_prs pr
+        \\  WHERE pr.org_id = $1::uuid AND pr.status = 'open'
+        \\  GROUP BY pr.prompt_id
+        \\) pr_stats ON pr_stats.prompt_id = p.prompt_id
+        \\WHERE p.org_id = $1::uuid
+        \\ORDER BY COALESCE(te_stats.refer_count, 0) DESC
+    , .{user.org_id}) catch null;
+    if (prompt_result) |pr| {
+        defer pr.deinit();
+        while (pr.next() catch null) |prow| {
+            prompt_list.append(req.arena, .{
+                .prompt_id = req.arena.dupe(u8, prow.get([]const u8, 0) catch continue) catch continue,
+                .refer_count = prow.get(i64, 1) catch continue,
+                .active_constraint_count = prow.get(i64, 2) catch continue,
+                .workspace_count = prow.get(i64, 3) catch continue,
+                .bundle_count = prow.get(i64, 4) catch continue,
+                .open_pr_count = prow.get(i64, 5) catch continue,
+            }) catch continue;
+        }
+    }
 
     const trend_data = queryTrend(
         conn,
@@ -182,12 +250,14 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         sql_trunc,
         "ws_id IN (SELECT ws_id FROM workspaces WHERE org_id = $1::uuid)",
         .{user.org_id},
+        max_days,
     );
 
     try res.json(.{
         .total_refer_count = try row.get(i64, 0),
         .workspace_count = try row.get(i64, 1),
         .prompt_count = try row.get(i64, 2),
+        .prompts = prompt_list.items,
         .trend = .{ .period = period, .data = trend_data },
     }, .{});
 }
@@ -209,6 +279,7 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     const sql_trunc = parsePeriod(period) orelse {
         return apiError(res, 400, "BAD_REQUEST", "invalid period; use daily, weekly, or monthly");
     };
+    const max_days: ?u32 = if (qs.get("days")) |ds| std.fmt.parseInt(u32, ds, 10) catch null else null;
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -262,7 +333,7 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
         }
     }
 
-    const trend_data = queryTrend(conn, req.arena, sql_trunc, "ws_id = $1", .{ws_id});
+    const trend_data = queryTrend(conn, req.arena, sql_trunc, "ws_id = $1", .{ws_id}, max_days);
 
     try res.json(.{
         .ws_id = ws_id,
@@ -290,6 +361,7 @@ pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const sql_trunc = parsePeriod(period) orelse {
         return apiError(res, 400, "BAD_REQUEST", "invalid period; use daily, weekly, or monthly");
     };
+    const max_days: ?u32 = if (qs.get("days")) |ds| std.fmt.parseInt(u32, ds, 10) catch null else null;
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -326,7 +398,7 @@ pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         }) catch continue;
     }
 
-    const trend_data = queryTrend(conn, req.arena, sql_trunc, "prompt_id = $1", .{prompt_id});
+    const trend_data = queryTrend(conn, req.arena, sql_trunc, "prompt_id = $1", .{prompt_id}, max_days);
 
     try res.json(.{
         .prompt_id = prompt_id,
