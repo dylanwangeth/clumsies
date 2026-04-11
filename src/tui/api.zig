@@ -93,6 +93,26 @@ pub const TrendPoint = struct {
     refer_count: i64,
 };
 
+// Workspace-specific data (fetched on demand)
+pub const WsDetail = struct {
+    ws_id: []const u8,
+    context_files: []const ContextFileData,
+    ws_prompts: []const WsPromptData,
+};
+
+pub const ContextFileData = struct {
+    path: []const u8,
+    hash: []const u8,
+    size: i64,
+    author: []const u8 = "",
+    updated_at: []const u8 = "",
+};
+
+pub const WsPromptData = struct {
+    prompt_id: []const u8,
+    content_hash: []const u8,
+};
+
 pub const ApiState = struct {
     mutex: std.Thread.Mutex = .{},
     status: ConnectionStatus = .disconnected,
@@ -105,6 +125,14 @@ pub const ApiState = struct {
     prompt_prs: ?[]const PromptPr = null,
     // Insights
     org_stats: ?OrgStats = null,
+    // Workspace detail (on-demand)
+    ws_detail: ?WsDetail = null,
+    prompt_content: ?[]const u8 = null,
+    prompt_content_name: ?[]const u8 = null,
+    // Fetch coordination
+    hub_url: ?[]const u8 = null,
+    access_token: ?[]const u8 = null,
+    fetch_busy: bool = false,
     // Arena for all fetched data
     arena: std.heap.ArenaAllocator,
 
@@ -121,7 +149,64 @@ pub fn startFetch(api_state: *ApiState, hub_url: []const u8, access_token: []con
     const alloc = api_state.arena.allocator();
     const url_copy = try alloc.dupe(u8, hub_url);
     const token_copy = try alloc.dupe(u8, access_token);
+    api_state.hub_url = url_copy;
+    api_state.access_token = token_copy;
     return std.Thread.spawn(.{}, fetchAll, .{ api_state, url_copy, token_copy });
+}
+
+// Fetch workspace detail on demand (context files + prompts from manifest)
+pub fn fetchWorkspaceAsync(api_state: *ApiState, ws_id: []const u8) void {
+    api_state.mutex.lock();
+    if (api_state.fetch_busy or api_state.hub_url == null) {
+        api_state.mutex.unlock();
+        return;
+    }
+    api_state.fetch_busy = true;
+    api_state.mutex.unlock();
+
+    const alloc = api_state.arena.allocator();
+    const ws_id_copy = alloc.dupe(u8, ws_id) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    _ = std.Thread.spawn(.{}, fetchWorkspace, .{ api_state, ws_id_copy }) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    };
+}
+
+// Fetch prompt content on demand
+pub fn fetchPromptContentAsync(api_state: *ApiState, canonical_name: []const u8) void {
+    api_state.mutex.lock();
+    if (api_state.fetch_busy or api_state.hub_url == null) {
+        api_state.mutex.unlock();
+        return;
+    }
+    // Skip if already cached
+    if (api_state.prompt_content_name) |cached| {
+        if (std.mem.eql(u8, cached, canonical_name)) {
+            api_state.mutex.unlock();
+            return;
+        }
+    }
+    api_state.fetch_busy = true;
+    api_state.mutex.unlock();
+
+    const alloc = api_state.arena.allocator();
+    const name_copy = alloc.dupe(u8, canonical_name) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    _ = std.Thread.spawn(.{}, fetchPromptContent, .{ api_state, name_copy }) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    };
 }
 
 fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8) void {
@@ -177,6 +262,157 @@ fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8)
     api_state.org_stats = org_stats;
     api_state.status = .connected;
     api_state.mutex.unlock();
+}
+
+fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
+    const alloc = api_state.arena.allocator();
+    api_state.mutex.lock();
+    const hub_url = api_state.hub_url orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const token = api_state.access_token orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    api_state.mutex.unlock();
+
+    var client = HubClient.init(alloc, hub_url, token);
+
+    // GET /api/workspaces/{ws_id}/context/files
+    const files_path = std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/files", .{ws_id}) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const files = doFetchParse(&client, alloc, files_path, []const ContextFileData, parseContextFiles);
+
+    // GET /api/workspaces/{ws_id}/manifest
+    const manifest_path = std.fmt.allocPrint(alloc, "/api/workspaces/{s}/manifest", .{ws_id}) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const ws_prompts = doFetchParse(&client, alloc, manifest_path, []const WsPromptData, parseManifestPrompts);
+
+    api_state.mutex.lock();
+    api_state.ws_detail = .{
+        .ws_id = ws_id,
+        .context_files = files orelse &.{},
+        .ws_prompts = ws_prompts orelse &.{},
+    };
+    api_state.fetch_busy = false;
+    api_state.mutex.unlock();
+}
+
+fn fetchPromptContent(api_state: *ApiState, canonical_name: []const u8) void {
+    const alloc = api_state.arena.allocator();
+    api_state.mutex.lock();
+    const hub_url = api_state.hub_url orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const token = api_state.access_token orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    api_state.mutex.unlock();
+
+    var client = HubClient.init(alloc, hub_url, token);
+    const path = std.fmt.allocPrint(alloc, "/api/org/library/prompt/content?name={s}", .{canonical_name}) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+
+    const resp = client.get(path) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    defer resp.deinit();
+
+    if (resp.status == .ok) {
+        // Parse {"body": "content..."} or use raw body
+        const ContentJson = struct { body: []const u8 = "" };
+        const parsed = std.json.parseFromSlice(ContentJson, alloc, resp.body, .{ .allocate = .alloc_always }) catch null;
+        const content = if (parsed) |p| blk: {
+            defer p.deinit();
+            break :blk alloc.dupe(u8, p.value.body) catch null;
+        } else null;
+
+        api_state.mutex.lock();
+        api_state.prompt_content = content;
+        api_state.prompt_content_name = canonical_name;
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    } else {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    }
+}
+
+fn parseContextFiles(alloc: std.mem.Allocator, body: []const u8) ?[]const ContextFileData {
+    const Json = struct {
+        files: []const struct {
+            path: []const u8,
+            hash: []const u8,
+            size: i64 = 0,
+            author: []const u8 = "",
+            updated_at: []const u8 = "",
+        } = &.{},
+    };
+    const parsed = std.json.parseFromSlice(Json, alloc, body, .{ .allocate = .alloc_always }) catch return null;
+    defer parsed.deinit();
+
+    var list: std.ArrayList(ContextFileData) = .empty;
+    for (parsed.value.files) |f| {
+        list.append(alloc, .{
+            .path = alloc.dupe(u8, f.path) catch continue,
+            .hash = alloc.dupe(u8, f.hash) catch continue,
+            .size = f.size,
+            .author = alloc.dupe(u8, f.author) catch continue,
+            .updated_at = alloc.dupe(u8, f.updated_at) catch continue,
+        }) catch continue;
+    }
+    return list.items;
+}
+
+fn parseManifestPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const WsPromptData {
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{ .allocate = .alloc_always }) catch return null;
+    defer parsed.deinit();
+
+    const prompts_obj = switch (parsed.value) {
+        .object => |obj| obj.get("prompts") orelse return null,
+        else => return null,
+    };
+    const map = switch (prompts_obj) {
+        .object => |obj| obj,
+        else => return null,
+    };
+
+    var list: std.ArrayList(WsPromptData) = .empty;
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        const hash = switch (entry.value_ptr.*) {
+            .string => |s| s,
+            else => "",
+        };
+        list.append(alloc, .{
+            .prompt_id = alloc.dupe(u8, entry.key_ptr.*) catch continue,
+            .content_hash = alloc.dupe(u8, hash) catch continue,
+        }) catch continue;
+    }
+    return list.items;
 }
 
 fn setStatus(api_state: *ApiState, status: ConnectionStatus) void {
