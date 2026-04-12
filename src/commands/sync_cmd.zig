@@ -93,25 +93,23 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     ensureDir(ws_dir);
     ensureDir(cache_dir);
 
-    // Sync prompts — write to rule/ and workflow/ subdirectories
-    // Manifest prompts are keyed by prompt_id, but canonical_name determines the path
+    // Sync prompts — write to paths mirroring the Library.
+    // Manifest prompts are keyed by prompt_id; we look up each prompt's path via the library API.
     var prompt_count: usize = 0;
     if (manifest.object.get("prompts")) |prompts_val| {
         if (prompts_val == .object) {
             var iter = prompts_val.object.iterator();
             while (iter.next()) |entry| {
                 const prompt_id = entry.key_ptr.*;
-                // Fetch prompt content by ID
                 const encoded_prompt_id = try percentEncode(allocator, prompt_id);
                 defer allocator.free(encoded_prompt_id);
-                const api_path = try std.fmt.allocPrint(allocator, "/api/org/library/prompt?name={s}", .{encoded_prompt_id});
+                const api_path = try std.fmt.allocPrint(allocator, "/api/org/library/prompt?prompt_id={s}", .{encoded_prompt_id});
                 defer allocator.free(api_path);
 
                 const response = client.get(api_path) catch continue;
                 defer response.deinit();
                 if (response.status != .ok) continue;
 
-                // Parse to get canonical_name and kind for directory placement
                 const prompt_parsed = std.json.parseFromSlice(std.json.Value, allocator, response.body, .{}) catch continue;
                 defer prompt_parsed.deinit();
 
@@ -119,26 +117,19 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
                     .object => |obj| obj,
                     else => continue,
                 };
-                const canonical_name = if (prompt_obj.get("canonical_name")) |v| switch (v) {
+                const prompt_path = if (prompt_obj.get("path")) |v| switch (v) {
                     .string => |s| s,
                     else => continue,
                 } else continue;
 
-                // Fetch actual content
-                const encoded_canonical = try percentEncode(allocator, canonical_name);
-                defer allocator.free(encoded_canonical);
-                const content_path = try std.fmt.allocPrint(allocator, "/api/org/library/prompt/content?name={s}", .{encoded_canonical});
-                defer allocator.free(content_path);
+                const content_api_path = try std.fmt.allocPrint(allocator, "/api/org/library/prompt/content?prompt_id={s}", .{encoded_prompt_id});
+                defer allocator.free(content_api_path);
 
-                const content_response = client.get(content_path) catch continue;
+                const content_response = client.get(content_api_path) catch continue;
                 defer content_response.deinit();
                 if (content_response.status != .ok) continue;
 
-                // canonical_name is like "rule/coding/STYLE" or "workflow/cmd/COMMIT"
-                // Write directly to cache using canonical_name as the path
-                const file_name = try std.fmt.allocPrint(allocator, "{s}.md", .{canonical_name});
-                defer allocator.free(file_name);
-                writeToCache(allocator, cache_dir, "", file_name, content_response.body) catch continue;
+                writeToCache(allocator, cache_dir, "", prompt_path, content_response.body) catch continue;
                 prompt_count += 1;
             }
         }

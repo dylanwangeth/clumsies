@@ -8,7 +8,7 @@ pub const ROLES = [_][]const u8{ "maintainer", "member" };
 pub const WS_MEMBER_ROLES = [_][]const u8{ "member", "admin" };
 pub const PROMPT_PR_STATUSES = [_][]const u8{ "open", "accepted", "rejected" };
 pub const CONTEXT_PR_STATUSES = [_][]const u8{ "open", "merged", "closed", "conflict" };
-pub const TRACE_EVENT_TYPES = [_][]const u8{ "setup", "begin", "refer", "refer", "complete" };
+pub const TRACE_EVENT_TYPES = [_][]const u8{ "setup", "refer", "refer" };
 
 // Counts for reset mode
 pub const USER_COUNT: usize = 8;

@@ -234,10 +234,11 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         \\  GROUP BY bp.prompt_id
         \\) bp_stats ON bp_stats.prompt_id = p.prompt_id
         \\LEFT JOIN (
-        \\  SELECT pr.prompt_id, count(*) as open_pr_count
-        \\  FROM prompt_prs pr
-        \\  WHERE pr.org_id = $1::uuid AND pr.status = 'open'
-        \\  GROUP BY pr.prompt_id
+        \\  SELECT op.prompt_id, count(DISTINCT op.pr_id) as open_pr_count
+        \\  FROM prompt_pr_operations op
+        \\  JOIN prompt_prs pr ON pr.pr_id = op.pr_id
+        \\  WHERE pr.org_id = $1::uuid AND pr.status = 'open' AND op.prompt_id IS NOT NULL
+        \\  GROUP BY op.prompt_id
         \\) pr_stats ON pr_stats.prompt_id = p.prompt_id
         \\WHERE p.org_id = $1::uuid
         \\ORDER BY COALESCE(te_stats.refer_count, 0) DESC
