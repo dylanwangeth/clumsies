@@ -2,7 +2,7 @@
 const std = @import("std");
 
 pub const PromptEntry = struct {
-    canonical_name: []const u8,
+    path: []const u8,
     kind: []const u8,
     refer_count: []const u8,
     constraint_count: u8,
@@ -214,18 +214,40 @@ pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
 };
 
 // Helper functions
-pub fn pathPrefix(canonical_name: []const u8) []const u8 {
-    if (std.mem.indexOf(u8, canonical_name, "/")) |idx| {
-        return canonical_name[0..idx];
+// Returns the group segment after the kind prefix.
+// e.g. "rule/coding/STYLE.md" -> "coding"
+pub fn pathPrefix(path: []const u8) []const u8 {
+    var p = path;
+    if (std.mem.indexOfScalar(u8, p, '/')) |first_slash| {
+        p = p[first_slash + 1 ..];
     }
-    return canonical_name;
+    if (std.mem.indexOfScalar(u8, p, '/')) |idx| {
+        return p[0..idx];
+    }
+    return p;
 }
 
-pub fn promptName(canonical_name: []const u8) []const u8 {
-    if (std.mem.indexOf(u8, canonical_name, "/")) |idx| {
-        return canonical_name[idx + 1 ..];
+// Returns the last segment without .md extension.
+// e.g. "rule/coding/STYLE.md" -> "STYLE"
+pub fn promptName(path: []const u8) []const u8 {
+    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return stripMd(path);
+    return stripMd(path[last_slash + 1 ..]);
+}
+
+fn stripMd(name: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, name, ".md")) return name[0 .. name.len - 3];
+    return name;
+}
+
+// Derives kind short label from path prefix.
+// e.g. "rule/..." -> "rule", "workflow/..." -> "wf"
+pub fn kindFromPath(path: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, path, '/')) |idx| {
+        const category = path[0..idx];
+        if (std.mem.eql(u8, category, "rule")) return "rule";
+        if (std.mem.eql(u8, category, "workflow")) return "wf";
     }
-    return canonical_name;
+    return "";
 }
 
 pub fn syncStateLabel(ws: *const WorkspaceEntry) []const u8 {
