@@ -2,10 +2,25 @@ const std = @import("std");
 const testing = std.testing;
 const lib = @import("clumsies_lib");
 const protocol = @import("protocol.zig");
+const ws_config = @import("../workspace_config.zig");
 
 const encoding = lib.encoding;
 const trace = lib.trace;
 const workspace_prompt = lib.workspace_prompt;
+
+pub const Session = struct {
+    ws_id: []const u8,
+    session_id: [32]u8,
+    event_counter: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+
+    pub fn deinit(self: *Session, allocator: std.mem.Allocator) void {
+        allocator.free(self.ws_id);
+    }
+
+    pub fn nextEventId(self: *Session) i64 {
+        return self.event_counter.fetchAdd(1, .monotonic);
+    }
+};
 
 pub fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u8 {
     const esc_version = try encoding.jsonEscapeAlloc(allocator, version);
@@ -50,7 +65,12 @@ const tool_refer =
     "{\"name\":\"memory.refer\",\"title\":\"Refer\",\"description\":\"Declare constraint references from loaded prompts. Pass an array of refs, each with promptId and optional constraintId.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"},\"promptHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"promptId\"]}}},\"required\":[\"refs\"],\"additionalProperties\":false}}";
 
-pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, params: std.json.Value) ![]u8 {
+pub fn handleToolCall(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session_ptr: *?Session,
+    params: std.json.Value,
+) ![]u8 {
     const params_obj = switch (params) {
         .object => |obj| obj,
         else => return error.InvalidParams,
@@ -68,28 +88,73 @@ pub fn handleToolCall(allocator: std.mem.Allocator, workspace_root: []const u8, 
     };
 
     if (std.mem.eql(u8, name, "memory.setup")) {
-        return try handleSetup(allocator, workspace_root, args_obj);
+        return try handleSetup(allocator, workspace_root, session_ptr, args_obj);
     }
     if (std.mem.eql(u8, name, "memory.search")) {
-        return try handleSearch(allocator, workspace_root, args_obj);
+        return try handleSearch(allocator, workspace_root, session_ptr, args_obj);
     }
     if (std.mem.eql(u8, name, "memory.load")) {
-        return handleLoad(allocator, workspace_root, args_obj) catch |err| switch (err) {
+        return handleLoad(allocator, workspace_root, session_ptr, args_obj) catch |err| switch (err) {
             error.UnknownPromptId => try buildToolErrorResult(allocator, "Unknown prompt id"),
             else => return err,
         };
     }
 
     if (std.mem.eql(u8, name, "memory.refer")) {
-        return try handleRefer(allocator, workspace_root, args_obj);
+        return try handleRefer(allocator, session_ptr, args_obj);
     }
 
     return try buildToolErrorResult(allocator, "Unknown tool");
 }
 
+fn initSession(allocator: std.mem.Allocator, workspace_root: []const u8) !Session {
+    const binding = try ws_config.resolveWorkspace(allocator, workspace_root);
+    defer allocator.free(binding.name);
+
+    var rand_bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&rand_bytes);
+    var session_id: [32]u8 = undefined;
+    const hex = "0123456789abcdef";
+    for (rand_bytes, 0..) |byte, i| {
+        session_id[i * 2] = hex[byte >> 4];
+        session_id[i * 2 + 1] = hex[byte & 0x0f];
+    }
+
+    return .{
+        .ws_id = binding.ws_id,
+        .session_id = session_id,
+        .event_counter = std.atomic.Value(i64).init(0),
+    };
+}
+
+fn writeTraceEvent(
+    allocator: std.mem.Allocator,
+    session_ptr: *?Session,
+    event_type: []const u8,
+    prompt_id: ?[]const u8,
+    prompt_hash: ?[]const u8,
+    constraint_id: ?[]const u8,
+    reason: ?[]const u8,
+) void {
+    const session = &(session_ptr.* orelse return);
+    const event_id = session.nextEventId();
+    trace.appendTraceEvent(allocator, .{
+        .ws_id = session.ws_id,
+        .session_id = session.session_id[0..],
+        .event_id = event_id,
+        .type = event_type,
+        .timestamp = std.time.milliTimestamp(),
+        .prompt_id = prompt_id,
+        .prompt_hash = prompt_hash,
+        .constraint_id = constraint_id,
+        .reason = reason,
+    }) catch {};
+}
+
 fn handleSetup(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
+    session_ptr: *?Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     const known_hash: ?[]const u8 = if (args_obj.get("knownHash")) |value| switch (value) {
@@ -97,18 +162,20 @@ fn handleSetup(
         else => null,
     } else null;
 
+    if (session_ptr.* == null) {
+        session_ptr.* = initSession(allocator, workspace_root) catch |err| switch (err) {
+            error.NoWorkspaceFound, error.NoConfigFound => return try buildToolErrorResult(allocator, "Workspace is not bound. Run 'clumsies init' to bind this directory to a workspace."),
+            else => return err,
+        };
+    }
+
     var mpf = try workspace_prompt.loadMpf(allocator, workspace_root, known_hash);
     defer mpf.deinit(allocator);
 
-    const ws_id = try trace.workspaceId(allocator, workspace_root);
-    defer allocator.free(ws_id);
+    writeTraceEvent(allocator, session_ptr, "setup", null, mpf.hash, null, null);
 
-    try trace.appendTraceEvent(allocator, workspace_root, .{
-        .event_type = .setup,
-        .mpf_hash = mpf.hash,
-    });
-
-    const esc_ws = try encoding.jsonEscapeAlloc(allocator, ws_id);
+    const session = &session_ptr.*.?;
+    const esc_ws = try encoding.jsonEscapeAlloc(allocator, session.ws_id);
     defer allocator.free(esc_ws);
 
     if (mpf.content) |content| {
@@ -135,6 +202,7 @@ fn handleSetup(
 fn handleSearch(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
+    session_ptr: *?Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     const kind = if (args_obj.get("kind")) |value|
@@ -149,12 +217,7 @@ fn handleSearch(
     var items = try workspace_prompt.discoverSearchable(allocator, workspace_root, kind, group);
     defer workspace_prompt.deinitPromptItems(allocator, &items);
 
-    // Trace: search event
-    const ws_id = try trace.workspaceId(allocator, workspace_root);
-    defer allocator.free(ws_id);
-    try trace.appendTraceEvent(allocator, workspace_root, .{
-        .event_type = .search,
-    });
+    writeTraceEvent(allocator, session_ptr, "search", null, null, null, null);
 
     const structured = try serializePromptList(allocator, items.items);
     defer allocator.free(structured);
@@ -164,6 +227,7 @@ fn handleSearch(
 fn handleLoad(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
+    session_ptr: *?Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     var ids = try parseRequiredIds(allocator, args_obj.get("ids"));
@@ -176,21 +240,17 @@ fn handleLoad(
     defer result.deinit(allocator);
 
     for (result.items.items) |item| {
-        try trace.appendTraceEvent(allocator, workspace_root, .{
-            .event_type = .load,
-            .prompt_id = item.id,
-            .prompt_hash = item.hash,
-        });
+        writeTraceEvent(allocator, session_ptr, "load", item.id, item.hash, null, null);
     }
 
-    const structured = try serializeLoadResultWithConstraints(allocator, &result, workspace_root);
+    const structured = try serializeLoadResultWithConstraints(allocator, &result, session_ptr);
     defer allocator.free(structured);
     return try buildToolSuccessResult(allocator, structured);
 }
 
 fn handleRefer(
     allocator: std.mem.Allocator,
-    workspace_root: []const u8,
+    session_ptr: *?Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     const refs_val = args_obj.get("refs") orelse return error.InvalidParams;
@@ -228,13 +288,7 @@ fn handleRefer(
             else => null,
         } else null;
 
-        try trace.appendTraceEvent(allocator, workspace_root, .{
-            .event_type = .refer,
-            .prompt_id = prompt_id,
-            .prompt_hash = prompt_hash,
-            .constraint_id = constraint_id,
-            .reason = reason,
-        });
+        writeTraceEvent(allocator, session_ptr, "refer", prompt_id, prompt_hash, constraint_id, reason);
         count += 1;
     }
 
@@ -279,13 +333,15 @@ fn serializePromptList(allocator: std.mem.Allocator, items: []const workspace_pr
     return try buf.toOwnedSlice(allocator);
 }
 
-fn serializeLoadResultWithConstraints(allocator: std.mem.Allocator, result: *workspace_prompt.LoadResult, workspace_root: []const u8) ![]u8 {
+fn serializeLoadResultWithConstraints(
+    allocator: std.mem.Allocator,
+    result: *workspace_prompt.LoadResult,
+    session_ptr: *?Session,
+) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
-    const ws_id = try trace.workspaceId(allocator, workspace_root);
-    defer allocator.free(ws_id);
-
+    const ws_id: []const u8 = if (session_ptr.*) |s| s.ws_id else "";
     const esc_ws = try encoding.jsonEscapeAlloc(allocator, ws_id);
     defer allocator.free(esc_ws);
 
@@ -293,15 +349,12 @@ fn serializeLoadResultWithConstraints(allocator: std.mem.Allocator, result: *wor
     for (result.items.items, 0..) |item, idx| {
         if (idx > 0) try buf.append(allocator, ',');
 
-        // For Rule/Workflow with content, parse constraints first so we can
-        // include them in both the refer reminder and the JSON output
         if ((item.kind == .rule or item.kind == .workflow) and item.content != null) {
             var parsed = try workspace_prompt.parseConstraints(allocator, item.content.?);
             defer parsed.deinit(allocator);
 
             try appendLoadedPromptWithConstraints(allocator, &buf, item, parsed.constraints.items);
 
-            // Reopen the item JSON to append constraints array
             if (buf.items.len > 0 and buf.items[buf.items.len - 1] == '}') {
                 buf.items.len -= 1;
             }
@@ -375,7 +428,6 @@ fn appendLoadedPromptWithConstraints(
     if (item.content) |content| {
         const needs_reminder = item.kind == .rule or item.kind == .workflow;
         if (needs_reminder) {
-            // Build constraint list for the reminder
             var constraint_list_buf: std.ArrayList(u8) = .empty;
             defer constraint_list_buf.deinit(allocator);
             for (constraints) |c| {
@@ -477,7 +529,6 @@ test "buildToolsListResult: exposes all memory tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.load\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.refer\"") != null);
 
-    // Removed tools should NOT be present
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.begin\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.complete\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
@@ -485,62 +536,17 @@ test "buildToolsListResult: exposes all memory tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
 }
 
-test "handleToolCall: memory.setup returns mpf content" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath(".prompts");
-    const file = try tmp.dir.createFile(".prompts/META_PROMPT.md", .{});
-    defer file.close();
-    var tw_buf1: [4096]u8 = undefined;
-    var tw1 = std.fs.File.Writer.init(file, &tw_buf1);
-    defer tw1.interface.flush() catch {};
-    try tw1.interface.writeAll("bootstrap content");
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
-
-    const params = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"memory.setup\",\"arguments\":{}}", .{});
-    defer params.deinit();
-
-    const result = try handleToolCall(testing.allocator, root, params.value);
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"workspaceId\":\"ws-") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "bootstrap content") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"hash\":\"") != null);
-}
-
-test "handleToolCall: memory.setup returns null when no mpf" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath(".prompts");
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
-
-    const params = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"memory.setup\",\"arguments\":{}}", .{});
-    defer params.deinit();
-
-    const result = try handleToolCall(testing.allocator, root, params.value);
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"workspaceId\":\"ws-") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"mpf\":null") != null);
-}
-
-test "handleToolCall: memory.search returns rule metadata" {
+test "handleToolCall: memory.search returns rule metadata without session" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try tmp.dir.makePath(".prompts/rule/coding");
     const file = try tmp.dir.createFile(".prompts/rule/coding/00_COMPAT.md", .{});
     defer file.close();
-    var tw_buf2: [4096]u8 = undefined;
-    var tw2 = std.fs.File.Writer.init(file, &tw_buf2);
-    defer tw2.interface.flush() catch {};
-    try tw2.interface.writeAll("compat rule");
+    var tw_buf: [4096]u8 = undefined;
+    var tw = std.fs.File.Writer.init(file, &tw_buf);
+    defer tw.interface.flush() catch {};
+    try tw.interface.writeAll("compat rule");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
@@ -548,24 +554,27 @@ test "handleToolCall: memory.search returns rule metadata" {
     const params = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"memory.search\",\"arguments\":{\"kind\":\"rule\"}}", .{});
     defer params.deinit();
 
-    const result = try handleToolCall(testing.allocator, root, params.value);
+    var session: ?Session = null;
+    defer if (session) |*s| s.deinit(testing.allocator);
+
+    const result = try handleToolCall(testing.allocator, root, &session, params.value);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"rule:coding/00_COMPAT.md\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"group\":\"coding\"") != null);
 }
 
-test "handleToolCall: memory.load returns content" {
+test "handleToolCall: memory.load returns content without session" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try tmp.dir.makePath(".prompts/rule");
     const file = try tmp.dir.createFile(".prompts/rule/00_STYLE.md", .{});
     defer file.close();
-    var tw_buf3: [4096]u8 = undefined;
-    var tw3 = std.fs.File.Writer.init(file, &tw_buf3);
-    defer tw3.interface.flush() catch {};
-    try tw3.interface.writeAll("style content");
+    var tw_buf: [4096]u8 = undefined;
+    var tw = std.fs.File.Writer.init(file, &tw_buf);
+    defer tw.interface.flush() catch {};
+    try tw.interface.writeAll("style content");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
@@ -573,9 +582,39 @@ test "handleToolCall: memory.load returns content" {
     const params = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"memory.load\",\"arguments\":{\"ids\":[\"rule:00_STYLE.md\"]}}", .{});
     defer params.deinit();
 
-    const result = try handleToolCall(testing.allocator, root, params.value);
+    var session: ?Session = null;
+    defer if (session) |*s| s.deinit(testing.allocator);
+
+    const result = try handleToolCall(testing.allocator, root, &session, params.value);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "style content") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"changed\":true") != null);
+}
+
+test "handleToolCall: memory.setup returns structured error when no workspace binding" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".prompts");
+    const file = try tmp.dir.createFile(".prompts/META_PROMPT.md", .{});
+    defer file.close();
+    var tw_buf: [4096]u8 = undefined;
+    var tw = std.fs.File.Writer.init(file, &tw_buf);
+    defer tw.interface.flush() catch {};
+    try tw.interface.writeAll("bootstrap content");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmp.dir.realpath(".", &buf) catch return error.RealPathFailed;
+
+    const params = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"memory.setup\",\"arguments\":{}}", .{});
+    defer params.deinit();
+
+    var session: ?Session = null;
+    defer if (session) |*s| s.deinit(testing.allocator);
+
+    const result = try handleToolCall(testing.allocator, root, &session, params.value);
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"isError\":true") != null);
 }

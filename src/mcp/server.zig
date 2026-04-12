@@ -5,8 +5,13 @@ const handlers = @import("handlers.zig");
 
 pub const State = struct {
     workspace_root: []const u8,
+    session: ?handlers.Session = null,
     initialized: bool = false,
     initialize_seen: bool = false,
+
+    pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
+        if (self.session) |*s| s.deinit(allocator);
+    }
 };
 
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, version: []const u8) !void {
@@ -21,6 +26,7 @@ pub fn runWithRoot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: st
     var state: State = .{
         .workspace_root = workspace_root,
     };
+    defer state.deinit(allocator);
 
     var stdin_buffer: [4096]u8 = undefined;
     var stdin_reader = std.fs.File.Reader.init(std.fs.File.stdin(), &stdin_buffer);
@@ -97,7 +103,7 @@ fn processMessage(allocator: std.mem.Allocator, state: *State, version: []const 
     }
 
     if (std.mem.eql(u8, method, "tools/call")) {
-        const result = handlers.handleToolCall(allocator, state.workspace_root, params) catch |err| switch (err) {
+        const result = handlers.handleToolCall(allocator, state.workspace_root, &state.session, params) catch |err| switch (err) {
             error.InvalidParams => return try protocol.buildErrorAlloc(allocator, id.?, .invalid_params, "Invalid tool arguments"),
             else => return err,
         };
