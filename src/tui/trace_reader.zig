@@ -13,7 +13,7 @@ pub const LocalStats = struct {
 
 const TraceEvent = struct {
     type: []const u8 = "",
-    ts: i64 = 0,
+    timestamp: i64 = 0,
     prompt_id: ?[]const u8 = null,
     prompt_hash: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
@@ -21,37 +21,38 @@ const TraceEvent = struct {
 };
 
 pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
-    const log_dir = getLogDir(allocator) orelse return null;
-    defer allocator.free(log_dir);
+    const base = getBaseDir(allocator) orelse return null;
+    defer allocator.free(base);
+    const ws_root = std.fs.path.join(allocator, &.{ base, "workspaces" }) catch return null;
+    defer allocator.free(ws_root);
 
-    // Read all workspace trace files
-    var dir = std.fs.openDirAbsolute(log_dir, .{ .iterate = true }) catch return null;
+    var dir = std.fs.openDirAbsolute(ws_root, .{ .iterate = true }) catch return null;
     defer dir.close();
 
     var all_events: std.ArrayList(TraceEvent) = .empty;
     var it = dir.iterate();
     while (it.next() catch null) |entry| {
-        if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
-        const path = std.fs.path.join(allocator, &.{ log_dir, entry.name }) catch continue;
-        defer allocator.free(path);
-        readEventsFromFile(allocator, path, &all_events);
+        if (entry.kind != .directory) continue;
+        const trace_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "trace.jsonl" }) catch continue;
+        defer allocator.free(trace_path);
+        readEventsFromFile(allocator, trace_path, &all_events);
     }
 
     if (all_events.items.len == 0) return null;
     return computeStats(allocator, all_events.items);
 }
 
-fn getLogDir(allocator: std.mem.Allocator) ?[]const u8 {
+fn getBaseDir(allocator: std.mem.Allocator) ?[]const u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch return null;
     defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, ".clumsies", "log" }) catch null;
+    return std.fs.path.join(allocator, &.{ home, ".clumsies" }) catch null;
 }
 
 fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, events: *std.ArrayList(TraceEvent)) void {
     const file = std.fs.openFileAbsolute(path, .{}) catch return;
     defer file.close();
 
-    var buf: [64 * 1024]u8 = undefined;
+    var buf: [256 * 1024]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
         const n = file.read(buf[total..]) catch return;
@@ -74,14 +75,12 @@ fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, events: *s
 fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalStats {
     var stats: LocalStats = .{};
 
-    // Count refers per prompt, track unique constraints
     const PromptAcc = struct {
         refer_count: u32 = 0,
         constraints: std.StringHashMap(u32),
     };
     var prompt_map: std.StringHashMap(PromptAcc) = .init(allocator);
 
-    // 30-day trend: bucket events by day
     const now_ms: i64 = std.time.milliTimestamp();
     const day_ms: i64 = 86400 * 1000;
 
@@ -89,14 +88,12 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
         if (!std.mem.eql(u8, ev.type, "refer")) continue;
         stats.total_refer_count += 1;
 
-        // Trend: which day bucket (0 = 30 days ago, 29 = today)
-        const age_days = @divTrunc(now_ms - ev.ts, day_ms);
+        const age_days = @divTrunc(now_ms - ev.timestamp, day_ms);
         if (age_days >= 0 and age_days < 30) {
             const bucket: usize = @intCast(29 - age_days);
             stats.refer_trend[bucket] += 1;
         }
 
-        // Per-prompt accumulation
         const pid = ev.prompt_id orelse continue;
         const entry = prompt_map.getOrPut(pid) catch continue;
         if (!entry.found_existing) {
@@ -111,7 +108,6 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
         }
     }
 
-    // Build InsightsPrompt list
     var prompts_list: std.ArrayList(data.InsightsPrompt) = .empty;
     var total_constraints: u32 = 0;
     var active_constraints: u32 = 0;
@@ -140,7 +136,6 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
         }) catch continue;
     }
 
-    // Sort by refer_count descending
     std.mem.sort(data.InsightsPrompt, prompts_list.items, {}, struct {
         fn cmp(_: void, a: data.InsightsPrompt, b: data.InsightsPrompt) bool {
             return a.refer_count > b.refer_count;
