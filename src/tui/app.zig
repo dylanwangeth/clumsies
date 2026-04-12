@@ -537,7 +537,7 @@ pub const Dashboard = struct {
                                 const all_p = self.getPrompts();
                                 const si = @min(self.selected_prompt, if (all_p.len > 0) all_p.len - 1 else 0);
                                 if (all_p.len > 0) {
-                                    const prs_for = self.getPrsForPrompt(all_p[si].canonical_name);
+                                    const prs_for = self.getPrsForPrompt(all_p[si].path);
                                     const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
                                     if (prs_for.len > 0) api.fetchPrDetailAsync(self.api_state, prs_for[pri].id);
                                 }
@@ -1244,7 +1244,7 @@ pub const Dashboard = struct {
         if (self.detail_tab == .pull_requests) {
             w.writeRightText(&surface, ctx, 0, "f filter", theme.textOn(theme.PANEL, theme.MUTED));
         } else {
-            w.writeRightText(&surface, ctx, 0, p.canonical_name, theme.textOn(theme.PANEL, theme.MUTED));
+            w.writeRightText(&surface, ctx, 0, p.path, theme.textOn(theme.PANEL, theme.MUTED));
         }
 
         const inner_h = ctx.max.height.? -| 2;
@@ -1275,7 +1275,7 @@ pub const Dashboard = struct {
                 surface.children = children;
             },
             .pull_requests => {
-                const prs = self.getPrsForPrompt(p.canonical_name);
+                const prs = self.getPrsForPrompt(p.path);
                 if (prs.len == 0) {
                     w.writeText(&surface, ctx, 2, 2, "No pull requests for this prompt.", theme.fg(theme.MUTED));
                 } else if (self.show_pr_diff) {
@@ -1395,7 +1395,7 @@ pub const Dashboard = struct {
                 surface.children = children;
             },
             .pull_requests => {
-                const prs = self.getPrsForPrompt(p.canonical_name);
+                const prs = self.getPrsForPrompt(p.path);
                 if (prs.len == 0) {
                     w.writeText(&surface, ctx, 2, 2, "No pull requests for this prompt.", theme.fg(theme.MUTED));
                 } else if (self.show_pr_diff) {
@@ -1461,7 +1461,7 @@ pub const Dashboard = struct {
         w.fillSurface(&surface, theme.PANEL);
         const border_color = if (self.detail_focus_content) theme.ACCENT else theme.BORDER;
         w.drawBorder(&surface, border_color, theme.PANEL);
-        w.writeText(&surface, ctx, 2, 0, p.canonical_name, theme.boldOn(theme.PANEL, theme.TEXT));
+        w.writeText(&surface, ctx, 2, 0, p.path, theme.boldOn(theme.PANEL, theme.TEXT));
 
         self.syncContentWidget();
         const inner_w = ctx.max.width.? -| 4;
@@ -1614,12 +1614,12 @@ pub const Dashboard = struct {
                 var kv_row: u16 = 2;
                 var last_prefix: []const u8 = "";
                 if (live_ws) |ws_d| {
-                    // Live: cross-ref prompt_id with library for canonical_name
+                    // Cross-ref content_hash with library to get display path
                     const lib_prompts = self.getPrompts();
                     for (ws_d.ws_prompts, 0..) |wp, i| {
                         if (kv_row >= inner_h + 2) break;
                         const name = for (lib_prompts) |lp| {
-                            if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.canonical_name;
+                            if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
                         } else wp.prompt_id;
                         const prefix = data.pathPrefix(name);
                         if (!std.mem.eql(u8, prefix, last_prefix)) {
@@ -2357,14 +2357,14 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn getPrsForPrompt(self: *Dashboard, canonical_name: []const u8) []const data.PullRequestEntry {
+    fn getPrsForPrompt(self: *Dashboard, prompt_path: []const u8) []const data.PullRequestEntry {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const live_prs = self.api_state.prompt_prs;
         const lib = self.api_state.prompts;
         if (live_prs) |prs| {
             const alloc = self.api_state.arena.allocator();
-            return api.toPrEntries(alloc, prs, canonical_name, lib, self.api_state);
+            return api.toPrEntries(alloc, prs, prompt_path, lib, self.api_state);
         }
         return &.{};
     }
@@ -2383,7 +2383,7 @@ pub const Dashboard = struct {
         const all_p = self.getPrompts();
         const si = @min(self.selected_prompt, if (all_p.len > 0) all_p.len - 1 else 0);
         if (all_p.len == 0) return;
-        const prs_for = self.getPrsForPrompt(all_p[si].canonical_name);
+        const prs_for = self.getPrsForPrompt(all_p[si].path);
         const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
         if (prs_for.len == 0) return;
 
@@ -2408,7 +2408,7 @@ pub const Dashboard = struct {
         const all_p = self.getPrompts();
         const si = @min(self.selected_prompt, if (all_p.len > 0) all_p.len - 1 else 0);
         if (all_p.len == 0) return;
-        const prs_for = self.getPrsForPrompt(all_p[si].canonical_name);
+        const prs_for = self.getPrsForPrompt(all_p[si].path);
         const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
         if (prs_for.len == 0) return;
         const pr_id = prs_for[pri].id;
@@ -2654,7 +2654,7 @@ pub const Dashboard = struct {
         const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
         const title = if (all_prompts.len > 0) blk: {
             const p = &all_prompts[sel_idx];
-            const prs = self.getPrsForPrompt(p.canonical_name);
+            const prs = self.getPrsForPrompt(p.path);
             break :blk if (prs.len > 0 and self.selected_pr_idx < prs.len)
                 try std.fmt.allocPrint(ctx.arena, " Comment on {s} ", .{prs[self.selected_pr_idx].id})
             else
@@ -2718,8 +2718,8 @@ pub const Dashboard = struct {
                 if (std.mem.indexOf(u8, p.bundle_names, fname) == null) continue;
             }
 
-            const prefix = data.pathPrefix(p.canonical_name);
-            const name = data.promptName(p.canonical_name);
+            const prefix = data.pathPrefix(p.path);
+            const name = data.promptName(p.path);
 
             if (!std.mem.eql(u8, prefix, last_prefix)) {
                 if (row_idx < MAX_LIBRARY_ROWS) {
@@ -2793,7 +2793,7 @@ pub const Dashboard = struct {
         // Trigger fetch for the selected prompt content
         const prompts = self.getPrompts();
         if (self.selected_prompt < prompts.len) {
-            api.fetchPromptContentAsync(self.api_state, prompts[self.selected_prompt].canonical_name);
+            api.fetchPromptContentAsync(self.api_state, prompts[self.selected_prompt].path);
         }
     }
 
@@ -2807,7 +2807,7 @@ pub const Dashboard = struct {
         }
         const sel_idx = @min(self.selected_prompt, all_prompts.len - 1);
         const p = &all_prompts[sel_idx];
-        const prs = self.getPrsForPrompt(p.canonical_name);
+        const prs = self.getPrsForPrompt(p.path);
         var row_idx: usize = 0;
         for (prs, 0..) |pr, pi| {
             if (row_idx + 1 >= self.pr_widgets.len) break;
@@ -2862,7 +2862,7 @@ pub const Dashboard = struct {
         }
         const sel_idx = @min(self.selected_prompt, all_prompts.len - 1);
         const p = &all_prompts[sel_idx];
-        const prs = self.getPrsForPrompt(p.canonical_name);
+        const prs = self.getPrsForPrompt(p.path);
         if (prs.len == 0) {
             self.pr_diff_count = 0;
             return;

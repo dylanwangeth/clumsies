@@ -40,8 +40,7 @@ pub const DirectoryData = struct {
 // Library data
 pub const LibraryPrompt = struct {
     prompt_id: []const u8,
-    canonical_name: []const u8,
-    kind: []const u8,
+    path: []const u8,
     content_hash: []const u8,
     updated_at: []const u8,
     refer_count: i64 = 0,
@@ -203,15 +202,14 @@ pub fn fetchWorkspaceAsync(api_state: *ApiState, ws_id: []const u8) void {
 }
 
 // Fetch prompt content on demand
-pub fn fetchPromptContentAsync(api_state: *ApiState, canonical_name: []const u8) void {
+pub fn fetchPromptContentAsync(api_state: *ApiState, prompt_path: []const u8) void {
     api_state.mutex.lock();
     if (api_state.fetch_busy or api_state.hub_url == null) {
         api_state.mutex.unlock();
         return;
     }
-    // Skip if already cached
     if (api_state.prompt_content_name) |cached| {
-        if (std.mem.eql(u8, cached, canonical_name)) {
+        if (std.mem.eql(u8, cached, prompt_path)) {
             api_state.mutex.unlock();
             return;
         }
@@ -220,13 +218,13 @@ pub fn fetchPromptContentAsync(api_state: *ApiState, canonical_name: []const u8)
     api_state.mutex.unlock();
 
     const alloc = api_state.arena.allocator();
-    const name_copy = alloc.dupe(u8, canonical_name) catch {
+    const path_copy = alloc.dupe(u8, prompt_path) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
         return;
     };
-    _ = std.Thread.spawn(.{}, fetchPromptContent, .{ api_state, name_copy }) catch {
+    _ = std.Thread.spawn(.{}, fetchPromptContent, .{ api_state, path_copy }) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
@@ -544,7 +542,7 @@ fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
     api_state.mutex.unlock();
 }
 
-fn fetchPromptContent(api_state: *ApiState, canonical_name: []const u8) void {
+fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
     const alloc = api_state.arena.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
@@ -560,7 +558,7 @@ fn fetchPromptContent(api_state: *ApiState, canonical_name: []const u8) void {
     api_state.mutex.unlock();
 
     var client = HubClient.init(alloc, hub_url, token);
-    const path = std.fmt.allocPrint(alloc, "/api/org/library/prompt/content?name={s}", .{canonical_name}) catch {
+    const path = std.fmt.allocPrint(alloc, "/api/org/library/prompt/content?path={s}", .{prompt_path}) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
@@ -586,7 +584,7 @@ fn fetchPromptContent(api_state: *ApiState, canonical_name: []const u8) void {
 
         api_state.mutex.lock();
         api_state.prompt_content = content;
-        api_state.prompt_content_name = canonical_name;
+        api_state.prompt_content_name = prompt_path;
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
     } else {
@@ -771,9 +769,8 @@ fn parseLibraryPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const Libr
     const Json = struct {
         prompts: []const struct {
             prompt_id: []const u8,
-            kind: []const u8,
             source: []const u8 = "",
-            canonical_name: []const u8,
+            path: []const u8,
             content_hash: []const u8,
             updated_at: []const u8,
         },
@@ -785,8 +782,7 @@ fn parseLibraryPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const Libr
     for (parsed.value.prompts) |p| {
         list.append(alloc, .{
             .prompt_id = alloc.dupe(u8, p.prompt_id) catch continue,
-            .canonical_name = alloc.dupe(u8, p.canonical_name) catch continue,
-            .kind = alloc.dupe(u8, p.kind) catch continue,
+            .path = alloc.dupe(u8, p.path) catch continue,
             .content_hash = alloc.dupe(u8, p.content_hash) catch continue,
             .updated_at = alloc.dupe(u8, p.updated_at) catch continue,
         }) catch continue;
@@ -916,8 +912,8 @@ pub fn toPromptEntries(alloc: std.mem.Allocator, prompts: []const LibraryPrompt)
     for (prompts) |p| {
         const refer_str = formatCount(alloc, p.refer_count) catch "";
         list.append(alloc, .{
-            .canonical_name = p.canonical_name,
-            .kind = p.kind,
+            .path = p.path,
+            .kind = data.kindFromPath(p.path),
             .refer_count = refer_str,
             .constraint_count = @intCast(@min(p.active_constraint_count, 255)),
             .bundle_count = @intCast(@min(p.bundle_count, 255)),
@@ -958,11 +954,10 @@ pub fn toBundleEntries(alloc: std.mem.Allocator, bundles: []const BundleData) []
 
 // Convert API PromptPr to mock-compatible PullRequestEntry slice.
 // If pr_detail is available for a PR, its diff/comments are populated.
-pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, canonical_name: []const u8, library: ?[]const LibraryPrompt, api_state: *ApiState) []const data.PullRequestEntry {
-    // Find prompt_id for the given canonical_name
+pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, prompt_path: []const u8, library: ?[]const LibraryPrompt, api_state: *ApiState) []const data.PullRequestEntry {
     const target_id: ?[]const u8 = if (library) |lib| blk: {
         for (lib) |lp| {
-            if (std.mem.eql(u8, lp.canonical_name, canonical_name))
+            if (std.mem.eql(u8, lp.path, prompt_path))
                 break :blk lp.prompt_id;
         }
         break :blk null;
@@ -970,12 +965,10 @@ pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, canonical_na
 
     var list: std.ArrayList(data.PullRequestEntry) = .empty;
     for (prs) |pr| {
-        // Filter by prompt_id if we found one, otherwise skip
         if (target_id) |tid| {
             if (!std.mem.eql(u8, pr.prompt_id, tid)) continue;
         } else continue;
 
-        // Populate diff/comments from cached PR detail if matching
         var diff: []const []const u8 = &.{};
         var comments: []const data.CommentEntry = &.{};
         var trace_refers: u16 = 0;
@@ -989,7 +982,7 @@ pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, canonical_na
 
         list.append(alloc, .{
             .id = pr.pr_id,
-            .prompt_name = canonical_name,
+            .prompt_name = prompt_path,
             .status = pr.status,
             .author = pr.author,
             .created = pr.created_at,
@@ -1066,7 +1059,7 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
         const name = if (library) |lib| blk: {
             for (lib) |lp| {
                 if (std.mem.eql(u8, lp.prompt_id, ps.prompt_id))
-                    break :blk lp.canonical_name;
+                    break :blk lp.path;
             }
             break :blk ps.prompt_id;
         } else ps.prompt_id;
