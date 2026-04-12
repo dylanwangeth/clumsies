@@ -171,12 +171,11 @@ const migration_sql =
     \\CREATE TABLE IF NOT EXISTS prompts (
     \\    prompt_id TEXT PRIMARY KEY,
     \\    org_id UUID NOT NULL REFERENCES orgs(org_id),
-    \\    canonical_name TEXT NOT NULL,
-    \\    kind TEXT NOT NULL CHECK (kind IN ('rule', 'workflow')),
+    \\    path TEXT NOT NULL,
     \\    content TEXT NOT NULL DEFAULT '',
     \\    content_hash TEXT NOT NULL DEFAULT '',
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    \\    UNIQUE(org_id, canonical_name)
+    \\    UNIQUE(org_id, path)
     \\);
     \\
     \\CREATE TABLE IF NOT EXISTS workspace_prompts (
@@ -250,15 +249,25 @@ const migration_sql =
     \\CREATE TABLE IF NOT EXISTS prompt_prs (
     \\    pr_id TEXT PRIMARY KEY,
     \\    org_id UUID NOT NULL REFERENCES orgs(org_id),
-    \\    prompt_id TEXT NOT NULL REFERENCES prompts(prompt_id),
     \\    author_id TEXT NOT NULL REFERENCES users(user_id),
-    \\    base_hash TEXT NOT NULL,
-    \\    content TEXT NOT NULL,
     \\    description TEXT NOT NULL DEFAULT '',
     \\    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'rejected')),
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS prompt_pr_operations (
+    \\    pr_id TEXT NOT NULL REFERENCES prompt_prs(pr_id) ON DELETE CASCADE,
+    \\    op_index INTEGER NOT NULL,
+    \\    type TEXT NOT NULL CHECK (type IN ('modify', 'rename', 'create', 'delete')),
+    \\    prompt_id TEXT,
+    \\    base_hash TEXT,
+    \\    content TEXT,
+    \\    path TEXT,
+    \\    PRIMARY KEY (pr_id, op_index)
+    \\);
+    \\CREATE INDEX IF NOT EXISTS prompt_pr_operations_prompt_id_idx
+    \\    ON prompt_pr_operations(prompt_id);
     \\
     \\CREATE TABLE IF NOT EXISTS prompt_pr_comments (
     \\    comment_id TEXT PRIMARY KEY,
@@ -292,6 +301,7 @@ const migration_sql =
     \\CREATE TABLE IF NOT EXISTS prompt_history (
     \\    prompt_id TEXT NOT NULL REFERENCES prompts(prompt_id),
     \\    content_hash TEXT NOT NULL,
+    \\    path TEXT NOT NULL DEFAULT '',
     \\    content TEXT NOT NULL DEFAULT '',
     \\    merged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    pr_id TEXT,

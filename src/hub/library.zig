@@ -70,8 +70,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 
 const PromptMeta = struct {
     prompt_id: []const u8,
-    kind: []const u8,
-    canonical_name: []const u8,
+    path: []const u8,
     content_hash: []const u8,
     updated_at: []const u8,
     source: []const u8,
@@ -86,38 +85,37 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
     };
-    const kind_filter = qs.get("kind");
+    const path_prefix = qs.get("path_prefix");
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
 
-    var result = if (kind_filter) |kind|
-        conn.query(
-            "SELECT p.prompt_id, p.kind, p.canonical_name, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.kind = $2 ORDER BY p.canonical_name",
-            .{ user.org_id, kind },
-        ) catch {
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        }
-    else
-        conn.query(
-            "SELECT p.prompt_id, p.kind, p.canonical_name, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid ORDER BY p.canonical_name",
-            .{user.org_id},
+    var result = if (path_prefix) |prefix| blk: {
+        const like_arg = try std.fmt.allocPrint(req.arena, "{s}%", .{prefix});
+        break :blk conn.query(
+            "SELECT p.prompt_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.path LIKE $2 ORDER BY p.path",
+            .{ user.org_id, like_arg },
         ) catch {
             return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
         };
+    } else conn.query(
+        "SELECT p.prompt_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid ORDER BY p.path",
+        .{user.org_id},
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
     defer result.deinit();
 
     var list: std.ArrayList(PromptMeta) = .empty;
     while (try result.next()) |row| {
         try list.append(req.arena, .{
             .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-            .kind = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-            .canonical_name = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            .content_hash = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-            .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-            .source = try req.arena.dupe(u8, try row.get([]const u8, 5)),
+            .path = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+            .content_hash = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .source = try req.arena.dupe(u8, try row.get([]const u8, 4)),
         });
     }
 
@@ -126,6 +124,7 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 
 const HistoryEntry = struct {
     content_hash: []const u8,
+    path: []const u8,
     merged_at: []const u8,
     pr_id: ?[]const u8,
 };
@@ -139,34 +138,38 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
     };
-    const name = qs.get("name") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "name query parameter is required");
-    };
+    const prompt_id_q = qs.get("prompt_id");
+    const path_q = qs.get("path");
+    if (prompt_id_q == null and path_q == null) {
+        return apiError(res, 400, "BAD_REQUEST", "prompt_id or path query parameter is required");
+    }
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
 
-    var row = conn.row(
-        "SELECT p.prompt_id, p.kind, p.canonical_name, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.canonical_name = $2",
-        .{ user.org_id, name },
-    ) catch {
+    var row = (if (prompt_id_q) |pid| conn.row(
+        "SELECT p.prompt_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.prompt_id = $2",
+        .{ user.org_id, pid },
+    ) else conn.row(
+        "SELECT p.prompt_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.path = $2",
+        .{ user.org_id, path_q.? },
+    )) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
         return apiError(res, 404, "NOT_FOUND", "prompt not found");
     };
 
     const prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
-    const kind = try req.arena.dupe(u8, try row.get([]const u8, 1));
-    const canonical_name = try req.arena.dupe(u8, try row.get([]const u8, 2));
-    const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 3));
-    const updated_at = try req.arena.dupe(u8, try row.get([]const u8, 4));
-    const source = try req.arena.dupe(u8, try row.get([]const u8, 5));
+    const path = try req.arena.dupe(u8, try row.get([]const u8, 1));
+    const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 2));
+    const updated_at = try req.arena.dupe(u8, try row.get([]const u8, 3));
+    const source = try req.arena.dupe(u8, try row.get([]const u8, 4));
     row.deinit() catch {};
 
     var history_result = conn.query(
-        "SELECT content_hash, merged_at::text, pr_id FROM prompt_history WHERE prompt_id = $1 ORDER BY merged_at DESC",
+        "SELECT content_hash, path, merged_at::text, pr_id FROM prompt_history WHERE prompt_id = $1 ORDER BY merged_at DESC",
         .{prompt_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -176,13 +179,15 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     var history: std.ArrayList(HistoryEntry) = .empty;
     while (try history_result.next()) |hrow| {
         const h_hash = try req.arena.dupe(u8, try hrow.get([]const u8, 0));
-        const h_merged = try req.arena.dupe(u8, try hrow.get([]const u8, 1));
-        const h_pr_id: ?[]const u8 = if (hrow.get([]const u8, 2)) |v|
+        const h_path = try req.arena.dupe(u8, try hrow.get([]const u8, 1));
+        const h_merged = try req.arena.dupe(u8, try hrow.get([]const u8, 2));
+        const h_pr_id: ?[]const u8 = if (hrow.get([]const u8, 3)) |v|
             try req.arena.dupe(u8, v)
         else |_|
             null;
         try history.append(req.arena, .{
             .content_hash = h_hash,
+            .path = h_path,
             .merged_at = h_merged,
             .pr_id = h_pr_id,
         });
@@ -190,8 +195,7 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
 
     try res.json(.{
         .prompt_id = prompt_id,
-        .kind = kind,
-        .canonical_name = canonical_name,
+        .path = path,
         .content_hash = content_hash,
         .updated_at = updated_at,
         .source = source,
@@ -208,19 +212,24 @@ pub fn handleGetPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *h
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
     };
-    const name = qs.get("name") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "name query parameter is required");
-    };
+    const prompt_id_q = qs.get("prompt_id");
+    const path_q = qs.get("path");
+    if (prompt_id_q == null and path_q == null) {
+        return apiError(res, 400, "BAD_REQUEST", "prompt_id or path query parameter is required");
+    }
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
 
-    var row = conn.row(
-        "SELECT prompt_id, content_hash, content FROM prompts WHERE org_id = $1::uuid AND canonical_name = $2",
-        .{ user.org_id, name },
-    ) catch {
+    var row = (if (prompt_id_q) |pid| conn.row(
+        "SELECT prompt_id, content_hash, content, path FROM prompts WHERE org_id = $1::uuid AND prompt_id = $2",
+        .{ user.org_id, pid },
+    ) else conn.row(
+        "SELECT prompt_id, content_hash, content, path FROM prompts WHERE org_id = $1::uuid AND path = $2",
+        .{ user.org_id, path_q.? },
+    )) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
         return apiError(res, 404, "NOT_FOUND", "prompt not found");
@@ -238,11 +247,13 @@ pub fn handleGetPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *h
 
     const prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     const body = try req.arena.dupe(u8, try row.get([]const u8, 2));
+    const path = try req.arena.dupe(u8, try row.get([]const u8, 3));
     row.deinit() catch {};
 
     res.header("ETag", content_hash);
     try res.json(.{
         .prompt_id = prompt_id,
+        .path = path,
         .content_hash = content_hash,
         .body = body,
     }, .{});

@@ -96,7 +96,7 @@ fn traceSession(faker: *Faker, conn: *pg.Conn) void {
     var session_buf: [24]u8 = undefined;
     const session_id = faker.hexId(&session_buf, "ses-");
 
-    const events = [_][]const u8{ "setup", "begin", "refer", "refer", "complete" };
+    const events = [_][]const u8{ "setup", "refer", "refer" };
     for (events, 0..) |event_type, ei| {
         const prompt_id: ?[]const u8 = if (std.mem.eql(u8, event_type, "refer"))
             prompt_ids[ei % prompt_count]
@@ -233,12 +233,12 @@ fn reviewComment(faker: *Faker, conn: *pg.Conn) void {
 fn openPromptPr(faker: *Faker, conn: *pg.Conn) void {
     var pid_buf: [64]u8 = undefined;
     var hash_buf: [64]u8 = undefined;
-    var kind_buf: [16]u8 = undefined;
+    var path_buf: [96]u8 = undefined;
     var prompt_id: []const u8 = undefined;
     var base_hash: []const u8 = undefined;
-    var kind: []const u8 = undefined;
+    var path: []const u8 = undefined;
     {
-        var row = (conn.row("SELECT prompt_id, content_hash, kind FROM prompts ORDER BY random() LIMIT 1", .{}) catch return) orelse return;
+        var row = (conn.row("SELECT prompt_id, content_hash, path FROM prompts ORDER BY random() LIMIT 1", .{}) catch return) orelse return;
         prompt_id = copyRowStr(&pid_buf, &row, 0) orelse {
             row.deinit() catch {};
             return;
@@ -247,7 +247,7 @@ fn openPromptPr(faker: *Faker, conn: *pg.Conn) void {
             row.deinit() catch {};
             return;
         };
-        kind = copyRowStr(&kind_buf, &row, 2) orelse {
+        path = copyRowStr(&path_buf, &row, 2) orelse {
             row.deinit() catch {};
             return;
         };
@@ -268,13 +268,22 @@ fn openPromptPr(faker: *Faker, conn: *pg.Conn) void {
     var id_buf: [24]u8 = undefined;
     const pr_id = faker.hexId(&id_buf, "ppr-");
     const desc = faker.prDescription();
+    const kind: []const u8 = if (std.mem.startsWith(u8, path, "rule/")) "rule" else "workflow";
     var content_buf: [512]u8 = undefined;
     const content = faker.promptContent(&content_buf, kind, "Proposed Update");
 
     _ = conn.exec(
-        "INSERT INTO prompt_prs (pr_id, org_id, prompt_id, author_id, base_hash, content, description, status) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, 'open')",
-        .{ pr_id, data.ORG_ID, prompt_id, author_id, base_hash, content, desc },
+        "INSERT INTO prompt_prs (pr_id, org_id, author_id, description, status) VALUES ($1, $2::uuid, $3, $4, 'open')",
+        .{ pr_id, data.ORG_ID, author_id, desc },
     ) catch |err| {
+        log.warn("pump: {}", .{err});
+        return;
+    };
+
+    _ = conn.exec(
+        \\INSERT INTO prompt_pr_operations (pr_id, op_index, type, prompt_id, base_hash, content, path)
+        \\VALUES ($1, 0, 'modify', $2, $3, $4, NULL)
+    , .{ pr_id, prompt_id, base_hash, content }) catch |err| {
         log.warn("pump: {}", .{err});
     };
 }

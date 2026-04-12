@@ -14,7 +14,8 @@ const SeedState = struct {
 
     prompt_ids: [data.PROMPT_COUNT][24]u8 = undefined,
     prompt_hashes: [data.PROMPT_COUNT][24]u8 = undefined,
-    prompt_kinds: [data.PROMPT_COUNT][]const u8 = undefined,
+    prompt_paths: [data.PROMPT_COUNT][80]u8 = undefined,
+    prompt_path_lens: [data.PROMPT_COUNT]usize = .{0} ** data.PROMPT_COUNT,
     prompt_count: usize = 0,
 
     bundle_ids: [data.BUNDLE_COUNT][24]u8 = undefined,
@@ -51,7 +52,7 @@ pub fn run(pool: *pg.Pool) !void {
     _ = conn.exec(
         \\TRUNCATE orgs, users, tokens, workspaces, workspace_members, prompts, workspace_prompts,
         \\  context_branches, context_files, context_prs, context_pr_files, context_pr_comments,
-        \\  bundles, bundle_prompts, prompt_prs, prompt_pr_comments,
+        \\  bundles, bundle_prompts, prompt_prs, prompt_pr_operations, prompt_pr_comments,
         \\  trace_events, library_manifest, prompt_history
         \\CASCADE
     , .{}) catch |err| {
@@ -131,42 +132,36 @@ fn seedUsers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 fn seedPrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding {d} prompts...", .{data.PROMPT_COUNT});
 
-    var used_names: [data.PROMPT_COUNT][80]u8 = undefined;
-    var used_name_lens: [data.PROMPT_COUNT]usize = .{0} ** data.PROMPT_COUNT;
-    var used_count: usize = 0;
-
     for (0..data.PROMPT_COUNT) |i| {
         const id = faker.hexId(&state.prompt_ids[i], "p-");
         const hash = faker.hexId(&state.prompt_hashes[i], "sha256:");
 
-        // Generate unique canonical_name
-        var name_buf: [80]u8 = undefined;
-        var canonical_name: []const u8 = undefined;
+        var path_buf: [80]u8 = undefined;
+        var path: []const u8 = undefined;
         var attempts: usize = 0;
         while (attempts < 50) : (attempts += 1) {
-            canonical_name = faker.promptCanonicalName(&name_buf);
+            path = faker.promptPath(&path_buf);
             var duplicate = false;
-            for (0..used_count) |j| {
-                if (std.mem.eql(u8, used_names[j][0..used_name_lens[j]], canonical_name)) {
+            for (0..state.prompt_count) |j| {
+                if (std.mem.eql(u8, state.prompt_paths[j][0..state.prompt_path_lens[j]], path)) {
                     duplicate = true;
                     break;
                 }
             }
             if (!duplicate) break;
         }
-        @memcpy(used_names[used_count][0..canonical_name.len], canonical_name);
-        used_name_lens[used_count] = canonical_name.len;
-        used_count += 1;
+        @memcpy(state.prompt_paths[i][0..path.len], path);
+        state.prompt_path_lens[i] = path.len;
+        const stable_path = state.prompt_paths[i][0..path.len];
 
-        const kind = faker.promptKind();
-        state.prompt_kinds[i] = kind;
+        const kind: []const u8 = if (std.mem.startsWith(u8, stable_path, "rule/")) "rule" else "workflow";
 
         var content_buf: [512]u8 = undefined;
-        const content = faker.promptContent(&content_buf, kind, canonical_name);
+        const content = faker.promptContent(&content_buf, kind, stable_path);
 
         _ = conn.exec(
-            "INSERT INTO prompts (prompt_id, org_id, canonical_name, kind, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5, $6)",
-            .{ id, data.ORG_ID, canonical_name, kind, content, hash },
+            "INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5)",
+            .{ id, data.ORG_ID, stable_path, content, hash },
         ) catch |err| {
             log.warn("prompt insert failed: {}", .{err});
             continue;
@@ -247,7 +242,6 @@ fn seedLibraryManifest(conn: *pg.Conn) !void {
 fn seedPromptHistory(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding prompt history...", .{});
 
-    // Give ~40% of prompts 1-3 history entries
     for (0..state.prompt_count) |i| {
         if (!faker.chance(40)) continue;
 
@@ -260,10 +254,11 @@ fn seedPromptHistory(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 
             var content_buf: [256]u8 = undefined;
             const content = std.fmt.bufPrint(&content_buf, "# Historical version {d}\n\nPrevious version of this prompt.", .{h + 1}) catch "# History";
+            const path = state.prompt_paths[i][0..state.prompt_path_lens[i]];
 
             _ = conn.exec(
-                "INSERT INTO prompt_history (prompt_id, content_hash, content, merged_at) VALUES ($1, $2, $3, now() - $4::interval) ON CONFLICT DO NOTHING",
-                .{ state.promptId(i), hash, content, interval },
+                "INSERT INTO prompt_history (prompt_id, content_hash, path, content, merged_at) VALUES ($1, $2, $3, $4, now() - $5::interval) ON CONFLICT DO NOTHING",
+                .{ state.promptId(i), hash, path, content, interval },
             ) catch |err| {
                 log.warn("seed: {}", .{err});
             };
@@ -481,22 +476,30 @@ fn seedPromptPrs(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         var id_buf: [24]u8 = undefined;
         const pr_id = faker.hexId(&id_buf, "ppr-");
         const pi = faker.intRange(usize, 0, state.prompt_count);
-        // Only non-maintainer members create prompt PRs (index >= 2)
         const author_idx = faker.intRange(usize, 2, state.user_count);
         const desc = faker.prDescription();
         const status = faker.pick([]const u8, &data.PROMPT_PR_STATUSES);
 
+        _ = conn.exec(
+            "INSERT INTO prompt_prs (pr_id, org_id, author_id, description, status) VALUES ($1, $2::uuid, $3, $4, $5)",
+            .{ pr_id, data.ORG_ID, state.userId(author_idx), desc, status },
+        ) catch |err| {
+            log.warn("seed: {}", .{err});
+            continue;
+        };
+
         var content_buf: [512]u8 = undefined;
-        const content = faker.promptContent(&content_buf, state.prompt_kinds[pi], "Updated Version");
+        const path = state.prompt_paths[pi][0..state.prompt_path_lens[pi]];
+        const kind: []const u8 = if (std.mem.startsWith(u8, path, "rule/")) "rule" else "workflow";
+        const content = faker.promptContent(&content_buf, kind, "Updated Version");
 
         _ = conn.exec(
-            "INSERT INTO prompt_prs (pr_id, org_id, prompt_id, author_id, base_hash, content, description, status) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8)",
-            .{ pr_id, data.ORG_ID, state.promptId(pi), state.userId(author_idx), state.promptHash(pi), content, desc, status },
-        ) catch |err| {
+            \\INSERT INTO prompt_pr_operations (pr_id, op_index, type, prompt_id, base_hash, content, path)
+            \\VALUES ($1, 0, 'modify', $2, $3, $4, NULL)
+        , .{ pr_id, state.promptId(pi), state.promptHash(pi), content }) catch |err| {
             log.warn("seed: {}", .{err});
         };
 
-        // 0-3 review comments
         const comment_count = faker.intRange(usize, 0, 4);
         for (0..comment_count) |_| {
             var cmt_id_buf: [24]u8 = undefined;

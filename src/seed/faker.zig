@@ -121,19 +121,15 @@ const WORKFLOW_NAMES = [_][]const u8{
     "CODE_REVIEW", "DEPLOY",  "ROLLBACK",       "INCIDENT_RESPONSE",
 };
 
-pub fn promptCanonicalName(self: *Self, buf: *[80]u8) []const u8 {
+pub fn promptPath(self: *Self, buf: *[80]u8) []const u8 {
     if (self.chance(70)) {
         const group = self.pick([]const u8, &RULE_GROUPS);
         const name = self.pick([]const u8, &RULE_NAMES);
-        return std.fmt.bufPrint(buf, "rule/{s}/{s}", .{ group, name }) catch "rule/coding/STYLE";
+        return std.fmt.bufPrint(buf, "rule/{s}/{s}.md", .{ group, name }) catch "rule/coding/STYLE.md";
     } else {
         const name = self.pick([]const u8, &WORKFLOW_NAMES);
-        return std.fmt.bufPrint(buf, "workflow/{s}", .{name}) catch "workflow/CODING";
+        return std.fmt.bufPrint(buf, "workflow/{s}.md", .{name}) catch "workflow/CODING.md";
     }
-}
-
-pub fn promptKind(self: *Self) []const u8 {
-    return if (self.chance(70)) "rule" else "workflow";
 }
 
 const RULE_CONTENT_TEMPLATES = [_][]const u8{
