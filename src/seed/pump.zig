@@ -135,25 +135,18 @@ fn contextFileEdit(faker: *Faker, conn: *pg.Conn) void {
         row.deinit() catch {};
     }
 
-    var branch_buf: [40]u8 = undefined;
-    const branch = faker.branchName(&branch_buf);
-
-    _ = conn.exec(
-        "INSERT INTO context_branches (ws_id, branch_name, base_revision, revision) VALUES ($1, $2, 0, 1) ON CONFLICT (ws_id, branch_name) DO UPDATE SET revision = context_branches.revision + 1",
-        .{ ws_id, branch },
-    ) catch |err| {
-        log.warn("pump: {}", .{err});
-    };
-
     var path_buf: [80]u8 = undefined;
     const path = faker.contextPath(&path_buf);
     var content_buf: [256]u8 = undefined;
     const content = faker.contextContent(&content_buf);
+    var cid_buf: [24]u8 = undefined;
+    const cid = faker.hexId(&cid_buf, "ctx-");
 
     _ = conn.exec(
-        "INSERT INTO context_files (ws_id, branch_name, path, content, content_hash, author) VALUES ($1, $2, $3, $4, md5($4), $5) ON CONFLICT (ws_id, branch_name, path) DO UPDATE SET content = $4, content_hash = md5($4), updated_at = now()",
-        .{ ws_id, branch, path, content, author },
-    ) catch |err| {
+        \\INSERT INTO context_files (context_id, ws_id, path, content, content_hash, author)
+        \\VALUES ($1, $2, $3, $4, md5($4), $5)
+        \\ON CONFLICT (ws_id, path) DO UPDATE SET content = $4, content_hash = md5($4), author = $5, updated_at = now()
+    , .{ cid, ws_id, path, content, author }) catch |err| {
         log.warn("pump: {}", .{err});
     };
 }
@@ -350,15 +343,8 @@ fn cleanup(conn: *pg.Conn) void {
     };
 
     _ = conn.exec(
-        "DELETE FROM context_files WHERE (ws_id, branch_name, path) IN (SELECT ws_id, branch_name, path FROM context_files ORDER BY updated_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM context_files) - $1))",
+        "DELETE FROM context_files WHERE context_id IN (SELECT context_id FROM context_files ORDER BY updated_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM context_files) - $1))",
         .{data.CAP_CONTEXT_FILES},
-    ) catch |err| {
-        log.warn("pump: {}", .{err});
-    };
-
-    _ = conn.exec(
-        "DELETE FROM context_branches WHERE (ws_id, branch_name) IN (SELECT ws_id, branch_name FROM context_branches WHERE branch_name != 'main' ORDER BY created_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM context_branches) - $1))",
-        .{data.CAP_CONTEXT_BRANCHES},
     ) catch |err| {
         log.warn("pump: {}", .{err});
     };

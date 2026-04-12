@@ -184,43 +184,41 @@ const migration_sql =
     \\    PRIMARY KEY (ws_id, prompt_id)
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS context_branches (
-    \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
-    \\    branch_name TEXT NOT NULL,
-    \\    base_revision INTEGER NOT NULL DEFAULT 0,
-    \\    revision INTEGER NOT NULL DEFAULT 0,
-    \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    \\    PRIMARY KEY (ws_id, branch_name)
-    \\);
-    \\
     \\CREATE TABLE IF NOT EXISTS context_files (
-    \\    ws_id TEXT NOT NULL,
-    \\    branch_name TEXT NOT NULL,
+    \\    context_id TEXT PRIMARY KEY,
+    \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
     \\    path TEXT NOT NULL,
     \\    content TEXT NOT NULL,
     \\    content_hash TEXT NOT NULL,
     \\    author TEXT NOT NULL,
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    \\    PRIMARY KEY (ws_id, branch_name, path),
-    \\    FOREIGN KEY (ws_id, branch_name) REFERENCES context_branches(ws_id, branch_name) ON DELETE CASCADE
+    \\    UNIQUE(ws_id, path)
     \\);
+    \\CREATE INDEX IF NOT EXISTS context_files_ws_idx
+    \\    ON context_files(ws_id);
     \\
     \\CREATE TABLE IF NOT EXISTS context_prs (
     \\    pr_id TEXT PRIMARY KEY,
     \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
     \\    author TEXT NOT NULL,
-    \\    branch_name TEXT NOT NULL,
     \\    description TEXT NOT NULL DEFAULT '',
     \\    status TEXT NOT NULL DEFAULT 'open'
-    \\        CHECK (status IN ('open', 'merged', 'closed', 'conflict')),
+    \\        CHECK (status IN ('open', 'merged', 'rejected', 'conflicted')),
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS context_pr_files (
+    \\CREATE TABLE IF NOT EXISTS context_pr_operations (
     \\    pr_id TEXT NOT NULL REFERENCES context_prs(pr_id) ON DELETE CASCADE,
-    \\    path TEXT NOT NULL,
-    \\    PRIMARY KEY (pr_id, path)
+    \\    op_index INTEGER NOT NULL,
+    \\    type TEXT NOT NULL CHECK (type IN ('modify', 'rename', 'create', 'delete')),
+    \\    context_id TEXT,
+    \\    base_hash TEXT,
+    \\    content TEXT,
+    \\    path TEXT,
+    \\    PRIMARY KEY (pr_id, op_index)
     \\);
+    \\CREATE INDEX IF NOT EXISTS context_pr_operations_context_id_idx
+    \\    ON context_pr_operations(context_id);
     \\
     \\CREATE TABLE IF NOT EXISTS context_pr_comments (
     \\    comment_id TEXT PRIMARY KEY,

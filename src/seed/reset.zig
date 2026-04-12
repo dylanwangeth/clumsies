@@ -51,7 +51,7 @@ pub fn run(pool: *pg.Pool) !void {
     log.info("truncating all tables...", .{});
     _ = conn.exec(
         \\TRUNCATE orgs, users, tokens, workspaces, workspace_members, prompts, workspace_prompts,
-        \\  context_branches, context_files, context_prs, context_pr_files, context_pr_comments,
+        \\  context_files, context_prs, context_pr_operations, context_pr_comments,
         \\  bundles, bundle_prompts, prompt_prs, prompt_pr_operations, prompt_pr_comments,
         \\  trace_events, library_manifest, prompt_history
         \\CASCADE
@@ -69,7 +69,6 @@ pub fn run(pool: *pg.Pool) !void {
     try seedWorkspaces(conn, &faker, &state);
     try seedWorkspacePrompts(conn, &faker, &state);
     try seedWorkspaceMembers(conn, &faker, &state);
-    try seedContextBranches(conn, &faker, &state);
     try seedContextFiles(conn, &faker, &state);
     try seedContextPrs(conn, &faker, &state);
     try seedPromptPrs(conn, &faker, &state);
@@ -368,38 +367,10 @@ fn seedWorkspaceMembers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void 
     }
 }
 
-fn seedContextBranches(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
-    log.info("seeding context branches...", .{});
-
-    for (0..state.ws_count) |wi| {
-        // Every workspace gets a main branch
-        _ = conn.exec(
-            "INSERT INTO context_branches (ws_id, branch_name, base_revision, revision) VALUES ($1, 'main', 0, $2) ON CONFLICT DO NOTHING",
-            .{ state.wsId(wi), faker.intRange(i32, 1, 5) },
-        ) catch |err| {
-            log.warn("seed: {}", .{err});
-        };
-
-        // 1-2 feature branches
-        const branch_count = faker.intRange(usize, 1, 3);
-        for (0..branch_count) |_| {
-            var name_buf: [40]u8 = undefined;
-            const branch_name = faker.branchName(&name_buf);
-            _ = conn.exec(
-                "INSERT INTO context_branches (ws_id, branch_name, base_revision, revision) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                .{ state.wsId(wi), branch_name, faker.intRange(i32, 0, 3), faker.intRange(i32, 1, 6) },
-            ) catch |err| {
-                log.warn("seed: {}", .{err});
-            };
-        }
-    }
-}
-
 fn seedContextFiles(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding context files...", .{});
 
     for (0..state.ws_count) |wi| {
-        // 2-4 files on main
         const file_count = faker.intRange(usize, 2, 5);
         for (0..file_count) |_| {
             var path_buf: [80]u8 = undefined;
@@ -408,9 +379,12 @@ fn seedContextFiles(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             const content = faker.contextContent(&content_buf);
             const author = state.user_names[faker.intRange(usize, 0, state.user_count)];
 
+            var cid_buf: [24]u8 = undefined;
+            const cid = faker.hexId(&cid_buf, "ctx-");
+
             _ = conn.exec(
-                "INSERT INTO context_files (ws_id, branch_name, path, content, content_hash, author) VALUES ($1, 'main', $2, $3, md5($3), $4) ON CONFLICT DO NOTHING",
-                .{ state.wsId(wi), path, content, author },
+                "INSERT INTO context_files (context_id, ws_id, path, content, content_hash, author) VALUES ($1, $2, $3, $4, md5($4), $5) ON CONFLICT DO NOTHING",
+                .{ cid, state.wsId(wi), path, content, author },
             ) catch |err| {
                 log.warn("seed: {}", .{err});
             };
@@ -426,32 +400,31 @@ fn seedContextPrs(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         const pr_id = faker.hexId(&id_buf, "cpr-");
         const wi = faker.intRange(usize, 0, state.ws_count);
         const author = state.user_names[faker.intRange(usize, 0, state.user_count)];
-        var branch_buf: [40]u8 = undefined;
-        const branch = faker.branchName(&branch_buf);
         const desc = faker.prDescription();
         const status = faker.pick([]const u8, &data.CONTEXT_PR_STATUSES);
 
         _ = conn.exec(
-            "INSERT INTO context_prs (pr_id, ws_id, author, branch_name, description, status) VALUES ($1, $2, $3, $4, $5, $6)",
-            .{ pr_id, state.wsId(wi), author, branch, desc, status },
+            "INSERT INTO context_prs (pr_id, ws_id, author, description, status) VALUES ($1, $2, $3, $4, $5)",
+            .{ pr_id, state.wsId(wi), author, desc, status },
         ) catch |err| {
             log.warn("seed: {}", .{err});
+            continue;
         };
 
-        // 1-3 files per PR
-        const file_count = faker.intRange(usize, 1, 4);
-        for (0..file_count) |_| {
+        const op_count = faker.intRange(usize, 1, 4);
+        for (0..op_count) |opi| {
             var path_buf: [80]u8 = undefined;
             const path = faker.contextPath(&path_buf);
+            var content_buf: [256]u8 = undefined;
+            const new_content = faker.contextContent(&content_buf);
             _ = conn.exec(
-                "INSERT INTO context_pr_files (pr_id, path) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                .{ pr_id, path },
-            ) catch |err| {
+                \\INSERT INTO context_pr_operations (pr_id, op_index, type, context_id, base_hash, content, path)
+                \\VALUES ($1, $2, 'create', NULL, NULL, $3, $4)
+            , .{ pr_id, @as(i32, @intCast(opi)), new_content, path }) catch |err| {
                 log.warn("seed: {}", .{err});
             };
         }
 
-        // 0-3 comments per PR
         const comment_count = faker.intRange(usize, 0, 4);
         for (0..comment_count) |_| {
             var cmt_id_buf: [24]u8 = undefined;
