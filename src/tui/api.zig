@@ -1,6 +1,7 @@
 const std = @import("std");
 const HubClient = @import("hub_client.zig").HubClient;
 const data = @import("mock_data.zig");
+const trace_reader = @import("trace_reader.zig");
 
 pub const ConnectionStatus = enum {
     disconnected,
@@ -143,6 +144,8 @@ pub const ApiState = struct {
     // Workspace stats (for Insights team activity)
     ws_stats_members: ?[]const WsStatsMember = null,
     ws_stats_models: ?[]const WsStatsModel = null,
+    // Local trace stats from ~/.clumsies/log/*.jsonl
+    local_stats: ?trace_reader.LocalStats = null,
     prompt_content: ?[]const u8 = null,
     prompt_content_name: ?[]const u8 = null,
     // PR detail (on-demand)
@@ -236,6 +239,13 @@ fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8)
     api_state.mutex.unlock();
 
     const alloc = api_state.arena.allocator();
+
+    // Read local trace.jsonl first (available even if server is unreachable)
+    const local = trace_reader.readLocalStats(alloc);
+    api_state.mutex.lock();
+    api_state.local_stats = local;
+    api_state.mutex.unlock();
+
     var client = HubClient.init(alloc, hub_url, access_token);
 
     // GET /api/auth/me
@@ -1031,7 +1041,7 @@ fn toInsightsModels(alloc: std.mem.Allocator, models: []const WsStatsModel) []co
 
 // Build InsightsData from OrgStats.
 // Members/models/alerts fall back to mock (need workspace-level stats).
-pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]const LibraryPrompt, ws_members: ?[]const WsStatsMember, ws_models: ?[]const WsStatsModel) data.InsightsData {
+pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]const LibraryPrompt, ws_members: ?[]const WsStatsMember, ws_models: ?[]const WsStatsModel, local: ?trace_reader.LocalStats) data.InsightsData {
     var trend: [30]u16 = .{0} ** 30;
     const tcount = @min(stats.trend.len, 30);
     for (0..tcount) |i| {
@@ -1079,6 +1089,25 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
             .trend = .{0} ** 30,
             .constraints = &.{},
         }) catch continue;
+    }
+
+    // Prefer local trace data for chart and prompts (personal real-time)
+    // Fall back to server stats for team-level data
+    if (local) |l| {
+        return .{
+            .constraint_count = l.constraint_count,
+            .active_constraint_count = l.active_constraint_count,
+            .idle_constraint_count = if (l.constraint_count > l.active_constraint_count) l.constraint_count - l.active_constraint_count else 0,
+            .signal_ratio = l.signal_ratio,
+            .refers_per_hour = refers_per_hour,
+            .today_delta_pct = 0,
+            .last_event_minutes_ago = 0,
+            .refer_trend = l.refer_trend,
+            .prompts = l.prompts,
+            .members = if (ws_members) |wm| toInsightsMembers(alloc, wm) else &.{},
+            .models = if (ws_models) |wmod| toInsightsModels(alloc, wmod) else &.{},
+            .alerts = &.{},
+        };
     }
 
     return .{

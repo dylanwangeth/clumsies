@@ -1733,7 +1733,17 @@ pub const Dashboard = struct {
         var live_insights: ?data.InsightsData = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
-            if (self.api_state.org_stats) |stats| break :blk api.insightsFromStats(ctx.arena, stats, self.api_state.prompts, self.api_state.ws_stats_members, self.api_state.ws_stats_models);
+            if (self.api_state.org_stats) |stats|
+                break :blk api.insightsFromStats(ctx.arena, stats, self.api_state.prompts, self.api_state.ws_stats_members, self.api_state.ws_stats_models, self.api_state.local_stats);
+            // No server stats, but local trace available — show personal data
+            if (self.api_state.local_stats) |local| break :blk data.InsightsData{
+                .constraint_count = local.constraint_count,
+                .active_constraint_count = local.active_constraint_count,
+                .idle_constraint_count = if (local.constraint_count > local.active_constraint_count) local.constraint_count - local.active_constraint_count else 0,
+                .signal_ratio = local.signal_ratio,
+                .refer_trend = local.refer_trend,
+                .prompts = local.prompts,
+            };
             break :blk null;
         };
         var empty_insights: data.InsightsData = .{
