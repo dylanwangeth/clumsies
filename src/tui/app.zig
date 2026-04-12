@@ -1614,7 +1614,6 @@ pub const Dashboard = struct {
                 var kv_row: u16 = 2;
                 var last_prefix: []const u8 = "";
                 if (live_ws) |ws_d| {
-                    // Cross-ref content_hash with library to get display path
                     const lib_prompts = self.getPrompts();
                     for (ws_d.ws_prompts, 0..) |wp, i| {
                         if (kv_row >= inner_h + 2) break;
@@ -1636,7 +1635,12 @@ pub const Dashboard = struct {
                                 .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
                             });
                         }
-                        w.writeText(&surface, ctx, 2, kv_row, data.promptName(name), name_style);
+                        const display_name = data.promptName(name);
+                        w.writeText(&surface, ctx, 2, kv_row, display_name, name_style);
+                        if (self.hasDraftFor(name)) {
+                            const nw: u16 = @intCast(ctx.stringWidth(display_name));
+                            w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
+                        }
                         kv_row += 1;
                     }
                 } else {
@@ -2355,6 +2359,34 @@ pub const Dashboard = struct {
             w.writeText(&surface, ctx, 2, row, "Effective permissions = min(org role, token scopes)", theme.fg(theme.MUTED));
         }
         return surface;
+    }
+
+    // Count active drafts (status != "merged") across all categories.
+    fn draftCount(self: *Dashboard) usize {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const drafts = self.api_state.drafts orelse return 0;
+        var count: usize = 0;
+        for (drafts) |d| {
+            if (!std.mem.eql(u8, d.status, "merged")) count += 1;
+        }
+        return count;
+    }
+
+    // Returns true if any active draft targets the given prompt path.
+    fn hasDraftFor(self: *Dashboard, prompt_path: []const u8) bool {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const drafts = self.api_state.drafts orelse return false;
+        for (drafts) |d| {
+            if (!std.mem.eql(u8, d.category, "prompt")) continue;
+            if (std.mem.eql(u8, d.status, "merged")) continue;
+            if (d.current_path) |cp| {
+                if (std.mem.eql(u8, cp, prompt_path)) return true;
+            }
+            if (std.mem.eql(u8, d.draft_path, prompt_path)) return true;
+        }
+        return false;
     }
 
     fn getPrsForPrompt(self: *Dashboard, prompt_path: []const u8) []const data.PullRequestEntry {

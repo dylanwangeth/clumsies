@@ -1,0 +1,75 @@
+// Read local drafts/_index.json files across all workspaces.
+const std = @import("std");
+
+pub const DraftEntry = struct {
+    category: []const u8,
+    prompt_id: ?[]const u8 = null,
+    current_path: ?[]const u8 = null,
+    draft_path: []const u8,
+    operation: []const u8,
+    status: []const u8,
+};
+
+pub fn readAllDrafts(allocator: std.mem.Allocator) ?[]const DraftEntry {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return null;
+    defer allocator.free(home);
+    const ws_root = std.fs.path.join(allocator, &.{ home, ".clumsies", "workspaces" }) catch return null;
+    defer allocator.free(ws_root);
+
+    var dir = std.fs.openDirAbsolute(ws_root, .{ .iterate = true }) catch return null;
+    defer dir.close();
+
+    var all: std.ArrayList(DraftEntry) = .empty;
+    var it = dir.iterate();
+    while (it.next() catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        const index_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "drafts", "_index.json" }) catch continue;
+        defer allocator.free(index_path);
+        readIndexFile(allocator, index_path, &all);
+    }
+
+    if (all.items.len == 0) return null;
+    return all.items;
+}
+
+fn readIndexFile(allocator: std.mem.Allocator, path: []const u8, out: *std.ArrayList(DraftEntry)) void {
+    const file = std.fs.openFileAbsolute(path, .{}) catch return;
+    defer file.close();
+
+    var buf: [64 * 1024]u8 = undefined;
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = file.read(buf[total..]) catch return;
+        if (n == 0) break;
+        total += n;
+    }
+    if (total == 0) return;
+
+    const Json = struct {
+        version: u32 = 1,
+        drafts: []const struct {
+            category: []const u8 = "",
+            prompt_id: ?[]const u8 = null,
+            current_path: ?[]const u8 = null,
+            draft_path: []const u8 = "",
+            operation: []const u8 = "",
+            status: []const u8 = "",
+        } = &.{},
+    };
+    const parsed = std.json.parseFromSlice(Json, allocator, buf[0..total], .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch return;
+    defer parsed.deinit();
+
+    for (parsed.value.drafts) |d| {
+        out.append(allocator, .{
+            .category = allocator.dupe(u8, d.category) catch continue,
+            .prompt_id = if (d.prompt_id) |pid| (allocator.dupe(u8, pid) catch continue) else null,
+            .current_path = if (d.current_path) |cp| (allocator.dupe(u8, cp) catch continue) else null,
+            .draft_path = allocator.dupe(u8, d.draft_path) catch continue,
+            .operation = allocator.dupe(u8, d.operation) catch continue,
+            .status = allocator.dupe(u8, d.status) catch continue,
+        }) catch continue;
+    }
+}
