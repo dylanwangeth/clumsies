@@ -37,9 +37,21 @@ assert_json() {
     fi
 }
 
-# Seed database with test org and maintainer user
+# Seed database with test org and maintainer user. Uses a local psql
+# if available, otherwise falls back to the docker-compose postgres container.
+run_psql() {
+    if command -v psql >/dev/null 2>&1; then
+        PGPASSWORD=clumsies psql -h 127.0.0.1 -U clumsies -d clumsies -q
+    elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^clumsies-postgres-1$'; then
+        docker exec -i -e PGPASSWORD=clumsies clumsies-postgres-1 psql -U clumsies -d clumsies -q
+    else
+        echo "FATAL: neither psql nor clumsies-postgres-1 container is available" >&2
+        return 1
+    fi
+}
+
 seed_db() {
-    PGPASSWORD=clumsies psql -h 127.0.0.1 -U clumsies -d clumsies -q <<'SQL'
+    run_psql <<'SQL'
 INSERT INTO orgs (org_id, name) VALUES ('a0000000-0000-0000-0000-000000000001', 'acme')
   ON CONFLICT DO NOTHING;
 INSERT INTO users (user_id, org_id, username, password_hash, role, status) VALUES
@@ -50,11 +62,11 @@ INSERT INTO users (user_id, org_id, username, password_hash, role, status) VALUE
   ON CONFLICT DO NOTHING;
 INSERT INTO library_manifest (org_id, revision) VALUES ('a0000000-0000-0000-0000-000000000001', 0)
   ON CONFLICT DO NOTHING;
-INSERT INTO prompts (prompt_id, org_id, canonical_name, kind, content, content_hash) VALUES
-  ('p-test-001', 'a0000000-0000-0000-0000-000000000001', 'coding/STYLE', 'rule', '# STYLE', 'sha256:abc123')
+INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES
+  ('p-test-001', 'a0000000-0000-0000-0000-000000000001', 'rule/coding/STYLE.md', '# STYLE', 'sha256:abc123')
   ON CONFLICT DO NOTHING;
-INSERT INTO prompts (prompt_id, org_id, canonical_name, kind, content, content_hash) VALUES
-  ('p-test-002', 'a0000000-0000-0000-0000-000000000001', 'cmd/COMMIT', 'workflow', '# COMMIT', 'sha256:def456')
+INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES
+  ('p-test-002', 'a0000000-0000-0000-0000-000000000001', 'workflow/cmd/COMMIT.md', '# COMMIT', 'sha256:def456')
   ON CONFLICT DO NOTHING;
 SQL
 }
@@ -182,13 +194,97 @@ step "Library: list prompts"
 RAW=$(call GET "/api/org/library/prompts")
 parse_response "$RAW"
 assert_status "list prompts" "200" "$STATUS"
-assert_json "contains STYLE" "STYLE" "$BODY"
+assert_json "contains STYLE path" "rule/coding/STYLE.md" "$BODY"
+assert_json "returns path field" '"path":' "$BODY"
+
+step "Library: get prompt by prompt_id"
+RAW=$(call GET "/api/org/library/prompt?prompt_id=p-test-001")
+parse_response "$RAW"
+assert_status "get by prompt_id" "200" "$STATUS"
+assert_json "contains path" "rule/coding/STYLE.md" "$BODY"
+
+step "Library: get prompt by path"
+RAW=$(call GET "/api/org/library/prompt?path=rule/coding/STYLE.md")
+parse_response "$RAW"
+assert_status "get by path" "200" "$STATUS"
+assert_json "contains prompt_id" "p-test-001" "$BODY"
+
+step "Library: get prompt content by prompt_id"
+RAW=$(call GET "/api/org/library/prompt/content?prompt_id=p-test-001")
+parse_response "$RAW"
+assert_status "get content" "200" "$STATUS"
+assert_json "contains body" "STYLE" "$BODY"
 
 step "Library: manifest"
 RAW=$(call GET "/api/org/library/manifest")
 parse_response "$RAW"
 assert_status "get manifest" "200" "$STATUS"
 assert_json "contains revision" "revision" "$BODY"
+
+# Prompt PRs (multi-operation model)
+step "Prompt PR: create with modify operation"
+RAW=$(call POST "/api/org/prompt-prs" '{"description":"Tighten STYLE rules","operations":[{"type":"modify","prompt_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened."}]}')
+parse_response "$RAW"
+assert_status "create prompt PR" "201" "$STATUS"
+assert_json "returns proposal_id" "proposal_id" "$BODY"
+assert_json "status open" "open" "$BODY"
+PPR_ID=$(echo "$BODY" | grep -o '"proposal_id":"[^"]*"' | cut -d'"' -f4)
+
+step "Prompt PR: reject empty operations"
+RAW=$(call POST "/api/org/prompt-prs" '{"description":"empty","operations":[]}')
+parse_response "$RAW"
+assert_status "empty ops rejected" "400" "$STATUS"
+
+step "Prompt PR: reject stale base_hash"
+RAW=$(call POST "/api/org/prompt-prs" '{"description":"stale","operations":[{"type":"modify","prompt_id":"p-test-001","base_hash":"sha256:wrong","content":"x"}]}')
+parse_response "$RAW"
+assert_status "stale base_hash 409" "409" "$STATUS"
+
+step "Prompt PR: list"
+RAW=$(call GET "/api/org/prompt-prs")
+parse_response "$RAW"
+assert_status "list prompt PRs" "200" "$STATUS"
+assert_json "contains PR" "$PPR_ID" "$BODY"
+
+step "Prompt PR: get detail"
+RAW=$(call GET "/api/org/prompt-prs/$PPR_ID")
+parse_response "$RAW"
+assert_status "get prompt PR" "200" "$STATUS"
+assert_json "has operations" "operations" "$BODY"
+assert_json "operation type modify" '"type":"modify"' "$BODY"
+
+step "Prompt PR: accept as maintainer"
+RAW=$(call PUT "/api/org/prompt-prs/$PPR_ID" '{"action":"accept"}')
+parse_response "$RAW"
+assert_status "accept prompt PR" "200" "$STATUS"
+assert_json "status accepted" "accepted" "$BODY"
+
+step "Prompt PR: library now reflects merged content"
+RAW=$(call GET "/api/org/library/prompt/content?prompt_id=p-test-001")
+parse_response "$RAW"
+assert_status "get updated content" "200" "$STATUS"
+assert_json "contains Tightened" "Tightened" "$BODY"
+
+step "Prompt PR: create with rename operation"
+# First get current hash of p-test-002
+RAW=$(call GET "/api/org/library/prompt?prompt_id=p-test-002")
+parse_response "$RAW"
+P002_HASH=$(echo "$BODY" | grep -o '"content_hash":"[^"]*"' | cut -d'"' -f4)
+RAW=$(call POST "/api/org/prompt-prs" "{\"description\":\"Relocate COMMIT\",\"operations\":[{\"type\":\"rename\",\"prompt_id\":\"p-test-002\",\"base_hash\":\"$P002_HASH\",\"new_path\":\"workflow/git/COMMIT.md\"}]}")
+parse_response "$RAW"
+assert_status "create rename PR" "201" "$STATUS"
+RENAME_PR_ID=$(echo "$BODY" | grep -o '"proposal_id":"[^"]*"' | cut -d'"' -f4)
+
+step "Prompt PR: accept rename"
+RAW=$(call PUT "/api/org/prompt-prs/$RENAME_PR_ID" '{"action":"accept"}')
+parse_response "$RAW"
+assert_status "accept rename" "200" "$STATUS"
+
+step "Prompt PR: path updated, prompt_id preserved"
+RAW=$(call GET "/api/org/library/prompt?prompt_id=p-test-002")
+parse_response "$RAW"
+assert_status "get by id after rename" "200" "$STATUS"
+assert_json "path is new" "workflow/git/COMMIT.md" "$BODY"
 
 # Bundles
 step "Bundle: create"
@@ -320,54 +416,25 @@ RAW=$(call POST "/api/workspaces/$CTX_WS/members" '{"user_id":"usr-member-001","
 parse_response "$RAW"
 assert_status "add bob to context ws" "201" "$STATUS"
 
-step "Context: list branches (empty)"
-RAW=$(call GET "/api/workspaces/$CTX_WS/context/branches")
-parse_response "$RAW"
-assert_status "list branches" "200" "$STATUS"
-assert_json "returns branches array" "branches" "$BODY"
-
-step "Context: write file (creates member branch)"
-RAW=$(curl -s -w "\n%{http_code}" -X PUT "$BASE/api/workspaces/$CTX_WS/context/file?path=spec/API.md" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/octet-stream" \
-    -d "# API Design")
-parse_response "$RAW"
-assert_status "write context file" "200" "$STATUS"
-assert_json "returns branch name" "alice" "$BODY"
-assert_json "returns path" "spec/API.md" "$BODY"
-assert_json "returns hash" "hash" "$BODY"
-
-step "Context: list files on member branch"
-RAW=$(call GET "/api/workspaces/$CTX_WS/context/files?branch=alice")
-parse_response "$RAW"
-assert_status "list files on branch" "200" "$STATUS"
-assert_json "contains spec/API.md" "spec/API.md" "$BODY"
-
 step "Context: list files on main (empty)"
 RAW=$(call GET "/api/workspaces/$CTX_WS/context/files")
 parse_response "$RAW"
 assert_status "list files on main" "200" "$STATUS"
+assert_json "returns files array" "files" "$BODY"
 
-step "Context: read file content"
-RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?path=spec/API.md&branch=alice" \
-    -H "Authorization: Bearer $TOKEN")
-parse_response "$RAW"
-assert_status "read file content" "200" "$STATUS"
-assert_json "content matches" "API Design" "$BODY"
-
-step "Context: read nonexistent file"
-RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?path=nope.md&branch=alice" \
-    -H "Authorization: Bearer $TOKEN")
-parse_response "$RAW"
-assert_status "nonexistent file returns 404" "404" "$STATUS"
-
-step "Context: create PR"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add API spec"}')
+step "Context: create PR with create operation"
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add API spec","operations":[{"type":"create","path":"spec/API.md","content":"# API Design"}]}')
 parse_response "$RAW"
 assert_status "create context PR" "201" "$STATUS"
 assert_json "returns pr_id" "pr_id" "$BODY"
 assert_json "status is open" "open" "$BODY"
+assert_json "operation_count is 1" "\"operation_count\":1" "$BODY"
 PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
+
+step "Context: reject PR missing operations"
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"empty","operations":[]}')
+parse_response "$RAW"
+assert_status "empty operations rejected" "400" "$STATUS"
 
 step "Context: list PRs"
 RAW=$(call GET "/api/workspaces/$CTX_WS/context/prs")
@@ -386,7 +453,9 @@ RAW=$(call GET "/api/workspaces/$CTX_WS/context/prs/$PR_ID")
 parse_response "$RAW"
 assert_status "get PR detail" "200" "$STATUS"
 assert_json "has description" "Add API spec" "$BODY"
-assert_json "has files" "spec/API.md" "$BODY"
+assert_json "has operations" "operations" "$BODY"
+assert_json "operation type create" '"type":"create"' "$BODY"
+assert_json "operation path" "spec/API.md" "$BODY"
 
 step "Context: add PR comment"
 RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs/$PR_ID/comments" '{"body":"LGTM"}')
@@ -398,50 +467,68 @@ step "Context: merge PR (maintainer)"
 RAW=$(call PUT "/api/workspaces/$CTX_WS/context/prs/$PR_ID" '{"action":"merge"}')
 parse_response "$RAW"
 assert_status "merge PR" "200" "$STATUS"
-assert_json "merged is true" "true" "$BODY"
+assert_json "status merged" "merged" "$BODY"
 
 step "Context: file now on main after merge"
 RAW=$(call GET "/api/workspaces/$CTX_WS/context/files")
 parse_response "$RAW"
 assert_status "list main after merge" "200" "$STATUS"
 assert_json "main has spec/API.md" "spec/API.md" "$BODY"
+assert_json "file has context_id" "context_id" "$BODY"
+CTX_ID=$(echo "$BODY" | grep -o '"context_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+step "Context: read file content by path"
+RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?path=spec/API.md" \
+    -H "Authorization: Bearer $TOKEN")
+parse_response "$RAW"
+assert_status "read file content by path" "200" "$STATUS"
+assert_json "content matches" "API Design" "$BODY"
+
+step "Context: read file content by context_id"
+RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?context_id=$CTX_ID" \
+    -H "Authorization: Bearer $TOKEN")
+parse_response "$RAW"
+assert_status "read by context_id" "200" "$STATUS"
+assert_json "content matches" "API Design" "$BODY"
+
+step "Context: read nonexistent file"
+RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?path=nope.md" \
+    -H "Authorization: Bearer $TOKEN")
+parse_response "$RAW"
+assert_status "nonexistent file returns 404" "404" "$STATUS"
 
 step "Context: manifest reflects context"
 RAW=$(call GET "/api/workspaces/$CTX_WS/manifest")
 parse_response "$RAW"
 assert_status "get manifest" "200" "$STATUS"
-assert_json "manifest has context" "spec/API.md" "$BODY"
+
+step "Context: branch endpoint is gone"
+RAW=$(call GET "/api/workspaces/$CTX_WS/context/branches")
+parse_response "$RAW"
+assert_status "branches endpoint 404" "404" "$STATUS"
+
+step "Context: PUT /context/file endpoint is gone"
+RAW=$(curl -s -w "\n%{http_code}" -X PUT "$BASE/api/workspaces/$CTX_WS/context/file?path=x.md" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    -d "junk")
+parse_response "$RAW"
+assert_status "PUT file endpoint 404" "404" "$STATUS"
 
 step "Context: member cannot merge"
 TOKEN="$BOB_TOKEN"
-# Bob writes a file first
-curl -s -X PUT "$BASE/api/workspaces/$CTX_WS/context/file?path=research/notes.md" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/octet-stream" \
-    -d "# Research Notes" > /dev/null
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add research"}')
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add research","operations":[{"type":"create","path":"research/notes.md","content":"# Research Notes"}]}')
 parse_response "$RAW"
 BOB_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 RAW=$(call PUT "/api/workspaces/$CTX_WS/context/prs/$BOB_PR_ID" '{"action":"merge"}')
 parse_response "$RAW"
 assert_status "member cannot merge" "403" "$STATUS"
 
-step "Context: rebase branch"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/branches/bob/rebase")
+step "Context: member can reject own PR"
+RAW=$(call PUT "/api/workspaces/$CTX_WS/context/prs/$BOB_PR_ID" '{"action":"reject"}')
 parse_response "$RAW"
-assert_status "rebase succeeds" "200" "$STATUS"
-assert_json "status is rebased" "rebased" "$BODY"
-
-step "Context: cannot rebase main"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/branches/main/rebase")
-parse_response "$RAW"
-assert_status "cannot rebase main" "400" "$STATUS"
-
-step "Context: delete file on branch"
-RAW=$(curl -s -w "\n%{http_code}" -X DELETE "$BASE/api/workspaces/$CTX_WS/context/file?path=research/notes.md" \
-    -H "Authorization: Bearer $TOKEN")
-parse_response "$RAW"
-assert_status "delete file" "200" "$STATUS"
+assert_status "member can reject" "200" "$STATUS"
+assert_json "status rejected" "rejected" "$BODY"
 
 # Cleanup: delete context test workspace (as maintainer)
 TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
