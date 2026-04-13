@@ -56,8 +56,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 }
 
 fn printHelp(w: *std.Io.Writer) !void {
-    try w.print("{s}{s}clumsies flush-trace{s}\n\n", .{ P, Color.bold, Color.reset });
+    try w.print("{s}{s}clumsies trace flush{s}\n\n", .{ P, Color.bold, Color.reset });
     try w.print("Upload pending trace events from this workspace to the hub.\n\n", .{});
     try w.print("{s}Usage:{s}\n", .{ Color.bold, Color.reset });
-    try w.print("  clumsies flush-trace\n", .{});
+    try w.print("  clumsies trace flush\n", .{});
 }
