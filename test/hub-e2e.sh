@@ -68,6 +68,9 @@ INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES
 INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES
   ('p-test-002', 'a0000000-0000-0000-0000-000000000001', 'workflow/cmd/COMMIT.md', '# COMMIT', 'sha256:def456')
   ON CONFLICT DO NOTHING;
+INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES
+  ('p-test-mpf', 'a0000000-0000-0000-0000-000000000001', 'META_PROMPT.md', '# clumsies Protocol Bootstrap', 'sha256:mpf001')
+  ON CONFLICT DO NOTHING;
 SQL
 }
 
@@ -222,6 +225,7 @@ assert_status "get manifest" "200" "$STATUS"
 assert_json "contains revision" "revision" "$BODY"
 assert_json "prompt entries carry path" '"path":"rule/coding/STYLE.md"' "$BODY"
 assert_json "prompt entries carry hash" '"hash":"sha256:abc123"' "$BODY"
+assert_json "includes reserved MPF path" '"path":"META_PROMPT.md"' "$BODY"
 
 # Prompt PRs (multi-operation model)
 step "Prompt PR: create with modify operation"
