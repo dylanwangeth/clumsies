@@ -43,6 +43,11 @@ pub const PullRequestEntry = struct {
     comments: []const CommentEntry = &.{},
     trace_refers: u16,
     trace_sessions: u8,
+    operation_count: u16 = 0,
+    op_type: []const u8 = "",
+    op_current_path: []const u8 = "",
+    op_new_path: []const u8 = "",
+    op_index: u16 = 0,
 };
 
 pub const AccessLevel = enum {

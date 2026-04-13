@@ -171,6 +171,7 @@ pub const Dashboard = struct {
     pr_table_cols: [MAX_PR_ROWS][4]Column = undefined,
     pr_text_rows: [MAX_PR_ROWS]vxfw.Text = undefined,
     pr_indices: [MAX_PR_ROWS * 2]?usize = .{null} ** (MAX_PR_ROWS * 2),
+    pr_desc_bufs: [MAX_PR_ROWS][160]u8 = undefined,
     pr_row_count: usize = 0,
     // PR drill-down state
     show_pr_diff: bool = false,
@@ -1332,6 +1333,12 @@ pub const Dashboard = struct {
                     const pr = &prs[pr_idx];
                     const title = try std.fmt.allocPrint(ctx.arena, "{s} \xe2\x94\x80 {s} \xe2\x94\x80 {s} \xe2\x94\x80 {s} \xe2\x94\x80 refer:{d}", .{ pr.id, pr.prompt_name, pr.author, pr.status, pr.trace_refers });
                     w.writeText(&surface, ctx, 2, 2, title, theme.boldOn(theme.PANEL, theme.TEXT));
+
+                    // Row 3: operation header (only once detail has been fetched).
+                    if (pr.operation_count > 0) {
+                        const op_line = try opHeaderLine(ctx.arena, pr);
+                        w.writeText(&surface, ctx, 2, 3, op_line, theme.fg(theme.TEXT_SOFT));
+                    }
 
                     self.syncPrDiffAndComments(ctx.arena);
                     const diff_h = inner_h -| 2;
@@ -3040,9 +3047,14 @@ pub const Dashboard = struct {
             self.pr_widgets[row_idx] = self.pr_table_rows[pi].widget();
             self.pr_indices[row_idx] = pi;
             row_idx += 1;
-            // Row 2: description (muted)
+            // Row 2: description + multi-op hint (muted)
+            const desc_text: []const u8 = if (pr.operation_count > 1) blk: {
+                const buf = &self.pr_desc_bufs[pi];
+                const written = std.fmt.bufPrint(buf, "{s}  \xc2\xb7 {d} ops", .{ pr.description, pr.operation_count }) catch break :blk pr.description;
+                break :blk written;
+            } else pr.description;
             self.pr_text_rows[pi] = .{
-                .text = pr.description,
+                .text = desc_text,
                 .style = theme.textOn(theme.PANEL, theme.MUTED),
             };
             self.pr_widgets[row_idx] = self.pr_text_rows[pi].widget();
@@ -3136,6 +3148,21 @@ pub const Dashboard = struct {
         if (std.mem.startsWith(u8, line, "+")) return theme.rgb(0x1d2617);
         if (std.mem.startsWith(u8, line, "-")) return theme.rgb(0x2a1b18);
         return theme.PANEL;
+    }
+
+    // Format the one-line operation header shown above the PR diff pane.
+    // Falls back gracefully when op detail has not yet been fetched.
+    fn opHeaderLine(arena: std.mem.Allocator, pr: *const data.PullRequestEntry) ![]const u8 {
+        const position = if (pr.operation_count > 1)
+            try std.fmt.allocPrint(arena, "op {d}/{d}", .{ pr.op_index + 1, pr.operation_count })
+        else
+            "op";
+        if (pr.op_type.len == 0) return position;
+        if (std.mem.eql(u8, pr.op_type, "rename")) {
+            return std.fmt.allocPrint(arena, "{s}: rename {s} \xe2\x86\x92 {s}", .{ position, pr.op_current_path, pr.op_new_path });
+        }
+        const target = if (pr.op_current_path.len > 0) pr.op_current_path else pr.op_new_path;
+        return std.fmt.allocPrint(arena, "{s}: {s} {s}", .{ position, pr.op_type, target });
     }
 
     fn diffFg(line: []const u8) vaxis.Color {
