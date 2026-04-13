@@ -157,7 +157,16 @@ fn collectBatch(
         }
 
         const projected = total_bytes + trimmed.len + 1;
-        if (projected > MAX_BYTES_PER_BATCH and lines.items.len > 0) break;
+        if (projected > MAX_BYTES_PER_BATCH) {
+            if (lines.items.len > 0) break;
+
+            std.log.warn(
+                "dropping trace event at offset {d}: {d} bytes exceeds {d} batch budget",
+                .{ end_offset, trimmed.len, MAX_BYTES_PER_BATCH },
+            );
+            end_offset += line_bytes;
+            continue;
+        }
 
         const owned = try allocator.dupe(u8, trimmed);
         errdefer allocator.free(owned);
@@ -331,4 +340,20 @@ test "collectBatch advances offset when only oversized events are present" {
 
     try testing.expectEqual(@as(usize, 0), batch.lines.items.len);
     try testing.expectEqual(@as(u64, 50 + huge.len + 1), batch.end_offset);
+}
+
+test "collectBatch drops first event when it exceeds batch budget" {
+    const too_large = "x" ** MAX_BYTES_PER_BATCH;
+    var sample: std.ArrayList(u8) = .empty;
+    defer sample.deinit(testing.allocator);
+    try sample.writer(testing.allocator).print("{s}\nok\n", .{too_large});
+
+    var reader = std.Io.Reader.fixed(sample.items);
+    var batch = try collectBatch(testing.allocator, &reader, 10);
+    defer batch.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), batch.lines.items.len);
+    try testing.expectEqualStrings("ok", batch.lines.items[0]);
+    try testing.expect(batch.total_bytes <= MAX_BYTES_PER_BATCH);
+    try testing.expectEqual(@as(u64, 10 + too_large.len + 1 + 3), batch.end_offset);
 }
