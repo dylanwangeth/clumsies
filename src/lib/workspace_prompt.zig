@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const prompt = @import("prompt.zig");
+const drafts = @import("drafts.zig");
 
 pub const PromptKind = enum {
     rule,
@@ -37,6 +38,8 @@ pub const LoadedPrompt = struct {
     hash: []const u8,
     changed: bool,
     content: ?[]const u8,
+    has_draft: bool = false,
+    draft_base_hash: ?[]const u8 = null,
 };
 
 pub const LoadResult = struct {
@@ -50,6 +53,7 @@ pub const LoadResult = struct {
             if (item.group) |group| allocator.free(group);
             allocator.free(item.hash);
             if (item.content) |content| allocator.free(content);
+            if (item.draft_base_hash) |bh| allocator.free(bh);
         }
         self.items.deinit(allocator);
     }
@@ -288,8 +292,9 @@ fn lessThanPromptItem(_: void, a: PromptItem, b: PromptItem) bool {
 }
 
 /// Load prompt content by hub-issued prompt_id. Resolves each id through
-/// the local manifest, reads the cache file, and returns content + metadata.
-/// Unknown ids return `error.UnknownPromptId`.
+/// the local manifest, then consults drafts/_index.json: an active draft
+/// with operation != "delete" wins over the cache copy. Unknown ids return
+/// `error.UnknownPromptId`. Drafts marked for deletion behave as NotFound.
 pub fn loadPrompts(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
@@ -298,6 +303,9 @@ pub fn loadPrompts(
 ) !LoadResult {
     var manifest = try loadManifest(allocator, ws_dir);
     defer manifest.deinit(allocator);
+
+    var draft_index = try drafts.loadIndex(allocator, ws_dir);
+    defer draft_index.deinit(allocator);
 
     var result: LoadResult = .{};
     errdefer result.deinit(allocator);
@@ -323,14 +331,28 @@ pub fn loadPrompts(
         const known_hash = knownHashFor(id, known);
         const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, m_entry.hash);
 
-        const content = if (changed)
-            try readCacheFileAlloc(allocator, ws_dir, m_entry.path)
-        else
-            null;
+        const draft_entry = draft_index.findByCurrentPath(.prompt, m_entry.path);
+        if (draft_entry) |entry| {
+            if (entry.operation == .delete) return error.UnknownPromptId;
+        }
+
+        const content = if (changed) blk: {
+            if (draft_entry) |entry| {
+                break :blk try drafts.readDraftFile(allocator, ws_dir, .prompt, entry.draft_path);
+            }
+            break :blk try readCacheFileAlloc(allocator, ws_dir, m_entry.path);
+        } else null;
         errdefer if (content) |owned| allocator.free(owned);
 
         const display_name = prompt.displayNameFromFilename(std.fs.path.basename(m_entry.path));
         const group_slice = groupFromPath(m_entry.path);
+
+        const has_draft = draft_entry != null;
+        const draft_base = if (draft_entry) |entry|
+            if (entry.base_hash) |bh| try allocator.dupe(u8, bh) else null
+        else
+            null;
+        errdefer if (draft_base) |bh| allocator.free(bh);
 
         try result.items.append(allocator, .{
             .id = try allocator.dupe(u8, id),
@@ -341,6 +363,8 @@ pub fn loadPrompts(
             .hash = try allocator.dupe(u8, m_entry.hash),
             .changed = changed,
             .content = content,
+            .has_draft = has_draft,
+            .draft_base_hash = draft_base,
         });
     }
 
@@ -774,6 +798,90 @@ test "loadPrompts: unknown id returns UnknownPromptId" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     try testing.expectError(error.UnknownPromptId, loadPrompts(testing.allocator, root, &.{"p-missing"}, &.{}));
+}
+
+test "loadPrompts: draft content overrides cache when indexed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule");
+    try writeFile(tmp.dir, "cache/rule/STYLE.md", "cache content");
+
+    try tmp.dir.makePath("drafts/prompt/rule");
+    try writeFile(tmp.dir, "drafts/prompt/rule/STYLE.md", "draft override");
+    try writeFile(tmp.dir, "drafts/_index.json",
+        \\{
+        \\  "drafts": [
+        \\    {
+        \\      "category": "prompt",
+        \\      "prompt_id": "p-style",
+        \\      "current_path": "rule/STYLE.md",
+        \\      "draft_path": "rule/STYLE.md",
+        \\      "operation": "modify",
+        \\      "base_hash": "sha256:original",
+        \\      "status": "editing"
+        \\    }
+        \\  ]
+        \\}
+    );
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "prompts": {
+        \\    "p-style": {"path": "rule/STYLE.md", "hash": "sha256:zzz"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var result = try loadPrompts(testing.allocator, root, &.{"p-style"}, &.{});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.items.items.len);
+    const item = result.items.items[0];
+    try testing.expect(item.has_draft);
+    try testing.expectEqualStrings("sha256:original", item.draft_base_hash.?);
+    try testing.expectEqualStrings("draft override", item.content.?);
+}
+
+test "loadPrompts: draft marked delete behaves as UnknownPromptId" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule");
+    try writeFile(tmp.dir, "cache/rule/STYLE.md", "cache content");
+
+    try tmp.dir.makePath("drafts");
+    try writeFile(tmp.dir, "drafts/_index.json",
+        \\{
+        \\  "drafts": [
+        \\    {
+        \\      "category": "prompt",
+        \\      "prompt_id": "p-style",
+        \\      "current_path": "rule/STYLE.md",
+        \\      "draft_path": "rule/STYLE.md",
+        \\      "operation": "delete",
+        \\      "base_hash": "sha256:original",
+        \\      "status": "editing"
+        \\    }
+        \\  ]
+        \\}
+    );
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "prompts": {
+        \\    "p-style": {"path": "rule/STYLE.md", "hash": "sha256:zzz"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try testing.expectError(error.UnknownPromptId, loadPrompts(testing.allocator, root, &.{"p-style"}, &.{}));
 }
 
 test "loadMpf: returns content and hash from cache subdirectory" {
