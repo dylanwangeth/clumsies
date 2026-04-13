@@ -5,6 +5,7 @@ const theme = @import("theme.zig");
 const w = @import("widgets.zig");
 const data = @import("mock_data.zig");
 const api = @import("api.zig");
+const tree = @import("tree.zig");
 const TableRow = @import("table_row.zig").TableRow;
 const Column = @import("table_row.zig").Column;
 
@@ -143,15 +144,20 @@ pub const Dashboard = struct {
     settings_content_sel: usize = 0, // cursor within content (members/teams/workspaces list)
     status_line: []const u8 = "Ready.",
 
-    // Library: grouped display with bundle filter
+    // Library: tree-structured display with bundle filter
     library_bundle_filter: usize = 0,
     library_scroll_bars: vxfw.ScrollBars,
     library_row_count: usize = 0,
     library_prompt_indices: [MAX_LIBRARY_ROWS]?usize = .{null} ** MAX_LIBRARY_ROWS,
+    library_row_dir_path: [MAX_LIBRARY_ROWS]?[]const u8 = .{null} ** MAX_LIBRARY_ROWS,
+    library_row_depth: [MAX_LIBRARY_ROWS]u8 = .{0} ** MAX_LIBRARY_ROWS,
     library_widgets: [MAX_LIBRARY_ROWS]vxfw.Widget = undefined,
     library_text_rows: [MAX_LIBRARY_ROWS]vxfw.Text = undefined,
     library_table_rows: [MAX_LIBRARY_ROWS]TableRow = undefined,
     library_table_cols: [MAX_LIBRARY_ROWS][2]Column = undefined,
+    library_row_text_bufs: [MAX_LIBRARY_ROWS][96]u8 = undefined,
+    library_expanded: std.StringHashMapUnmanaged(void) = .empty,
+    library_tree_initialized: bool = false,
 
     content_scroll_bars: vxfw.ScrollBars,
     content_widget: [1]vxfw.Widget = undefined,
@@ -600,11 +606,62 @@ pub const Dashboard = struct {
                             ctx.consumeAndRedraw();
                             return;
                         }
-                        // Enter from list: focus detail pane
+                        // Enter from list: toggle directory expansion, or focus detail for leaves.
                         if (!self.detail_focus_content and key.matches(vaxis.Key.enter, .{})) {
+                            self.syncLibraryWidgets();
+                            const pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
+                            if (pos < self.library_row_count) {
+                                if (self.library_row_dir_path[pos]) |dir| {
+                                    self.toggleLibraryDir(dir);
+                                    ctx.consumeAndRedraw();
+                                    return;
+                                }
+                            }
                             self.detail_focus_content = true;
                             ctx.consumeAndRedraw();
                             return;
+                        }
+                        // List pane: l/right expands the dir under cursor.
+                        if (!self.detail_focus_content and (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{}))) {
+                            self.syncLibraryWidgets();
+                            const pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
+                            if (pos < self.library_row_count) {
+                                if (self.library_row_dir_path[pos]) |dir| {
+                                    const alloc = self.api_state.arena.allocator();
+                                    if (!self.library_expanded.contains(dir)) {
+                                        _ = self.library_expanded.put(alloc, dir, {}) catch {};
+                                        ctx.consumeAndRedraw();
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        // List pane: h/left collapses current dir, or jumps to parent.
+                        if (!self.detail_focus_content and (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{}))) {
+                            self.syncLibraryWidgets();
+                            const pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
+                            if (pos < self.library_row_count) {
+                                if (self.library_row_dir_path[pos]) |dir| {
+                                    if (self.library_expanded.contains(dir)) {
+                                        _ = self.library_expanded.remove(dir);
+                                        ctx.consumeAndRedraw();
+                                        return;
+                                    }
+                                }
+                                // Jump to parent: scan upward for a row at a shallower depth.
+                                const cur_depth = self.library_row_depth[pos];
+                                if (cur_depth > 0 and pos > 0) {
+                                    var p: usize = pos;
+                                    while (p > 0) {
+                                        p -= 1;
+                                        if (self.library_row_depth[p] < cur_depth) {
+                                            self.library_scroll_bars.scroll_view.cursor = @intCast(p);
+                                            ctx.consumeAndRedraw();
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
                         }
                         if (self.detail_focus_content) {
                             // Detail pane has focus
@@ -696,25 +753,16 @@ pub const Dashboard = struct {
                             }
                             return;
                         }
-                        // List pane: j/k moves through prompts, skipping group headers.
-                        const prev = self.library_scroll_bars.scroll_view.cursor;
+                        // List pane: j/k moves through rows. Cursor can land on
+                        // dir nodes (which allows Enter to toggle them) as well
+                        // as leaf prompts.
                         try self.library_scroll_bars.scroll_view.handleEvent(ctx, event);
                         if (self.library_row_count == 0) return;
 
                         var pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
                         if (pos >= self.library_row_count) pos = self.library_row_count - 1;
+                        self.library_scroll_bars.scroll_view.cursor = @intCast(pos);
 
-                        // If landed on a group header, skip one row in direction of movement
-                        if (self.library_prompt_indices[pos] == null and self.library_scroll_bars.scroll_view.cursor != prev) {
-                            const moving_down = self.library_scroll_bars.scroll_view.cursor > prev;
-                            if (moving_down and pos + 1 < self.library_row_count) {
-                                pos += 1;
-                            } else if (!moving_down and pos > 0) {
-                                pos -= 1;
-                            }
-                            self.library_scroll_bars.scroll_view.cursor = @intCast(pos);
-                            ctx.consumeAndRedraw();
-                        }
                         if (self.library_prompt_indices[pos]) |pi| {
                             if (self.selected_prompt != pi) {
                                 self.selected_prompt = pi;
@@ -1584,27 +1632,55 @@ pub const Dashboard = struct {
         switch (self.ws_tab) {
             .context => {
                 var kv_row: u16 = 2;
-                var last_prefix: []const u8 = "";
                 if (live_ws) |ws_d| {
-                    for (ws_d.context_files, 0..) |f, i| {
-                        if (kv_row >= inner_h + 2) break;
-                        const prefix = data.pathPrefix(f.path);
-                        if (!std.mem.eql(u8, prefix, last_prefix)) {
-                            w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
+                    if (ws_d.context_files.len == 0) {
+                        w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
+                    } else {
+                        const MAX_ROWS = 128;
+                        var paths_buf: [MAX_ROWS][]const u8 = undefined;
+                        var orig_idx: [MAX_ROWS]usize = undefined;
+                        const n = @min(ws_d.context_files.len, MAX_ROWS);
+                        for (0..n) |i| {
+                            paths_buf[i] = ws_d.context_files[i].path;
+                            orig_idx[i] = i;
+                        }
+                        const SortCtx = struct {
+                            paths: [*]const []const u8,
+                            fn lt(cx: @This(), a: usize, b: usize) bool {
+                                return std.mem.lessThan(u8, cx.paths[a], cx.paths[b]);
+                            }
+                        };
+                        std.mem.sort(usize, orig_idx[0..n], SortCtx{ .paths = &paths_buf }, SortCtx.lt);
+                        var sorted_paths: [MAX_ROWS][]const u8 = undefined;
+                        for (0..n) |i| sorted_paths[i] = paths_buf[orig_idx[i]];
+
+                        var rows_buf: [MAX_ROWS]tree.Row = undefined;
+                        const row_count = tree.flatten(sorted_paths[0..n], null, &rows_buf);
+
+                        var text_buf: [96]u8 = undefined;
+                        var r: usize = 0;
+                        while (r < row_count and kv_row < inner_h + 2) : (r += 1) {
+                            const tr = rows_buf[r];
+                            var len = tree.renderPrefix(&text_buf, tr.depth, tr.is_last, null);
+                            len = tree.appendText(&text_buf, len, tr.label);
+                            if (tr.kind == .dir and len < text_buf.len) {
+                                text_buf[len] = '/';
+                                len += 1;
+                                w.writeText(&surface, ctx, 2, kv_row, text_buf[0..len], theme.boldOn(theme.PANEL, theme.ACCENT));
+                            } else {
+                                const file_i = orig_idx[tr.leaf_idx];
+                                const sel = file_i == self.ws_list_sel;
+                                if (sel) {
+                                    surface.writeCell(1, kv_row, .{
+                                        .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                                        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                                    });
+                                }
+                                const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                                w.writeText(&surface, ctx, 2, kv_row, text_buf[0..len], name_style);
+                            }
                             kv_row += 1;
-                            last_prefix = prefix;
-                            if (kv_row >= inner_h + 2) break;
                         }
-                        const sel = i == self.ws_list_sel;
-                        const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                        if (sel) {
-                            surface.writeCell(1, kv_row, .{
-                                .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                            });
-                        }
-                        w.writeText(&surface, ctx, 2, kv_row, data.promptName(f.path), name_style);
-                        kv_row += 1;
                     }
                 } else {
                     w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
@@ -1612,36 +1688,64 @@ pub const Dashboard = struct {
             },
             .prompts => {
                 var kv_row: u16 = 2;
-                var last_prefix: []const u8 = "";
                 if (live_ws) |ws_d| {
-                    const lib_prompts = self.getPrompts();
-                    for (ws_d.ws_prompts, 0..) |wp, i| {
-                        if (kv_row >= inner_h + 2) break;
-                        const name = for (lib_prompts) |lp| {
-                            if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-                        } else wp.prompt_id;
-                        const prefix = data.pathPrefix(name);
-                        if (!std.mem.eql(u8, prefix, last_prefix)) {
-                            w.writeText(&surface, ctx, 2, kv_row, prefix, theme.boldOn(theme.PANEL, theme.ACCENT));
+                    if (ws_d.ws_prompts.len == 0) {
+                        w.writeText(&surface, ctx, 2, kv_row, "No workspace prompts.", theme.fg(theme.MUTED));
+                    } else {
+                        const MAX_ROWS = 128;
+                        const lib_prompts = self.getPrompts();
+                        var paths_buf: [MAX_ROWS][]const u8 = undefined;
+                        var orig_idx: [MAX_ROWS]usize = undefined;
+                        const n = @min(ws_d.ws_prompts.len, MAX_ROWS);
+                        for (0..n) |i| {
+                            const wp = ws_d.ws_prompts[i];
+                            paths_buf[i] = for (lib_prompts) |lp| {
+                                if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
+                            } else wp.prompt_id;
+                            orig_idx[i] = i;
+                        }
+                        const SortCtx = struct {
+                            paths: [*]const []const u8,
+                            fn lt(cx: @This(), a: usize, b: usize) bool {
+                                return std.mem.lessThan(u8, cx.paths[a], cx.paths[b]);
+                            }
+                        };
+                        std.mem.sort(usize, orig_idx[0..n], SortCtx{ .paths = &paths_buf }, SortCtx.lt);
+                        var sorted_paths: [MAX_ROWS][]const u8 = undefined;
+                        for (0..n) |i| sorted_paths[i] = paths_buf[orig_idx[i]];
+
+                        var rows_buf: [MAX_ROWS]tree.Row = undefined;
+                        const row_count = tree.flatten(sorted_paths[0..n], null, &rows_buf);
+
+                        var text_buf: [96]u8 = undefined;
+                        var r: usize = 0;
+                        while (r < row_count and kv_row < inner_h + 2) : (r += 1) {
+                            const tr = rows_buf[r];
+                            var len = tree.renderPrefix(&text_buf, tr.depth, tr.is_last, null);
+                            len = tree.appendText(&text_buf, len, tr.label);
+                            if (tr.kind == .dir and len < text_buf.len) {
+                                text_buf[len] = '/';
+                                len += 1;
+                                w.writeText(&surface, ctx, 2, kv_row, text_buf[0..len], theme.boldOn(theme.PANEL, theme.ACCENT));
+                            } else {
+                                const wp_i = orig_idx[tr.leaf_idx];
+                                const sel = wp_i == self.ws_list_sel;
+                                if (sel) {
+                                    surface.writeCell(1, kv_row, .{
+                                        .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                                        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                                    });
+                                }
+                                const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                                w.writeText(&surface, ctx, 2, kv_row, text_buf[0..len], name_style);
+                                // Draft marker: the full prompt path lives in sorted_paths[r]; hasDraftFor matches on path.
+                                if (self.hasDraftFor(sorted_paths[tr.leaf_idx])) {
+                                    const nw: u16 = @intCast(ctx.stringWidth(text_buf[0..len]));
+                                    w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
+                                }
+                            }
                             kv_row += 1;
-                            last_prefix = prefix;
-                            if (kv_row >= inner_h + 2) break;
                         }
-                        const sel = i == self.ws_list_sel;
-                        const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                        if (sel) {
-                            surface.writeCell(1, kv_row, .{
-                                .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                            });
-                        }
-                        const display_name = data.promptName(name);
-                        w.writeText(&surface, ctx, 2, kv_row, display_name, name_style);
-                        if (self.hasDraftFor(name)) {
-                            const nw: u16 = @intCast(ctx.stringWidth(display_name));
-                            w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
-                        }
-                        kv_row += 1;
                     }
                 } else {
                     w.writeText(&surface, ctx, 2, kv_row, "No workspace prompts.", theme.fg(theme.MUTED));
@@ -2069,7 +2173,6 @@ pub const Dashboard = struct {
 
         return s;
     }
-
 
     // Settings: vertical sidebar + content pane (web-style layout)
     fn drawSettings(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -2717,12 +2820,11 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    // Library: grouped by path prefix with optional bundle filter.
-    // Builds a mixed list of group headers (Text) and prompt rows (TableRow).
-    // library_prompt_indices maps each row index to the PROMPTS array index
-    // (null for group header rows, so cursor can skip them).
+    // Library: directory tree flattened by current expansion state.
+    // Each row is either a directory node (library_row_dir_path[r] != null)
+    // or a leaf prompt (library_prompt_indices[r] != null). Cursor can land
+    // on either; Enter toggles dir expansion or focuses detail for leaves.
     fn syncLibraryWidgets(self: *Dashboard) void {
-        // Use live prompts if available, else empty
         const prompts = self.getPrompts();
 
         const bundles: []const data.BundleEntry = blk: {
@@ -2742,32 +2844,85 @@ pub const Dashboard = struct {
         else
             null;
 
-        var row_idx: usize = 0;
-        var last_prefix: []const u8 = "";
+        // Default-expand every depth-0 prefix the first time we see prompts.
+        if (!self.library_tree_initialized and prompts.len > 0) {
+            const alloc = self.api_state.arena.allocator();
+            for (prompts) |p| {
+                if (std.mem.indexOfScalar(u8, p.path, '/')) |i| {
+                    const top = p.path[0 .. i + 1];
+                    if (!self.library_expanded.contains(top)) {
+                        _ = self.library_expanded.put(alloc, top, {}) catch {};
+                    }
+                }
+            }
+            self.library_tree_initialized = true;
+        }
 
+        // Filter prompts by bundle, collect paths into a parallel array
+        // plus an index map back to the original prompts slice.
+        var filtered_paths: [MAX_LIBRARY_ROWS][]const u8 = undefined;
+        var filtered_orig: [MAX_LIBRARY_ROWS]usize = undefined;
+        var filtered_len: usize = 0;
         for (prompts, 0..) |p, pidx| {
             if (filter_name) |fname| {
                 if (std.mem.indexOf(u8, p.bundle_names, fname) == null) continue;
             }
+            if (filtered_len >= MAX_LIBRARY_ROWS) break;
+            filtered_paths[filtered_len] = p.path;
+            filtered_orig[filtered_len] = pidx;
+            filtered_len += 1;
+        }
 
-            const prefix = data.pathPrefix(p.path);
-            const name = data.promptName(p.path);
+        // Sort filtered paths lexicographically so siblings are adjacent;
+        // keep the index map in sync via a paired sort.
+        var sort_idx: [MAX_LIBRARY_ROWS]usize = undefined;
+        for (0..filtered_len) |si| sort_idx[si] = si;
+        const SortCtx = struct {
+            paths: [*]const []const u8,
+            fn lt(ctx: @This(), a: usize, b: usize) bool {
+                return std.mem.lessThan(u8, ctx.paths[a], ctx.paths[b]);
+            }
+        };
+        std.mem.sort(usize, sort_idx[0..filtered_len], SortCtx{ .paths = &filtered_paths }, SortCtx.lt);
 
-            if (!std.mem.eql(u8, prefix, last_prefix)) {
-                if (row_idx < MAX_LIBRARY_ROWS) {
-                    self.library_text_rows[row_idx] = .{
-                        .text = prefixWithPad(prefix),
-                        .style = theme.boldOn(theme.PANEL, theme.ACCENT),
-                    };
-                    self.library_widgets[row_idx] = self.library_text_rows[row_idx].widget();
-                    self.library_prompt_indices[row_idx] = null;
-                    row_idx += 1;
-                }
-                last_prefix = prefix;
+        var sorted_paths: [MAX_LIBRARY_ROWS][]const u8 = undefined;
+        var sorted_orig: [MAX_LIBRARY_ROWS]usize = undefined;
+        for (0..filtered_len) |si| {
+            sorted_paths[si] = filtered_paths[sort_idx[si]];
+            sorted_orig[si] = filtered_orig[sort_idx[si]];
+        }
+
+        var rows_buf: [MAX_LIBRARY_ROWS]tree.Row = undefined;
+        const row_count = tree.flatten(sorted_paths[0..filtered_len], &self.library_expanded, &rows_buf);
+
+        var i: usize = 0;
+        while (i < row_count) : (i += 1) {
+            const tr = rows_buf[i];
+            const buf = &self.library_row_text_bufs[i];
+            self.library_row_depth[i] = tr.depth;
+
+            const chevron: ?tree.Chevron = if (tr.kind == .dir)
+                (if (self.library_expanded.contains(tr.dir_prefix)) .expanded else .collapsed)
+            else
+                null;
+            var len = tree.renderPrefix(buf, tr.depth, tr.is_last, chevron);
+            len = tree.appendText(buf, len, tr.label);
+            if (tr.kind == .dir and len < buf.len) {
+                buf[len] = '/';
+                len += 1;
             }
 
-            if (row_idx < MAX_LIBRARY_ROWS) {
-                const sel = pidx == self.selected_prompt;
+            if (tr.kind == .dir) {
+                self.library_text_rows[i] = .{
+                    .text = buf[0..len],
+                    .style = theme.boldOn(theme.PANEL, theme.ACCENT),
+                };
+                self.library_widgets[i] = self.library_text_rows[i].widget();
+                self.library_prompt_indices[i] = null;
+                self.library_row_dir_path[i] = tr.dir_prefix;
+            } else {
+                const orig_pidx = sorted_orig[tr.leaf_idx];
+                const p = prompts[orig_pidx];
                 const pr_label: []const u8 = switch (p.open_pr_count) {
                     0 => "",
                     1 => "\xe2\x80\xa21",
@@ -2775,35 +2930,48 @@ pub const Dashboard = struct {
                     3 => "\xe2\x80\xa23",
                     else => "\xe2\x80\xa2+",
                 };
-                self.library_table_cols[row_idx] = .{
-                    .{ .text = name, .flex = 1 },
+                const sel = orig_pidx == self.selected_prompt;
+                self.library_table_cols[i] = .{
+                    .{ .text = buf[0..len], .flex = 1 },
                     .{ .text = pr_label, .flex = 0, .min_width = 2, .alignment = .right },
                 };
-                self.library_table_rows[row_idx] = .{
-                    .columns = &self.library_table_cols[row_idx],
+                self.library_table_rows[i] = .{
+                    .columns = &self.library_table_cols[i],
                     .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
                     .gap = 2,
                 };
-                self.library_widgets[row_idx] = self.library_table_rows[row_idx].widget();
-                self.library_prompt_indices[row_idx] = pidx;
-                row_idx += 1;
+                self.library_widgets[i] = self.library_table_rows[i].widget();
+                self.library_prompt_indices[i] = orig_pidx;
+                self.library_row_dir_path[i] = null;
             }
         }
+        // Clear trailing entries so stale dir/leaf markers don't linger.
+        var c: usize = row_count;
+        while (c < MAX_LIBRARY_ROWS) : (c += 1) {
+            self.library_prompt_indices[c] = null;
+            self.library_row_dir_path[c] = null;
+        }
 
-        self.library_row_count = row_idx;
-        self.library_scroll_bars.scroll_view.children = .{ .slice = self.library_widgets[0..row_idx] };
-        self.library_scroll_bars.estimated_content_height = @intCast(row_idx);
+        self.library_row_count = row_count;
+        self.library_scroll_bars.scroll_view.children = .{ .slice = self.library_widgets[0..row_count] };
+        self.library_scroll_bars.estimated_content_height = @intCast(row_count);
 
         var cur = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
-        while (cur < row_idx and self.library_prompt_indices[cur] == null) {
-            cur += 1;
-        }
+        if (cur >= row_count) cur = if (row_count > 0) row_count - 1 else 0;
         self.library_scroll_bars.scroll_view.cursor = @intCast(cur);
-        if (cur < row_idx) {
+        if (cur < row_count) {
             if (self.library_prompt_indices[cur]) |pi| {
                 self.selected_prompt = pi;
             }
         }
+    }
+
+    fn toggleLibraryDir(self: *Dashboard, prefix: []const u8) void {
+        const alloc = self.api_state.arena.allocator();
+        if (self.library_expanded.fetchRemove(prefix)) |_| {
+            return;
+        }
+        _ = self.library_expanded.put(alloc, prefix, {}) catch {};
     }
 
     fn syncContentWidget(self: *Dashboard) void {
@@ -3023,21 +3191,3 @@ pub const Dashboard = struct {
         self.ws_tab = @enumFromInt(@as(u8, @intCast(next)));
     }
 };
-
-// Static row buffers to avoid per-frame allocation
-// Small buffers for inline-formatted column values (counts, percentages)
-fn prefixWithPad(prefix: []const u8) []const u8 {
-    // Map known path prefixes to static padded strings
-    const map = std.StaticStringMap([]const u8).initComptime(.{
-        .{ "arch", " arch" },
-        .{ "cmd", " cmd" },
-        .{ "coding", " coding" },
-        .{ "style", " style" },
-        .{ "wf", " wf" },
-        .{ "zig", " zig" },
-    });
-    return map.get(prefix) orelse prefix;
-}
-
-// workspace_buf removed: workspace uses manual grid rendering
-
