@@ -10,6 +10,7 @@ const cmd_mcp = @import("commands/mcp_cmd.zig");
 const cmd_setup = @import("commands/setup_cmd.zig");
 const cmd_workspace_info = @import("commands/workspace_info_cmd.zig");
 const cmd_flush_trace = @import("commands/flush_trace_cmd.zig");
+const cmd_trace_append = @import("commands/trace_append_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const Color = styles.Color;
@@ -22,7 +23,7 @@ const Command = enum {
     init_cmd,
     sync,
     mcp,
-    flush_trace,
+    trace,
     help,
     version,
     none,
@@ -33,7 +34,7 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "init", .init_cmd },
     .{ "sync", .sync },
     .{ "mcp", .mcp },
-    .{ "flush-trace", .flush_trace },
+    .{ "trace", .trace },
     .{ "help", .help },
     .{ "-h", .help },
     .{ "--help", .help },
@@ -108,7 +109,18 @@ pub fn main() !void {
         .init_cmd => try cmd_init.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .sync => try cmd_sync.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
-        .flush_trace => try cmd_flush_trace.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .trace => {
+            const subcmd = if (cmd_args.len > 0) cmd_args[0] else "";
+            if (std.mem.eql(u8, subcmd, "flush")) {
+                try cmd_flush_trace.run(stdout_writer, stderr_writer, allocator, cmd_args[1..]);
+            } else if (std.mem.eql(u8, subcmd, "append")) {
+                try cmd_trace_append.run(stdout_writer, stderr_writer, allocator, cmd_args[1..]);
+            } else {
+                try stderr_writer.print("{s}{s}{s}Error:{s} unknown trace subcommand: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
+                stderr_file_writer.interface.flush() catch {};
+                std.process.exit(1);
+            }
+        },
         .none => {
             if (args.len > 1) {
                 // Unknown command
@@ -131,7 +143,7 @@ test "command_map: all commands resolve" {
         .{ .str = "login", .cmd = .login },
         .{ .str = "init", .cmd = .init_cmd },
         .{ .str = "sync", .cmd = .sync },
-        .{ .str = "flush-trace", .cmd = .flush_trace },
+        .{ .str = "trace", .cmd = .trace },
         .{ .str = "mcp", .cmd = .mcp },
         .{ .str = "help", .cmd = .help },
         .{ .str = "-h", .cmd = .help },

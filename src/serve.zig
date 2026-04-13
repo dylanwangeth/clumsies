@@ -2,6 +2,7 @@ const std = @import("std");
 const mcp_server = @import("mcp/server.zig");
 const mcp_handlers = @import("mcp/handlers.zig");
 const ws_config = @import("workspace_config.zig");
+const lib = @import("clumsies_lib");
 
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, version: []const u8) !void {
     const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
@@ -19,6 +20,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     const ws_dir = try ws_config.getWsDir(allocator, session.ws_id);
     defer allocator.free(ws_dir);
+
+    lib.session_marker.write(allocator, ws_dir, session.session_id[0..]) catch |err| {
+        std.log.warn("failed to write current_session.json: {}", .{err});
+    };
+    defer lib.session_marker.clear(allocator, ws_dir);
 
     try mcp_server.runWithRoot(stdout, stderr, allocator, version, ws_dir, session);
 }
