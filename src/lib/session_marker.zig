@@ -3,7 +3,6 @@ const testing = std.testing;
 
 pub const SessionMarker = struct {
     session_id: []const u8,
-    pid: i64,
     started_at: i64,
 };
 
@@ -21,7 +20,6 @@ pub fn write(allocator: std.mem.Allocator, ws_dir: []const u8, session_id: []con
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
     defer allocator.free(tmp_path);
 
-    const pid: i64 = @intCast(std.c.getpid());
     const started_at = std.time.milliTimestamp();
 
     {
@@ -30,8 +28,8 @@ pub fn write(allocator: std.mem.Allocator, ws_dir: []const u8, session_id: []con
         var buf: [512]u8 = undefined;
         var w = std.fs.File.Writer.init(file, &buf);
         try w.interface.print(
-            "{{\"session_id\":\"{s}\",\"pid\":{d},\"started_at\":{d}}}\n",
-            .{ session_id, pid, started_at },
+            "{{\"session_id\":\"{s}\",\"started_at\":{d}}}\n",
+            .{ session_id, started_at },
         );
         try w.interface.flush();
     }
@@ -76,12 +74,6 @@ pub fn read(allocator: std.mem.Allocator, ws_dir: []const u8) !?SessionMarker {
         else => return error.InvalidSessionMarker,
     };
 
-    const pid_val = obj.get("pid") orelse return error.InvalidSessionMarker;
-    const pid: i64 = switch (pid_val) {
-        .integer => |n| n,
-        else => return error.InvalidSessionMarker,
-    };
-
     const started_val = obj.get("started_at") orelse return error.InvalidSessionMarker;
     const started_at: i64 = switch (started_val) {
         .integer => |n| n,
@@ -90,7 +82,6 @@ pub fn read(allocator: std.mem.Allocator, ws_dir: []const u8) !?SessionMarker {
 
     return .{
         .session_id = try allocator.dupe(u8, sid_str),
-        .pid = pid,
         .started_at = started_at,
     };
 }
@@ -108,7 +99,6 @@ test "write then read roundtrip" {
     defer testing.allocator.free(marker.session_id);
 
     try testing.expectEqualStrings("sess-test123", marker.session_id);
-    try testing.expect(marker.pid > 0);
     try testing.expect(marker.started_at > 0);
 }
 
