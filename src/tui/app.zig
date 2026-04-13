@@ -1705,7 +1705,11 @@ pub const Dashboard = struct {
                             if (tr.kind == .dir and len < text_buf.len) {
                                 text_buf[len] = '/';
                                 len += 1;
-                                w.writeText(&surface, ctx, 2, kv_row, text_buf[0..len], theme.boldOn(theme.PANEL, theme.ACCENT));
+                            }
+                            // Copy to draw arena so cell grapheme pointers remain valid
+                            const rendered = ctx.arena.dupe(u8, text_buf[0..len]) catch continue;
+                            if (tr.kind == .dir) {
+                                w.writeText(&surface, ctx, 2, kv_row, rendered, theme.boldOn(theme.PANEL, theme.ACCENT));
                             } else {
                                 const file_i = orig_idx[tr.leaf_idx];
                                 const sel = file_i == self.ws_list_sel;
@@ -1716,7 +1720,7 @@ pub const Dashboard = struct {
                                     });
                                 }
                                 const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                                w.writeText(&surface, ctx, 2, kv_row, text_buf[0..len], name_style);
+                                w.writeText(&surface, ctx, 2, kv_row, rendered, name_style);
                             }
                             kv_row += 1;
                         }
@@ -1770,7 +1774,11 @@ pub const Dashboard = struct {
                             if (tr.kind == .dir and len < text_buf.len) {
                                 text_buf[len] = '/';
                                 len += 1;
-                                w.writeText(&surface, ctx, 2, kv_row, text_buf[0..len], theme.boldOn(theme.PANEL, theme.ACCENT));
+                            }
+                            // Copy to draw arena so cell grapheme pointers remain valid
+                            const rendered = ctx.arena.dupe(u8, text_buf[0..len]) catch continue;
+                            if (tr.kind == .dir) {
+                                w.writeText(&surface, ctx, 2, kv_row, rendered, theme.boldOn(theme.PANEL, theme.ACCENT));
                             } else {
                                 const wp_i = orig_idx[tr.leaf_idx];
                                 const sel = wp_i == self.ws_list_sel;
@@ -1781,10 +1789,10 @@ pub const Dashboard = struct {
                                     });
                                 }
                                 const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                                w.writeText(&surface, ctx, 2, kv_row, text_buf[0..len], name_style);
+                                w.writeText(&surface, ctx, 2, kv_row, rendered, name_style);
                                 // Draft marker: the full prompt path lives in sorted_paths[r]; hasDraftFor matches on path.
                                 if (self.hasDraftFor(sorted_paths[tr.leaf_idx])) {
-                                    const nw: u16 = @intCast(ctx.stringWidth(text_buf[0..len]));
+                                    const nw: u16 = @intCast(ctx.stringWidth(rendered));
                                     w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
                                 }
                             }
