@@ -159,6 +159,13 @@ pub const ApiState = struct {
     pr_detail_diff: ?[]const []const u8 = null,
     pr_detail_comments: ?[]const data.CommentEntry = null,
     pr_detail_trace_refers: u16 = 0,
+    // Summary of the operation currently shown in the diff pane. Set by
+    // fetchPrDetail when it picks an operation for rendering.
+    pr_detail_op_type: ?[]const u8 = null,
+    pr_detail_op_current_path: ?[]const u8 = null,
+    pr_detail_op_new_path: ?[]const u8 = null,
+    pr_detail_op_index: u16 = 0,
+    pr_detail_op_total: u16 = 0,
     // Fetch coordination
     hub_url: ?[]const u8 = null,
     access_token: ?[]const u8 = null,
@@ -291,6 +298,11 @@ fn fetchPromptPrs(api_state: *ApiState, prompt_path: []const u8, prompt_id: []co
     api_state.pr_detail_diff = null;
     api_state.pr_detail_comments = null;
     api_state.pr_detail_trace_refers = 0;
+    api_state.pr_detail_op_type = null;
+    api_state.pr_detail_op_current_path = null;
+    api_state.pr_detail_op_new_path = null;
+    api_state.pr_detail_op_index = 0;
+    api_state.pr_detail_op_total = 0;
     api_state.fetch_busy = false;
     api_state.mutex.unlock();
 }
@@ -471,6 +483,11 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
 
     var diff_lines: ?[]const []const u8 = null;
     var trace_refers: u16 = 0;
+    var picked_op_type: ?[]const u8 = null;
+    var picked_op_current_path: ?[]const u8 = null;
+    var picked_op_new_path: ?[]const u8 = null;
+    var picked_op_index: u16 = 0;
+    var picked_op_total: u16 = 0;
     if (detail_resp.status == .ok) {
         const DetailJson = struct {
             operations: []const struct {
@@ -512,11 +529,16 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
             }
             if (pick_idx == null and p.value.operations.len > 0) pick_idx = 0;
 
+            picked_op_total = @intCast(@min(p.value.operations.len, std.math.maxInt(u16)));
             if (pick_idx) |i| {
                 const op = p.value.operations[i];
                 const base = op.base_content orelse "";
                 const proposed = op.content orelse "";
                 diff_lines = computeDiffLines(alloc, base, proposed);
+                picked_op_type = alloc.dupe(u8, op.type) catch null;
+                if (op.current_path) |cp| picked_op_current_path = alloc.dupe(u8, cp) catch null;
+                if (op.path) |np| picked_op_new_path = alloc.dupe(u8, np) catch null;
+                picked_op_index = @intCast(@min(i, std.math.maxInt(u16)));
             }
             if (p.value.trace_summary) |ts| {
                 trace_refers = @intCast(@min(ts.refer_count, std.math.maxInt(u16)));
@@ -542,6 +564,11 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
     api_state.pr_detail_diff = diff_lines;
     api_state.pr_detail_comments = comments;
     api_state.pr_detail_trace_refers = trace_refers;
+    api_state.pr_detail_op_type = picked_op_type;
+    api_state.pr_detail_op_current_path = picked_op_current_path;
+    api_state.pr_detail_op_new_path = picked_op_new_path;
+    api_state.pr_detail_op_index = picked_op_index;
+    api_state.pr_detail_op_total = picked_op_total;
     api_state.fetch_busy = false;
     api_state.mutex.unlock();
 }
@@ -1087,11 +1114,19 @@ pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, prompt_path:
         var diff: []const []const u8 = &.{};
         var comments: []const data.CommentEntry = &.{};
         var trace_refers: u16 = 0;
+        var op_type: []const u8 = "";
+        var op_current_path: []const u8 = "";
+        var op_new_path: []const u8 = "";
+        var op_index: u16 = 0;
         if (api_state.pr_detail_id) |cached_id| {
             if (std.mem.eql(u8, cached_id, pr.pr_id)) {
                 diff = api_state.pr_detail_diff orelse &.{};
                 comments = api_state.pr_detail_comments orelse &.{};
                 trace_refers = api_state.pr_detail_trace_refers;
+                op_type = api_state.pr_detail_op_type orelse "";
+                op_current_path = api_state.pr_detail_op_current_path orelse "";
+                op_new_path = api_state.pr_detail_op_new_path orelse "";
+                op_index = api_state.pr_detail_op_index;
             }
         }
 
@@ -1107,6 +1142,11 @@ pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, prompt_path:
             .comments = comments,
             .trace_refers = trace_refers,
             .trace_sessions = 0,
+            .operation_count = @intCast(@max(pr.operation_count, 0)),
+            .op_type = op_type,
+            .op_current_path = op_current_path,
+            .op_new_path = op_new_path,
+            .op_index = op_index,
         }) catch continue;
     }
     return list.items;
