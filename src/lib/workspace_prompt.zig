@@ -55,14 +55,6 @@ pub const LoadResult = struct {
     }
 };
 
-// Kind directory mapping
-
-const kind_dirs = [_]struct { dir: []const u8, kind: PromptKind }{
-    .{ .dir = "rule", .kind = .rule },
-    .{ .dir = "workflow", .kind = .workflow },
-    .{ .dir = "context", .kind = .context },
-};
-
 fn priorityForKind(kind: PromptKind) SetupPriority {
     return switch (kind) {
         .rule, .workflow, .context => .normal,
@@ -87,8 +79,12 @@ pub const MpfResult = struct {
     }
 };
 
-pub fn loadMpf(allocator: std.mem.Allocator, workspace_root: []const u8, known_hash: ?[]const u8) !MpfResult {
-    const mpf_path = try std.fs.path.join(allocator, &.{ workspace_root, "META_PROMPT.md" });
+/// Load META_PROMPT.md from the workspace cache directory.
+/// `ws_dir` is the workspace root (~/.clumsies/workspaces/{ws_id}).
+/// MPF lives at `{ws_dir}/cache/META_PROMPT.md` per Library reserved-path
+/// convention (see s1-1).
+pub fn loadMpf(allocator: std.mem.Allocator, ws_dir: []const u8, known_hash: ?[]const u8) !MpfResult {
+    const mpf_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
     defer allocator.free(mpf_path);
 
     const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return .{ .content = null, .hash = null };
@@ -112,7 +108,85 @@ pub fn loadMpf(allocator: std.mem.Allocator, workspace_root: []const u8, known_h
     return .{ .content = content, .hash = hash };
 }
 
-// Public API
+pub const ManifestEntry = struct {
+    path: []const u8,
+    hash: []const u8,
+};
+
+/// Parsed local manifest. Both maps borrow strings from an arena owned by
+/// this struct; deinit drops the arena and invalidates all keys/values.
+pub const Manifest = struct {
+    arena_state: *std.heap.ArenaAllocator,
+    prompts: std.StringHashMapUnmanaged(ManifestEntry) = .empty,
+    context: std.StringHashMapUnmanaged(ManifestEntry) = .empty,
+
+    pub fn deinit(self: *Manifest, allocator: std.mem.Allocator) void {
+        self.arena_state.deinit();
+        allocator.destroy(self.arena_state);
+    }
+};
+
+/// Read `{ws_dir}/manifest.json` into an in-memory map. Returns an empty
+/// manifest (no error) if the file does not exist — that is the expected
+/// state before the first sync. Format mismatch returns InvalidManifest.
+pub fn loadManifest(allocator: std.mem.Allocator, ws_dir: []const u8) !Manifest {
+    const arena_state = try allocator.create(std.heap.ArenaAllocator);
+    errdefer allocator.destroy(arena_state);
+    arena_state.* = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena_state.deinit();
+
+    var manifest: Manifest = .{ .arena_state = arena_state };
+    const arena = arena_state.allocator();
+
+    const manifest_path = try std.fs.path.join(arena, &.{ ws_dir, "manifest.json" });
+
+    const file = std.fs.openFileAbsolute(manifest_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return manifest,
+        else => return err,
+    };
+    defer file.close();
+
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = try fr.interface.allocRemaining(arena, std.io.Limit.limited(4 * 1024 * 1024));
+
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, content, .{}) catch return error.InvalidManifest;
+    if (parsed != .object) return error.InvalidManifest;
+
+    if (parsed.object.get("prompts")) |prompts_val| {
+        try parseManifestSection(arena, &manifest.prompts, prompts_val);
+    }
+    if (parsed.object.get("context")) |context_val| {
+        try parseManifestSection(arena, &manifest.context, context_val);
+    }
+
+    return manifest;
+}
+
+fn parseManifestSection(
+    arena: std.mem.Allocator,
+    map: *std.StringHashMapUnmanaged(ManifestEntry),
+    value: std.json.Value,
+) !void {
+    if (value != .object) return;
+    var it = value.object.iterator();
+    while (it.next()) |entry| {
+        const obj = switch (entry.value_ptr.*) {
+            .object => |o| o,
+            else => continue,
+        };
+        const path_str = if (obj.get("path")) |v| switch (v) {
+            .string => |s| s,
+            else => continue,
+        } else continue;
+        const hash_str = if (obj.get("hash")) |v| switch (v) {
+            .string => |s| s,
+            else => continue,
+        } else continue;
+
+        try map.put(arena, entry.key_ptr.*, .{ .path = path_str, .hash = hash_str });
+    }
+}
 
 fn freePromptItem(allocator: std.mem.Allocator, item: PromptItem) void {
     allocator.free(item.id);
@@ -127,125 +201,84 @@ pub fn deinitPromptItems(allocator: std.mem.Allocator, items: *std.ArrayList(Pro
     items.deinit(allocator);
 }
 
-/// Discover all prompts in the workspace cache directory, organized by kind.
-pub fn discoverAll(allocator: std.mem.Allocator, workspace_root: []const u8) !std.ArrayList(PromptItem) {
-    var items: std.ArrayList(PromptItem) = .empty;
-    errdefer deinitPromptItems(allocator, &items);
-
-    const prompts_root = workspace_root;
-
-    for (kind_dirs) |kd| {
-        try scanKindDirectory(allocator, prompts_root, kd.dir, kd.kind, &items);
-    }
-
-    std.mem.sort(PromptItem, items.items, {}, lessThanPromptItem);
-    return items;
+fn kindFromPath(path: []const u8) ?PromptKind {
+    if (std.mem.startsWith(u8, path, "rule/")) return .rule;
+    if (std.mem.startsWith(u8, path, "workflow/")) return .workflow;
+    if (std.mem.startsWith(u8, path, "context/")) return .context;
+    return null;
 }
 
-/// Discover prompts for memory.search.
-pub fn discoverSearchable(allocator: std.mem.Allocator, workspace_root: []const u8, kind_filter: ?PromptKind, group_filter: ?[]const u8) !std.ArrayList(PromptItem) {
-    var items: std.ArrayList(PromptItem) = .empty;
-    errdefer deinitPromptItems(allocator, &items);
-
-    const prompts_root = workspace_root;
-
-    const searchable_kinds = [_]struct { dir: []const u8, kind: PromptKind }{
-        .{ .dir = "rule", .kind = .rule },
-        .{ .dir = "workflow", .kind = .workflow },
-        .{ .dir = "context", .kind = .context },
-    };
-
-    for (searchable_kinds) |kd| {
-        if (kind_filter) |filter| {
-            if (filter != kd.kind) continue;
-        }
-        try scanKindDirectory(allocator, prompts_root, kd.dir, kd.kind, &items);
-    }
-
-    // Apply group filter in-place to avoid double-free on shared pointers
-    if (group_filter) |gf| {
-        var write_idx: usize = 0;
-        for (items.items) |item| {
-            const item_group = item.group orelse {
-                freePromptItem(allocator, item);
-                continue;
-            };
-            if (std.mem.eql(u8, item_group, gf) or
-                (std.mem.startsWith(u8, item_group, gf) and gf.len < item_group.len and item_group[gf.len] == '/'))
-            {
-                items.items[write_idx] = item;
-                write_idx += 1;
-            } else {
-                freePromptItem(allocator, item);
-            }
-        }
-        items.items.len = write_idx;
-    }
-
-    std.mem.sort(PromptItem, items.items, {}, lessThanPromptItem);
-    return items;
+fn groupFromPath(path: []const u8) ?[]const u8 {
+    const slash = std.mem.indexOfScalar(u8, path, '/') orelse return null;
+    const after_kind = path[slash + 1 ..];
+    const next_slash = std.mem.indexOfScalar(u8, after_kind, '/') orelse return null;
+    return after_kind[0..next_slash];
 }
 
-/// Load prompts by ids, returning content for changed items (delta).
-pub fn loadPrompts(allocator: std.mem.Allocator, workspace_root: []const u8, ids: []const []const u8, known: []const KnownHash) !LoadResult {
-    var inventory = try discoverAll(allocator, workspace_root);
-    defer deinitPromptItems(allocator, &inventory);
-
-    return try materializeSelection(allocator, workspace_root, inventory.items, ids, known);
+fn matchesGroup(item_group: []const u8, filter: []const u8) bool {
+    if (std.mem.eql(u8, item_group, filter)) return true;
+    if (std.mem.startsWith(u8, item_group, filter) and filter.len < item_group.len and item_group[filter.len] == '/') return true;
+    return false;
 }
 
-fn scanKindDirectory(
+/// Discover prompts available for memory.search. Iterates the local
+/// manifest, classifies each entry by path prefix, and applies optional
+/// kind/group filters. Reserved paths (META_PROMPT.md) are excluded.
+pub fn discoverSearchable(
     allocator: std.mem.Allocator,
-    prompts_root: []const u8,
-    dir_name: []const u8,
-    kind: PromptKind,
-    items: *std.ArrayList(PromptItem),
-) !void {
-    const kind_path = try std.fs.path.join(allocator, &.{ prompts_root, dir_name });
-    defer allocator.free(kind_path);
+    ws_dir: []const u8,
+    kind_filter: ?PromptKind,
+    group_filter: ?[]const u8,
+) !std.ArrayList(PromptItem) {
+    var items: std.ArrayList(PromptItem) = .empty;
+    errdefer deinitPromptItems(allocator, &items);
 
-    var kind_dir = std.fs.openDirAbsolute(kind_path, .{ .iterate = true }) catch return;
-    defer kind_dir.close();
+    var manifest = try loadManifest(allocator, ws_dir);
+    defer manifest.deinit(allocator);
 
-    var walker = try kind_dir.walk(allocator);
-    defer walker.deinit();
+    var it = manifest.prompts.iterator();
+    while (it.next()) |entry| {
+        const m_entry = entry.value_ptr.*;
 
-    const kind_str = kindToString(kind);
+        if (std.mem.eql(u8, m_entry.path, "META_PROMPT.md")) continue;
 
-    while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (std.mem.startsWith(u8, entry.path, ".")) continue;
+        const kind = kindFromPath(m_entry.path) orelse continue;
+        if (kind_filter) |kf| {
+            if (kf != kind) continue;
+        }
 
-        const abs_path = try std.fs.path.join(allocator, &.{ kind_path, entry.path });
-        defer allocator.free(abs_path);
+        const group_slice = groupFromPath(m_entry.path);
+        if (group_filter) |gf| {
+            const g = group_slice orelse continue;
+            if (!matchesGroup(g, gf)) continue;
+        }
 
-        // id = "kind:relative_path" where relative_path is relative to the kind directory
-        const id = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ kind_str, entry.path });
-        errdefer allocator.free(id);
+        const display_name = prompt.displayNameFromFilename(std.fs.path.basename(m_entry.path));
 
-        // path = relative to workspace root
-        const rel_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_name, entry.path });
-        errdefer allocator.free(rel_path);
-
-        // group = first subdirectory under the kind directory, or null
-        const group = if (std.fs.path.dirname(entry.path)) |dir|
-            try allocator.dupe(u8, dir)
-        else
-            null;
-        errdefer if (group) |g| allocator.free(g);
-
-        const display_name = prompt.displayNameFromFilename(std.fs.path.basename(entry.path));
+        const id_owned = try allocator.dupe(u8, entry.key_ptr.*);
+        errdefer allocator.free(id_owned);
+        const path_owned = try allocator.dupe(u8, m_entry.path);
+        errdefer allocator.free(path_owned);
+        const name_owned = try allocator.dupe(u8, display_name);
+        errdefer allocator.free(name_owned);
+        const group_owned = if (group_slice) |g| try allocator.dupe(u8, g) else null;
+        errdefer if (group_owned) |g| allocator.free(g);
+        const hash_owned = try allocator.dupe(u8, m_entry.hash);
+        errdefer allocator.free(hash_owned);
 
         try items.append(allocator, .{
-            .id = id,
+            .id = id_owned,
             .kind = kind,
-            .path = rel_path,
-            .name = try allocator.dupe(u8, display_name),
-            .group = group,
-            .hash = try prompt.readFileHashHexAlloc(allocator, abs_path),
+            .path = path_owned,
+            .name = name_owned,
+            .group = group_owned,
+            .hash = hash_owned,
             .priority = priorityForKind(kind),
         });
     }
+
+    std.mem.sort(PromptItem, items.items, {}, lessThanPromptItem);
+    return items;
 }
 
 fn lessThanPromptItem(_: void, a: PromptItem, b: PromptItem) bool {
@@ -254,82 +287,68 @@ fn lessThanPromptItem(_: void, a: PromptItem, b: PromptItem) bool {
     return std.mem.order(u8, a.id, b.id) == .lt;
 }
 
-fn materializeAll(
+/// Load prompt content by hub-issued prompt_id. Resolves each id through
+/// the local manifest, reads the cache file, and returns content + metadata.
+/// Unknown ids return `error.UnknownPromptId`.
+pub fn loadPrompts(
     allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    items: []const PromptItem,
-    known: []const KnownHash,
-) !LoadResult {
-    var result: LoadResult = .{};
-    errdefer result.deinit(allocator);
-
-    try result.items.ensureTotalCapacity(allocator, items.len);
-    for (items) |item| {
-        try result.items.append(allocator, try materializeItem(allocator, workspace_root, item, knownHashFor(item.id, known)));
-    }
-    return result;
-}
-
-fn materializeSelection(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    inventory: []const PromptItem,
+    ws_dir: []const u8,
     ids: []const []const u8,
     known: []const KnownHash,
 ) !LoadResult {
+    var manifest = try loadManifest(allocator, ws_dir);
+    defer manifest.deinit(allocator);
+
     var result: LoadResult = .{};
     errdefer result.deinit(allocator);
 
-    var seen_ids = std.StringHashMap(void).init(allocator);
+    var seen = std.StringHashMap(void).init(allocator);
     defer {
-        var key_iter = seen_ids.keyIterator();
-        while (key_iter.next()) |key| allocator.free(@constCast(key.*));
-        seen_ids.deinit();
+        var it = seen.keyIterator();
+        while (it.next()) |k| allocator.free(@constCast(k.*));
+        seen.deinit();
     }
 
     for (ids) |id| {
-        if (seen_ids.contains(id)) continue;
-
+        if (seen.contains(id)) continue;
         const seen_key = try allocator.dupe(u8, id);
-        seen_ids.put(seen_key, {}) catch |err| {
+        seen.put(seen_key, {}) catch |err| {
             allocator.free(seen_key);
             return err;
         };
 
-        const item = findPromptById(inventory, id) orelse return error.UnknownPromptId;
-        try result.items.append(allocator, try materializeItem(allocator, workspace_root, item, knownHashFor(id, known)));
+        const m_entry = manifest.prompts.get(id) orelse return error.UnknownPromptId;
+        const kind = kindFromPath(m_entry.path) orelse return error.UnknownPromptId;
+
+        const known_hash = knownHashFor(id, known);
+        const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, m_entry.hash);
+
+        const content = if (changed)
+            try readCacheFileAlloc(allocator, ws_dir, m_entry.path)
+        else
+            null;
+        errdefer if (content) |owned| allocator.free(owned);
+
+        const display_name = prompt.displayNameFromFilename(std.fs.path.basename(m_entry.path));
+        const group_slice = groupFromPath(m_entry.path);
+
+        try result.items.append(allocator, .{
+            .id = try allocator.dupe(u8, id),
+            .kind = kind,
+            .path = try allocator.dupe(u8, m_entry.path),
+            .name = try allocator.dupe(u8, display_name),
+            .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
+            .hash = try allocator.dupe(u8, m_entry.hash),
+            .changed = changed,
+            .content = content,
+        });
     }
 
     return result;
 }
 
-fn materializeItem(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    item: PromptItem,
-    known_hash: ?[]const u8,
-) !LoadedPrompt {
-    const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, item.hash);
-    const content = if (changed)
-        try readWorkspaceFileAlloc(allocator, workspace_root, item.path)
-    else
-        null;
-    errdefer if (content) |owned| allocator.free(owned);
-
-    return .{
-        .id = try allocator.dupe(u8, item.id),
-        .kind = item.kind,
-        .path = try allocator.dupe(u8, item.path),
-        .name = try allocator.dupe(u8, item.name),
-        .group = if (item.group) |group| try allocator.dupe(u8, group) else null,
-        .hash = try allocator.dupe(u8, item.hash),
-        .changed = changed,
-        .content = content,
-    };
-}
-
-fn readWorkspaceFileAlloc(allocator: std.mem.Allocator, workspace_root: []const u8, rel_path: []const u8) ![]const u8 {
-    const abs_path = try std.fs.path.join(allocator, &.{ workspace_root, rel_path });
+fn readCacheFileAlloc(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
+    const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", rel_path });
     defer allocator.free(abs_path);
 
     const file = try std.fs.openFileAbsolute(abs_path, .{});
@@ -340,21 +359,12 @@ fn readWorkspaceFileAlloc(allocator: std.mem.Allocator, workspace_root: []const 
     return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(prompt.MAX_FILE_SIZE));
 }
 
-fn findPromptById(inventory: []const PromptItem, id: []const u8) ?PromptItem {
-    for (inventory) |item| {
-        if (std.mem.eql(u8, item.id, id)) return item;
-    }
-    return null;
-}
-
 fn knownHashFor(id: []const u8, known: []const KnownHash) ?[]const u8 {
     for (known) |entry| {
         if (std.mem.eql(u8, entry.id, id)) return entry.hash;
     }
     return null;
 }
-
-// Constraint parsing (for validate)
 
 pub const ParsedConstraint = struct {
     id: []const u8,
@@ -412,7 +422,6 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
     var line_num: usize = 0;
     var constraint_counter: usize = 0;
 
-    // State: are we inside a ## region?
     var in_region = false;
     var region_start: usize = 0;
     var region_has_list = false;
@@ -422,25 +431,20 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
         line_num += 1;
         const trimmed = std.mem.trimLeft(u8, line, " \t");
 
-        // # heading = title, skip
         if (std.mem.startsWith(u8, trimmed, "# ") and !std.mem.startsWith(u8, trimmed, "## ")) {
             continue;
         }
 
-        // ## heading = new constraint region (with reserved heading exceptions)
         if (std.mem.startsWith(u8, trimmed, "## ")) {
             const heading_text = trimmed[3..];
 
-            // Reserved: ## Steps — execution steps, not constraints
             const is_steps = std.ascii.eqlIgnoreCase(heading_text, "Steps") or
                 std.ascii.eqlIgnoreCase(heading_text, "steps");
-            // Reserved: ## Examples — supporting material
             const is_examples = std.ascii.eqlIgnoreCase(heading_text, "Examples") or
                 std.ascii.eqlIgnoreCase(heading_text, "examples") or
                 std.ascii.eqlIgnoreCase(heading_text, "Example") or
                 std.ascii.eqlIgnoreCase(heading_text, "example");
 
-            // Close previous region if open
             if (in_region and !region_has_list) {
                 constraint_counter += 1;
                 const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
@@ -463,9 +467,7 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
             continue;
         }
 
-        // List item (- or 1.) within a region = individual constraint
         if (in_region and (std.mem.startsWith(u8, trimmed, "- ") or isOrderedListItem(trimmed))) {
-            // Skip support material lines
             if (std.mem.startsWith(u8, trimmed, "- **理由**") or
                 std.mem.startsWith(u8, trimmed, "- **示例**"))
                 continue;
@@ -481,7 +483,6 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
             continue;
         }
 
-        // **理由** / **示例** = support material, skip
         if (std.mem.startsWith(u8, trimmed, "**理由**") or
             std.mem.startsWith(u8, trimmed, "**示例**") or
             std.mem.startsWith(u8, trimmed, "✅") or
@@ -491,7 +492,6 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
         }
     }
 
-    // Close last region
     if (in_region and !region_has_list) {
         constraint_counter += 1;
         const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
@@ -530,46 +530,6 @@ fn isOrderedListItem(line: []const u8) bool {
     return line[i] == '.' and i + 1 < line.len and line[i + 1] == ' ';
 }
 
-/// Validate a prompt file. For Rule/Workflow: parse constraints. For Data: just check readable.
-pub fn validatePrompt(allocator: std.mem.Allocator, workspace_root: []const u8, prompt_id: []const u8) !ValidateResult {
-    var all = try discoverAll(allocator, workspace_root);
-    defer deinitPromptItems(allocator, &all);
-
-    const item = findPromptById(all.items, prompt_id) orelse {
-        var issues: std.ArrayList([]const u8) = .empty;
-        try issues.append(allocator, try allocator.dupe(u8, "Prompt not found"));
-        return .{
-            .valid = false,
-            .constraints = .empty,
-            .issues = issues,
-        };
-    };
-
-    if (item.kind == .context) {
-        // Just check readable
-        const content = readWorkspaceFileAlloc(allocator, workspace_root, item.path) catch {
-            var issues: std.ArrayList([]const u8) = .empty;
-            try issues.append(allocator, try allocator.dupe(u8, "File not readable"));
-            return .{
-                .valid = false,
-                .constraints = .empty,
-                .issues = issues,
-            };
-        };
-        allocator.free(content);
-        return .{
-            .valid = true,
-            .constraints = .empty,
-            .issues = .empty,
-        };
-    }
-
-    // Rule or Workflow: parse constraints
-    const content = try readWorkspaceFileAlloc(allocator, workspace_root, item.path);
-    defer allocator.free(content);
-    return try parseConstraints(allocator, content);
-}
-
 fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
     defer file.close();
@@ -583,54 +543,245 @@ fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8)
     return tmp.dir.realpath(".", buf) catch "";
 }
 
-test "discoverAll: finds rules workflows and data by kind directory" {
+fn writeTestManifest(dir: std.fs.Dir, json: []const u8) !void {
+    try writeFile(dir, "manifest.json", json);
+}
+
+test "loadManifest: parses prompts and context entries" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("rule/coding");
-    try tmp.dir.makePath("workflow");
-    try tmp.dir.makePath("context/research");
-
-    try writeFile(tmp.dir, "rule/coding/00_COMPAT.md", "compat rule");
-    try writeFile(tmp.dir, "workflow/00_GEN_COMMIT.md", "commit workflow");
-    try writeFile(tmp.dir, "context/research/R1-0.md", "research data");
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "revision": 7,
+        \\  "prompts": {
+        \\    "p-1": {"path": "rule/coding/STYLE.md", "hash": "sha256:abc"},
+        \\    "p-2": {"path": "workflow/cmd/COMMIT.md", "hash": "sha256:def"}
+        \\  },
+        \\  "context": {
+        \\    "c-1": {"path": "spec/API.md", "hash": "sha256:xyz"}
+        \\  }
+        \\}
+    );
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    var items = try discoverAll(testing.allocator, root);
-    defer deinitPromptItems(testing.allocator, &items);
+    var manifest = try loadManifest(testing.allocator, root);
+    defer manifest.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 3), items.items.len);
+    try testing.expectEqual(@as(usize, 2), manifest.prompts.count());
+    try testing.expectEqual(@as(usize, 1), manifest.context.count());
 
-    var found_rule = false;
-    var found_workflow = false;
-    var found_data = false;
-    for (items.items) |item| {
-        if (std.mem.eql(u8, item.id, "rule:coding/00_COMPAT.md")) {
-            found_rule = true;
-            try testing.expectEqualStrings("coding", item.group.?);
-        }
-        if (std.mem.eql(u8, item.id, "workflow:00_GEN_COMMIT.md")) {
-            found_workflow = true;
-            try testing.expect(item.group == null);
-        }
-        if (std.mem.eql(u8, item.id, "context:research/R1-0.md")) {
-            found_data = true;
-            try testing.expectEqualStrings("research", item.group.?);
-        }
-    }
-    try testing.expect(found_rule);
-    try testing.expect(found_workflow);
-    try testing.expect(found_data);
+    const p1 = manifest.prompts.get("p-1").?;
+    try testing.expectEqualStrings("rule/coding/STYLE.md", p1.path);
+    try testing.expectEqualStrings("sha256:abc", p1.hash);
+
+    const c1 = manifest.context.get("c-1").?;
+    try testing.expectEqualStrings("spec/API.md", c1.path);
 }
 
-test "loadMpf: returns content and hash" {
+test "loadManifest: missing file returns empty manifest" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".prompts");
-    try writeFile(tmp.dir, "META_PROMPT.md", "bootstrap rules");
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var manifest = try loadManifest(testing.allocator, root);
+    defer manifest.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), manifest.prompts.count());
+    try testing.expectEqual(@as(usize, 0), manifest.context.count());
+}
+
+test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.makePath("cache/workflow/cmd");
+    try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style");
+    try writeFile(tmp.dir, "cache/workflow/cmd/COMMIT.md", "commit");
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "prompts": {
+        \\    "p-style": {"path": "rule/coding/STYLE.md", "hash": "sha256:1"},
+        \\    "p-commit": {"path": "workflow/cmd/COMMIT.md", "hash": "sha256:2"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var items = try discoverSearchable(testing.allocator, root, null, null);
+    defer deinitPromptItems(testing.allocator, &items);
+
+    try testing.expectEqual(@as(usize, 2), items.items.len);
+
+    var found_style = false;
+    var found_commit = false;
+    for (items.items) |item| {
+        if (std.mem.eql(u8, item.id, "p-style")) {
+            found_style = true;
+            try testing.expectEqual(PromptKind.rule, item.kind);
+            try testing.expectEqualStrings("rule/coding/STYLE.md", item.path);
+            try testing.expectEqualStrings("coding", item.group.?);
+        }
+        if (std.mem.eql(u8, item.id, "p-commit")) {
+            found_commit = true;
+            try testing.expectEqual(PromptKind.workflow, item.kind);
+            try testing.expectEqualStrings("cmd", item.group.?);
+        }
+    }
+    try testing.expect(found_style);
+    try testing.expect(found_commit);
+}
+
+test "discoverSearchable: kind filter narrows results" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "prompts": {
+        \\    "p-style": {"path": "rule/coding/STYLE.md", "hash": "sha256:1"},
+        \\    "p-commit": {"path": "workflow/cmd/COMMIT.md", "hash": "sha256:2"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var rules = try discoverSearchable(testing.allocator, root, .rule, null);
+    defer deinitPromptItems(testing.allocator, &rules);
+
+    try testing.expectEqual(@as(usize, 1), rules.items.len);
+    try testing.expectEqualStrings("p-style", rules.items[0].id);
+}
+
+test "discoverSearchable: group filter matches first path component after kind" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "prompts": {
+        \\    "p-1": {"path": "rule/coding/STYLE.md", "hash": "sha256:1"},
+        \\    "p-2": {"path": "rule/zig/NAMING.md", "hash": "sha256:2"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var zig_rules = try discoverSearchable(testing.allocator, root, .rule, "zig");
+    defer deinitPromptItems(testing.allocator, &zig_rules);
+
+    try testing.expectEqual(@as(usize, 1), zig_rules.items.len);
+    try testing.expectEqualStrings("p-2", zig_rules.items[0].id);
+}
+
+test "discoverSearchable: META_PROMPT.md is excluded" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "prompts": {
+        \\    "p-mpf": {"path": "META_PROMPT.md", "hash": "sha256:abc"},
+        \\    "p-style": {"path": "rule/coding/STYLE.md", "hash": "sha256:1"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var items = try discoverSearchable(testing.allocator, root, null, null);
+    defer deinitPromptItems(testing.allocator, &items);
+
+    try testing.expectEqual(@as(usize, 1), items.items.len);
+    try testing.expectEqualStrings("p-style", items.items[0].id);
+}
+
+test "loadPrompts: looks up by hub prompt_id and reads cache file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule");
+    try writeFile(tmp.dir, "cache/rule/STYLE.md", "style content");
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "prompts": {
+        \\    "p-style": {"path": "rule/STYLE.md", "hash": "sha256:zzz"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var result = try loadPrompts(testing.allocator, root, &.{"p-style"}, &.{});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.items.items.len);
+    try testing.expectEqualStrings("p-style", result.items.items[0].id);
+    try testing.expect(result.items.items[0].changed);
+    try testing.expectEqualStrings("style content", result.items.items[0].content.?);
+}
+
+test "loadPrompts: known hash matches returns delta with no content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule");
+    try writeFile(tmp.dir, "cache/rule/STYLE.md", "style content");
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "prompts": {
+        \\    "p-style": {"path": "rule/STYLE.md", "hash": "sha256:zzz"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const known = [_]KnownHash{.{ .id = "p-style", .hash = "sha256:zzz" }};
+    var result = try loadPrompts(testing.allocator, root, &.{"p-style"}, &known);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(!result.items.items[0].changed);
+    try testing.expect(result.items.items[0].content == null);
+}
+
+test "loadPrompts: unknown id returns UnknownPromptId" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestManifest(tmp.dir,
+        \\{"prompts": {}}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try testing.expectError(error.UnknownPromptId, loadPrompts(testing.allocator, root, &.{"p-missing"}, &.{}));
+}
+
+test "loadMpf: returns content and hash from cache subdirectory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache");
+    try writeFile(tmp.dir, "cache/META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
@@ -647,19 +798,17 @@ test "loadMpf: delta when hash matches" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".prompts");
-    try writeFile(tmp.dir, "META_PROMPT.md", "bootstrap rules");
+    try tmp.dir.makePath("cache");
+    try writeFile(tmp.dir, "cache/META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    // First load to get hash
     var first = try loadMpf(testing.allocator, root, null);
     const hash = try testing.allocator.dupe(u8, first.hash.?);
     defer testing.allocator.free(hash);
     first.deinit(testing.allocator);
 
-    // Second load with known hash — content should be null (no delta)
     var second = try loadMpf(testing.allocator, root, hash);
     defer second.deinit(testing.allocator);
 
@@ -671,8 +820,6 @@ test "loadMpf: returns null when file missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".prompts");
-
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
@@ -681,61 +828,6 @@ test "loadMpf: returns null when file missing" {
 
     try testing.expect(result.content == null);
     try testing.expect(result.hash == null);
-}
-
-test "discoverSearchable: filters by kind and group" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath("rule/coding");
-    try tmp.dir.makePath("rule/zig");
-    try tmp.dir.makePath("workflow");
-
-    try writeFile(tmp.dir, "rule/coding/00_COMPAT.md", "compat");
-    try writeFile(tmp.dir, "rule/zig/00_STYLE.md", "style");
-    try writeFile(tmp.dir, "workflow/00_COMMIT.md", "commit");
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-
-    // Filter by kind=rule
-    var rules = try discoverSearchable(testing.allocator, root, .rule, null);
-    defer deinitPromptItems(testing.allocator, &rules);
-    try testing.expectEqual(@as(usize, 2), rules.items.len);
-
-    // Filter by kind=rule, group=zig
-    var zig_rules = try discoverSearchable(testing.allocator, root, .rule, "zig");
-    defer deinitPromptItems(testing.allocator, &zig_rules);
-    try testing.expectEqual(@as(usize, 1), zig_rules.items.len);
-    try testing.expectEqualStrings("rule:zig/00_STYLE.md", zig_rules.items[0].id);
-}
-
-test "loadPrompts: loads by id with delta" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath("rule");
-    try writeFile(tmp.dir, "rule/00_STYLE.md", "style content");
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-
-    var result = try loadPrompts(testing.allocator, root, &.{"rule:00_STYLE.md"}, &.{});
-    defer result.deinit(testing.allocator);
-
-    try testing.expectEqual(@as(usize, 1), result.items.items.len);
-    try testing.expect(result.items.items[0].changed);
-    try testing.expectEqualStrings("style content", result.items.items[0].content.?);
-}
-
-test "loadPrompts: unknown id fails" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-
-    try testing.expectError(error.UnknownPromptId, loadPrompts(testing.allocator, root, &.{"rule:missing.md"}, &.{}));
 }
 
 test "parseConstraints: list items become individual constraints" {

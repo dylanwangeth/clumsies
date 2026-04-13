@@ -220,6 +220,8 @@ RAW=$(call GET "/api/org/library/manifest")
 parse_response "$RAW"
 assert_status "get manifest" "200" "$STATUS"
 assert_json "contains revision" "revision" "$BODY"
+assert_json "prompt entries carry path" '"path":"rule/coding/STYLE.md"' "$BODY"
+assert_json "prompt entries carry hash" '"hash":"sha256:abc123"' "$BODY"
 
 # Prompt PRs (multi-operation model)
 step "Prompt PR: create with modify operation"
@@ -543,6 +545,8 @@ step "Context: manifest reflects context"
 RAW=$(call GET "/api/workspaces/$CTX_WS/manifest")
 parse_response "$RAW"
 assert_status "get manifest" "200" "$STATUS"
+assert_json "context entries keyed by context_id" "$CTX_ID" "$BODY"
+assert_json "context entries carry path" '"path":"spec/API.md"' "$BODY"
 
 step "Context: branch endpoint is gone"
 RAW=$(call GET "/api/workspaces/$CTX_WS/context/branches")

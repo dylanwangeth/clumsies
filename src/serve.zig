@@ -17,8 +17,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
     errdefer session.deinit(allocator);
 
-    const cache_path = try ws_config.getCachePath(allocator, session.ws_id);
-    defer allocator.free(cache_path);
+    const ws_dir = try ws_config.getWsDir(allocator, session.ws_id);
+    defer allocator.free(ws_dir);
 
-    try mcp_server.runWithRoot(stdout, stderr, allocator, version, cache_path, session);
+    try mcp_server.runWithRoot(stdout, stderr, allocator, version, ws_dir, session);
 }

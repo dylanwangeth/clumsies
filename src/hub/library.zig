@@ -3,8 +3,8 @@ const httpz = @import("httpz");
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("../protocol/api_error.zig").send;
-const KvMap = @import("../protocol/manifest.zig").KvMap;
-const KvEntry = @import("../protocol/manifest.zig").KvEntry;
+const ManifestMap = @import("../protocol/manifest.zig").ManifestMap;
+const ManifestItem = @import("../protocol/manifest.zig").ManifestItem;
 
 pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -25,7 +25,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     } orelse {
         try res.json(.{
             .revision = @as(i32, 0),
-            .prompts = KvMap{ .entries = &.{} },
+            .prompts = ManifestMap{ .items = &.{} },
         }, .{});
         return;
     };
@@ -43,18 +43,21 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     }
 
     var result = conn.query(
-        "SELECT prompt_id, content_hash FROM prompts WHERE org_id = $1::uuid",
+        "SELECT prompt_id, path, content_hash FROM prompts WHERE org_id = $1::uuid",
         .{user.org_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
     defer result.deinit();
 
-    var entries: std.ArrayList(KvEntry) = .empty;
+    var items: std.ArrayList(ManifestItem) = .empty;
     while (try result.next()) |row| {
-        try entries.append(req.arena, .{
+        try items.append(req.arena, .{
             .key = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-            .value = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+            .value = .{
+                .path = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+                .hash = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            },
         });
     }
 
@@ -64,7 +67,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 
     try res.json(.{
         .revision = revision,
-        .prompts = KvMap{ .entries = entries.items },
+        .prompts = ManifestMap{ .items = items.items },
     }, .{});
 }
 
