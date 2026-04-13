@@ -2405,7 +2405,7 @@ pub const Dashboard = struct {
             const is_last = i + 1 == sessions_slice.len;
             const connector = if (is_last) "\xe2\x94\x94" else "\xe2\x94\x9c";
             w.writeText(&surface, ctx, 6, row, connector, theme.fg(theme.BORDER));
-            const line = try std.fmt.allocPrint(ctx.arena, "{s}  {s}  pid {d}  {s}", .{ sess.ws_id, sess.session_id, sess.pid, sess.age });
+            const line = try std.fmt.allocPrint(ctx.arena, "{s}  {s}  {s}", .{ sess.ws_id, sess.session_id, sess.age });
             w.writeText(&surface, ctx, 8, row, line, theme.fg(theme.TEXT_SOFT));
             row += 1;
         }
@@ -2666,7 +2666,6 @@ pub const Dashboard = struct {
             list.append(arena, .{
                 .ws_id = sess.ws_id,
                 .session_id = sess.session_id,
-                .pid = sess.pid,
                 .age = age,
             }) catch continue;
         }

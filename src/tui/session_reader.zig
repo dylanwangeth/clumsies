@@ -9,7 +9,6 @@ const std = @import("std");
 pub const ActiveSession = struct {
     ws_id: []const u8,
     session_id: []const u8,
-    pid: i64,
     started_at: i64,
 };
 
@@ -50,7 +49,6 @@ fn readMarker(allocator: std.mem.Allocator, ws_id: []const u8, path: []const u8,
 
     const Json = struct {
         session_id: []const u8 = "",
-        pid: i64 = 0,
         started_at: i64 = 0,
     };
     const parsed = std.json.parseFromSlice(Json, allocator, buf[0..total], .{
@@ -61,21 +59,9 @@ fn readMarker(allocator: std.mem.Allocator, ws_id: []const u8, path: []const u8,
 
     if (parsed.value.session_id.len == 0) return;
 
-    // A stale marker from a crashed MCP can linger on disk. Probe the
-    // pid with signal 0 (no-op) to verify the process is still alive;
-    // if the kill check fails we skip the entry rather than report a
-    // ghost session.
-    if (parsed.value.pid > 0 and !pidAlive(@intCast(parsed.value.pid))) return;
-
     out.append(allocator, .{
         .ws_id = allocator.dupe(u8, ws_id) catch return,
         .session_id = allocator.dupe(u8, parsed.value.session_id) catch return,
-        .pid = parsed.value.pid,
         .started_at = parsed.value.started_at,
     }) catch return;
-}
-
-fn pidAlive(pid: std.c.pid_t) bool {
-    const rc = std.c.kill(pid, 0);
-    return rc == 0;
 }
