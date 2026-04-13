@@ -39,9 +39,7 @@ pub fn migrate(pool: *Pool) !void {
 
 pub fn bootstrap(pool: *Pool) !void {
     const alloc = std.heap.page_allocator;
-    const username = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_USERNAME") catch return;
-    const password = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_PASSWORD") catch return;
-    const org_name = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_ORG") catch "default";
+    const log = std.log.scoped(.bootstrap);
 
     const conn = try pool.acquire();
     defer conn.release();
@@ -54,7 +52,15 @@ pub fn bootstrap(pool: *Pool) !void {
         if (count > 0) return;
     }
 
-    const log = std.log.scoped(.bootstrap);
+    const username = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_USERNAME") catch blk: {
+        log.warn("HUB_BOOTSTRAP_USERNAME missing; defaulting to 'admin'", .{});
+        break :blk "admin";
+    };
+    const password = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_PASSWORD") catch blk: {
+        log.warn("HUB_BOOTSTRAP_PASSWORD missing; defaulting to 'admin'", .{});
+        break :blk "admin";
+    };
+    const org_name = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_ORG") catch "default";
 
     // Create org
     _ = conn.exec(

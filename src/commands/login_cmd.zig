@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const flag = @import("../flags.zig");
 const auth_mod = @import("../auth.zig");
 const HubClient = @import("../hub_client.zig").HubClient;
@@ -63,13 +64,20 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer response.deinit();
 
     if (response.status == .ok) {
-        const parsed = std.json.parseFromSlice(LoginResponse, allocator, response.body, .{ .allocate = .alloc_always }) catch {
+        const parsed = std.json.parseFromSlice(LoginResponse, allocator, response.body, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to parse login response\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
         defer parsed.deinit();
-        try auth_mod.saveAuth(allocator, hub_url, username, parsed.value.access_token, parsed.value.refresh_token);
+        const save_location = auth_mod.saveAuth(allocator, hub_url, username, parsed.value.access_token, parsed.value.refresh_token) catch |err| {
+            try stderr.print("{s}{s}{s}Error:{s} Failed to save login credentials ({s})\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
+            return;
+        };
         try stdout.print("{s}{s}{s}Logged in{s} as {s}{s}{s}\n", .{ P, Color.bold, Color.green, Color.reset, Color.cyan, username, Color.reset });
+        try printStorageNote(stderr, allocator, save_location);
         return;
     }
 
@@ -117,13 +125,20 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         return;
     }
 
-    const parsed = std.json.parseFromSlice(LoginResponse, allocator, activate_resp.body, .{ .allocate = .alloc_always }) catch {
+    const parsed = std.json.parseFromSlice(LoginResponse, allocator, activate_resp.body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to parse activation response\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
     defer parsed.deinit();
-    try auth_mod.saveAuth(allocator, hub_url, username, parsed.value.access_token, parsed.value.refresh_token);
+    const save_location = auth_mod.saveAuth(allocator, hub_url, username, parsed.value.access_token, parsed.value.refresh_token) catch |err| {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to save login credentials ({s})\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
+        return;
+    };
     try stdout.print("{s}{s}{s}Account activated and logged in{s} as {s}{s}{s}\n", .{ P, Color.bold, Color.green, Color.reset, Color.cyan, username, Color.reset });
+    try printStorageNote(stderr, allocator, save_location);
 }
 
 fn readLine(allocator: std.mem.Allocator) ![]const u8 {
@@ -164,6 +179,39 @@ const LoginResponse = struct {
     access_token: []const u8,
     refresh_token: []const u8,
 };
+
+fn printStorageNote(stderr: *std.Io.Writer, allocator: std.mem.Allocator, save_location: auth_mod.SaveLocation) !void {
+    if (save_location != .file_fallback) return;
+
+    const base = auth_mod.getBasePath(allocator) catch {
+        try stderr.print("{s}Note: Keychain was unavailable; credentials were stored in ~/.clumsies/auth.json\n", .{P});
+        return;
+    };
+    defer allocator.free(base);
+
+    const path = std.fs.path.join(allocator, &.{ base, "auth.json" }) catch {
+        try stderr.print("{s}Note: Keychain was unavailable; credentials were stored in ~/.clumsies/auth.json\n", .{P});
+        return;
+    };
+    defer allocator.free(path);
+
+    try stderr.print("{s}Note: Keychain was unavailable; credentials were stored in {s}\n", .{ P, path });
+}
+
+test "LoginResponse parsing ignores expires_in" {
+    const body =
+        \\{"access_token":"acc","refresh_token":"ref","expires_in":3600}
+    ;
+
+    const parsed = try std.json.parseFromSlice(LoginResponse, testing.allocator, body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try testing.expectEqualStrings("acc", parsed.value.access_token);
+    try testing.expectEqualStrings("ref", parsed.value.refresh_token);
+}
 
 fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies login [--hub-url <url>] [--username <user>]{s}\n", .{ P, Color.cyan, Color.reset });

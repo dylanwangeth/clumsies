@@ -2,6 +2,7 @@ const std = @import("std");
 const pg = @import("pg");
 const data = @import("data.zig");
 const Faker = @import("faker.zig");
+const local_trace = @import("clumsies_lib").trace;
 
 const log = std.log.scoped(.pump);
 
@@ -11,6 +12,19 @@ fn copyRowStr(dest: []u8, row: anytype, col: usize) ?[]const u8 {
     if (val.len > dest.len) return null;
     @memcpy(dest[0..val.len], val);
     return dest[0..val.len];
+}
+
+fn appendLocalTraceEvent(ws_id: []const u8, session_id: []const u8, event_id: i64, event_type: []const u8, timestamp: i64, prompt_id: ?[]const u8) void {
+    local_trace.appendTraceEvent(std.heap.page_allocator, .{
+        .ws_id = ws_id,
+        .session_id = session_id,
+        .event_id = event_id,
+        .type = event_type,
+        .timestamp = timestamp,
+        .prompt_id = prompt_id,
+    }) catch |err| {
+        log.warn("pump: local trace append failed: {}", .{err});
+    };
 }
 
 pub fn run(pool: *pg.Pool, interval_ms: u64) !void {
@@ -102,13 +116,15 @@ fn traceSession(faker: *Faker, conn: *pg.Conn) void {
             prompt_ids[ei % prompt_count]
         else
             null;
+        const timestamp = std.time.milliTimestamp();
 
         _ = conn.exec(
-            "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id) VALUES ($1, $2, $3, $4, (extract(epoch from now()) * 1000)::bigint, $5) ON CONFLICT DO NOTHING",
-            .{ ws_id, session_id, @as(i64, @intCast(ei)), event_type, prompt_id },
+            "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+            .{ ws_id, session_id, @as(i64, @intCast(ei)), event_type, timestamp, prompt_id },
         ) catch |err| {
             log.warn("pump: {}", .{err});
         };
+        appendLocalTraceEvent(ws_id, session_id, @as(i64, @intCast(ei)), event_type, timestamp, prompt_id);
     }
 }
 

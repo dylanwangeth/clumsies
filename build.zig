@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
+                .{ .name = "clumsies_lib", .module = lib },
                 .{ .name = "pg", .module = pg.module("pg") },
             },
         }),
@@ -152,5 +153,4 @@ pub fn build(b: *std.Build) void {
     const run_hub_tests = b.addRunArtifact(hub_tests);
     const hub_test_step = b.step("test-hub", "Run Hub Server unit tests");
     hub_test_step.dependOn(&run_hub_tests.step);
-
 }

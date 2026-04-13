@@ -2,6 +2,8 @@ const std = @import("std");
 const pg = @import("pg");
 const data = @import("data.zig");
 const Faker = @import("faker.zig");
+const password = @import("password.zig");
+const local_trace = @import("clumsies_lib").trace;
 
 const log = std.log.scoped(.seed);
 
@@ -48,6 +50,7 @@ pub fn run(pool: *pg.Pool) !void {
     var faker = Faker.init(std.heap.page_allocator);
     var state = SeedState{};
 
+    clearExistingLocalTrace(conn);
     log.info("truncating all tables...", .{});
     _ = conn.exec(
         \\TRUNCATE orgs, users, tokens, workspaces, workspace_members, prompts, workspace_prompts,
@@ -77,6 +80,52 @@ pub fn run(pool: *pg.Pool) !void {
     log.info("reset complete", .{});
 }
 
+fn clearExistingLocalTrace(conn: *pg.Conn) void {
+    var result = conn.query("SELECT ws_id FROM workspaces", .{}) catch return;
+    defer result.deinit();
+
+    while (result.next() catch null) |row| {
+        const ws_id = row.get([]const u8, 0) catch continue;
+        deleteLocalTraceFile(ws_id);
+        deleteLocalCursorFile(ws_id);
+    }
+}
+
+fn deleteLocalTraceFile(ws_id: []const u8) void {
+    const alloc = std.heap.page_allocator;
+    const path = local_trace.traceFilePath(alloc, ws_id) catch return;
+    defer alloc.free(path);
+
+    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => log.warn("seed: local trace cleanup failed: {}", .{err}),
+    };
+}
+
+fn deleteLocalCursorFile(ws_id: []const u8) void {
+    const alloc = std.heap.page_allocator;
+    const path = local_trace.cursorFilePath(alloc, ws_id) catch return;
+    defer alloc.free(path);
+
+    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => log.warn("seed: local cursor cleanup failed: {}", .{err}),
+    };
+}
+
+fn appendLocalTraceEvent(ws_id: []const u8, session_id: []const u8, event_id: i64, event_type: []const u8, timestamp: i64, prompt_id: ?[]const u8) void {
+    local_trace.appendTraceEvent(std.heap.page_allocator, .{
+        .ws_id = ws_id,
+        .session_id = session_id,
+        .event_id = event_id,
+        .type = event_type,
+        .timestamp = timestamp,
+        .prompt_id = prompt_id,
+    }) catch |err| {
+        log.warn("seed: local trace append failed: {}", .{err});
+    };
+}
+
 fn seedOrg(conn: *pg.Conn) !void {
     log.info("seeding org...", .{});
     _ = try conn.exec(
@@ -88,34 +137,16 @@ fn seedOrg(conn: *pg.Conn) !void {
 fn seedUsers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding {d} users...", .{data.USER_COUNT});
 
-    // Track used names to avoid duplicates
-    var used_names: [data.USER_COUNT][]const u8 = undefined;
-    var used_count: usize = 0;
+    var hash_buf: [128]u8 = undefined;
+    const active_password_hash = try password.hashPassword(data.SEED_PASSWORD, &hash_buf);
 
-    for (0..data.USER_COUNT) |i| {
-        // Generate unique name
-        var name: []const u8 = undefined;
-        var attempts: usize = 0;
-        while (attempts < 50) : (attempts += 1) {
-            name = faker.firstName();
-            var duplicate = false;
-            for (used_names[0..used_count]) |used| {
-                if (std.mem.eql(u8, used, name)) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (!duplicate) break;
-        }
-        used_names[used_count] = name;
-        used_count += 1;
-
+    for (data.SEED_USERNAMES, 0..) |name, i| {
         const id = faker.hexId(&state.user_ids[i], "usr-");
         // First 2 users are maintainers, rest are members; last 2 are invited
         const role: []const u8 = if (i < 2) "maintainer" else "member";
         const is_invited = i >= data.USER_COUNT - 2;
         const status: []const u8 = if (is_invited) "invited" else "active";
-        const password: []const u8 = if (is_invited) "" else "testpass";
+        const password_hash: []const u8 = if (is_invited) "!invited" else active_password_hash;
 
         state.user_names[i] = name;
         state.user_roles[i] = role;
@@ -123,7 +154,7 @@ fn seedUsers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 
         _ = try conn.exec(
             "INSERT INTO users (user_id, org_id, username, password_hash, role, status) VALUES ($1, $2::uuid, $3, $4, $5, $6)",
-            .{ id, data.ORG_ID, name, password, role, status },
+            .{ id, data.ORG_ID, name, password_hash, role, status },
         );
     }
 }
@@ -511,8 +542,7 @@ fn seedTraceEvents(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 
         for (0..data.TRACE_EVENTS_PER_SESSION) |ei| {
             const event_type = faker.pick([]const u8, &data.TRACE_EVENT_TYPES);
-            var interval_buf: [64]u8 = undefined;
-            const interval = faker.pastInterval(&interval_buf, 30);
+            const timestamp = std.time.milliTimestamp() + faker.pastDaysMs(30);
 
             const is_refer = std.mem.eql(u8, event_type, "refer");
             const prompt_id: ?[]const u8 = if (is_refer)
@@ -523,11 +553,12 @@ fn seedTraceEvents(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
             const event_id: i64 = @intCast(si * data.TRACE_EVENTS_PER_SESSION + ei);
 
             _ = conn.exec(
-                "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id) VALUES ($1, $2, $3, $4, (extract(epoch from (now() - $5::interval)) * 1000)::bigint, $6) ON CONFLICT DO NOTHING",
-                .{ state.wsId(wi), session_id, event_id, event_type, interval, prompt_id },
+                "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+                .{ state.wsId(wi), session_id, event_id, event_type, timestamp, prompt_id },
             ) catch |err| {
                 log.warn("seed: {}", .{err});
             };
+            appendLocalTraceEvent(state.wsId(wi), session_id, event_id, event_type, timestamp, prompt_id);
         }
     }
 }
