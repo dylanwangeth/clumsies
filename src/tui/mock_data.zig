@@ -31,6 +31,13 @@ pub const CommentEntry = struct {
     created: []const u8,
 };
 
+pub const ActiveSessionView = struct {
+    ws_id: []const u8,
+    session_id: []const u8,
+    pid: i64,
+    age: []const u8,
+};
+
 pub const PullRequestEntry = struct {
     id: []const u8,
     prompt_name: []const u8,

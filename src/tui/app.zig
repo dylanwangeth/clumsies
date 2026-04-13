@@ -907,6 +907,10 @@ pub const Dashboard = struct {
                             };
                             ctx.consumeAndRedraw();
                         }
+                        if (key.matches('F', .{ .shift = true })) {
+                            self.flushTrace();
+                            ctx.consumeAndRedraw();
+                        }
                         if (key.matches(vaxis.Key.tab, .{})) {
                             self.insights_focus = switch (self.insights_focus) {
                                 .chart => .prompts,
@@ -1924,6 +1928,13 @@ pub const Dashboard = struct {
         w.writeText(&s, ctx, 4, 0, "Signal Trend", theme.boldOn(theme.PANEL, theme.TEXT));
         const metrics_txt = try std.fmt.allocPrint(ctx.arena, "signal {d}%", .{ins.signal_ratio});
         w.writeText(&s, ctx, 18, 0, metrics_txt, theme.fg(theme.ACCENT_SOFT));
+
+        const active = self.activeSessionCount();
+        if (active > 0) {
+            const sess_txt = try std.fmt.allocPrint(ctx.arena, "\u{25cf} {d} live", .{active});
+            w.writeText(&s, ctx, 32, 0, sess_txt, .{ .fg = theme.OK, .bg = theme.PANEL });
+        }
+
         w.writeRightText(&s, ctx, 0, "t period", theme.fg(theme.MUTED));
 
         const chart_x: u16 = 1;
@@ -2276,7 +2287,25 @@ pub const Dashboard = struct {
         const token_color = if (std.mem.eql(u8, cfg.token_status, "active")) theme.OK else theme.DANGER;
         const token_info = try std.fmt.allocPrint(ctx.arena, "{s}, expires {s}", .{ cfg.token_status, cfg.token_expires });
         w.writeText(&surface, ctx, 19, row, token_info, theme.fg(token_color));
-        row += 2;
+        row += 1;
+
+        // Active MCP sessions (current_session.json markers on disk).
+        const sessions_slice: []const data.ActiveSessionView = self.getActiveSessionViews(ctx.arena);
+        w.writeText(&surface, ctx, 4, row, "MCP", theme.fg(theme.MUTED));
+        const mcp_summary = try std.fmt.allocPrint(ctx.arena, "{d} live session(s)", .{sessions_slice.len});
+        const mcp_color = if (sessions_slice.len > 0) theme.OK else theme.MUTED;
+        w.writeText(&surface, ctx, 19, row, mcp_summary, theme.fg(mcp_color));
+        row += 1;
+        for (sessions_slice, 0..) |sess, i| {
+            if (row >= size.height -| 4) break;
+            const is_last = i + 1 == sessions_slice.len;
+            const connector = if (is_last) "\xe2\x94\x94" else "\xe2\x94\x9c";
+            w.writeText(&surface, ctx, 6, row, connector, theme.fg(theme.BORDER));
+            const line = try std.fmt.allocPrint(ctx.arena, "{s}  {s}  pid {d}  {s}", .{ sess.ws_id, sess.session_id, sess.pid, sess.age });
+            w.writeText(&surface, ctx, 8, row, line, theme.fg(theme.TEXT_SOFT));
+            row += 1;
+        }
+        row += 1;
 
         // Security
         row = w.writeSectionHeader(&surface, ctx, 2, row, "Security");
@@ -2474,6 +2503,70 @@ pub const Dashboard = struct {
             w.writeText(&surface, ctx, 2, row, "Effective permissions = min(org role, token scopes)", theme.fg(theme.MUTED));
         }
         return surface;
+    }
+
+    // Spawn `clumsies trace flush` synchronously and report the result in
+    // the status line. Synchronous is fine here: the upload worker is a
+    // short-lived CLI that flushes buffered trace events and exits.
+    fn flushTrace(self: *Dashboard) void {
+        self.status_line = "Flushing trace...";
+        const alloc = self.api_state.arena.allocator();
+        var child = std.process.Child.init(&.{ "clumsies", "trace", "flush" }, alloc);
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+        child.spawn() catch {
+            self.status_line = "Flush failed: clumsies binary not found";
+            return;
+        };
+        var stdout: std.ArrayList(u8) = .empty;
+        var stderr: std.ArrayList(u8) = .empty;
+        child.collectOutput(alloc, &stdout, &stderr, 64 * 1024) catch {};
+        const term = child.wait() catch {
+            self.status_line = "Flush failed: child wait error";
+            return;
+        };
+        switch (term) {
+            .Exited => |code| {
+                if (code == 0) {
+                    const trimmed = std.mem.trim(u8, stdout.items, " \n\r\t");
+                    if (trimmed.len > 0) {
+                        self.status_line = std.fmt.allocPrint(alloc, "Flush: {s}", .{trimmed}) catch "Flush: ok";
+                    } else {
+                        self.status_line = "Flush: ok";
+                    }
+                } else {
+                    const trimmed = std.mem.trim(u8, stderr.items, " \n\r\t");
+                    self.status_line = std.fmt.allocPrint(alloc, "Flush exit {d}: {s}", .{ code, trimmed }) catch "Flush failed";
+                }
+            },
+            else => self.status_line = "Flush terminated abnormally",
+        }
+    }
+
+    fn activeSessionCount(self: *Dashboard) usize {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        return if (self.api_state.active_sessions) |s| s.len else 0;
+    }
+
+    // Build display-ready session rows with a human-readable age string.
+    fn getActiveSessionViews(self: *Dashboard, arena: std.mem.Allocator) []const data.ActiveSessionView {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const sessions = self.api_state.active_sessions orelse return &.{};
+        const now_s = std.time.timestamp();
+        var list: std.ArrayList(data.ActiveSessionView) = .empty;
+        for (sessions) |sess| {
+            const age_seconds = @max(now_s - sess.started_at, 0);
+            const age = formatAge(arena, age_seconds) catch "?";
+            list.append(arena, .{
+                .ws_id = sess.ws_id,
+                .session_id = sess.session_id,
+                .pid = sess.pid,
+                .age = age,
+            }) catch continue;
+        }
+        return list.items;
     }
 
     // Count active drafts (status != "merged") across all categories.
@@ -3147,6 +3240,16 @@ pub const Dashboard = struct {
         self.pr_diff_count = count;
         self.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.pr_diff_widgets[0..count] };
         self.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
+    }
+
+    fn formatAge(arena: std.mem.Allocator, seconds: i64) ![]const u8 {
+        if (seconds < 60) return std.fmt.allocPrint(arena, "{d}s", .{seconds});
+        const minutes = @divTrunc(seconds, 60);
+        if (minutes < 60) return std.fmt.allocPrint(arena, "{d}m", .{minutes});
+        const hours = @divTrunc(minutes, 60);
+        if (hours < 48) return std.fmt.allocPrint(arena, "{d}h", .{hours});
+        const days = @divTrunc(hours, 24);
+        return std.fmt.allocPrint(arena, "{d}d", .{days});
     }
 
     fn diffBg(line: []const u8) vaxis.Color {

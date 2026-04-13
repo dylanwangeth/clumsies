@@ -2,9 +2,11 @@ const std = @import("std");
 const HubClient = @import("hub_client.zig").HubClient;
 const data = @import("mock_data.zig");
 const trace_reader = @import("trace_reader.zig");
+const session_reader = @import("session_reader.zig");
 const drafts_reader = @import("drafts_reader.zig");
 
 pub const DraftEntry = drafts_reader.DraftEntry;
+pub const ActiveSession = session_reader.ActiveSession;
 
 pub const ConnectionStatus = enum {
     disconnected,
@@ -156,6 +158,8 @@ pub const ApiState = struct {
     local_stats: ?trace_reader.LocalStats = null,
     // Local drafts from ~/.clumsies/workspaces/*/drafts/_index.json
     drafts: ?[]const DraftEntry = null,
+    // Active MCP sessions from ~/.clumsies/workspaces/*/current_session.json
+    active_sessions: ?[]const ActiveSession = null,
     prompt_content: ?[]const u8 = null,
     prompt_content_name: ?[]const u8 = null,
     // PR detail (on-demand)
@@ -351,9 +355,11 @@ fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8)
     // Read local trace.jsonl first (available even if server is unreachable)
     const local = trace_reader.readLocalStats(alloc);
     const local_drafts = drafts_reader.readAllDrafts(alloc);
+    const sessions = session_reader.readAllSessions(alloc);
     api_state.mutex.lock();
     api_state.local_stats = local;
     api_state.drafts = local_drafts;
+    api_state.active_sessions = sessions;
     api_state.mutex.unlock();
 
     var client = HubClient.init(alloc, hub_url, access_token);
