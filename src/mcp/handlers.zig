@@ -68,7 +68,7 @@ const tool_refer =
 pub fn handleToolCall(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
-    session_ptr: *?Session,
+    session: *Session,
     params: std.json.Value,
 ) ![]u8 {
     const params_obj = switch (params) {
@@ -88,26 +88,30 @@ pub fn handleToolCall(
     };
 
     if (std.mem.eql(u8, name, "memory.setup")) {
-        return try handleSetup(allocator, workspace_root, session_ptr, args_obj);
+        return try handleSetup(allocator, workspace_root, session, args_obj);
     }
     if (std.mem.eql(u8, name, "memory.search")) {
-        return try handleSearch(allocator, workspace_root, session_ptr, args_obj);
+        return try handleSearch(allocator, workspace_root, session, args_obj);
     }
     if (std.mem.eql(u8, name, "memory.load")) {
-        return handleLoad(allocator, workspace_root, session_ptr, args_obj) catch |err| switch (err) {
+        return handleLoad(allocator, workspace_root, session, args_obj) catch |err| switch (err) {
             error.UnknownPromptId => try buildToolErrorResult(allocator, "Unknown prompt id"),
             else => return err,
         };
     }
 
     if (std.mem.eql(u8, name, "memory.refer")) {
-        return try handleRefer(allocator, session_ptr, args_obj);
+        return try handleRefer(allocator, session, args_obj);
     }
 
     return try buildToolErrorResult(allocator, "Unknown tool");
 }
 
-fn initSession(allocator: std.mem.Allocator, workspace_root: []const u8) !Session {
+/// Initialize an MCP session for the given workspace. Resolves the workspace
+/// binding from config.toml, generates a random session_id, and writes the
+/// first setup trace event (event_id=0) to trace.jsonl. Called once per MCP
+/// server process at startup, not from a tool handler.
+pub fn initSession(allocator: std.mem.Allocator, workspace_root: []const u8) !Session {
     const binding = try ws_config.resolveWorkspace(allocator, workspace_root);
     defer allocator.free(binding.name);
 
@@ -120,24 +124,38 @@ fn initSession(allocator: std.mem.Allocator, workspace_root: []const u8) !Sessio
         session_id[i * 2 + 1] = hex[byte & 0x0f];
     }
 
-    return .{
+    var session: Session = .{
         .ws_id = binding.ws_id,
         .session_id = session_id,
         .event_counter = std.atomic.Value(i64).init(0),
     };
+
+    const event_id = session.nextEventId();
+    trace.appendTraceEvent(allocator, .{
+        .ws_id = session.ws_id,
+        .session_id = session.session_id[0..],
+        .event_id = event_id,
+        .type = "setup",
+        .timestamp = std.time.milliTimestamp(),
+    }) catch |err| {
+        std.log.err(
+            "failed to write initial setup trace event session_id='{s}': {}",
+            .{ session.session_id[0..], err },
+        );
+    };
+
+    return session;
 }
 
 fn writeTraceEvent(
     allocator: std.mem.Allocator,
-    session_ptr: *?Session,
+    session: *Session,
     event_type: []const u8,
     prompt_id: ?[]const u8,
     prompt_hash: ?[]const u8,
     constraint_id: ?[]const u8,
     reason: ?[]const u8,
 ) void {
-    if (session_ptr.* == null) return;
-    const session = &session_ptr.*.?;
     const event_id = session.nextEventId();
     trace.appendTraceEvent(allocator, .{
         .ws_id = session.ws_id,
@@ -160,7 +178,7 @@ fn writeTraceEvent(
 fn handleSetup(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
-    session_ptr: *?Session,
+    session: *Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     const known_hash: ?[]const u8 = if (args_obj.get("knownHash")) |value| switch (value) {
@@ -168,19 +186,9 @@ fn handleSetup(
         else => null,
     } else null;
 
-    if (session_ptr.* == null) {
-        session_ptr.* = initSession(allocator, workspace_root) catch |err| switch (err) {
-            error.NoWorkspaceFound, error.NoConfigFound => return try buildToolErrorResult(allocator, "Workspace is not bound. Run 'clumsies init' to bind this directory to a workspace."),
-            else => return err,
-        };
-    }
-
     var mpf = try workspace_prompt.loadMpf(allocator, workspace_root, known_hash);
     defer mpf.deinit(allocator);
 
-    writeTraceEvent(allocator, session_ptr, "setup", null, mpf.hash, null, null);
-
-    const session = &session_ptr.*.?;
     const esc_ws = try encoding.jsonEscapeAlloc(allocator, session.ws_id);
     defer allocator.free(esc_ws);
     const esc_session = try encoding.jsonEscapeAlloc(allocator, session.session_id[0..]);
@@ -210,7 +218,7 @@ fn handleSetup(
 fn handleSearch(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
-    session_ptr: *?Session,
+    session: *Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     const kind = if (args_obj.get("kind")) |value|
@@ -225,7 +233,7 @@ fn handleSearch(
     var items = try workspace_prompt.discoverSearchable(allocator, workspace_root, kind, group);
     defer workspace_prompt.deinitPromptItems(allocator, &items);
 
-    writeTraceEvent(allocator, session_ptr, "search", null, null, null, null);
+    writeTraceEvent(allocator, session, "search", null, null, null, null);
 
     const structured = try serializePromptList(allocator, items.items);
     defer allocator.free(structured);
@@ -235,7 +243,7 @@ fn handleSearch(
 fn handleLoad(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
-    session_ptr: *?Session,
+    session: *Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     var ids = try parseRequiredIds(allocator, args_obj.get("ids"));
@@ -248,17 +256,17 @@ fn handleLoad(
     defer result.deinit(allocator);
 
     for (result.items.items) |item| {
-        writeTraceEvent(allocator, session_ptr, "load", item.id, item.hash, null, null);
+        writeTraceEvent(allocator, session, "load", item.id, item.hash, null, null);
     }
 
-    const structured = try serializeLoadResultWithConstraints(allocator, &result, session_ptr);
+    const structured = try serializeLoadResultWithConstraints(allocator, &result, session);
     defer allocator.free(structured);
     return try buildToolSuccessResult(allocator, structured);
 }
 
 fn handleRefer(
     allocator: std.mem.Allocator,
-    session_ptr: *?Session,
+    session: *Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     const refs_val = args_obj.get("refs") orelse return error.InvalidParams;
@@ -296,7 +304,7 @@ fn handleRefer(
             else => null,
         } else null;
 
-        writeTraceEvent(allocator, session_ptr, "refer", prompt_id, prompt_hash, constraint_id, reason);
+        writeTraceEvent(allocator, session, "refer", prompt_id, prompt_hash, constraint_id, reason);
         count += 1;
     }
 
@@ -344,13 +352,12 @@ fn serializePromptList(allocator: std.mem.Allocator, items: []const workspace_pr
 fn serializeLoadResultWithConstraints(
     allocator: std.mem.Allocator,
     result: *workspace_prompt.LoadResult,
-    session_ptr: *?Session,
+    session: *Session,
 ) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
-    const ws_id: []const u8 = if (session_ptr.*) |s| s.ws_id else "";
-    const esc_ws = try encoding.jsonEscapeAlloc(allocator, ws_id);
+    const esc_ws = try encoding.jsonEscapeAlloc(allocator, session.ws_id);
     defer allocator.free(esc_ws);
 
     try buf.writer(allocator).print("{{\"workspaceId\":\"{s}\",\"items\":[", .{esc_ws});

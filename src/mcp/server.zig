@@ -6,26 +6,28 @@ const trace_upload = @import("../trace_upload.zig");
 
 pub const State = struct {
     workspace_root: []const u8,
-    session: ?handlers.Session = null,
+    session: handlers.Session,
     initialized: bool = false,
     initialize_seen: bool = false,
 
     pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
-        if (self.session) |*s| s.deinit(allocator);
+        self.session.deinit(allocator);
     }
 };
 
-pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, version: []const u8) !void {
-    const workspace_root = try std.process.getCwdAlloc(allocator);
-    defer allocator.free(workspace_root);
-    try runWithRoot(stdout, stderr, allocator, version, workspace_root);
-}
-
-pub fn runWithRoot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, version: []const u8, workspace_root: []const u8) !void {
+pub fn runWithRoot(
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    version: []const u8,
+    workspace_root: []const u8,
+    session: handlers.Session,
+) !void {
     _ = stderr;
 
     var state: State = .{
         .workspace_root = workspace_root,
+        .session = session,
     };
     defer state.deinit(allocator);
     defer flushOnExit(allocator, &state);
@@ -56,8 +58,7 @@ pub fn runWithRoot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: st
 }
 
 fn flushOnExit(allocator: std.mem.Allocator, state: *State) void {
-    const session = state.session orelse return;
-    const outcome = trace_upload.flushWorkspace(allocator, session.ws_id);
+    const outcome = trace_upload.flushWorkspace(allocator, state.session.ws_id);
     switch (outcome) {
         .flushed => |result| {
             if (result.events_sent > 0) {
@@ -142,7 +143,14 @@ fn handleNotification(state: *State, method: []const u8) ?[]u8 {
 }
 
 test "processLine: initialize then tools list" {
-    var state: State = .{ .workspace_root = "/tmp/workspace" };
+    var state: State = .{
+        .workspace_root = "/tmp/workspace",
+        .session = .{
+            .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+            .session_id = [_]u8{'a'} ** 32,
+        },
+    };
+    defer state.deinit(testing.allocator);
 
     const init_response = (try processLine(
         testing.allocator,
