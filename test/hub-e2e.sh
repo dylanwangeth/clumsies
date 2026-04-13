@@ -359,6 +359,48 @@ RAW=$(call DELETE "/api/workspaces/$WS_ID/members/usr-member-001")
 parse_response "$RAW"
 assert_status "remove member" "204" "$STATUS"
 
+# Trace upload: POST batch of events and verify stats reflect them.
+# The CLI upload_worker is unit-tested separately; this section exercises
+# the hub ingest endpoint that the worker posts to.
+step "Trace: upload setup + refer batch"
+TRACE_BATCH='{"events":[{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":0,"type":"setup","timestamp":1000},{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":1,"type":"refer","timestamp":1001,"prompt_id":"p-test-001","constraint_id":"c-1"},{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":2,"type":"refer","timestamp":1002,"prompt_id":"p-test-001","constraint_id":"c-2"}]}'
+RAW=$(call POST "/api/traces" "$TRACE_BATCH")
+parse_response "$RAW"
+assert_status "upload batch" "200" "$STATUS"
+assert_json "reports accepted" '"accepted":3' "$BODY"
+
+step "Trace: workspace stats reflect refers"
+RAW=$(call GET "/api/stats/workspace/$WS_ID")
+parse_response "$RAW"
+assert_status "get workspace stats" "200" "$STATUS"
+assert_json "total_refer_count is 2" '"total_refer_count":2' "$BODY"
+
+step "Trace: replay batch is deduplicated"
+RAW=$(call POST "/api/traces" "$TRACE_BATCH")
+parse_response "$RAW"
+assert_status "replay batch" "200" "$STATUS"
+assert_json "all three deduplicated" '"deduplicated":3' "$BODY"
+
+RAW=$(call GET "/api/stats/workspace/$WS_ID")
+parse_response "$RAW"
+assert_json "replay did not double count" '"total_refer_count":2' "$BODY"
+
+step "Trace: append new event advances stats"
+APPEND_BATCH='{"events":[{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":3,"type":"refer","timestamp":1003,"prompt_id":"p-test-001","constraint_id":"c-3"}]}'
+RAW=$(call POST "/api/traces" "$APPEND_BATCH")
+parse_response "$RAW"
+assert_status "append batch" "200" "$STATUS"
+assert_json "new event accepted" '"accepted":1' "$BODY"
+
+RAW=$(call GET "/api/stats/workspace/$WS_ID")
+parse_response "$RAW"
+assert_json "refer count advanced to 3" '"total_refer_count":3' "$BODY"
+
+step "Trace: missing body rejected"
+RAW=$(curl -s -w "\n%{http_code}" -X POST "$BASE/api/traces" -H "Authorization: Bearer $TOKEN")
+parse_response "$RAW"
+assert_status "missing body 400" "400" "$STATUS"
+
 step "Workspace: delete"
 RAW=$(call DELETE "/api/workspaces/$WS_ID")
 parse_response "$RAW"

@@ -183,23 +183,25 @@ fn handleSetup(
     const session = &session_ptr.*.?;
     const esc_ws = try encoding.jsonEscapeAlloc(allocator, session.ws_id);
     defer allocator.free(esc_ws);
+    const esc_session = try encoding.jsonEscapeAlloc(allocator, session.session_id[0..]);
+    defer allocator.free(esc_session);
 
     if (mpf.content) |content| {
         const esc_content = try encoding.jsonEscapeAlloc(allocator, content);
         defer allocator.free(esc_content);
         const esc_hash = try encoding.jsonEscapeAlloc(allocator, mpf.hash.?);
         defer allocator.free(esc_hash);
-        const structured = try std.fmt.allocPrint(allocator, "{{\"workspaceId\":\"{s}\",\"mpf\":{{\"hash\":\"{s}\",\"content\":\"{s}\"}}}}", .{ esc_ws, esc_hash, esc_content });
+        const structured = try std.fmt.allocPrint(allocator, "{{\"workspaceId\":\"{s}\",\"sessionId\":\"{s}\",\"mpf\":{{\"hash\":\"{s}\",\"content\":\"{s}\"}}}}", .{ esc_ws, esc_session, esc_hash, esc_content });
         defer allocator.free(structured);
         return try buildToolSuccessResult(allocator, structured);
     } else if (mpf.hash) |hash| {
         const esc_hash = try encoding.jsonEscapeAlloc(allocator, hash);
         defer allocator.free(esc_hash);
-        const structured = try std.fmt.allocPrint(allocator, "{{\"workspaceId\":\"{s}\",\"mpf\":{{\"hash\":\"{s}\",\"changed\":false}}}}", .{ esc_ws, esc_hash });
+        const structured = try std.fmt.allocPrint(allocator, "{{\"workspaceId\":\"{s}\",\"sessionId\":\"{s}\",\"mpf\":{{\"hash\":\"{s}\",\"changed\":false}}}}", .{ esc_ws, esc_session, esc_hash });
         defer allocator.free(structured);
         return try buildToolSuccessResult(allocator, structured);
     } else {
-        const structured = try std.fmt.allocPrint(allocator, "{{\"workspaceId\":\"{s}\",\"mpf\":null}}", .{esc_ws});
+        const structured = try std.fmt.allocPrint(allocator, "{{\"workspaceId\":\"{s}\",\"sessionId\":\"{s}\",\"mpf\":null}}", .{ esc_ws, esc_session });
         defer allocator.free(structured);
         return try buildToolSuccessResult(allocator, structured);
     }
