@@ -213,6 +213,38 @@ pub fn reviewComment(self: *Self) []const u8 {
     return self.pick([]const u8, &REVIEW_COMMENTS);
 }
 
+// Synthetic user prompts for local trace/session_input seeding
+
+const SESSION_INPUT_TEMPLATES = [_][]const u8{
+    "Find the prompt that covers {topic} and summarize the key rules before I start coding.",
+    "Search the library for guidance on {topic}; I need the shortest useful checklist.",
+    "Load the most relevant prompt for {topic} and tell me what constraints I should follow.",
+    "I am about to touch {topic}. Which prompt or workflow should I read first?",
+    "Give me the best prompt for {topic} and explain the tradeoffs in plain language.",
+    "Before I change anything, pull the rule for {topic} and highlight the risky parts.",
+};
+
+pub fn sessionInput(self: *Self, buf: *[256]u8) []const u8 {
+    const topic = self.pick([]const u8, &TOPICS);
+    const template = self.pick([]const u8, &SESSION_INPUT_TEMPLATES);
+
+    if (std.mem.indexOf(u8, template, "{topic}")) |idx| {
+        const before = template[0..idx];
+        const after = template[idx + 7 ..];
+        const len = before.len + topic.len + after.len;
+        if (len <= buf.len) {
+            @memcpy(buf[0..before.len], before);
+            @memcpy(buf[before.len..][0..topic.len], topic);
+            @memcpy(buf[before.len + topic.len ..][0..after.len], after);
+            return buf[0..len];
+        }
+    }
+
+    const out_len = @min(template.len, buf.len);
+    @memcpy(buf[0..out_len], template[0..out_len]);
+    return buf[0..out_len];
+}
+
 // PR descriptions
 
 const PR_DESCRIPTIONS = [_][]const u8{
@@ -317,4 +349,13 @@ pub fn branchName(self: *Self, buf: *[40]u8) []const u8 {
     const prefix = self.pick([]const u8, &BRANCH_PREFIXES);
     const topic = self.pick([]const u8, &BRANCH_TOPICS);
     return std.fmt.bufPrint(buf, "{s}/{s}", .{ prefix, topic }) catch "feat/update";
+}
+
+test "sessionInput renders concrete text" {
+    var faker = Self.initWithSeed(std.testing.allocator, 42);
+    var buf: [256]u8 = undefined;
+    const input = faker.sessionInput(&buf);
+
+    try std.testing.expect(input.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, input, "{topic}") == null);
 }

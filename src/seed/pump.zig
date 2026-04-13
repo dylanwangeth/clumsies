@@ -2,7 +2,9 @@ const std = @import("std");
 const pg = @import("pg");
 const data = @import("data.zig");
 const Faker = @import("faker.zig");
-const local_trace = @import("clumsies_lib").trace;
+const clumsies_lib = @import("clumsies_lib");
+const local_trace = clumsies_lib.trace;
+const prompt_lib = clumsies_lib.prompt;
 
 const log = std.log.scoped(.pump);
 
@@ -14,7 +16,7 @@ fn copyRowStr(dest: []u8, row: anytype, col: usize) ?[]const u8 {
     return dest[0..val.len];
 }
 
-fn appendLocalTraceEvent(ws_id: []const u8, session_id: []const u8, event_id: i64, event_type: []const u8, timestamp: i64, prompt_id: ?[]const u8) void {
+fn appendLocalTraceEvent(ws_id: []const u8, session_id: []const u8, event_id: i64, event_type: []const u8, timestamp: i64, prompt_id: ?[]const u8, content: ?[]const u8, content_hash: ?[]const u8) void {
     local_trace.appendTraceEvent(std.heap.page_allocator, .{
         .ws_id = ws_id,
         .session_id = session_id,
@@ -22,6 +24,8 @@ fn appendLocalTraceEvent(ws_id: []const u8, session_id: []const u8, event_id: i6
         .type = event_type,
         .timestamp = timestamp,
         .prompt_id = prompt_id,
+        .content = content,
+        .content_hash = content_hash,
     }) catch |err| {
         log.warn("pump: local trace append failed: {}", .{err});
     };
@@ -110,21 +114,35 @@ fn traceSession(faker: *Faker, conn: *pg.Conn) void {
     var session_buf: [24]u8 = undefined;
     const session_id = faker.hexId(&session_buf, "ses-");
 
-    const events = [_][]const u8{ "setup", "refer", "refer" };
+    const events = [_][]const u8{ "setup", "session_input", "refer", "refer" };
     for (events, 0..) |event_type, ei| {
         const prompt_id: ?[]const u8 = if (std.mem.eql(u8, event_type, "refer"))
             prompt_ids[ei % prompt_count]
         else
             null;
-        const timestamp = std.time.milliTimestamp();
+        var content_buf: [256]u8 = undefined;
+        const content: ?[]const u8 = if (std.mem.eql(u8, event_type, "session_input"))
+            faker.sessionInput(&content_buf)
+        else
+            null;
+        const content_hash: ?[]const u8 = if (content) |body|
+            prompt_lib.hashContentHexAlloc(std.heap.page_allocator, body) catch |err| blk: {
+                log.warn("pump: content hash failed: {}", .{err});
+                break :blk null;
+            }
+        else
+            null;
+        defer if (content_hash) |hash| std.heap.page_allocator.free(hash);
+
+        const timestamp = std.time.milliTimestamp() + @as(i64, @intCast(ei));
 
         _ = conn.exec(
-            "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
-            .{ ws_id, session_id, @as(i64, @intCast(ei)), event_type, timestamp, prompt_id },
+            "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id, content, content_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
+            .{ ws_id, session_id, @as(i64, @intCast(ei)), event_type, timestamp, prompt_id, content, content_hash },
         ) catch |err| {
             log.warn("pump: {}", .{err});
         };
-        appendLocalTraceEvent(ws_id, session_id, @as(i64, @intCast(ei)), event_type, timestamp, prompt_id);
+        appendLocalTraceEvent(ws_id, session_id, @as(i64, @intCast(ei)), event_type, timestamp, prompt_id, content, content_hash);
     }
 }
 
@@ -340,6 +358,13 @@ fn cleanup(conn: *pg.Conn) void {
     _ = conn.exec(
         "DELETE FROM prompt_pr_comments WHERE comment_id IN (SELECT comment_id FROM prompt_pr_comments ORDER BY created_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM prompt_pr_comments) - $1))",
         .{data.CAP_PROMPT_PR_COMMENTS},
+    ) catch |err| {
+        log.warn("pump: {}", .{err});
+    };
+
+    _ = conn.exec(
+        "DELETE FROM prompt_pr_comments WHERE pr_id IN (SELECT pr_id FROM prompt_prs WHERE status != 'open' ORDER BY created_at ASC LIMIT GREATEST(0, (SELECT count(*) FROM prompt_prs) - $1))",
+        .{data.CAP_PROMPT_PRS},
     ) catch |err| {
         log.warn("pump: {}", .{err});
     };
