@@ -8,6 +8,7 @@ const cmd_init = @import("commands/init_cmd.zig");
 const cmd_sync = @import("commands/sync_cmd.zig");
 const cmd_mcp = @import("commands/mcp_cmd.zig");
 const cmd_setup = @import("commands/setup_cmd.zig");
+const cmd_workspace_info = @import("commands/workspace_info_cmd.zig");
 const cmd_flush_trace = @import("commands/flush_trace_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
@@ -88,6 +89,8 @@ pub fn main() !void {
         const subcmd = if (cmd_args.len > 0) cmd_args[0] else "";
         if (std.mem.eql(u8, subcmd, "setup")) {
             try cmd_setup.run(stdout_writer, stderr_writer, allocator);
+        } else if (std.mem.eql(u8, subcmd, "workspace-info")) {
+            try cmd_workspace_info.run(stdout_writer, stderr_writer, allocator);
         } else {
             try stderr_writer.print("{s}{s}{s}Error:{s} unknown agent command: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
             stderr_file_writer.interface.flush() catch {};
