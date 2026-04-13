@@ -1094,6 +1094,23 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
     // Prefer local trace data for chart and prompts (personal real-time)
     // Fall back to server stats for team-level data
     if (local) |l| {
+        // trace_reader fills .name with the raw prompt_id; remap to path via
+        // library so the Insights Prompts Rank shows friendly labels.
+        const remapped_prompts: []const data.InsightsPrompt = if (library) |lib| blk: {
+            var remapped: std.ArrayList(data.InsightsPrompt) = .empty;
+            for (l.prompts) |p| {
+                var copy = p;
+                for (lib) |lp| {
+                    if (std.mem.eql(u8, lp.prompt_id, p.name)) {
+                        copy.name = lp.path;
+                        break;
+                    }
+                }
+                remapped.append(alloc, copy) catch continue;
+            }
+            break :blk remapped.items;
+        } else l.prompts;
+
         return .{
             .constraint_count = l.constraint_count,
             .active_constraint_count = l.active_constraint_count,
@@ -1103,7 +1120,7 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
             .today_delta_pct = 0,
             .last_event_minutes_ago = 0,
             .refer_trend = l.refer_trend,
-            .prompts = l.prompts,
+            .prompts = remapped_prompts,
             .members = if (ws_members) |wm| toInsightsMembers(alloc, wm) else &.{},
             .models = if (ws_models) |wmod| toInsightsModels(alloc, wmod) else &.{},
             .alerts = &.{},
