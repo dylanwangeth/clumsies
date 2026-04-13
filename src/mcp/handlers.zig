@@ -435,11 +435,26 @@ fn appendLoadedPromptWithConstraints(
 ) !void {
     const esc_id = try encoding.jsonEscapeAlloc(allocator, item.id);
     defer allocator.free(esc_id);
+    const esc_path = try encoding.jsonEscapeAlloc(allocator, item.path);
+    defer allocator.free(esc_path);
 
     try buf.writer(allocator).print(
-        "{{\"id\":\"{s}\",\"kind\":\"{s}\",\"changed\":{s},\"hash\":\"{s}\",\"content\":",
-        .{ esc_id, workspace_prompt.kindToString(item.kind), if (item.changed) "true" else "false", item.hash },
+        "{{\"id\":\"{s}\",\"kind\":\"{s}\",\"path\":\"{s}\",\"changed\":{s},\"hash\":\"{s}\",\"hasDraft\":{s},",
+        .{
+            esc_id,
+            workspace_prompt.kindToString(item.kind),
+            esc_path,
+            if (item.changed) "true" else "false",
+            item.hash,
+            if (item.has_draft) "true" else "false",
+        },
     );
+    if (item.draft_base_hash) |bh| {
+        const esc_bh = try encoding.jsonEscapeAlloc(allocator, bh);
+        defer allocator.free(esc_bh);
+        try buf.writer(allocator).print("\"draftBaseHash\":\"{s}\",", .{esc_bh});
+    }
+    try buf.appendSlice(allocator, "\"content\":");
     if (item.content) |content| {
         const needs_reminder = item.kind == .rule or item.kind == .workflow;
         if (needs_reminder) {
