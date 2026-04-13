@@ -197,11 +197,13 @@ pub const Dashboard = struct {
     // Insights
     insights_period: Period = .daily,
     breathing_phase: u8 = 0, // 0-20 for breathing animation cycle
-    insights_focus: enum { chart, prompts, team } = .chart,
+    insights_focus: enum { chart, prompts, team, inputs } = .chart,
     insights_prompt_cursor: usize = 0,
     insights_member_cursor: usize = 0,
+    insights_input_cursor: usize = 0,
     insights_expanded_prompt: ?usize = null,
     insights_show_member_detail: bool = false,
+    insights_show_input_detail: bool = false,
     chart_offset: u16 = 0,
 
     pub fn init(api_state: *api.ApiState) Dashboard {
@@ -915,10 +917,12 @@ pub const Dashboard = struct {
                             self.insights_focus = switch (self.insights_focus) {
                                 .chart => .prompts,
                                 .prompts => .team,
-                                .team => .chart,
+                                .team => .inputs,
+                                .inputs => .chart,
                             };
                             self.insights_expanded_prompt = null;
                             self.insights_show_member_detail = false;
+                            self.insights_show_input_detail = false;
                             ctx.consumeAndRedraw();
                         }
                         if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
@@ -933,6 +937,11 @@ pub const Dashboard = struct {
                                         self.insights_member_cursor += 1;
                                     ctx.consumeAndRedraw();
                                 },
+                                .inputs => {
+                                    if (ins_counts.input_count > 0 and self.insights_input_cursor < ins_counts.input_count - 1)
+                                        self.insights_input_cursor += 1;
+                                    ctx.consumeAndRedraw();
+                                },
                                 else => {},
                             }
                         }
@@ -944,6 +953,10 @@ pub const Dashboard = struct {
                                 },
                                 .team => {
                                     self.insights_member_cursor -|= 1;
+                                    ctx.consumeAndRedraw();
+                                },
+                                .inputs => {
+                                    self.insights_input_cursor -|= 1;
                                     ctx.consumeAndRedraw();
                                 },
                                 else => {},
@@ -976,6 +989,10 @@ pub const Dashboard = struct {
                                     self.insights_show_member_detail = !self.insights_show_member_detail;
                                     ctx.consumeAndRedraw();
                                 },
+                                .inputs => {
+                                    self.insights_show_input_detail = !self.insights_show_input_detail;
+                                    ctx.consumeAndRedraw();
+                                },
                                 else => {},
                             }
                         }
@@ -985,6 +1002,9 @@ pub const Dashboard = struct {
                                 ctx.consumeAndRedraw();
                             } else if (self.insights_show_member_detail) {
                                 self.insights_show_member_detail = false;
+                                ctx.consumeAndRedraw();
+                            } else if (self.insights_show_input_detail) {
+                                self.insights_show_input_detail = false;
                                 ctx.consumeAndRedraw();
                             } else {
                                 self.insights_focus = .prompts;
@@ -1035,13 +1055,20 @@ pub const Dashboard = struct {
         );
 
         var child_count: usize = 3;
-        if (self.show_help or self.show_confirm or self.show_comment_editor) child_count = 4;
+        if (self.show_help or self.show_confirm or self.show_comment_editor or self.insights_show_input_detail) child_count = 4;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
         children[1] = .{ .origin = .{ .row = header_h, .col = 0 }, .surface = try self.drawBody(body_ctx) };
         children[2] = .{ .origin = .{ .row = header_h + body_h, .col = 0 }, .surface = try self.drawFooter(footer_ctx) };
 
+        if (self.insights_show_input_detail and self.selected_module == .insights) {
+            const input_ctx = ctx.withConstraints(
+                .{ .width = size.width, .height = size.height },
+                .{ .width = size.width, .height = size.height },
+            );
+            children[3] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawInputDetailOverlay(input_ctx) };
+        }
         if (self.show_help) {
             const help_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
@@ -1173,9 +1200,10 @@ pub const Dashboard = struct {
                 .content => "j/k scroll  d toggle diff  Esc list  ? help",
             },
             .insights => switch (self.insights_focus) {
-                .chart => "h/l scroll  Tab focus  t period  ? help  q quit",
-                .prompts => "j/k move  Enter expand  Tab focus  t period  ? help  q quit",
-                .team => "j/k move  Enter detail  Tab focus  t period  ? help  q quit",
+                .chart => "h/l scroll  Tab focus  t period  Shift-F flush  ? help  q quit",
+                .prompts => "j/k move  Enter expand  Tab focus  t period  Shift-F flush  ? help  q quit",
+                .team => "j/k move  Enter detail  Tab focus  t period  Shift-F flush  ? help  q quit",
+                .inputs => "j/k move  Enter detail  Tab focus  t period  Shift-F flush  ? help  q quit",
             },
         };
         w.writeText(&surface, ctx, 1, 0, keys, theme.fg(theme.MUTED));
@@ -1860,14 +1888,21 @@ pub const Dashboard = struct {
             if (self.api_state.org_stats) |stats|
                 break :blk api.insightsFromStats(ctx.arena, stats, self.api_state.prompts, self.api_state.ws_stats_members, self.api_state.ws_stats_models, self.api_state.local_stats);
             // No server stats, but local trace available — show personal data
-            if (self.api_state.local_stats) |local| break :blk data.InsightsData{
-                .constraint_count = local.constraint_count,
-                .active_constraint_count = local.active_constraint_count,
-                .idle_constraint_count = if (local.constraint_count > local.active_constraint_count) local.constraint_count - local.active_constraint_count else 0,
-                .signal_ratio = local.signal_ratio,
-                .refer_trend = local.refer_trend,
-                .prompts = local.prompts,
-            };
+            if (self.api_state.local_stats) |local| {
+                var inputs_list: std.ArrayList(data.InputItem) = .empty;
+                for (local.inputs) |iv| {
+                    inputs_list.append(ctx.arena, .{ .timestamp = iv.timestamp, .content = iv.content }) catch break;
+                }
+                break :blk data.InsightsData{
+                    .constraint_count = local.constraint_count,
+                    .active_constraint_count = local.active_constraint_count,
+                    .idle_constraint_count = if (local.constraint_count > local.active_constraint_count) local.constraint_count - local.active_constraint_count else 0,
+                    .signal_ratio = local.signal_ratio,
+                    .refer_trend = local.refer_trend,
+                    .prompts = local.prompts,
+                    .inputs = inputs_list.items,
+                };
+            }
             break :blk null;
         };
         var empty_insights: data.InsightsData = .{
@@ -1886,24 +1921,30 @@ pub const Dashboard = struct {
         };
         const ins: *const data.InsightsData = if (live_insights) |*li| li else &empty_insights;
 
-        // Layout: chart(top, full width) + prompts|team (bottom, side by side)
+        // Layout:
+        //   row 0: chart (full width)
+        //   row 1: prompts | team (side by side)
+        //   row 2: recent inputs (full width)
         const chart_h: u16 = if (size.height > 40) 10 else 8;
-        const body_h: u16 = size.height -| chart_h;
-        const team_w: u16 = 18; // narrow sidebar: border(2) + padding(2) + grid(5×2) + gaps
+        const inputs_h: u16 = if (size.height > 40) 10 else 7;
+        const middle_h: u16 = size.height -| chart_h -| inputs_h;
+        const team_w: u16 = 18;
         const prompts_w: u16 = size.width -| team_w;
 
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 3);
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 4);
 
         // Panel 1: Signal Trend chart (hero, full width)
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawInsightsChart(ctx, size.width, chart_h, ins) };
         // Panel 2: Prompts Rank (or Member Detail if active)
         const main_surface = if (self.insights_show_member_detail)
-            try self.drawMemberDetail(ctx, prompts_w, body_h, ins)
+            try self.drawMemberDetail(ctx, prompts_w, middle_h, ins)
         else
-            try self.drawInsightsPrompts(ctx, prompts_w, body_h, ins);
+            try self.drawInsightsPrompts(ctx, prompts_w, middle_h, ins);
         children[1] = .{ .origin = .{ .row = chart_h, .col = 0 }, .surface = main_surface };
         // Panel 3: Team Activity sidebar (narrow, right side)
-        children[2] = .{ .origin = .{ .row = chart_h, .col = prompts_w }, .surface = try self.drawInsightsTeam(ctx, team_w, body_h, ins) };
+        children[2] = .{ .origin = .{ .row = chart_h, .col = prompts_w }, .surface = try self.drawInsightsTeam(ctx, team_w, middle_h, ins) };
+        // Panel 4: Recent Inputs (full width, bottom)
+        children[3] = .{ .origin = .{ .row = chart_h + middle_h, .col = 0 }, .surface = try self.drawInsightsInputs(ctx, size.width, inputs_h, ins) };
 
         root.children = children;
         return root;
@@ -2126,6 +2167,69 @@ pub const Dashboard = struct {
                 row += 1;
             }
             row += 1; // gap between members
+        }
+
+        return s;
+    }
+
+    // Returns the cutoff timestamp (ms since epoch) for the current
+    // insights_period window. Events older than this are filtered out.
+    fn inputsCutoffMs(self: *const Dashboard) i64 {
+        const now_ms = std.time.milliTimestamp();
+        const day_ms: i64 = 86400 * 1000;
+        const window_days: i64 = switch (self.insights_period) {
+            .daily => 1,
+            .weekly => 7,
+            .monthly => 30,
+        };
+        return now_ms - window_days * day_ms;
+    }
+
+    fn visibleInputs(ins: *const data.InsightsData, cutoff_ms: i64) []const data.InputItem {
+        var last: usize = 0;
+        for (ins.inputs, 0..) |iv, i| {
+            if (iv.timestamp >= cutoff_ms) last = i + 1 else break;
+        }
+        return ins.inputs[0..last];
+    }
+
+    fn drawInsightsInputs(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+        const border_color = if (self.insights_focus == .inputs) theme.ACCENT else theme.BORDER;
+        var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        w.fillSurface(&s, theme.PANEL);
+        w.drawBorder(&s, border_color, theme.PANEL);
+
+        const cutoff = self.inputsCutoffMs();
+        const visible = visibleInputs(ins, cutoff);
+
+        const title_txt = try std.fmt.allocPrint(ctx.arena, "Recent Inputs  \xc2\xb7 {d} in {s}", .{ visible.len, self.insights_period.label() });
+        w.writeText(&s, ctx, 2, 0, title_txt, theme.boldOn(theme.PANEL, theme.TEXT));
+
+        if (visible.len == 0) {
+            w.writeText(&s, ctx, 2, 2, "No user prompts captured in this window.", theme.fg(theme.MUTED));
+            return s;
+        }
+
+        const focused = self.insights_focus == .inputs;
+        const max_rows: u16 = height -| 2;
+        const content_w: u16 = width -| 14; // leave room for timestamp column
+        var row: u16 = 1;
+        var i: usize = 0;
+        while (i < visible.len and row < max_rows) : (i += 1) {
+            const iv = visible[i];
+            const is_sel = focused and i == self.insights_input_cursor;
+            if (is_sel) {
+                s.writeCell(1, row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
+            const time_txt = try formatHm(ctx.arena, iv.timestamp);
+            w.writeText(&s, ctx, 2, row, time_txt, theme.fg(theme.MUTED));
+            const snippet = firstLineTrimmed(iv.content, content_w);
+            const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+            w.writeText(&s, ctx, 10, row, snippet, name_style);
+            row += 1;
         }
 
         return s;
@@ -2733,20 +2837,30 @@ pub const Dashboard = struct {
         return 0;
     }
 
-    const InsightsCounts = struct { prompt_count: usize, member_count: usize };
+    const InsightsCounts = struct { prompt_count: usize, member_count: usize, input_count: usize };
 
     fn getInsightsCounts(self: *Dashboard) InsightsCounts {
-        // Returns counts of prompts and members for bounds checking in event handler.
-        // Uses live org_stats prompt/member counts if available, else 0.
+        // Returns counts of prompts, members, and inputs for bounds checking
+        // in the event handler. Inputs are filtered by the current period
+        // window to match what drawInsightsInputs actually renders.
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
+        const input_count: usize = if (self.api_state.local_stats) |local| blk: {
+            const cutoff_ms = self.inputsCutoffMs();
+            var n: usize = 0;
+            for (local.inputs) |iv| {
+                if (iv.timestamp >= cutoff_ms) n += 1 else break;
+            }
+            break :blk n;
+        } else 0;
         if (self.api_state.org_stats) |stats| {
             return .{
                 .prompt_count = stats.prompts.len,
                 .member_count = if (self.api_state.ws_stats_members) |m| m.len else 0,
+                .input_count = input_count,
             };
         }
-        return .{ .prompt_count = 0, .member_count = 0 };
+        return .{ .prompt_count = 0, .member_count = 0, .input_count = input_count };
     }
 
     fn drawEmptyDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -2764,6 +2878,91 @@ pub const Dashboard = struct {
         const count: i8 = @intCast(settings_tabs.len);
         const next = @mod(current + delta + count, count);
         self.settings_tab = @enumFromInt(@as(u8, @intCast(next)));
+    }
+
+    // Modal overlay showing the full text of the currently-selected user
+    // prompt from the Recent Inputs panel. Wraps at the box width and
+    // truncates if the prompt is longer than the box can display.
+    fn drawInputDetailOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&surface, theme.PANEL);
+
+        const box_w: u16 = @min(size.width -| 4, @as(u16, 100));
+        const box_h: u16 = @min(size.height -| 4, @as(u16, 24));
+        const start_col = (size.width -| box_w) / 2;
+        const start_row = (size.height -| box_h) / 2;
+
+        var row: u16 = 0;
+        while (row < box_h) : (row += 1) {
+            var col: u16 = 0;
+            while (col < box_w) : (col += 1) {
+                surface.writeCell(start_col + col, start_row + row, .{
+                    .char = .{ .grapheme = " ", .width = 1 },
+                    .style = .{ .fg = theme.TEXT, .bg = theme.PANEL_ALT },
+                });
+            }
+        }
+
+        const border = vaxis.Style{ .fg = theme.ACCENT, .bg = theme.PANEL_ALT };
+        surface.writeCell(start_col, start_row, .{ .char = .{ .grapheme = "╭", .width = 1 }, .style = border });
+        surface.writeCell(start_col + box_w - 1, start_row, .{ .char = .{ .grapheme = "╮", .width = 1 }, .style = border });
+        surface.writeCell(start_col, start_row + box_h - 1, .{ .char = .{ .grapheme = "╰", .width = 1 }, .style = border });
+        surface.writeCell(start_col + box_w - 1, start_row + box_h - 1, .{ .char = .{ .grapheme = "╯", .width = 1 }, .style = border });
+        var c: u16 = 1;
+        while (c < box_w - 1) : (c += 1) {
+            surface.writeCell(start_col + c, start_row, .{ .char = .{ .grapheme = "─", .width = 1 }, .style = border });
+            surface.writeCell(start_col + c, start_row + box_h - 1, .{ .char = .{ .grapheme = "─", .width = 1 }, .style = border });
+        }
+        var r: u16 = 1;
+        while (r < box_h - 1) : (r += 1) {
+            surface.writeCell(start_col, start_row + r, .{ .char = .{ .grapheme = "│", .width = 1 }, .style = border });
+            surface.writeCell(start_col + box_w - 1, start_row + r, .{ .char = .{ .grapheme = "│", .width = 1 }, .style = border });
+        }
+
+        // Resolve the selected input via the same filter drawInsightsInputs uses.
+        const content_and_ts: struct { content: []const u8, ts: i64 } = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            const local = self.api_state.local_stats orelse break :blk .{ .content = "", .ts = 0 };
+            const cutoff = self.inputsCutoffMs();
+            var vlen: usize = 0;
+            for (local.inputs) |iv| {
+                if (iv.timestamp >= cutoff) vlen += 1 else break;
+            }
+            if (vlen == 0) break :blk .{ .content = "", .ts = 0 };
+            const idx = @min(self.insights_input_cursor, vlen - 1);
+            break :blk .{ .content = local.inputs[idx].content, .ts = local.inputs[idx].timestamp };
+        };
+
+        const time_txt = try formatHm(ctx.arena, content_and_ts.ts);
+        const title = try std.fmt.allocPrint(ctx.arena, " User Input @ {s} ", .{time_txt});
+        w.writeText(&surface, ctx, start_col + 2, start_row, title, theme.boldOn(theme.PANEL_ALT, theme.ACCENT));
+
+        // Word-wrap the content into box_w - 4 columns.
+        const inner_w: u16 = box_w -| 4;
+        const inner_h: u16 = box_h -| 3;
+        var out_row: u16 = 0;
+        var remaining: []const u8 = content_and_ts.content;
+        while (remaining.len > 0 and out_row < inner_h) {
+            var line_end: usize = 0;
+            if (std.mem.indexOfScalar(u8, remaining, '\n')) |n| line_end = n else line_end = remaining.len;
+            var line = remaining[0..line_end];
+            while (line.len > 0 and out_row < inner_h) {
+                const take: usize = @min(line.len, @as(usize, @intCast(inner_w)));
+                w.writeText(&surface, ctx, start_col + 2, start_row + 2 + out_row, line[0..take], theme.textOn(theme.PANEL_ALT, theme.TEXT));
+                line = line[take..];
+                out_row += 1;
+            }
+            if (line_end < remaining.len) {
+                remaining = remaining[line_end + 1 ..];
+            } else {
+                remaining = &.{};
+            }
+        }
+
+        w.writeText(&surface, ctx, start_col + 2, start_row + box_h -| 1, " Esc close ", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        return surface;
     }
 
     fn drawHelpOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -3240,6 +3439,28 @@ pub const Dashboard = struct {
         self.pr_diff_count = count;
         self.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.pr_diff_widgets[0..count] };
         self.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
+    }
+
+    // Format a unix-ms timestamp as local HH:MM. Uses epoch-seconds div to
+    // avoid pulling in timezone machinery; shows UTC time.
+    fn formatHm(arena: std.mem.Allocator, ts_ms: i64) ![]const u8 {
+        const secs = @divTrunc(ts_ms, 1000);
+        const day_secs: i64 = 86400;
+        const day_offset = @mod(secs, day_secs);
+        const hh = @divTrunc(day_offset, 3600);
+        const mm = @divTrunc(@mod(day_offset, 3600), 60);
+        return std.fmt.allocPrint(arena, "{d:0>2}:{d:0>2}", .{ @as(u32, @intCast(hh)), @as(u32, @intCast(mm)) });
+    }
+
+    // Return the first line of `text` truncated to `max_cells`. Multi-line
+    // inputs get a trailing ellipsis hint so the user knows there is more.
+    fn firstLineTrimmed(text: []const u8, max_cells: u16) []const u8 {
+        var end: usize = text.len;
+        if (std.mem.indexOfScalar(u8, text, '\n')) |n| end = n;
+        var slice = text[0..end];
+        const cap: usize = @intCast(max_cells);
+        if (slice.len > cap) slice = slice[0..cap];
+        return slice;
     }
 
     fn formatAge(arena: std.mem.Allocator, seconds: i64) ![]const u8 {

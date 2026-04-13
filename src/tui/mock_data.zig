@@ -156,6 +156,12 @@ pub const InsightsData = struct {
     members: []const InsightsMember = &.{},
     models: []const InsightsModel = &.{},
     alerts: []const InsightsAlert = &.{},
+    inputs: []const InputItem = &.{},
+};
+
+pub const InputItem = struct {
+    timestamp: i64,
+    content: []const u8,
 };
 
 pub const ContextFile = struct {

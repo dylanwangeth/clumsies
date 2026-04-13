@@ -1283,6 +1283,11 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
             break :blk remapped.items;
         } else l.prompts;
 
+        var inputs_list: std.ArrayList(data.InputItem) = .empty;
+        for (l.inputs) |iv| {
+            inputs_list.append(alloc, .{ .timestamp = iv.timestamp, .content = iv.content }) catch break;
+        }
+
         return .{
             .constraint_count = l.constraint_count,
             .active_constraint_count = l.active_constraint_count,
@@ -1296,6 +1301,7 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
             .members = if (ws_members) |wm| toInsightsMembers(alloc, wm) else &.{},
             .models = if (ws_models) |wmod| toInsightsModels(alloc, wmod) else &.{},
             .alerts = &.{},
+            .inputs = inputs_list.items,
         };
     }
 

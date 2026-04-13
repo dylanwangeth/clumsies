@@ -9,6 +9,12 @@ pub const LocalStats = struct {
     signal_ratio: u8 = 0,
     refer_trend: [30]u16 = .{0} ** 30,
     prompts: []const data.InsightsPrompt = &.{},
+    inputs: []const InputEvent = &.{},
+};
+
+pub const InputEvent = struct {
+    timestamp: i64,
+    content: []const u8,
 };
 
 const TraceEvent = struct {
@@ -18,6 +24,7 @@ const TraceEvent = struct {
     prompt_hash: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
     reason: ?[]const u8 = null,
+    content: ?[]const u8 = null,
 };
 
 pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
@@ -81,10 +88,21 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
     };
     var prompt_map: std.StringHashMap(PromptAcc) = .init(allocator);
 
+    var inputs_list: std.ArrayList(InputEvent) = .empty;
+
     const now_ms: i64 = std.time.milliTimestamp();
     const day_ms: i64 = 86400 * 1000;
 
     for (events) |ev| {
+        if (std.mem.eql(u8, ev.type, "session_input")) {
+            if (ev.content) |c| {
+                inputs_list.append(allocator, .{
+                    .timestamp = ev.timestamp,
+                    .content = c,
+                }) catch {};
+            }
+            continue;
+        }
         if (!std.mem.eql(u8, ev.type, "refer")) continue;
         stats.total_refer_count += 1;
 
@@ -149,6 +167,13 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
     else
         0;
     stats.prompts = prompts_list.items;
+
+    std.mem.sort(InputEvent, inputs_list.items, {}, struct {
+        fn cmp(_: void, a: InputEvent, b: InputEvent) bool {
+            return a.timestamp > b.timestamp;
+        }
+    }.cmp);
+    stats.inputs = inputs_list.items;
 
     return stats;
 }
