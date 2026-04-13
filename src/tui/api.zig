@@ -61,11 +61,11 @@ pub const BundleData = struct {
 
 pub const PromptPr = struct {
     pr_id: []const u8,
-    prompt_id: []const u8,
     status: []const u8,
     description: []const u8,
     created_at: []const u8,
     author: []const u8,
+    operation_count: i32 = 0,
 };
 
 // Stats / Insights data
@@ -139,6 +139,8 @@ pub const ApiState = struct {
     prompts: ?[]const LibraryPrompt = null,
     bundles: ?[]const BundleData = null,
     prompt_prs: ?[]const PromptPr = null,
+    prompt_prs_for_path: ?[]const u8 = null,
+    prompt_prs_for_id: ?[]const u8 = null,
     // Insights
     org_stats: ?OrgStats = null,
     // Workspace detail (on-demand)
@@ -204,6 +206,93 @@ pub fn fetchWorkspaceAsync(api_state: *ApiState, ws_id: []const u8) void {
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
     };
+}
+
+// Fetch the PR list scoped to a single prompt. Re-issued whenever the
+// user selects a different prompt in Library; the hub returns only PRs
+// whose operations[] touches that prompt_id.
+pub fn fetchPromptPrsAsync(api_state: *ApiState, prompt_path: []const u8) void {
+    api_state.mutex.lock();
+    if (api_state.fetch_busy or api_state.hub_url == null) {
+        api_state.mutex.unlock();
+        return;
+    }
+    if (api_state.prompt_prs_for_path) |cached| {
+        if (std.mem.eql(u8, cached, prompt_path)) {
+            api_state.mutex.unlock();
+            return;
+        }
+    }
+    const lib = api_state.prompts orelse {
+        api_state.mutex.unlock();
+        return;
+    };
+    const alloc = api_state.arena.allocator();
+    const prompt_id: ?[]const u8 = for (lib) |lp| {
+        if (std.mem.eql(u8, lp.path, prompt_path)) break alloc.dupe(u8, lp.prompt_id) catch null;
+    } else null;
+    api_state.mutex.unlock();
+    if (prompt_id == null) return;
+
+    const path_copy = alloc.dupe(u8, prompt_path) catch return;
+
+    api_state.mutex.lock();
+    api_state.fetch_busy = true;
+    api_state.mutex.unlock();
+
+    _ = std.Thread.spawn(.{}, fetchPromptPrs, .{ api_state, path_copy, prompt_id.? }) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    };
+}
+
+fn fetchPromptPrs(api_state: *ApiState, prompt_path: []const u8, prompt_id: []const u8) void {
+    const alloc = api_state.arena.allocator();
+    api_state.mutex.lock();
+    const hub_url = api_state.hub_url orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const token = api_state.access_token orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    api_state.mutex.unlock();
+
+    var client = HubClient.init(alloc, hub_url, token);
+    const path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs?prompt_id={s}", .{prompt_id}) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+
+    const resp = client.get(path) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    defer resp.deinit();
+
+    var prs: ?[]const PromptPr = null;
+    if (resp.status == .ok) {
+        prs = parsePromptPrs(alloc, resp.body);
+    }
+
+    api_state.mutex.lock();
+    api_state.prompt_prs = prs;
+    api_state.prompt_prs_for_path = prompt_path;
+    api_state.prompt_prs_for_id = prompt_id;
+    api_state.pr_detail_id = null;
+    api_state.pr_detail_diff = null;
+    api_state.pr_detail_comments = null;
+    api_state.pr_detail_trace_refers = 0;
+    api_state.fetch_busy = false;
+    api_state.mutex.unlock();
 }
 
 // Fetch prompt content on demand
@@ -286,8 +375,7 @@ fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8)
     // GET /api/org/bundles
     const bundles = doFetchParse(&client, alloc, "/api/org/bundles", []const BundleData, parseBundles);
 
-    // GET /api/org/prompt-prs
-    const prs = doFetchParse(&client, alloc, "/api/org/prompt-prs", []const PromptPr, parsePromptPrs);
+    // PR list is fetched per prompt via fetchPromptPrsAsync when selection changes.
 
     // GET /api/stats/workspace/{first_ws_id}?period=daily&days=30
     var ws_members: ?[]const WsStatsMember = null;
@@ -312,7 +400,6 @@ fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8)
     api_state.directory = directory;
     api_state.prompts = prompts_list;
     api_state.bundles = bundles;
-    api_state.prompt_prs = prs;
     api_state.org_stats = org_stats;
     api_state.ws_stats_members = ws_members;
     api_state.ws_stats_models = ws_models;
@@ -386,10 +473,16 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
     var trace_refers: u16 = 0;
     if (detail_resp.status == .ok) {
         const DetailJson = struct {
-            diff: ?struct {
-                base: []const u8 = "",
-                proposed: []const u8 = "",
-            } = null,
+            operations: []const struct {
+                op_index: i32 = 0,
+                type: []const u8 = "",
+                prompt_id: ?[]const u8 = null,
+                base_hash: ?[]const u8 = null,
+                content: ?[]const u8 = null,
+                path: ?[]const u8 = null,
+                base_content: ?[]const u8 = null,
+                current_path: ?[]const u8 = null,
+            } = &.{},
             trace_summary: ?struct {
                 refer_count: i64 = 0,
             } = null,
@@ -397,8 +490,33 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
         const parsed = std.json.parseFromSlice(DetailJson, alloc, detail_resp.body, .{ .allocate = .alloc_always }) catch null;
         if (parsed) |p| {
             defer p.deinit();
-            if (p.value.diff) |d| {
-                diff_lines = computeDiffLines(alloc, d.base, d.proposed);
+            // Pick the operation scoped to the currently selected prompt if we
+            // can resolve it; otherwise fall back to the first op. A PR with
+            // rename-only or delete-only targeting this prompt still renders
+            // its base content diffed against empty (or new path header).
+            const target_id = blk: {
+                api_state.mutex.lock();
+                defer api_state.mutex.unlock();
+                break :blk if (api_state.prompt_prs_for_id) |id| alloc.dupe(u8, id) catch null else null;
+            };
+            var pick_idx: ?usize = null;
+            if (target_id) |tid| {
+                for (p.value.operations, 0..) |op, i| {
+                    if (op.prompt_id) |pid| {
+                        if (std.mem.eql(u8, pid, tid)) {
+                            pick_idx = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (pick_idx == null and p.value.operations.len > 0) pick_idx = 0;
+
+            if (pick_idx) |i| {
+                const op = p.value.operations[i];
+                const base = op.base_content orelse "";
+                const proposed = op.content orelse "";
+                diff_lines = computeDiffLines(alloc, base, proposed);
             }
             if (p.value.trace_summary) |ts| {
                 trace_refers = @intCast(@min(ts.refer_count, std.math.maxInt(u16)));
@@ -887,12 +1005,12 @@ fn parseBundles(alloc: std.mem.Allocator, body: []const u8) ?[]const BundleData 
 fn parsePromptPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const PromptPr {
     const Json = struct {
         prs: []const struct {
-            pr_id: []const u8,
-            prompt_id: []const u8,
+            proposal_id: []const u8,
             status: []const u8,
             description: []const u8,
             created_at: []const u8,
             author: []const u8 = "",
+            operation_count: i32 = 0,
         },
     };
     const parsed = std.json.parseFromSlice(Json, alloc, body, .{ .allocate = .alloc_always }) catch return null;
@@ -901,12 +1019,12 @@ fn parsePromptPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const PromptPr 
     var list: std.ArrayList(PromptPr) = .empty;
     for (parsed.value.prs) |pr| {
         list.append(alloc, .{
-            .pr_id = alloc.dupe(u8, pr.pr_id) catch continue,
-            .prompt_id = alloc.dupe(u8, pr.prompt_id) catch continue,
+            .pr_id = alloc.dupe(u8, pr.proposal_id) catch continue,
             .status = alloc.dupe(u8, pr.status) catch continue,
             .description = alloc.dupe(u8, pr.description) catch continue,
             .created_at = alloc.dupe(u8, pr.created_at) catch continue,
             .author = alloc.dupe(u8, pr.author) catch continue,
+            .operation_count = pr.operation_count,
         }) catch continue;
     }
     return list.items;
@@ -960,22 +1078,12 @@ pub fn toBundleEntries(alloc: std.mem.Allocator, bundles: []const BundleData) []
 }
 
 // Convert API PromptPr to mock-compatible PullRequestEntry slice.
-// If pr_detail is available for a PR, its diff/comments are populated.
-pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, prompt_path: []const u8, library: ?[]const LibraryPrompt, api_state: *ApiState) []const data.PullRequestEntry {
-    const target_id: ?[]const u8 = if (library) |lib| blk: {
-        for (lib) |lp| {
-            if (std.mem.eql(u8, lp.path, prompt_path))
-                break :blk lp.prompt_id;
-        }
-        break :blk null;
-    } else null;
-
+// The caller is responsible for ensuring `prs` is already scoped to the
+// intended prompt (the hub PR list now supports ?prompt_id= filtering, so
+// this converter no longer filters client-side).
+pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, prompt_path: []const u8, api_state: *ApiState) []const data.PullRequestEntry {
     var list: std.ArrayList(data.PullRequestEntry) = .empty;
     for (prs) |pr| {
-        if (target_id) |tid| {
-            if (!std.mem.eql(u8, pr.prompt_id, tid)) continue;
-        } else continue;
-
         var diff: []const []const u8 = &.{};
         var comments: []const data.CommentEntry = &.{};
         var trace_refers: u16 = 0;
