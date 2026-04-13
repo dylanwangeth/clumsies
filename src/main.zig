@@ -8,6 +8,7 @@ const cmd_init = @import("commands/init_cmd.zig");
 const cmd_sync = @import("commands/sync_cmd.zig");
 const cmd_mcp = @import("commands/mcp_cmd.zig");
 const cmd_setup = @import("commands/setup_cmd.zig");
+const cmd_flush_trace = @import("commands/flush_trace_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const Color = styles.Color;
@@ -20,6 +21,7 @@ const Command = enum {
     init_cmd,
     sync,
     mcp,
+    flush_trace,
     help,
     version,
     none,
@@ -30,6 +32,7 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "init", .init_cmd },
     .{ "sync", .sync },
     .{ "mcp", .mcp },
+    .{ "flush-trace", .flush_trace },
     .{ "help", .help },
     .{ "-h", .help },
     .{ "--help", .help },
@@ -102,6 +105,7 @@ pub fn main() !void {
         .init_cmd => try cmd_init.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .sync => try cmd_sync.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
+        .flush_trace => try cmd_flush_trace.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .none => {
             if (args.len > 1) {
                 // Unknown command
@@ -124,6 +128,7 @@ test "command_map: all commands resolve" {
         .{ .str = "login", .cmd = .login },
         .{ .str = "init", .cmd = .init_cmd },
         .{ .str = "sync", .cmd = .sync },
+        .{ .str = "flush-trace", .cmd = .flush_trace },
         .{ .str = "mcp", .cmd = .mcp },
         .{ .str = "help", .cmd = .help },
         .{ .str = "-h", .cmd = .help },

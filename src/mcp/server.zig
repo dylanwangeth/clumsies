@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const protocol = @import("protocol.zig");
 const handlers = @import("handlers.zig");
+const trace_upload = @import("../trace_upload.zig");
 
 pub const State = struct {
     workspace_root: []const u8,
@@ -27,6 +28,7 @@ pub fn runWithRoot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: st
         .workspace_root = workspace_root,
     };
     defer state.deinit(allocator);
+    defer flushOnExit(allocator, &state);
 
     var stdin_buffer: [4096]u8 = undefined;
     var stdin_reader = std.fs.File.Reader.init(std.fs.File.stdin(), &stdin_buffer);
@@ -50,6 +52,23 @@ pub fn runWithRoot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: st
             try stdout.writeAll(owned);
             try stdout.flush();
         }
+    }
+}
+
+fn flushOnExit(allocator: std.mem.Allocator, state: *State) void {
+    const session = state.session orelse return;
+    const outcome = trace_upload.flushWorkspace(allocator, session.ws_id);
+    switch (outcome) {
+        .flushed => |result| {
+            if (result.events_sent > 0) {
+                std.log.info(
+                    "trace flush on shutdown: sent {d} events in {d} batches",
+                    .{ result.events_sent, result.batches_sent },
+                );
+            }
+        },
+        .not_authenticated => {},
+        .failed => |err| std.log.warn("trace flush on shutdown failed: {}", .{err}),
     }
 }
 
