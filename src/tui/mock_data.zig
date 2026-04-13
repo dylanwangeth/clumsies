@@ -34,7 +34,6 @@ pub const CommentEntry = struct {
 pub const ActiveSessionView = struct {
     ws_id: []const u8,
     session_id: []const u8,
-    pid: i64,
     age: []const u8,
 };
 
