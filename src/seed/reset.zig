@@ -3,7 +3,9 @@ const pg = @import("pg");
 const data = @import("data.zig");
 const Faker = @import("faker.zig");
 const password = @import("password.zig");
-const local_trace = @import("clumsies_lib").trace;
+const clumsies_lib = @import("clumsies_lib");
+const local_trace = clumsies_lib.trace;
+const prompt_lib = clumsies_lib.prompt;
 
 const log = std.log.scoped(.seed);
 
@@ -113,7 +115,7 @@ fn deleteLocalCursorFile(ws_id: []const u8) void {
     };
 }
 
-fn appendLocalTraceEvent(ws_id: []const u8, session_id: []const u8, event_id: i64, event_type: []const u8, timestamp: i64, prompt_id: ?[]const u8) void {
+fn appendLocalTraceEvent(ws_id: []const u8, session_id: []const u8, event_id: i64, event_type: []const u8, timestamp: i64, prompt_id: ?[]const u8, content: ?[]const u8, content_hash: ?[]const u8) void {
     local_trace.appendTraceEvent(std.heap.page_allocator, .{
         .ws_id = ws_id,
         .session_id = session_id,
@@ -121,6 +123,8 @@ fn appendLocalTraceEvent(ws_id: []const u8, session_id: []const u8, event_id: i6
         .type = event_type,
         .timestamp = timestamp,
         .prompt_id = prompt_id,
+        .content = content,
+        .content_hash = content_hash,
     }) catch |err| {
         log.warn("seed: local trace append failed: {}", .{err});
     };
@@ -541,7 +545,10 @@ fn seedTraceEvents(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
         const wi = faker.intRange(usize, 0, state.ws_count);
 
         for (0..data.TRACE_EVENTS_PER_SESSION) |ei| {
-            const event_type = faker.pick([]const u8, &data.TRACE_EVENT_TYPES);
+            const event_type: []const u8 = if (ei == 0)
+                "setup"
+            else
+                faker.pick([]const u8, &data.TRACE_EVENT_TYPES);
             const timestamp = std.time.milliTimestamp() + faker.pastDaysMs(30);
 
             const is_refer = std.mem.eql(u8, event_type, "refer");
@@ -549,16 +556,29 @@ fn seedTraceEvents(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
                 state.promptId(faker.intRange(usize, 0, state.prompt_count))
             else
                 null;
+            var content_buf: [256]u8 = undefined;
+            const content: ?[]const u8 = if (std.mem.eql(u8, event_type, "session_input"))
+                faker.sessionInput(&content_buf)
+            else
+                null;
+            const content_hash: ?[]const u8 = if (content) |body|
+                prompt_lib.hashContentHexAlloc(std.heap.page_allocator, body) catch |err| blk: {
+                    log.warn("seed: session input hash failed: {}", .{err});
+                    break :blk null;
+                }
+            else
+                null;
+            defer if (content_hash) |hash| std.heap.page_allocator.free(hash);
 
             const event_id: i64 = @intCast(si * data.TRACE_EVENTS_PER_SESSION + ei);
 
             _ = conn.exec(
-                "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
-                .{ state.wsId(wi), session_id, event_id, event_type, timestamp, prompt_id },
+                "INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp, prompt_id, content, content_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
+                .{ state.wsId(wi), session_id, event_id, event_type, timestamp, prompt_id, content, content_hash },
             ) catch |err| {
                 log.warn("seed: {}", .{err});
             };
-            appendLocalTraceEvent(state.wsId(wi), session_id, event_id, event_type, timestamp, prompt_id);
+            appendLocalTraceEvent(state.wsId(wi), session_id, event_id, event_type, timestamp, prompt_id, content, content_hash);
         }
     }
 }
