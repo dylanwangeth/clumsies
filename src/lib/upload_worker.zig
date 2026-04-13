@@ -20,6 +20,11 @@ pub const FlushError = error{
 
 pub const MAX_EVENTS_PER_BATCH: usize = 1000;
 pub const MAX_BYTES_PER_BATCH: usize = 512 * 1024;
+/// Hard upper bound on a single event's size. The hub server rejects bodies
+/// larger than 1 MB, so any single event above ~900 KB can never be uploaded
+/// successfully. Such events are logged and skipped so the pipeline cannot be
+/// wedged by a malformed or pathologically large trace line.
+pub const MAX_SINGLE_EVENT_BYTES: usize = 900 * 1024;
 
 /// A single batch collected from trace.jsonl, ready to POST as
 /// {"events":[line1, line2, ...]} to /api/traces.
@@ -61,6 +66,7 @@ pub fn flushOnce(
 
     const start_offset = readCursor(allocator, ws_id) catch |err| switch (err) {
         error.FileNotFound => 0,
+        error.ParseCursorFailed => return error.ParseCursorFailed,
         else => return error.ReadCursorFailed,
     };
 
@@ -86,26 +92,27 @@ pub fn flushOnce(
     while (true) {
         var batch = collectBatch(allocator, &reader.interface, cursor_offset) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.EndOfStream => break,
             else => return error.ReadTraceFailed,
         };
         defer batch.deinit(allocator);
 
-        if (batch.lines.items.len == 0) break;
+        if (batch.end_offset == cursor_offset) break;
 
-        result.events_read += batch.lines.items.len;
+        if (batch.lines.items.len > 0) {
+            result.events_read += batch.lines.items.len;
 
-        const body = buildBatchBody(allocator, batch.lines.items) catch return error.OutOfMemory;
-        defer allocator.free(body);
+            const body = buildBatchBody(allocator, batch.lines.items) catch return error.OutOfMemory;
+            defer allocator.free(body);
 
-        const ok = uploader.post(body) catch return error.UploadFailed;
-        if (!ok) return error.UploadFailed;
+            const ok = uploader.post(body) catch return error.UploadFailed;
+            if (!ok) return error.UploadFailed;
+
+            result.events_sent += batch.lines.items.len;
+            result.batches_sent += 1;
+        }
 
         cursor_offset = batch.end_offset;
         writeCursor(allocator, ws_id, cursor_offset) catch return error.WriteCursorFailed;
-
-        result.events_sent += batch.lines.items.len;
-        result.batches_sent += 1;
 
         if (cursor_offset >= stat.size) break;
     }
@@ -129,16 +136,22 @@ fn collectBatch(
 
     while (lines.items.len < MAX_EVENTS_PER_BATCH) {
         const raw = reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => {
-                if (lines.items.len == 0) return err;
-                break;
-            },
+            error.EndOfStream => break,
             else => return err,
         };
 
         const trimmed = std.mem.trim(u8, raw, " \t\r");
         const line_bytes = raw.len + 1;
         if (trimmed.len == 0) {
+            end_offset += line_bytes;
+            continue;
+        }
+
+        if (trimmed.len > MAX_SINGLE_EVENT_BYTES) {
+            std.log.warn(
+                "dropping oversized trace event at offset {d}: {d} bytes exceeds {d} limit",
+                .{ end_offset, trimmed.len, MAX_SINGLE_EVENT_BYTES },
+            );
             end_offset += line_bytes;
             continue;
         }
@@ -197,13 +210,13 @@ fn writeCursor(allocator: std.mem.Allocator, ws_id: []const u8, offset: u64) !vo
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{cursor_path});
     defer allocator.free(tmp_path);
 
-    const file = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true });
     {
+        const file = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true });
         defer file.close();
         var buf: [32]u8 = undefined;
         var w = std.fs.File.Writer.init(file, &buf);
-        defer w.interface.flush() catch {};
         try w.interface.print("{d}\n", .{offset});
+        try w.interface.flush();
     }
 
     try std.fs.renameAbsolute(tmp_path, cursor_path);
@@ -287,4 +300,35 @@ test "collectBatch skips blank lines without counting them" {
     try testing.expectEqualStrings("a", batch.lines.items[0]);
     try testing.expectEqualStrings("b", batch.lines.items[1]);
     try testing.expectEqual(@as(u64, 100 + 4), batch.end_offset);
+}
+
+test "collectBatch drops oversized event and keeps neighbors" {
+    const huge = "x" ** (MAX_SINGLE_EVENT_BYTES + 100);
+    var sample: std.ArrayList(u8) = .empty;
+    defer sample.deinit(testing.allocator);
+    try sample.writer(testing.allocator).print("ok1\n{s}\nok2\n", .{huge});
+
+    var reader = std.Io.Reader.fixed(sample.items);
+    var batch = try collectBatch(testing.allocator, &reader, 0);
+    defer batch.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), batch.lines.items.len);
+    try testing.expectEqualStrings("ok1", batch.lines.items[0]);
+    try testing.expectEqualStrings("ok2", batch.lines.items[1]);
+    const expected_end: u64 = 4 + huge.len + 1 + 4;
+    try testing.expectEqual(expected_end, batch.end_offset);
+}
+
+test "collectBatch advances offset when only oversized events are present" {
+    const huge = "x" ** (MAX_SINGLE_EVENT_BYTES + 100);
+    var sample: std.ArrayList(u8) = .empty;
+    defer sample.deinit(testing.allocator);
+    try sample.writer(testing.allocator).print("{s}\n", .{huge});
+
+    var reader = std.Io.Reader.fixed(sample.items);
+    var batch = try collectBatch(testing.allocator, &reader, 50);
+    defer batch.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), batch.lines.items.len);
+    try testing.expectEqual(@as(u64, 50 + huge.len + 1), batch.end_offset);
 }
