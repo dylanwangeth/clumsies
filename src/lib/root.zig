@@ -1,5 +1,6 @@
 pub const drafts = @import("drafts.zig");
 pub const encoding = @import("encoding.zig");
+pub const path_util = @import("path_util.zig");
 pub const prompt = @import("prompt.zig");
 pub const sequence = @import("sequence.zig");
 pub const session_marker = @import("session_marker.zig");

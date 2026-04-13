@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const prompt = @import("prompt.zig");
 const drafts = @import("drafts.zig");
+const path_util = @import("path_util.zig");
 
 pub const PromptKind = enum {
     rule,
@@ -132,7 +133,10 @@ pub const Manifest = struct {
 
 /// Read `{ws_dir}/manifest.json` into an in-memory map. Returns an empty
 /// manifest (no error) if the file does not exist — that is the expected
-/// state before the first sync. Format mismatch returns InvalidManifest.
+/// state before the first sync. Invalid JSON or a non-object top-level
+/// value returns `InvalidManifest`. Malformed prompts/context entries
+/// inside an otherwise valid top-level object are silently skipped so a
+/// single bad row doesn't block discovery of the rest.
 pub fn loadManifest(allocator: std.mem.Allocator, ws_dir: []const u8) !Manifest {
     const arena_state = try allocator.create(std.heap.ArenaAllocator);
     errdefer allocator.destroy(arena_state);
@@ -372,6 +376,8 @@ pub fn loadPrompts(
 }
 
 fn readCacheFileAlloc(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
+    if (!path_util.isSafeRelative(rel_path)) return error.UnsafeCachePath;
+
     const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", rel_path });
     defer allocator.free(abs_path);
 

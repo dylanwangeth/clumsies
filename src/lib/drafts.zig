@@ -1,5 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
+const path_util = @import("path_util.zig");
 
 pub const DraftCategory = enum {
     prompt,
@@ -50,9 +51,11 @@ pub const DraftsIndex = struct {
         allocator.destroy(self.arena_state);
     }
 
-    /// Find an active draft entry matching the given category and current path.
-    /// Returns null if no entry matches or if the matching entry is a delete
-    /// operation (callers should treat delete as NotFound).
+    /// Find a draft entry matching the given category and current path.
+    /// Returns null only when no entry matches — delete-operation entries
+    /// are still returned. Callers are expected to inspect `operation` and
+    /// handle `.delete` as NotFound themselves, so the lookup stays usable
+    /// for other callers that need the full set of tracked drafts.
     pub fn findByCurrentPath(self: *const DraftsIndex, category: DraftCategory, path: []const u8) ?*const DraftEntry {
         for (self.entries.items) |*entry| {
             if (entry.category != category) continue;
@@ -169,6 +172,8 @@ pub fn readDraftFile(
     category: DraftCategory,
     draft_path: []const u8,
 ) ![]const u8 {
+    if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
+
     const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString(), draft_path });
     defer allocator.free(abs_path);
 

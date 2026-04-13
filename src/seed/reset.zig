@@ -132,7 +132,7 @@ fn seedPrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding {d} prompts...", .{data.PROMPT_COUNT});
 
     _ = conn.exec(
-        "INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5)",
+        "INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5) ON CONFLICT (prompt_id) DO NOTHING",
         .{
             "p-mpf",
             data.ORG_ID,

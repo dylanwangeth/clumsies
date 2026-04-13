@@ -3,6 +3,7 @@ const flag = @import("../flags.zig");
 const auth_mod = @import("../auth.zig");
 const ws_config = @import("../workspace_config.zig");
 const HubClient = @import("../hub_client.zig").HubClient;
+const lib = @import("clumsies_lib");
 const styles = @import("../styles.zig");
 
 const Color = styles.Color;
@@ -180,24 +181,8 @@ fn ensureDir(path: []const u8) void {
     };
 }
 
-fn isPathSafe(name: []const u8) bool {
-    if (name.len == 0) return false;
-    if (std.fs.path.isAbsolute(name)) return false;
-    var it = std.mem.splitScalar(u8, name, std.fs.path.sep);
-    while (it.next()) |component| {
-        if (std.mem.eql(u8, component, "..")) return false;
-    }
-    if (std.fs.path.sep != '/') {
-        var it2 = std.mem.splitScalar(u8, name, '/');
-        while (it2.next()) |component| {
-            if (std.mem.eql(u8, component, "..")) return false;
-        }
-    }
-    return true;
-}
-
 fn writeToCache(allocator: std.mem.Allocator, ws_cache_dir: []const u8, sub_dir: []const u8, name: []const u8, content: []const u8) !void {
-    if (!isPathSafe(name)) return error.UnsafePath;
+    if (!lib.path_util.isSafeRelative(name)) return error.UnsafePath;
     const dir_path = try std.fs.path.join(allocator, &.{ ws_cache_dir, sub_dir });
     defer allocator.free(dir_path);
     ensureDir(dir_path);
@@ -245,28 +230,6 @@ fn printHelp(out: *std.Io.Writer) !void {
 }
 
 const testing = std.testing;
-
-test "isPathSafe rejects traversal" {
-    try testing.expect(!isPathSafe("../etc/passwd"));
-    try testing.expect(!isPathSafe("foo/../../etc/passwd"));
-    try testing.expect(!isPathSafe(".."));
-}
-
-test "isPathSafe rejects absolute paths" {
-    try testing.expect(!isPathSafe("/etc/passwd"));
-    try testing.expect(!isPathSafe("/absolute/path"));
-}
-
-test "isPathSafe rejects empty" {
-    try testing.expect(!isPathSafe(""));
-}
-
-test "isPathSafe accepts valid relative paths" {
-    try testing.expect(isPathSafe("rule/coding/STYLE.md"));
-    try testing.expect(isPathSafe("context/readme.md"));
-    try testing.expect(isPathSafe("file.md"));
-    try testing.expect(isPathSafe("a/b/c/d.txt"));
-}
 
 test "percentEncode encodes special characters" {
     const allocator = testing.allocator;

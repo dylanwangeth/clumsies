@@ -16,7 +16,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         },
         else => return err,
     };
-    errdefer session.deinit(allocator);
+    defer session.deinit(allocator);
 
     const ws_dir = try ws_config.getWsDir(allocator, session.ws_id);
     defer allocator.free(ws_dir);
@@ -26,5 +26,5 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
     defer lib.session_marker.clear(allocator, ws_dir);
 
-    try mcp_server.runWithRoot(stdout, stderr, allocator, version, ws_dir, session);
+    try mcp_server.runWithRoot(stdout, stderr, allocator, version, ws_dir, &session);
 }

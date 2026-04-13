@@ -18,7 +18,12 @@ WS_INFO=$("$CLUMSIES" _agent workspace-info 2>/dev/null || true)
 WS_ID=""
 CACHE_DIR=""
 if [ -n "$WS_INFO" ]; then
-  eval "$WS_INFO"
+  while IFS='=' read -r key value; do
+    case "$key" in
+      WS_ID) WS_ID="$value" ;;
+      CACHE_DIR) CACHE_DIR="$value" ;;
+    esac
+  done <<< "$WS_INFO"
 fi
 
 # 3. Auto-generate workflow skills from cache/workflow/ when bound
