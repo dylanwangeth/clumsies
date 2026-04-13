@@ -6,13 +6,9 @@ const trace_upload = @import("../trace_upload.zig");
 
 pub const State = struct {
     workspace_root: []const u8,
-    session: handlers.Session,
+    session: *handlers.Session,
     initialized: bool = false,
     initialize_seen: bool = false,
-
-    pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
-        self.session.deinit(allocator);
-    }
 };
 
 pub fn runWithRoot(
@@ -21,7 +17,7 @@ pub fn runWithRoot(
     allocator: std.mem.Allocator,
     version: []const u8,
     workspace_root: []const u8,
-    session: handlers.Session,
+    session: *handlers.Session,
 ) !void {
     _ = stderr;
 
@@ -29,7 +25,6 @@ pub fn runWithRoot(
         .workspace_root = workspace_root,
         .session = session,
     };
-    defer state.deinit(allocator);
     defer flushOnExit(allocator, &state);
 
     var stdin_buffer: [4096]u8 = undefined;
@@ -123,7 +118,7 @@ fn processMessage(allocator: std.mem.Allocator, state: *State, version: []const 
     }
 
     if (std.mem.eql(u8, method, "tools/call")) {
-        const result = handlers.handleToolCall(allocator, state.workspace_root, &state.session, params) catch |err| switch (err) {
+        const result = handlers.handleToolCall(allocator, state.workspace_root, state.session, params) catch |err| switch (err) {
             error.InvalidParams => return try protocol.buildErrorAlloc(allocator, id.?, .invalid_params, "Invalid tool arguments"),
             else => return err,
         };
@@ -143,14 +138,16 @@ fn handleNotification(state: *State, method: []const u8) ?[]u8 {
 }
 
 test "processLine: initialize then tools list" {
+    var session: handlers.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .session_id = [_]u8{'a'} ** 32,
+    };
+    defer session.deinit(testing.allocator);
+
     var state: State = .{
         .workspace_root = "/tmp/workspace",
-        .session = .{
-            .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-            .session_id = [_]u8{'a'} ** 32,
-        },
+        .session = &session,
     };
-    defer state.deinit(testing.allocator);
 
     const init_response = (try processLine(
         testing.allocator,
