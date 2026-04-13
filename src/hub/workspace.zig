@@ -3,8 +3,9 @@ const httpz = @import("httpz");
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("../protocol/api_error.zig").send;
-const KvMap = @import("../protocol/manifest.zig").KvMap;
-const KvEntry = @import("../protocol/manifest.zig").KvEntry;
+const ManifestMap = @import("../protocol/manifest.zig").ManifestMap;
+const ManifestItem = @import("../protocol/manifest.zig").ManifestItem;
+const ManifestEntry = @import("../protocol/manifest.zig").ManifestEntry;
 
 const CreateRequest = struct {
     name: []const u8,
@@ -203,9 +204,9 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         }
     }
 
-    const prompts = try collectKvMap(req.arena, conn, "SELECT wp.prompt_id, p.content_hash FROM workspace_prompts wp JOIN prompts p ON p.prompt_id = wp.prompt_id WHERE wp.ws_id = $1", .{ws_id});
+    const prompts = try collectManifestMap(req.arena, conn, "SELECT wp.prompt_id, p.path, p.content_hash FROM workspace_prompts wp JOIN prompts p ON p.prompt_id = wp.prompt_id WHERE wp.ws_id = $1", .{ws_id});
 
-    const context = try collectKvMap(req.arena, conn, "SELECT path, content_hash FROM context_files WHERE ws_id = $1 AND branch_name = 'main'", .{ws_id});
+    const context = try collectManifestMap(req.arena, conn, "SELECT context_id, path, content_hash FROM context_files WHERE ws_id = $1", .{ws_id});
 
     var etag_buf: [32]u8 = undefined;
     const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
@@ -692,17 +693,20 @@ pub fn handleRemoveWsMember(ctx: *Server.Context, req: *httpz.Request, res: *htt
     res.status = 204;
 }
 
-fn collectKvMap(arena: std.mem.Allocator, conn: anytype, sql: []const u8, params: anytype) !KvMap {
-    var result = conn.query(sql, params) catch return KvMap{ .entries = &.{} };
+fn collectManifestMap(arena: std.mem.Allocator, conn: anytype, sql: []const u8, params: anytype) !ManifestMap {
+    var result = conn.query(sql, params) catch return ManifestMap{ .items = &.{} };
     defer result.deinit();
 
-    var entries: std.ArrayList(KvEntry) = .empty;
+    var items: std.ArrayList(ManifestItem) = .empty;
     while (try result.next()) |row| {
-        try entries.append(arena, .{
+        try items.append(arena, .{
             .key = try arena.dupe(u8, try row.get([]const u8, 0)),
-            .value = try arena.dupe(u8, try row.get([]const u8, 1)),
+            .value = .{
+                .path = try arena.dupe(u8, try row.get([]const u8, 1)),
+                .hash = try arena.dupe(u8, try row.get([]const u8, 2)),
+            },
         });
     }
 
-    return KvMap{ .entries = entries.items };
+    return ManifestMap{ .items = items.items };
 }

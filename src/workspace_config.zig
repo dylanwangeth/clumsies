@@ -37,7 +37,14 @@ pub fn resolveWorkspace(allocator: std.mem.Allocator, cwd: []const u8) !Workspac
     return error.NoWorkspaceFound;
 }
 
-/// Get the cache directory for a workspace.
+/// Get the workspace directory for a workspace: ~/.clumsies/workspaces/{ws_id}
+pub fn getWsDir(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
+    const base = try auth.getBasePath(allocator);
+    defer allocator.free(base);
+    return std.fs.path.join(allocator, &.{ base, "workspaces", ws_id });
+}
+
+/// Get the cache directory for a workspace: ~/.clumsies/workspaces/{ws_id}/cache
 pub fn getCachePath(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
     const base = try auth.getBasePath(allocator);
     defer allocator.free(base);
