@@ -685,7 +685,6 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
             const matches = std.mem.eql(u8, current_hash, bh);
             row.deinit() catch {};
             if (!matches) {
-                _ = conn.exec("UPDATE context_prs SET status = 'conflicted' WHERE pr_id = $1", .{pr_id}) catch {};
                 conn.rollback() catch {};
                 try apiError(res, 409, "CONFLICT", "file has changed since PR was created");
                 return false;
@@ -724,7 +723,6 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
             const matches = std.mem.eql(u8, current_hash, bh);
             row.deinit() catch {};
             if (!matches) {
-                _ = conn.exec("UPDATE context_prs SET status = 'conflicted' WHERE pr_id = $1", .{pr_id}) catch {};
                 conn.rollback() catch {};
                 try apiError(res, 409, "CONFLICT", "file has changed since PR was created");
                 return false;

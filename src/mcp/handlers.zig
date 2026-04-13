@@ -136,7 +136,8 @@ fn writeTraceEvent(
     constraint_id: ?[]const u8,
     reason: ?[]const u8,
 ) void {
-    const session = &(session_ptr.* orelse return);
+    if (session_ptr.* == null) return;
+    const session = &session_ptr.*.?;
     const event_id = session.nextEventId();
     trace.appendTraceEvent(allocator, .{
         .ws_id = session.ws_id,
@@ -148,7 +149,12 @@ fn writeTraceEvent(
         .prompt_hash = prompt_hash,
         .constraint_id = constraint_id,
         .reason = reason,
-    }) catch {};
+    }) catch |err| {
+        std.log.err(
+            "failed to append trace event type='{s}' session_id='{s}': {}",
+            .{ event_type, session.session_id[0..], err },
+        );
+    };
 }
 
 fn handleSetup(
