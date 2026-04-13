@@ -85,13 +85,24 @@ start_hub() {
 
     "$HUB" &
     HUB_PID=$!
-    sleep 2
 
-    if ! kill -0 "$HUB_PID" 2>/dev/null; then
-        echo "FATAL: Hub server failed to start"
-        exit 1
-    fi
-    echo "Hub server running (PID $HUB_PID)"
+    local attempts=50
+    local delay_s=0.2
+    local i
+    for ((i = 1; i <= attempts; i++)); do
+        if ! kill -0 "$HUB_PID" 2>/dev/null; then
+            echo "FATAL: Hub server failed to start"
+            exit 1
+        fi
+        if curl -s -o /dev/null --connect-timeout 1 "$BASE/api/auth/me"; then
+            echo "Hub server running (PID $HUB_PID)"
+            return
+        fi
+        sleep "$delay_s"
+    done
+
+    echo "FATAL: Hub server did not become ready at $BASE"
+    exit 1
 }
 
 cleanup() {
