@@ -1706,7 +1706,12 @@ pub const Dashboard = struct {
                         const n = @min(ws_d.ws_prompts.len, MAX_ROWS);
                         for (0..n) |i| {
                             const wp = ws_d.ws_prompts[i];
-                            paths_buf[i] = for (lib_prompts) |lp| {
+                            // Prefer the manifest-supplied path (new schema); fall
+                            // back to a library lookup for the legacy string-valued
+                            // manifest, and finally to the raw prompt_id.
+                            paths_buf[i] = if (wp.path.len > 0)
+                                wp.path
+                            else for (lib_prompts) |lp| {
                                 if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
                             } else wp.prompt_id;
                             orig_idx[i] = i;
