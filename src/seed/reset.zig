@@ -131,6 +131,17 @@ fn seedUsers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 fn seedPrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding {d} prompts...", .{data.PROMPT_COUNT});
 
+    _ = conn.exec(
+        "INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5)",
+        .{
+            "p-mpf",
+            data.ORG_ID,
+            "META_PROMPT.md",
+            "# clumsies Protocol Bootstrap\n\nUse memory.search to discover rules, memory.load to read them, memory.refer to declare what you applied.\n",
+            "sha256:mpf0000000000000000000000000000000000000000000000000000000000",
+        },
+    ) catch |err| log.warn("MPF seed insert failed: {}", .{err});
+
     for (0..data.PROMPT_COUNT) |i| {
         const id = faker.hexId(&state.prompt_ids[i], "p-");
         const hash = faker.hexId(&state.prompt_hashes[i], "sha256:");
