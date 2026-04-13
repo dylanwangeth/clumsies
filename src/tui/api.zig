@@ -127,6 +127,10 @@ pub const ContextFileData = struct {
 pub const WsPromptData = struct {
     prompt_id: []const u8,
     content_hash: []const u8,
+    // Populated when the server manifest carries structured values
+    // ({path, hash}). Empty on the older string-valued manifest schema,
+    // in which case callers still resolve path via library lookup.
+    path: []const u8 = "",
 };
 
 pub const ApiState = struct {
@@ -785,16 +789,30 @@ fn parseManifestPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const WsP
         else => return null,
     };
 
+    // The manifest historically mapped prompt_id to a plain hash string;
+    // the post-alignment schema maps it to {path, hash}. Accept both so
+    // the TUI keeps working across the server-side migration.
     var list: std.ArrayList(WsPromptData) = .empty;
     var it = map.iterator();
     while (it.next()) |entry| {
-        const hash = switch (entry.value_ptr.*) {
-            .string => |s| s,
-            else => "",
-        };
+        var hash: []const u8 = "";
+        var path: []const u8 = "";
+        switch (entry.value_ptr.*) {
+            .string => |s| hash = s,
+            .object => |obj| {
+                if (obj.get("hash")) |h| if (h == .string) {
+                    hash = h.string;
+                };
+                if (obj.get("path")) |p| if (p == .string) {
+                    path = p.string;
+                };
+            },
+            else => {},
+        }
         list.append(alloc, .{
             .prompt_id = alloc.dupe(u8, entry.key_ptr.*) catch continue,
             .content_hash = alloc.dupe(u8, hash) catch continue,
+            .path = alloc.dupe(u8, path) catch continue,
         }) catch continue;
     }
     return list.items;
