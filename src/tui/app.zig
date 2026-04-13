@@ -2496,10 +2496,15 @@ pub const Dashboard = struct {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const live_prs = self.api_state.prompt_prs;
-        const lib = self.api_state.prompts;
         if (live_prs) |prs| {
+            // Only trust the cached PR list when it was fetched for this path.
+            if (self.api_state.prompt_prs_for_path) |cached| {
+                if (!std.mem.eql(u8, cached, prompt_path)) return &.{};
+            } else {
+                return &.{};
+            }
             const alloc = self.api_state.arena.allocator();
-            return api.toPrEntries(alloc, prs, prompt_path, lib, self.api_state);
+            return api.toPrEntries(alloc, prs, prompt_path, self.api_state);
         }
         return &.{};
     }
@@ -2990,10 +2995,12 @@ pub const Dashboard = struct {
         self.content_scroll_bars.scroll_view.children = .{ .slice = self.content_widget[0..1] };
         self.content_scroll_bars.estimated_content_height = @intCast(@max(w.countLines(content), 24));
 
-        // Trigger fetch for the selected prompt content
+        // Trigger fetch for the selected prompt content and its PR list
         const prompts = self.getPrompts();
         if (self.selected_prompt < prompts.len) {
-            api.fetchPromptContentAsync(self.api_state, prompts[self.selected_prompt].path);
+            const sel_path = prompts[self.selected_prompt].path;
+            api.fetchPromptContentAsync(self.api_state, sel_path);
+            api.fetchPromptPrsAsync(self.api_state, sel_path);
         }
     }
 
