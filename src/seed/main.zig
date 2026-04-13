@@ -1,5 +1,6 @@
 const std = @import("std");
 const pg = @import("pg");
+const ensure = @import("ensure.zig");
 const reset = @import("reset.zig");
 const pump = @import("pump.zig");
 
@@ -37,14 +38,11 @@ pub fn main() !void {
     defer std.process.argsFree(std.heap.page_allocator, args);
 
     var do_reset = false;
-    var do_pump = false;
     var interval_ms: u64 = 3000;
 
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--reset")) {
             do_reset = true;
-        } else if (std.mem.eql(u8, arg, "--pump")) {
-            do_pump = true;
         } else if (std.mem.startsWith(u8, arg, "--interval=")) {
             interval_ms = std.fmt.parseInt(u64, arg["--interval=".len..], 10) catch 3000;
             if (interval_ms < 100) {
@@ -59,12 +57,6 @@ pub fn main() !void {
             printUsage();
             std.process.exit(1);
         }
-    }
-
-    if (!do_reset and !do_pump) {
-        log.err("specify --reset and/or --pump", .{});
-        printUsage();
-        std.process.exit(1);
     }
 
     const config = Config.fromEnv();
@@ -94,14 +86,17 @@ pub fn main() !void {
             log.err("reset failed: {}", .{err});
             std.process.exit(1);
         };
-    }
-
-    if (do_pump) {
-        pump.run(pool, interval_ms) catch |err| {
-            log.err("pump failed: {}", .{err});
+    } else {
+        ensure.run(pool) catch |err| {
+            log.err("ensure base data failed: {}", .{err});
             std.process.exit(1);
         };
     }
+
+    pump.run(pool, interval_ms) catch |err| {
+        log.err("pump failed: {}", .{err});
+        std.process.exit(1);
+    };
 
     log.info("done", .{});
 }
@@ -111,16 +106,14 @@ fn printUsage() void {
         \\Usage: clumsies-seed [options]
         \\
         \\Options:
-        \\  --reset          Truncate all tables and seed initial data
-        \\  --pump           Continuously inject new data (Ctrl-C to stop)
+        \\  --reset          Truncate all tables, seed fresh data, then start pump
         \\  --interval=N     Pump interval in milliseconds (default: 3000)
         \\  --help, -h       Show this help
         \\
         \\Examples:
-        \\  clumsies-seed --reset              Reset database with seed data
-        \\  clumsies-seed --pump               Start continuous data pump
-        \\  clumsies-seed --reset --pump       Reset then pump
-        \\  clumsies-seed --pump --interval=1000  Pump every second
+        \\  clumsies-seed                      Ensure base data, then start pump
+        \\  clumsies-seed --reset             Reset database, then start pump
+        \\  clumsies-seed --interval=1000     Pump every second
         \\
         \\Environment variables:
         \\  HUB_DB_HOST      Database host (default: 127.0.0.1)

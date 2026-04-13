@@ -3,6 +3,30 @@
 
 pub const ORG_ID = "a0000000-0000-0000-0000-000000000001";
 pub const ORG_NAME = "acme";
+pub const SEED_PASSWORD = "admin";
+
+pub const BASE_MAINTAINER_ID = "usr-seed-maintainer";
+pub const BASE_MAINTAINER_USERNAME = "admin";
+pub const SEED_USERNAMES = [_][]const u8{
+    BASE_MAINTAINER_USERNAME,
+    "Dylan",
+    "lilhammer",
+    "Joji",
+    "amimibear",
+    "Milo",
+    "Nori",
+    "Sora",
+};
+pub const BASE_MEMBER_ID = "usr-seed-member";
+pub const BASE_MEMBER_USERNAME = SEED_USERNAMES[1];
+pub const BASE_PROMPT_ID = "p-seed-default";
+pub const BASE_PROMPT_PATH = "rule/testing/SEED_PUMP.md";
+pub const BASE_PROMPT_CONTENT =
+    "# SEED_PUMP\n\nSynthetic baseline prompt used by clumsies-seed.\n";
+pub const BASE_PROMPT_HASH =
+    "sha256:seed000000000000000000000000000000000000000000000000000000000";
+pub const BASE_WORKSPACE_ID = "ws-seed-default";
+pub const BASE_WORKSPACE_NAME = "seed-sandbox";
 
 pub const ROLES = [_][]const u8{ "maintainer", "member" };
 pub const WS_MEMBER_ROLES = [_][]const u8{ "member", "admin" };
@@ -11,7 +35,7 @@ pub const CONTEXT_PR_STATUSES = [_][]const u8{ "open", "merged", "rejected" };
 pub const TRACE_EVENT_TYPES = [_][]const u8{ "setup", "refer", "refer" };
 
 // Counts for reset mode
-pub const USER_COUNT: usize = 8;
+pub const USER_COUNT: usize = SEED_USERNAMES.len;
 pub const PROMPT_COUNT: usize = 15;
 pub const BUNDLE_COUNT: usize = 3;
 pub const WORKSPACE_COUNT: usize = 4;
