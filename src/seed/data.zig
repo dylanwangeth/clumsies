@@ -23,8 +23,6 @@ pub const BASE_PROMPT_ID = "p-seed-default";
 pub const BASE_PROMPT_PATH = "rule/testing/SEED_PUMP.md";
 pub const BASE_PROMPT_CONTENT =
     "# SEED_PUMP\n\nSynthetic baseline prompt used by clumsies-seed.\n";
-pub const BASE_PROMPT_HASH =
-    "sha256:seed000000000000000000000000000000000000000000000000000000000";
 pub const BASE_WORKSPACE_ID = "ws-seed-default";
 pub const BASE_WORKSPACE_NAME = "seed-sandbox";
 
