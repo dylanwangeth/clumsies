@@ -179,24 +179,75 @@ pub const ApiState = struct {
     access_token: ?[]const u8 = null,
     fetch_busy: bool = false,
     // Arena for all fetched data
-    arena: std.heap.ArenaAllocator,
+    backing_allocator: std.mem.Allocator,
+    arena: *std.heap.ArenaAllocator,
+    ts_allocator: std.heap.ThreadSafeAllocator,
 
-    pub fn init(allocator: std.mem.Allocator) ApiState {
-        return .{ .arena = std.heap.ArenaAllocator.init(allocator) };
+    pub fn init(base_allocator: std.mem.Allocator) ApiState {
+        const arena_ptr = base_allocator.create(std.heap.ArenaAllocator) catch @panic("ApiState.init: arena allocation failed");
+        arena_ptr.* = std.heap.ArenaAllocator.init(base_allocator);
+        return .{
+            .backing_allocator = base_allocator,
+            .arena = arena_ptr,
+            .ts_allocator = undefined,
+        };
+    }
+
+    pub fn bindAllocator(self: *ApiState) void {
+        self.ts_allocator = .{ .child_allocator = self.arena.allocator() };
     }
 
     pub fn deinit(self: *ApiState) void {
         self.arena.deinit();
+        self.backing_allocator.destroy(self.arena);
+    }
+
+    pub fn allocator(self: *ApiState) std.mem.Allocator {
+        return self.ts_allocator.allocator();
     }
 };
 
 pub fn startFetch(api_state: *ApiState, hub_url: []const u8, access_token: []const u8) !std.Thread {
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
     const url_copy = try alloc.dupe(u8, hub_url);
     const token_copy = try alloc.dupe(u8, access_token);
+    api_state.mutex.lock();
     api_state.hub_url = url_copy;
     api_state.access_token = token_copy;
+    api_state.fetch_busy = true;
+    api_state.mutex.unlock();
     return std.Thread.spawn(.{}, fetchAll, .{ api_state, url_copy, token_copy });
+}
+
+pub fn refreshLocalState(api_state: *ApiState) void {
+    const alloc = api_state.allocator();
+    const local = trace_reader.readLocalStats(alloc);
+    const local_drafts = drafts_reader.readAllDrafts(alloc);
+    const sessions = session_reader.readAllSessions(alloc);
+
+    api_state.mutex.lock();
+    api_state.local_stats = local;
+    api_state.drafts = local_drafts;
+    api_state.active_sessions = sessions;
+    api_state.mutex.unlock();
+}
+
+pub fn refetchAllAsync(api_state: *ApiState) void {
+    api_state.mutex.lock();
+    if (api_state.fetch_busy or api_state.hub_url == null or api_state.access_token == null) {
+        api_state.mutex.unlock();
+        return;
+    }
+    api_state.fetch_busy = true;
+    const hub_url = api_state.hub_url.?;
+    const access_token = api_state.access_token.?;
+    api_state.mutex.unlock();
+
+    _ = std.Thread.spawn(.{}, fetchAll, .{ api_state, hub_url, access_token }) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    };
 }
 
 // Fetch workspace detail on demand (context files + prompts from manifest)
@@ -209,7 +260,7 @@ pub fn fetchWorkspaceAsync(api_state: *ApiState, ws_id: []const u8) void {
     api_state.fetch_busy = true;
     api_state.mutex.unlock();
 
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
     const ws_id_copy = alloc.dupe(u8, ws_id) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
@@ -242,7 +293,7 @@ pub fn fetchPromptPrsAsync(api_state: *ApiState, prompt_path: []const u8) void {
         api_state.mutex.unlock();
         return;
     };
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
     const prompt_id: ?[]const u8 = for (lib) |lp| {
         if (std.mem.eql(u8, lp.path, prompt_path)) break alloc.dupe(u8, lp.prompt_id) catch null;
     } else null;
@@ -263,7 +314,7 @@ pub fn fetchPromptPrsAsync(api_state: *ApiState, prompt_path: []const u8) void {
 }
 
 fn fetchPromptPrs(api_state: *ApiState, prompt_path: []const u8, prompt_id: []const u8) void {
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
         api_state.fetch_busy = false;
@@ -331,7 +382,7 @@ pub fn fetchPromptContentAsync(api_state: *ApiState, prompt_path: []const u8) vo
     api_state.fetch_busy = true;
     api_state.mutex.unlock();
 
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
     const path_copy = alloc.dupe(u8, prompt_path) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
@@ -346,21 +397,19 @@ pub fn fetchPromptContentAsync(api_state: *ApiState, prompt_path: []const u8) vo
 }
 
 fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8) void {
+    defer {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    }
     api_state.mutex.lock();
     api_state.status = .connecting;
     api_state.mutex.unlock();
 
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
 
     // Read local trace.jsonl first (available even if server is unreachable)
-    const local = trace_reader.readLocalStats(alloc);
-    const local_drafts = drafts_reader.readAllDrafts(alloc);
-    const sessions = session_reader.readAllSessions(alloc);
-    api_state.mutex.lock();
-    api_state.local_stats = local;
-    api_state.drafts = local_drafts;
-    api_state.active_sessions = sessions;
-    api_state.mutex.unlock();
+    refreshLocalState(api_state);
 
     var client = HubClient.init(alloc, hub_url, access_token);
 
@@ -445,7 +494,7 @@ pub fn fetchPrDetailAsync(api_state: *ApiState, pr_id: []const u8) void {
     api_state.fetch_busy = true;
     api_state.mutex.unlock();
 
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
     const id_copy = alloc.dupe(u8, pr_id) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
@@ -460,7 +509,7 @@ pub fn fetchPrDetailAsync(api_state: *ApiState, pr_id: []const u8) void {
 }
 
 fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
         api_state.fetch_busy = false;
@@ -660,7 +709,7 @@ pub fn postAction(api_state: *ApiState, alloc: std.mem.Allocator, method: std.ht
 }
 
 fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
         api_state.fetch_busy = false;
@@ -705,7 +754,7 @@ fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
 }
 
 fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
-    const alloc = api_state.arena.allocator();
+    const alloc = api_state.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
         api_state.fetch_busy = false;
@@ -1255,9 +1304,10 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
             .idle_constraint_count = c_idle,
             .signal_ratio = sig,
             .refer_count = @intCast(@min(ps.refer_count, std.math.maxInt(u32))),
+            .workspace_count = @intCast(@min(ps.workspace_count, 255)),
             .rate_per_day = rate,
             .delta_pct = 0,
-            .last_referred_days_ago = 0,
+            .last_referred_days_ago = null,
             .trend = .{0} ** 30,
             .constraints = &.{},
         }) catch continue;
