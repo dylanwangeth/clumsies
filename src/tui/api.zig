@@ -340,6 +340,7 @@ fn fetchPromptPrs(api_state: *ApiState, prompt_path: []const u8, prompt_id: []co
         api_state.mutex.unlock();
         return;
     };
+    defer alloc.free(path);
 
     const resp = client.get(path) catch {
         api_state.mutex.lock();
@@ -459,6 +460,7 @@ fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8)
     if (user.workspaces.len > 0) {
         const ws_stats_path = std.fmt.allocPrint(alloc, "/api/stats/workspace/{s}?period=daily&days=30", .{user.workspaces[0].ws_id}) catch null;
         if (ws_stats_path) |path| {
+            defer alloc.free(path);
             const ws_resp = client.get(path) catch null;
             if (ws_resp) |resp| {
                 defer resp.deinit();
@@ -537,6 +539,7 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
         api_state.mutex.unlock();
         return;
     };
+    defer alloc.free(detail_path);
     const detail_resp = client.get(detail_path) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
@@ -582,6 +585,7 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
             };
             var pick_idx: ?usize = null;
             if (target_id) |tid| {
+                defer alloc.free(tid);
                 for (p.value.operations, 0..) |op, i| {
                     if (op.prompt_id) |pid| {
                         if (std.mem.eql(u8, pid, tid)) {
@@ -614,6 +618,7 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
     const comments_path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{pr_id}) catch null;
     var comments: ?[]const data.CommentEntry = null;
     if (comments_path) |cpath| {
+        defer alloc.free(cpath);
         const c_resp = client.get(cpath) catch null;
         if (c_resp) |resp| {
             defer resp.deinit();
@@ -737,6 +742,7 @@ fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
         api_state.mutex.unlock();
         return;
     };
+    defer alloc.free(files_path);
     const files = doFetchParse(&client, alloc, files_path, []const ContextFileData, parseContextFiles);
 
     // GET /api/workspaces/{ws_id}/manifest
@@ -746,6 +752,7 @@ fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
         api_state.mutex.unlock();
         return;
     };
+    defer alloc.free(manifest_path);
     const ws_prompts = doFetchParse(&client, alloc, manifest_path, []const WsPromptData, parseManifestPrompts);
 
     api_state.mutex.lock();
@@ -782,12 +789,14 @@ fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
         api_state.mutex.unlock();
         return;
     };
+    defer alloc.free(encoded_path);
     const path = std.fmt.allocPrint(alloc, "/api/org/library/prompt/content?path={s}", .{encoded_path}) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
         return;
     };
+    defer alloc.free(path);
 
     const resp = client.get(path) catch {
         api_state.mutex.lock();

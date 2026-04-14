@@ -12,8 +12,13 @@ pub const ActiveSession = struct {
     started_at: i64,
 };
 
+fn getHomeDirOwned(allocator: std.mem.Allocator) ?[]u8 {
+    return std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch null;
+}
+
 pub fn readAllSessions(allocator: std.mem.Allocator) ?[]const ActiveSession {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return null;
+    const home = getHomeDirOwned(allocator) orelse return null;
     defer allocator.free(home);
     const ws_root = std.fs.path.join(allocator, &.{ home, ".clumsies", "workspaces" }) catch return null;
     defer allocator.free(ws_root);

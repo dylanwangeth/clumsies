@@ -40,5 +40,6 @@ pub fn main() !void {
     }
 
     var dashboard = Dashboard.init(&api_state);
+    defer dashboard.deinit();
     try app.run(dashboard.widget(), .{});
 }

@@ -10,8 +10,13 @@ pub const DraftEntry = struct {
     status: []const u8,
 };
 
+fn getHomeDirOwned(allocator: std.mem.Allocator) ?[]u8 {
+    return std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch null;
+}
+
 pub fn readAllDrafts(allocator: std.mem.Allocator) ?[]const DraftEntry {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return null;
+    const home = getHomeDirOwned(allocator) orelse return null;
     defer allocator.free(home);
     const ws_root = std.fs.path.join(allocator, &.{ home, ".clumsies", "workspaces" }) catch return null;
     defer allocator.free(ws_root);

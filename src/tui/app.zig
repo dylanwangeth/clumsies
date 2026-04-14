@@ -196,6 +196,7 @@ pub const Dashboard = struct {
     insights_show_member_detail: bool = false,
     insights_show_input_detail: bool = false,
     dashboard_input_capacity: usize = 1,
+    view_arena: std.heap.ArenaAllocator,
 
     pub fn init(api_state: *api.ApiState) Dashboard {
         return .{
@@ -204,7 +205,15 @@ pub const Dashboard = struct {
             .content_scroll_bars = w.initPlainScrollBars(theme.PANEL, 3),
             .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
+            .view_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
         };
+    }
+
+    pub fn deinit(self: *Dashboard) void {
+        self.view_arena.deinit();
+        self.library_expanded.deinit(self.api_state.allocator());
+        self.ws_context_expanded.deinit(self.api_state.allocator());
+        self.ws_prompts_expanded.deinit(self.api_state.allocator());
     }
 
     pub fn widget(self: *Dashboard) vxfw.Widget {
@@ -225,7 +234,12 @@ pub const Dashboard = struct {
         return self.draw(ctx);
     }
 
+    fn viewAllocator(self: *Dashboard) std.mem.Allocator {
+        return self.view_arena.allocator();
+    }
+
     fn handleEvent(self: *Dashboard, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+        _ = self.view_arena.reset(.retain_capacity);
         switch (event) {
             .key_press => |key| {
                 // Confirm overlay absorbs all keys
@@ -1103,6 +1117,7 @@ pub const Dashboard = struct {
     }
 
     fn draw(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        _ = self.view_arena.reset(.retain_capacity);
         const size = ctx.max.size();
         if (size.width < 96 or size.height < 24) {
             return self.drawTooSmall(ctx, size);
@@ -1354,15 +1369,7 @@ pub const Dashboard = struct {
         self.library_scroll_bars.scroll_view.draw_cursor = false;
         defer self.library_scroll_bars.scroll_view.draw_cursor = true;
 
-        const bundles_list: []const data.BundleEntry = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            if (self.api_state.bundles) |lb| {
-                const a = self.api_state.allocator();
-                break :blk api.toBundleEntries(a, lb);
-            }
-            break :blk &.{};
-        };
+        const bundles_list = self.getBundles();
         const bundle_label: []const u8 = if (self.library_bundle_filter == 0)
             "All"
         else if (self.library_bundle_filter - 1 < bundles_list.len)
@@ -1402,7 +1409,7 @@ pub const Dashboard = struct {
             w.writeText(&surface, ctx, 2, 2, empty_msg, theme.fg(theme.MUTED));
             return surface;
         }
-        return w.applyCursorOverlay(ctx, &surface, &self.library_scroll_bars.scroll_view);
+        return w.applyCursorOverlay(ctx, &surface, &self.library_scroll_bars.scroll_view, theme.PANEL);
     }
 
     // Library right pane: detail for selected prompt with Overview/Content/Pull Requests tabs.
@@ -3077,8 +3084,7 @@ pub const Dashboard = struct {
             } else {
                 return &.{};
             }
-            const alloc = self.api_state.allocator();
-            return api.toPrEntries(alloc, prs, prompt_path, self.api_state);
+            return api.toPrEntries(self.viewAllocator(), prs, prompt_path, self.api_state);
         }
         return &.{};
     }
@@ -3087,8 +3093,16 @@ pub const Dashboard = struct {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.prompts) |lp| {
-            const alloc = self.api_state.allocator();
-            return api.toPromptEntries(alloc, lp);
+            return api.toPromptEntries(self.viewAllocator(), lp);
+        }
+        return &.{};
+    }
+
+    fn getBundles(self: *Dashboard) []const data.BundleEntry {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.bundles) |lb| {
+            return api.toBundleEntries(self.viewAllocator(), lb);
         }
         return &.{};
     }
@@ -3106,11 +3120,13 @@ pub const Dashboard = struct {
             self.status_line = "Failed to submit comment";
             return;
         };
+        defer alloc.free(path);
         const comment_text = self.comment_input_buf[0..self.comment_input_len];
         const body = std.fmt.allocPrint(alloc, "{{\"body\":\"{s}\"}}", .{comment_text}) catch {
             self.status_line = "Failed to submit comment";
             return;
         };
+        defer alloc.free(body);
         _ = api.postAction(self.api_state, alloc, .POST, path, body) catch {
             self.status_line = "Comment submission failed";
             return;
@@ -3132,10 +3148,12 @@ pub const Dashboard = struct {
             self.status_line = "Failed to build request";
             return;
         };
+        defer alloc.free(path);
         const body = std.fmt.allocPrint(alloc, "{{\"action\":\"{s}\"}}", .{action}) catch {
             self.status_line = "Failed to build request";
             return;
         };
+        defer alloc.free(body);
         _ = api.postAction(self.api_state, alloc, .PUT, path, body) catch {
             self.status_line = if (std.mem.eql(u8, action, "accept")) "Accept failed" else "Reject failed";
             return;
@@ -3612,15 +3630,7 @@ pub const Dashboard = struct {
     fn syncLibraryWidgets(self: *Dashboard) void {
         const prompts = self.getPrompts();
 
-        const bundles: []const data.BundleEntry = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            if (self.api_state.bundles) |lb| {
-                const alloc = self.api_state.allocator();
-                break :blk api.toBundleEntries(alloc, lb);
-            }
-            break :blk &.{};
-        };
+        const bundles = self.getBundles();
 
         const filter_name: ?[]const u8 = if (self.library_bundle_filter == 0)
             null

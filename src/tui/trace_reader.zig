@@ -106,7 +106,8 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
 }
 
 fn getBaseDir(allocator: std.mem.Allocator) ?[]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return null;
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return null;
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".clumsies" }) catch null;
 }
