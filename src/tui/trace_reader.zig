@@ -8,16 +8,46 @@ pub const LocalStats = struct {
     active_constraint_count: u32 = 0,
     signal_ratio: u8 = 0,
     refer_trend: [30]u16 = .{0} ** 30,
+    refers: []const ReferEvent = &.{},
+    prompts: []const data.InsightsPrompt = &.{},
+    inputs: []const InputEvent = &.{},
+    workspaces: []const WorkspaceLocalStats = &.{},
+
+    pub fn workspace(self: *const LocalStats, ws_id: []const u8) ?*const WorkspaceLocalStats {
+        for (self.workspaces) |*ws| {
+            if (std.mem.eql(u8, ws.ws_id, ws_id)) return ws;
+        }
+        return null;
+    }
+};
+
+pub const WorkspaceLocalStats = struct {
+    ws_id: []const u8,
+    total_refer_count: u32 = 0,
+    constraint_count: u32 = 0,
+    active_constraint_count: u32 = 0,
+    signal_ratio: u8 = 0,
+    refer_trend: [30]u16 = .{0} ** 30,
+    refers: []const ReferEvent = &.{},
     prompts: []const data.InsightsPrompt = &.{},
     inputs: []const InputEvent = &.{},
 };
 
+pub const ReferEvent = struct {
+    ws_id: []const u8 = "",
+    timestamp: i64,
+};
+
 pub const InputEvent = struct {
+    ws_id: []const u8 = "",
+    session_id: []const u8 = "",
     timestamp: i64,
     content: []const u8,
 };
 
 const TraceEvent = struct {
+    ws_id: []const u8 = "",
+    session_id: []const u8 = "",
     type: []const u8 = "",
     timestamp: i64 = 0,
     prompt_id: ?[]const u8 = null,
@@ -37,16 +67,39 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     defer dir.close();
 
     var all_events: std.ArrayList(TraceEvent) = .empty;
+    var workspace_stats: std.ArrayList(WorkspaceLocalStats) = .empty;
     var it = dir.iterate();
     while (it.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
+        const ws_id = allocator.dupe(u8, entry.name) catch continue;
         const trace_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "trace.jsonl" }) catch continue;
         defer allocator.free(trace_path);
-        readEventsFromFile(allocator, trace_path, &all_events);
+        var ws_events: std.ArrayList(TraceEvent) = .empty;
+        readEventsFromFile(allocator, trace_path, ws_id, &ws_events);
+        if (ws_events.items.len == 0) continue;
+
+        const ws_stats = computeStats(allocator, ws_events.items);
+        workspace_stats.append(allocator, .{
+            .ws_id = ws_id,
+            .total_refer_count = ws_stats.total_refer_count,
+            .constraint_count = ws_stats.constraint_count,
+            .active_constraint_count = ws_stats.active_constraint_count,
+            .signal_ratio = ws_stats.signal_ratio,
+            .refer_trend = ws_stats.refer_trend,
+            .refers = ws_stats.refers,
+            .prompts = ws_stats.prompts,
+            .inputs = ws_stats.inputs,
+        }) catch continue;
+
+        for (ws_events.items) |ev| {
+            all_events.append(allocator, ev) catch break;
+        }
     }
 
     if (all_events.items.len == 0) return null;
-    return computeStats(allocator, all_events.items);
+    var all_stats = computeStats(allocator, all_events.items);
+    all_stats.workspaces = workspace_stats.items;
+    return all_stats;
 }
 
 fn getBaseDir(allocator: std.mem.Allocator) ?[]const u8 {
@@ -55,27 +108,43 @@ fn getBaseDir(allocator: std.mem.Allocator) ?[]const u8 {
     return std.fs.path.join(allocator, &.{ home, ".clumsies" }) catch null;
 }
 
-fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, events: *std.ArrayList(TraceEvent)) void {
+fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, ws_id: []const u8, events: *std.ArrayList(TraceEvent)) void {
     const file = std.fs.openFileAbsolute(path, .{}) catch return;
     defer file.close();
 
-    var buf: [256 * 1024]u8 = undefined;
-    var total: usize = 0;
-    while (total < buf.len) {
-        const n = file.read(buf[total..]) catch return;
-        if (n == 0) break;
-        total += n;
-    }
+    const max_trace_bytes: u64 = 8 * 1024 * 1024;
+    const end_pos = file.getEndPos() catch return;
+    if (end_pos == 0) return;
+
+    const read_from: u64 = if (end_pos > max_trace_bytes) end_pos - max_trace_bytes else 0;
+    file.seekTo(read_from) catch return;
+
+    const read_len: usize = @intCast(end_pos - read_from);
+    const buf = allocator.alloc(u8, read_len) catch return;
+    defer allocator.free(buf);
+
+    const total = file.readAll(buf) catch return;
     if (total == 0) return;
 
-    var line_it = std.mem.splitScalar(u8, buf[0..total], '\n');
+    var contents = buf[0..total];
+    if (read_from > 0) {
+        if (std.mem.indexOfScalar(u8, contents, '\n')) |newline| {
+            contents = contents[newline + 1 ..];
+        } else {
+            return;
+        }
+    }
+
+    var line_it = std.mem.splitScalar(u8, contents, '\n');
     while (line_it.next()) |line| {
         if (line.len == 0) continue;
         const parsed = std.json.parseFromSlice(TraceEvent, allocator, line, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         }) catch continue;
-        events.append(allocator, parsed.value) catch continue;
+        var ev = parsed.value;
+        ev.ws_id = ws_id;
+        events.append(allocator, ev) catch continue;
     }
 }
 
@@ -88,6 +157,7 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
     };
     var prompt_map: std.StringHashMap(PromptAcc) = .init(allocator);
 
+    var refers_list: std.ArrayList(ReferEvent) = .empty;
     var inputs_list: std.ArrayList(InputEvent) = .empty;
 
     const now_ms: i64 = std.time.milliTimestamp();
@@ -97,6 +167,8 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
         if (std.mem.eql(u8, ev.type, "session_input")) {
             if (ev.content) |c| {
                 inputs_list.append(allocator, .{
+                    .ws_id = ev.ws_id,
+                    .session_id = ev.session_id,
                     .timestamp = ev.timestamp,
                     .content = c,
                 }) catch {};
@@ -105,6 +177,10 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
         }
         if (!std.mem.eql(u8, ev.type, "refer")) continue;
         stats.total_refer_count += 1;
+        refers_list.append(allocator, .{
+            .ws_id = ev.ws_id,
+            .timestamp = ev.timestamp,
+        }) catch {};
 
         const age_days = @divTrunc(now_ms - ev.timestamp, day_ms);
         if (age_days >= 0 and age_days < 30) {
@@ -139,6 +215,25 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
         const rate: u16 = @intCast(@min(@divTrunc(kv.value_ptr.refer_count, 30), std.math.maxInt(u16)));
         const sig: u8 = if (c_count > 0) 100 else 0;
 
+        var constraints_list: std.ArrayList(data.ConstraintStat) = .empty;
+        var c_it = kv.value_ptr.constraints.iterator();
+        while (c_it.next()) |cv| {
+            constraints_list.append(allocator, .{
+                .id = cv.key_ptr.*,
+                .label = cv.key_ptr.*,
+                .refer_count = cv.value_ptr.*,
+                .idle_days = null,
+            }) catch continue;
+        }
+        std.mem.sort(data.ConstraintStat, constraints_list.items, {}, struct {
+            fn cmp(_: void, a: data.ConstraintStat, b: data.ConstraintStat) bool {
+                if (a.refer_count == b.refer_count) {
+                    return std.mem.lessThan(u8, a.id, b.id);
+                }
+                return a.refer_count > b.refer_count;
+            }
+        }.cmp);
+
         prompts_list.append(allocator, .{
             .name = kv.key_ptr.*,
             .constraint_count = c_count,
@@ -146,11 +241,12 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
             .idle_constraint_count = 0,
             .signal_ratio = sig,
             .refer_count = kv.value_ptr.refer_count,
+            .workspace_count = 0,
             .rate_per_day = rate,
             .delta_pct = 0,
-            .last_referred_days_ago = 0,
+            .last_referred_days_ago = null,
             .trend = .{0} ** 30,
-            .constraints = &.{},
+            .constraints = constraints_list.items,
         }) catch continue;
     }
 
@@ -166,6 +262,7 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
         @intCast(@min(@divTrunc(active_constraints * 100, total_constraints), 100))
     else
         0;
+    stats.refers = refers_list.items;
     stats.prompts = prompts_list.items;
 
     std.mem.sort(InputEvent, inputs_list.items, {}, struct {

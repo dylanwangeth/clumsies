@@ -6,6 +6,7 @@ const w = @import("widgets.zig");
 const data = @import("mock_data.zig");
 const api = @import("api.zig");
 const tree = @import("tree.zig");
+const trace_reader = @import("trace_reader.zig");
 const TableRow = @import("table_row.zig").TableRow;
 const Column = @import("table_row.zig").Column;
 
@@ -24,28 +25,6 @@ const WsTab = enum(u8) {
 const ws_tabs = [_]WsTab{ .context, .prompts };
 
 const WsFocus = enum { bar, list, content };
-
-const Period = enum(u8) {
-    daily,
-    weekly,
-    monthly,
-
-    fn label(self: Period) []const u8 {
-        return switch (self) {
-            .daily => "daily",
-            .weekly => "weekly",
-            .monthly => "monthly",
-        };
-    }
-
-    fn next(self: Period) Period {
-        return switch (self) {
-            .daily => .weekly,
-            .weekly => .monthly,
-            .monthly => .daily,
-        };
-    }
-};
 
 const SettingsTab = enum(u8) {
     account,
@@ -73,15 +52,17 @@ const ConfirmAction = enum {
 };
 
 const TopModule = enum(u8) {
-    insights,
+    dashboard,
     workspace,
     library,
+    analysis,
 
     fn label(self: TopModule) []const u8 {
         return switch (self) {
-            .insights => "Insights",
+            .dashboard => "Dashboard",
             .workspace => "Workspace",
             .library => "Library",
+            .analysis => "Analysis",
         };
     }
 };
@@ -120,7 +101,7 @@ const DetailTab = enum(u8) {
     }
 };
 
-const top_tabs = [_]TopModule{ .insights, .workspace, .library };
+const top_tabs = [_]TopModule{ .dashboard, .workspace, .library, .analysis };
 
 const MAX_LIBRARY_ROWS = 128;
 const MAX_PR_ROWS = 64;
@@ -128,7 +109,7 @@ const detail_tabs = [_]DetailTab{ .content, .pull_requests };
 
 pub const Dashboard = struct {
     api_state: *api.ApiState,
-    selected_module: TopModule = .insights,
+    selected_module: TopModule = .dashboard,
     selected_prompt: usize = 0,
     show_help: bool = false,
     show_detail: bool = false,
@@ -192,10 +173,20 @@ pub const Dashboard = struct {
     ws_list_sel: usize = 0,
     ws_grid_cols: u16 = 3,
     ws_show_diff: bool = false,
-    // Workspace uses manual grid + list rendering, no ScrollBars
+    ws_row_count: usize = 0,
+    ws_row_leaf_index: [MAX_LIBRARY_ROWS]?usize = .{null} ** MAX_LIBRARY_ROWS,
+    ws_row_dir_path: [MAX_LIBRARY_ROWS]?[]const u8 = .{null} ** MAX_LIBRARY_ROWS,
+    ws_row_depth: [MAX_LIBRARY_ROWS]u8 = .{0} ** MAX_LIBRARY_ROWS,
+    ws_row_text_len: [MAX_LIBRARY_ROWS]usize = .{0} ** MAX_LIBRARY_ROWS,
+    ws_row_text_bufs: [MAX_LIBRARY_ROWS][96]u8 = undefined,
+    ws_context_expanded: std.StringHashMapUnmanaged(void) = .empty,
+    ws_prompts_expanded: std.StringHashMapUnmanaged(void) = .empty,
+    ws_context_tree_initialized: bool = false,
+    ws_prompts_tree_initialized: bool = false,
+    // Workspace uses manual grid + cached visible rows, no ScrollBars
 
-    // Insights
-    insights_period: Period = .daily,
+    // Dashboard / Analysis shared state
+    insights_scope_idx: usize = 0,
     breathing_phase: u8 = 0, // 0-20 for breathing animation cycle
     insights_focus: enum { chart, prompts, team, inputs } = .chart,
     insights_prompt_cursor: usize = 0,
@@ -204,7 +195,7 @@ pub const Dashboard = struct {
     insights_expanded_prompt: ?usize = null,
     insights_show_member_detail: bool = false,
     insights_show_input_detail: bool = false,
-    chart_offset: u16 = 0,
+    dashboard_input_capacity: usize = 1,
 
     pub fn init(api_state: *api.ApiState) Dashboard {
         return .{
@@ -251,7 +242,7 @@ pub const Dashboard = struct {
                                 self.status_line = "Workspace deleted (not yet implemented)";
                             },
                             .revoke_token => {
-                                const alloc = self.api_state.arena.allocator();
+                                const alloc = self.api_state.allocator();
                                 _ = api.postAction(self.api_state, alloc, .DELETE, "/api/auth/token", null) catch {
                                     self.status_line = "Token revoke failed";
                                     self.show_confirm = false;
@@ -584,13 +575,20 @@ pub const Dashboard = struct {
                 }
 
                 // Top-level tab switching
-                if (key.matches('1', .{})) return self.selectTab(ctx, .insights);
+                if (key.matches('1', .{})) return self.selectTab(ctx, .dashboard);
                 if (key.matches('2', .{})) return self.selectTab(ctx, .workspace);
                 if (key.matches('3', .{})) return self.selectTab(ctx, .library);
+                if (key.matches('4', .{})) return self.selectTab(ctx, .analysis);
 
                 // Module-specific input
                 switch (self.selected_module) {
                     .library => {
+                        if (key.matches('r', .{})) {
+                            api.refetchAllAsync(self.api_state);
+                            self.status_line = "Refreshing data...";
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
                         if (key.matches('b', .{})) {
                             const bundle_count = blk: {
                                 self.api_state.mutex.lock();
@@ -630,7 +628,7 @@ pub const Dashboard = struct {
                             const pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
                             if (pos < self.library_row_count) {
                                 if (self.library_row_dir_path[pos]) |dir| {
-                                    const alloc = self.api_state.arena.allocator();
+                                    const alloc = self.api_state.allocator();
                                     if (!self.library_expanded.contains(dir)) {
                                         _ = self.library_expanded.put(alloc, dir, {}) catch {};
                                         ctx.consumeAndRedraw();
@@ -759,8 +757,11 @@ pub const Dashboard = struct {
                         // List pane: j/k moves through rows. Cursor can land on
                         // dir nodes (which allows Enter to toggle them) as well
                         // as leaf prompts.
+                        if (self.library_row_count == 0) {
+                            ctx.consumeEvent();
+                            return;
+                        }
                         try self.library_scroll_bars.scroll_view.handleEvent(ctx, event);
-                        if (self.library_row_count == 0) return;
 
                         var pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
                         if (pos >= self.library_row_count) pos = self.library_row_count - 1;
@@ -822,6 +823,9 @@ pub const Dashboard = struct {
                                 }
                                 if (key.matches(vaxis.Key.enter, .{})) {
                                     self.ws_focus = .list;
+                                    self.ws_list_sel = 0;
+                                    self.ws_show_diff = false;
+                                    self.resetWorkspaceTrees();
                                     // Trigger workspace detail fetch
                                     self.api_state.mutex.lock();
                                     const ws_list = if (self.api_state.current_user) |u| u.workspaces else &.{};
@@ -836,24 +840,63 @@ pub const Dashboard = struct {
                                 }
                             },
                             .list => {
-                                if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+                                self.syncWsRows();
+                                if (key.matches('h', .{})) {
                                     self.shiftWsTab(-1);
                                     self.ws_list_sel = 0;
+                                    self.ws_show_diff = false;
                                     ctx.consumeAndRedraw();
                                     return;
                                 }
-                                if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
+                                if (key.matches('l', .{})) {
                                     self.shiftWsTab(1);
                                     self.ws_list_sel = 0;
+                                    self.ws_show_diff = false;
                                     ctx.consumeAndRedraw();
+                                    return;
+                                }
+                                if (key.matches(vaxis.Key.left, .{})) {
+                                    if (self.ws_list_sel < self.ws_row_count) {
+                                        if (self.ws_row_dir_path[self.ws_list_sel]) |dir| {
+                                            if (self.wsExpandedSet().contains(dir)) {
+                                                _ = self.wsExpandedSet().remove(dir);
+                                                self.ws_show_diff = false;
+                                                ctx.consumeAndRedraw();
+                                                return;
+                                            }
+                                        }
+                                        const cur_depth = self.ws_row_depth[self.ws_list_sel];
+                                        if (cur_depth > 0 and self.ws_list_sel > 0) {
+                                            var p = self.ws_list_sel;
+                                            while (p > 0) {
+                                                p -= 1;
+                                                if (self.ws_row_depth[p] < cur_depth) {
+                                                    self.ws_list_sel = p;
+                                                    self.ws_show_diff = false;
+                                                    ctx.consumeAndRedraw();
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    return;
+                                }
+                                if (key.matches(vaxis.Key.right, .{})) {
+                                    if (self.ws_list_sel < self.ws_row_count) {
+                                        if (self.ws_row_dir_path[self.ws_list_sel]) |dir| {
+                                            if (!self.wsExpandedSet().contains(dir)) {
+                                                const alloc = self.api_state.allocator();
+                                                _ = self.wsExpandedSet().put(alloc, dir, {}) catch {};
+                                                self.ws_show_diff = false;
+                                                ctx.consumeAndRedraw();
+                                                return;
+                                            }
+                                        }
+                                    }
                                     return;
                                 }
                                 if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-                                    const max_items: usize = switch (self.ws_tab) {
-                                        .context => self.wsContextCount(),
-                                        .prompts => self.wsPromptsCount(),
-                                    };
-                                    if (self.ws_list_sel + 1 < max_items) {
+                                    if (self.ws_list_sel + 1 < self.ws_row_count) {
                                         self.ws_list_sel += 1;
                                         self.ws_show_diff = false;
                                         ctx.consumeAndRedraw();
@@ -869,7 +912,16 @@ pub const Dashboard = struct {
                                     return;
                                 }
                                 if (key.matches(vaxis.Key.enter, .{})) {
+                                    if (self.ws_list_sel < self.ws_row_count) {
+                                        if (self.ws_row_dir_path[self.ws_list_sel]) |dir| {
+                                            self.toggleWsDir(dir);
+                                            self.ws_show_diff = false;
+                                            ctx.consumeAndRedraw();
+                                            return;
+                                        }
+                                    }
                                     self.ws_focus = .content;
+                                    self.ws_show_diff = false;
                                     ctx.consumeAndRedraw();
                                     return;
                                 }
@@ -894,36 +946,79 @@ pub const Dashboard = struct {
                             },
                         }
                         if (key.matches('r', .{})) {
-                            self.status_line = "Sync (not yet implemented)";
+                            api.refetchAllAsync(self.api_state);
+                            self.status_line = "Refreshing data...";
                             ctx.consumeAndRedraw();
                         }
                     },
-                    .insights => {
+                    .dashboard => {
                         const ins_counts = self.getInsightsCounts();
-                        if (key.matches('t', .{})) {
-                            self.insights_period = self.insights_period.next();
-                            self.status_line = switch (self.insights_period) {
-                                .daily => "Period: daily (30d).",
-                                .weekly => "Period: weekly (8w).",
-                                .monthly => "Period: monthly (12m).",
-                            };
+                        if (key.matches('w', .{})) {
+                            const scope = self.cycleInsightsScope();
+                            const alloc = self.api_state.allocator();
+                            self.insights_input_cursor = 0;
+                            self.insights_show_input_detail = false;
+                            self.status_line = std.fmt.allocPrint(alloc, "Dashboard scope: {s}", .{scope.label}) catch "Dashboard scope updated.";
                             ctx.consumeAndRedraw();
+                            return;
                         }
                         if (key.matches('F', .{ .shift = true })) {
                             self.flushTrace();
                             ctx.consumeAndRedraw();
+                            return;
                         }
                         if (key.matches(vaxis.Key.tab, .{})) {
                             self.insights_focus = switch (self.insights_focus) {
-                                .chart => .prompts,
+                                .chart => .inputs,
+                                else => .chart,
+                            };
+                            self.insights_show_input_detail = false;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+                            if (self.insights_focus == .inputs) {
+                                if (ins_counts.input_count > 0 and self.insights_input_cursor < ins_counts.input_count - 1)
+                                    self.insights_input_cursor += 1;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                        }
+                        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+                            if (self.insights_focus == .inputs) {
+                                self.insights_input_cursor -|= 1;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                        }
+                        if (key.matches(vaxis.Key.enter, .{})) {
+                            if (self.insights_focus == .inputs) {
+                                self.insights_show_input_detail = !self.insights_show_input_detail;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                        }
+                        if (key.matches(vaxis.Key.escape, .{})) {
+                            if (self.insights_show_input_detail) {
+                                self.insights_show_input_detail = false;
+                            } else {
+                                self.insights_focus = .chart;
+                            }
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                    },
+                    .analysis => {
+                        const ins_counts = self.getInsightsCounts();
+                        if (key.matches(vaxis.Key.tab, .{})) {
+                            self.insights_focus = switch (self.insights_focus) {
                                 .prompts => .team,
-                                .team => .inputs,
-                                .inputs => .chart,
+                                else => .prompts,
                             };
                             self.insights_expanded_prompt = null;
                             self.insights_show_member_detail = false;
-                            self.insights_show_input_detail = false;
                             ctx.consumeAndRedraw();
+                            return;
                         }
                         if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
                             switch (self.insights_focus) {
@@ -931,16 +1026,13 @@ pub const Dashboard = struct {
                                     if (ins_counts.prompt_count > 0 and self.insights_prompt_cursor < ins_counts.prompt_count - 1)
                                         self.insights_prompt_cursor += 1;
                                     ctx.consumeAndRedraw();
+                                    return;
                                 },
                                 .team => {
                                     if (ins_counts.member_count > 0 and self.insights_member_cursor < ins_counts.member_count - 1)
                                         self.insights_member_cursor += 1;
                                     ctx.consumeAndRedraw();
-                                },
-                                .inputs => {
-                                    if (ins_counts.input_count > 0 and self.insights_input_cursor < ins_counts.input_count - 1)
-                                        self.insights_input_cursor += 1;
-                                    ctx.consumeAndRedraw();
+                                    return;
                                 },
                                 else => {},
                             }
@@ -950,48 +1042,31 @@ pub const Dashboard = struct {
                                 .prompts => {
                                     self.insights_prompt_cursor -|= 1;
                                     ctx.consumeAndRedraw();
+                                    return;
                                 },
                                 .team => {
                                     self.insights_member_cursor -|= 1;
                                     ctx.consumeAndRedraw();
-                                },
-                                .inputs => {
-                                    self.insights_input_cursor -|= 1;
-                                    ctx.consumeAndRedraw();
+                                    return;
                                 },
                                 else => {},
-                            }
-                        }
-                        if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-                            if (self.insights_focus == .chart) {
-                                self.status_line = "Chart scroll requires Hub API (mock: fixed 30d window).";
-                                ctx.consumeAndRedraw();
-                            }
-                        }
-                        if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-                            if (self.insights_focus == .chart) {
-                                self.status_line = "Chart scroll requires Hub API (mock: fixed 30d window).";
-                                ctx.consumeAndRedraw();
                             }
                         }
                         if (key.matches(vaxis.Key.enter, .{})) {
                             switch (self.insights_focus) {
                                 .prompts => {
-                                    // Toggle per-constraint detail expansion
                                     if (self.insights_expanded_prompt == self.insights_prompt_cursor) {
                                         self.insights_expanded_prompt = null;
                                     } else {
                                         self.insights_expanded_prompt = self.insights_prompt_cursor;
                                     }
                                     ctx.consumeAndRedraw();
+                                    return;
                                 },
                                 .team => {
                                     self.insights_show_member_detail = !self.insights_show_member_detail;
                                     ctx.consumeAndRedraw();
-                                },
-                                .inputs => {
-                                    self.insights_show_input_detail = !self.insights_show_input_detail;
-                                    ctx.consumeAndRedraw();
+                                    return;
                                 },
                                 else => {},
                             }
@@ -999,17 +1074,13 @@ pub const Dashboard = struct {
                         if (key.matches(vaxis.Key.escape, .{})) {
                             if (self.insights_expanded_prompt != null) {
                                 self.insights_expanded_prompt = null;
-                                ctx.consumeAndRedraw();
                             } else if (self.insights_show_member_detail) {
                                 self.insights_show_member_detail = false;
-                                ctx.consumeAndRedraw();
-                            } else if (self.insights_show_input_detail) {
-                                self.insights_show_input_detail = false;
-                                ctx.consumeAndRedraw();
                             } else {
                                 self.insights_focus = .prompts;
-                                ctx.consumeAndRedraw();
                             }
+                            ctx.consumeAndRedraw();
+                            return;
                         }
                     },
                 }
@@ -1021,6 +1092,9 @@ pub const Dashboard = struct {
             .tick => {
                 // Advance breathing cycle: 0→20→0 (2 seconds at 100ms intervals)
                 self.breathing_phase = (self.breathing_phase + 1) % 21;
+                if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.breathing_phase == 0 or self.breathing_phase == 10)) {
+                    api.refreshLocalState(self.api_state);
+                }
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -1054,15 +1128,16 @@ pub const Dashboard = struct {
             .{ .width = size.width, .height = footer_h },
         );
 
+        const show_input_overlay = self.insights_show_input_detail and self.selected_module == .dashboard;
         var child_count: usize = 3;
-        if (self.show_help or self.show_confirm or self.show_comment_editor or self.insights_show_input_detail) child_count = 4;
+        if (self.show_help or self.show_confirm or self.show_comment_editor or show_input_overlay) child_count = 4;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
         children[1] = .{ .origin = .{ .row = header_h, .col = 0 }, .surface = try self.drawBody(body_ctx) };
         children[2] = .{ .origin = .{ .row = header_h + body_h, .col = 0 }, .surface = try self.drawFooter(footer_ctx) };
 
-        if (self.insights_show_input_detail and self.selected_module == .insights) {
+        if (show_input_overlay) {
             const input_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
@@ -1151,9 +1226,10 @@ pub const Dashboard = struct {
         if (self.show_settings) return self.drawSettings(ctx);
         if (self.show_detail) return self.drawPromptDetail(ctx);
         return switch (self.selected_module) {
+            .dashboard => self.drawDashboard(ctx),
             .library => self.drawLibrary(ctx),
             .workspace => self.drawWorkspaceStatus(ctx),
-            .insights => self.drawInsights(ctx),
+            .analysis => self.drawAnalysis(ctx),
         };
     }
 
@@ -1186,6 +1262,11 @@ pub const Dashboard = struct {
         else if (self.show_detail)
             "h/l tab  j/k move  Tab content pane  p create PR  Esc back  ? help"
         else switch (self.selected_module) {
+            .dashboard => switch (self.insights_focus) {
+                .chart => "Tab focus  w scope  Shift-F flush  ? help  q quit",
+                .inputs => "j/k move  Enter detail  Tab focus  w scope  Shift-F flush  ? help  q quit",
+                else => "Tab focus  w scope  Shift-F flush  ? help  q quit",
+            },
             .library => if (self.detail_focus_content and self.detail_tab == .pull_requests and self.show_pr_diff)
                 "j/k scroll  a accept  x reject  c comment  Esc back"
             else if (self.detail_focus_content and self.detail_tab == .pull_requests)
@@ -1193,17 +1274,16 @@ pub const Dashboard = struct {
             else if (self.detail_focus_content)
                 "h/l tab  j/k scroll  Esc list  ? help"
             else
-                "j/k move  Enter detail  b bundle  S settings  ? help  q quit",
+                "j/k move  Enter detail  r refresh  b bundle  S settings  ? help  q quit",
             .workspace => switch (self.ws_focus) {
-                .bar => "j/k select workspace  Tab list  r sync  ? help  q quit",
-                .list => "h/l tab  j/k move  Enter content  Esc bar  ? help",
+                .bar => "j/k select workspace  Tab list  r refresh  ? help  q quit",
+                .list => "h/l tab  j/k move  ←/→ tree  Enter open  Esc bar  ? help",
                 .content => "j/k scroll  d toggle diff  Esc list  ? help",
             },
-            .insights => switch (self.insights_focus) {
-                .chart => "h/l scroll  Tab focus  t period  Shift-F flush  ? help  q quit",
-                .prompts => "j/k move  Enter expand  Tab focus  t period  Shift-F flush  ? help  q quit",
-                .team => "j/k move  Enter detail  Tab focus  t period  Shift-F flush  ? help  q quit",
-                .inputs => "j/k move  Enter detail  Tab focus  t period  Shift-F flush  ? help  q quit",
+            .analysis => switch (self.insights_focus) {
+                .prompts => "j/k move  Enter expand  Tab focus  ? help  q quit",
+                .team => "j/k move  Enter detail  Tab focus  ? help  q quit",
+                else => "Tab focus  ? help  q quit",
             },
         };
         w.writeText(&surface, ctx, 1, 0, keys, theme.fg(theme.MUTED));
@@ -1278,7 +1358,7 @@ pub const Dashboard = struct {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
             if (self.api_state.bundles) |lb| {
-                const a = self.api_state.arena.allocator();
+                const a = self.api_state.allocator();
                 break :blk api.toBundleEntries(a, lb);
             }
             break :blk &.{};
@@ -1304,8 +1384,24 @@ pub const Dashboard = struct {
             .background = theme.PANEL,
             .border_color = list_border,
             .child = self.library_scroll_bars.widget(),
+            .padding = .{ .left = 1 },
         };
         var surface = try panel.draw(ctx);
+        if (self.library_row_count == 0) {
+            const empty_msg: []const u8 = blk: {
+                self.api_state.mutex.lock();
+                defer self.api_state.mutex.unlock();
+                break :blk switch (self.api_state.status) {
+                    .connecting => "Loading prompts...",
+                    .error_auth => "Not authenticated. Run clumsies login.",
+                    .error_network => "Hub unavailable. Check clumsies-hub.",
+                    .disconnected => "Not connected to hub.",
+                    .connected => "No prompts loaded.",
+                };
+            };
+            w.writeText(&surface, ctx, 2, 2, empty_msg, theme.fg(theme.MUTED));
+            return surface;
+        }
         return w.applyCursorOverlay(ctx, &surface, &self.library_scroll_bars.scroll_view);
     }
 
@@ -1590,7 +1686,18 @@ pub const Dashboard = struct {
         w.writeText(&bar, ctx, 2, 0, "Workspaces", theme.boldOn(theme.PANEL, theme.TEXT));
 
         if (wss.len == 0) {
-            w.writeText(&bar, ctx, 2, 1, "No workspaces loaded.", theme.fg(theme.MUTED));
+            const empty_msg: []const u8 = blk: {
+                self.api_state.mutex.lock();
+                defer self.api_state.mutex.unlock();
+                break :blk switch (self.api_state.status) {
+                    .connecting => "Loading workspaces...",
+                    .error_auth => "Not authenticated. Run clumsies login.",
+                    .error_network => "Hub unavailable. Check clumsies-hub.",
+                    .disconnected => "Not connected to hub.",
+                    .connected => "No workspaces loaded.",
+                };
+            };
+            w.writeText(&bar, ctx, 2, 1, empty_msg, theme.fg(theme.MUTED));
         }
 
         const ws_idx = if (wss.len > 0) @min(self.ws_sel, wss.len - 1) else 0;
@@ -1653,6 +1760,8 @@ pub const Dashboard = struct {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
         w.drawBorder(&surface, list_border, theme.PANEL);
+        const row_col: u16 = 2;
+        const cursor_col: u16 = 1;
 
         // Row 0: inner tabs
         var tab_col: u16 = 2;
@@ -1662,149 +1771,254 @@ pub const Dashboard = struct {
         }
 
         const inner_h = ctx.max.height.? -| 2;
+        self.syncWsRows();
 
-        // Check for live workspace detail
+        if (self.ws_row_count == 0) {
+            const empty_msg = switch (self.ws_tab) {
+                .context => "No context files.",
+                .prompts => "No workspace prompts.",
+            };
+            w.writeText(&surface, ctx, row_col, 1, empty_msg, theme.fg(theme.MUTED));
+            return surface;
+        }
+
         self.api_state.mutex.lock();
         const live_ws = self.api_state.ws_detail;
         self.api_state.mutex.unlock();
+        const lib_prompts: []const data.PromptEntry = if (self.ws_tab == .prompts) self.getPrompts() else &.{};
 
-        switch (self.ws_tab) {
-            .context => {
-                var kv_row: u16 = 2;
-                if (live_ws) |ws_d| {
-                    if (ws_d.context_files.len == 0) {
-                        w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
-                    } else {
-                        const MAX_ROWS = 128;
-                        var paths_buf: [MAX_ROWS][]const u8 = undefined;
-                        var orig_idx: [MAX_ROWS]usize = undefined;
-                        const n = @min(ws_d.context_files.len, MAX_ROWS);
-                        for (0..n) |i| {
-                            paths_buf[i] = ws_d.context_files[i].path;
-                            orig_idx[i] = i;
-                        }
-                        const SortCtx = struct {
-                            paths: [*]const []const u8,
-                            fn lt(cx: @This(), a: usize, b: usize) bool {
-                                return std.mem.lessThan(u8, cx.paths[a], cx.paths[b]);
-                            }
-                        };
-                        std.mem.sort(usize, orig_idx[0..n], SortCtx{ .paths = &paths_buf }, SortCtx.lt);
-                        var sorted_paths: [MAX_ROWS][]const u8 = undefined;
-                        for (0..n) |i| sorted_paths[i] = paths_buf[orig_idx[i]];
+        var kv_row: u16 = 1;
+        var r: usize = 0;
+        while (r < self.ws_row_count and kv_row < inner_h + 1) : (r += 1) {
+            const sel = r == self.ws_list_sel;
+            if (sel) {
+                surface.writeCell(cursor_col, kv_row, .{
+                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+                });
+            }
 
-                        var rows_buf: [MAX_ROWS]tree.Row = undefined;
-                        const row_count = tree.flatten(sorted_paths[0..n], null, &rows_buf);
+            const rendered = self.ws_row_text_bufs[r][0..self.ws_row_text_len[r]];
+            if (self.ws_row_dir_path[r] != null) {
+                const style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.boldOn(theme.PANEL, theme.TEXT_SOFT);
+                w.writeText(&surface, ctx, row_col, kv_row, rendered, style);
+            } else {
+                const style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                w.writeText(&surface, ctx, row_col, kv_row, rendered, style);
 
-                        var text_buf: [96]u8 = undefined;
-                        var r: usize = 0;
-                        while (r < row_count and kv_row < inner_h + 2) : (r += 1) {
-                            const tr = rows_buf[r];
-                            var len = tree.renderPrefix(&text_buf, tr.depth, tr.is_last, null);
-                            len = tree.appendText(&text_buf, len, tr.label);
-                            if (tr.kind == .dir and len < text_buf.len) {
-                                text_buf[len] = '/';
-                                len += 1;
-                            }
-                            // Copy to draw arena so cell grapheme pointers remain valid
-                            const rendered = ctx.arena.dupe(u8, text_buf[0..len]) catch continue;
-                            if (tr.kind == .dir) {
-                                w.writeText(&surface, ctx, 2, kv_row, rendered, theme.boldOn(theme.PANEL, theme.ACCENT));
-                            } else {
-                                const file_i = orig_idx[tr.leaf_idx];
-                                const sel = file_i == self.ws_list_sel;
-                                if (sel) {
-                                    surface.writeCell(1, kv_row, .{
-                                        .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                                        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                                    });
-                                }
-                                const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                                w.writeText(&surface, ctx, 2, kv_row, rendered, name_style);
-                            }
-                            kv_row += 1;
-                        }
-                    }
-                } else {
-                    w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
-                }
-            },
-            .prompts => {
-                var kv_row: u16 = 2;
-                if (live_ws) |ws_d| {
-                    if (ws_d.ws_prompts.len == 0) {
-                        w.writeText(&surface, ctx, 2, kv_row, "No workspace prompts.", theme.fg(theme.MUTED));
-                    } else {
-                        const MAX_ROWS = 128;
-                        const lib_prompts = self.getPrompts();
-                        var paths_buf: [MAX_ROWS][]const u8 = undefined;
-                        var orig_idx: [MAX_ROWS]usize = undefined;
-                        const n = @min(ws_d.ws_prompts.len, MAX_ROWS);
-                        for (0..n) |i| {
-                            const wp = ws_d.ws_prompts[i];
-                            // Prefer the manifest-supplied path (new schema); fall
-                            // back to a library lookup for the legacy string-valued
-                            // manifest, and finally to the raw prompt_id.
-                            paths_buf[i] = if (wp.path.len > 0)
+                if (self.ws_tab == .prompts) {
+                    if (live_ws) |ws_d| {
+                        if (self.ws_row_leaf_index[r]) |idx| {
+                            const wp = ws_d.ws_prompts[idx];
+                            const prompt_path = if (wp.path.len > 0)
                                 wp.path
                             else for (lib_prompts) |lp| {
                                 if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
                             } else wp.prompt_id;
-                            orig_idx[i] = i;
-                        }
-                        const SortCtx = struct {
-                            paths: [*]const []const u8,
-                            fn lt(cx: @This(), a: usize, b: usize) bool {
-                                return std.mem.lessThan(u8, cx.paths[a], cx.paths[b]);
-                            }
-                        };
-                        std.mem.sort(usize, orig_idx[0..n], SortCtx{ .paths = &paths_buf }, SortCtx.lt);
-                        var sorted_paths: [MAX_ROWS][]const u8 = undefined;
-                        for (0..n) |i| sorted_paths[i] = paths_buf[orig_idx[i]];
 
-                        var rows_buf: [MAX_ROWS]tree.Row = undefined;
-                        const row_count = tree.flatten(sorted_paths[0..n], null, &rows_buf);
-
-                        var text_buf: [96]u8 = undefined;
-                        var r: usize = 0;
-                        while (r < row_count and kv_row < inner_h + 2) : (r += 1) {
-                            const tr = rows_buf[r];
-                            var len = tree.renderPrefix(&text_buf, tr.depth, tr.is_last, null);
-                            len = tree.appendText(&text_buf, len, tr.label);
-                            if (tr.kind == .dir and len < text_buf.len) {
-                                text_buf[len] = '/';
-                                len += 1;
+                            if (self.hasDraftFor(prompt_path)) {
+                                const nw: u16 = @intCast(ctx.stringWidth(rendered));
+                                w.writeText(&surface, ctx, row_col + nw + 1, kv_row, "*", theme.fg(theme.WARN));
                             }
-                            // Copy to draw arena so cell grapheme pointers remain valid
-                            const rendered = ctx.arena.dupe(u8, text_buf[0..len]) catch continue;
-                            if (tr.kind == .dir) {
-                                w.writeText(&surface, ctx, 2, kv_row, rendered, theme.boldOn(theme.PANEL, theme.ACCENT));
-                            } else {
-                                const wp_i = orig_idx[tr.leaf_idx];
-                                const sel = wp_i == self.ws_list_sel;
-                                if (sel) {
-                                    surface.writeCell(1, kv_row, .{
-                                        .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                                        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                                    });
-                                }
-                                const name_style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                                w.writeText(&surface, ctx, 2, kv_row, rendered, name_style);
-                                // Draft marker: the full prompt path lives in sorted_paths[r]; hasDraftFor matches on path.
-                                if (self.hasDraftFor(sorted_paths[tr.leaf_idx])) {
-                                    const nw: u16 = @intCast(ctx.stringWidth(rendered));
-                                    w.writeText(&surface, ctx, 2 + nw + 1, kv_row, "*", theme.fg(theme.WARN));
-                                }
-                            }
-                            kv_row += 1;
                         }
                     }
-                } else {
-                    w.writeText(&surface, ctx, 2, kv_row, "No workspace prompts.", theme.fg(theme.MUTED));
+                }
+            }
+            kv_row += 1;
+        }
+        return surface;
+    }
+
+    fn sortPathIndices(paths: []const []const u8, out: []usize) void {
+        for (0..paths.len) |i| out[i] = i;
+        const SortCtx = struct {
+            paths: []const []const u8,
+
+            fn lt(cx: @This(), a: usize, b: usize) bool {
+                return std.mem.lessThan(u8, cx.paths[a], cx.paths[b]);
+            }
+        };
+        std.mem.sort(usize, out[0..paths.len], SortCtx{ .paths = paths }, SortCtx.lt);
+    }
+
+    fn clearWsRows(self: *Dashboard) void {
+        self.ws_row_count = 0;
+        var i: usize = 0;
+        while (i < MAX_LIBRARY_ROWS) : (i += 1) {
+            self.ws_row_leaf_index[i] = null;
+            self.ws_row_dir_path[i] = null;
+            self.ws_row_depth[i] = 0;
+            self.ws_row_text_len[i] = 0;
+        }
+        self.ws_list_sel = 0;
+    }
+
+    fn wsExpandedSet(self: *Dashboard) *std.StringHashMapUnmanaged(void) {
+        return switch (self.ws_tab) {
+            .context => &self.ws_context_expanded,
+            .prompts => &self.ws_prompts_expanded,
+        };
+    }
+
+    fn wsTreeInitializedFlag(self: *Dashboard) *bool {
+        return switch (self.ws_tab) {
+            .context => &self.ws_context_tree_initialized,
+            .prompts => &self.ws_prompts_tree_initialized,
+        };
+    }
+
+    fn resetWorkspaceTrees(self: *Dashboard) void {
+        self.ws_context_expanded.clearRetainingCapacity();
+        self.ws_prompts_expanded.clearRetainingCapacity();
+        self.ws_context_tree_initialized = false;
+        self.ws_prompts_tree_initialized = false;
+        self.clearWsRows();
+    }
+
+    fn syncWsRows(self: *Dashboard) void {
+        self.api_state.mutex.lock();
+        const live_ws = self.api_state.ws_detail;
+        self.api_state.mutex.unlock();
+
+        if (live_ws == null) {
+            self.clearWsRows();
+            return;
+        }
+        const ws_d = live_ws.?;
+
+        var paths_buf: [MAX_LIBRARY_ROWS][]const u8 = undefined;
+        var orig_idx: [MAX_LIBRARY_ROWS]usize = undefined;
+        var item_count: usize = 0;
+
+        switch (self.ws_tab) {
+            .context => {
+                item_count = @min(ws_d.context_files.len, MAX_LIBRARY_ROWS);
+                for (0..item_count) |i| {
+                    paths_buf[i] = ws_d.context_files[i].path;
+                    orig_idx[i] = i;
+                }
+            },
+            .prompts => {
+                const lib_prompts = self.getPrompts();
+                item_count = @min(ws_d.ws_prompts.len, MAX_LIBRARY_ROWS);
+                for (0..item_count) |i| {
+                    const wp = ws_d.ws_prompts[i];
+                    paths_buf[i] = if (wp.path.len > 0)
+                        wp.path
+                    else for (lib_prompts) |lp| {
+                        if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
+                    } else wp.prompt_id;
+                    orig_idx[i] = i;
                 }
             },
         }
-        return surface;
+
+        if (item_count == 0) {
+            self.clearWsRows();
+            return;
+        }
+
+        const expanded = self.wsExpandedSet();
+        const initialized = self.wsTreeInitializedFlag();
+        if (!initialized.*) {
+            const alloc = self.api_state.allocator();
+            for (paths_buf[0..item_count]) |path| {
+                if (std.mem.indexOfScalar(u8, path, '/')) |slash| {
+                    const top = path[0 .. slash + 1];
+                    if (!expanded.contains(top)) {
+                        _ = expanded.put(alloc, top, {}) catch {};
+                    }
+                }
+            }
+            initialized.* = true;
+        }
+
+        var sort_idx: [MAX_LIBRARY_ROWS]usize = undefined;
+        sortPathIndices(paths_buf[0..item_count], sort_idx[0..item_count]);
+
+        var sorted_paths: [MAX_LIBRARY_ROWS][]const u8 = undefined;
+        var sorted_orig: [MAX_LIBRARY_ROWS]usize = undefined;
+        for (0..item_count) |i| {
+            sorted_paths[i] = paths_buf[sort_idx[i]];
+            sorted_orig[i] = orig_idx[sort_idx[i]];
+        }
+
+        var rows_buf: [MAX_LIBRARY_ROWS]tree.Row = undefined;
+        const row_count = tree.flatten(sorted_paths[0..item_count], expanded, &rows_buf);
+
+        var i: usize = 0;
+        while (i < row_count) : (i += 1) {
+            const tr = rows_buf[i];
+            const buf = &self.ws_row_text_bufs[i];
+
+            self.ws_row_leaf_index[i] = null;
+            self.ws_row_dir_path[i] = null;
+            self.ws_row_depth[i] = tr.depth;
+
+            var len = tree.renderPrefix(buf, tr.depth, tr.ancestor_mask, tr.is_last, null);
+            len = tree.appendText(buf, len, tr.label);
+            if (tr.kind == .dir and len < buf.len) {
+                buf[len] = '/';
+                len += 1;
+            }
+            self.ws_row_text_len[i] = len;
+
+            switch (tr.kind) {
+                .dir => self.ws_row_dir_path[i] = tr.dir_prefix,
+                .leaf => self.ws_row_leaf_index[i] = sorted_orig[tr.leaf_idx],
+            }
+        }
+
+        var clear_idx: usize = row_count;
+        while (clear_idx < MAX_LIBRARY_ROWS) : (clear_idx += 1) {
+            self.ws_row_leaf_index[clear_idx] = null;
+            self.ws_row_dir_path[clear_idx] = null;
+            self.ws_row_depth[clear_idx] = 0;
+            self.ws_row_text_len[clear_idx] = 0;
+        }
+
+        self.ws_row_count = row_count;
+        if (row_count == 0) {
+            self.ws_list_sel = 0;
+        } else if (self.ws_list_sel >= row_count) {
+            self.ws_list_sel = row_count - 1;
+        }
+    }
+
+    fn toggleWsDir(self: *Dashboard, prefix: []const u8) void {
+        const expanded = self.wsExpandedSet();
+        const alloc = self.api_state.allocator();
+        if (expanded.fetchRemove(prefix)) |_| return;
+        _ = expanded.put(alloc, prefix, {}) catch {};
+    }
+
+    fn currentWsDirSelection(self: *Dashboard) ?[]const u8 {
+        if (self.ws_list_sel >= self.ws_row_count) return null;
+        return self.ws_row_dir_path[self.ws_list_sel];
+    }
+
+    fn resolveWsContextSelection(self: *Dashboard, ws_d: *const api.WsDetail) ?usize {
+        _ = ws_d;
+        if (self.ws_list_sel >= self.ws_row_count) return null;
+        return self.ws_row_leaf_index[self.ws_list_sel];
+    }
+
+    const ResolvedWsPrompt = struct {
+        idx: usize,
+        path: []const u8,
+    };
+
+    fn resolveWsPromptSelection(self: *Dashboard, ws_d: *const api.WsDetail) ?ResolvedWsPrompt {
+        if (self.ws_list_sel >= self.ws_row_count) return null;
+        const idx = self.ws_row_leaf_index[self.ws_list_sel] orelse return null;
+        const lib_prompts = self.getPrompts();
+        const wp = ws_d.ws_prompts[idx];
+        const path = if (wp.path.len > 0)
+            wp.path
+        else for (lib_prompts) |lp| {
+            if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
+        } else wp.prompt_id;
+        return .{ .idx = idx, .path = path };
     }
 
     // Workspace content pane: shows selected item's content
@@ -1826,12 +2040,15 @@ pub const Dashboard = struct {
             return surface;
         }
         const ws_d = live_ws.?;
-        const sel = self.ws_list_sel;
+        self.syncWsRows();
+        const dir_sel = self.currentWsDirSelection();
+        const context_sel = self.resolveWsContextSelection(&ws_d);
+        const prompt_sel = self.resolveWsPromptSelection(&ws_d);
 
         // Title: selected item name
         const title: []const u8 = switch (self.ws_tab) {
-            .context => if (sel < ws_d.context_files.len) ws_d.context_files[sel].path else "no files",
-            .prompts => if (sel < ws_d.ws_prompts.len) ws_d.ws_prompts[sel].prompt_id else "no prompts",
+            .context => if (dir_sel) |dir| dir else if (context_sel) |sel| ws_d.context_files[sel].path else "no files",
+            .prompts => if (dir_sel) |dir| dir else if (prompt_sel) |sel| sel.path else "no prompts",
         };
         // Title with diff marker
         const has_diff: bool = false; // Live data does not yet track diff state
@@ -1846,7 +2063,13 @@ pub const Dashboard = struct {
 
         switch (self.ws_tab) {
             .context => {
-                if (sel < ws_d.context_files.len) {
+                if (dir_sel != null) {
+                    w.writeText(&surface, ctx, 2, kv_row, "Directory selected.", theme.fg(theme.TEXT_SOFT));
+                    kv_row += 1;
+                    if (kv_row < max_row) {
+                        w.writeText(&surface, ctx, 2, kv_row, "Enter toggles expansion. Left collapses or jumps to parent. Right expands.", theme.fg(theme.MUTED));
+                    }
+                } else if (context_sel) |sel| {
                     const f = &ws_d.context_files[sel];
                     if (self.ws_show_diff) {
                         w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
@@ -1863,12 +2086,18 @@ pub const Dashboard = struct {
                 }
             },
             .prompts => {
-                if (sel < ws_d.ws_prompts.len) {
-                    const p = &ws_d.ws_prompts[sel];
+                if (dir_sel != null) {
+                    w.writeText(&surface, ctx, 2, kv_row, "Directory selected.", theme.fg(theme.TEXT_SOFT));
+                    kv_row += 1;
+                    if (kv_row < max_row) {
+                        w.writeText(&surface, ctx, 2, kv_row, "Enter toggles expansion. Left collapses or jumps to parent. Right expands.", theme.fg(theme.MUTED));
+                    }
+                } else if (prompt_sel) |sel| {
+                    const p = &ws_d.ws_prompts[sel.idx];
                     if (self.ws_show_diff) {
                         w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
                     } else {
-                        w.writeText(&surface, ctx, 2, kv_row, p.prompt_id, theme.fg(theme.TEXT_SOFT));
+                        w.writeText(&surface, ctx, 2, kv_row, sel.path, theme.fg(theme.TEXT_SOFT));
                         kv_row += 1;
                         if (kv_row < max_row) {
                             const hash_label = try std.fmt.allocPrint(ctx.arena, "hash: {s}", .{p.content_hash});
@@ -1883,36 +2112,66 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    // Insights: multi-panel signal-ratio dashboard
-    fn drawInsights(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn loadInsightsData(self: *Dashboard, arena: std.mem.Allocator) ?data.InsightsData {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.org_stats) |stats| {
+            return api.insightsFromStats(arena, stats, self.api_state.prompts, self.api_state.ws_stats_members, self.api_state.ws_stats_models, null);
+        }
+        return null;
+    }
+
+    // Dashboard: live scope-aware signal and recent input feed.
+    fn drawDashboard(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&root, theme.CANVAS);
+        const scope = self.currentInsightsScope();
+        const server_signal_ratio = self.serverSignalRatio();
+
+        const scoped_trace = self.scopedTraceData();
+        const signal_value_text: []const u8 = blk: {
+            if (scoped_trace) |st| {
+                if (st.constraint_count > 0) {
+                    break :blk std.fmt.allocPrint(ctx.arena, "{d}%", .{st.signal_ratio}) catch "n/a";
+                }
+            }
+            if (scope.ws_id == null) {
+                if (server_signal_ratio) |sig| {
+                    break :blk std.fmt.allocPrint(ctx.arena, "{d}%", .{sig}) catch "n/a";
+                }
+            }
+            break :blk "n/a";
+        };
+        const chart_series: ChartSeries = if (scoped_trace) |st|
+            self.buildLocalChartSeries(ctx.arena, st.refers)
+        else
+            .{ .values = &.{}, .left_label = "60s ago", .right_label = "now" };
+
+        const inputs: []const trace_reader.InputEvent = if (scoped_trace) |st| st.inputs else &.{};
+
+        const chart_h: u16 = if (size.height > 40) 10 else 8;
+        const inputs_h: u16 = size.height -| chart_h;
+        const usable_input_rows: u16 = inputs_h -| 2;
+        self.dashboard_input_capacity = @max(@as(usize, 1), @as(usize, @intCast((usable_input_rows + 1) / 3)));
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawInsightsChart(ctx, size.width, chart_h, signal_value_text, chart_series, scope.label, scope.ws_id) };
+        children[1] = .{ .origin = .{ .row = chart_h, .col = 0 }, .surface = try self.drawInsightsInputs(ctx, size.width, inputs_h, inputs, scope.label) };
+
+        root.children = children;
+        return root;
+    }
+
+    // Analysis: aggregate prompt/team views and drill-downs.
+    fn drawAnalysis(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.CANVAS);
 
-        // Use live stats if available, otherwise zero-initialized defaults
-        var live_insights: ?data.InsightsData = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            if (self.api_state.org_stats) |stats|
-                break :blk api.insightsFromStats(ctx.arena, stats, self.api_state.prompts, self.api_state.ws_stats_members, self.api_state.ws_stats_models, self.api_state.local_stats);
-            // No server stats, but local trace available — show personal data
-            if (self.api_state.local_stats) |local| {
-                var inputs_list: std.ArrayList(data.InputItem) = .empty;
-                for (local.inputs) |iv| {
-                    inputs_list.append(ctx.arena, .{ .timestamp = iv.timestamp, .content = iv.content }) catch break;
-                }
-                break :blk data.InsightsData{
-                    .constraint_count = local.constraint_count,
-                    .active_constraint_count = local.active_constraint_count,
-                    .idle_constraint_count = if (local.constraint_count > local.active_constraint_count) local.constraint_count - local.active_constraint_count else 0,
-                    .signal_ratio = local.signal_ratio,
-                    .refer_trend = local.refer_trend,
-                    .prompts = local.prompts,
-                    .inputs = inputs_list.items,
-                };
-            }
-            break :blk null;
-        };
+        var live_insights = self.loadInsightsData(ctx.arena);
+        const analysis_available = live_insights != null;
         var empty_insights: data.InsightsData = .{
             .constraint_count = 0,
             .active_constraint_count = 0,
@@ -1929,42 +2188,29 @@ pub const Dashboard = struct {
         };
         const ins: *const data.InsightsData = if (live_insights) |*li| li else &empty_insights;
 
-        // Layout:
-        //   row 0: chart (full width)
-        //   row 1: prompts | team (side by side)
-        //   row 2: recent inputs (full width)
-        const chart_h: u16 = if (size.height > 40) 10 else 8;
-        const inputs_h: u16 = if (size.height > 40) 10 else 7;
-        const middle_h: u16 = size.height -| chart_h -| inputs_h;
         const team_w: u16 = 18;
         const prompts_w: u16 = size.width -| team_w;
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
 
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 4);
-
-        // Panel 1: Signal Trend chart (hero, full width)
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawInsightsChart(ctx, size.width, chart_h, ins) };
-        // Panel 2: Prompts Rank (or Member Detail if active)
         const main_surface = if (self.insights_show_member_detail)
-            try self.drawMemberDetail(ctx, prompts_w, middle_h, ins)
+            try self.drawMemberDetail(ctx, prompts_w, size.height, ins)
         else
-            try self.drawInsightsPrompts(ctx, prompts_w, middle_h, ins);
-        children[1] = .{ .origin = .{ .row = chart_h, .col = 0 }, .surface = main_surface };
-        // Panel 3: Team Activity sidebar (narrow, right side)
-        children[2] = .{ .origin = .{ .row = chart_h, .col = prompts_w }, .surface = try self.drawInsightsTeam(ctx, team_w, middle_h, ins) };
-        // Panel 4: Recent Inputs (full width, bottom)
-        children[3] = .{ .origin = .{ .row = chart_h + middle_h, .col = 0 }, .surface = try self.drawInsightsInputs(ctx, size.width, inputs_h, ins) };
+            try self.drawInsightsPrompts(ctx, prompts_w, size.height, ins, analysis_available);
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = main_surface };
+        children[1] = .{ .origin = .{ .row = 0, .col = prompts_w }, .surface = try self.drawInsightsTeam(ctx, team_w, size.height, ins, analysis_available) };
 
         root.children = children;
         return root;
     }
 
-    fn drawInsightsChart(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawInsightsChart(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, signal_value_text: []const u8, series: ChartSeries, scope_label: []const u8, scope_ws_id: ?[]const u8) std.mem.Allocator.Error!vxfw.Surface {
         const border_color = if (self.insights_focus == .chart) theme.ACCENT else theme.BORDER;
         var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
         w.fillSurface(&s, theme.PANEL);
         w.drawBorder(&s, border_color, theme.PANEL);
 
-        // Title bar: ● Signal Trend ── key metrics
+        // Title bar: continuous bullet-separated fields, no border dashes
+        // bleeding through between segments.
         // Breathing ● : phase 0-10 = dim→bright, 10-20 = bright→dim
         const breath_t: f32 = blk: {
             const p = self.breathing_phase;
@@ -1974,31 +2220,78 @@ pub const Dashboard = struct {
         const dark_green = theme.rgb(0x2d4a1f);
         const dot_color = theme.lerpColor(dark_green, theme.OK, breath_t);
         w.writeText(&s, ctx, 2, 0, "\u{25cf}", .{ .fg = dot_color, .bg = theme.PANEL });
-        w.writeText(&s, ctx, 4, 0, "Signal Trend", theme.boldOn(theme.PANEL, theme.TEXT));
-        const metrics_txt = try std.fmt.allocPrint(ctx.arena, "signal {d}%", .{ins.signal_ratio});
-        w.writeText(&s, ctx, 18, 0, metrics_txt, theme.fg(theme.ACCENT_SOFT));
+        const right_hint = "w scope  Shift-F flush";
+        const right_hint_w: u16 = @intCast(ctx.stringWidth(right_hint));
+        const right_limit: u16 = width -| right_hint_w -| 2;
 
-        const active = self.activeSessionCount();
-        if (active > 0) {
-            const sess_txt = try std.fmt.allocPrint(ctx.arena, "\u{25cf} {d} live", .{active});
-            w.writeText(&s, ctx, 32, 0, sess_txt, .{ .fg = theme.OK, .bg = theme.PANEL });
+        var header_col: u16 = 3;
+        const lead_gap = " ";
+        if (header_col < right_limit) {
+            w.writeText(&s, ctx, header_col, 0, lead_gap, theme.textOn(theme.PANEL, theme.TEXT));
+            header_col +|= @intCast(ctx.stringWidth(lead_gap));
+        }
+        const title_txt = "Signal Trend";
+        if (header_col < right_limit) {
+            w.writeText(&s, ctx, header_col, 0, title_txt, theme.boldOn(theme.PANEL, theme.TEXT));
+            header_col +|= @intCast(ctx.stringWidth(title_txt));
+        }
+        const sep_txt = "  \xc2\xb7 ";
+        if (header_col < right_limit) {
+            w.writeText(&s, ctx, header_col, 0, sep_txt, theme.fg(theme.MUTED));
+            header_col +|= @intCast(ctx.stringWidth(sep_txt));
+        }
+        if (header_col < right_limit) {
+            w.writeText(&s, ctx, header_col, 0, scope_label, theme.boldOn(theme.PANEL, theme.TEXT));
+            header_col +|= @intCast(ctx.stringWidth(scope_label));
+        }
+        if (header_col < right_limit) {
+            w.writeText(&s, ctx, header_col, 0, sep_txt, theme.fg(theme.MUTED));
+            header_col +|= @intCast(ctx.stringWidth(sep_txt));
+        }
+        if (header_col < right_limit) {
+            w.writeText(&s, ctx, header_col, 0, "signal", theme.boldOn(theme.PANEL, theme.TEXT));
+            header_col +|= @intCast(ctx.stringWidth("signal"));
+        }
+        if (header_col < right_limit) {
+            w.writeText(&s, ctx, header_col, 0, " ", theme.fg(theme.MUTED));
+            header_col +|= 1;
+        }
+        if (header_col < right_limit) {
+            const signal_style = if (std.mem.eql(u8, signal_value_text, "n/a"))
+                theme.fg(theme.MUTED)
+            else
+                theme.fg(theme.TEXT_SOFT);
+            w.writeText(&s, ctx, header_col, 0, signal_value_text, signal_style);
+            header_col +|= @intCast(ctx.stringWidth(signal_value_text));
         }
 
-        w.writeRightText(&s, ctx, 0, "t period", theme.fg(theme.MUTED));
+        const active = self.activeSessionCount(scope_ws_id);
+        if (active > 0) {
+            const sess_txt = try std.fmt.allocPrint(ctx.arena, "{d} live", .{active});
+            if (header_col < right_limit) {
+                w.writeText(&s, ctx, header_col, 0, sep_txt, theme.fg(theme.MUTED));
+                header_col +|= @intCast(ctx.stringWidth(sep_txt));
+            }
+            if (header_col < right_limit) {
+                w.writeText(&s, ctx, header_col, 0, sess_txt, .{ .fg = theme.OK, .bg = theme.PANEL });
+            }
+        }
+
+        w.writeRightText(&s, ctx, 0, right_hint, theme.fg(theme.MUTED));
 
         const chart_x: u16 = 1;
         const chart_w: u16 = width -| 2;
         const chart_rows: u16 = height -| 3;
-        w.drawBrailleAreaChart(&s, ctx.arena, &ins.refer_trend, chart_x, 1, chart_w, chart_rows);
+        w.drawBrailleAreaChart(&s, ctx.arena, series.values, chart_x, 1, chart_w, chart_rows);
 
         // X-axis: minimal endpoints
-        w.writeText(&s, ctx, chart_x, height -| 2, "30d ago", theme.fg(theme.DIM));
-        w.writeRightText(&s, ctx, height -| 2, "today", theme.fg(theme.DIM));
+        w.writeText(&s, ctx, chart_x, height -| 2, series.left_label, theme.fg(theme.DIM));
+        w.writeRightText(&s, ctx, height -| 2, series.right_label, theme.fg(theme.DIM));
 
         return s;
     }
 
-    fn drawInsightsPrompts(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawInsightsPrompts(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData, available: bool) std.mem.Allocator.Error!vxfw.Surface {
         const border_color = if (self.insights_focus == .prompts) theme.ACCENT else theme.BORDER;
         var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
         w.fillSurface(&s, theme.PANEL);
@@ -2006,12 +2299,23 @@ pub const Dashboard = struct {
 
         w.writeText(&s, ctx, 3, 0, "Prompts Rank", theme.boldOn(theme.PANEL, theme.TEXT));
         // Right-aligned column headers (with right padding)
-        const col_rate: u16 = width -| 24;
-        const col_delta: u16 = width -| 16;
-        const col_sig: u16 = width -| 9;
-        w.writeText(&s, ctx, col_rate, 0, "rate", theme.fg(theme.MUTED));
-        w.writeText(&s, ctx, col_delta, 0, "\u{0394}7d", theme.fg(theme.MUTED));
-        w.writeText(&s, ctx, col_sig, 0, "signal", theme.fg(theme.MUTED));
+        const col_reach: u16 = width -| 24;
+        const col_trend: u16 = width -| 16;
+        const col_last: u16 = width -| 8;
+        w.writeText(&s, ctx, col_reach, 0, "reach", theme.fg(theme.MUTED));
+        w.writeText(&s, ctx, col_trend, 0, "trend", theme.fg(theme.MUTED));
+        w.writeText(&s, ctx, col_last, 0, "last", theme.fg(theme.MUTED));
+
+        if (!available) {
+            w.writeText(&s, ctx, 2, 2, "Remote analysis unavailable.", theme.fg(theme.MUTED));
+            w.writeText(&s, ctx, 2, 3, "Analysis now uses hub stats only. Press r to refresh after /api/stats loads.", theme.fg(theme.DIM));
+            return s;
+        }
+
+        if (ins.prompts.len == 0) {
+            w.writeText(&s, ctx, 2, 2, "No prompt analysis data returned by the hub.", theme.fg(theme.MUTED));
+            return s;
+        }
 
         // Find max refer count for bar scaling
         var max_refer: u32 = 1;
@@ -2019,9 +2323,17 @@ pub const Dashboard = struct {
             if (p.refer_count > max_refer) max_refer = p.refer_count;
         }
 
-        const name_w: u16 = 21;
-        const bar_start: u16 = name_w + 1;
-        const bar_end: u16 = col_rate -| 2;
+        const name_col: u16 = 2;
+        const min_name_w: u16 = 18;
+        const max_name_w: u16 = @max(min_name_w, @min(@as(u16, 40), col_reach -| name_col -| 24));
+        var measured_name_w: u16 = min_name_w;
+        for (ins.prompts) |p| {
+            const candidate = @as(u16, @intCast(ctx.stringWidth(firstLineTrimmed(p.name, max_name_w))));
+            if (candidate > measured_name_w) measured_name_w = candidate;
+        }
+        const name_w: u16 = @min(max_name_w, measured_name_w);
+        const bar_start: u16 = name_col + name_w + 1;
+        const bar_end: u16 = col_reach -| 2;
         const bar_max_w: u16 = bar_end -| bar_start;
 
         const focused = self.insights_focus == .prompts;
@@ -2039,19 +2351,17 @@ pub const Dashboard = struct {
                 });
             }
 
-            if (is_idle) {
-                // Same layout as active prompts, just name in red
-                const name_style: vaxis.Style = if (is_sel) theme.boldOn(theme.PANEL, theme.DANGER) else .{ .fg = theme.DANGER, .bg = theme.PANEL };
-                w.writeText(&s, ctx, 2, row, p.name, name_style);
-                w.writeText(&s, ctx, col_rate, row, "0/d", theme.fg(theme.MUTED));
-                w.writeText(&s, ctx, col_delta, row, " 0%", theme.fg(theme.MUTED));
-                const sig_txt = try std.fmt.allocPrint(ctx.arena, "0/{d}", .{p.constraint_count});
-                w.writeText(&s, ctx, col_sig, row, sig_txt, theme.fg(theme.MUTED));
-            } else {
-                const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-                w.writeText(&s, ctx, 2, row, p.name, name_style);
+            const name_style: vaxis.Style = if (is_idle)
+                (if (is_sel) theme.boldOn(theme.PANEL, theme.DANGER) else .{ .fg = theme.DANGER, .bg = theme.PANEL })
+            else if (is_sel)
+                theme.boldOn(theme.PANEL, theme.TEXT)
+            else
+                theme.fg(theme.TEXT_SOFT);
+            w.writeText(&s, ctx, name_col, row, firstLineTrimmed(p.name, name_w), name_style);
 
-                const bar_w: u16 = @intCast(@as(u32, bar_max_w) * p.refer_count / max_refer);
+            if (!is_idle) {
+                const bar_w_raw: u16 = @intCast(@as(u32, bar_max_w) * p.refer_count / max_refer);
+                const bar_w: u16 = if (p.refer_count > 0 and bar_w_raw == 0 and bar_max_w > 0) 1 else bar_w_raw;
                 for (0..bar_w) |offset| {
                     const bc: u16 = bar_start + @as(u16, @intCast(offset));
                     if (bc >= bar_end) break;
@@ -2063,15 +2373,19 @@ pub const Dashboard = struct {
                 }
                 const ref_text = try std.fmt.allocPrint(ctx.arena, " {d}", .{p.refer_count});
                 const ref_col: u16 = bar_start + bar_w;
-                if (ref_col + @as(u16, @intCast(ctx.stringWidth(ref_text))) < col_rate) {
+                if (ref_col + @as(u16, @intCast(ctx.stringWidth(ref_text))) < col_reach) {
                     w.writeText(&s, ctx, ref_col, row, ref_text, theme.fg(theme.TEXT));
                 }
-                const rate = try std.fmt.allocPrint(ctx.arena, "{d}/d", .{p.rate_per_day});
-                w.writeText(&s, ctx, col_rate, row, rate, theme.fg(theme.MUTED));
-                w.writeDelta(&s, ctx, col_delta, row, p.delta_pct);
-                const sig_txt = try std.fmt.allocPrint(ctx.arena, "{d}/{d}", .{ p.active_constraint_count, p.constraint_count });
-                w.writeText(&s, ctx, col_sig, row, sig_txt, theme.fg(theme.MUTED));
             }
+
+            const reach_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{p.workspace_count});
+            w.writeText(&s, ctx, col_reach, row, reach_txt, theme.fg(theme.MUTED));
+            w.writeText(&s, ctx, col_trend, row, "\xe2\x80\x94", theme.fg(theme.DIM));
+            const last_txt = if (p.last_referred_days_ago) |days|
+                (try std.fmt.allocPrint(ctx.arena, "{d}d", .{days}))
+            else
+                "\xe2\x80\x94";
+            w.writeText(&s, ctx, col_last, row, last_txt, theme.fg(theme.MUTED));
             row += 1;
 
             // Expanded per-constraint detail
@@ -2084,15 +2398,23 @@ pub const Dashboard = struct {
                     if (row >= height -| 1) break;
                     const is_c_idle = c.refer_count == 0;
                     const is_last = ci + 1 == p.constraints.len;
+                    const show_child_id = !std.mem.eql(u8, c.id, c.label);
+                    const child_label_col: u16 = if (show_child_id) 12 else 9;
+                    const child_label = firstLineTrimmed(c.label, bar_start -| child_label_col -| 2);
+                    const child_bar_start: u16 = bar_start + 2;
                     const tree_char: []const u8 = if (is_last) "\xe2\x94\x94" else "\xe2\x94\x9c"; // └ or ├
                     w.writeText(&s, ctx, 5, row, tree_char, theme.fg(theme.DIM));
-                    w.writeText(&s, ctx, 7, row, c.id, theme.fg(theme.MUTED));
-                    w.writeText(&s, ctx, 12, row, c.label, if (is_c_idle) theme.fg(theme.DANGER) else theme.fg(theme.TEXT_SOFT));
+                    if (show_child_id) {
+                        w.writeText(&s, ctx, 7, row, firstLineTrimmed(c.id, 4), theme.fg(theme.MUTED));
+                    }
+                    w.writeText(&s, ctx, child_label_col, row, child_label, if (is_c_idle) theme.fg(theme.DANGER) else theme.fg(theme.TEXT_SOFT));
                     if (!is_c_idle) {
-                        const c_bar_w: u16 = @intCast(@min(@as(u32, bar_max_w / 2) * c.refer_count / c_max, bar_max_w / 2));
+                        const child_bar_max_w: u16 = bar_max_w / 2;
+                        const c_bar_w_raw: u16 = @intCast(@min(@as(u32, child_bar_max_w) * c.refer_count / c_max, child_bar_max_w));
+                        const c_bar_w: u16 = if (c.refer_count > 0 and c_bar_w_raw == 0 and child_bar_max_w > 0) 1 else c_bar_w_raw;
                         for (0..c_bar_w) |offset| {
-                            const bc: u16 = 32 + @as(u16, @intCast(offset));
-                            if (bc >= col_rate -| 2) break;
+                            const bc: u16 = child_bar_start + @as(u16, @intCast(offset));
+                            if (bc >= col_reach -| 2) break;
                             const t: f32 = if (c_bar_w > 1) @as(f32, @floatFromInt(offset)) / @as(f32, @floatFromInt(c_bar_w - 1)) else 0.5;
                             s.writeCell(bc, row, .{
                                 .char = .{ .grapheme = "\xe2\x96\x88", .width = 1 },
@@ -2100,13 +2422,13 @@ pub const Dashboard = struct {
                             });
                         }
                         const c_ref = try std.fmt.allocPrint(ctx.arena, " {d}", .{c.refer_count});
-                        w.writeText(&s, ctx, col_rate, row, c_ref, theme.fg(theme.MUTED));
+                        w.writeText(&s, ctx, col_reach, row, c_ref, theme.fg(theme.MUTED));
                     } else {
                         const idle_txt = if (c.idle_days) |d|
                             try std.fmt.allocPrint(ctx.arena, "idle {d}d \xe2\x9a\xa0", .{d})
                         else
                             "idle \xe2\x9a\xa0";
-                        w.writeText(&s, ctx, col_rate, row, idle_txt, .{ .fg = theme.DANGER, .bg = theme.PANEL });
+                        w.writeText(&s, ctx, col_reach, row, idle_txt, .{ .fg = theme.DANGER, .bg = theme.PANEL });
                     }
                     row += 1;
                 }
@@ -2116,13 +2438,25 @@ pub const Dashboard = struct {
         return s;
     }
 
-    fn drawInsightsTeam(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawInsightsTeam(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData, available: bool) std.mem.Allocator.Error!vxfw.Surface {
         const border_color = if (self.insights_focus == .team) theme.ACCENT else theme.BORDER;
         var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
         w.fillSurface(&s, theme.PANEL);
         w.drawBorder(&s, border_color, theme.PANEL);
 
         w.writeText(&s, ctx, 2, 0, "Team Activity", theme.boldOn(theme.PANEL, theme.TEXT));
+
+        if (!available) {
+            w.writeText(&s, ctx, 2, 2, "No", theme.fg(theme.MUTED));
+            w.writeText(&s, ctx, 2, 3, "stats", theme.fg(theme.MUTED));
+            return s;
+        }
+
+        if (ins.members.len == 0) {
+            w.writeText(&s, ctx, 2, 2, "No", theme.fg(theme.MUTED));
+            w.writeText(&s, ctx, 2, 3, "team", theme.fg(theme.MUTED));
+            return s;
+        }
 
         // Find team max for color scaling
         var team_max: u16 = 1;
@@ -2180,64 +2514,78 @@ pub const Dashboard = struct {
         return s;
     }
 
-    // Returns the cutoff timestamp (ms since epoch) for the current
-    // insights_period window. Events older than this are filtered out.
-    fn inputsCutoffMs(self: *const Dashboard) i64 {
-        const now_ms = std.time.milliTimestamp();
-        const day_ms: i64 = 86400 * 1000;
-        const window_days: i64 = switch (self.insights_period) {
-            .daily => 1,
-            .weekly => 7,
-            .monthly => 30,
-        };
-        return now_ms - window_days * day_ms;
+    fn latestInputs(inputs: anytype, limit: usize) @TypeOf(inputs) {
+        return inputs[0..@min(inputs.len, limit)];
     }
 
-    fn visibleInputs(ins: *const data.InsightsData, cutoff_ms: i64) []const data.InputItem {
-        var last: usize = 0;
-        for (ins.inputs, 0..) |iv, i| {
-            if (iv.timestamp >= cutoff_ms) last = i + 1 else break;
+    fn workspaceNameForId(self: *const Dashboard, ws_id: []const u8) []const u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return ws_id;
+        for (user.workspaces) |ws| {
+            if (std.mem.eql(u8, ws.ws_id, ws_id)) return ws.name;
         }
-        return ins.inputs[0..last];
+        return ws_id;
     }
 
-    fn drawInsightsInputs(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, ins: *const data.InsightsData) std.mem.Allocator.Error!vxfw.Surface {
+    fn compactSessionId(session_id: []const u8) []const u8 {
+        if (session_id.len <= 12) return session_id;
+        if (std.mem.startsWith(u8, session_id, "ses-") and session_id.len >= 10) {
+            return session_id[0..10];
+        }
+        return session_id[0..@min(session_id.len, 12)];
+    }
+
+    fn drawInsightsInputs(self: *Dashboard, ctx: vxfw.DrawContext, width: u16, height: u16, inputs: []const trace_reader.InputEvent, scope_label: []const u8) std.mem.Allocator.Error!vxfw.Surface {
         const border_color = if (self.insights_focus == .inputs) theme.ACCENT else theme.BORDER;
         var s = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
         w.fillSurface(&s, theme.PANEL);
         w.drawBorder(&s, border_color, theme.PANEL);
 
-        const cutoff = self.inputsCutoffMs();
-        const visible = visibleInputs(ins, cutoff);
+        const visible = latestInputs(inputs, self.dashboard_input_capacity);
 
-        const title_txt = try std.fmt.allocPrint(ctx.arena, "Recent Inputs  \xc2\xb7 {d} in {s}", .{ visible.len, self.insights_period.label() });
+        const title_txt = try std.fmt.allocPrint(ctx.arena, "Recent Inputs  \xc2\xb7 {s}  \xc2\xb7 live feed", .{scope_label});
         w.writeText(&s, ctx, 2, 0, title_txt, theme.boldOn(theme.PANEL, theme.TEXT));
 
         if (visible.len == 0) {
-            w.writeText(&s, ctx, 2, 2, "No user prompts captured in this window.", theme.fg(theme.MUTED));
+            w.writeText(&s, ctx, 2, 2, "No recent user prompts captured.", theme.fg(theme.MUTED));
             return s;
         }
 
         const focused = self.insights_focus == .inputs;
-        const max_rows: u16 = height -| 2;
-        const content_w: u16 = width -| 14; // leave room for timestamp column
+        const inner_w: u16 = width -| 4;
+        const body_col: u16 = 3;
+        const content_w: u16 = inner_w -| 4;
         var row: u16 = 1;
         var i: usize = 0;
-        while (i < visible.len and row < max_rows) : (i += 1) {
+        while (i < visible.len and row + 1 < height -| 1) : (i += 1) {
             const iv = visible[i];
             const is_sel = focused and i == self.insights_input_cursor;
-            if (is_sel) {
-                s.writeCell(1, row, .{
-                    .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
-                    .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-                });
-            }
+            const ws_label = self.workspaceNameForId(iv.ws_id);
+            const session_label = compactSessionId(iv.session_id);
             const time_txt = try formatHm(ctx.arena, iv.timestamp);
-            w.writeText(&s, ctx, 2, row, time_txt, theme.fg(theme.MUTED));
+            const meta_label = if (std.mem.eql(u8, scope_label, "All Workspaces"))
+                try std.fmt.allocPrint(ctx.arena, "{s}  \xc2\xb7 {s}  \xc2\xb7 input", .{ ws_label, session_label })
+            else
+                try std.fmt.allocPrint(ctx.arena, "{s}  \xc2\xb7 input", .{session_label});
+            const meta_style: vaxis.Style = if (is_sel) theme.boldOn(theme.PANEL, theme.ACCENT_SOFT) else .{ .fg = theme.MUTED, .bg = theme.PANEL };
+            w.writeText(&s, ctx, body_col, row, firstLineTrimmed(meta_label, content_w), meta_style);
+            w.writeRightText(&s, ctx, row, time_txt, .{ .fg = if (is_sel) theme.ACCENT_SOFT else theme.MUTED, .bg = theme.PANEL });
+
             const snippet = firstLineTrimmed(iv.content, content_w);
-            const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-            w.writeText(&s, ctx, 10, row, snippet, name_style);
-            row += 1;
+            const body_style: vaxis.Style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else .{ .fg = theme.TEXT_SOFT, .bg = theme.PANEL };
+            w.writeText(&s, ctx, body_col, row + 1, snippet, body_style);
+
+            if (i + 1 < visible.len and row + 2 < height -| 1) {
+                var sep_col: u16 = 2;
+                while (sep_col < width -| 2) : (sep_col += 1) {
+                    s.writeCell(sep_col, row + 2, .{
+                        .char = .{ .grapheme = "\xe2\x94\x80", .width = 1 },
+                        .style = .{ .fg = if (is_sel) theme.ACCENT_SOFT else theme.BORDER, .bg = theme.PANEL },
+                    });
+                }
+            }
+            row += 3;
         }
 
         return s;
@@ -2280,7 +2628,8 @@ pub const Dashboard = struct {
         for (member.top_prompts) |tp| {
             if (row >= height -| 5) break;
             w.writeText(&s, ctx, 5, row, tp.name, theme.fg(theme.TEXT_SOFT));
-            const bar_w: u16 = @intCast(@as(u32, bar_max_w) * tp.refer_count / max_ref);
+            const bar_w_raw: u16 = @intCast(@as(u32, bar_max_w) * tp.refer_count / max_ref);
+            const bar_w: u16 = if (tp.refer_count > 0 and bar_w_raw == 0 and bar_max_w > 0) 1 else bar_w_raw;
             for (0..bar_w) |offset| {
                 const bc: u16 = bar_start + @as(u16, @intCast(offset));
                 if (bc >= bar_end) break;
@@ -2622,7 +2971,7 @@ pub const Dashboard = struct {
     // short-lived CLI that flushes buffered trace events and exits.
     fn flushTrace(self: *Dashboard) void {
         self.status_line = "Flushing trace...";
-        const alloc = self.api_state.arena.allocator();
+        const alloc = self.api_state.allocator();
         var child = std.process.Child.init(&.{ "clumsies", "trace", "flush" }, alloc);
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
@@ -2640,6 +2989,7 @@ pub const Dashboard = struct {
         switch (term) {
             .Exited => |code| {
                 if (code == 0) {
+                    api.refreshLocalState(self.api_state);
                     const trimmed = std.mem.trim(u8, stdout.items, " \n\r\t");
                     if (trimmed.len > 0) {
                         self.status_line = std.fmt.allocPrint(alloc, "Flush: {s}", .{trimmed}) catch "Flush: ok";
@@ -2655,10 +3005,18 @@ pub const Dashboard = struct {
         }
     }
 
-    fn activeSessionCount(self: *Dashboard) usize {
+    fn activeSessionCount(self: *Dashboard, scope_ws_id: ?[]const u8) usize {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        return if (self.api_state.active_sessions) |s| s.len else 0;
+        const sessions = self.api_state.active_sessions orelse return 0;
+        if (scope_ws_id) |ws_id| {
+            var count: usize = 0;
+            for (sessions) |sess| {
+                if (std.mem.eql(u8, sess.ws_id, ws_id)) count += 1;
+            }
+            return count;
+        }
+        return sessions.len;
     }
 
     // Build display-ready session rows with a human-readable age string.
@@ -2719,7 +3077,7 @@ pub const Dashboard = struct {
             } else {
                 return &.{};
             }
-            const alloc = self.api_state.arena.allocator();
+            const alloc = self.api_state.allocator();
             return api.toPrEntries(alloc, prs, prompt_path, self.api_state);
         }
         return &.{};
@@ -2729,7 +3087,7 @@ pub const Dashboard = struct {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.prompts) |lp| {
-            const alloc = self.api_state.arena.allocator();
+            const alloc = self.api_state.allocator();
             return api.toPromptEntries(alloc, lp);
         }
         return &.{};
@@ -2743,7 +3101,7 @@ pub const Dashboard = struct {
         const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
         if (prs_for.len == 0) return;
 
-        const alloc = self.api_state.arena.allocator();
+        const alloc = self.api_state.allocator();
         const path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{prs_for[pri].id}) catch {
             self.status_line = "Failed to submit comment";
             return;
@@ -2769,7 +3127,7 @@ pub const Dashboard = struct {
         if (prs_for.len == 0) return;
         const pr_id = prs_for[pri].id;
 
-        const alloc = self.api_state.arena.allocator();
+        const alloc = self.api_state.allocator();
         const path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}", .{pr_id}) catch {
             self.status_line = "Failed to build request";
             return;
@@ -2808,7 +3166,7 @@ pub const Dashboard = struct {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.current_user) |u| {
-            const alloc = self.api_state.arena.allocator();
+            const alloc = self.api_state.allocator();
             var list: std.ArrayList(data.WorkspaceEntry) = .empty;
             for (u.workspaces) |ws| {
                 const al: data.AccessLevel = if (std.mem.eql(u8, ws.role, "admin")) .admin else .member;
@@ -2846,28 +3204,145 @@ pub const Dashboard = struct {
 
     const InsightsCounts = struct { prompt_count: usize, member_count: usize, input_count: usize };
 
-    fn getInsightsCounts(self: *Dashboard) InsightsCounts {
-        // Returns counts of prompts, members, and inputs for bounds checking
-        // in the event handler. Inputs are filtered by the current period
-        // window to match what drawInsightsInputs actually renders.
+    const InsightsScopeInfo = struct {
+        label: []const u8,
+        ws_id: ?[]const u8,
+    };
+
+    const ScopedTraceData = struct {
+        label: []const u8,
+        signal_ratio: u8,
+        constraint_count: u32,
+        refers: []const trace_reader.ReferEvent,
+        inputs: []const trace_reader.InputEvent,
+    };
+
+    const ChartSeries = struct {
+        values: []const u16,
+        left_label: []const u8,
+        right_label: []const u8,
+    };
+
+    fn currentInsightsScopeLocked(self: *const Dashboard) InsightsScopeInfo {
+        const workspaces = if (self.api_state.current_user) |u| u.workspaces else &.{};
+        if (workspaces.len == 0 or self.insights_scope_idx == 0) {
+            return .{ .label = "All Workspaces", .ws_id = null };
+        }
+
+        const scope_idx = @min(self.insights_scope_idx, workspaces.len);
+        const ws = workspaces[scope_idx - 1];
+        return .{ .label = ws.name, .ws_id = ws.ws_id };
+    }
+
+    fn currentInsightsScope(self: *const Dashboard) InsightsScopeInfo {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        const input_count: usize = if (self.api_state.local_stats) |local| blk: {
-            const cutoff_ms = self.inputsCutoffMs();
-            var n: usize = 0;
-            for (local.inputs) |iv| {
-                if (iv.timestamp >= cutoff_ms) n += 1 else break;
+        return self.currentInsightsScopeLocked();
+    }
+
+    fn cycleInsightsScope(self: *Dashboard) InsightsScopeInfo {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const workspaces = if (self.api_state.current_user) |u| u.workspaces else &.{};
+        const scope_count = workspaces.len + 1;
+        self.insights_scope_idx = (self.insights_scope_idx + 1) % scope_count;
+        return self.currentInsightsScopeLocked();
+    }
+
+    fn serverSignalRatio(self: *const Dashboard) ?u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const stats = self.api_state.org_stats orelse return null;
+        return @intCast(@min(@as(u64, @intFromFloat(stats.signal_ratio * 100)), 100));
+    }
+
+    fn scopedTraceData(self: *const Dashboard) ?ScopedTraceData {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+
+        const local = self.api_state.local_stats orelse return null;
+        const scope = self.currentInsightsScopeLocked();
+        if (scope.ws_id) |ws_id| {
+            if (local.workspace(ws_id)) |ws| {
+                return .{
+                    .label = scope.label,
+                    .signal_ratio = ws.signal_ratio,
+                    .constraint_count = ws.constraint_count,
+                    .refers = ws.refers,
+                    .inputs = ws.inputs,
+                };
             }
-            break :blk n;
-        } else 0;
-        if (self.api_state.org_stats) |stats| {
             return .{
-                .prompt_count = stats.prompts.len,
-                .member_count = if (self.api_state.ws_stats_members) |m| m.len else 0,
-                .input_count = input_count,
+                .label = scope.label,
+                .signal_ratio = 0,
+                .constraint_count = 0,
+                .refers = &.{},
+                .inputs = &.{},
             };
         }
-        return .{ .prompt_count = 0, .member_count = 0, .input_count = input_count };
+        return .{
+            .label = scope.label,
+            .signal_ratio = local.signal_ratio,
+            .constraint_count = local.constraint_count,
+            .refers = local.refers,
+            .inputs = local.inputs,
+        };
+    }
+
+    fn buildLocalChartSeries(self: *const Dashboard, arena: std.mem.Allocator, refers: []const trace_reader.ReferEvent) ChartSeries {
+        _ = self;
+        const bucket_ms: i64 = std.time.ms_per_s;
+        const bucket_count: usize = 60;
+        const span_ms: i64 = bucket_ms * bucket_count;
+
+        const values = arena.alloc(u16, bucket_count) catch {
+            return .{ .values = &.{}, .left_label = "60s ago", .right_label = "now" };
+        };
+        @memset(values, 0);
+
+        const now_ms = std.time.milliTimestamp();
+        const current_bucket_start_ms = now_ms - @mod(now_ms, bucket_ms);
+        const end_ms = current_bucket_start_ms + bucket_ms;
+        const start_ms = end_ms - span_ms;
+        for (refers) |rv| {
+            if (rv.timestamp < start_ms or rv.timestamp >= end_ms) continue;
+            const idx: usize = @intCast(@divFloor(rv.timestamp - start_ms, bucket_ms));
+            if (idx >= bucket_count) continue;
+            values[idx] +|= 1;
+        }
+
+        return .{
+            .values = values,
+            .left_label = "60s ago",
+            .right_label = "now",
+        };
+    }
+
+    fn getInsightsCounts(self: *Dashboard) InsightsCounts {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+
+        const scope = self.currentInsightsScopeLocked();
+        const input_count: usize = if (self.api_state.local_stats) |local| blk: {
+            const inputs = if (scope.ws_id) |ws_id|
+                (if (local.workspace(ws_id)) |ws| ws.inputs else &.{})
+            else
+                local.inputs;
+            break :blk latestInputs(inputs, self.dashboard_input_capacity).len;
+        } else 0;
+
+        const prompt_count: usize = if (self.api_state.local_stats) |local|
+            local.prompts.len
+        else if (self.api_state.org_stats) |stats|
+            stats.prompts.len
+        else
+            0;
+
+        return .{
+            .prompt_count = prompt_count,
+            .member_count = if (self.api_state.ws_stats_members) |m| m.len else 0,
+            .input_count = input_count,
+        };
     }
 
     fn drawEmptyDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -2927,19 +3402,13 @@ pub const Dashboard = struct {
             surface.writeCell(start_col + box_w - 1, start_row + r, .{ .char = .{ .grapheme = "│", .width = 1 }, .style = border });
         }
 
-        // Resolve the selected input via the same filter drawInsightsInputs uses.
+        // Resolve the selected input via the same latest-N slice drawInsightsInputs uses.
         const content_and_ts: struct { content: []const u8, ts: i64 } = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            const local = self.api_state.local_stats orelse break :blk .{ .content = "", .ts = 0 };
-            const cutoff = self.inputsCutoffMs();
-            var vlen: usize = 0;
-            for (local.inputs) |iv| {
-                if (iv.timestamp >= cutoff) vlen += 1 else break;
-            }
-            if (vlen == 0) break :blk .{ .content = "", .ts = 0 };
-            const idx = @min(self.insights_input_cursor, vlen - 1);
-            break :blk .{ .content = local.inputs[idx].content, .ts = local.inputs[idx].timestamp };
+            const scoped = self.scopedTraceData() orelse break :blk .{ .content = "", .ts = 0 };
+            const visible = latestInputs(scoped.inputs, self.dashboard_input_capacity);
+            if (visible.len == 0) break :blk .{ .content = "", .ts = 0 };
+            const idx = @min(self.insights_input_cursor, visible.len - 1);
+            break :blk .{ .content = visible[idx].content, .ts = visible[idx].timestamp };
         };
 
         const time_txt = try formatHm(ctx.arena, content_and_ts.ts);
@@ -3016,7 +3485,7 @@ pub const Dashboard = struct {
         w.writeText(&surface, ctx, start_col + 2, start_row, " Keyboard Reference ", theme.boldOn(theme.PANEL_ALT, theme.ACCENT));
 
         const lines = [_][]const u8{
-            "1-3            Switch top-level module",
+            "1-4            Switch top-level module",
             "j / \xe2\x86\x93           Move down / next row",
             "k / \xe2\x86\x91           Move up / previous row",
             "h / \xe2\x86\x90           Previous tab / region",
@@ -3026,7 +3495,7 @@ pub const Dashboard = struct {
             "g              Jump to first row",
             "G              Jump to last row",
             "r              Refresh / sync",
-            "w              Workspace switcher (future)",
+            "w              Dashboard scope",
             "?              Toggle this help",
             "q / Ctrl+C     Quit",
         };
@@ -3147,7 +3616,7 @@ pub const Dashboard = struct {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
             if (self.api_state.bundles) |lb| {
-                const alloc = self.api_state.arena.allocator();
+                const alloc = self.api_state.allocator();
                 break :blk api.toBundleEntries(alloc, lb);
             }
             break :blk &.{};
@@ -3162,7 +3631,7 @@ pub const Dashboard = struct {
 
         // Default-expand every depth-0 prefix the first time we see prompts.
         if (!self.library_tree_initialized and prompts.len > 0) {
-            const alloc = self.api_state.arena.allocator();
+            const alloc = self.api_state.allocator();
             for (prompts) |p| {
                 if (std.mem.indexOfScalar(u8, p.path, '/')) |i| {
                     const top = p.path[0 .. i + 1];
@@ -3210,6 +3679,10 @@ pub const Dashboard = struct {
 
         var rows_buf: [MAX_LIBRARY_ROWS]tree.Row = undefined;
         const row_count = tree.flatten(sorted_paths[0..filtered_len], &self.library_expanded, &rows_buf);
+        const selected_row: usize = if (row_count > 0)
+            @min(@as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor)), row_count - 1)
+        else
+            0;
 
         var i: usize = 0;
         while (i < row_count) : (i += 1) {
@@ -3217,11 +3690,7 @@ pub const Dashboard = struct {
             const buf = &self.library_row_text_bufs[i];
             self.library_row_depth[i] = tr.depth;
 
-            const chevron: ?tree.Chevron = if (tr.kind == .dir)
-                (if (self.library_expanded.contains(tr.dir_prefix)) .expanded else .collapsed)
-            else
-                null;
-            var len = tree.renderPrefix(buf, tr.depth, tr.is_last, chevron);
+            var len = tree.renderPrefix(buf, tr.depth, tr.ancestor_mask, tr.is_last, null);
             len = tree.appendText(buf, len, tr.label);
             if (tr.kind == .dir and len < buf.len) {
                 buf[len] = '/';
@@ -3229,9 +3698,10 @@ pub const Dashboard = struct {
             }
 
             if (tr.kind == .dir) {
+                const row_sel = i == selected_row;
                 self.library_text_rows[i] = .{
                     .text = buf[0..len],
-                    .style = theme.boldOn(theme.PANEL, theme.ACCENT),
+                    .style = theme.boldOn(theme.PANEL, if (row_sel) theme.TEXT else theme.TEXT_SOFT),
                 };
                 self.library_widgets[i] = self.library_text_rows[i].widget();
                 self.library_prompt_indices[i] = null;
@@ -3246,15 +3716,16 @@ pub const Dashboard = struct {
                     3 => "\xe2\x80\xa23",
                     else => "\xe2\x80\xa2+",
                 };
-                const sel = orig_pidx == self.selected_prompt;
+                const row_sel = i == selected_row;
                 self.library_table_cols[i] = .{
                     .{ .text = buf[0..len], .flex = 1 },
                     .{ .text = pr_label, .flex = 0, .min_width = 2, .alignment = .right },
                 };
                 self.library_table_rows[i] = .{
                     .columns = &self.library_table_cols[i],
-                    .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
+                    .style = theme.textOn(theme.PANEL, if (row_sel) theme.TEXT else theme.TEXT_SOFT),
                     .gap = 2,
+                    .padding_left = 0,
                 };
                 self.library_widgets[i] = self.library_table_rows[i].widget();
                 self.library_prompt_indices[i] = orig_pidx;
@@ -3283,7 +3754,7 @@ pub const Dashboard = struct {
     }
 
     fn toggleLibraryDir(self: *Dashboard, prefix: []const u8) void {
-        const alloc = self.api_state.arena.allocator();
+        const alloc = self.api_state.allocator();
         if (self.library_expanded.fetchRemove(prefix)) |_| {
             return;
         }
@@ -3515,15 +3986,32 @@ pub const Dashboard = struct {
             .pull_requests => if (self.show_pr_diff) "PR diff view. j/k scroll, a/x/c actions." else "j/k move  f filter  Enter view  c comment  Esc back",
         };
         return switch (self.selected_module) {
+            .dashboard => "Live signal and recent input feed.",
             .library => "Bundle facet, prompt list, and passive preview.",
             .workspace => "Workspace list and sync status detail.",
-            .insights => "Refer coverage analysis (Phase 3, API pending).",
+            .analysis => "Prompt and team aggregates.",
         };
     }
 
     fn selectTab(self: *Dashboard, ctx: *vxfw.EventContext, tab: TopModule) void {
         self.show_detail = false;
         self.selected_module = tab;
+        self.insights_show_input_detail = false;
+        self.insights_show_member_detail = false;
+        self.insights_expanded_prompt = null;
+        switch (tab) {
+            .dashboard => {
+                if (self.insights_focus != .chart and self.insights_focus != .inputs) {
+                    self.insights_focus = .chart;
+                }
+            },
+            .analysis => {
+                if (self.insights_focus != .prompts and self.insights_focus != .team) {
+                    self.insights_focus = .prompts;
+                }
+            },
+            else => {},
+        }
         self.status_line = tab.label();
         ctx.consumeAndRedraw();
     }
