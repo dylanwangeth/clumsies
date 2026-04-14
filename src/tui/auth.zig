@@ -150,7 +150,10 @@ fn fileFallbackStore(allocator: std.mem.Allocator, data: []const u8) !void {
     };
     const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
     defer file.close();
-    try file.writeAll(data);
+    var file_buffer: [4096]u8 = undefined;
+    var file_writer = std.fs.File.Writer.init(file, &file_buffer);
+    defer file_writer.interface.flush() catch {};
+    try file_writer.interface.writeAll(data);
 }
 
 fn fileFallbackLoad(allocator: std.mem.Allocator) ![]const u8 {

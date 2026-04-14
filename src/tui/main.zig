@@ -33,7 +33,10 @@ pub fn main() !void {
     defer app.deinit();
 
     if (builtin.os.tag != .windows) {
-        std.fs.File.stdout().writeAll("\x1b]2;clumsies hub\x07") catch {};
+        var title_buffer: [64]u8 = undefined;
+        var title_writer = std.fs.File.Writer.init(std.fs.File.stdout(), &title_buffer);
+        defer title_writer.interface.flush() catch {};
+        title_writer.interface.writeAll("\x1b]2;clumsies hub\x07") catch {};
     }
 
     var dashboard = Dashboard.init(&api_state);
