@@ -89,9 +89,20 @@ fn clearExistingLocalTrace(conn: *pg.Conn) void {
 
     while (result.next() catch null) |row| {
         const ws_id = row.get([]const u8, 0) catch continue;
+        if (!isSafeWorkspaceId(ws_id)) {
+            log.warn("seed: skipping unsafe workspace id during local trace cleanup: {s}", .{ws_id});
+            continue;
+        }
         deleteLocalTraceFile(ws_id);
         deleteLocalCursorFile(ws_id);
     }
+}
+
+fn isSafeWorkspaceId(ws_id: []const u8) bool {
+    if (std.mem.indexOfScalar(u8, ws_id, '/')) |_| return false;
+    if (std.mem.indexOfScalar(u8, ws_id, '\\')) |_| return false;
+    if (std.mem.indexOf(u8, ws_id, "..")) |_| return false;
+    return true;
 }
 
 fn deleteLocalTraceFile(ws_id: []const u8) void {
@@ -129,6 +140,13 @@ fn appendLocalTraceEvent(ws_id: []const u8, session_id: []const u8, event_id: i6
     }) catch |err| {
         log.warn("seed: local trace append failed: {}", .{err});
     };
+}
+
+test "isSafeWorkspaceId rejects path traversal markers" {
+    try std.testing.expect(isSafeWorkspaceId("ws-seed-default"));
+    try std.testing.expect(!isSafeWorkspaceId("../escape"));
+    try std.testing.expect(!isSafeWorkspaceId("nested/ws"));
+    try std.testing.expect(!isSafeWorkspaceId("nested\\ws"));
 }
 
 fn seedOrg(conn: *pg.Conn) !void {

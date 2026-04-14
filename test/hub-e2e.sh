@@ -89,15 +89,19 @@ start_hub() {
     local attempts=150
     local delay_s=0.2
     local i
+    local http_status
     for ((i = 1; i <= attempts; i++)); do
         if ! kill -0 "$HUB_PID" 2>/dev/null; then
             echo "FATAL: Hub server failed to start"
             exit 1
         fi
-        if curl -s -o /dev/null --connect-timeout 1 --max-time 1 "$BASE/api/auth/me"; then
-            echo "Hub server running (PID $HUB_PID)"
-            return
-        fi
+        http_status="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 1 --max-time 1 "$BASE/api/auth/me" || true)"
+        case "$http_status" in
+            200|401|403)
+                echo "Hub server running (PID $HUB_PID)"
+                return
+                ;;
+        esac
         sleep "$delay_s"
     done
 

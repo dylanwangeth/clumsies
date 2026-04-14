@@ -127,7 +127,7 @@ fn ensureUser(conn: *pg.Conn, id_buf: *[64]u8, preferred_id: []const u8, usernam
             r.deinit() catch {};
             return err;
         };
-        const stable_id = copySlice(id_buf, existing_id);
+        const stable_id = try copySlice(id_buf, existing_id);
         r.deinit() catch {};
 
         _ = conn.exec(
@@ -159,13 +159,13 @@ fn ensureUser(conn: *pg.Conn, id_buf: *[64]u8, preferred_id: []const u8, usernam
         return err;
     };
 
-    return copySlice(id_buf, preferred_id);
+    return try copySlice(id_buf, preferred_id);
 }
 
-fn copySlice(dest: *[64]u8, src: []const u8) []const u8 {
-    const len = @min(dest.len, src.len);
-    @memcpy(dest[0..len], src[0..len]);
-    return dest[0..len];
+fn copySlice(dest: *[64]u8, src: []const u8) ![]const u8 {
+    if (src.len > dest.len) return error.IdentifierTooLong;
+    @memcpy(dest[0..src.len], src);
+    return dest[0..src.len];
 }
 
 fn logPgError(conn: *pg.Conn, msg: []const u8, err: anytype) void {
@@ -173,4 +173,9 @@ fn logPgError(conn: *pg.Conn, msg: []const u8, err: anytype) void {
     if (conn.err) |pg_err| {
         log.err("pg detail: {s}", .{pg_err.message});
     }
+}
+
+test "copySlice rejects oversized ids" {
+    var buf: [4]u8 = undefined;
+    try std.testing.expectError(error.IdentifierTooLong, copySlice(&buf, "12345"));
 }
