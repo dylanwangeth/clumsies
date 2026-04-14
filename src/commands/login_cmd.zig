@@ -74,7 +74,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         defer parsed.deinit();
         const save_location = auth_mod.saveAuth(allocator, hub_url, username, parsed.value.access_token, parsed.value.refresh_token) catch |err| {
             try stderr.print("{s}{s}{s}Error:{s} Failed to save login credentials ({s})\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
-            return;
+            return error.CommandFailed;
         };
         try stdout.print("{s}{s}{s}Logged in{s} as {s}{s}{s}\n", .{ P, Color.bold, Color.green, Color.reset, Color.cyan, username, Color.reset });
         try printStorageNote(stderr, allocator, save_location);
@@ -135,7 +135,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer parsed.deinit();
     const save_location = auth_mod.saveAuth(allocator, hub_url, username, parsed.value.access_token, parsed.value.refresh_token) catch |err| {
         try stderr.print("{s}{s}{s}Error:{s} Failed to save login credentials ({s})\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
-        return;
+        return error.CommandFailed;
     };
     try stdout.print("{s}{s}{s}Account activated and logged in{s} as {s}{s}{s}\n", .{ P, Color.bold, Color.green, Color.reset, Color.cyan, username, Color.reset });
     try printStorageNote(stderr, allocator, save_location);

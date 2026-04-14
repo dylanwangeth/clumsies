@@ -105,7 +105,13 @@ pub fn main() !void {
             try stdout_writer.print("{s}{s}{s}clumsies{s} {s}\n", .{ P, Color.bold, Color.orange, Color.reset, version });
         },
         .help => try cmd_help.run(stdout_writer),
-        .login => try cmd_login.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .login => cmd_login.run(stdout_writer, stderr_writer, allocator, cmd_args) catch |err| switch (err) {
+            error.CommandFailed => {
+                stderr_file_writer.interface.flush() catch {};
+                std.process.exit(1);
+            },
+            else => return err,
+        },
         .init_cmd => try cmd_init.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .sync => try cmd_sync.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
