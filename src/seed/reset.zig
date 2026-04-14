@@ -2,6 +2,7 @@ const std = @import("std");
 const pg = @import("pg");
 const data = @import("data.zig");
 const Faker = @import("faker.zig");
+const seed_hash = @import("hash.zig");
 const password = @import("password.zig");
 const clumsies_lib = @import("clumsies_lib");
 const local_trace = clumsies_lib.trace;
@@ -17,7 +18,7 @@ const SeedState = struct {
     user_count: usize = 0,
 
     prompt_ids: [data.PROMPT_COUNT][24]u8 = undefined,
-    prompt_hashes: [data.PROMPT_COUNT][24]u8 = undefined,
+    prompt_hashes: [data.PROMPT_COUNT][71]u8 = undefined,
     prompt_paths: [data.PROMPT_COUNT][80]u8 = undefined,
     prompt_path_lens: [data.PROMPT_COUNT]usize = .{0} ** data.PROMPT_COUNT,
     prompt_count: usize = 0,
@@ -146,8 +147,8 @@ fn seedUsers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 
     for (data.SEED_USERNAMES, 0..) |name, i| {
         const id = faker.hexId(&state.user_ids[i], "usr-");
-        // First 2 users are maintainers, rest are members; last 2 are invited
-        const role: []const u8 = if (i < 2) "maintainer" else "member";
+        // Keep reset aligned with ensure: only the base admin user is a maintainer.
+        const role: []const u8 = if (std.mem.eql(u8, name, data.BASE_MAINTAINER_USERNAME)) "maintainer" else "member";
         const is_invited = i >= data.USER_COUNT - 2;
         const status: []const u8 = if (is_invited) "invited" else "active";
         const password_hash: []const u8 = if (is_invited) "!invited" else active_password_hash;
@@ -166,20 +167,23 @@ fn seedUsers(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 fn seedPrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
     log.info("seeding {d} prompts...", .{data.PROMPT_COUNT});
 
+    const mpf_content =
+        "# clumsies Protocol Bootstrap\n\nUse memory.search to discover rules, memory.load to read them, memory.refer to declare what you applied.\n";
+    const mpf_hash = seed_hash.contentHash(mpf_content);
+
     _ = conn.exec(
         "INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5) ON CONFLICT (prompt_id) DO NOTHING",
         .{
             "p-mpf",
             data.ORG_ID,
             "META_PROMPT.md",
-            "# clumsies Protocol Bootstrap\n\nUse memory.search to discover rules, memory.load to read them, memory.refer to declare what you applied.\n",
-            "sha256:mpf0000000000000000000000000000000000000000000000000000000000",
+            mpf_content,
+            mpf_hash[0..],
         },
     ) catch |err| log.warn("MPF seed insert failed: {}", .{err});
 
     for (0..data.PROMPT_COUNT) |i| {
         const id = faker.hexId(&state.prompt_ids[i], "p-");
-        const hash = faker.hexId(&state.prompt_hashes[i], "sha256:");
 
         var path_buf: [80]u8 = undefined;
         var path: []const u8 = undefined;
@@ -203,10 +207,11 @@ fn seedPrompts(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 
         var content_buf: [512]u8 = undefined;
         const content = faker.promptContent(&content_buf, kind, stable_path);
+        state.prompt_hashes[i] = seed_hash.contentHash(content);
 
         _ = conn.exec(
             "INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5)",
-            .{ id, data.ORG_ID, stable_path, content, hash },
+            .{ id, data.ORG_ID, stable_path, content, state.promptHash(i) },
         ) catch |err| {
             log.warn("prompt insert failed: {}", .{err});
             continue;
@@ -292,18 +297,17 @@ fn seedPromptHistory(conn: *pg.Conn, faker: *Faker, state: *SeedState) !void {
 
         const history_count = faker.intRange(usize, 1, 4);
         for (0..history_count) |h| {
-            var hash_buf: [24]u8 = undefined;
-            const hash = faker.hexId(&hash_buf, "sha256:");
             var interval_buf: [64]u8 = undefined;
             const interval = faker.pastInterval(&interval_buf, 30 - @as(u32, @intCast(h * 7)));
 
             var content_buf: [256]u8 = undefined;
             const content = std.fmt.bufPrint(&content_buf, "# Historical version {d}\n\nPrevious version of this prompt.", .{h + 1}) catch "# History";
+            const hash = seed_hash.contentHash(content);
             const path = state.prompt_paths[i][0..state.prompt_path_lens[i]];
 
             _ = conn.exec(
                 "INSERT INTO prompt_history (prompt_id, content_hash, path, content, merged_at) VALUES ($1, $2, $3, $4, now() - $5::interval) ON CONFLICT DO NOTHING",
-                .{ state.promptId(i), hash, path, content, interval },
+                .{ state.promptId(i), hash[0..], path, content, interval },
             ) catch |err| {
                 log.warn("seed: {}", .{err});
             };

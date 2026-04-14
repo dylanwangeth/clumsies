@@ -1,6 +1,7 @@
 const std = @import("std");
 const pg = @import("pg");
 const data = @import("data.zig");
+const seed_hash = @import("hash.zig");
 const password = @import("password.zig");
 
 const log = std.log.scoped(.seed);
@@ -13,6 +14,7 @@ pub fn run(pool: *pg.Pool) !void {
 
     var hash_buf: [128]u8 = undefined;
     const password_hash = try password.hashPassword(data.SEED_PASSWORD, &hash_buf);
+    const prompt_hash = seed_hash.contentHash(data.BASE_PROMPT_CONTENT);
     var maintainer_id_buf: [64]u8 = undefined;
     var member_id_buf: [64]u8 = undefined;
 
@@ -58,7 +60,7 @@ pub fn run(pool: *pg.Pool) !void {
         data.ORG_ID,
         data.BASE_PROMPT_PATH,
         data.BASE_PROMPT_CONTENT,
-        data.BASE_PROMPT_HASH,
+        prompt_hash[0..],
     }) catch |err| {
         logPgError(conn, "ensure prompt failed", err);
         return err;

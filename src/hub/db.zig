@@ -52,15 +52,32 @@ pub fn bootstrap(pool: *Pool) !void {
         if (count > 0) return;
     }
 
-    const username = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_USERNAME") catch blk: {
-        log.warn("HUB_BOOTSTRAP_USERNAME missing; defaulting to 'admin'", .{});
-        break :blk "admin";
+    const username_owned = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_USERNAME") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => blk: {
+            log.warn("HUB_BOOTSTRAP_USERNAME missing; defaulting to 'admin'", .{});
+            break :blk null;
+        },
+        else => return err,
     };
-    const password = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_PASSWORD") catch blk: {
-        log.warn("HUB_BOOTSTRAP_PASSWORD missing; defaulting to 'admin'", .{});
-        break :blk "admin";
+    defer if (username_owned) |value| alloc.free(value);
+    const username = username_owned orelse "admin";
+
+    const password_owned = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_PASSWORD") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => blk: {
+            log.warn("HUB_BOOTSTRAP_PASSWORD missing; defaulting to 'admin'", .{});
+            break :blk null;
+        },
+        else => return err,
     };
-    const org_name = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_ORG") catch "default";
+    defer if (password_owned) |value| alloc.free(value);
+    const password = password_owned orelse "admin";
+
+    const org_name_owned = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_ORG") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    defer if (org_name_owned) |value| alloc.free(value);
+    const org_name = org_name_owned orelse "default";
 
     // Create org
     _ = conn.exec(
