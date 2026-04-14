@@ -1,6 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const enable_keychain = build_options.enable_keychain;
+const log = std.log.scoped(.auth);
 
 pub const AuthInfo = struct {
     hub_url: []const u8,
@@ -38,7 +39,10 @@ pub fn saveAuth(allocator: std.mem.Allocator, hub_url: []const u8, username: []c
     defer allocator.free(json);
 
     if (comptime enable_keychain) {
-        try keychainStore(json);
+        keychainStore(json) catch |err| {
+            log.warn("keychain store failed ({s}); falling back to auth.json", .{@errorName(err)});
+            try fileFallbackStore(allocator, json);
+        };
     } else {
         try fileFallbackStore(allocator, json);
     }
@@ -46,7 +50,12 @@ pub fn saveAuth(allocator: std.mem.Allocator, hub_url: []const u8, username: []c
 
 pub fn loadAuth(allocator: std.mem.Allocator) !AuthInfo {
     const json = if (comptime enable_keychain)
-        keychainLookup(allocator) catch return error.NotAuthenticated
+        keychainLookup(allocator) catch |err| blk: {
+            if (err != error.NotAuthenticated) {
+                log.warn("keychain lookup failed ({s}); trying auth.json", .{@errorName(err)});
+            }
+            break :blk fileFallbackLoad(allocator) catch return error.NotAuthenticated;
+        }
     else
         fileFallbackLoad(allocator) catch return error.NotAuthenticated;
     defer allocator.free(json);
