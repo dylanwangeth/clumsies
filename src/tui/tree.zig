@@ -17,6 +17,7 @@ pub const RowKind = enum { dir, leaf };
 
 pub const Row = struct {
     depth: u8,
+    ancestor_mask: u16,
     is_last: bool,
     kind: RowKind,
     label: []const u8,
@@ -73,6 +74,7 @@ pub fn flatten(
             const label_start: usize = if (std.mem.lastIndexOfScalar(u8, without_slash, '/')) |s| s + 1 else 0;
             out[row_count] = .{
                 .depth = @intCast(depth),
+                .ancestor_mask = 0,
                 .is_last = false,
                 .kind = .dir,
                 .label = without_slash[label_start..],
@@ -95,6 +97,7 @@ pub fn flatten(
 
         out[row_count] = .{
             .depth = @intCast(parents_len),
+            .ancestor_mask = 0,
             .is_last = false,
             .kind = .leaf,
             .label = basename(path),
@@ -120,6 +123,30 @@ pub fn flatten(
         out[r].is_last = last;
     }
 
+    var ancestor_last: [MAX_DEPTH]bool = .{true} ** MAX_DEPTH;
+    var ancestor_len: usize = 0;
+    r = 0;
+    while (r < row_count) : (r += 1) {
+        const d = out[r].depth;
+        while (ancestor_len > d) {
+            ancestor_len -= 1;
+        }
+
+        var mask: u16 = 0;
+        var level: usize = 0;
+        while (level < d) : (level += 1) {
+            if (!ancestor_last[level]) {
+                mask |= @as(u16, 1) << @intCast(level);
+            }
+        }
+        out[r].ancestor_mask = mask;
+
+        if (d < MAX_DEPTH) {
+            ancestor_last[d] = out[r].is_last;
+            ancestor_len = d + 1;
+        }
+    }
+
     return row_count;
 }
 
@@ -138,21 +165,27 @@ fn stripMd(name: []const u8) []const u8 {
     return name;
 }
 
-/// Writes `depth`-level indent + tree connector + optional chevron into `buf`.
+/// Writes tree guides + connector + optional chevron into `buf`.
+/// Depth-1 rows start directly with the branch connector instead of an extra
+/// blank indent segment, which keeps the tree visually aligned with the root.
 /// Returns the number of bytes written. Safe against buffer overflow.
 pub fn renderPrefix(
     buf: []u8,
     depth: u8,
+    ancestor_mask: u16,
     is_last: bool,
     chevron: ?Chevron,
 ) usize {
     var len: usize = 0;
-    var pad: u8 = 0;
+    var pad: u8 = 1;
     while (pad < depth) : (pad += 1) {
-        if (len + 2 > buf.len) return len;
-        buf[len] = ' ';
-        buf[len + 1] = ' ';
-        len += 2;
+        const guide: []const u8 = if ((ancestor_mask & (@as(u16, 1) << @intCast(pad))) == 0)
+            "  "
+        else
+            "\xe2\x94\x82 "; // "│ "
+        if (len + guide.len > buf.len) return len;
+        @memcpy(buf[len .. len + guide.len], guide);
+        len += guide.len;
     }
     if (depth > 0) {
         const connector: []const u8 = if (is_last)
