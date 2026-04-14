@@ -43,7 +43,7 @@ fn emitScenario(conn: *pg.Conn, tick: u64) void {
     var session_buf: [64]u8 = undefined;
     const session_id = std.fmt.bufPrint(&session_buf, "ses-seed-{d}-{d}", .{ timestamp_base, tick }) catch return;
 
-    insertTraceEvent(conn, .{
+    insertTraceEvent(conn, scenario.user_id, .{
         .ws_id = scenario.ws_id,
         .session_id = session_id,
         .event_id = 0,
@@ -54,7 +54,7 @@ fn emitScenario(conn: *pg.Conn, tick: u64) void {
     const input_hash = prompt_lib.hashContentHexAlloc(std.heap.page_allocator, scenario.input) catch null;
     defer if (input_hash) |hash| std.heap.page_allocator.free(hash);
 
-    insertTraceEvent(conn, .{
+    insertTraceEvent(conn, scenario.user_id, .{
         .ws_id = scenario.ws_id,
         .session_id = session_id,
         .event_id = 1,
@@ -67,7 +67,7 @@ fn emitScenario(conn: *pg.Conn, tick: u64) void {
     for (scenario.refers, 0..) |refer, idx| {
         const prompt = data.promptById(refer.prompt_id) orelse continue;
         const prompt_hash = seed_hash.contentHash(prompt.content);
-        insertTraceEvent(conn, .{
+        insertTraceEvent(conn, scenario.user_id, .{
             .ws_id = scenario.ws_id,
             .session_id = session_id,
             .event_id = @as(i64, @intCast(idx + 2)),
@@ -81,13 +81,14 @@ fn emitScenario(conn: *pg.Conn, tick: u64) void {
     }
 }
 
-fn insertTraceEvent(conn: *pg.Conn, event: local_trace.TraceEvent) void {
+fn insertTraceEvent(conn: *pg.Conn, user_id: ?[]const u8, event: local_trace.TraceEvent) void {
     _ = conn.exec(
-        \\INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp,
+        \\INSERT INTO trace_events (user_id, ws_id, session_id, event_id, type, timestamp,
         \\  prompt_id, prompt_hash, constraint_id, override_base_hash, reason, content, content_hash)
-        \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
     , .{
+        user_id,
         event.ws_id,
         event.session_id,
         event.event_id,

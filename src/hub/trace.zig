@@ -3,6 +3,7 @@ const httpz = @import("httpz");
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("../protocol/api_error.zig").send;
+const log = std.log.scoped(.trace_stats);
 
 const TraceEventInput = struct {
     event_id: i64,
@@ -40,6 +41,23 @@ const OrgPromptStats = struct {
     workspace_count: i64,
     bundle_count: i64,
     open_pr_count: i64,
+    last_referred_at: ?i64 = null,
+    trend: []const i64 = &.{},
+};
+
+const UserTopPromptStat = struct {
+    prompt_id: []const u8,
+    refer_count: i64,
+};
+
+const OrgUserStats = struct {
+    user_id: []const u8,
+    username: []const u8,
+    refer_count: i64,
+    active_days: i64,
+    last_referred_at: ?i64 = null,
+    trend: []const i64 = &.{},
+    top_prompts: []const UserTopPromptStat = &.{},
 };
 
 fn parsePeriod(period: []const u8) ?[]const u8 {
@@ -74,7 +92,10 @@ fn queryTrend(
         .{ sql_trunc, where_clause, days_filter },
     ) catch return &.{};
 
-    var result = conn.query(query, bind) catch return &.{};
+    var result = conn.query(query, bind) catch |err| {
+        log.err("trend query failed: {}", .{err});
+        return &.{};
+    };
     defer result.deinit();
 
     var list: std.ArrayList(TrendEntry) = .empty;
@@ -85,6 +106,160 @@ fn queryTrend(
         }) catch continue;
     }
     return list.items;
+}
+
+fn recentCutoffMs(max_days: u32) i64 {
+    return std.time.milliTimestamp() - @as(i64, max_days) * std.time.ms_per_day;
+}
+
+fn zeroTrendSeries(arena: std.mem.Allocator, max_days: u32) []i64 {
+    const len: usize = @intCast(max_days);
+    const buf = arena.alloc(i64, len) catch return &.{};
+    @memset(buf, 0);
+    return buf;
+}
+
+fn setTrendBucket(series: []i64, age_days: i64, count: i64) void {
+    if (age_days < 0) return;
+    const days: usize = @intCast(age_days);
+    if (days >= series.len) return;
+    const idx = series.len - 1 - days;
+    series[idx] = count;
+}
+
+fn queryPromptTrendSeries(
+    conn: anytype,
+    arena: std.mem.Allocator,
+    org_id: []const u8,
+    max_days: u32,
+) std.StringHashMap([]i64) {
+    var series_by_prompt = std.StringHashMap([]i64).init(arena);
+    const cutoff_ms = recentCutoffMs(max_days);
+
+    var result = conn.query(
+        \\SELECT te.prompt_id,
+        \\  floor(extract(epoch from (date_trunc('day', now()) - date_trunc('day', to_timestamp(te.timestamp / 1000)))) / 86400)::bigint as age_days,
+        \\  count(*) as refer_count
+        \\FROM trace_events te
+        \\JOIN workspaces w ON w.ws_id = te.ws_id
+        \\WHERE w.org_id = $1::uuid
+        \\  AND te.type = 'refer'
+        \\  AND te.prompt_id IS NOT NULL
+        \\  AND te.timestamp >= $2
+        \\GROUP BY te.prompt_id, age_days
+        \\ORDER BY te.prompt_id, age_days
+    , .{ org_id, cutoff_ms }) catch |err| {
+        log.err("prompt trend query failed: {}", .{err});
+        return series_by_prompt;
+    };
+    defer result.deinit();
+
+    while (result.next() catch null) |row| {
+        const prompt_id = row.get([]const u8, 0) catch continue;
+        const age_days = row.get(i64, 1) catch continue;
+        const refer_count = row.get(i64, 2) catch continue;
+
+        const key = arena.dupe(u8, prompt_id) catch continue;
+        const entry = series_by_prompt.getOrPut(key) catch continue;
+        if (!entry.found_existing) {
+            entry.value_ptr.* = zeroTrendSeries(arena, max_days);
+        }
+        setTrendBucket(entry.value_ptr.*, age_days, refer_count);
+    }
+
+    return series_by_prompt;
+}
+
+fn queryUserTrendSeries(
+    conn: anytype,
+    arena: std.mem.Allocator,
+    org_id: []const u8,
+    max_days: u32,
+) std.StringHashMap([]i64) {
+    var series_by_user = std.StringHashMap([]i64).init(arena);
+    const cutoff_ms = recentCutoffMs(max_days);
+
+    var result = conn.query(
+        \\SELECT te.user_id,
+        \\  floor(extract(epoch from (date_trunc('day', now()) - date_trunc('day', to_timestamp(te.timestamp / 1000)))) / 86400)::bigint as age_days,
+        \\  count(*) as refer_count
+        \\FROM trace_events te
+        \\JOIN workspaces w ON w.ws_id = te.ws_id
+        \\WHERE w.org_id = $1::uuid
+        \\  AND te.type = 'refer'
+        \\  AND te.user_id IS NOT NULL
+        \\  AND te.timestamp >= $2
+        \\GROUP BY te.user_id, age_days
+        \\ORDER BY te.user_id, age_days
+    , .{ org_id, cutoff_ms }) catch |err| {
+        log.err("user trend query failed: {}", .{err});
+        return series_by_user;
+    };
+    defer result.deinit();
+
+    while (result.next() catch null) |row| {
+        const user_id = row.get([]const u8, 0) catch continue;
+        const age_days = row.get(i64, 1) catch continue;
+        const refer_count = row.get(i64, 2) catch continue;
+
+        const key = arena.dupe(u8, user_id) catch continue;
+        const entry = series_by_user.getOrPut(key) catch continue;
+        if (!entry.found_existing) {
+            entry.value_ptr.* = zeroTrendSeries(arena, max_days);
+        }
+        setTrendBucket(entry.value_ptr.*, age_days, refer_count);
+    }
+
+    return series_by_user;
+}
+
+fn queryUserTopPrompts(
+    conn: anytype,
+    arena: std.mem.Allocator,
+    org_id: []const u8,
+) std.StringHashMap([]const UserTopPromptStat) {
+    var lists = std.StringHashMap(std.ArrayList(UserTopPromptStat)).init(arena);
+
+    var result = conn.query(
+        \\SELECT te.user_id, te.prompt_id, count(*) as refer_count
+        \\FROM trace_events te
+        \\JOIN workspaces w ON w.ws_id = te.ws_id
+        \\WHERE w.org_id = $1::uuid
+        \\  AND te.type = 'refer'
+        \\  AND te.user_id IS NOT NULL
+        \\  AND te.prompt_id IS NOT NULL
+        \\GROUP BY te.user_id, te.prompt_id
+        \\ORDER BY te.user_id, refer_count DESC, te.prompt_id
+    , .{org_id}) catch |err| {
+        log.err("user top prompts query failed: {}", .{err});
+        const empty = std.StringHashMap([]const UserTopPromptStat).init(arena);
+        return empty;
+    };
+    defer result.deinit();
+
+    while (result.next() catch null) |row| {
+        const user_id = row.get([]const u8, 0) catch continue;
+        const prompt_id = row.get([]const u8, 1) catch continue;
+        const refer_count = row.get(i64, 2) catch continue;
+
+        const key = arena.dupe(u8, user_id) catch continue;
+        const entry = lists.getOrPut(key) catch continue;
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .empty;
+        }
+        if (entry.value_ptr.items.len >= 3) continue;
+        entry.value_ptr.append(arena, .{
+            .prompt_id = arena.dupe(u8, prompt_id) catch continue,
+            .refer_count = refer_count,
+        }) catch continue;
+    }
+
+    var frozen = std.StringHashMap([]const UserTopPromptStat).init(arena);
+    var it = lists.iterator();
+    while (it.next()) |entry| {
+        frozen.put(entry.key_ptr.*, entry.value_ptr.items) catch continue;
+    }
+    return frozen;
 }
 
 pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -137,15 +312,16 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
             }
         }
         const rows_affected = conn.exec(
-            \\INSERT INTO trace_events (ws_id, session_id, event_id, type, timestamp,
+            \\INSERT INTO trace_events (user_id, ws_id, session_id, event_id, type, timestamp,
             \\  prompt_id, prompt_hash, constraint_id, override_base_hash, reason, content, content_hash)
-            \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
         , .{
-            event.ws_id,       event.session_id,          @as(i64, event.event_id),
-            event.type,        @as(i64, event.timestamp), event.prompt_id,
-            event.prompt_hash, event.constraint_id,       event.override_base_hash,
-            event.reason,      event.content,             event.content_hash,
+            user.user_id,             event.ws_id,       event.session_id,
+            @as(i64, event.event_id), event.type,        @as(i64, event.timestamp),
+            event.prompt_id,          event.prompt_hash, event.constraint_id,
+            event.override_base_hash, event.reason,      event.content,
+            event.content_hash,
         }) catch {
             deduplicated += 1;
             continue;
@@ -202,21 +378,30 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         try res.json(.{ .total_refer_count = @as(i64, 0), .workspace_count = @as(i64, 0), .prompt_count = @as(i64, 0), .prompts = @as([]const OrgPromptStats, &.{}), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
         return;
     };
-    defer row.deinit() catch {};
+    const total_refer_count = try row.get(i64, 0);
+    const workspace_count = try row.get(i64, 1);
+    const prompt_count = try row.get(i64, 2);
+    row.deinit() catch {};
+
+    const prompt_trends = queryPromptTrendSeries(conn, req.arena, user.org_id, max_days);
+    const user_trends = queryUserTrendSeries(conn, req.arena, user.org_id, max_days);
+    const user_top_prompts = queryUserTopPrompts(conn, req.arena, user.org_id);
 
     // Per-prompt aggregated stats via LEFT JOINs
     var prompt_list: std.ArrayList(OrgPromptStats) = .empty;
-    const prompt_result = conn.query(
+    var prompt_result = conn.query(
         \\SELECT p.prompt_id,
         \\  COALESCE(te_stats.refer_count, 0),
         \\  COALESCE(te_stats.active_constraints, 0),
         \\  COALESCE(ws_stats.workspace_count, 0),
         \\  COALESCE(bp_stats.bundle_count, 0),
-        \\  COALESCE(pr_stats.open_pr_count, 0)
+        \\  COALESCE(pr_stats.open_pr_count, 0),
+        \\  te_stats.last_referred_at
         \\FROM prompts p
         \\LEFT JOIN (
         \\  SELECT te.prompt_id, count(*) as refer_count,
-        \\    count(DISTINCT te.constraint_id) as active_constraints
+        \\    count(DISTINCT te.constraint_id) as active_constraints,
+        \\    max(te.timestamp) as last_referred_at
         \\  FROM trace_events te JOIN workspaces w ON w.ws_id = te.ws_id
         \\  WHERE w.org_id = $1::uuid AND te.type = 'refer' AND te.prompt_id IS NOT NULL
         \\  GROUP BY te.prompt_id
@@ -242,21 +427,111 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         \\) pr_stats ON pr_stats.prompt_id = p.prompt_id
         \\WHERE p.org_id = $1::uuid
         \\ORDER BY COALESCE(te_stats.refer_count, 0) DESC
-    , .{user.org_id}) catch null;
-    if (prompt_result) |pr| {
-        defer pr.deinit();
-        while (pr.next() catch null) |prow| {
+    , .{user.org_id}) catch |err| blk: {
+        log.err("org stats prompt query failed: {}", .{err});
+        break :blk null;
+    };
+    if (prompt_result) |*pr| {
+        defer pr.*.deinit();
+        while (true) {
+            const prow = pr.*.next() catch |err| {
+                log.err("org stats prompt query next failed: {}", .{err});
+                break;
+            } orelse break;
             prompt_list.append(req.arena, .{
-                .prompt_id = req.arena.dupe(u8, prow.get([]const u8, 0) catch continue) catch continue,
-                .refer_count = prow.get(i64, 1) catch continue,
-                .active_constraint_count = prow.get(i64, 2) catch continue,
-                .workspace_count = prow.get(i64, 3) catch continue,
-                .bundle_count = prow.get(i64, 4) catch continue,
-                .open_pr_count = prow.get(i64, 5) catch continue,
+                .prompt_id = req.arena.dupe(u8, prow.get([]const u8, 0) catch |err| {
+                    log.err("org stats prompt_id get failed: {}", .{err});
+                    continue;
+                }) catch continue,
+                .refer_count = prow.get(i64, 1) catch |err| {
+                    log.err("org stats refer_count get failed: {}", .{err});
+                    continue;
+                },
+                .active_constraint_count = prow.get(i64, 2) catch |err| {
+                    log.err("org stats active_constraint_count get failed: {}", .{err});
+                    continue;
+                },
+                .workspace_count = prow.get(i64, 3) catch |err| {
+                    log.err("org stats workspace_count get failed: {}", .{err});
+                    continue;
+                },
+                .bundle_count = prow.get(i64, 4) catch |err| {
+                    log.err("org stats bundle_count get failed: {}", .{err});
+                    continue;
+                },
+                .open_pr_count = prow.get(i64, 5) catch |err| {
+                    log.err("org stats open_pr_count get failed: {}", .{err});
+                    continue;
+                },
+                .last_referred_at = prow.get(?i64, 6) catch |err| blk: {
+                    log.err("org stats last_referred_at get failed: {}", .{err});
+                    break :blk null;
+                },
+                .trend = if (prompt_trends.get(prow.get([]const u8, 0) catch "")) |trend| trend else zeroTrendSeries(req.arena, max_days),
             }) catch continue;
         }
     }
 
+    var user_list: std.ArrayList(OrgUserStats) = .empty;
+    var user_result = conn.query(
+        \\SELECT u.user_id,
+        \\  u.username,
+        \\  COALESCE(stats.refer_count, 0),
+        \\  COALESCE(stats.active_days, 0),
+        \\  stats.last_referred_at
+        \\FROM users u
+        \\LEFT JOIN (
+        \\  SELECT te.user_id,
+        \\    count(*) as refer_count,
+        \\    count(DISTINCT date_trunc('day', to_timestamp(te.timestamp / 1000))) as active_days,
+        \\    max(te.timestamp) as last_referred_at
+        \\  FROM trace_events te
+        \\  JOIN workspaces w ON w.ws_id = te.ws_id
+        \\  WHERE w.org_id = $1::uuid
+        \\    AND te.type = 'refer'
+        \\    AND te.user_id IS NOT NULL
+        \\  GROUP BY te.user_id
+        \\) stats ON stats.user_id = u.user_id
+        \\WHERE u.org_id = $1::uuid
+        \\ORDER BY COALESCE(stats.refer_count, 0) DESC, u.username
+    , .{user.org_id}) catch |err| blk: {
+        log.err("org stats user query failed: {}", .{err});
+        break :blk null;
+    };
+    if (user_result) |*ur| {
+        defer ur.*.deinit();
+        while (true) {
+            const urow = ur.*.next() catch |err| {
+                log.err("org stats user query next failed: {}", .{err});
+                break;
+            } orelse break;
+            const user_id = urow.get([]const u8, 0) catch |err| {
+                log.err("org stats user_id get failed: {}", .{err});
+                continue;
+            };
+            user_list.append(req.arena, .{
+                .user_id = req.arena.dupe(u8, user_id) catch continue,
+                .username = req.arena.dupe(u8, urow.get([]const u8, 1) catch |err| {
+                    log.err("org stats username get failed: {}", .{err});
+                    continue;
+                }) catch continue,
+                .refer_count = urow.get(i64, 2) catch |err| {
+                    log.err("org stats user refer_count get failed: {}", .{err});
+                    continue;
+                },
+                .active_days = urow.get(i64, 3) catch |err| {
+                    log.err("org stats user active_days get failed: {}", .{err});
+                    continue;
+                },
+                .last_referred_at = urow.get(?i64, 4) catch |err| blk: {
+                    log.err("org stats user last_referred_at get failed: {}", .{err});
+                    break :blk null;
+                },
+                .trend = if (user_trends.get(user_id)) |trend| trend else zeroTrendSeries(req.arena, max_days),
+                .top_prompts = if (user_top_prompts.get(user_id)) |tops| tops else &.{},
+            }) catch continue;
+        }
+    }
     const trend_data = queryTrend(
         conn,
         req.arena,
@@ -267,10 +542,11 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     );
 
     try res.json(.{
-        .total_refer_count = try row.get(i64, 0),
-        .workspace_count = try row.get(i64, 1),
-        .prompt_count = try row.get(i64, 2),
+        .total_refer_count = total_refer_count,
+        .workspace_count = workspace_count,
+        .prompt_count = prompt_count,
         .prompts = prompt_list.items,
+        .users = user_list.items,
         .trend = .{ .period = period, .data = trend_data },
     }, .{});
 }
@@ -316,9 +592,8 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
         try res.json(.{ .ws_id = ws_id, .total_refer_count = @as(i64, 0), .constraint_coverage = @as(f64, 0.0), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
         return;
     };
-    defer row.deinit() catch {};
-
     const total_refer_count = try row.get(i64, 0);
+    row.deinit() catch {};
 
     // Query constraint coverage: fraction of workspace prompts that have been referred
     var coverage: f64 = 0.0;
@@ -340,20 +615,32 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     };
     var prompt_list: std.ArrayList(PromptRef) = .empty;
 
-    const prompt_result = conn.query(
+    var prompt_result = conn.query(
         "SELECT prompt_id, count(*) FROM trace_events WHERE ws_id = $1 AND type = 'refer' AND prompt_id IS NOT NULL GROUP BY prompt_id ORDER BY count(*) DESC",
         .{ws_id},
-    ) catch null;
-    if (prompt_result) |pr| {
-        defer pr.deinit();
-        while (pr.next() catch null) |prow| {
+    ) catch |err| blk: {
+        log.err("workspace stats prompt query failed: {}", .{err});
+        break :blk null;
+    };
+    if (prompt_result) |*pr| {
+        defer pr.*.deinit();
+        while (true) {
+            const prow = pr.*.next() catch |err| {
+                log.err("workspace stats prompt query next failed: {}", .{err});
+                break;
+            } orelse break;
             prompt_list.append(req.arena, .{
-                .prompt_id = req.arena.dupe(u8, prow.get([]const u8, 0) catch continue) catch continue,
-                .refer_count = prow.get(i64, 1) catch continue,
+                .prompt_id = req.arena.dupe(u8, prow.get([]const u8, 0) catch |err| {
+                    log.err("workspace stats prompt_id get failed: {}", .{err});
+                    continue;
+                }) catch continue,
+                .refer_count = prow.get(i64, 1) catch |err| {
+                    log.err("workspace stats refer_count get failed: {}", .{err});
+                    continue;
+                },
             }) catch continue;
         }
     }
-
     const trend_data = queryTrend(conn, req.arena, sql_trunc, "ws_id = $1", .{ws_id}, max_days);
 
     try res.json(.{

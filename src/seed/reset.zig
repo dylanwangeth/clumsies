@@ -36,6 +36,7 @@ pub fn rebuild(conn: *pg.Conn) !void {
     try seedWorkspaceMembers(conn);
     try seedWorkspacePrompts(conn);
     try seedContexts(conn);
+    try seedHistoricalTrace(conn);
     try ensureLocalWorkspaceState();
 
     log.info("seed fixtures rebuilt", .{});
@@ -122,4 +123,86 @@ fn seedContexts(conn: *pg.Conn) !void {
             \\VALUES ($1, $2, $3, $4, $5, $6)
         , .{ context.id, context.ws_id, context.path, context.content, content_hash[0..], context.author });
     }
+}
+
+fn seedHistoricalTrace(conn: *pg.Conn) !void {
+    const day_ms = std.time.ms_per_day;
+    const hour_ms = std.time.ms_per_hour;
+    const now_ms = std.time.milliTimestamp();
+
+    for (0..14) |age_days| {
+        for (data.PUMP_SCENARIOS, 0..) |scenario, scenario_idx| {
+            const repeats = historicalRepeats(age_days, scenario_idx);
+            for (0..repeats) |repeat_idx| {
+                const base_ts = now_ms -
+                    (@as(i64, @intCast(age_days + 1)) * day_ms) +
+                    (@as(i64, @intCast(repeat_idx)) * hour_ms);
+                var session_buf: [96]u8 = undefined;
+                const session_id = std.fmt.bufPrint(
+                    &session_buf,
+                    "ses-seed-history-{d}-{d}-{d}",
+                    .{ age_days, scenario_idx, repeat_idx },
+                ) catch continue;
+
+                for (scenario.refers, 0..) |refer, refer_idx| {
+                    const prompt = data.promptById(refer.prompt_id) orelse continue;
+                    const prompt_hash = seed_hash.contentHash(prompt.content);
+                    try insertHistoricalTraceEvent(conn, scenario.user_id, .{
+                        .ws_id = scenario.ws_id,
+                        .session_id = session_id,
+                        .event_id = @as(i64, @intCast(refer_idx)),
+                        .type = "refer",
+                        .timestamp = base_ts + @as(i64, @intCast(refer_idx)),
+                        .prompt_id = prompt.id,
+                        .prompt_hash = prompt_hash[0..],
+                        .constraint_id = refer.constraint_id,
+                        .reason = refer.reason,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn historicalRepeats(age_days: usize, scenario_idx: usize) usize {
+    return switch (scenario_idx) {
+        0 => if (age_days < 7) 3 else 1, // trending up
+        1 => if (age_days < 7) 1 else 3, // trending down
+        2 => 2, // flat
+        3 => if (age_days < 7) 2 else 0, // newly active
+        4 => if (age_days < 7) 0 else 2, // recently cooled off
+        else => 1,
+    };
+}
+
+const HistoricalTraceEvent = struct {
+    ws_id: []const u8,
+    session_id: []const u8,
+    event_id: i64,
+    type: []const u8,
+    timestamp: i64,
+    prompt_id: ?[]const u8 = null,
+    prompt_hash: ?[]const u8 = null,
+    constraint_id: ?[]const u8 = null,
+    reason: ?[]const u8 = null,
+};
+
+fn insertHistoricalTraceEvent(conn: *pg.Conn, user_id: []const u8, event: HistoricalTraceEvent) !void {
+    _ = try conn.exec(
+        \\INSERT INTO trace_events (user_id, ws_id, session_id, event_id, type, timestamp,
+        \\  prompt_id, prompt_hash, constraint_id, override_base_hash, reason, content, content_hash)
+        \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, $10, NULL, NULL)
+        \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
+    , .{
+        user_id,
+        event.ws_id,
+        event.session_id,
+        event.event_id,
+        event.type,
+        event.timestamp,
+        event.prompt_id,
+        event.prompt_hash,
+        event.constraint_id,
+        event.reason,
+    });
 }

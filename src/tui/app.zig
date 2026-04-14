@@ -1419,7 +1419,7 @@ pub const Dashboard = struct {
         w.fillSurface(&surface, theme.PANEL);
         w.drawBorder(&surface, border_color, theme.PANEL);
 
-        // Row 0: inner tabs + prompt name
+        // Row 0: inner tabs + compact panel meta
         var tab_col: u16 = 2;
         for (detail_tabs) |tab| {
             tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, tab.label(), tab == self.detail_tab);
@@ -1427,8 +1427,8 @@ pub const Dashboard = struct {
         }
         if (self.detail_tab == .pull_requests) {
             w.writeRightText(&surface, ctx, 0, "f filter", theme.textOn(theme.PANEL, theme.MUTED));
-        } else {
-            w.writeRightText(&surface, ctx, 0, p.path, theme.textOn(theme.PANEL, theme.MUTED));
+        } else if (self.detail_tab == .content) {
+            try writePromptMetaOnPanelChrome(&surface, ctx, tab_col, p);
         }
 
         const inner_h = ctx.max.height.? -| 2;
@@ -1436,23 +1436,9 @@ pub const Dashboard = struct {
 
         switch (self.detail_tab) {
             .content => {
-                // Meta header row
-                var header_rows: u16 = 1;
-                const meta_line = try std.fmt.allocPrint(ctx.arena, "rev.{d}  \xc2\xb7{d} PR  {d} constraints  {s}", .{ p.revision, p.open_pr_count, p.constraint_count, p.updated });
-                w.writeText(&surface, ctx, 2, 2, meta_line, theme.fg(theme.MUTED));
-
-                // Workspace names (if present)
-                if (p.workspace_names.len > 0) {
-                    header_rows += 1;
-                    w.writeText(&surface, ctx, 2, 3, p.workspace_names, theme.fg(theme.TEXT_SOFT));
-                }
-
-                // Spacing row
-                header_rows += 1;
-                const content_origin_row: u16 = 2 + header_rows;
-                const content_h = inner_h -| header_rows;
-
                 self.syncContentWidget();
+                const content_origin_row: u16 = 2;
+                const content_h = ctx.max.height.? -| 3;
                 const child_ctx = ctx.withConstraints(.{ .width = inner_w, .height = content_h }, .{ .width = inner_w, .height = content_h });
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
                 children[0] = .{ .origin = .{ .row = content_origin_row, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
@@ -1547,7 +1533,7 @@ pub const Dashboard = struct {
         const info_border = if (!self.detail_focus_content) theme.ACCENT else theme.BORDER;
         w.drawBorder(&surface, info_border, theme.PANEL);
 
-        // Row 0: inner tabs + right hint
+        // Row 0: inner tabs + compact panel meta
         var col: u16 = 2;
         for (detail_tabs) |tab| {
             col = w.drawInnerTabBadge(&surface, ctx, 0, col, tab.label(), tab == self.detail_tab);
@@ -1555,6 +1541,8 @@ pub const Dashboard = struct {
         }
         if (self.detail_tab == .pull_requests) {
             w.writeRightText(&surface, ctx, 0, "f filter", theme.textOn(theme.PANEL, theme.MUTED));
+        } else if (self.detail_tab == .content) {
+            try writePromptMetaOnPanelChrome(&surface, ctx, col, p);
         }
 
         const inner_h = ctx.max.height.? -| 3;
@@ -1562,23 +1550,9 @@ pub const Dashboard = struct {
 
         switch (self.detail_tab) {
             .content => {
-                // Meta header row
-                var header_rows2: u16 = 1;
-                const meta_line2 = try std.fmt.allocPrint(ctx.arena, "rev.{d}  \xc2\xb7{d} PR  {d} constraints  {s}", .{ p.revision, p.open_pr_count, p.constraint_count, p.updated });
-                w.writeText(&surface, ctx, 2, 2, meta_line2, theme.fg(theme.MUTED));
-
-                // Workspace names (if present)
-                if (p.workspace_names.len > 0) {
-                    header_rows2 += 1;
-                    w.writeText(&surface, ctx, 2, 3, p.workspace_names, theme.fg(theme.TEXT_SOFT));
-                }
-
-                // Spacing row
-                header_rows2 += 1;
-                const content_origin_row2: u16 = 2 + header_rows2;
-                const content_h2 = inner_h -| header_rows2;
-
                 self.syncContentWidget();
+                const content_origin_row2: u16 = 2;
+                const content_h2 = ctx.max.height.? -| 3;
                 const child_ctx = ctx.withConstraints(.{ .width = inner_w, .height = content_h2 }, .{ .width = inner_w, .height = content_h2 });
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
                 children[0] = .{ .origin = .{ .row = content_origin_row2, .col = 2 }, .surface = try self.content_scroll_bars.widget().draw(child_ctx) };
@@ -2015,6 +1989,46 @@ pub const Dashboard = struct {
         path: []const u8,
     };
 
+    fn cachedWorkspaceContextBody(self: *Dashboard, ws_id: []const u8, path: []const u8) ?[]const u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+
+        const cached_ws_id = self.api_state.workspace_context_content_ws_id orelse return null;
+        const cached_path = self.api_state.workspace_context_content_path orelse return null;
+        if (!std.mem.eql(u8, cached_ws_id, ws_id) or !std.mem.eql(u8, cached_path, path)) return null;
+        return self.api_state.workspace_context_content;
+    }
+
+    fn cachedPromptBody(self: *Dashboard, path: []const u8) ?[]const u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+
+        const cached_path = self.api_state.prompt_content_name orelse return null;
+        if (!std.mem.eql(u8, cached_path, path)) return null;
+        return self.api_state.prompt_content;
+    }
+
+    fn drawTextBlock(
+        self: *Dashboard,
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        col: u16,
+        start_row: u16,
+        max_row: u16,
+        text: []const u8,
+        style: vaxis.Style,
+    ) void {
+        _ = self;
+
+        var row = start_row;
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |line| {
+            if (row >= max_row) break;
+            w.writeText(surface, ctx, col, row, line, style);
+            row += 1;
+        }
+    }
+
     fn resolveWsPromptSelection(self: *Dashboard, ws_d: *const api.WsDetail) ?ResolvedWsPrompt {
         if (self.ws_list_sel >= self.ws_row_count) return null;
         const idx = self.ws_row_leaf_index[self.ws_list_sel] orelse return null;
@@ -2051,6 +2065,15 @@ pub const Dashboard = struct {
         const dir_sel = self.currentWsDirSelection();
         const context_sel = self.resolveWsContextSelection(&ws_d);
         const prompt_sel = self.resolveWsPromptSelection(&ws_d);
+        const context_body: ?[]const u8 = if (dir_sel == null and self.ws_tab == .context and context_sel != null) blk: {
+            const f = &ws_d.context_files[context_sel.?];
+            api.fetchWorkspaceContextContentAsync(self.api_state, ws_d.ws_id, f.path);
+            break :blk self.cachedWorkspaceContextBody(ws_d.ws_id, f.path);
+        } else null;
+        const prompt_body: ?[]const u8 = if (dir_sel == null and self.ws_tab == .prompts and prompt_sel != null) blk: {
+            api.fetchPromptContentAsync(self.api_state, prompt_sel.?.path);
+            break :blk self.cachedPromptBody(prompt_sel.?.path);
+        } else null;
 
         // Title: selected item name
         const title: []const u8 = switch (self.ws_tab) {
@@ -2084,8 +2107,29 @@ pub const Dashboard = struct {
                         w.writeText(&surface, ctx, 2, kv_row, f.path, theme.fg(theme.TEXT_SOFT));
                         kv_row += 1;
                         if (kv_row < max_row) {
-                            const size_label = try std.fmt.allocPrint(ctx.arena, "hash: {s}", .{f.hash});
-                            w.writeText(&surface, ctx, 2, kv_row, size_label, theme.fg(theme.MUTED));
+                            const hash_label = try std.fmt.allocPrint(ctx.arena, "hash: {s}", .{f.hash});
+                            w.writeText(&surface, ctx, 2, kv_row, hash_label, theme.fg(theme.MUTED));
+                            kv_row += 1;
+                        }
+                        if (kv_row < max_row and f.author.len > 0) {
+                            const author_label = try std.fmt.allocPrint(ctx.arena, "author: {s}", .{f.author});
+                            w.writeText(&surface, ctx, 2, kv_row, author_label, theme.fg(theme.MUTED));
+                            kv_row += 1;
+                        }
+                        if (kv_row < max_row and f.updated_at.len > 0) {
+                            const updated_label = try std.fmt.allocPrint(ctx.arena, "updated: {s}", .{f.updated_at});
+                            w.writeText(&surface, ctx, 2, kv_row, updated_label, theme.fg(theme.MUTED));
+                            kv_row += 1;
+                        }
+                        if (kv_row < max_row) {
+                            kv_row += 1;
+                        }
+                        if (kv_row < max_row) {
+                            if (context_body) |body| {
+                                self.drawTextBlock(&surface, ctx, 2, kv_row, max_row, body, theme.textOn(theme.PANEL, theme.TEXT_SOFT));
+                            } else {
+                                w.writeText(&surface, ctx, 2, kv_row, "Loading context content...", theme.fg(theme.MUTED));
+                            }
                         }
                     }
                 } else {
@@ -2109,6 +2153,17 @@ pub const Dashboard = struct {
                         if (kv_row < max_row) {
                             const hash_label = try std.fmt.allocPrint(ctx.arena, "hash: {s}", .{p.content_hash});
                             w.writeText(&surface, ctx, 2, kv_row, hash_label, theme.fg(theme.MUTED));
+                            kv_row += 1;
+                        }
+                        if (kv_row < max_row) {
+                            kv_row += 1;
+                        }
+                        if (kv_row < max_row) {
+                            if (prompt_body) |body| {
+                                self.drawTextBlock(&surface, ctx, 2, kv_row, max_row, body, theme.textOn(theme.PANEL, theme.TEXT_SOFT));
+                            } else {
+                                w.writeText(&surface, ctx, 2, kv_row, "Loading prompt content...", theme.fg(theme.MUTED));
+                            }
                         }
                     }
                 } else {
@@ -2123,7 +2178,7 @@ pub const Dashboard = struct {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.org_stats) |stats| {
-            return api.insightsFromStats(arena, stats, self.api_state.prompts, self.api_state.ws_stats_members, self.api_state.ws_stats_models, null);
+            return api.insightsFromStats(arena, stats, self.api_state.prompts, null);
         }
         return null;
     }
@@ -2387,7 +2442,14 @@ pub const Dashboard = struct {
 
             const reach_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{p.workspace_count});
             w.writeText(&s, ctx, col_reach, row, reach_txt, theme.fg(theme.MUTED));
-            w.writeText(&s, ctx, col_trend, row, "\xe2\x80\x94", theme.fg(theme.DIM));
+            const trend_summary = try promptTrendSummary(ctx.arena, p.trend);
+            const trend_style: vaxis.Style = switch (trend_summary.kind) {
+                .up => theme.fg(theme.OK),
+                .down => theme.fg(theme.DANGER),
+                .flat => theme.fg(theme.MUTED),
+                .none => theme.fg(theme.DIM),
+            };
+            w.writeText(&s, ctx, col_trend, row, trend_summary.text, trend_style);
             const last_txt = if (p.last_referred_days_ago) |days|
                 (try std.fmt.allocPrint(ctx.arena, "{d}d", .{days}))
             else
@@ -2451,7 +2513,7 @@ pub const Dashboard = struct {
         w.fillSurface(&s, theme.PANEL);
         w.drawBorder(&s, border_color, theme.PANEL);
 
-        w.writeText(&s, ctx, 2, 0, "Team Activity", theme.boldOn(theme.PANEL, theme.TEXT));
+        w.writeText(&s, ctx, 2, 0, "User Activity", theme.boldOn(theme.PANEL, theme.TEXT));
 
         if (!available) {
             w.writeText(&s, ctx, 2, 2, "No", theme.fg(theme.MUTED));
@@ -2461,7 +2523,7 @@ pub const Dashboard = struct {
 
         if (ins.members.len == 0) {
             w.writeText(&s, ctx, 2, 2, "No", theme.fg(theme.MUTED));
-            w.writeText(&s, ctx, 2, 3, "team", theme.fg(theme.MUTED));
+            w.writeText(&s, ctx, 2, 3, "users", theme.fg(theme.MUTED));
             return s;
         }
 
@@ -2629,12 +2691,22 @@ pub const Dashboard = struct {
         for (member.top_prompts) |tp| {
             if (tp.refer_count > max_ref) max_ref = tp.refer_count;
         }
-        const bar_start: u16 = 24;
-        const bar_end: u16 = width -| 12;
+        const name_col: u16 = 5;
+        const count_col: u16 = width -| 7;
+        const min_name_w: u16 = 14;
+        const max_name_w: u16 = @max(min_name_w, @min(@as(u16, 32), count_col -| name_col -| 12));
+        var measured_name_w: u16 = min_name_w;
+        for (member.top_prompts) |tp| {
+            const candidate = @as(u16, @intCast(ctx.stringWidth(firstLineTrimmed(tp.name, max_name_w))));
+            if (candidate > measured_name_w) measured_name_w = candidate;
+        }
+        const name_w: u16 = @min(max_name_w, measured_name_w);
+        const bar_start: u16 = name_col + name_w + 1;
+        const bar_end: u16 = count_col -| 1;
         const bar_max_w: u16 = bar_end -| bar_start;
         for (member.top_prompts) |tp| {
             if (row >= height -| 5) break;
-            w.writeText(&s, ctx, 5, row, tp.name, theme.fg(theme.TEXT_SOFT));
+            w.writeText(&s, ctx, name_col, row, firstLineTrimmed(tp.name, name_w), theme.fg(theme.TEXT_SOFT));
             const bar_w_raw: u16 = @intCast(@as(u32, bar_max_w) * tp.refer_count / max_ref);
             const bar_w: u16 = if (tp.refer_count > 0 and bar_w_raw == 0 and bar_max_w > 0) 1 else bar_w_raw;
             for (0..bar_w) |offset| {
@@ -2646,8 +2718,8 @@ pub const Dashboard = struct {
                     .style = .{ .fg = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, t), .bg = theme.PANEL },
                 });
             }
-            const ref_txt = try std.fmt.allocPrint(ctx.arena, " {d}", .{tp.refer_count});
-            w.writeText(&s, ctx, bar_start + bar_w, row, ref_txt, theme.fg(theme.MUTED));
+            const ref_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{tp.refer_count});
+            w.writeText(&s, ctx, count_col, row, ref_txt, theme.fg(theme.MUTED));
             row += 1;
         }
 
@@ -3927,6 +3999,100 @@ pub const Dashboard = struct {
         self.pr_diff_count = count;
         self.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.pr_diff_widgets[0..count] };
         self.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
+    }
+
+    fn writePromptMetaOnPanelChrome(
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        min_col: u16,
+        p: *const data.PromptEntry,
+    ) std.mem.Allocator.Error!void {
+        const full = try formatPromptMeta(ctx.arena, p, true);
+        if (writeHeaderRightIfFits(surface, ctx, 0, min_col, full, theme.fg(theme.MUTED))) return;
+
+        const compact = try formatPromptMeta(ctx.arena, p, false);
+        _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, compact, theme.fg(theme.MUTED));
+    }
+
+    fn formatPromptMeta(arena: std.mem.Allocator, p: *const data.PromptEntry, include_updated: bool) std.mem.Allocator.Error![]const u8 {
+        if (!include_updated) {
+            return std.fmt.allocPrint(arena, "rev{d} pr{d} c{d}", .{ p.revision, p.open_pr_count, p.constraint_count });
+        }
+        const updated = try compactPromptUpdated(arena, p.updated);
+        if (updated.len == 0) {
+            return std.fmt.allocPrint(arena, "rev{d} pr{d} c{d}", .{ p.revision, p.open_pr_count, p.constraint_count });
+        }
+        return std.fmt.allocPrint(arena, "rev{d} pr{d} c{d} {s}", .{ p.revision, p.open_pr_count, p.constraint_count, updated });
+    }
+
+    fn compactPromptUpdated(arena: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]const u8 {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len < 10) return arena.dupe(u8, trimmed);
+        if (trimmed.len >= 16 and (trimmed[10] == 'T' or trimmed[10] == ' ')) {
+            return std.fmt.allocPrint(arena, "{s} {s}", .{ trimmed[0..10], trimmed[11..16] });
+        }
+        return arena.dupe(u8, trimmed[0..10]);
+    }
+
+    fn writeHeaderRightIfFits(
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        row: u16,
+        min_col: u16,
+        text: []const u8,
+        style: vaxis.Style,
+    ) bool {
+        const width: u16 = @intCast(ctx.stringWidth(text));
+        if (width == 0 or width >= surface.size.width) return false;
+        const start_col = surface.size.width - width - 1;
+        if (start_col <= min_col) return false;
+        w.writeText(surface, ctx, start_col, row, text, style);
+        return true;
+    }
+
+    const TrendSummaryKind = enum {
+        up,
+        down,
+        flat,
+        none,
+    };
+
+    const TrendSummary = struct {
+        text: []const u8,
+        kind: TrendSummaryKind,
+    };
+
+    fn promptTrendSummary(arena: std.mem.Allocator, trend: [30]u16) std.mem.Allocator.Error!TrendSummary {
+        const window = 7;
+        var recent: u32 = 0;
+        var previous: u32 = 0;
+
+        for (trend[trend.len - window ..]) |value| recent += value;
+        for (trend[trend.len - window * 2 .. trend.len - window]) |value| previous += value;
+
+        if (recent == 0 and previous == 0) {
+            return .{ .text = try arena.dupe(u8, "\xe2\x80\x94"), .kind = .none };
+        }
+        if (previous == 0 and recent > 0) {
+            return .{ .text = try arena.dupe(u8, "new"), .kind = .up };
+        }
+        if (recent == previous) {
+            return .{ .text = try arena.dupe(u8, "flat"), .kind = .flat };
+        }
+
+        if (recent > previous) {
+            const pct = @min(@divTrunc((recent - previous) * 100, previous), 999);
+            return .{
+                .text = try std.fmt.allocPrint(arena, "+{d}%", .{pct}),
+                .kind = .up,
+            };
+        }
+
+        const pct = @min(@divTrunc((previous - recent) * 100, previous), 999);
+        return .{
+            .text = try std.fmt.allocPrint(arena, "-{d}%", .{pct}),
+            .kind = .down,
+        };
     }
 
     // Format a unix-ms timestamp as local HH:MM. Uses epoch-seconds div to
