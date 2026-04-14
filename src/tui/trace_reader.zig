@@ -72,11 +72,14 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     while (it.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
         const ws_id = allocator.dupe(u8, entry.name) catch continue;
+        var keep_ws_id = false;
+        defer if (!keep_ws_id) allocator.free(ws_id);
         const trace_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "trace.jsonl" }) catch continue;
         defer allocator.free(trace_path);
         var ws_events: std.ArrayList(TraceEvent) = .empty;
         readEventsFromFile(allocator, trace_path, ws_id, &ws_events);
         if (ws_events.items.len == 0) continue;
+        keep_ws_id = true;
 
         const ws_stats = computeStats(allocator, ws_events.items);
         workspace_stats.append(allocator, .{
@@ -142,10 +145,61 @@ fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, ws_id: []c
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         }) catch continue;
-        var ev = parsed.value;
-        ev.ws_id = ws_id;
-        events.append(allocator, ev) catch continue;
+        defer parsed.deinit();
+
+        const ev = cloneTraceEvent(allocator, ws_id, parsed.value) catch continue;
+        events.append(allocator, ev) catch {
+            freeTraceEventOwned(allocator, ev);
+            continue;
+        };
     }
+}
+
+fn cloneTraceEvent(allocator: std.mem.Allocator, ws_id: []const u8, src: TraceEvent) !TraceEvent {
+    var out = TraceEvent{
+        .ws_id = ws_id,
+        .session_id = try allocator.dupe(u8, src.session_id),
+        .type = try allocator.dupe(u8, src.type),
+        .timestamp = src.timestamp,
+        .prompt_id = null,
+        .prompt_hash = null,
+        .constraint_id = null,
+        .reason = null,
+        .content = null,
+    };
+    errdefer allocator.free(out.session_id);
+    errdefer allocator.free(out.type);
+
+    out.prompt_id = try dupeOptional(allocator, src.prompt_id);
+    errdefer if (out.prompt_id) |s| allocator.free(s);
+
+    out.prompt_hash = try dupeOptional(allocator, src.prompt_hash);
+    errdefer if (out.prompt_hash) |s| allocator.free(s);
+
+    out.constraint_id = try dupeOptional(allocator, src.constraint_id);
+    errdefer if (out.constraint_id) |s| allocator.free(s);
+
+    out.reason = try dupeOptional(allocator, src.reason);
+    errdefer if (out.reason) |s| allocator.free(s);
+
+    out.content = try dupeOptional(allocator, src.content);
+    errdefer if (out.content) |s| allocator.free(s);
+
+    return out;
+}
+
+fn dupeOptional(allocator: std.mem.Allocator, maybe: ?[]const u8) !?[]const u8 {
+    return if (maybe) |value| try allocator.dupe(u8, value) else null;
+}
+
+fn freeTraceEventOwned(allocator: std.mem.Allocator, ev: TraceEvent) void {
+    allocator.free(ev.session_id);
+    allocator.free(ev.type);
+    if (ev.prompt_id) |s| allocator.free(s);
+    if (ev.prompt_hash) |s| allocator.free(s);
+    if (ev.constraint_id) |s| allocator.free(s);
+    if (ev.reason) |s| allocator.free(s);
+    if (ev.content) |s| allocator.free(s);
 }
 
 fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalStats {
