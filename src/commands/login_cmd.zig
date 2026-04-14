@@ -2,13 +2,19 @@ const std = @import("std");
 const testing = std.testing;
 const flag = @import("../flags.zig");
 const auth_mod = @import("../auth.zig");
-const HubClient = @import("../hub_client.zig").HubClient;
+const hub_client = @import("../hub_client.zig");
+const HubClient = hub_client.HubClient;
+const HubResponse = hub_client.Response;
 const styles = @import("../styles.zig");
 
 const Color = styles.Color;
 const P = styles.P;
 
 const DEFAULT_HUB_URL = "http://127.0.0.1:8400";
+const HubUrlError = std.mem.Allocator.Error || error{
+    InvalidHubUrl,
+    UnsupportedHubUrlScheme,
+};
 
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const SPECS = [_]flag.FlagSpec{
@@ -35,7 +41,28 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
     defer result.deinit(allocator);
 
-    const hub_url = result.value(0) orelse DEFAULT_HUB_URL;
+    const hub_url = normalizeHubUrl(allocator, result.value(0) orelse DEFAULT_HUB_URL) catch |err| switch (err) {
+        error.InvalidHubUrl => {
+            try stderr.print("{s}{s}{s}Error:{s} Invalid hub URL. Use a full URL like http://127.0.0.1:8400 or localhost:8400.\n", .{
+                P,
+                Color.bold,
+                Color.red,
+                Color.reset,
+            });
+            return error.CommandFailed;
+        },
+        error.UnsupportedHubUrlScheme => {
+            try stderr.print("{s}{s}{s}Error:{s} Hub URL must use http:// or https://\n", .{
+                P,
+                Color.bold,
+                Color.red,
+                Color.reset,
+            });
+            return error.CommandFailed;
+        },
+        else => return err,
+    };
+    defer allocator.free(hub_url);
 
     // Get username: from flag or prompt interactively
     const username_from_prompt: ?[]const u8 = if (result.value(1) != null) null else blk: {
@@ -60,7 +87,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     // POST /api/auth/login
     var client = HubClient.init(allocator, hub_url, null);
-    const response = try client.post("/api/auth/login", body);
+    const response = try postOrPrintClientError(stderr, &client, hub_url, "/api/auth/login", body);
     defer response.deinit();
 
     if (response.status == .ok) {
@@ -114,7 +141,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }, .{}) catch return error.OutOfMemory;
     defer allocator.free(activate_body);
 
-    const activate_resp = try client.post("/api/auth/activate", activate_body);
+    const activate_resp = try postOrPrintClientError(stderr, &client, hub_url, "/api/auth/activate", activate_body);
     defer activate_resp.deinit();
 
     if (activate_resp.status != .ok) {
@@ -180,6 +207,78 @@ const LoginResponse = struct {
     refresh_token: []const u8,
 };
 
+fn postOrPrintClientError(
+    stderr: *std.Io.Writer,
+    client: *HubClient,
+    hub_url: []const u8,
+    path: []const u8,
+    body: []const u8,
+) !HubResponse {
+    return client.post(path, body) catch |err| {
+        try printHubRequestError(stderr, hub_url, err);
+        return error.CommandFailed;
+    };
+}
+
+fn printHubRequestError(stderr: *std.Io.Writer, hub_url: []const u8, err: anyerror) !void {
+    switch (err) {
+        error.ConnectionRefused => {
+            try stderr.print(
+                "{s}{s}{s}Error:{s} Failed to reach hub at {s} (connection refused). Start clumsies-hub or pass --hub-url.\n",
+                .{ P, Color.bold, Color.red, Color.reset, hub_url },
+            );
+        },
+        error.ConnectionTimedOut => {
+            try stderr.print(
+                "{s}{s}{s}Error:{s} Hub request to {s} timed out. Check that clumsies-hub is reachable or pass --hub-url.\n",
+                .{ P, Color.bold, Color.red, Color.reset, hub_url },
+            );
+        },
+        error.NetworkUnreachable => {
+            try stderr.print(
+                "{s}{s}{s}Error:{s} Network is unreachable for hub {s}. Check your network or pass --hub-url.\n",
+                .{ P, Color.bold, Color.red, Color.reset, hub_url },
+            );
+        },
+        error.TemporaryNameServerFailure, error.NameServerFailure, error.UnknownHostName, error.HostLacksNetworkAddresses => {
+            try stderr.print(
+                "{s}{s}{s}Error:{s} Could not resolve hub host in {s}. Check --hub-url.\n",
+                .{ P, Color.bold, Color.red, Color.reset, hub_url },
+            );
+        },
+        error.ConnectionResetByPeer => {
+            try stderr.print(
+                "{s}{s}{s}Error:{s} Hub connection to {s} was reset. Check that clumsies-hub is healthy.\n",
+                .{ P, Color.bold, Color.red, Color.reset, hub_url },
+            );
+        },
+        error.UnsupportedUriScheme => {
+            try stderr.print(
+                "{s}{s}{s}Error:{s} Hub URL must use http:// or https://\n",
+                .{ P, Color.bold, Color.red, Color.reset },
+            );
+        },
+        error.TlsInitializationFailed => {
+            try stderr.print(
+                "{s}{s}{s}Error:{s} Failed to initialize TLS for hub {s}. Check the URL scheme and TLS settings.\n",
+                .{ P, Color.bold, Color.red, Color.reset, hub_url },
+            );
+        },
+        error.UnexpectedConnectFailure => {
+            try stderr.print(
+                "{s}{s}{s}Error:{s} Failed to open a network connection to hub {s}. Start clumsies-hub or pass --hub-url.\n",
+                .{ P, Color.bold, Color.red, Color.reset, hub_url },
+            );
+        },
+        else => {
+            try stderr.print(
+                "{s}{s}{s}Error:{s} Failed to contact hub at {s} ({s})\n",
+                .{ P, Color.bold, Color.red, Color.reset, hub_url, @errorName(err) },
+            );
+        },
+    }
+}
+
 fn printStorageNote(stderr: *std.Io.Writer, allocator: std.mem.Allocator, save_location: auth_mod.SaveLocation) !void {
     if (save_location != .file_fallback) return;
 
@@ -198,6 +297,32 @@ fn printStorageNote(stderr: *std.Io.Writer, allocator: std.mem.Allocator, save_l
     try stderr.print("{s}Note: Keychain was unavailable; credentials were stored in {s}\n", .{ P, path });
 }
 
+fn normalizeHubUrl(allocator: std.mem.Allocator, raw: []const u8) HubUrlError![]u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidHubUrl;
+
+    const with_scheme = if (std.mem.indexOf(u8, trimmed, "://") == null)
+        try std.fmt.allocPrint(allocator, "http://{s}", .{trimmed})
+    else
+        try allocator.dupe(u8, trimmed);
+    errdefer allocator.free(with_scheme);
+
+    const without_trailing_slash = std.mem.trimRight(u8, with_scheme, "/");
+    if (without_trailing_slash.len == 0) return error.InvalidHubUrl;
+
+    const uri = std.Uri.parse(without_trailing_slash) catch return error.InvalidHubUrl;
+    if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) {
+        return error.UnsupportedHubUrlScheme;
+    }
+    if (uri.host == null) return error.InvalidHubUrl;
+
+    if (without_trailing_slash.len == with_scheme.len) return with_scheme;
+
+    const normalized = try allocator.dupe(u8, without_trailing_slash);
+    allocator.free(with_scheme);
+    return normalized;
+}
+
 test "LoginResponse parsing ignores expires_in" {
     const body =
         \\{"access_token":"acc","refresh_token":"ref","expires_in":3600}
@@ -211,6 +336,59 @@ test "LoginResponse parsing ignores expires_in" {
 
     try testing.expectEqualStrings("acc", parsed.value.access_token);
     try testing.expectEqualStrings("ref", parsed.value.refresh_token);
+}
+
+test "normalizeHubUrl adds http scheme for host:port input" {
+    const normalized = try normalizeHubUrl(testing.allocator, "localhost:8410");
+    defer testing.allocator.free(normalized);
+
+    try testing.expectEqualStrings("http://localhost:8410", normalized);
+}
+
+test "normalizeHubUrl trims trailing slash" {
+    const normalized = try normalizeHubUrl(testing.allocator, "http://127.0.0.1:8410/");
+    defer testing.allocator.free(normalized);
+
+    try testing.expectEqualStrings("http://127.0.0.1:8410", normalized);
+}
+
+test "normalizeHubUrl rejects unsupported schemes" {
+    try testing.expectError(error.UnsupportedHubUrlScheme, normalizeHubUrl(testing.allocator, "ftp://localhost:8410"));
+}
+
+test "printHubRequestError formats connection refused without stack-oriented detail" {
+    var capture = std.Io.Writer.Allocating.init(testing.allocator);
+    defer capture.deinit();
+
+    try printHubRequestError(&capture.writer, "http://127.0.0.1:8400", error.ConnectionRefused);
+    const output = try capture.toOwnedSlice();
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "Failed to reach hub at http://127.0.0.1:8400"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "Start clumsies-hub or pass --hub-url."));
+}
+
+test "printHubRequestError formats bad host" {
+    var capture = std.Io.Writer.Allocating.init(testing.allocator);
+    defer capture.deinit();
+
+    try printHubRequestError(&capture.writer, "http://bad-host:8400", error.UnknownHostName);
+    const output = try capture.toOwnedSlice();
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "Could not resolve hub host"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "http://bad-host:8400"));
+}
+
+test "printHubRequestError formats unexpected connect failure" {
+    var capture = std.Io.Writer.Allocating.init(testing.allocator);
+    defer capture.deinit();
+
+    try printHubRequestError(&capture.writer, "http://127.0.0.1:8400", error.UnexpectedConnectFailure);
+    const output = try capture.toOwnedSlice();
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "Failed to open a network connection to hub http://127.0.0.1:8400"));
 }
 
 fn printHelp(out: *std.Io.Writer) !void {
