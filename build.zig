@@ -145,6 +145,11 @@ pub fn build(b: *std.Build) void {
 
     const seed_run_cmd = b.addRunArtifact(seed_exe);
     seed_run_cmd.step.dependOn(b.getInstallStep());
+    seed_run_cmd.setEnvironmentVariable("HUB_DB_HOST", "127.0.0.1");
+    seed_run_cmd.setEnvironmentVariable("HUB_DB_PORT", "5433");
+    seed_run_cmd.setEnvironmentVariable("HUB_DB_NAME", "clumsies_dev");
+    seed_run_cmd.setEnvironmentVariable("HUB_DB_USER", "clumsies_dev");
+    seed_run_cmd.setEnvironmentVariable("HUB_DB_PASSWORD", "clumsies_dev");
     if (b.args) |args| {
         seed_run_cmd.addArgs(args);
     }

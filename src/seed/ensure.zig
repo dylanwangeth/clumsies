@@ -1,8 +1,9 @@
 const std = @import("std");
 const pg = @import("pg");
+const bcrypt = std.crypto.pwhash.bcrypt;
 const data = @import("data.zig");
-const seed_hash = @import("hash.zig");
-const password = @import("password.zig");
+const local_state = @import("local_state.zig");
+const reset = @import("reset.zig");
 
 const log = std.log.scoped(.seed);
 
@@ -10,172 +11,131 @@ pub fn run(pool: *pg.Pool) !void {
     const conn = try pool.acquire();
     defer conn.release();
 
-    log.info("ensuring base data for pump...", .{});
+    log.info("checking seed fixtures...", .{});
 
-    var hash_buf: [128]u8 = undefined;
-    const password_hash = try password.hashPassword(data.SEED_PASSWORD, &hash_buf);
-    const prompt_hash = seed_hash.contentHash(data.BASE_PROMPT_CONTENT);
-    var maintainer_id_buf: [64]u8 = undefined;
-    var member_id_buf: [64]u8 = undefined;
+    if (!try fixturesHealthy(conn)) {
+        log.warn("seed fixtures missing or stale; rebuilding seed-owned state", .{});
+        try reset.rebuild(conn);
+        return;
+    }
 
-    _ = conn.exec(
-        "INSERT INTO orgs (org_id, name) VALUES ($1::uuid, $2) ON CONFLICT (org_id) DO NOTHING",
-        .{ data.ORG_ID, data.ORG_NAME },
-    ) catch |err| {
-        logPgError(conn, "ensure org failed", err);
-        return err;
-    };
+    try ensureLocalWorkspaceState();
+    log.info("seed fixtures ready", .{});
+}
 
-    _ = conn.exec(
-        "INSERT INTO library_manifest (org_id, revision) VALUES ($1::uuid, 0) ON CONFLICT DO NOTHING",
+fn fixturesHealthy(conn: *pg.Conn) !bool {
+    if (!try stringColumnMatches(
+        conn,
+        "SELECT name FROM orgs WHERE org_id = $1::uuid",
         .{data.ORG_ID},
-    ) catch |err| {
-        logPgError(conn, "ensure library manifest failed", err);
-        return err;
-    };
+        data.ORG_NAME,
+    )) return false;
 
-    const maintainer_id = try ensureUser(
+    if (!try intColumnMatches(
         conn,
-        &maintainer_id_buf,
-        data.BASE_MAINTAINER_ID,
-        data.BASE_MAINTAINER_USERNAME,
-        "maintainer",
-        password_hash,
-    );
-    const member_id = try ensureUser(
-        conn,
-        &member_id_buf,
-        data.BASE_MEMBER_ID,
-        data.BASE_MEMBER_USERNAME,
-        "member",
-        password_hash,
-    );
+        "SELECT revision FROM library_manifest WHERE org_id = $1::uuid",
+        .{data.ORG_ID},
+        data.FIXTURE_VERSION,
+    )) return false;
 
-    _ = conn.exec(
-        \\INSERT INTO prompts (prompt_id, org_id, path, content, content_hash)
-        \\VALUES ($1, $2::uuid, $3, $4, $5)
-        \\ON CONFLICT (prompt_id) DO NOTHING
-    , .{
-        data.BASE_PROMPT_ID,
-        data.ORG_ID,
-        data.BASE_PROMPT_PATH,
-        data.BASE_PROMPT_CONTENT,
-        prompt_hash[0..],
-    }) catch |err| {
-        logPgError(conn, "ensure prompt failed", err);
-        return err;
-    };
+    for (data.USERS) |user| {
+        if (!try userHealthy(conn, user)) return false;
+    }
 
-    _ = conn.exec(
-        \\INSERT INTO workspaces (ws_id, org_id, name, revision)
-        \\VALUES ($1, $2::uuid, $3, 1)
-        \\ON CONFLICT (ws_id) DO NOTHING
-    , .{
-        data.BASE_WORKSPACE_ID,
-        data.ORG_ID,
-        data.BASE_WORKSPACE_NAME,
-    }) catch |err| {
-        logPgError(conn, "ensure workspace failed", err);
-        return err;
-    };
+    for (data.PROMPTS) |prompt| {
+        if (!try stringColumnMatches(
+            conn,
+            "SELECT path FROM prompts WHERE prompt_id = $1",
+            .{prompt.id},
+            prompt.path,
+        )) return false;
+    }
 
-    _ = conn.exec(
-        \\INSERT INTO workspace_members (ws_id, user_id, role)
-        \\VALUES ($1, $2, 'admin')
-        \\ON CONFLICT DO NOTHING
-    , .{
-        data.BASE_WORKSPACE_ID,
-        maintainer_id,
-    }) catch |err| {
-        logPgError(conn, "ensure maintainer workspace membership failed", err);
-        return err;
-    };
+    for (data.WORKSPACES) |workspace| {
+        if (!try stringColumnMatches(
+            conn,
+            "SELECT name FROM workspaces WHERE ws_id = $1",
+            .{workspace.id},
+            workspace.name,
+        )) return false;
+    }
 
-    _ = conn.exec(
-        \\INSERT INTO workspace_members (ws_id, user_id, role)
-        \\VALUES ($1, $2, 'member')
-        \\ON CONFLICT DO NOTHING
-    , .{
-        data.BASE_WORKSPACE_ID,
-        member_id,
-    }) catch |err| {
-        logPgError(conn, "ensure member workspace membership failed", err);
-        return err;
-    };
+    for (data.WORKSPACE_MEMBERS) |membership| {
+        if (!try exists(
+            conn,
+            "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND role = $3",
+            .{ membership.ws_id, membership.user_id, membership.role },
+        )) return false;
+    }
 
-    _ = conn.exec(
-        \\INSERT INTO workspace_prompts (ws_id, prompt_id)
-        \\VALUES ($1, $2)
-        \\ON CONFLICT DO NOTHING
-    , .{
-        data.BASE_WORKSPACE_ID,
-        data.BASE_PROMPT_ID,
-    }) catch |err| {
-        logPgError(conn, "ensure workspace prompt binding failed", err);
-        return err;
-    };
+    for (data.WORKSPACE_PROMPTS) |binding| {
+        if (!try exists(
+            conn,
+            "SELECT 1 FROM workspace_prompts WHERE ws_id = $1 AND prompt_id = $2",
+            .{ binding.ws_id, binding.prompt_id },
+        )) return false;
+    }
+
+    for (data.CONTEXTS) |context| {
+        if (!try stringColumnMatches(
+            conn,
+            "SELECT path FROM context_files WHERE context_id = $1",
+            .{context.id},
+            context.path,
+        )) return false;
+    }
+
+    return true;
 }
 
-fn ensureUser(conn: *pg.Conn, id_buf: *[64]u8, preferred_id: []const u8, username: []const u8, role: []const u8, password_hash: []const u8) ![]const u8 {
-    var row = conn.row("SELECT user_id FROM users WHERE username = $1", .{username}) catch |err| {
-        logPgError(conn, "ensure user lookup failed", err);
-        return err;
-    };
+fn userHealthy(conn: *pg.Conn, user: data.UserFixture) !bool {
+    var row = try conn.row(
+        "SELECT username, role, status, password_hash FROM users WHERE user_id = $1",
+        .{user.id},
+    ) orelse return false;
+    defer row.deinit() catch {};
 
+    const username = row.get([]const u8, 0) catch return false;
+    const role = row.get([]const u8, 1) catch return false;
+    const status = row.get([]const u8, 2) catch return false;
+    const password_hash = row.get([]const u8, 3) catch return false;
+
+    if (!std.mem.eql(u8, username, user.username)) return false;
+    if (!std.mem.eql(u8, role, user.role)) return false;
+    if (!std.mem.eql(u8, status, user.status)) return false;
+
+    bcrypt.strVerify(password_hash, data.SEED_PASSWORD, .{
+        .silently_truncate_password = false,
+    }) catch return false;
+
+    return true;
+}
+
+fn ensureLocalWorkspaceState() !void {
+    for (data.WORKSPACES) |workspace| {
+        try local_state.ensureWorkspaceFiles(workspace.id);
+    }
+}
+
+fn exists(conn: *pg.Conn, query: []const u8, args: anytype) !bool {
+    var row = try conn.row(query, args);
     if (row) |*r| {
-        const existing_id = r.get([]const u8, 0) catch |err| {
-            r.deinit() catch {};
-            return err;
-        };
-        const stable_id = try copySlice(id_buf, existing_id);
         r.deinit() catch {};
-
-        _ = conn.exec(
-            \\UPDATE users
-            \\SET org_id = $1::uuid,
-            \\    username = $2,
-            \\    password_hash = $3,
-            \\    role = $4,
-            \\    status = 'active'
-            \\WHERE user_id = $5
-        , .{ data.ORG_ID, username, password_hash, role, stable_id }) catch |err| {
-            logPgError(conn, "ensure user update failed", err);
-            return err;
-        };
-        return stable_id;
+        return true;
     }
-
-    _ = conn.exec(
-        \\INSERT INTO users (user_id, org_id, username, password_hash, role, status)
-        \\VALUES ($1, $2::uuid, $3, $4, $5, 'active')
-        \\ON CONFLICT (user_id) DO UPDATE
-        \\SET org_id = EXCLUDED.org_id,
-        \\    username = EXCLUDED.username,
-        \\    password_hash = EXCLUDED.password_hash,
-        \\    role = EXCLUDED.role,
-        \\    status = EXCLUDED.status
-    , .{ preferred_id, data.ORG_ID, username, password_hash, role }) catch |err| {
-        logPgError(conn, "ensure user insert failed", err);
-        return err;
-    };
-
-    return try copySlice(id_buf, preferred_id);
+    return false;
 }
 
-fn copySlice(dest: *[64]u8, src: []const u8) ![]const u8 {
-    if (src.len > dest.len) return error.IdentifierTooLong;
-    @memcpy(dest[0..src.len], src);
-    return dest[0..src.len];
+fn stringColumnMatches(conn: *pg.Conn, query: []const u8, args: anytype, expected: []const u8) !bool {
+    var row = try conn.row(query, args) orelse return false;
+    defer row.deinit() catch {};
+    const actual = row.get([]const u8, 0) catch return false;
+    return std.mem.eql(u8, actual, expected);
 }
 
-fn logPgError(conn: *pg.Conn, msg: []const u8, err: anytype) void {
-    log.err("{s}: {}", .{ msg, err });
-    if (conn.err) |pg_err| {
-        log.err("pg detail: {s}", .{pg_err.message});
-    }
-}
-
-test "copySlice rejects oversized ids" {
-    var buf: [4]u8 = undefined;
-    try std.testing.expectError(error.IdentifierTooLong, copySlice(&buf, "12345"));
+fn intColumnMatches(conn: *pg.Conn, query: []const u8, args: anytype, expected: i32) !bool {
+    var row = try conn.row(query, args) orelse return false;
+    defer row.deinit() catch {};
+    const actual = row.get(i32, 0) catch return false;
+    return actual == expected;
 }
