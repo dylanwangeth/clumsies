@@ -78,6 +78,23 @@ pub const PromptStats = struct {
     workspace_count: i64,
     bundle_count: i64,
     open_pr_count: i64,
+    last_referred_at: ?i64 = null,
+    trend: []const i64 = &.{},
+};
+
+pub const UserPromptStats = struct {
+    prompt_id: []const u8,
+    refer_count: i64,
+};
+
+pub const UserStats = struct {
+    user_id: []const u8,
+    username: []const u8,
+    refer_count: i64,
+    active_days: i64,
+    last_referred_at: ?i64 = null,
+    trend: []const i64 = &.{},
+    top_prompts: []const UserPromptStats = &.{},
 };
 
 pub const OrgStats = struct {
@@ -91,6 +108,7 @@ pub const OrgStats = struct {
     last_event_at: ?i64 = null,
     trend: []const TrendPoint,
     prompts: []const PromptStats = &.{},
+    users: []const UserStats = &.{},
 };
 
 pub const TrendPoint = struct {
@@ -162,6 +180,9 @@ pub const ApiState = struct {
     active_sessions: ?[]const ActiveSession = null,
     prompt_content: ?[]const u8 = null,
     prompt_content_name: ?[]const u8 = null,
+    workspace_context_content: ?[]const u8 = null,
+    workspace_context_content_ws_id: ?[]const u8 = null,
+    workspace_context_content_path: ?[]const u8 = null,
     // PR detail (on-demand)
     pr_detail_id: ?[]const u8 = null,
     pr_detail_diff: ?[]const []const u8 = null,
@@ -380,7 +401,7 @@ pub fn fetchPromptContentAsync(api_state: *ApiState, prompt_path: []const u8) vo
         return;
     }
     if (api_state.prompt_content_name) |cached| {
-        if (std.mem.eql(u8, cached, prompt_path)) {
+        if (std.mem.eql(u8, cached, prompt_path) and api_state.prompt_content != null) {
             api_state.mutex.unlock();
             return;
         }
@@ -396,6 +417,43 @@ pub fn fetchPromptContentAsync(api_state: *ApiState, prompt_path: []const u8) vo
         return;
     };
     _ = std.Thread.spawn(.{}, fetchPromptContent, .{ api_state, path_copy }) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    };
+}
+
+pub fn fetchWorkspaceContextContentAsync(api_state: *ApiState, ws_id: []const u8, path: []const u8) void {
+    api_state.mutex.lock();
+    if (api_state.fetch_busy or api_state.hub_url == null) {
+        api_state.mutex.unlock();
+        return;
+    }
+    if (api_state.workspace_context_content_ws_id) |cached_ws_id| {
+        if (api_state.workspace_context_content_path) |cached_path| {
+            if (std.mem.eql(u8, cached_ws_id, ws_id) and std.mem.eql(u8, cached_path, path) and api_state.workspace_context_content != null) {
+                api_state.mutex.unlock();
+                return;
+            }
+        }
+    }
+    api_state.fetch_busy = true;
+    api_state.mutex.unlock();
+
+    const alloc = api_state.allocator();
+    const ws_id_copy = alloc.dupe(u8, ws_id) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const path_copy = alloc.dupe(u8, path) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    _ = std.Thread.spawn(.{}, fetchWorkspaceContextContent, .{ api_state, ws_id_copy, path_copy }) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
@@ -809,7 +867,10 @@ fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
     if (resp.status == .ok) {
         // Parse {"body": "content..."} or use raw body
         const ContentJson = struct { body: []const u8 = "" };
-        const parsed = std.json.parseFromSlice(ContentJson, alloc, resp.body, .{ .allocate = .alloc_always }) catch null;
+        const parsed = std.json.parseFromSlice(ContentJson, alloc, resp.body, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch null;
         const content = if (parsed) |p| blk: {
             defer p.deinit();
             break :blk alloc.dupe(u8, p.value.body) catch null;
@@ -827,30 +888,132 @@ fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
     }
 }
 
+fn fetchWorkspaceContextContent(api_state: *ApiState, ws_id: []const u8, path: []const u8) void {
+    const alloc = api_state.allocator();
+    api_state.mutex.lock();
+    const hub_url = api_state.hub_url orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const token = api_state.access_token orelse {
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    api_state.mutex.unlock();
+
+    var client = HubClient.init(alloc, hub_url, token);
+    const encoded_path = std.fmt.allocPrint(alloc, "{f}", .{
+        std.fmt.alt(std.Uri.Component{ .raw = path }, .formatQuery),
+    }) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    defer alloc.free(encoded_path);
+    const request_path = std.fmt.allocPrint(
+        alloc,
+        "/api/workspaces/{s}/context/file/content?path={s}",
+        .{ ws_id, encoded_path },
+    ) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    defer alloc.free(request_path);
+
+    const resp = client.get(request_path) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    defer resp.deinit();
+
+    if (resp.status == .ok) {
+        const content = alloc.dupe(u8, resp.body) catch null;
+        api_state.mutex.lock();
+        api_state.workspace_context_content = content;
+        api_state.workspace_context_content_ws_id = ws_id;
+        api_state.workspace_context_content_path = path;
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    } else {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+    }
+}
+
 fn parseContextFiles(alloc: std.mem.Allocator, body: []const u8) ?[]const ContextFileData {
     const Json = struct {
         files: []const struct {
             path: []const u8,
-            hash: []const u8,
+            hash: []const u8 = "",
+            content_hash: []const u8 = "",
             size: i64 = 0,
             author: []const u8 = "",
             updated_at: []const u8 = "",
         } = &.{},
     };
-    const parsed = std.json.parseFromSlice(Json, alloc, body, .{ .allocate = .alloc_always }) catch return null;
+    const parsed = std.json.parseFromSlice(Json, alloc, body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch return null;
     defer parsed.deinit();
 
     var list: std.ArrayList(ContextFileData) = .empty;
     for (parsed.value.files) |f| {
+        const hash = if (f.hash.len > 0) f.hash else f.content_hash;
         list.append(alloc, .{
             .path = alloc.dupe(u8, f.path) catch continue,
-            .hash = alloc.dupe(u8, f.hash) catch continue,
+            .hash = alloc.dupe(u8, hash) catch continue,
             .size = f.size,
             .author = alloc.dupe(u8, f.author) catch continue,
             .updated_at = alloc.dupe(u8, f.updated_at) catch continue,
         }) catch continue;
     }
     return list.items;
+}
+
+test "parseContextFiles accepts content_hash from hub response" {
+    const testing = std.testing;
+    const body =
+        \\{"files":[{"path":"spec/ARCHITECTURE.md","content_hash":"sha256:abc","size":123,"author":"admin","updated_at":"2026-04-14T00:00:00Z"}]}
+    ;
+
+    const files = parseContextFiles(testing.allocator, body) orelse return error.TestUnexpectedResult;
+    defer {
+        for (files) |file| {
+            testing.allocator.free(file.path);
+            testing.allocator.free(file.hash);
+            testing.allocator.free(file.author);
+            testing.allocator.free(file.updated_at);
+        }
+        testing.allocator.free(files);
+    }
+    try testing.expectEqual(@as(usize, 1), files.len);
+    try testing.expectEqualStrings("spec/ARCHITECTURE.md", files[0].path);
+    try testing.expectEqualStrings("sha256:abc", files[0].hash);
+}
+
+test "prompt content response parsing ignores extra fields" {
+    const testing = std.testing;
+    const body =
+        \\{"prompt_id":"p-1","path":"rule/architecture/HUB_SINGLE_SOURCE.md","content_hash":"sha256:def","body":"hello"}
+    ;
+
+    const ContentJson = struct { body: []const u8 = "" };
+    const parsed = try std.json.parseFromSlice(ContentJson, testing.allocator, body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try testing.expectEqualStrings("hello", parsed.value.body);
 }
 
 fn parseManifestPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const WsPromptData {
@@ -1054,6 +1217,20 @@ fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?OrgStats {
             workspace_count: i64 = 0,
             bundle_count: i64 = 0,
             open_pr_count: i64 = 0,
+            last_referred_at: ?i64 = null,
+            trend: []const i64 = &.{},
+        } = &.{},
+        users: []const struct {
+            user_id: []const u8 = "",
+            username: []const u8 = "",
+            refer_count: i64 = 0,
+            active_days: i64 = 0,
+            last_referred_at: ?i64 = null,
+            trend: []const i64 = &.{},
+            top_prompts: []const struct {
+                prompt_id: []const u8 = "",
+                refer_count: i64 = 0,
+            } = &.{},
         } = &.{},
         trend: struct {
             period: []const u8 = "",
@@ -1077,6 +1254,10 @@ fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?OrgStats {
 
     var prompt_stats: std.ArrayList(PromptStats) = .empty;
     for (v.prompts) |p| {
+        var trend_values: std.ArrayList(i64) = .empty;
+        for (p.trend) |bucket| {
+            trend_values.append(alloc, bucket) catch continue;
+        }
         prompt_stats.append(alloc, .{
             .prompt_id = alloc.dupe(u8, p.prompt_id) catch continue,
             .refer_count = p.refer_count,
@@ -1084,6 +1265,34 @@ fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?OrgStats {
             .workspace_count = p.workspace_count,
             .bundle_count = p.bundle_count,
             .open_pr_count = p.open_pr_count,
+            .last_referred_at = p.last_referred_at,
+            .trend = trend_values.items,
+        }) catch continue;
+    }
+
+    var user_stats: std.ArrayList(UserStats) = .empty;
+    for (v.users) |u| {
+        var trend_values: std.ArrayList(i64) = .empty;
+        for (u.trend) |bucket| {
+            trend_values.append(alloc, bucket) catch continue;
+        }
+
+        var top_prompts: std.ArrayList(UserPromptStats) = .empty;
+        for (u.top_prompts) |tp| {
+            top_prompts.append(alloc, .{
+                .prompt_id = alloc.dupe(u8, tp.prompt_id) catch continue,
+                .refer_count = tp.refer_count,
+            }) catch continue;
+        }
+
+        user_stats.append(alloc, .{
+            .user_id = alloc.dupe(u8, u.user_id) catch continue,
+            .username = alloc.dupe(u8, u.username) catch continue,
+            .refer_count = u.refer_count,
+            .active_days = u.active_days,
+            .last_referred_at = u.last_referred_at,
+            .trend = trend_values.items,
+            .top_prompts = top_prompts.items,
         }) catch continue;
     }
 
@@ -1098,6 +1307,7 @@ fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?OrgStats {
         .last_event_at = v.last_event_at,
         .trend = trend_list.items,
         .prompts = prompt_stats.items,
+        .users = user_stats.items,
     };
 }
 
@@ -1247,20 +1457,49 @@ pub fn toPrEntries(alloc: std.mem.Allocator, prs: []const PromptPr, prompt_path:
     return list.items;
 }
 
-fn toInsightsMembers(alloc: std.mem.Allocator, members: []const WsStatsMember) []const data.InsightsMember {
+fn lastReferredDaysAgo(ts_ms: ?i64) ?u16 {
+    const ts = ts_ms orelse return null;
+    const now_ms = std.time.milliTimestamp();
+    if (ts > now_ms) return 0;
+    const age_days = @divTrunc(now_ms - ts, std.time.ms_per_day);
+    return @intCast(@min(age_days, std.math.maxInt(u16)));
+}
+
+fn trend30FromBuckets(source: []const i64) [30]u16 {
+    var trend30: [30]u16 = .{0} ** 30;
+    const count = @min(source.len, 30);
+    const start = if (source.len > 30) source.len - 30 else 0;
+    for (0..count) |i| {
+        trend30[30 - count + i] = @intCast(@min(@max(source[start + i], 0), std.math.maxInt(u16)));
+    }
+    return trend30;
+}
+
+fn promptNameForId(library: ?[]const LibraryPrompt, prompt_id: []const u8) []const u8 {
+    if (library) |lib| {
+        for (lib) |lp| {
+            if (std.mem.eql(u8, lp.prompt_id, prompt_id)) return lp.path;
+        }
+    }
+    return prompt_id;
+}
+
+fn toInsightsMembers(alloc: std.mem.Allocator, members: []const UserStats, library: ?[]const LibraryPrompt) []const data.InsightsMember {
     var list: std.ArrayList(data.InsightsMember) = .empty;
     for (members) |m| {
-        var trend30: [30]u16 = .{0} ** 30;
-        const count = @min(m.trend.len, 30);
-        for (0..count) |i| {
-            trend30[i] = @intCast(@min(@max(m.trend[i], 0), std.math.maxInt(u16)));
+        var top_prompts: std.ArrayList(data.MemberPromptStat) = .empty;
+        for (m.top_prompts) |tp| {
+            top_prompts.append(alloc, .{
+                .name = promptNameForId(library, tp.prompt_id),
+                .refer_count = @intCast(@min(tp.refer_count, std.math.maxInt(u32))),
+            }) catch continue;
         }
         list.append(alloc, .{
             .username = m.username,
             .refer_count = @intCast(@min(m.refer_count, std.math.maxInt(u32))),
             .active_days = @intCast(@min(m.active_days, 255)),
-            .trend = trend30,
-            .top_prompts = &.{},
+            .trend = trend30FromBuckets(m.trend),
+            .top_prompts = top_prompts.items,
             .models = &.{},
         }) catch continue;
     }
@@ -1283,8 +1522,7 @@ fn toInsightsModels(alloc: std.mem.Allocator, models: []const WsStatsModel) []co
 }
 
 // Build InsightsData from OrgStats.
-// Members/models/alerts fall back to mock (need workspace-level stats).
-pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]const LibraryPrompt, ws_members: ?[]const WsStatsMember, ws_models: ?[]const WsStatsModel, local: ?trace_reader.LocalStats) data.InsightsData {
+pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]const LibraryPrompt, local: ?trace_reader.LocalStats) data.InsightsData {
     var trend: [30]u16 = .{0} ** 30;
     const tcount = @min(stats.trend.len, 30);
     for (0..tcount) |i| {
@@ -1329,8 +1567,8 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
             .workspace_count = @intCast(@min(ps.workspace_count, 255)),
             .rate_per_day = rate,
             .delta_pct = 0,
-            .last_referred_days_ago = null,
-            .trend = .{0} ** 30,
+            .last_referred_days_ago = lastReferredDaysAgo(ps.last_referred_at),
+            .trend = trend30FromBuckets(ps.trend),
             .constraints = &.{},
         }) catch continue;
     }
@@ -1370,8 +1608,8 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
             .last_event_minutes_ago = 0,
             .refer_trend = l.refer_trend,
             .prompts = remapped_prompts,
-            .members = if (ws_members) |wm| toInsightsMembers(alloc, wm) else &.{},
-            .models = if (ws_models) |wmod| toInsightsModels(alloc, wmod) else &.{},
+            .members = toInsightsMembers(alloc, stats.users, library),
+            .models = &.{},
             .alerts = &.{},
             .inputs = inputs_list.items,
         };
@@ -1387,8 +1625,8 @@ pub fn insightsFromStats(alloc: std.mem.Allocator, stats: OrgStats, library: ?[]
         .last_event_minutes_ago = 0,
         .refer_trend = trend,
         .prompts = prompts_list.items,
-        .members = if (ws_members) |wm| toInsightsMembers(alloc, wm) else &.{},
-        .models = if (ws_models) |wmod| toInsightsModels(alloc, wmod) else &.{},
+        .members = toInsightsMembers(alloc, stats.users, library),
+        .models = &.{},
         .alerts = &.{},
     };
 }

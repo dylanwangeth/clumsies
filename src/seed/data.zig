@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const FIXTURE_VERSION: i32 = 2;
+pub const FIXTURE_VERSION: i32 = 3;
 
 pub const ORG_ID = "a0000000-0000-0000-0000-000000000001";
 pub const ORG_NAME = "clumsies-seed-lab";
@@ -53,6 +53,7 @@ pub const PumpRefer = struct {
 };
 
 pub const PumpScenario = struct {
+    user_id: []const u8,
     ws_id: []const u8,
     input: []const u8,
     refers: []const PumpRefer,
@@ -305,26 +306,31 @@ const RESET_REFERS = [_]PumpRefer{
 
 pub const PUMP_SCENARIOS = [_]PumpScenario{
     .{
+        .user_id = "usr-seed-dylan",
         .ws_id = "ws-seed-sandbox",
         .input = "Investigate why the Recent Inputs panel is empty in the TUI dashboard.",
         .refers = &SANDBOX_REFERS,
     },
     .{
+        .user_id = "usr-seed-lilhammer",
         .ws_id = "ws-seed-hub",
         .input = "Verify first maintainer bootstrap when HUB_BOOTSTRAP_USERNAME is missing.",
         .refers = &HUB_REFERS,
     },
     .{
+        .user_id = "usr-seed-admin",
         .ws_id = "ws-seed-tui",
         .input = "Confirm that insights are sourced from local trace.jsonl instead of only server stats.",
         .refers = &TUI_REFERS,
     },
     .{
+        .user_id = "usr-seed-joji",
         .ws_id = "ws-seed-plugin",
         .input = "Sketch a Codex adapter that can honor setup search load refer over the current hub.",
         .refers = &PLUGIN_REFERS,
     },
     .{
+        .user_id = "usr-seed-amimibear",
         .ws_id = "ws-seed-sandbox",
         .input = "Keep clumsies-seed focused on fixture repair plus trace pump instead of random structural writes.",
         .refers = &RESET_REFERS,
