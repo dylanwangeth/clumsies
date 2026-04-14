@@ -216,3 +216,102 @@ pub fn appendText(buf: []u8, start: usize, text: []const u8) usize {
     if (take > 0) @memcpy(buf[start .. start + take], text[0..take]);
     return start + take;
 }
+
+test "flatten marks nested rows and last siblings correctly" {
+    const expectEqual = std.testing.expectEqual;
+    const expectEqualStrings = std.testing.expectEqualStrings;
+
+    const paths = [_][]const u8{
+        "rule/api/NAMING.md",
+        "rule/db/E2E.md",
+        "workflow/GEN_PR.md",
+    };
+    var rows: [16]Row = undefined;
+
+    const count = flatten(paths[0..], null, &rows);
+    try expectEqual(@as(usize, 7), count);
+
+    try expectEqual(RowKind.dir, rows[0].kind);
+    try expectEqual(@as(u8, 0), rows[0].depth);
+    try expectEqual(false, rows[0].is_last);
+    try expectEqualStrings("rule", rows[0].label);
+
+    try expectEqual(RowKind.dir, rows[1].kind);
+    try expectEqual(@as(u8, 1), rows[1].depth);
+    try expectEqual(false, rows[1].is_last);
+    try expectEqualStrings("api", rows[1].label);
+
+    try expectEqual(RowKind.leaf, rows[2].kind);
+    try expectEqual(@as(u8, 2), rows[2].depth);
+    try expectEqual(true, rows[2].is_last);
+    try expectEqualStrings("NAMING", rows[2].label);
+
+    try expectEqual(RowKind.dir, rows[3].kind);
+    try expectEqual(@as(u8, 1), rows[3].depth);
+    try expectEqual(true, rows[3].is_last);
+    try expectEqualStrings("db", rows[3].label);
+
+    try expectEqual(RowKind.leaf, rows[4].kind);
+    try expectEqual(@as(u8, 2), rows[4].depth);
+    try expectEqual(true, rows[4].is_last);
+    try expectEqualStrings("E2E", rows[4].label);
+
+    try expectEqual(RowKind.dir, rows[5].kind);
+    try expectEqual(@as(u8, 0), rows[5].depth);
+    try expectEqual(true, rows[5].is_last);
+    try expectEqualStrings("workflow", rows[5].label);
+
+    try expectEqual(RowKind.leaf, rows[6].kind);
+    try expectEqual(@as(u8, 1), rows[6].depth);
+    try expectEqual(true, rows[6].is_last);
+    try expectEqualStrings("GEN_PR", rows[6].label);
+}
+
+test "flatten respects expansion state and hides collapsed leaves" {
+    const expectEqual = std.testing.expectEqual;
+    const expectEqualStrings = std.testing.expectEqualStrings;
+
+    const paths = [_][]const u8{
+        "rule/api/NAMING.md",
+        "rule/db/E2E.md",
+        "workflow/GEN_PR.md",
+    };
+    var expanded: std.StringHashMapUnmanaged(void) = .empty;
+    defer expanded.deinit(std.testing.allocator);
+    try expanded.put(std.testing.allocator, "rule/", {});
+
+    var rows: [16]Row = undefined;
+    const count = flatten(paths[0..], &expanded, &rows);
+
+    try expectEqual(@as(usize, 4), count);
+    try expectEqualStrings("rule", rows[0].label);
+    try expectEqualStrings("api", rows[1].label);
+    try expectEqualStrings("db", rows[2].label);
+    try expectEqualStrings("workflow", rows[3].label);
+    try expectEqual(RowKind.dir, rows[1].kind);
+    try expectEqual(RowKind.dir, rows[2].kind);
+    try expectEqual(RowKind.dir, rows[3].kind);
+}
+
+test "flatten caps directory depth at MAX_DEPTH" {
+    const expectEqual = std.testing.expectEqual;
+    const expectEqualStrings = std.testing.expectEqualStrings;
+
+    const paths = [_][]const u8{"a/b/c/d/e/f/g/h/i/j.md"};
+    var rows: [16]Row = undefined;
+
+    const count = flatten(paths[0..], null, &rows);
+    try expectEqual(@as(usize, 9), count);
+    try expectEqual(RowKind.dir, rows[7].kind);
+    try expectEqual(@as(u8, 7), rows[7].depth);
+    try expectEqualStrings("h", rows[7].label);
+    try expectEqual(RowKind.leaf, rows[8].kind);
+    try expectEqual(@as(u8, MAX_DEPTH), rows[8].depth);
+    try expectEqualStrings("j", rows[8].label);
+}
+
+test "renderPrefix draws guides connectors and chevrons" {
+    var buf: [32]u8 = undefined;
+    const len = renderPrefix(&buf, 3, 0b0010, false, .collapsed);
+    try std.testing.expectEqualStrings("\xe2\x94\x82   \xe2\x94\x9c\xe2\x94\x80 \xe2\x96\xb6 ", buf[0..len]);
+}

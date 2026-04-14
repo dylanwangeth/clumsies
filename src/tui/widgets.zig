@@ -465,6 +465,7 @@ pub fn applyCursorOverlay(
     ctx: vxfw.DrawContext,
     surface: *vxfw.Surface,
     scroll_view: *const vxfw.ScrollView,
+    bg: vaxis.Color,
 ) std.mem.Allocator.Error!vxfw.Surface {
     const cursor_pos = scroll_view.cursor;
     const scroll_top = scroll_view.scroll.top;
@@ -478,7 +479,7 @@ pub fn applyCursorOverlay(
     const cursor_buf = try ctx.arena.alloc(vaxis.Cell, 1);
     cursor_buf[0] = .{
         .char = .{ .grapheme = "▌", .width = 1 },
-        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+        .style = .{ .fg = theme.ACCENT_SOFT, .bg = bg },
     };
     const cursor_surface: vxfw.Surface = .{
         .size = .{ .width = 1, .height = 1 },
