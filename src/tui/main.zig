@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const Dashboard = @import("app.zig").Dashboard;
@@ -31,8 +32,9 @@ pub fn main() !void {
     var app = try vxfw.App.init(allocator);
     defer app.deinit();
 
-    const stdout = std.posix.STDOUT_FILENO;
-    _ = std.posix.write(stdout, "\x1b]2;clumsies hub\x07") catch {};
+    if (builtin.os.tag != .windows) {
+        std.fs.File.stdout().writeAll("\x1b]2;clumsies hub\x07") catch {};
+    }
 
     var dashboard = Dashboard.init(&api_state);
     try app.run(dashboard.widget(), .{});

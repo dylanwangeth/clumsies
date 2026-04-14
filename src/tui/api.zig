@@ -181,14 +181,18 @@ pub const ApiState = struct {
     // Arena for all fetched data
     backing_allocator: std.mem.Allocator,
     arena: *std.heap.ArenaAllocator,
+    local_arena: *std.heap.ArenaAllocator,
     ts_allocator: std.heap.ThreadSafeAllocator,
 
     pub fn init(base_allocator: std.mem.Allocator) ApiState {
         const arena_ptr = base_allocator.create(std.heap.ArenaAllocator) catch @panic("ApiState.init: arena allocation failed");
         arena_ptr.* = std.heap.ArenaAllocator.init(base_allocator);
+        const local_arena_ptr = base_allocator.create(std.heap.ArenaAllocator) catch @panic("ApiState.init: local arena allocation failed");
+        local_arena_ptr.* = std.heap.ArenaAllocator.init(base_allocator);
         return .{
             .backing_allocator = base_allocator,
             .arena = arena_ptr,
+            .local_arena = local_arena_ptr,
             .ts_allocator = undefined,
         };
     }
@@ -199,7 +203,9 @@ pub const ApiState = struct {
 
     pub fn deinit(self: *ApiState) void {
         self.arena.deinit();
+        self.local_arena.deinit();
         self.backing_allocator.destroy(self.arena);
+        self.backing_allocator.destroy(self.local_arena);
     }
 
     pub fn allocator(self: *ApiState) std.mem.Allocator {
@@ -220,16 +226,15 @@ pub fn startFetch(api_state: *ApiState, hub_url: []const u8, access_token: []con
 }
 
 pub fn refreshLocalState(api_state: *ApiState) void {
-    const alloc = api_state.allocator();
-    const local = trace_reader.readLocalStats(alloc);
-    const local_drafts = drafts_reader.readAllDrafts(alloc);
-    const sessions = session_reader.readAllSessions(alloc);
-
     api_state.mutex.lock();
-    api_state.local_stats = local;
-    api_state.drafts = local_drafts;
-    api_state.active_sessions = sessions;
-    api_state.mutex.unlock();
+    defer api_state.mutex.unlock();
+
+    _ = api_state.local_arena.reset(.retain_capacity);
+    const alloc = api_state.local_arena.allocator();
+
+    api_state.local_stats = trace_reader.readLocalStats(alloc);
+    api_state.drafts = drafts_reader.readAllDrafts(alloc);
+    api_state.active_sessions = session_reader.readAllSessions(alloc);
 }
 
 pub fn refetchAllAsync(api_state: *ApiState) void {
@@ -769,7 +774,15 @@ fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
     api_state.mutex.unlock();
 
     var client = HubClient.init(alloc, hub_url, token);
-    const path = std.fmt.allocPrint(alloc, "/api/org/library/prompt/content?path={s}", .{prompt_path}) catch {
+    const encoded_path = std.fmt.allocPrint(alloc, "{f}", .{
+        std.fmt.alt(std.Uri.Component{ .raw = prompt_path }, .formatQuery),
+    }) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
+    const path = std.fmt.allocPrint(alloc, "/api/org/library/prompt/content?path={s}", .{encoded_path}) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();

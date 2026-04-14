@@ -122,21 +122,6 @@ pub fn drawInnerTabBadge(surface: *vxfw.Surface, ctx: vxfw.DrawContext, row: u16
     );
 }
 
-// Build a sparkline string from raw values (0-based, max determines scale).
-pub fn sparkline(allocator: std.mem.Allocator, values: []const u8) ![]const u8 {
-    var max: u8 = 1;
-    for (values) |v| {
-        if (v > max) max = v;
-    }
-    var list: std.ArrayList(u8) = .empty;
-    for (values, 0..) |v, idx| {
-        if (idx > 0) try list.append(allocator, ' ');
-        const normalized: usize = @min(@as(usize, v) * theme.SPARKLINE.len / (@as(usize, max) + 1), theme.SPARKLINE.len - 1);
-        try list.appendSlice(allocator, theme.SPARKLINE[normalized]);
-    }
-    return try list.toOwnedSlice(allocator);
-}
-
 // Draw a braille area chart with gradient coloring (btop-style).
 // Area is filled from the data line down to the bottom, creating
 // a solid "mountain" shape. Gradient: ACCENT_SOFT (bottom) → OK (top).
