@@ -88,7 +88,7 @@ pub fn main() !void {
         };
     } else {
         ensure.run(pool) catch |err| {
-            log.err("ensure base data failed: {}", .{err});
+            log.err("ensure seed state failed: {}", .{err});
             std.process.exit(1);
         };
     }
@@ -106,13 +106,13 @@ fn printUsage() void {
         \\Usage: clumsies-seed [options]
         \\
         \\Options:
-        \\  --reset          Truncate all tables, seed fresh data, then start pump
+        \\  --reset          Force rebuild of seed-owned fixtures, then start pump
         \\  --interval=N     Pump interval in milliseconds (default: 3000)
         \\  --help, -h       Show this help
         \\
         \\Examples:
-        \\  clumsies-seed                      Ensure base data, then start pump
-        \\  clumsies-seed --reset             Reset database, then start pump
+        \\  clumsies-seed                      Ensure or repair seed fixtures, then start pump
+        \\  clumsies-seed --reset             Force fixture rebuild, then start pump
         \\  clumsies-seed --interval=1000     Pump every second
         \\
         \\Environment variables:

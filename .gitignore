@@ -28,3 +28,6 @@ Thumbs.db
 CLAUDE.md
 prompts/
 GEMINI.md
+
+# Local developer environment
+.env.local
