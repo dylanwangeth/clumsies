@@ -77,7 +77,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             return;
         }
 
-        const parsed = std.json.parseFromSlice(WorkspaceResponse, allocator, response.body, .{ .allocate = .alloc_always }) catch {
+        const parsed = parseWorkspaceResponse(allocator, response.body) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to parse workspace response\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
@@ -85,7 +85,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
         ws_id_owned = try allocator.dupe(u8, parsed.value.ws_id);
         ws_id = ws_id_owned.?;
-        ws_name = name;
+        ws_name_owned = try allocator.dupe(u8, parsed.value.name);
+        ws_name = ws_name_owned.?;
     } else if (ws_id_flag) |id| {
         // GET /api/workspaces/{ws_id} to verify access
         const path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}", .{id});
@@ -98,7 +99,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             return;
         }
 
-        const parsed = std.json.parseFromSlice(WorkspaceResponse, allocator, response.body, .{ .allocate = .alloc_always }) catch {
+        const parsed = parseWorkspaceResponse(allocator, response.body) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to parse workspace response\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
@@ -144,7 +145,15 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 const WorkspaceResponse = struct {
     ws_id: []const u8,
     name: []const u8,
+    revision: ?i32 = null,
 };
+
+fn parseWorkspaceResponse(allocator: std.mem.Allocator, body: []const u8) !std.json.Parsed(WorkspaceResponse) {
+    return std.json.parseFromSlice(WorkspaceResponse, allocator, body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+}
 
 fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies init [--create <name> | --ws-id <id>] [--bundle <bundle_id>]{s}\n", .{ P, Color.cyan, Color.reset });
@@ -153,4 +162,17 @@ fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}  {s}--create <name>{s}     Create a new workspace with this name\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--ws-id <id>{s}        Bind to an existing workspace by ID\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--bundle <bundle_id>{s} Associate a bundle (with --create)\n", .{ P, Color.cyan, Color.reset });
+}
+
+test "parseWorkspaceResponse ignores added fields from hub responses" {
+    const body =
+        \\{"ws_id":"ws-123","name":"clumsiesws","revision":4}
+    ;
+
+    const parsed = try parseWorkspaceResponse(std.testing.allocator, body);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("ws-123", parsed.value.ws_id);
+    try std.testing.expectEqualStrings("clumsiesws", parsed.value.name);
+    try std.testing.expectEqual(@as(?i32, 4), parsed.value.revision);
 }
