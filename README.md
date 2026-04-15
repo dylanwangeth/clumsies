@@ -35,7 +35,7 @@ Analysis view:
 
 Watch a short recording:
 
-<video src="assets/adapters/tui_dashboard.mov" controls autoplay muted loop>
+<video src="assets/adapters/tui_dashboard.mov" controls autoplay muted loop title="TUI Dashboard Demo Video">
   Your browser does not support the video tag.
 </video>
 
