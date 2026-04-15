@@ -82,7 +82,12 @@ const PumpPlanner = struct {
             }
         }
 
-        const emit_count: u16 = @intFromFloat(@floor(self.session_budget));
+        const whole_budget = @floor(self.session_budget);
+        const max_emit_count = std.math.maxInt(u16);
+        const emit_count: u16 = if (whole_budget > @as(f32, @floatFromInt(max_emit_count)))
+            max_emit_count
+        else
+            @intFromFloat(whole_budget);
         self.session_budget -= @as(f32, @floatFromInt(emit_count));
 
         return .{
@@ -370,4 +375,14 @@ test "planner preserves total profile volume across subsecond ticks" {
     if (data.PUMP_PROFILES.len > 1) {
         try std.testing.expectEqual(@as(usize, 1), planner.current_profile_idx);
     }
+}
+
+test "planner clamps oversized emit batches to u16 max" {
+    var planner = PumpPlanner.initWithSeed(19);
+    planner.session_budget = @as(f32, @floatFromInt(std.math.maxInt(u16))) + 42.5;
+
+    const tick = planner.planTick(100);
+
+    try std.testing.expectEqual(std.math.maxInt(u16), tick.emit_count);
+    try std.testing.expectApproxEqAbs(@as(f32, 42.5), planner.session_budget, 0.001);
 }
