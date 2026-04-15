@@ -3400,10 +3400,54 @@ pub const Dashboard = struct {
     };
 
     const ChartSeries = struct {
-        values: []const u16,
+        values: []const f32,
         left_label: []const u8,
         right_label: []const u8,
     };
+
+    fn smoothLocalChartBuckets(arena: std.mem.Allocator, source: []const u16) []const f32 {
+        if (source.len == 0) return &.{};
+
+        const values = arena.alloc(f32, source.len) catch return &.{};
+        const kernel = [_]f32{ 1, 2, 3, 2, 1 };
+
+        // Smooth the second-level refer buckets just for display. This keeps
+        // the underlying counts exact while turning isolated spikes into a
+        // more legible local activity wave.
+        for (source, 0..) |_, center| {
+            var weighted_sum: f32 = 0;
+            var weight_total: f32 = 0;
+
+            for (kernel, 0..) |weight, kernel_idx| {
+                const offset: isize = @as(isize, @intCast(kernel_idx)) - 2;
+                const sample_idx_signed: isize = @as(isize, @intCast(center)) + offset;
+                if (sample_idx_signed < 0 or sample_idx_signed >= @as(isize, @intCast(source.len))) continue;
+
+                const sample_idx: usize = @intCast(sample_idx_signed);
+                weighted_sum += @as(f32, @floatFromInt(source[sample_idx])) * weight;
+                weight_total += weight;
+            }
+
+            values[center] = if (weight_total > 0)
+                weighted_sum / weight_total
+            else
+                @as(f32, @floatFromInt(source[center]));
+        }
+
+        return values;
+    }
+
+    test "smoothLocalChartBuckets softens an isolated spike" {
+        const source = [_]u16{ 0, 0, 0, 6, 0, 0, 0 };
+        const values = smoothLocalChartBuckets(std.testing.allocator, &source);
+        defer std.testing.allocator.free(values);
+
+        try std.testing.expectApproxEqAbs(@as(f32, 2.0 / 3.0), values[1], 0.001);
+        try std.testing.expectApproxEqAbs(@as(f32, 4.0 / 3.0), values[2], 0.001);
+        try std.testing.expectApproxEqAbs(@as(f32, 2.0), values[3], 0.001);
+        try std.testing.expectApproxEqAbs(@as(f32, 4.0 / 3.0), values[4], 0.001);
+        try std.testing.expectApproxEqAbs(@as(f32, 2.0 / 3.0), values[5], 0.001);
+    }
 
     fn currentInsightsScopeLocked(self: *const Dashboard) InsightsScopeInfo {
         const workspaces = if (self.api_state.current_user) |u| u.workspaces else &.{};
@@ -3477,10 +3521,7 @@ pub const Dashboard = struct {
         const bucket_count: usize = 60;
         const span_ms: i64 = bucket_ms * bucket_count;
 
-        const values = arena.alloc(u16, bucket_count) catch {
-            return .{ .values = &.{}, .left_label = "60s ago", .right_label = "now" };
-        };
-        @memset(values, 0);
+        var raw_values: [bucket_count]u16 = .{0} ** bucket_count;
 
         const now_ms = std.time.milliTimestamp();
         const current_bucket_start_ms = now_ms - @mod(now_ms, bucket_ms);
@@ -3490,11 +3531,11 @@ pub const Dashboard = struct {
             if (rv.timestamp < start_ms or rv.timestamp >= end_ms) continue;
             const idx: usize = @intCast(@divFloor(rv.timestamp - start_ms, bucket_ms));
             if (idx >= bucket_count) continue;
-            values[idx] +|= 1;
+            raw_values[idx] +|= 1;
         }
 
         return .{
-            .values = values,
+            .values = smoothLocalChartBuckets(arena, raw_values[0..]),
             .left_label = "60s ago",
             .right_label = "now",
         };

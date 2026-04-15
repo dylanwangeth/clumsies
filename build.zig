@@ -91,6 +91,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "build_options", .module = options.createModule() },
+            .{ .name = "clumsies_lib", .module = lib },
         },
     });
     tui_module.addImport("vaxis", vaxis_dep.module("vaxis"));
