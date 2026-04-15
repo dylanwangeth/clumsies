@@ -159,12 +159,15 @@ fn queryPromptTrendSeries(
         const age_days = row.get(i64, 1) catch continue;
         const refer_count = row.get(i64, 2) catch continue;
 
-        const key = arena.dupe(u8, prompt_id) catch continue;
-        const entry = series_by_prompt.getOrPut(key) catch continue;
-        if (!entry.found_existing) {
-            entry.value_ptr.* = zeroTrendSeries(arena, max_days);
+        if (series_by_prompt.getPtr(prompt_id)) |series_ptr| {
+            setTrendBucket(series_ptr.*, age_days, refer_count);
+            continue;
         }
-        setTrendBucket(entry.value_ptr.*, age_days, refer_count);
+
+        const series = zeroTrendSeries(arena, max_days);
+        const key = arena.dupe(u8, prompt_id) catch continue;
+        series_by_prompt.put(key, series) catch continue;
+        setTrendBucket(series, age_days, refer_count);
     }
 
     return series_by_prompt;
@@ -202,12 +205,15 @@ fn queryUserTrendSeries(
         const age_days = row.get(i64, 1) catch continue;
         const refer_count = row.get(i64, 2) catch continue;
 
-        const key = arena.dupe(u8, user_id) catch continue;
-        const entry = series_by_user.getOrPut(key) catch continue;
-        if (!entry.found_existing) {
-            entry.value_ptr.* = zeroTrendSeries(arena, max_days);
+        if (series_by_user.getPtr(user_id)) |series_ptr| {
+            setTrendBucket(series_ptr.*, age_days, refer_count);
+            continue;
         }
-        setTrendBucket(entry.value_ptr.*, age_days, refer_count);
+
+        const series = zeroTrendSeries(arena, max_days);
+        const key = arena.dupe(u8, user_id) catch continue;
+        series_by_user.put(key, series) catch continue;
+        setTrendBucket(series, age_days, refer_count);
     }
 
     return series_by_user;
@@ -242,13 +248,19 @@ fn queryUserTopPrompts(
         const prompt_id = row.get([]const u8, 1) catch continue;
         const refer_count = row.get(i64, 2) catch continue;
 
-        const key = arena.dupe(u8, user_id) catch continue;
-        const entry = lists.getOrPut(key) catch continue;
-        if (!entry.found_existing) {
-            entry.value_ptr.* = .empty;
+        if (lists.getPtr(user_id)) |list_ptr| {
+            if (list_ptr.items.len >= 3) continue;
+            list_ptr.append(arena, .{
+                .prompt_id = arena.dupe(u8, prompt_id) catch continue,
+                .refer_count = refer_count,
+            }) catch continue;
+            continue;
         }
-        if (entry.value_ptr.items.len >= 3) continue;
-        entry.value_ptr.append(arena, .{
+
+        const key = arena.dupe(u8, user_id) catch continue;
+        lists.put(key, .empty) catch continue;
+        const list_ptr = lists.getPtr(user_id) orelse continue;
+        list_ptr.append(arena, .{
             .prompt_id = arena.dupe(u8, prompt_id) catch continue,
             .refer_count = refer_count,
         }) catch continue;
