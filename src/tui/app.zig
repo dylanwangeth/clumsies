@@ -143,6 +143,10 @@ pub const Dashboard = struct {
     content_scroll_bars: vxfw.ScrollBars,
     content_widget: [1]vxfw.Widget = undefined,
     content_text: vxfw.Text = .{ .text = "" },
+    prompt_content_request_key: ?u64 = null,
+    prompt_prs_request_key: ?u64 = null,
+    ws_context_request_key: ?u64 = null,
+    ws_prompt_request_key: ?u64 = null,
 
     // PR list within Prompt Detail
     pr_filter: PrFilter = .open,
@@ -598,6 +602,8 @@ pub const Dashboard = struct {
                 switch (self.selected_module) {
                     .library => {
                         if (key.matches('r', .{})) {
+                            api.invalidateOnDemandCaches(self.api_state);
+                            self.invalidateRemoteDetailRequests();
                             api.refetchAllAsync(self.api_state);
                             self.status_line = "Refreshing data...";
                             ctx.consumeAndRedraw();
@@ -960,6 +966,8 @@ pub const Dashboard = struct {
                             },
                         }
                         if (key.matches('r', .{})) {
+                            api.invalidateOnDemandCaches(self.api_state);
+                            self.invalidateRemoteDetailRequests();
                             api.refetchAllAsync(self.api_state);
                             self.status_line = "Refreshing data...";
                             ctx.consumeAndRedraw();
@@ -1853,6 +1861,8 @@ pub const Dashboard = struct {
         self.ws_prompts_expanded.clearRetainingCapacity();
         self.ws_context_tree_initialized = false;
         self.ws_prompts_tree_initialized = false;
+        self.ws_context_request_key = null;
+        self.ws_prompt_request_key = null;
         self.clearWsRows();
     }
 
@@ -2008,6 +2018,88 @@ pub const Dashboard = struct {
         return self.api_state.prompt_content;
     }
 
+    fn contentRequestKey(parts: []const []const u8) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        const sep = [_]u8{0};
+        for (parts) |part| {
+            hasher.update(part);
+            hasher.update(sep[0..]);
+        }
+        return hasher.final();
+    }
+
+    fn invalidateRemoteDetailRequests(self: *Dashboard) void {
+        self.prompt_content_request_key = null;
+        self.prompt_prs_request_key = null;
+        self.ws_context_request_key = null;
+        self.ws_prompt_request_key = null;
+    }
+
+    fn requestSelectedPromptDetail(self: *Dashboard) void {
+        const prompts = self.getPrompts();
+        if (self.selected_prompt >= prompts.len) {
+            self.prompt_content_request_key = null;
+            self.prompt_prs_request_key = null;
+            return;
+        }
+
+        const sel_path = prompts[self.selected_prompt].path;
+        const content_key = contentRequestKey(&.{ "library-prompt-content", sel_path });
+        if (self.prompt_content_request_key == null or self.prompt_content_request_key.? != content_key) {
+            if (api.fetchPromptContentAsync(self.api_state, sel_path)) {
+                self.prompt_content_request_key = content_key;
+            }
+        }
+
+        const prs_key = contentRequestKey(&.{ "library-prompt-prs", sel_path });
+        if (self.prompt_prs_request_key == null or self.prompt_prs_request_key.? != prs_key) {
+            if (api.fetchPromptPrsAsync(self.api_state, sel_path)) {
+                self.prompt_prs_request_key = prs_key;
+            }
+        }
+    }
+
+    fn requestWorkspaceSelectionContent(self: *Dashboard, ws_d: *const api.WsDetail) void {
+        const dir_sel = self.currentWsDirSelection();
+        switch (self.ws_tab) {
+            .context => {
+                self.ws_prompt_request_key = null;
+                if (dir_sel != null) {
+                    self.ws_context_request_key = null;
+                    return;
+                }
+                const context_sel = self.resolveWsContextSelection(ws_d) orelse {
+                    self.ws_context_request_key = null;
+                    return;
+                };
+                const file = &ws_d.context_files[context_sel];
+                const key = contentRequestKey(&.{ "ws-context", ws_d.ws_id, file.path });
+                if (self.ws_context_request_key != null and self.ws_context_request_key.? == key) return;
+
+                if (api.fetchWorkspaceContextContentAsync(self.api_state, ws_d.ws_id, file.path)) {
+                    self.ws_context_request_key = key;
+                }
+            },
+            .prompts => {
+                self.ws_context_request_key = null;
+                if (dir_sel != null) {
+                    self.ws_prompt_request_key = null;
+                    return;
+                }
+                const prompt_sel = self.resolveWsPromptSelection(ws_d) orelse {
+                    self.ws_prompt_request_key = null;
+                    return;
+                };
+                const key = contentRequestKey(&.{ "ws-prompt", ws_d.ws_id, prompt_sel.path });
+                if (self.ws_prompt_request_key != null and self.ws_prompt_request_key.? == key) return;
+
+                if (api.fetchPromptContentAsync(self.api_state, prompt_sel.path)) {
+                    self.ws_prompt_request_key = key;
+                }
+            },
+        }
+    }
+
     fn drawTextBlock(
         self: *Dashboard,
         surface: *vxfw.Surface,
@@ -2062,18 +2154,18 @@ pub const Dashboard = struct {
         }
         const ws_d = live_ws.?;
         self.syncWsRows();
+        self.requestWorkspaceSelectionContent(&ws_d);
         const dir_sel = self.currentWsDirSelection();
         const context_sel = self.resolveWsContextSelection(&ws_d);
         const prompt_sel = self.resolveWsPromptSelection(&ws_d);
-        const context_body: ?[]const u8 = if (dir_sel == null and self.ws_tab == .context and context_sel != null) blk: {
-            const f = &ws_d.context_files[context_sel.?];
-            api.fetchWorkspaceContextContentAsync(self.api_state, ws_d.ws_id, f.path);
-            break :blk self.cachedWorkspaceContextBody(ws_d.ws_id, f.path);
-        } else null;
-        const prompt_body: ?[]const u8 = if (dir_sel == null and self.ws_tab == .prompts and prompt_sel != null) blk: {
-            api.fetchPromptContentAsync(self.api_state, prompt_sel.?.path);
-            break :blk self.cachedPromptBody(prompt_sel.?.path);
-        } else null;
+        const context_body: ?[]const u8 = if (dir_sel == null and self.ws_tab == .context and context_sel != null)
+            self.cachedWorkspaceContextBody(ws_d.ws_id, ws_d.context_files[context_sel.?].path)
+        else
+            null;
+        const prompt_body: ?[]const u8 = if (dir_sel == null and self.ws_tab == .prompts and prompt_sel != null)
+            self.cachedPromptBody(prompt_sel.?.path)
+        else
+            null;
 
         // Title: selected item name
         const title: []const u8 = switch (self.ws_tab) {
@@ -3844,13 +3936,9 @@ pub const Dashboard = struct {
     }
 
     fn syncContentWidget(self: *Dashboard) void {
-        // Use live prompt content if available, else empty
-        const content: []const u8 = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            if (self.api_state.prompt_content) |c| break :blk c;
-            break :blk "";
-        };
+        const prompts = self.getPrompts();
+        const selected_path: ?[]const u8 = if (self.selected_prompt < prompts.len) prompts[self.selected_prompt].path else null;
+        const content = if (selected_path) |path| self.cachedPromptBody(path) orelse "" else "";
         self.content_text = .{
             .text = content,
             .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
@@ -3859,13 +3947,7 @@ pub const Dashboard = struct {
         self.content_scroll_bars.scroll_view.children = .{ .slice = self.content_widget[0..1] };
         self.content_scroll_bars.estimated_content_height = @intCast(@max(w.countLines(content), 24));
 
-        // Trigger fetch for the selected prompt content and its PR list
-        const prompts = self.getPrompts();
-        if (self.selected_prompt < prompts.len) {
-            const sel_path = prompts[self.selected_prompt].path;
-            api.fetchPromptContentAsync(self.api_state, sel_path);
-            api.fetchPromptPrsAsync(self.api_state, sel_path);
-        }
+        self.requestSelectedPromptDetail();
     }
 
     fn syncPrWidgets(self: *Dashboard) void {
