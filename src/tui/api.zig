@@ -258,6 +258,29 @@ pub fn refreshLocalState(api_state: *ApiState) void {
     api_state.active_sessions = session_reader.readAllSessions(alloc);
 }
 
+pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
+    api_state.mutex.lock();
+    defer api_state.mutex.unlock();
+
+    api_state.prompt_prs = null;
+    api_state.prompt_prs_for_path = null;
+    api_state.prompt_prs_for_id = null;
+    api_state.prompt_content = null;
+    api_state.prompt_content_name = null;
+    api_state.workspace_context_content = null;
+    api_state.workspace_context_content_ws_id = null;
+    api_state.workspace_context_content_path = null;
+    api_state.pr_detail_id = null;
+    api_state.pr_detail_diff = null;
+    api_state.pr_detail_comments = null;
+    api_state.pr_detail_trace_refers = 0;
+    api_state.pr_detail_op_type = null;
+    api_state.pr_detail_op_current_path = null;
+    api_state.pr_detail_op_new_path = null;
+    api_state.pr_detail_op_index = 0;
+    api_state.pr_detail_op_total = 0;
+}
+
 pub fn refetchAllAsync(api_state: *ApiState) void {
     api_state.mutex.lock();
     if (api_state.fetch_busy or api_state.hub_url == null or api_state.access_token == null) {
@@ -286,14 +309,15 @@ pub fn fetchWorkspaceAsync(api_state: *ApiState, ws_id: []const u8) void {
     api_state.fetch_busy = true;
     api_state.mutex.unlock();
 
-    const alloc = api_state.allocator();
-    const ws_id_copy = alloc.dupe(u8, ws_id) catch {
+    const request_alloc = api_state.backing_allocator;
+    const ws_id_copy = request_alloc.dupe(u8, ws_id) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
         return;
     };
     _ = std.Thread.spawn(.{}, fetchWorkspace, .{ api_state, ws_id_copy }) catch {
+        request_alloc.free(ws_id_copy);
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
@@ -303,43 +327,58 @@ pub fn fetchWorkspaceAsync(api_state: *ApiState, ws_id: []const u8) void {
 // Fetch the PR list scoped to a single prompt. Re-issued whenever the
 // user selects a different prompt in Library; the hub returns only PRs
 // whose operations[] touches that prompt_id.
-pub fn fetchPromptPrsAsync(api_state: *ApiState, prompt_path: []const u8) void {
+//
+// Returns true when the selection is already satisfied from cache or a
+// request was successfully scheduled. Returns false when the caller
+// should retry later, e.g. because another fetch is currently in flight.
+pub fn fetchPromptPrsAsync(api_state: *ApiState, prompt_path: []const u8) bool {
     api_state.mutex.lock();
     if (api_state.fetch_busy or api_state.hub_url == null) {
         api_state.mutex.unlock();
-        return;
+        return false;
     }
     if (api_state.prompt_prs_for_path) |cached| {
         if (std.mem.eql(u8, cached, prompt_path)) {
             api_state.mutex.unlock();
-            return;
+            return true;
         }
     }
     const lib = api_state.prompts orelse {
         api_state.mutex.unlock();
-        return;
+        return false;
     };
-    const alloc = api_state.allocator();
+    const request_alloc = api_state.backing_allocator;
     const prompt_id: ?[]const u8 = for (lib) |lp| {
-        if (std.mem.eql(u8, lp.path, prompt_path)) break alloc.dupe(u8, lp.prompt_id) catch null;
+        if (std.mem.eql(u8, lp.path, prompt_path)) break request_alloc.dupe(u8, lp.prompt_id) catch null;
     } else null;
     api_state.mutex.unlock();
-    if (prompt_id == null) return;
+    if (prompt_id == null) return false;
 
-    const path_copy = alloc.dupe(u8, prompt_path) catch return;
+    const path_copy = request_alloc.dupe(u8, prompt_path) catch {
+        request_alloc.free(prompt_id.?);
+        return false;
+    };
 
     api_state.mutex.lock();
     api_state.fetch_busy = true;
     api_state.mutex.unlock();
 
     _ = std.Thread.spawn(.{}, fetchPromptPrs, .{ api_state, path_copy, prompt_id.? }) catch {
+        request_alloc.free(path_copy);
+        request_alloc.free(prompt_id.?);
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
+        return false;
     };
+    return true;
 }
 
 fn fetchPromptPrs(api_state: *ApiState, prompt_path: []const u8, prompt_id: []const u8) void {
+    const request_alloc = api_state.backing_allocator;
+    defer request_alloc.free(prompt_path);
+    defer request_alloc.free(prompt_id);
+
     const alloc = api_state.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
@@ -354,14 +393,14 @@ fn fetchPromptPrs(api_state: *ApiState, prompt_path: []const u8, prompt_id: []co
     };
     api_state.mutex.unlock();
 
-    var client = HubClient.init(alloc, hub_url, token);
-    const path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs?prompt_id={s}", .{prompt_id}) catch {
+    var client = HubClient.init(request_alloc, hub_url, token);
+    const path = std.fmt.allocPrint(request_alloc, "/api/org/prompt-prs?prompt_id={s}", .{prompt_id}) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
         return;
     };
-    defer alloc.free(path);
+    defer request_alloc.free(path);
 
     const resp = client.get(path) catch {
         api_state.mutex.lock();
@@ -376,10 +415,13 @@ fn fetchPromptPrs(api_state: *ApiState, prompt_path: []const u8, prompt_id: []co
         prs = parsePromptPrs(alloc, resp.body);
     }
 
+    const stored_prompt_path = alloc.dupe(u8, prompt_path) catch null;
+    const stored_prompt_id = alloc.dupe(u8, prompt_id) catch null;
+
     api_state.mutex.lock();
     api_state.prompt_prs = prs;
-    api_state.prompt_prs_for_path = prompt_path;
-    api_state.prompt_prs_for_id = prompt_id;
+    api_state.prompt_prs_for_path = stored_prompt_path;
+    api_state.prompt_prs_for_id = stored_prompt_id;
     api_state.pr_detail_id = null;
     api_state.pr_detail_diff = null;
     api_state.pr_detail_comments = null;
@@ -393,71 +435,83 @@ fn fetchPromptPrs(api_state: *ApiState, prompt_path: []const u8, prompt_id: []co
     api_state.mutex.unlock();
 }
 
-// Fetch prompt content on demand
-pub fn fetchPromptContentAsync(api_state: *ApiState, prompt_path: []const u8) void {
+// Fetch prompt content on demand.
+//
+// Returns true when the prompt content is already cached or a request
+// was successfully scheduled. Returns false when the caller should retry
+// later, e.g. because another fetch is currently in flight.
+pub fn fetchPromptContentAsync(api_state: *ApiState, prompt_path: []const u8) bool {
     api_state.mutex.lock();
     if (api_state.fetch_busy or api_state.hub_url == null) {
         api_state.mutex.unlock();
-        return;
+        return false;
     }
     if (api_state.prompt_content_name) |cached| {
         if (std.mem.eql(u8, cached, prompt_path) and api_state.prompt_content != null) {
             api_state.mutex.unlock();
-            return;
+            return true;
         }
     }
     api_state.fetch_busy = true;
     api_state.mutex.unlock();
 
-    const alloc = api_state.allocator();
-    const path_copy = alloc.dupe(u8, prompt_path) catch {
+    const request_alloc = api_state.backing_allocator;
+    const path_copy = request_alloc.dupe(u8, prompt_path) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
-        return;
+        return false;
     };
     _ = std.Thread.spawn(.{}, fetchPromptContent, .{ api_state, path_copy }) catch {
+        request_alloc.free(path_copy);
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
+        return false;
     };
+    return true;
 }
 
-pub fn fetchWorkspaceContextContentAsync(api_state: *ApiState, ws_id: []const u8, path: []const u8) void {
+pub fn fetchWorkspaceContextContentAsync(api_state: *ApiState, ws_id: []const u8, path: []const u8) bool {
     api_state.mutex.lock();
     if (api_state.fetch_busy or api_state.hub_url == null) {
         api_state.mutex.unlock();
-        return;
+        return false;
     }
     if (api_state.workspace_context_content_ws_id) |cached_ws_id| {
         if (api_state.workspace_context_content_path) |cached_path| {
             if (std.mem.eql(u8, cached_ws_id, ws_id) and std.mem.eql(u8, cached_path, path) and api_state.workspace_context_content != null) {
                 api_state.mutex.unlock();
-                return;
+                return true;
             }
         }
     }
     api_state.fetch_busy = true;
     api_state.mutex.unlock();
 
-    const alloc = api_state.allocator();
-    const ws_id_copy = alloc.dupe(u8, ws_id) catch {
+    const request_alloc = api_state.backing_allocator;
+    const ws_id_copy = request_alloc.dupe(u8, ws_id) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
-        return;
+        return false;
     };
-    const path_copy = alloc.dupe(u8, path) catch {
+    const path_copy = request_alloc.dupe(u8, path) catch {
+        request_alloc.free(ws_id_copy);
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
-        return;
+        return false;
     };
     _ = std.Thread.spawn(.{}, fetchWorkspaceContextContent, .{ api_state, ws_id_copy, path_copy }) catch {
+        request_alloc.free(path_copy);
+        request_alloc.free(ws_id_copy);
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
+        return false;
     };
+    return true;
 }
 
 fn fetchAll(api_state: *ApiState, hub_url: []const u8, access_token: []const u8) void {
@@ -559,14 +613,15 @@ pub fn fetchPrDetailAsync(api_state: *ApiState, pr_id: []const u8) void {
     api_state.fetch_busy = true;
     api_state.mutex.unlock();
 
-    const alloc = api_state.allocator();
-    const id_copy = alloc.dupe(u8, pr_id) catch {
+    const request_alloc = api_state.backing_allocator;
+    const id_copy = request_alloc.dupe(u8, pr_id) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
         return;
     };
     _ = std.Thread.spawn(.{}, fetchPrDetail, .{ api_state, id_copy }) catch {
+        request_alloc.free(id_copy);
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
@@ -574,6 +629,9 @@ pub fn fetchPrDetailAsync(api_state: *ApiState, pr_id: []const u8) void {
 }
 
 fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
+    const request_alloc = api_state.backing_allocator;
+    defer request_alloc.free(pr_id);
+
     const alloc = api_state.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
@@ -588,16 +646,16 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
     };
     api_state.mutex.unlock();
 
-    var client = HubClient.init(alloc, hub_url, token);
+    var client = HubClient.init(request_alloc, hub_url, token);
 
     // GET /api/org/prompt-prs/{id}
-    const detail_path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}", .{pr_id}) catch {
+    const detail_path = std.fmt.allocPrint(request_alloc, "/api/org/prompt-prs/{s}", .{pr_id}) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
         return;
     };
-    defer alloc.free(detail_path);
+    defer request_alloc.free(detail_path);
     const detail_resp = client.get(detail_path) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
@@ -639,11 +697,11 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
             const target_id = blk: {
                 api_state.mutex.lock();
                 defer api_state.mutex.unlock();
-                break :blk if (api_state.prompt_prs_for_id) |id| alloc.dupe(u8, id) catch null else null;
+                break :blk if (api_state.prompt_prs_for_id) |id| request_alloc.dupe(u8, id) catch null else null;
             };
             var pick_idx: ?usize = null;
             if (target_id) |tid| {
-                defer alloc.free(tid);
+                defer request_alloc.free(tid);
                 for (p.value.operations, 0..) |op, i| {
                     if (op.prompt_id) |pid| {
                         if (std.mem.eql(u8, pid, tid)) {
@@ -673,10 +731,10 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
     }
 
     // GET /api/org/prompt-prs/{id}/comments
-    const comments_path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{pr_id}) catch null;
+    const comments_path = std.fmt.allocPrint(request_alloc, "/api/org/prompt-prs/{s}/comments", .{pr_id}) catch null;
     var comments: ?[]const data.CommentEntry = null;
     if (comments_path) |cpath| {
-        defer alloc.free(cpath);
+        defer request_alloc.free(cpath);
         const c_resp = client.get(cpath) catch null;
         if (c_resp) |resp| {
             defer resp.deinit();
@@ -686,8 +744,9 @@ fn fetchPrDetail(api_state: *ApiState, pr_id: []const u8) void {
         }
     }
 
+    const stored_pr_id = alloc.dupe(u8, pr_id) catch null;
     api_state.mutex.lock();
-    api_state.pr_detail_id = pr_id;
+    api_state.pr_detail_id = stored_pr_id;
     api_state.pr_detail_diff = diff_lines;
     api_state.pr_detail_comments = comments;
     api_state.pr_detail_trace_refers = trace_refers;
@@ -777,6 +836,9 @@ pub fn postAction(api_state: *ApiState, alloc: std.mem.Allocator, method: std.ht
 }
 
 fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
+    const request_alloc = api_state.backing_allocator;
+    defer request_alloc.free(ws_id);
+
     const alloc = api_state.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
@@ -791,31 +853,38 @@ fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
     };
     api_state.mutex.unlock();
 
-    var client = HubClient.init(alloc, hub_url, token);
+    var client = HubClient.init(request_alloc, hub_url, token);
 
     // GET /api/workspaces/{ws_id}/context/files
-    const files_path = std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/files", .{ws_id}) catch {
+    const files_path = std.fmt.allocPrint(request_alloc, "/api/workspaces/{s}/context/files", .{ws_id}) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
         return;
     };
-    defer alloc.free(files_path);
+    defer request_alloc.free(files_path);
     const files = doFetchParse(&client, alloc, files_path, []const ContextFileData, parseContextFiles);
 
     // GET /api/workspaces/{ws_id}/manifest
-    const manifest_path = std.fmt.allocPrint(alloc, "/api/workspaces/{s}/manifest", .{ws_id}) catch {
+    const manifest_path = std.fmt.allocPrint(request_alloc, "/api/workspaces/{s}/manifest", .{ws_id}) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
         return;
     };
-    defer alloc.free(manifest_path);
+    defer request_alloc.free(manifest_path);
     const ws_prompts = doFetchParse(&client, alloc, manifest_path, []const WsPromptData, parseManifestPrompts);
+
+    const stored_ws_id = alloc.dupe(u8, ws_id) catch {
+        api_state.mutex.lock();
+        api_state.fetch_busy = false;
+        api_state.mutex.unlock();
+        return;
+    };
 
     api_state.mutex.lock();
     api_state.ws_detail = .{
-        .ws_id = ws_id,
+        .ws_id = stored_ws_id,
         .context_files = files orelse &.{},
         .ws_prompts = ws_prompts orelse &.{},
     };
@@ -824,6 +893,9 @@ fn fetchWorkspace(api_state: *ApiState, ws_id: []const u8) void {
 }
 
 fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
+    const request_alloc = api_state.backing_allocator;
+    defer request_alloc.free(prompt_path);
+
     const alloc = api_state.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
@@ -838,8 +910,8 @@ fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
     };
     api_state.mutex.unlock();
 
-    var client = HubClient.init(alloc, hub_url, token);
-    const encoded_path = std.fmt.allocPrint(alloc, "{f}", .{
+    var client = HubClient.init(request_alloc, hub_url, token);
+    const encoded_path = std.fmt.allocPrint(request_alloc, "{f}", .{
         std.fmt.alt(std.Uri.Component{ .raw = prompt_path }, .formatQuery),
     }) catch {
         api_state.mutex.lock();
@@ -847,14 +919,14 @@ fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
         api_state.mutex.unlock();
         return;
     };
-    defer alloc.free(encoded_path);
-    const path = std.fmt.allocPrint(alloc, "/api/org/library/prompt/content?path={s}", .{encoded_path}) catch {
+    defer request_alloc.free(encoded_path);
+    const path = std.fmt.allocPrint(request_alloc, "/api/org/library/prompt/content?path={s}", .{encoded_path}) catch {
         api_state.mutex.lock();
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
         return;
     };
-    defer alloc.free(path);
+    defer request_alloc.free(path);
 
     const resp = client.get(path) catch {
         api_state.mutex.lock();
@@ -875,10 +947,11 @@ fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
             defer p.deinit();
             break :blk alloc.dupe(u8, p.value.body) catch null;
         } else null;
+        const stored_path = alloc.dupe(u8, prompt_path) catch null;
 
         api_state.mutex.lock();
         api_state.prompt_content = content;
-        api_state.prompt_content_name = prompt_path;
+        api_state.prompt_content_name = stored_path;
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
     } else {
@@ -889,6 +962,10 @@ fn fetchPromptContent(api_state: *ApiState, prompt_path: []const u8) void {
 }
 
 fn fetchWorkspaceContextContent(api_state: *ApiState, ws_id: []const u8, path: []const u8) void {
+    const request_alloc = api_state.backing_allocator;
+    defer request_alloc.free(ws_id);
+    defer request_alloc.free(path);
+
     const alloc = api_state.allocator();
     api_state.mutex.lock();
     const hub_url = api_state.hub_url orelse {
@@ -903,8 +980,8 @@ fn fetchWorkspaceContextContent(api_state: *ApiState, ws_id: []const u8, path: [
     };
     api_state.mutex.unlock();
 
-    var client = HubClient.init(alloc, hub_url, token);
-    const encoded_path = std.fmt.allocPrint(alloc, "{f}", .{
+    var client = HubClient.init(request_alloc, hub_url, token);
+    const encoded_path = std.fmt.allocPrint(request_alloc, "{f}", .{
         std.fmt.alt(std.Uri.Component{ .raw = path }, .formatQuery),
     }) catch {
         api_state.mutex.lock();
@@ -912,9 +989,9 @@ fn fetchWorkspaceContextContent(api_state: *ApiState, ws_id: []const u8, path: [
         api_state.mutex.unlock();
         return;
     };
-    defer alloc.free(encoded_path);
+    defer request_alloc.free(encoded_path);
     const request_path = std.fmt.allocPrint(
-        alloc,
+        request_alloc,
         "/api/workspaces/{s}/context/file/content?path={s}",
         .{ ws_id, encoded_path },
     ) catch {
@@ -923,7 +1000,7 @@ fn fetchWorkspaceContextContent(api_state: *ApiState, ws_id: []const u8, path: [
         api_state.mutex.unlock();
         return;
     };
-    defer alloc.free(request_path);
+    defer request_alloc.free(request_path);
 
     const resp = client.get(request_path) catch {
         api_state.mutex.lock();
@@ -935,10 +1012,12 @@ fn fetchWorkspaceContextContent(api_state: *ApiState, ws_id: []const u8, path: [
 
     if (resp.status == .ok) {
         const content = alloc.dupe(u8, resp.body) catch null;
+        const stored_ws_id = alloc.dupe(u8, ws_id) catch null;
+        const stored_path = alloc.dupe(u8, path) catch null;
         api_state.mutex.lock();
         api_state.workspace_context_content = content;
-        api_state.workspace_context_content_ws_id = ws_id;
-        api_state.workspace_context_content_path = path;
+        api_state.workspace_context_content_ws_id = stored_ws_id;
+        api_state.workspace_context_content_path = stored_path;
         api_state.fetch_busy = false;
         api_state.mutex.unlock();
     } else {
