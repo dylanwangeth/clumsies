@@ -8,11 +8,114 @@ const prompt_lib = clumsies_lib.prompt;
 
 const log = std.log.scoped(.pump);
 
+const PumpTick = struct {
+    emit_count: u16,
+    active_profile: data.PumpProfile,
+    profile_switched: bool,
+};
+
+const EmitBatch = struct {
+    emitted_count: u16 = 0,
+    last_scenario: ?*const data.PumpScenario = null,
+};
+
+const PumpPlanner = struct {
+    rng: std.Random.DefaultPrng,
+    current_profile_idx: usize = 0,
+    next_sweep_profile_idx: usize = if (data.PUMP_PROFILES.len > 1) 1 else 0,
+    sweep_complete: bool = data.PUMP_PROFILES.len <= 1,
+    profile_elapsed_ms: u64 = 0,
+    session_budget: f32 = 0,
+    scenario_cursor: usize = 0,
+    total_sessions: u64 = 0,
+
+    fn init() PumpPlanner {
+        var seed: u64 = 0;
+        std.crypto.random.bytes(std.mem.asBytes(&seed));
+        return initWithSeed(seed);
+    }
+
+    fn initWithSeed(seed: u64) PumpPlanner {
+        return .{
+            .rng = std.Random.DefaultPrng.init(seed),
+        };
+    }
+
+    fn currentProfile(self: *const PumpPlanner) data.PumpProfile {
+        return data.PUMP_PROFILES[self.current_profile_idx];
+    }
+
+    fn nextScenario(self: *PumpPlanner) *const data.PumpScenario {
+        const idx = self.scenario_cursor % data.PUMP_SCENARIOS.len;
+        self.scenario_cursor += 1;
+        return &data.PUMP_SCENARIOS[idx];
+    }
+
+    fn planTick(self: *PumpPlanner, interval_ms: u64) PumpTick {
+        var remaining_ms = interval_ms;
+        var profile_switched = false;
+
+        while (remaining_ms > 0) {
+            const profile = self.currentProfile();
+            const total_profile_ms = profileTotalMs(profile);
+            const second_idx = @min(
+                profile.session_rates.len - 1,
+                @as(usize, @intCast(self.profile_elapsed_ms / std.time.ms_per_s)),
+            );
+            const second_progress_ms = self.profile_elapsed_ms % std.time.ms_per_s;
+            const step_remaining_ms = std.time.ms_per_s - second_progress_ms;
+            const profile_remaining_ms = total_profile_ms - self.profile_elapsed_ms;
+            const slice_ms = @min(remaining_ms, @min(step_remaining_ms, profile_remaining_ms));
+            const rate = profile.session_rates[second_idx];
+
+            self.session_budget +=
+                @as(f32, @floatFromInt(rate)) *
+                @as(f32, @floatFromInt(slice_ms)) /
+                @as(f32, @floatFromInt(std.time.ms_per_s));
+
+            self.profile_elapsed_ms += slice_ms;
+            remaining_ms -= slice_ms;
+
+            if (self.profile_elapsed_ms == total_profile_ms) {
+                profile_switched = true;
+                self.advanceProfile();
+            }
+        }
+
+        const emit_count: u16 = @intFromFloat(@floor(self.session_budget));
+        self.session_budget -= @as(f32, @floatFromInt(emit_count));
+
+        return .{
+            .emit_count = emit_count,
+            .active_profile = self.currentProfile(),
+            .profile_switched = profile_switched,
+        };
+    }
+
+    fn advanceProfile(self: *PumpPlanner) void {
+        self.profile_elapsed_ms = 0;
+
+        if (!self.sweep_complete) {
+            self.current_profile_idx = self.next_sweep_profile_idx;
+            self.next_sweep_profile_idx += 1;
+            if (self.next_sweep_profile_idx >= data.PUMP_PROFILES.len) {
+                self.sweep_complete = true;
+            }
+            return;
+        }
+
+        self.current_profile_idx = pickRandomProfileIndex(self.rng.random(), self.current_profile_idx);
+    }
+};
+
 pub fn run(pool: *pg.Pool, interval_ms: u64) !void {
     log.info("pump started (interval: {d}ms, Ctrl-C to stop)", .{interval_ms});
 
     var tick: u64 = 0;
+    var planner = PumpPlanner.init();
     const sleep_ns = std.math.mul(u64, interval_ms, std.time.ns_per_ms) catch std.math.maxInt(u64);
+
+    logActiveProfile(planner.currentProfile());
 
     while (true) {
         const conn = pool.acquire() catch {
@@ -22,26 +125,53 @@ pub fn run(pool: *pg.Pool, interval_ms: u64) !void {
         };
         defer conn.release();
 
-        emitScenario(conn, tick);
+        const plan = planner.planTick(interval_ms);
+        const batch = emitBatch(conn, &planner, tick, plan.emit_count);
 
         tick += 1;
         if (tick % data.CLEANUP_INTERVAL == 0) {
             cleanupTrace(conn);
-            log.info("{d} sessions emitted (db cleanup done)", .{tick});
+            logBatchSummary(planner.total_sessions, plan.active_profile, batch, true);
+        } else if (plan.profile_switched) {
+            logActiveProfile(plan.active_profile);
+            logBatchSummary(planner.total_sessions, plan.active_profile, batch, false);
         } else if (tick % 10 == 0) {
-            log.info("{d} sessions emitted", .{tick});
+            logBatchSummary(planner.total_sessions, plan.active_profile, batch, false);
         }
 
         std.Thread.sleep(sleep_ns);
     }
 }
 
-fn emitScenario(conn: *pg.Conn, tick: u64) void {
-    const scenario = data.PUMP_SCENARIOS[tick % data.PUMP_SCENARIOS.len];
-    const timestamp_base = std.time.milliTimestamp();
+fn emitBatch(conn: *pg.Conn, planner: *PumpPlanner, tick: u64, emit_count: u16) EmitBatch {
+    var batch: EmitBatch = .{};
+
+    for (0..emit_count) |slot_idx| {
+        const scenario = planner.nextScenario();
+        emitScenario(conn, scenario, tick, planner.total_sessions, @intCast(slot_idx));
+        planner.total_sessions += 1;
+        batch.emitted_count += 1;
+        batch.last_scenario = scenario;
+    }
+
+    return batch;
+}
+
+fn emitScenario(
+    conn: *pg.Conn,
+    scenario: *const data.PumpScenario,
+    tick: u64,
+    session_serial: u64,
+    slot_idx: u16,
+) void {
+    const timestamp_base = std.time.milliTimestamp() + @as(i64, @intCast(slot_idx * 10));
 
     var session_buf: [64]u8 = undefined;
-    const session_id = std.fmt.bufPrint(&session_buf, "ses-seed-{d}-{d}", .{ timestamp_base, tick }) catch return;
+    const session_id = std.fmt.bufPrint(&session_buf, "ses-seed-{d}-{d}-{d}", .{
+        timestamp_base,
+        tick,
+        session_serial,
+    }) catch return;
 
     insertTraceEvent(conn, scenario.user_id, .{
         .ws_id = scenario.ws_id,
@@ -122,4 +252,122 @@ fn cleanupTrace(conn: *pg.Conn) void {
     , .{data.CAP_TRACE_EVENTS}) catch |err| {
         log.warn("trace cleanup failed: {}", .{err});
     };
+}
+
+fn logActiveProfile(profile: data.PumpProfile) void {
+    log.info("profile {s} active (~{d} session/s)", .{
+        profile.name,
+        averageSessionRate(profile),
+    });
+}
+
+fn logBatchSummary(total_sessions: u64, active_profile: data.PumpProfile, batch: EmitBatch, cleanup_done: bool) void {
+    var summary_buf: [160]u8 = undefined;
+    const summary = if (batch.last_scenario) |scenario|
+        formatScenarioSummary(&summary_buf, scenario)
+    else
+        "latest: idle window";
+
+    if (cleanup_done) {
+        log.info("{d} sessions emitted [{s}] {s} (db cleanup done)", .{
+            total_sessions,
+            active_profile.name,
+            summary,
+        });
+        return;
+    }
+
+    log.info("{d} sessions emitted [{s}] {s}", .{
+        total_sessions,
+        active_profile.name,
+        summary,
+    });
+}
+
+fn formatScenarioSummary(buf: *[160]u8, scenario: *const data.PumpScenario) []const u8 {
+    const workspace = if (data.workspaceById(scenario.ws_id)) |ws| ws.name else scenario.ws_id;
+    const user = if (data.userById(scenario.user_id)) |u| u.username else scenario.user_id;
+
+    var input_buf: [80]u8 = undefined;
+    const input = truncateForLog(&input_buf, scenario.input);
+
+    return std.fmt.bufPrint(buf, "latest: {s} / {s} / {s}", .{
+        workspace,
+        user,
+        input,
+    }) catch "latest: seed activity";
+}
+
+fn truncateForLog(buf: []u8, text: []const u8) []const u8 {
+    if (text.len <= buf.len) {
+        @memcpy(buf[0..text.len], text);
+        return buf[0..text.len];
+    }
+
+    if (buf.len <= 3) {
+        @memcpy(buf, text[0..buf.len]);
+        return buf;
+    }
+
+    const head_len = buf.len - 3;
+    @memcpy(buf[0..head_len], text[0..head_len]);
+    @memcpy(buf[head_len..], "...");
+    return buf;
+}
+
+fn averageSessionRate(profile: data.PumpProfile) u16 {
+    var total: u32 = 0;
+    for (profile.session_rates) |rate| total += rate;
+    const rounded = (total + profile.session_rates.len / 2) / profile.session_rates.len;
+    return @intCast(rounded);
+}
+
+fn profileTotalMs(profile: data.PumpProfile) u64 {
+    return @as(u64, @intCast(profile.session_rates.len)) * std.time.ms_per_s;
+}
+
+fn pickRandomProfileIndex(random: std.Random, current_idx: usize) usize {
+    if (data.PUMP_PROFILES.len <= 1) return current_idx;
+
+    var idx = current_idx;
+    while (idx == current_idx) {
+        idx = random.intRangeLessThan(usize, 0, data.PUMP_PROFILES.len);
+    }
+    return idx;
+}
+
+test "planner sweeps each profile before entering random rotation" {
+    var planner = PumpPlanner.initWithSeed(7);
+
+    try std.testing.expectEqual(@as(usize, 0), planner.current_profile_idx);
+    for (1..data.PUMP_PROFILES.len) |expected_idx| {
+        _ = planner.planTick(profileTotalMs(planner.currentProfile()));
+        try std.testing.expectEqual(expected_idx, planner.current_profile_idx);
+    }
+
+    const before_random = planner.current_profile_idx;
+    _ = planner.planTick(profileTotalMs(planner.currentProfile()));
+    if (data.PUMP_PROFILES.len > 1) {
+        try std.testing.expect(planner.current_profile_idx != before_random);
+    }
+}
+
+test "planner preserves total profile volume across subsecond ticks" {
+    var planner = PumpPlanner.initWithSeed(11);
+    const profile = planner.currentProfile();
+    const tick_ms: u64 = 250;
+    const tick_count = @divExact(profileTotalMs(profile), tick_ms);
+
+    var emitted: u32 = 0;
+    for (0..tick_count) |_| {
+        emitted += planner.planTick(tick_ms).emit_count;
+    }
+
+    var expected: u32 = 0;
+    for (profile.session_rates) |rate| expected += rate;
+
+    try std.testing.expectEqual(expected, emitted);
+    if (data.PUMP_PROFILES.len > 1) {
+        try std.testing.expectEqual(@as(usize, 1), planner.current_profile_idx);
+    }
 }

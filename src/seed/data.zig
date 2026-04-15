@@ -59,6 +59,11 @@ pub const PumpScenario = struct {
     refers: []const PumpRefer,
 };
 
+pub const PumpProfile = struct {
+    name: []const u8,
+    session_rates: []const u8,
+};
+
 pub const META_PROMPT_CONTENT =
     \\# clumsies Meta-Prompt File
     \\
@@ -304,6 +309,20 @@ const RESET_REFERS = [_]PumpRefer{
     .{ .prompt_id = "p-seed-trace", .constraint_id = "trace.keep-pump-structurally-pure", .reason = "pump stayed focused on activity data instead of schema churn" },
 };
 
+const PROFILE_RAMP_UP = [_]u8{ 1, 1, 2, 2, 3, 3, 4, 4, 5, 6, 7, 8 };
+const PROFILE_COOLDOWN = [_]u8{ 8, 7, 6, 5, 4, 3, 2, 2, 1, 1, 1, 0 };
+const PROFILE_WAVE = [_]u8{ 2, 3, 5, 6, 5, 3, 2, 3, 5, 6, 4, 2 };
+const PROFILE_SPIKE = [_]u8{ 0, 0, 1, 1, 2, 8, 10, 3, 1, 1, 0, 0 };
+const PROFILE_LOW_AMBIENT = [_]u8{ 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0 };
+
+pub const PUMP_PROFILES = [_]PumpProfile{
+    .{ .name = "ramp-up", .session_rates = &PROFILE_RAMP_UP },
+    .{ .name = "cooldown", .session_rates = &PROFILE_COOLDOWN },
+    .{ .name = "wave", .session_rates = &PROFILE_WAVE },
+    .{ .name = "spike", .session_rates = &PROFILE_SPIKE },
+    .{ .name = "low-ambient", .session_rates = &PROFILE_LOW_AMBIENT },
+};
+
 pub const PUMP_SCENARIOS = [_]PumpScenario{
     .{
         .user_id = "usr-seed-dylan",
@@ -344,6 +363,20 @@ pub fn promptById(prompt_id: []const u8) ?*const PromptFixture {
     return null;
 }
 
+pub fn userById(user_id: []const u8) ?*const UserFixture {
+    for (&USERS) |*user| {
+        if (std.mem.eql(u8, user.id, user_id)) return user;
+    }
+    return null;
+}
+
+pub fn workspaceById(ws_id: []const u8) ?*const WorkspaceFixture {
+    for (&WORKSPACES) |*workspace| {
+        if (std.mem.eql(u8, workspace.id, ws_id)) return workspace;
+    }
+    return null;
+}
+
 pub fn isSeedWorkspaceId(ws_id: []const u8) bool {
     return std.mem.startsWith(u8, ws_id, SEED_WORKSPACE_PREFIX);
 }
@@ -351,6 +384,13 @@ pub fn isSeedWorkspaceId(ws_id: []const u8) bool {
 test "promptById returns known prompt fixtures" {
     try std.testing.expect(promptById("p-seed-meta") != null);
     try std.testing.expect(promptById("missing") == null);
+}
+
+test "seed lookup helpers resolve user and workspace fixtures" {
+    try std.testing.expect(userById("usr-seed-admin") != null);
+    try std.testing.expect(userById("missing") == null);
+    try std.testing.expect(workspaceById("ws-seed-tui") != null);
+    try std.testing.expect(workspaceById("missing") == null);
 }
 
 test "isSeedWorkspaceId matches fixed seed prefix" {
