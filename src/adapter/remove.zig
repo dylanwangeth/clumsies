@@ -39,7 +39,30 @@ pub fn removeInstall(
             continue;
         }
 
-        const absolute_path = try resourceAbsolutePath(allocator, manifest.target_root, resource);
+        const absolute_path = resolveManagedAbsolutePath(allocator, manifest.target_root, resource) catch |err| switch (err) {
+            error.InvalidManagedPath, error.ManagedPathEscapesTargetRoot => {
+                blocked_count += 1;
+                try next_resources.append(allocator, resource);
+                try store.appendWalEvent(allocator, .{
+                    .event_type = "step_blocked",
+                    .install_id = manifest.install_id,
+                    .revision = manifest.active_revision,
+                    .mode = "remove",
+                    .timestamp = std.time.milliTimestamp(),
+                    .step_id = resource.resource_id,
+                    .resource_id = resource.resource_id,
+                    .target = resource.relative_path,
+                    .status = "blocked",
+                    .message = switch (err) {
+                        error.InvalidManagedPath => "Managed path is invalid and was not removed",
+                        error.ManagedPathEscapesTargetRoot => "Managed path escaped target root and was not removed",
+                        else => unreachable,
+                    },
+                });
+                continue;
+            },
+            else => return err,
+        };
         defer allocator.free(absolute_path);
         try stdout.print("[{d}/{d}] remove {s}\n", .{ idx + 1, manifest.managed_resources.len, absolute_path });
         try stdout.flush();
@@ -182,7 +205,14 @@ pub fn removeInstall(
         }
 
         if (isJsonHooksRegistryResource(resource)) {
-            const managed_hooks_content = try managedHooksContent(allocator, manifest.target_agent, manifest.scope, manifest.target_root, resource);
+            const managed_hooks_content = try managedHooksContent(
+                allocator,
+                manifest.target_agent,
+                manifest.adapter_id,
+                manifest.scope,
+                manifest.target_root,
+                resource,
+            );
             defer if (resource.managed_content == null) allocator.free(managed_hooks_content);
             const remove_result = try json_ops.removeJsonHooksRegistry(
                 allocator,
@@ -524,20 +554,33 @@ fn isJsonMcpRegistryResource(resource: model.ManagedResource) bool {
     return std.mem.eql(u8, resource.resource_kind, "json_mcp_registry");
 }
 
-fn resourceAbsolutePath(
+fn resolveManagedAbsolutePath(
     allocator: std.mem.Allocator,
     target_root: []const u8,
     resource: model.ManagedResource,
 ) ![]u8 {
+    const normalized_root = try std.fs.path.resolve(allocator, &.{target_root});
+    defer allocator.free(normalized_root);
+
     if (resource.absolute_path) |absolute_path| {
-        return allocator.dupe(u8, absolute_path);
+        if (!std.fs.path.isAbsolute(absolute_path)) return error.InvalidManagedPath;
+        const resolved = try std.fs.path.resolve(allocator, &.{absolute_path});
+        errdefer allocator.free(resolved);
+        if (!pathIsWithinRoot(normalized_root, resolved)) return error.ManagedPathEscapesTargetRoot;
+        return resolved;
     }
-    return std.fs.path.join(allocator, &.{ target_root, resource.relative_path });
+
+    if (std.fs.path.isAbsolute(resource.relative_path)) return error.InvalidManagedPath;
+    const resolved = try std.fs.path.resolve(allocator, &.{ normalized_root, resource.relative_path });
+    errdefer allocator.free(resolved);
+    if (!pathIsWithinRoot(normalized_root, resolved)) return error.ManagedPathEscapesTargetRoot;
+    return resolved;
 }
 
 fn managedHooksContent(
     allocator: std.mem.Allocator,
-    agent_name: []const u8,
+    target_agent: []const u8,
+    adapter_id: []const u8,
     scope_raw: []const u8,
     target_root: []const u8,
     resource: model.ManagedResource,
@@ -545,6 +588,70 @@ fn managedHooksContent(
     if (resource.managed_content) |managed_content| return managed_content;
 
     const scope = model.Scope.parse(scope_raw) orelse .repo;
+    const agent_name = if (target_agent.len != 0) target_agent else adapter_id;
     const pkg = packages.resolve(agent_name) orelse return error.UnknownAdapterPackage;
     return try (try pkg.renderManagedResource(allocator, resource.resource_id, scope, target_root) orelse error.MissingManagedContent);
+}
+
+fn pathIsWithinRoot(root: []const u8, candidate: []const u8) bool {
+    if (pathEql(root, candidate)) return true;
+    if (candidate.len <= root.len) return false;
+    if (!pathPrefixEql(root, candidate[0..root.len])) return false;
+    return std.fs.path.isSep(candidate[root.len]);
+}
+
+fn pathEql(a: []const u8, b: []const u8) bool {
+    return if (@import("builtin").os.tag == .windows)
+        std.os.windows.eqlIgnoreCaseWtf8(a, b)
+    else
+        std.mem.eql(u8, a, b);
+}
+
+fn pathPrefixEql(expected: []const u8, actual_prefix: []const u8) bool {
+    return if (@import("builtin").os.tag == .windows)
+        std.os.windows.eqlIgnoreCaseWtf8(expected, actual_prefix)
+    else
+        std.mem.eql(u8, expected, actual_prefix);
+}
+
+test "resolveManagedAbsolutePath keeps paths under target root" {
+    const resource = model.ManagedResource{
+        .resource_id = "x",
+        .relative_path = "hooks/session-start.sh",
+        .ownership = "exclusive",
+        .fingerprint = "",
+        .active = true,
+    };
+    const resolved = try resolveManagedAbsolutePath(std.testing.allocator, "/tmp/clumsies-root", resource);
+    defer std.testing.allocator.free(resolved);
+    try std.testing.expect(pathIsWithinRoot("/tmp/clumsies-root", resolved));
+}
+
+test "resolveManagedAbsolutePath rejects relative escape outside target root" {
+    const resource = model.ManagedResource{
+        .resource_id = "x",
+        .relative_path = "../outside.txt",
+        .ownership = "exclusive",
+        .fingerprint = "",
+        .active = true,
+    };
+    try std.testing.expectError(
+        error.ManagedPathEscapesTargetRoot,
+        resolveManagedAbsolutePath(std.testing.allocator, "/tmp/clumsies-root", resource),
+    );
+}
+
+test "resolveManagedAbsolutePath rejects absolute path outside target root" {
+    const resource = model.ManagedResource{
+        .resource_id = "x",
+        .relative_path = "hooks/session-start.sh",
+        .absolute_path = "/tmp/elsewhere/file.sh",
+        .ownership = "exclusive",
+        .fingerprint = "",
+        .active = true,
+    };
+    try std.testing.expectError(
+        error.ManagedPathEscapesTargetRoot,
+        resolveManagedAbsolutePath(std.testing.allocator, "/tmp/clumsies-root", resource),
+    );
 }
