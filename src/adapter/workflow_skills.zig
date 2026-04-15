@@ -157,7 +157,7 @@ fn renderSkillContent(
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
             \\
-            ,
+        ,
             .{ slug, filename, filename, workflow_id },
         ),
         .claude_code => std.fmt.allocPrint(
@@ -171,7 +171,7 @@ fn renderSkillContent(
             \\Call the `memory.load` MCP tool with ids: ["{s}"]
             \\
             \\$ARGUMENTS
-            ,
+        ,
             .{ slug, filename, workflow_id },
         ),
     };
