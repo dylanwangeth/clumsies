@@ -51,7 +51,7 @@ pub fn buildAdaptPlan(
         const is_active = std.mem.eql(u8, manifest.status, "active");
         if (is_active and !is_update) {
             return .{ .conflict = .{
-                .install_id = install_id,
+                .install_id = try allocator.dupe(u8, install_id),
                 .target_root = try allocator.dupe(u8, target_root),
                 .path = try allocator.dupe(u8, target_root),
                 .message = try std.fmt.allocPrint(allocator, "An active {s} adapter install already exists in this scope. Use --update to refresh it, or remove it first.", .{pkg.display_name}),
@@ -59,7 +59,7 @@ pub fn buildAdaptPlan(
         }
         if (!is_active and is_update) {
             return .{ .conflict = .{
-                .install_id = install_id,
+                .install_id = try allocator.dupe(u8, install_id),
                 .target_root = try allocator.dupe(u8, target_root),
                 .path = try allocator.dupe(u8, target_root),
                 .message = try std.fmt.allocPrint(allocator, "No active {s} adapter install exists for the selected scope.", .{pkg.display_name}),
@@ -67,7 +67,7 @@ pub fn buildAdaptPlan(
         }
     } else if (is_update) {
         return .{ .conflict = .{
-            .install_id = install_id,
+            .install_id = try allocator.dupe(u8, install_id),
             .target_root = try allocator.dupe(u8, target_root),
             .path = try allocator.dupe(u8, target_root),
             .message = try std.fmt.allocPrint(allocator, "No active {s} adapter install exists for the selected scope.", .{pkg.display_name}),
