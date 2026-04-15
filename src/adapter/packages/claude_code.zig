@@ -150,8 +150,13 @@ pub fn resolveTargetRoot(
     return switch (scope) {
         .repo => if (repo_root_opt) |repo_root| try allocator.dupe(u8, repo_root) else null,
         .user => blk: {
-            const home = std.process.getEnvVarOwned(allocator, "HOME") catch
-                return error.EnvironmentVariableNotFound;
+            const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+                error.EnvironmentVariableNotFound => std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |fallback_err| switch (fallback_err) {
+                    error.EnvironmentVariableNotFound => return error.EnvironmentVariableNotFound,
+                    else => return fallback_err,
+                },
+                else => return err,
+            };
             defer allocator.free(home);
             break :blk try allocator.dupe(u8, home);
         },

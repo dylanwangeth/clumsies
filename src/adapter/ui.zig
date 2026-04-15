@@ -34,7 +34,7 @@ pub fn promptYesNo(
 ) !bool {
     if (canUseInteractivePrompt()) {
         return promptYesNoInteractive(stdout, prompt, default_yes) catch
-            return promptYesNoLine(stdout, allocator, prompt, default_yes);
+            promptYesNoLine(stdout, allocator, prompt, default_yes);
     }
 
     return promptYesNoLine(stdout, allocator, prompt, default_yes);
@@ -141,6 +141,7 @@ fn promptChoiceInteractive(
     choices: []const Choice,
     default_index: usize,
 ) !usize {
+    if (comptime builtin.os.tag == .windows) return error.NotATerminal;
     if (choices.len == 0) return error.NoChoices;
 
     const stdin_fd = std.fs.File.stdin().handle;
@@ -204,6 +205,7 @@ fn promptYesNoInteractive(
     prompt: []const u8,
     default_yes: bool,
 ) !bool {
+    if (comptime builtin.os.tag == .windows) return error.NotATerminal;
     const choices = [_]Choice{
         .{ .key = "yes", .label = "Yes", .description = "" },
         .{ .key = "no", .label = "No", .description = "" },

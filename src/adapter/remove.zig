@@ -44,7 +44,7 @@ pub fn removeInstall(
         try stdout.print("[{d}/{d}] remove {s}\n", .{ idx + 1, manifest.managed_resources.len, absolute_path });
         try stdout.flush();
 
-        const content = readFileIfExists(allocator, absolute_path) catch null;
+        const content = try readFileIfExists(allocator, absolute_path);
         defer if (content) |owned| allocator.free(owned);
 
         if (content == null) {
