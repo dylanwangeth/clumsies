@@ -8,7 +8,7 @@ const output = @import("../output.zig");
 ///     WS_ID=ws-...
 ///     CACHE_DIR=/Users/.../.clumsies/workspaces/ws-.../cache
 ///
-/// Used by cc-plugin hook scripts to locate the cache directory before
+/// Used by adapter hook scripts to locate the cache directory before
 /// scanning workflow files. The output is deliberately NOT shell-eval'd —
 /// callers should parse it with `while IFS='=' read -r key value; do ...`
 /// so values containing spaces or metacharacters are handled safely.

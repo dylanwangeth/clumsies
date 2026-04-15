@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh\"",
+            "command": __CLUMSIES_SESSION_START_COMMAND_JSON__,
             "timeout": 15
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit.sh\"",
+            "command": __CLUMSIES_USER_PROMPT_SUBMIT_COMMAND_JSON__,
             "timeout": 5
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/stop-refer-check.sh\"",
+            "command": __CLUMSIES_STOP_CHECK_COMMAND_JSON__,
             "timeout": 5
           }
         ]

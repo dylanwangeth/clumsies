@@ -24,7 +24,11 @@ Thumbs.db
 *.pdb
 
 # AI
+.codex/
+.agents/
+plugins/
 .claude/
+.agents/skills/clumsies-generated-workflows/
 CLAUDE.md
 prompts/
 GEMINI.md

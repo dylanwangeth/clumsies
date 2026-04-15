@@ -20,8 +20,8 @@ const FLAG_CONTENT: usize = 1;
 /// collides with the in-process counter MCP uses for its own events.
 ///
 /// Best-effort: silent failure on missing binding, missing session marker,
-/// or trace write errors. Designed to be called from cc-plugin hooks where
-/// blocking the user is unacceptable.
+/// or trace write errors. Designed to be called from adapter hook scripts
+/// where blocking the user is unacceptable.
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     _ = stdout;
 
@@ -106,7 +106,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}{s}clumsies trace append{s}\n\n", .{ P, Color.bold, Color.reset });
     try out.print("Append a single trace event to the current workspace's trace.jsonl.\n", .{});
-    try out.print("Intended for cc-plugin hooks (UserPromptSubmit, etc).\n\n", .{});
+    try out.print("Intended for adapter hooks (UserPromptSubmit, etc).\n\n", .{});
     try out.print("{s}Usage:{s}\n", .{ Color.bold, Color.reset });
     try out.print("  clumsies trace append --type session_input --content \"hello\"\n", .{});
 }
