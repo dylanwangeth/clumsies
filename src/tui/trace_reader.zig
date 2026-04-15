@@ -1,6 +1,8 @@
 // Read local trace.jsonl files and compute Insights stats.
 const std = @import("std");
+const clumsies_lib = @import("clumsies_lib");
 const data = @import("mock_data.zig");
+const workspace_prompt = clumsies_lib.workspace_prompt;
 
 pub const LocalStats = struct {
     total_refer_count: u32 = 0,
@@ -57,6 +59,8 @@ const TraceEvent = struct {
     content: ?[]const u8 = null,
 };
 
+const PromptConstraintTotals = std.StringHashMap(u16);
+
 pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     const base = getBaseDir(allocator) orelse return null;
     defer allocator.free(base);
@@ -68,12 +72,16 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
 
     var all_events: std.ArrayList(TraceEvent) = .empty;
     var workspace_stats: std.ArrayList(WorkspaceLocalStats) = .empty;
+    var all_prompt_totals: PromptConstraintTotals = .init(allocator);
+    defer deinitPromptConstraintTotals(allocator, &all_prompt_totals);
     var it = dir.iterate();
     while (it.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
         const ws_id = allocator.dupe(u8, entry.name) catch continue;
         var keep_ws_id = false;
         defer if (!keep_ws_id) allocator.free(ws_id);
+        const ws_dir = std.fs.path.join(allocator, &.{ ws_root, entry.name }) catch continue;
+        defer allocator.free(ws_dir);
         const trace_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "trace.jsonl" }) catch continue;
         defer allocator.free(trace_path);
         var ws_events: std.ArrayList(TraceEvent) = .empty;
@@ -81,7 +89,12 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
         if (ws_events.items.len == 0) continue;
         keep_ws_id = true;
 
-        const ws_stats = computeStats(allocator, ws_events.items);
+        var ws_prompt_totals = loadPromptConstraintTotals(allocator, ws_dir) catch PromptConstraintTotals.init(allocator);
+        defer deinitPromptConstraintTotals(allocator, &ws_prompt_totals);
+
+        mergePromptConstraintTotals(allocator, &all_prompt_totals, &ws_prompt_totals);
+
+        const ws_stats = computeStats(allocator, ws_events.items, &ws_prompt_totals);
         workspace_stats.append(allocator, .{
             .ws_id = ws_id,
             .total_refer_count = ws_stats.total_refer_count,
@@ -100,7 +113,7 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     }
 
     if (all_events.items.len == 0) return null;
-    var all_stats = computeStats(allocator, all_events.items);
+    var all_stats = computeStats(allocator, all_events.items, &all_prompt_totals);
     all_stats.workspaces = workspace_stats.items;
     return all_stats;
 }
@@ -203,7 +216,82 @@ fn freeTraceEventOwned(allocator: std.mem.Allocator, ev: TraceEvent) void {
     if (ev.content) |s| allocator.free(s);
 }
 
-fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalStats {
+fn loadPromptConstraintTotals(allocator: std.mem.Allocator, ws_dir: []const u8) !PromptConstraintTotals {
+    var totals: PromptConstraintTotals = .init(allocator);
+    errdefer deinitPromptConstraintTotals(allocator, &totals);
+
+    var manifest = workspace_prompt.loadManifest(allocator, ws_dir) catch |err| switch (err) {
+        error.InvalidManifest, error.FileNotFound => return totals,
+        else => return err,
+    };
+    defer manifest.deinit(allocator);
+
+    var ids: std.ArrayList([]const u8) = .empty;
+    defer ids.deinit(allocator);
+
+    var it = manifest.prompts.iterator();
+    while (it.next()) |entry| {
+        ids.append(allocator, entry.key_ptr.*) catch continue;
+    }
+
+    if (ids.items.len == 0) return totals;
+
+    var loaded = workspace_prompt.loadPrompts(allocator, ws_dir, ids.items, &.{}) catch |err| switch (err) {
+        error.UnknownPromptId, error.FileNotFound, error.UnsafeCachePath => return totals,
+        else => return err,
+    };
+    defer loaded.deinit(allocator);
+
+    for (loaded.items.items) |prompt_item| {
+        const content = prompt_item.content orelse continue;
+        var parsed = workspace_prompt.parseConstraints(allocator, content) catch continue;
+        defer parsed.deinit(allocator);
+
+        const constraint_total: u16 = @intCast(@min(parsed.constraints.items.len, std.math.maxInt(u16)));
+        putPromptConstraintTotal(allocator, &totals, prompt_item.id, constraint_total) catch continue;
+    }
+
+    return totals;
+}
+
+fn mergePromptConstraintTotals(
+    allocator: std.mem.Allocator,
+    target: *PromptConstraintTotals,
+    source: *const PromptConstraintTotals,
+) void {
+    var it = source.iterator();
+    while (it.next()) |entry| {
+        putPromptConstraintTotal(allocator, target, entry.key_ptr.*, entry.value_ptr.*) catch continue;
+    }
+}
+
+fn putPromptConstraintTotal(
+    allocator: std.mem.Allocator,
+    totals: *PromptConstraintTotals,
+    prompt_id: []const u8,
+    constraint_total: u16,
+) !void {
+    if (totals.getPtr(prompt_id)) |value_ptr| {
+        if (constraint_total > value_ptr.*) value_ptr.* = constraint_total;
+        return;
+    }
+
+    const key = try allocator.dupe(u8, prompt_id);
+    errdefer allocator.free(key);
+    try totals.put(key, constraint_total);
+}
+
+fn deinitPromptConstraintTotals(allocator: std.mem.Allocator, totals: *PromptConstraintTotals) void {
+    var key_it = totals.keyIterator();
+    while (key_it.next()) |key| allocator.free(key.*);
+    totals.deinit();
+}
+
+fn computeStats(
+    allocator: std.mem.Allocator,
+    events: []const TraceEvent,
+    prompt_totals: *const PromptConstraintTotals,
+) LocalStats {
     var stats: LocalStats = .{};
 
     const PromptAcc = struct {
@@ -263,12 +351,23 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
 
     var map_it = prompt_map.iterator();
     while (map_it.next()) |kv| {
-        const c_count: u8 = @intCast(@min(kv.value_ptr.constraints.count(), 255));
-        total_constraints += c_count;
-        active_constraints += c_count;
+        const active_count_u32: u32 = @intCast(kv.value_ptr.constraints.count());
+        const total_count_u32: u32 = if (prompt_totals.get(kv.key_ptr.*)) |count|
+            @max(@as(u32, count), active_count_u32)
+        else
+            active_count_u32;
+        const active_count: u8 = @intCast(@min(active_count_u32, 255));
+        const total_count: u8 = @intCast(@min(total_count_u32, 255));
+        const idle_count: u8 = total_count -| active_count;
+
+        total_constraints += total_count_u32;
+        active_constraints += @min(active_count_u32, total_count_u32);
 
         const rate: u16 = @intCast(@min(@divTrunc(kv.value_ptr.refer_count, 30), std.math.maxInt(u16)));
-        const sig: u8 = if (c_count > 0) 100 else 0;
+        const sig: u8 = if (total_count_u32 > 0)
+            @intCast(@min(@divTrunc(@min(active_count_u32, total_count_u32) * 100, total_count_u32), 100))
+        else
+            0;
 
         var constraints_list: std.ArrayList(data.ConstraintStat) = .empty;
         var c_it = kv.value_ptr.constraints.iterator();
@@ -291,9 +390,9 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
 
         prompts_list.append(allocator, .{
             .name = kv.key_ptr.*,
-            .constraint_count = c_count,
-            .active_constraint_count = c_count,
-            .idle_constraint_count = 0,
+            .constraint_count = total_count,
+            .active_constraint_count = active_count,
+            .idle_constraint_count = idle_count,
             .signal_ratio = sig,
             .refer_count = kv.value_ptr.refer_count,
             .workspace_count = 0,
@@ -328,4 +427,69 @@ fn computeStats(allocator: std.mem.Allocator, events: []const TraceEvent) LocalS
     stats.inputs = inputs_list.items;
 
     return stats;
+}
+
+test "computeStats uses prompt totals to derive non-100 signal ratios" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const events = [_]TraceEvent{
+        .{
+            .ws_id = "ws-1",
+            .session_id = "ses-1",
+            .type = "refer",
+            .timestamp = std.time.milliTimestamp(),
+            .prompt_id = "p-1",
+            .constraint_id = "c-1",
+        },
+        .{
+            .ws_id = "ws-1",
+            .session_id = "ses-1",
+            .type = "refer",
+            .timestamp = std.time.milliTimestamp(),
+            .prompt_id = "p-1",
+            .constraint_id = "c-2",
+        },
+    };
+
+    var totals: PromptConstraintTotals = .init(alloc);
+    defer deinitPromptConstraintTotals(alloc, &totals);
+    try putPromptConstraintTotal(alloc, &totals, "p-1", 4);
+
+    const stats = computeStats(alloc, &events, &totals);
+
+    try std.testing.expectEqual(@as(u32, 4), stats.constraint_count);
+    try std.testing.expectEqual(@as(u32, 2), stats.active_constraint_count);
+    try std.testing.expectEqual(@as(u8, 50), stats.signal_ratio);
+    try std.testing.expectEqual(@as(u8, 4), stats.prompts[0].constraint_count);
+    try std.testing.expectEqual(@as(u8, 2), stats.prompts[0].active_constraint_count);
+    try std.testing.expectEqual(@as(u8, 2), stats.prompts[0].idle_constraint_count);
+    try std.testing.expectEqual(@as(u8, 50), stats.prompts[0].signal_ratio);
+}
+
+test "computeStats falls back to active constraint counts when prompt totals are unavailable" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const events = [_]TraceEvent{
+        .{
+            .ws_id = "ws-1",
+            .session_id = "ses-1",
+            .type = "refer",
+            .timestamp = std.time.milliTimestamp(),
+            .prompt_id = "p-1",
+            .constraint_id = "c-1",
+        },
+    };
+
+    var totals: PromptConstraintTotals = .init(alloc);
+    defer deinitPromptConstraintTotals(alloc, &totals);
+
+    const stats = computeStats(alloc, &events, &totals);
+
+    try std.testing.expectEqual(@as(u32, 1), stats.constraint_count);
+    try std.testing.expectEqual(@as(u32, 1), stats.active_constraint_count);
+    try std.testing.expectEqual(@as(u8, 100), stats.signal_ratio);
 }
