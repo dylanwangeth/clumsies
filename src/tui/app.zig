@@ -2436,7 +2436,7 @@ pub const Dashboard = struct {
         const chart_x: u16 = 1;
         const chart_w: u16 = width -| 2;
         const chart_rows: u16 = height -| 3;
-        w.drawBrailleAreaChart(&s, ctx.arena, series.values, chart_x, 1, chart_w, chart_rows);
+        w.drawBrailleAreaChart(&s, series.values, chart_x, 1, chart_w, chart_rows);
 
         // X-axis: minimal endpoints
         w.writeText(&s, ctx, chart_x, height -| 2, series.left_label, theme.fg(theme.DIM));

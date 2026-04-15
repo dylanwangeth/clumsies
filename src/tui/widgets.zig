@@ -3,6 +3,32 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const theme = @import("theme.zig");
 
+// Braille charts are redrawn frequently, so we keep a static UTF-8 lookup
+// table for U+2800..U+28FF instead of encoding and duplicating a grapheme
+// for every rendered cell on each draw.
+const braille_utf8_table = initBrailleUtf8Table();
+
+fn initBrailleUtf8Table() [256][3]u8 {
+    var table: [256][3]u8 = undefined;
+    for (0..table.len) |i| {
+        const cp: u21 = 0x2800 + @as(u21, @intCast(i));
+        // The braille block always encodes to three UTF-8 bytes. Assemble
+        // them directly so comptime table generation stays simple and avoids
+        // hitting std.unicode's branch quota during builds.
+        table[i] = .{
+            @as(u8, 0xe0) | @as(u8, @intCast(cp >> 12)),
+            @as(u8, 0x80) | @as(u8, @intCast((cp >> 6) & 0x3f)),
+            @as(u8, 0x80) | @as(u8, @intCast(cp & 0x3f)),
+        };
+    }
+    return table;
+}
+
+fn brailleGrapheme(cp: u21) []const u8 {
+    const idx: usize = @intCast(cp - 0x2800);
+    return braille_utf8_table[idx][0..];
+}
+
 // Fill entire surface buffer with a background color.
 pub fn fillSurface(surface: *vxfw.Surface, bg: vaxis.Color) void {
     @memset(surface.buffer, theme.blank(bg));
@@ -125,7 +151,7 @@ pub fn drawInnerTabBadge(surface: *vxfw.Surface, ctx: vxfw.DrawContext, row: u16
 // Draw a braille area chart with gradient coloring (btop-style).
 // Area is filled from the data line down to the bottom, creating
 // a solid "mountain" shape. Gradient: ACCENT_SOFT (bottom) → OK (top).
-pub fn drawBrailleAreaChart(surface: *vxfw.Surface, allocator: std.mem.Allocator, trend: []const u16, x: u16, y: u16, width: u16, height: u16) void {
+pub fn drawBrailleAreaChart(surface: *vxfw.Surface, trend: []const u16, x: u16, y: u16, width: u16, height: u16) void {
     if (width == 0 or height == 0 or trend.len == 0) return;
 
     var max_val: u16 = 1;
@@ -189,20 +215,21 @@ pub fn drawBrailleAreaChart(surface: *vxfw.Surface, allocator: std.mem.Allocator
             const vert_t: f32 = if (char_rows > 1) 1.0 - @as(f32, @floatFromInt(cr)) / @as(f32, @floatFromInt(char_rows - 1)) else 0.5;
             const color = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, vert_t);
 
-            var tmp: [4]u8 = undefined;
-            const len = std.unicode.utf8Encode(cp, &tmp) catch continue;
-            const grapheme = allocator.dupe(u8, tmp[0..len]) catch continue;
-
             const col: u16 = x + @as(u16, @intCast(cc));
             const row: u16 = y + @as(u16, @intCast(cr));
             if (col < surface.size.width and row < surface.size.height) {
                 surface.writeCell(col, row, .{
-                    .char = .{ .grapheme = grapheme, .width = 1 },
+                    .char = .{ .grapheme = brailleGrapheme(cp), .width = 1 },
                     .style = .{ .fg = color, .bg = theme.PANEL },
                 });
             }
         }
     }
+}
+
+test "brailleGrapheme uses stable utf8 lookups" {
+    try std.testing.expectEqualStrings("\xe2\xa0\x81", brailleGrapheme(0x2801));
+    try std.testing.expectEqualStrings("\xe2\xa3\xbf", brailleGrapheme(0x28ff));
 }
 
 // Draw a signal gauge: ███████░░ active/total
