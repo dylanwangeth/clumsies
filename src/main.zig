@@ -144,10 +144,20 @@ pub fn main() !void {
                 stderr_file_writer.interface.flush() catch {};
                 std.process.exit(1);
             } else {
-                try tui.run();
+                if (canLaunchTui()) {
+                    try tui.run();
+                } else {
+                    try stdout_writer.print("{s}{s}{s}clumsies{s} {s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, version });
+                    try stdout_writer.print("TUI Dashboard requires an interactive terminal.\n\n", .{});
+                    try cmd_help.run(stdout_writer);
+                }
             }
         },
     }
+}
+
+fn canLaunchTui() bool {
+    return std.fs.File.stdin().isTty() and std.fs.File.stdout().isTty();
 }
 
 test "command_map: all commands resolve" {
