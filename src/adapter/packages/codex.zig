@@ -198,8 +198,13 @@ fn scopedRelativePath(
 }
 
 fn userCodexRoot(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
-        return error.EnvironmentVariableNotFound;
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |fallback_err| switch (fallback_err) {
+            error.EnvironmentVariableNotFound => return error.EnvironmentVariableNotFound,
+            else => return fallback_err,
+        },
+        else => return err,
+    };
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".codex" });
 }

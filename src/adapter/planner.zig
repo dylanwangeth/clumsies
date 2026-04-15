@@ -89,10 +89,7 @@ pub fn buildAdaptPlan(
 
         const existing = readFileIfExists(allocator, absolute_path) catch |err| switch (err) {
             error.FileNotFound => null,
-            else => {
-                allocator.free(install_id);
-                return err;
-            },
+            else => return err,
         };
         defer if (existing) |content| allocator.free(content);
 
