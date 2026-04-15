@@ -12,7 +12,7 @@ pub fn ensureWorkspaceFiles(ws_id: []const u8) !void {
 
     const trace_path = try local_trace.traceFilePath(alloc, ws_id);
     defer alloc.free(trace_path);
-    try ensureEmptyFile(trace_path);
+    try ensureFileExists(trace_path);
 
     const cursor_path = try local_trace.cursorFilePath(alloc, ws_id);
     defer alloc.free(cursor_path);
@@ -58,7 +58,7 @@ fn ensureWorkspaceDirTree(ws_dir: []const u8) !void {
     };
 }
 
-fn ensureEmptyFile(path: []const u8) !void {
+fn ensureFileExists(path: []const u8) !void {
     const existing = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             const file = try std.fs.createFileAbsolute(path, .{});
