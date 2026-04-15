@@ -11,6 +11,8 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "version", version);
     const enable_keychain = target.result.os.tag == .macos and builtin.os.tag == .macos;
     options.addOption(bool, "enable_keychain", enable_keychain);
+    addCodexAdapterAssetOptions(b, options);
+    addClaudeCodeAdapterAssetOptions(b, options);
 
     const lib = b.addModule("clumsies_lib", .{
         .root_source_file = b.path("src/lib/root.zig"),
@@ -20,6 +22,10 @@ pub fn build(b: *std.Build) void {
 
     // CLI artifact
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
+    const vaxis_dep = b.dependency("vaxis", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const cli_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -30,6 +36,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "toml", .module = toml_dep.module("toml") },
         },
     });
+    cli_module.addImport("vaxis", vaxis_dep.module("vaxis"));
 
     // macOS keychain integration (native macOS builds only)
     if (enable_keychain) {
@@ -80,11 +87,6 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(hub);
 
     // TUI Dashboard executable
-    const vaxis_dep = b.dependency("vaxis", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     const tui_module = b.createModule(.{
         .root_source_file = b.path("src/tui/main.zig"),
         .target = target,
@@ -169,6 +171,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "toml", .module = toml_dep.module("toml") },
         },
     });
+    test_module.addImport("vaxis", vaxis_dep.module("vaxis"));
     if (enable_keychain) {
         test_module.linkFramework("Security", .{});
         test_module.linkFramework("CoreFoundation", .{});
@@ -198,4 +201,73 @@ pub fn build(b: *std.Build) void {
     const run_hub_tests = b.addRunArtifact(hub_tests);
     const hub_test_step = b.step("test-hub", "Run Hub Server unit tests");
     hub_test_step.dependOn(&run_hub_tests.step);
+}
+
+fn addCodexAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) void {
+    options.addOption([]const u8, "adapter_codex_runtime_config_toml", readSourceAsset(
+        b,
+        "assets/adapters/codex/runtime/config.toml.tpl",
+    ));
+    options.addOption([]const u8, "adapter_codex_runtime_hooks_json", readSourceAsset(
+        b,
+        "assets/adapters/codex/runtime/hooks.json.tpl",
+    ));
+    options.addOption([]const u8, "adapter_codex_runtime_resolve_binary_sh", readSourceAsset(
+        b,
+        "assets/adapters/codex/runtime/hooks/resolve-binary.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_codex_runtime_session_start_sh", readSourceAsset(
+        b,
+        "assets/adapters/codex/runtime/hooks/session-start.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_codex_runtime_user_prompt_submit_sh", readSourceAsset(
+        b,
+        "assets/adapters/codex/runtime/hooks/user-prompt-submit.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_codex_runtime_stop_refer_check_sh", readSourceAsset(
+        b,
+        "assets/adapters/codex/runtime/hooks/stop-refer-check.sh.tpl",
+    ));
+}
+
+fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) void {
+    options.addOption([]const u8, "adapter_claude_code_runtime_settings_json", readSourceAsset(
+        b,
+        "assets/adapters/claude-code/runtime/settings.json.tpl",
+    ));
+    options.addOption([]const u8, "adapter_claude_code_runtime_mcp_json", readSourceAsset(
+        b,
+        "assets/adapters/claude-code/runtime/mcp.json.tpl",
+    ));
+    options.addOption([]const u8, "adapter_claude_code_runtime_resolve_binary_sh", readSourceAsset(
+        b,
+        "assets/adapters/claude-code/runtime/hooks/resolve-binary.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_claude_code_runtime_session_start_sh", readSourceAsset(
+        b,
+        "assets/adapters/claude-code/runtime/hooks/session-start.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_claude_code_runtime_user_prompt_submit_sh", readSourceAsset(
+        b,
+        "assets/adapters/claude-code/runtime/hooks/user-prompt-submit.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_claude_code_runtime_stop_refer_check_sh", readSourceAsset(
+        b,
+        "assets/adapters/claude-code/runtime/hooks/stop-refer-check.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_claude_code_runtime_skill_search", readSourceAsset(
+        b,
+        "assets/adapters/claude-code/runtime/skills/search/SKILL.md",
+    ));
+    options.addOption([]const u8, "adapter_claude_code_runtime_skill_stats", readSourceAsset(
+        b,
+        "assets/adapters/claude-code/runtime/skills/stats/SKILL.md",
+    ));
+}
+
+fn readSourceAsset(b: *std.Build, relative_path: []const u8) []const u8 {
+    const absolute_path = b.path(relative_path).getPath(b);
+    return std.fs.cwd().readFileAlloc(b.allocator, absolute_path, 1024 * 1024) catch |err| {
+        std.debug.panic("failed to read asset {s}: {s}", .{ relative_path, @errorName(err) });
+    };
 }

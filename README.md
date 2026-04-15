@@ -6,88 +6,61 @@
 [![Release](https://img.shields.io/github/v/release/lilhammerfun/clumsies?include_prereleases&label=Release)](https://github.com/lilhammerfun/clumsies/releases/tag/v0.18.0-alpha)
 [![Zig](https://img.shields.io/badge/Zig-0.15%2B-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 
-Persistent, deterministic, and user-managed project memory for vibe coding.
+A self-hosted organizational platform for prompt, context, integration, and trace management for AI coding agents.
 
-> **v0.18.0-alpha** — functional but not battle-tested. The MCP server, stats engine, and Claude Code plugin are all part of this release line.
+> [!WARNING]
+> Work in progress. This is still a very early system. Expect rough edges, missing flows, broken corners, and backward-incompatible changes.
+
+clumsies is a self-hosted platform for organizations using AI coding agents. It centers on org-scoped prompt libraries, workspaces, runtime integration, and usage traces. The current codebase includes a Hub server, an MCP runtime, a terminal-first CLI, an adapter layer for agent integration, and an early TUI.
+
+The goal is simple: keep project rules and context under user control, let agents load them through an explicit protocol, and make actual usage visible instead of guessed.
 
 ## The problem
 
-Every AI agent compresses memory when context runs low. Claude Code at ~80% capacity, Cline at ~80%, Amazon Q at ~80%. The agent decides what matters and what gets dropped. This works for generic knowledge — common patterns, standard library usage, widely known conventions.
+AI coding changes the control plane of software development.
 
-But your project has rules that are specific to you. "All Zig code must use explicit allocators, never GeneralPurposeAllocator." "Commit messages follow this exact subsystem:subject format." "External API calls must go through the retry wrapper." These rules matter to your project, but from the compression algorithm's perspective, they are edge cases — not frequent enough to be prioritized, not generic enough to be preserved. They get silently dropped, and the agent keeps working confidently with outputs that look correct but violate constraints you thought were non-negotiable.
+Organizations used to manage code. Now they also need to manage the constraints, workflows, and project context that shape how agents produce code.
 
-You have no way to know what was compressed away. The agent does not tell you.
+An agent's own memory lives inside the agent runtime. It is not an organizational asset. Teams that want consistent output need organization-controlled rules and workspace-controlled context, plus a reliable way to deliver them to agents and see what was actually used.
 
-## The approach
+## TUI preview
 
-clumsies puts your critical constraints in a place the agent's compression algorithm cannot touch: a `.prompts/` directory in your project that the agent queries but never manages.
+Library view:
 
-You decide what goes in `.prompts/`. You write rules, workflows, and context as markdown files. The agent discovers them through a structured protocol (`memory.search`, `memory.load`), follows them, and declares which ones it actually used (`memory.refer`). Over time, the trace data tells you which constraints are effective and which are dead weight — so you can refine what you wrote.
+![TUI library view](assets/adapters/tui_library.png)
 
-The agent has no authority to compress, summarize, or delete anything in `.prompts/`. It can only read.
+Analysis view:
 
-## What we're building
+![TUI analysis view](assets/adapters/tui_analysis.png)
 
-**CLI + Registry.** Manage a personal prompt library. Register constraints refined through real use, store them in a git-based registry, import them into any project.
+Watch a short recording:
 
-**MCP Server.** Structured protocol for agents to discover constraints (`memory.search`), load them (`memory.load`), and declare references (`memory.refer` — batch support). Every interaction produces a trace log.
+[![Watch the TUI demo](assets/adapters/tui_analysis.png)](assets/adapters/tui_dashboard.mov)
 
-**Stats engine.** Aggregates trace data: which constraints are hot, which are cold, how coverage changes across versions.
+## Current state
 
-**Claude Code plugin.** Hooks and skills that solve MCP's passive nature. Startup hook loads your meta-prompt automatically via CLI pipe. Stop hook reminds the agent to declare constraint references.
+- `clumsies` now launches the TUI by default
+- `clumsies --help` still shows the command surface
+- `clumsies-hub` runs the Hub server
+- `clumsies mcp serve` runs the MCP runtime for coding agents
+- `clumsies adapt` installs host-specific integration config for supported agents
+- the TUI is usable, but still early and still buggy
 
-## Quick start with Claude Code
+## What is in the repo
 
-Install the CLI:
+**Hub server.** Shared authority for prompt libraries, workspace manifests, context, collaboration state, and trace aggregation.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
-```
+**CLI.** Local operator surface for login, workspace binding, cache sync, adapter install, adapter removal, trace flush, and TUI entry.
 
-Import a starter bundle into your project:
+**MCP runtime.** Agent-facing protocol for `memory.setup`, `memory.search`, `memory.load`, and `memory.refer`.
 
-```bash
-cd your-project
-clumsies get opus-coding --registry https://github.com/lilhammerfun/clumsies-registry.git
-```
+**Adapter layer.** An abstract integration layer for systems like Codex and Claude Code. This is where hooks, config fragments, skills, and install/remove flows live.
 
-This creates `.prompts/` with coding rules, workflows, and a `META_PROMPT.md`. Launch Claude Code with the plugin (marketplace distribution planned):
+**TUI.** Terminal-native dashboard for library browsing, workspace state, drafts, pull requests, and trace-driven analysis.
 
-```bash
-claude --plugin-dir /path/to/clumsies/cc-plugin
-```
+## Quick start
 
-On session start, the plugin loads `META_PROMPT.md` and generates slash commands for your workflows. Give the agent a task — it will search and load constraints from `.prompts/`.
-
-Check what happened:
-
-```bash
-clumsies stats
-```
-
-## The `.prompts/` layout
-
-```
-.prompts/
-├── META_PROMPT.md     # protocol bootstrap — loaded on session start
-├── rule/              # constraints — coding rules, project context, etc.
-├── workflow/           # ordered procedures — commit messages, architecture, etc.
-├── context/           # reference material — research, specs, documentation
-└── ...                # whatever else you need
-```
-
-`META_PROMPT.md` tells the agent what clumsies is, how to use the protocol, and what the priority model looks like. Everything else is discovered through `memory.search` and loaded on demand.
-
-## Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
-```
-
-<details>
-<summary>Build from source</summary>
-
-Requires [Zig](https://ziglang.org/) 0.15+:
+Build from source:
 
 ```bash
 git clone https://github.com/lilhammerfun/clumsies.git
@@ -95,17 +68,60 @@ cd clumsies
 zig build -Doptimize=ReleaseFast
 ```
 
-</details>
+Start local PostgreSQL:
 
-## Status
+```bash
+docker compose up -d
+```
 
-**Current version: v0.18.0-alpha**
+Start the Hub:
 
-| Component | Status |
-|-----------|--------|
-| CLI + Registry | Working — prompt management, bundles, import/export |
-| MCP Server | Working — `clumsies mcp serve`, 4 tools (setup, search, load, refer) |
-| Stats engine | Working — workspace/prompt/diff/timebucket scopes |
-| Claude Code plugin | Alpha — hooks, skills, auto-skill generation |
+```bash
+./zig-out/bin/clumsies-hub
+```
 
-The MCP server and stats engine are functional but not yet tested at scale. Trace data quality depends on agent compliance — which is what the Claude Code plugin is designed to improve.
+Log in:
+
+```bash
+./zig-out/bin/clumsies login --hub-url http://127.0.0.1:8400 --username admin
+```
+
+Bind the current repository to a workspace:
+
+```bash
+./zig-out/bin/clumsies init --create my-workspace
+```
+
+Sync local cache:
+
+```bash
+./zig-out/bin/clumsies sync
+```
+
+Install the Codex adapter in project scope:
+
+```bash
+./zig-out/bin/clumsies adapt --agent codex --scope repo --yes
+```
+
+Launch the TUI:
+
+```bash
+./zig-out/bin/clumsies
+```
+
+More commands:
+
+```bash
+./zig-out/bin/clumsies --help
+./zig-out/bin/clumsies mcp serve
+./zig-out/bin/clumsies adapt --agent claude-code --scope user --yes
+./zig-out/bin/clumsies remove-adapter --agent codex --scope repo --yes
+zig build tui
+zig build test
+zig build test-hub
+```
+
+## License
+
+MIT

@@ -1,0 +1,486 @@
+const std = @import("std");
+
+pub const HooksPlanResult = union(enum) {
+    prepared: PreparedHooksFile,
+    conflict: []const u8,
+};
+
+pub const PreparedHooksFile = struct {
+    action: []const u8,
+    rendered_content: []u8,
+    managed_content: []u8,
+
+    pub fn deinit(self: *PreparedHooksFile, allocator: std.mem.Allocator) void {
+        allocator.free(self.rendered_content);
+        allocator.free(self.managed_content);
+    }
+};
+
+pub const HooksRemoveResult = union(enum) {
+    delete_file,
+    rewrite: []u8,
+    already_absent,
+    conflict: []const u8,
+};
+
+const conflict_invalid_json = "Existing hooks registry is not valid JSON.";
+const conflict_invalid_root = "Existing hooks registry must be a JSON object.";
+const conflict_invalid_hooks = "Existing hooks registry has a non-object `hooks` field.";
+const conflict_invalid_event = "Existing hooks registry has a non-array hook event entry.";
+const conflict_incompatible_item = "Existing hooks registry already contains a clumsies-managed hook entry with incompatible content.";
+const conflict_invalid_fragment = "Internal managed hooks fragment is invalid.";
+
+pub fn prepareJsonHooksRegistry(
+    allocator: std.mem.Allocator,
+    existing_content_opt: ?[]const u8,
+    managed_fragment: []const u8,
+) !HooksPlanResult {
+    const managed_parsed = std.json.parseFromSlice(std.json.Value, allocator, managed_fragment, .{
+        .allocate = .alloc_always,
+    }) catch return .{ .conflict = conflict_invalid_fragment };
+    defer managed_parsed.deinit();
+
+    const managed_hooks = getHooksObject(managed_parsed.value) orelse return .{ .conflict = conflict_invalid_fragment };
+
+    if (existing_content_opt == null) {
+        return .{ .prepared = .{
+            .action = "create",
+            .rendered_content = try allocator.dupe(u8, managed_fragment),
+            .managed_content = try allocator.dupe(u8, managed_fragment),
+        } };
+    }
+
+    const existing_content = existing_content_opt.?;
+    var current_parsed = std.json.parseFromSlice(std.json.Value, allocator, existing_content, .{
+        .allocate = .alloc_always,
+    }) catch return .{ .conflict = conflict_invalid_json };
+    defer current_parsed.deinit();
+
+    const current_root = asObjectPtr(&current_parsed.value) orelse return .{ .conflict = conflict_invalid_root };
+    const arena = current_parsed.arena.allocator();
+    const hooks_object = ensureHooksObject(current_root, arena) catch return .{ .conflict = conflict_invalid_hooks };
+
+    var did_change = false;
+
+    var event_it = managed_hooks.iterator();
+    while (event_it.next()) |event_entry| {
+        const managed_items = asArray(event_entry.value_ptr.*) orelse return .{ .conflict = conflict_invalid_fragment };
+        const current_items = ensureEventArray(hooks_object, event_entry.key_ptr.*, arena) catch return .{ .conflict = conflict_invalid_event };
+
+        for (managed_items.items) |managed_item| {
+            switch (inspectManagedItem(current_items.items, managed_item)) {
+                .exact => {},
+                .absent => {
+                    try current_items.append(try cloneValue(arena, managed_item));
+                    did_change = true;
+                },
+                .conflict => return .{ .conflict = conflict_incompatible_item },
+            }
+        }
+    }
+
+    return .{ .prepared = .{
+        .action = if (did_change) "update" else "keep",
+        .rendered_content = if (did_change)
+            try renderPrettyJsonAlloc(allocator, current_parsed.value)
+        else
+            try allocator.dupe(u8, existing_content),
+        .managed_content = try allocator.dupe(u8, managed_fragment),
+    } };
+}
+
+pub fn removeJsonHooksRegistry(
+    allocator: std.mem.Allocator,
+    current_content: []const u8,
+    managed_fragment: []const u8,
+) !HooksRemoveResult {
+    const managed_parsed = std.json.parseFromSlice(std.json.Value, allocator, managed_fragment, .{
+        .allocate = .alloc_always,
+    }) catch return .{ .conflict = conflict_invalid_fragment };
+    defer managed_parsed.deinit();
+
+    const managed_hooks = getHooksObject(managed_parsed.value) orelse return .{ .conflict = conflict_invalid_fragment };
+
+    var current_parsed = std.json.parseFromSlice(std.json.Value, allocator, current_content, .{
+        .allocate = .alloc_always,
+    }) catch return .{ .conflict = conflict_invalid_json };
+    defer current_parsed.deinit();
+
+    const current_root = asObjectPtr(&current_parsed.value) orelse return .{ .conflict = conflict_invalid_root };
+    const hooks_value = current_root.getPtr("hooks") orelse return .already_absent;
+    const hooks_object = asObjectPtr(hooks_value) orelse return .{ .conflict = conflict_invalid_hooks };
+
+    var did_remove = false;
+
+    var event_it = managed_hooks.iterator();
+    while (event_it.next()) |event_entry| {
+        const managed_items = asArray(event_entry.value_ptr.*) orelse return .{ .conflict = conflict_invalid_fragment };
+        const current_items_value = hooks_object.getPtr(event_entry.key_ptr.*) orelse continue;
+        const current_items = asArrayPtr(current_items_value) orelse return .{ .conflict = conflict_invalid_event };
+
+        var indexes_to_remove: std.ArrayList(usize) = .empty;
+        defer indexes_to_remove.deinit(allocator);
+
+        for (managed_items.items) |managed_item| {
+            const match = inspectManagedItem(current_items.items, managed_item);
+            switch (match) {
+                .exact => |index| try indexes_to_remove.append(allocator, index),
+                .absent => {},
+                .conflict => return .{ .conflict = conflict_incompatible_item },
+            }
+        }
+
+        if (indexes_to_remove.items.len == 0) continue;
+
+        std.mem.sortUnstable(usize, indexes_to_remove.items, {}, comptime std.sort.desc(usize));
+        for (indexes_to_remove.items) |index| {
+            _ = current_items.orderedRemove(index);
+            did_remove = true;
+        }
+
+        if (current_items.items.len == 0) {
+            _ = hooks_object.orderedRemove(event_entry.key_ptr.*);
+        }
+    }
+
+    if (!did_remove) return .already_absent;
+
+    if (hooks_object.count() == 0) {
+        _ = current_root.orderedRemove("hooks");
+    }
+    if (current_root.count() == 0) {
+        return .delete_file;
+    }
+
+    return .{ .rewrite = try renderPrettyJsonAlloc(allocator, current_parsed.value) };
+}
+
+const ItemMatch = union(enum) {
+    absent,
+    exact: usize,
+    conflict,
+};
+
+fn inspectManagedItem(items: []const std.json.Value, managed_item: std.json.Value) ItemMatch {
+    var exact_index: ?usize = null;
+    var related_non_exact = false;
+
+    for (items, 0..) |item, index| {
+        if (valueEql(item, managed_item)) {
+            if (exact_index != null) return .conflict;
+            exact_index = index;
+            continue;
+        }
+        if (itemsOverlapOnCommand(item, managed_item)) {
+            related_non_exact = true;
+        }
+    }
+
+    if (related_non_exact) return .conflict;
+    if (exact_index) |index| return .{ .exact = index };
+    return .absent;
+}
+
+fn getHooksObject(root_value: std.json.Value) ?std.json.ObjectMap {
+    const root_object = asObject(root_value) orelse return null;
+    const hooks_value = root_object.get("hooks") orelse return null;
+    return asObject(hooks_value);
+}
+
+fn ensureHooksObject(root_object: *std.json.ObjectMap, arena: std.mem.Allocator) !*std.json.ObjectMap {
+    if (root_object.getPtr("hooks")) |hooks_value| {
+        return asObjectPtr(hooks_value) orelse error.InvalidHooksContainer;
+    }
+    try root_object.put("hooks", .{ .object = std.json.ObjectMap.init(arena) });
+    return asObjectPtr(root_object.getPtr("hooks").?).?;
+}
+
+fn ensureEventArray(hooks_object: *std.json.ObjectMap, event_name: []const u8, arena: std.mem.Allocator) !*std.json.Array {
+    if (hooks_object.getPtr(event_name)) |event_value| {
+        return asArrayPtr(event_value) orelse error.InvalidEventArray;
+    }
+
+    const owned_key = try arena.dupe(u8, event_name);
+    try hooks_object.put(owned_key, .{ .array = std.json.Array.init(arena) });
+    return asArrayPtr(hooks_object.getPtr(event_name).?).?;
+}
+
+fn renderPrettyJsonAlloc(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    const rendered = try std.json.Stringify.valueAlloc(allocator, value, .{ .whitespace = .indent_2 });
+    defer allocator.free(rendered);
+    return std.mem.concat(allocator, u8, &.{ rendered, "\n" });
+}
+
+fn cloneValue(arena: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    return switch (value) {
+        .null => .null,
+        .bool => |inner| .{ .bool = inner },
+        .integer => |inner| .{ .integer = inner },
+        .float => |inner| .{ .float = inner },
+        .number_string => |inner| .{ .number_string = try arena.dupe(u8, inner) },
+        .string => |inner| .{ .string = try arena.dupe(u8, inner) },
+        .array => |inner| blk: {
+            var cloned: std.json.Array = .init(arena);
+            for (inner.items) |item| {
+                try cloned.append(try cloneValue(arena, item));
+            }
+            break :blk .{ .array = cloned };
+        },
+        .object => |inner| blk: {
+            var cloned: std.json.ObjectMap = .init(arena);
+            var it = inner.iterator();
+            while (it.next()) |entry| {
+                try cloned.put(
+                    try arena.dupe(u8, entry.key_ptr.*),
+                    try cloneValue(arena, entry.value_ptr.*),
+                );
+            }
+            break :blk .{ .object = cloned };
+        },
+    };
+}
+
+fn valueEql(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+
+    return switch (a) {
+        .null => true,
+        .bool => |inner| inner == b.bool,
+        .integer => |inner| inner == b.integer,
+        .float => |inner| inner == b.float,
+        .number_string => |inner| std.mem.eql(u8, inner, b.number_string),
+        .string => |inner| std.mem.eql(u8, inner, b.string),
+        .array => |inner| blk: {
+            if (inner.items.len != b.array.items.len) break :blk false;
+            for (inner.items, b.array.items) |left, right| {
+                if (!valueEql(left, right)) break :blk false;
+            }
+            break :blk true;
+        },
+        .object => |inner| blk: {
+            if (inner.count() != b.object.count()) break :blk false;
+            var it = inner.iterator();
+            while (it.next()) |entry| {
+                const other = b.object.get(entry.key_ptr.*) orelse break :blk false;
+                if (!valueEql(entry.value_ptr.*, other)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
+
+fn itemsOverlapOnCommand(left: std.json.Value, right: std.json.Value) bool {
+    const left_hooks = nestedHooksArray(left) orelse return false;
+    const right_hooks = nestedHooksArray(right) orelse return false;
+
+    for (left_hooks) |left_hook| {
+        const left_command = hookCommand(left_hook) orelse continue;
+        for (right_hooks) |right_hook| {
+            const right_command = hookCommand(right_hook) orelse continue;
+            if (std.mem.eql(u8, left_command, right_command)) return true;
+        }
+    }
+    return false;
+}
+
+fn nestedHooksArray(item: std.json.Value) ?[]const std.json.Value {
+    const object = asObject(item) orelse return null;
+    const hooks = object.get("hooks") orelse return null;
+    return switch (hooks) {
+        .array => |array| array.items,
+        else => null,
+    };
+}
+
+fn hookCommand(hook: std.json.Value) ?[]const u8 {
+    const object = asObject(hook) orelse return null;
+    const command = object.get("command") orelse return null;
+    return switch (command) {
+        .string => |string| string,
+        else => null,
+    };
+}
+
+fn asObject(value: std.json.Value) ?std.json.ObjectMap {
+    return switch (value) {
+        .object => |object| object,
+        else => null,
+    };
+}
+
+fn asObjectPtr(value: *std.json.Value) ?*std.json.ObjectMap {
+    return switch (value.*) {
+        .object => |*object| object,
+        else => null,
+    };
+}
+
+fn asArray(value: std.json.Value) ?std.json.Array {
+    return switch (value) {
+        .array => |array| array,
+        else => null,
+    };
+}
+
+fn asArrayPtr(value: *std.json.Value) ?*std.json.Array {
+    return switch (value.*) {
+        .array => |*array| array,
+        else => null,
+    };
+}
+
+test "prepareJsonHooksRegistry appends managed entries without dropping foreign hooks" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "echo foreign"
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup|resume",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/repo/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "echo foreign") != null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "session-start.sh") != null);
+        },
+    }
+}
+
+test "removeJsonHooksRegistry keeps foreign hooks and removes managed ones" {
+    const allocator = std.testing.allocator;
+    const current =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "echo foreign"
+        \\          }
+        \\        ]
+        \\      },
+        \\      {
+        \\        "matcher": "startup|resume",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/repo/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup|resume",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/repo/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try removeJsonHooksRegistry(allocator, current, managed);
+    switch (result) {
+        .rewrite => |content| {
+            defer allocator.free(content);
+            try std.testing.expect(std.mem.indexOf(u8, content, "echo foreign") != null);
+            try std.testing.expect(std.mem.indexOf(u8, content, "session-start.sh") == null);
+        },
+        else => return error.UnexpectedRemoveResult,
+    }
+}
+
+test "removeJsonHooksRegistry blocks drifted managed hook entries" {
+    const allocator = std.testing.allocator;
+    const current =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "resume-only",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/repo/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup|resume",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/repo/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try removeJsonHooksRegistry(allocator, current, managed);
+    switch (result) {
+        .conflict => |message| try std.testing.expectEqualStrings(conflict_incompatible_item, message),
+        else => return error.ExpectedConflict,
+    }
+}

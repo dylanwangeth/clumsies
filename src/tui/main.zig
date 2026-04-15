@@ -13,7 +13,7 @@ fn recoverPanic(msg: []const u8, ra: ?usize) noreturn {
 
 pub const panic = std.debug.FullPanic(recoverPanic);
 
-pub fn main() !void {
+pub fn run() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
     const allocator = da.allocator();
@@ -42,4 +42,8 @@ pub fn main() !void {
     var dashboard = Dashboard.init(&api_state);
     defer dashboard.deinit();
     try app.run(dashboard.widget(), .{});
+}
+
+pub fn main() !void {
+    try run();
 }

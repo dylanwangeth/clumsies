@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Shared preamble for clumsies CC plugin hooks.
+# Shared preamble for clumsies Claude Code adapter hooks.
 # Source this file, don't execute it directly.
-# Exports: $CLUMSIES (binary path), $PROJECT_DIR
-# Exits 0 silently if the clumsies binary is not installed.
+# Exports: $CLUMSIES, $PROJECT_DIR
 
 set -euo pipefail
 

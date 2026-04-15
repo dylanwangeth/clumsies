@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook: capture developer prompt text as a session_input
-# trace event. Best-effort — silent failures must never block CC.
+# UserPromptSubmit hook: capture developer prompt text as a session_input trace.
+# Best-effort only. Parsing failures must never block CC.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/resolve-binary.sh"
 
 if ! command -v jq &>/dev/null; then

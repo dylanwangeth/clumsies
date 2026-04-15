@@ -7,11 +7,14 @@ const cmd_login = @import("commands/login_cmd.zig");
 const cmd_init = @import("commands/init_cmd.zig");
 const cmd_sync = @import("commands/sync_cmd.zig");
 const cmd_mcp = @import("commands/mcp_cmd.zig");
+const cmd_adapt = @import("commands/adapt_cmd.zig");
+const cmd_remove_adapter = @import("commands/remove_adapter_cmd.zig");
 const cmd_setup = @import("commands/setup_cmd.zig");
 const cmd_workspace_info = @import("commands/workspace_info_cmd.zig");
 const cmd_flush_trace = @import("commands/flush_trace_cmd.zig");
 const cmd_trace_append = @import("commands/trace_append_cmd.zig");
 const cmd_help = @import("commands/help.zig");
+const tui = @import("tui/main.zig");
 
 const Color = styles.Color;
 const P = styles.P;
@@ -22,6 +25,8 @@ const Command = enum {
     login,
     init_cmd,
     sync,
+    adapt,
+    remove_adapter,
     mcp,
     trace,
     help,
@@ -33,6 +38,8 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "login", .login },
     .{ "init", .init_cmd },
     .{ "sync", .sync },
+    .{ "adapt", .adapt },
+    .{ "remove-adapter", .remove_adapter },
     .{ "mcp", .mcp },
     .{ "trace", .trace },
     .{ "help", .help },
@@ -114,6 +121,8 @@ pub fn main() !void {
         },
         .init_cmd => try cmd_init.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .sync => try cmd_sync.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .adapt => try cmd_adapt.run(stdout_writer, stderr_writer, allocator, cmd_args),
+        .remove_adapter => try cmd_remove_adapter.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
         .trace => {
             const subcmd = if (cmd_args.len > 0) cmd_args[0] else "";
@@ -135,10 +144,7 @@ pub fn main() !void {
                 stderr_file_writer.interface.flush() catch {};
                 std.process.exit(1);
             } else {
-                // No args — TUI placeholder
-                try stdout_writer.print("{s}{s}{s}clumsies{s} {s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, version });
-                try stdout_writer.print("TUI Dashboard is not yet available.\n\n", .{});
-                try cmd_help.run(stdout_writer);
+                try tui.run();
             }
         },
     }
@@ -149,6 +155,8 @@ test "command_map: all commands resolve" {
         .{ .str = "login", .cmd = .login },
         .{ .str = "init", .cmd = .init_cmd },
         .{ .str = "sync", .cmd = .sync },
+        .{ .str = "adapt", .cmd = .adapt },
+        .{ .str = "remove-adapter", .cmd = .remove_adapter },
         .{ .str = "trace", .cmd = .trace },
         .{ .str = "mcp", .cmd = .mcp },
         .{ .str = "help", .cmd = .help },
