@@ -583,7 +583,6 @@ pub fn countLines(text: []const u8) usize {
     return 1 + std.mem.count(u8, text, "\n");
 }
 
-
 /// Create a horizontal two-column layout. Left column is `left_width` cells;
 /// right column fills the rest, separated by a 1-cell gap.
 pub fn splitHorizontal(
@@ -623,7 +622,6 @@ pub fn splitVertical(
     root.children = children;
     return root;
 }
-
 
 /// Draw the ▌ cursor marker at (col, row) on an existing surface.
 pub fn writeCursorMarker(surface: *vxfw.Surface, col: u16, row: u16) void {
@@ -727,7 +725,6 @@ pub fn drawTabBar(
     return col;
 }
 
-
 const api_state = @import("api/state.zig");
 
 /// Draw a gradient activity bar using █ characters. Width is proportional to
@@ -811,7 +808,6 @@ pub fn drawEmptyState(
     };
     writeText(surface, ctx, col, row, msg, .{ .fg = theme.MUTED, .bg = theme.PANEL });
 }
-
 
 test "writeCursorMarker does not crash on out-of-bounds" {
     const alloc = std.testing.allocator;
