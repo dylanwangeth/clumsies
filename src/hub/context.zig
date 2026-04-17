@@ -1,9 +1,14 @@
+//! Hub context endpoints. Context is project-specific knowledge (specs, research, ADRs) owned
+//! by each workspace independently. These endpoints list, serve, and track context files.
 const std = @import("std");
 const httpz = @import("httpz");
+const util_hash = @import("clumsies_lib").util.hash;
+const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
-const apiError = @import("../protocol/api_error.zig").send;
-const ContentHash = @import("../protocol/hash.zig").ContentHash;
+const apiError = @import("api_error.zig").send;
+const ContextFile = workspace_api.ContextFile;
+const ContextFilesResponse = workspace_api.ContextFilesResponse;
 
 pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -24,15 +29,6 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
     }
 
-    const FileMeta = struct {
-        context_id: []const u8,
-        path: []const u8,
-        content_hash: []const u8,
-        size: i64,
-        author: []const u8,
-        updated_at: []const u8,
-    };
-
     var result = conn.query(
         "SELECT context_id, path, content_hash, length(content)::bigint, author, updated_at::text FROM context_files WHERE ws_id = $1 ORDER BY path",
         .{ws_id},
@@ -41,7 +37,7 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     };
     defer result.deinit();
 
-    var list: std.ArrayList(FileMeta) = .empty;
+    var list: std.ArrayList(ContextFile) = .empty;
     while (try result.next()) |row| {
         try list.append(req.arena, .{
             .context_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
@@ -53,7 +49,7 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         });
     }
 
-    try res.json(.{ .files = list.items }, .{});
+    try res.json(ContextFilesResponse{ .files = list.items }, .{});
 }
 
 pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -689,7 +685,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 try apiError(res, 409, "CONFLICT", "file has changed since PR was created");
                 return false;
             }
-            const new_hash = ContentHash.compute(new_content);
+            const new_hash = util_hash.contentHash(new_content);
             const hash_slice: []const u8 = arena.dupe(u8, &new_hash) catch {
                 conn.rollback() catch {};
                 try apiError(res, 500, "INTERNAL_ERROR", "alloc failed");
@@ -728,7 +724,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 return false;
             }
             if (op.content) |new_content| {
-                const new_hash = ContentHash.compute(new_content);
+                const new_hash = util_hash.contentHash(new_content);
                 const hash_slice: []const u8 = arena.dupe(u8, &new_hash) catch {
                     conn.rollback() catch {};
                     try apiError(res, 500, "INTERNAL_ERROR", "alloc failed");
@@ -769,7 +765,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 try apiError(res, 500, "INTERNAL_ERROR", "alloc failed");
                 return false;
             };
-            const new_hash = ContentHash.compute(new_content);
+            const new_hash = util_hash.contentHash(new_content);
             const hash_slice: []const u8 = arena.dupe(u8, &new_hash) catch {
                 conn.rollback() catch {};
                 try apiError(res, 500, "INTERNAL_ERROR", "alloc failed");

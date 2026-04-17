@@ -1,10 +1,11 @@
+//! Hub HTTP server setup. Configures routes for all API endpoints (auth, library, workspace,
+//! context, collab, trace, stats), applies CORS and rate limiting, and starts listening.
 const std = @import("std");
 const httpz = @import("httpz");
 const pg = @import("pg");
 const auth = @import("auth.zig");
 const workspace_handler = @import("workspace.zig");
 const context_handler = @import("context.zig");
-const team_handler = @import("team.zig");
 const library_handler = @import("library.zig");
 const trace_handler = @import("trace.zig");
 const collab_handler = @import("collab.zig");
@@ -59,7 +60,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.patch("/api/org/members/:user_id", auth.handleChangeRole, .{});
     router.delete("/api/org/members/:user_id", auth.handleRemoveMember, .{});
     router.post("/api/org/members/:user_id/reissue-invite", auth.handleReissueInvite, .{});
-    router.get("/api/org/directory", team_handler.handleDirectory, .{});
+    router.get("/api/org/directory", auth.handleDirectory, .{});
 
     // Workspaces
     router.post("/api/workspaces", workspace_handler.handleCreate, .{});

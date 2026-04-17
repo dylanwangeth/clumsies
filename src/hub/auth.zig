@@ -1,10 +1,16 @@
+//! Hub request authentication. Validates Bearer tokens, resolves the user and org membership,
+//! and enforces token scope restrictions. Every API handler calls this to get verified user
+//! context before processing the request.
 const std = @import("std");
 const httpz = @import("httpz");
 const pg = @import("pg");
+const auth_api = @import("clumsies_lib").protocol.auth_api;
 const Server = @import("server.zig");
-const apiError = @import("../protocol/api_error.zig").send;
+const apiError = @import("api_error.zig").send;
 
 const bcrypt = std.crypto.pwhash.bcrypt;
+const MeResponse = auth_api.MeResponse;
+const MeWorkspace = auth_api.MeWorkspace;
 
 pub const AuthUser = struct {
     user_id: []const u8,
@@ -175,7 +181,7 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
     };
     defer conn.release();
 
-    var ws_list: std.ArrayList(WorkspaceInfo) = .empty;
+    var ws_list: std.ArrayList(MeWorkspace) = .empty;
     defer ws_list.deinit(req.arena);
 
     var result = conn.query(
@@ -197,7 +203,7 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
         });
     }
 
-    try res.json(.{
+    try res.json(MeResponse{
         .user_id = user.user_id,
         .username = user.username,
         .role = user.role,
@@ -205,12 +211,6 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
         .workspaces = ws_list.items,
     }, .{});
 }
-
-const WorkspaceInfo = struct {
-    ws_id: []const u8,
-    name: []const u8,
-    role: []const u8,
-};
 
 pub fn authenticate(ctx: *Server.Context, req: *httpz.Request) !AuthUser {
     const auth_header = req.header("authorization") orelse return error.Unauthorized;
@@ -761,4 +761,41 @@ pub fn handleReissueInvite(ctx: *Server.Context, req: *httpz.Request, res: *http
         .invite_token = invite_token,
         .invite_expires_at = expires_at,
     }, .{});
+}
+
+// GET /api/org/directory
+pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!requireScope(user, "members:read", res)) return;
+    if (!std.mem.eql(u8, user.role, "maintainer")) {
+        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
+    }
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    var members: std.ArrayList(auth_api.DirectoryMember) = .empty;
+    var result = conn.query(
+        "SELECT user_id, username, role, status, created_at::text FROM users WHERE org_id = $1::uuid ORDER BY username",
+        .{user.org_id},
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
+    defer result.deinit();
+
+    while (try result.next()) |row| {
+        try members.append(req.arena, .{
+            .user_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .username = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+            .role = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .status = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .joined_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+        });
+    }
+
+    try res.json(auth_api.DirectoryResponse{ .members = members.items }, .{});
 }

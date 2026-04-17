@@ -1,3 +1,6 @@
+//! Seed fixture data: users, workspaces, prompts, bundles, and constraints for development.
+//! These fixtures populate the database with realistic data so the TUI and CLI can be developed
+//! against a working Hub instance.
 const std = @import("std");
 
 pub const FIXTURE_VERSION: i32 = 3;

@@ -1,3 +1,4 @@
+//! PostgreSQL connection pool initialization for the Hub server.
 const std = @import("std");
 const pg = @import("pg");
 const Config = @import("config.zig");

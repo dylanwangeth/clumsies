@@ -1,9 +1,21 @@
+//! Hub trace endpoints. Ingests trace events uploaded by clients (POST /api/traces), stores them
+//! in PostgreSQL, and serves aggregated statistics: refer counts, signal ratios, per-prompt and
+//! per-user trends for the TUI dashboard.
 const std = @import("std");
 const httpz = @import("httpz");
+const stats_api = @import("clumsies_lib").protocol.stats_api;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
-const apiError = @import("../protocol/api_error.zig").send;
+const apiError = @import("api_error.zig").send;
 const log = std.log.scoped(.trace_stats);
+const OrgPromptStats = stats_api.OrgPromptStat;
+const OrgStatsResponse = stats_api.OrgStatsResponse;
+const OrgUserStats = stats_api.OrgUserStat;
+const TrendEntry = stats_api.TrendPoint;
+const TrendSeries = stats_api.TrendSeries;
+const UserTopPromptStat = stats_api.OrgUserTopPromptStat;
+const WorkspacePromptStat = stats_api.WorkspacePromptStat;
+const WorkspaceStatsResponse = stats_api.WorkspaceStatsResponse;
 
 const TraceEventInput = struct {
     event_id: i64,
@@ -27,37 +39,6 @@ const BatchRequest = struct {
 const ConstraintStat = struct {
     constraint_id: []const u8,
     refer_count: i64,
-};
-
-const TrendEntry = struct {
-    date: []const u8,
-    refer_count: i64,
-};
-
-const OrgPromptStats = struct {
-    prompt_id: []const u8,
-    refer_count: i64,
-    active_constraint_count: i64,
-    workspace_count: i64,
-    bundle_count: i64,
-    open_pr_count: i64,
-    last_referred_at: ?i64 = null,
-    trend: []const i64 = &.{},
-};
-
-const UserTopPromptStat = struct {
-    prompt_id: []const u8,
-    refer_count: i64,
-};
-
-const OrgUserStats = struct {
-    user_id: []const u8,
-    username: []const u8,
-    refer_count: i64,
-    active_days: i64,
-    last_referred_at: ?i64 = null,
-    trend: []const i64 = &.{},
-    top_prompts: []const UserTopPromptStat = &.{},
 };
 
 fn parsePeriod(period: []const u8) ?[]const u8 {
@@ -387,7 +368,14 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     , .{user.org_id}) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        try res.json(.{ .total_refer_count = @as(i64, 0), .workspace_count = @as(i64, 0), .prompt_count = @as(i64, 0), .prompts = @as([]const OrgPromptStats, &.{}), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
+        try res.json(OrgStatsResponse{
+            .total_refer_count = 0,
+            .workspace_count = 0,
+            .prompt_count = 0,
+            .prompts = &.{},
+            .users = &.{},
+            .trend = TrendSeries{ .period = period, .data = &.{} },
+        }, .{});
         return;
     };
     const total_refer_count = try row.get(i64, 0);
@@ -553,13 +541,13 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         max_days,
     );
 
-    try res.json(.{
+    try res.json(OrgStatsResponse{
         .total_refer_count = total_refer_count,
         .workspace_count = workspace_count,
         .prompt_count = prompt_count,
         .prompts = prompt_list.items,
         .users = user_list.items,
-        .trend = .{ .period = period, .data = trend_data },
+        .trend = TrendSeries{ .period = period, .data = trend_data },
     }, .{});
 }
 
@@ -601,7 +589,13 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        try res.json(.{ .ws_id = ws_id, .total_refer_count = @as(i64, 0), .constraint_coverage = @as(f64, 0.0), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
+        try res.json(WorkspaceStatsResponse{
+            .ws_id = ws_id,
+            .total_refer_count = 0,
+            .constraint_coverage = 0,
+            .prompts = &.{},
+            .trend = TrendSeries{ .period = period, .data = &.{} },
+        }, .{});
         return;
     };
     const total_refer_count = try row.get(i64, 0);
@@ -621,11 +615,7 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     }
 
     // Per-prompt refer counts
-    const PromptRef = struct {
-        prompt_id: []const u8,
-        refer_count: i64,
-    };
-    var prompt_list: std.ArrayList(PromptRef) = .empty;
+    var prompt_list: std.ArrayList(WorkspacePromptStat) = .empty;
 
     var prompt_result = conn.query(
         "SELECT prompt_id, count(*) FROM trace_events WHERE ws_id = $1 AND type = 'refer' AND prompt_id IS NOT NULL GROUP BY prompt_id ORDER BY count(*) DESC",
@@ -655,12 +645,12 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     }
     const trend_data = queryTrend(conn, req.arena, sql_trunc, "ws_id = $1", .{ws_id}, max_days);
 
-    try res.json(.{
+    try res.json(WorkspaceStatsResponse{
         .ws_id = ws_id,
         .total_refer_count = total_refer_count,
         .constraint_coverage = coverage,
         .prompts = prompt_list.items,
-        .trend = .{ .period = period, .data = trend_data },
+        .trend = TrendSeries{ .period = period, .data = trend_data },
     }, .{});
 }
 

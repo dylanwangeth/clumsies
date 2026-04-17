@@ -13,40 +13,38 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "enable_keychain", enable_keychain);
     addCodexAdapterAssetOptions(b, options);
     addClaudeCodeAdapterAssetOptions(b, options);
+    const build_options_module = options.createModule();
+    const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
 
-    const lib = b.addModule("clumsies_lib", .{
-        .root_source_file = b.path("src/lib/root.zig"),
+    const lib_module = b.addModule("clumsies_lib", .{
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options_module },
+            .{ .name = "toml", .module = toml_dep.module("toml") },
+        },
     });
 
-    // CLI artifact
-    const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
+    // Local client artifact
     const vaxis_dep = b.dependency("vaxis", .{
         .target = target,
         .optimize = optimize,
     });
-    const cli_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "build_options", .module = options.createModule() },
-            .{ .name = "clumsies_lib", .module = lib },
-            .{ .name = "toml", .module = toml_dep.module("toml") },
-        },
-    });
-    cli_module.addImport("vaxis", vaxis_dep.module("vaxis"));
-
-    // macOS keychain integration (native macOS builds only)
-    if (enable_keychain) {
-        cli_module.linkFramework("Security", .{});
-        cli_module.linkFramework("CoreFoundation", .{});
-    }
+    const client_module = createClientModule(
+        b,
+        target,
+        optimize,
+        build_options_module,
+        lib_module,
+        toml_dep.module("toml"),
+        vaxis_dep.module("vaxis"),
+        enable_keychain,
+    );
 
     const exe = b.addExecutable(.{
         .name = "clumsies",
-        .root_module = cli_module,
+        .root_module = client_module,
     });
 
     b.installArtifact(exe);
@@ -72,54 +70,18 @@ pub fn build(b: *std.Build) void {
 
     const hub = b.addExecutable(.{
         .name = "clumsies-hub",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/hub_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "build_options", .module = options.createModule() },
-                .{ .name = "httpz", .module = httpz.module("httpz") },
-                .{ .name = "pg", .module = pg.module("pg") },
-            },
-        }),
+        .root_module = createHubModule(
+            b,
+            target,
+            optimize,
+            build_options_module,
+            lib_module,
+            httpz.module("httpz"),
+            pg.module("pg"),
+        ),
     });
 
     b.installArtifact(hub);
-
-    // TUI Dashboard executable
-    const tui_module = b.createModule(.{
-        .root_source_file = b.path("src/tui/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "build_options", .module = options.createModule() },
-            .{ .name = "clumsies_lib", .module = lib },
-        },
-    });
-    tui_module.addImport("vaxis", vaxis_dep.module("vaxis"));
-
-    if (enable_keychain) {
-        tui_module.linkFramework("Security", .{});
-        tui_module.linkFramework("CoreFoundation", .{});
-    }
-
-    const tui_exe = b.addExecutable(.{
-        .name = "clumsies-tui",
-        .root_module = tui_module,
-    });
-    b.installArtifact(tui_exe);
-
-    const tui_run_cmd = b.addRunArtifact(tui_exe);
-    tui_run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        tui_run_cmd.addArgs(args);
-    }
-
-    const tui_build_step = b.step("tui", "Build TUI dashboard");
-    tui_build_step.dependOn(b.getInstallStep());
-
-    const tui_run_step = b.step("run-tui", "Run TUI dashboard");
-    tui_run_step.dependOn(&tui_run_cmd.step);
 
     const hub_run_cmd = b.addRunArtifact(hub);
     hub_run_cmd.step.dependOn(b.getInstallStep());
@@ -133,15 +95,14 @@ pub fn build(b: *std.Build) void {
     // Seed / data pump artifact
     const seed_exe = b.addExecutable(.{
         .name = "clumsies-seed",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/seed/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "clumsies_lib", .module = lib },
-                .{ .name = "pg", .module = pg.module("pg") },
-            },
-        }),
+        .root_module = createSeedModule(
+            b,
+            target,
+            optimize,
+            lib_module,
+            client_module,
+            pg.module("pg"),
+        ),
     });
 
     b.installArtifact(seed_exe);
@@ -160,24 +121,19 @@ pub fn build(b: *std.Build) void {
     const seed_step = b.step("seed", "Run data seed / pump tool");
     seed_step.dependOn(&seed_run_cmd.step);
 
-    // CLI tests
-    const test_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "build_options", .module = options.createModule() },
-            .{ .name = "clumsies_lib", .module = lib },
-            .{ .name = "toml", .module = toml_dep.module("toml") },
-        },
-    });
-    test_module.addImport("vaxis", vaxis_dep.module("vaxis"));
-    if (enable_keychain) {
-        test_module.linkFramework("Security", .{});
-        test_module.linkFramework("CoreFoundation", .{});
-    }
+    // Client tests
+    const client_test_module = createClientModule(
+        b,
+        target,
+        optimize,
+        build_options_module,
+        lib_module,
+        toml_dep.module("toml"),
+        vaxis_dep.module("vaxis"),
+        enable_keychain,
+    );
     const unit_tests = b.addTest(.{
-        .root_module = test_module,
+        .root_module = client_test_module,
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -186,21 +142,90 @@ pub fn build(b: *std.Build) void {
 
     // Hub tests
     const hub_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/hub_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "build_options", .module = options.createModule() },
-                .{ .name = "httpz", .module = httpz.module("httpz") },
-                .{ .name = "pg", .module = pg.module("pg") },
-            },
-        }),
+        .root_module = createHubModule(
+            b,
+            target,
+            optimize,
+            build_options_module,
+            lib_module,
+            httpz.module("httpz"),
+            pg.module("pg"),
+        ),
     });
 
     const run_hub_tests = b.addRunArtifact(hub_tests);
     const hub_test_step = b.step("test-hub", "Run Hub Server unit tests");
     hub_test_step.dependOn(&run_hub_tests.step);
+}
+
+fn createClientModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options_module: *std.Build.Module,
+    lib_module: *std.Build.Module,
+    toml_module: *std.Build.Module,
+    vaxis_module: *std.Build.Module,
+    enable_keychain: bool,
+) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/client/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options_module },
+            .{ .name = "clumsies_lib", .module = lib_module },
+            .{ .name = "toml", .module = toml_module },
+        },
+    });
+    module.addImport("vaxis", vaxis_module);
+    if (enable_keychain) {
+        module.linkFramework("Security", .{});
+        module.linkFramework("CoreFoundation", .{});
+    }
+    return module;
+}
+
+fn createHubModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options_module: *std.Build.Module,
+    lib_module: *std.Build.Module,
+    httpz_module: *std.Build.Module,
+    pg_module: *std.Build.Module,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/hub/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options_module },
+            .{ .name = "clumsies_lib", .module = lib_module },
+            .{ .name = "httpz", .module = httpz_module },
+            .{ .name = "pg", .module = pg_module },
+        },
+    });
+}
+
+fn createSeedModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    lib_module: *std.Build.Module,
+    client_module: *std.Build.Module,
+    pg_module: *std.Build.Module,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/seed/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "clumsies_lib", .module = lib_module },
+            .{ .name = "clumsies_client", .module = client_module },
+            .{ .name = "pg", .module = pg_module },
+        },
+    });
 }
 
 fn addCodexAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) void {
