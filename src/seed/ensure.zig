@@ -1,8 +1,10 @@
+//! Ensures seed prerequisites exist: database tables, workspace directories, and initial state
+//! required before the pump can generate synthetic trace events.
 const std = @import("std");
 const pg = @import("pg");
 const bcrypt = std.crypto.pwhash.bcrypt;
 const data = @import("data.zig");
-const local_state = @import("local_state.zig");
+const workspace_setup = @import("workspace_setup.zig");
 const reset = @import("reset.zig");
 
 const log = std.log.scoped(.seed);
@@ -113,7 +115,7 @@ fn userHealthy(conn: *pg.Conn, user: data.UserFixture) !bool {
 
 fn ensureLocalWorkspaceState() !void {
     for (data.WORKSPACES) |workspace| {
-        try local_state.ensureWorkspaceFiles(workspace.id);
+        try workspace_setup.ensureWorkspaceFiles(workspace.id);
     }
 }
 

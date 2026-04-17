@@ -1,8 +1,20 @@
+//! Hub collaboration endpoints. Implements the Pull Request lifecycle: create PR from workspace
+//! local edit, list/get PR details, add review comments, accept/reject, and track PR operations
+//! (add/modify/delete prompts). PRs are the only path for changes to enter the Library.
 const std = @import("std");
 const httpz = @import("httpz");
+const collab_api = @import("clumsies_lib").protocol.collab_api;
+const util_hash = @import("clumsies_lib").util.hash;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
-const apiError = @import("../protocol/api_error.zig").send;
+const apiError = @import("api_error.zig").send;
+const PromptPrComment = collab_api.PromptPrComment;
+const PromptPrCommentsResponse = collab_api.PromptPrCommentsResponse;
+const PromptPrDetailResponse = collab_api.PromptPrDetailResponse;
+const PromptPrListItem = collab_api.PromptPrListItem;
+const PromptPrListResponse = collab_api.PromptPrListResponse;
+const PromptPrChange = collab_api.PromptPrChange;
+const PromptPrUsageSummary = collab_api.PromptPrUsageSummary;
 
 const Operation = struct {
     type: []const u8,
@@ -85,7 +97,7 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 
     res.status = 201;
     try res.json(.{
-        .proposal_id = pr_id,
+        .pr_id = pr_id,
         .status = "open",
     }, .{});
 }
@@ -244,16 +256,7 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     };
     defer conn.release();
 
-    const PrMeta = struct {
-        proposal_id: []const u8,
-        status: []const u8,
-        description: []const u8,
-        created_at: []const u8,
-        author: []const u8,
-        operation_count: i64,
-    };
-
-    var list: std.ArrayList(PrMeta) = .empty;
+    var list: std.ArrayList(PromptPrListItem) = .empty;
 
     const base_sql =
         \\SELECT pp.pr_id, pp.status, pp.description, pp.created_at::text, u.username,
@@ -272,7 +275,7 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         defer result.deinit();
         while (try result.next()) |row| {
             try list.append(req.arena, .{
-                .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                 .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                 .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
@@ -290,7 +293,7 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         defer result.deinit();
         while (try result.next()) |row| {
             try list.append(req.arena, .{
-                .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                 .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                 .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
@@ -309,7 +312,7 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         defer result.deinit();
         while (try result.next()) |row| {
             try list.append(req.arena, .{
-                .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                 .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                 .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
@@ -327,7 +330,7 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         defer result.deinit();
         while (try result.next()) |row| {
             try list.append(req.arena, .{
-                .proposal_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+                .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                 .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
                 .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
@@ -337,19 +340,8 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         }
     }
 
-    try res.json(.{ .prs = list.items }, .{});
+    try res.json(PromptPrListResponse{ .prs = list.items }, .{});
 }
-
-const OperationView = struct {
-    op_index: i32,
-    type: []const u8,
-    prompt_id: ?[]const u8,
-    base_hash: ?[]const u8,
-    content: ?[]const u8,
-    path: ?[]const u8,
-    base_content: ?[]const u8,
-    current_path: ?[]const u8,
-};
 
 pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -381,7 +373,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     const created_at = try req.arena.dupe(u8, try row.get([]const u8, 3));
     row.deinit() catch {};
 
-    var ops: std.ArrayList(OperationView) = .empty;
+    var ops: std.ArrayList(PromptPrChange) = .empty;
     var op_result = conn.query(
         "SELECT op_index, type, prompt_id, base_hash, content, path FROM prompt_pr_operations WHERE pr_id = $1 ORDER BY op_index",
         .{pr_id},
@@ -449,12 +441,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
         });
     }
 
-    const TraceSummary = struct {
-        refer_count: i64 = 0,
-        sessions_used: i64 = 0,
-        last_referred: ?[]const u8 = null,
-    };
-    var trace_summary = TraceSummary{};
+    var trace_summary = PromptPrUsageSummary{};
 
     var trace_row = conn.row(
         \\SELECT count(*), count(DISTINCT session_id), max(to_timestamp(timestamp/1000))::text
@@ -471,8 +458,8 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
         tr.deinit() catch {};
     }
 
-    try res.json(.{
-        .proposal_id = pr_id,
+    try res.json(PromptPrDetailResponse{
+        .pr_id = pr_id,
         .status = status,
         .description = description,
         .created_at = created_at,
@@ -546,7 +533,7 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     };
 
     try res.json(.{
-        .proposal_id = id,
+        .pr_id = id,
         .status = if (is_accept) @as([]const u8, "accepted") else @as([]const u8, "rejected"),
     }, .{});
 }
@@ -638,7 +625,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                 try apiError(res, 409, "CONFLICT", "Library has changed since PR was created");
                 return false;
             }
-            const new_hash = @import("../protocol/hash.zig").ContentHash.compute(new_content);
+            const new_hash = util_hash.contentHash(new_content);
             const hash_slice: []const u8 = arena.dupe(u8, &new_hash) catch {
                 conn.rollback() catch {};
                 try apiError(res, 500, "INTERNAL_ERROR", "alloc failed");
@@ -682,7 +669,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                 return false;
             }
             if (op.content) |new_content| {
-                const new_hash = @import("../protocol/hash.zig").ContentHash.compute(new_content);
+                const new_hash = util_hash.contentHash(new_content);
                 const hash_slice: []const u8 = arena.dupe(u8, &new_hash) catch {
                     conn.rollback() catch {};
                     try apiError(res, 500, "INTERNAL_ERROR", "alloc failed");
@@ -728,7 +715,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                 try apiError(res, 500, "INTERNAL_ERROR", "alloc failed");
                 return false;
             };
-            const new_hash = @import("../protocol/hash.zig").ContentHash.compute(new_content);
+            const new_hash = util_hash.contentHash(new_content);
             const hash_slice: []const u8 = arena.dupe(u8, &new_hash) catch {
                 conn.rollback() catch {};
                 try apiError(res, 500, "INTERNAL_ERROR", "alloc failed");
@@ -831,7 +818,7 @@ pub fn handleAddComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     res.status = 201;
     try res.json(.{
         .comment_id = &cmt_id_buf,
-        .proposal_id = id,
+        .pr_id = id,
         .author = user.username,
         .body = comment.body,
     }, .{});
@@ -852,13 +839,6 @@ pub fn handleListComments(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     };
     defer conn.release();
 
-    const CommentMeta = struct {
-        comment_id: []const u8,
-        author_id: []const u8,
-        body: []const u8,
-        created_at: []const u8,
-    };
-
     var pr_check = conn.row("SELECT pr_id FROM prompt_prs WHERE pr_id = $1 AND org_id = $2::uuid", .{ id, user.org_id }) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
@@ -867,22 +847,28 @@ pub fn handleListComments(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     pr_check.deinit() catch {};
 
     var result = conn.query(
-        "SELECT comment_id, author_id, body, created_at::text FROM prompt_pr_comments WHERE pr_id = $1 ORDER BY created_at",
+        \\SELECT c.comment_id, c.author_id, u.username, c.body, c.created_at::text
+        \\FROM prompt_pr_comments c
+        \\JOIN users u ON u.user_id = c.author_id
+        \\WHERE c.pr_id = $1
+        \\ORDER BY c.created_at
+    ,
         .{id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
     defer result.deinit();
 
-    var list: std.ArrayList(CommentMeta) = .empty;
+    var list: std.ArrayList(PromptPrComment) = .empty;
     while (try result.next()) |row| {
         try list.append(req.arena, .{
             .comment_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
             .author_id = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-            .body = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .author = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .body = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
         });
     }
 
-    try res.json(.{ .comments = list.items }, .{});
+    try res.json(PromptPrCommentsResponse{ .comments = list.items }, .{});
 }

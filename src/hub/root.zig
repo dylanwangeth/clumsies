@@ -7,7 +7,7 @@ pub const collab = @import("collab.zig");
 pub const Config = @import("config.zig");
 pub const Server = @import("server.zig");
 pub const rate_limit = @import("rate_limit.zig");
-pub const protocol = @import("../protocol/root.zig");
+pub const protocol = @import("clumsies_lib").protocol;
 
 test {
     _ = auth;

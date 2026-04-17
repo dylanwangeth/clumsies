@@ -1,11 +1,16 @@
+//! Hub workspace endpoints. A workspace is a project's working environment: a subset of Library
+//! prompts plus its own context. These endpoints handle workspace CRUD and serve the manifest
+//! that drives the client sync protocol.
 const std = @import("std");
 const httpz = @import("httpz");
+const manifest = @import("clumsies_lib").protocol.manifest;
+const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
-const apiError = @import("../protocol/api_error.zig").send;
-const ManifestMap = @import("../protocol/manifest.zig").ManifestMap;
-const ManifestItem = @import("../protocol/manifest.zig").ManifestItem;
-const ManifestEntry = @import("../protocol/manifest.zig").ManifestEntry;
+const apiError = @import("api_error.zig").send;
+const ManifestMap = manifest.ManifestMap;
+const ManifestItem = manifest.ManifestItem;
+const WorkspaceManifestResponse = workspace_api.WorkspaceManifestResponse;
 
 const CreateRequest = struct {
     name: []const u8,
@@ -212,7 +217,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
     res.header("ETag", try req.arena.dupe(u8, etag_slice));
 
-    try res.json(.{
+    try res.json(WorkspaceManifestResponse{
         .ws_id = ws_id_val,
         .name = ws_name,
         .revision = revision,

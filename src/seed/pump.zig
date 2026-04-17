@@ -1,10 +1,11 @@
+//! Synthetic trace event generator. Simulates realistic user activity (multiple users, varying
+//! session lengths, different refer frequencies) to populate the trace pipeline with data for
+//! TUI dashboard and analysis development.
 const std = @import("std");
 const pg = @import("pg");
 const data = @import("data.zig");
-const seed_hash = @import("hash.zig");
-const clumsies_lib = @import("clumsies_lib");
-const local_trace = clumsies_lib.trace;
-const prompt_lib = clumsies_lib.prompt;
+const util_hash = @import("clumsies_lib").util.hash;
+const local_trace = @import("clumsies_client").trace;
 
 const log = std.log.scoped(.pump);
 
@@ -186,7 +187,7 @@ fn emitScenario(
         .timestamp = timestamp_base,
     });
 
-    const input_hash = prompt_lib.hashContentHexAlloc(std.heap.page_allocator, scenario.input) catch null;
+    const input_hash = util_hash.sha256HexAlloc(std.heap.page_allocator, scenario.input) catch null;
     defer if (input_hash) |hash| std.heap.page_allocator.free(hash);
 
     insertTraceEvent(conn, scenario.user_id, .{
@@ -201,7 +202,7 @@ fn emitScenario(
 
     for (scenario.refers, 0..) |refer, idx| {
         const prompt = data.promptById(refer.prompt_id) orelse continue;
-        const prompt_hash = seed_hash.contentHash(prompt.content);
+        const prompt_hash = util_hash.contentHash(prompt.content);
         insertTraceEvent(conn, scenario.user_id, .{
             .ws_id = scenario.ws_id,
             .session_id = session_id,

@@ -1,10 +1,21 @@
+//! Hub Library endpoints. The Library is the org's prompt collection and single source of truth.
+//! Serves the library manifest (content index), prompt metadata, prompt content by hash, and
+//! bundle definitions.
 const std = @import("std");
 const httpz = @import("httpz");
+const library_api = @import("clumsies_lib").protocol.library_api;
+const manifest = @import("clumsies_lib").protocol.manifest;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
-const apiError = @import("../protocol/api_error.zig").send;
-const ManifestMap = @import("../protocol/manifest.zig").ManifestMap;
-const ManifestItem = @import("../protocol/manifest.zig").ManifestItem;
+const apiError = @import("api_error.zig").send;
+const BundleListResponse = library_api.BundleListResponse;
+const BundleMeta = library_api.BundleMeta;
+const LibraryManifestResponse = library_api.LibraryManifestResponse;
+const PromptListResponse = library_api.PromptListResponse;
+const PromptMeta = library_api.PromptMeta;
+const PromptContentResponse = library_api.PromptContentResponse;
+const ManifestMap = manifest.ManifestMap;
+const ManifestItem = manifest.ManifestItem;
 
 pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -23,7 +34,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        try res.json(.{
+        try res.json(LibraryManifestResponse{
             .revision = @as(i32, 0),
             .prompts = ManifestMap{ .items = &.{} },
         }, .{});
@@ -65,19 +76,11 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
     res.header("ETag", try req.arena.dupe(u8, etag_slice));
 
-    try res.json(.{
+    try res.json(LibraryManifestResponse{
         .revision = revision,
         .prompts = ManifestMap{ .items = items.items },
     }, .{});
 }
-
-const PromptMeta = struct {
-    prompt_id: []const u8,
-    path: []const u8,
-    content_hash: []const u8,
-    updated_at: []const u8,
-    source: []const u8,
-};
 
 pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -122,7 +125,7 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         });
     }
 
-    try res.json(.{ .prompts = list.items }, .{});
+    try res.json(PromptListResponse{ .prompts = list.items }, .{});
 }
 
 const HistoryEntry = struct {
@@ -254,7 +257,7 @@ pub fn handleGetPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *h
     row.deinit() catch {};
 
     res.header("ETag", content_hash);
-    try res.json(.{
+    try res.json(PromptContentResponse{
         .prompt_id = prompt_id,
         .path = path,
         .content_hash = content_hash,
@@ -273,14 +276,14 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     };
     defer conn.release();
 
-    const BundleMeta = struct {
-        name: []const u8,
-        description: []const u8,
-        updated_at: []const u8,
-    };
-
     var result = conn.query(
-        "SELECT name, description, updated_at::text FROM bundles WHERE org_id = $1::uuid ORDER BY name",
+        \\SELECT b.name, b.description, b.updated_at::text, count(bp.prompt_id)::bigint
+        \\FROM bundles b
+        \\LEFT JOIN bundle_prompts bp ON bp.bundle_id = b.bundle_id
+        \\WHERE b.org_id = $1::uuid
+        \\GROUP BY b.bundle_id, b.name, b.description, b.updated_at
+        \\ORDER BY b.name
+    ,
         .{user.org_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -293,10 +296,11 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
             .name = try req.arena.dupe(u8, try row.get([]const u8, 0)),
             .description = try req.arena.dupe(u8, try row.get([]const u8, 1)),
             .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .prompt_count = try row.get(i64, 3),
         });
     }
 
-    try res.json(.{ .bundles = list.items }, .{});
+    try res.json(BundleListResponse{ .bundles = list.items }, .{});
 }
 
 pub fn handleGetBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {

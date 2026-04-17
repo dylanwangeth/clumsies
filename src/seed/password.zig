@@ -1,3 +1,4 @@
+//! Bcrypt password hashing for seed user accounts.
 const std = @import("std");
 const bcrypt = std.crypto.pwhash.bcrypt;
 

@@ -1,3 +1,5 @@
+//! Hub server configuration from environment variables: database connection parameters, listen
+//! address, and runtime settings.
 const std = @import("std");
 
 port: u16,

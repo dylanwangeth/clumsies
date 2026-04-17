@@ -1,9 +1,11 @@
+//! Database reset for development: drops and recreates all seed fixtures, providing a clean
+//! slate for testing.
 const std = @import("std");
 const pg = @import("pg");
 const data = @import("data.zig");
-const seed_hash = @import("hash.zig");
+const util_hash = @import("clumsies_lib").util.hash;
 const password = @import("password.zig");
-const local_state = @import("local_state.zig");
+const workspace_setup = @import("workspace_setup.zig");
 
 const log = std.log.scoped(.seed);
 
@@ -44,13 +46,13 @@ pub fn rebuild(conn: *pg.Conn) !void {
 
 fn clearSeedLocalState() void {
     for (data.WORKSPACES) |workspace| {
-        local_state.deleteWorkspaceFiles(workspace.id);
+        workspace_setup.deleteWorkspaceFiles(workspace.id);
     }
 }
 
 fn ensureLocalWorkspaceState() !void {
     for (data.WORKSPACES) |workspace| {
-        try local_state.ensureWorkspaceFiles(workspace.id);
+        try workspace_setup.ensureWorkspaceFiles(workspace.id);
     }
 }
 
@@ -80,7 +82,7 @@ fn seedUsers(conn: *pg.Conn) !void {
 
 fn seedPrompts(conn: *pg.Conn) !void {
     for (data.PROMPTS) |prompt| {
-        const content_hash = seed_hash.contentHash(prompt.content);
+        const content_hash = util_hash.contentHash(prompt.content);
         _ = try conn.exec(
             \\INSERT INTO prompts (prompt_id, org_id, path, content, content_hash)
             \\VALUES ($1, $2::uuid, $3, $4, $5)
@@ -117,7 +119,7 @@ fn seedWorkspacePrompts(conn: *pg.Conn) !void {
 
 fn seedContexts(conn: *pg.Conn) !void {
     for (data.CONTEXTS) |context| {
-        const content_hash = seed_hash.contentHash(context.content);
+        const content_hash = util_hash.contentHash(context.content);
         _ = try conn.exec(
             \\INSERT INTO context_files (context_id, ws_id, path, content, content_hash, author)
             \\VALUES ($1, $2, $3, $4, $5, $6)
@@ -146,7 +148,7 @@ fn seedHistoricalTrace(conn: *pg.Conn) !void {
 
                 for (scenario.refers, 0..) |refer, refer_idx| {
                     const prompt = data.promptById(refer.prompt_id) orelse continue;
-                    const prompt_hash = seed_hash.contentHash(prompt.content);
+                    const prompt_hash = util_hash.contentHash(prompt.content);
                     try insertHistoricalTraceEvent(conn, scenario.user_id, .{
                         .ws_id = scenario.ws_id,
                         .session_id = session_id,

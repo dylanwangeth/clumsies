@@ -1,3 +1,6 @@
+//! Token-bucket rate limiter. Tracks per-client request counts within sliding time windows.
+//! Protects the Hub from excessive sync polling — the ETag 304 fast path is lightweight, but
+//! clients should not hammer it.
 const std = @import("std");
 
 const Entry = struct {
@@ -56,4 +59,28 @@ pub fn check(self: *RateLimiter, key: []const u8) bool {
         return false;
     };
     return true;
+}
+
+test "first request for new key is allowed" {
+    var rl = init(std.testing.allocator, 60, 5);
+    defer rl.deinit();
+    try std.testing.expect(rl.check("user-1"));
+}
+
+test "requests up to max are allowed then denied" {
+    var rl = init(std.testing.allocator, 3600, 3);
+    defer rl.deinit();
+    try std.testing.expect(rl.check("user-1"));
+    try std.testing.expect(rl.check("user-1"));
+    try std.testing.expect(rl.check("user-1"));
+    try std.testing.expect(!rl.check("user-1")); // 4th denied
+    try std.testing.expect(!rl.check("user-1")); // still denied
+}
+
+test "different keys have independent limits" {
+    var rl = init(std.testing.allocator, 3600, 1);
+    defer rl.deinit();
+    try std.testing.expect(rl.check("user-1"));
+    try std.testing.expect(!rl.check("user-1")); // user-1 exhausted
+    try std.testing.expect(rl.check("user-2")); // user-2 independent
 }
