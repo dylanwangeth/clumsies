@@ -247,9 +247,9 @@ step "Prompt PR: create with modify operation"
 RAW=$(call POST "/api/org/prompt-prs" '{"description":"Tighten STYLE rules","operations":[{"type":"modify","prompt_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened."}]}')
 parse_response "$RAW"
 assert_status "create prompt PR" "201" "$STATUS"
-assert_json "returns proposal_id" "proposal_id" "$BODY"
+assert_json "returns pr_id" "pr_id" "$BODY"
 assert_json "status open" "open" "$BODY"
-PPR_ID=$(echo "$BODY" | grep -o '"proposal_id":"[^"]*"' | cut -d'"' -f4)
+PPR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 
 step "Prompt PR: reject empty operations"
 RAW=$(call POST "/api/org/prompt-prs" '{"description":"empty","operations":[]}')
@@ -294,7 +294,7 @@ P002_HASH=$(echo "$BODY" | grep -o '"content_hash":"[^"]*"' | cut -d'"' -f4)
 RAW=$(call POST "/api/org/prompt-prs" "{\"description\":\"Relocate COMMIT\",\"operations\":[{\"type\":\"rename\",\"prompt_id\":\"p-test-002\",\"base_hash\":\"$P002_HASH\",\"new_path\":\"workflow/git/COMMIT.md\"}]}")
 parse_response "$RAW"
 assert_status "create rename PR" "201" "$STATUS"
-RENAME_PR_ID=$(echo "$BODY" | grep -o '"proposal_id":"[^"]*"' | cut -d'"' -f4)
+RENAME_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 
 step "Prompt PR: accept rename"
 RAW=$(call PUT "/api/org/prompt-prs/$RENAME_PR_ID" '{"action":"accept"}')
