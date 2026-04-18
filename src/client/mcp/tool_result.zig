@@ -215,7 +215,7 @@ test "buildErrorResult escapes special characters in message" {
 test "serializePromptList produces valid items array" {
     const allocator = std.testing.allocator;
     const items = [_]workspace_prompt.PromptItem{
-        .{ .id = "p-1", .path = "rule/STYLE.md", .kind = .rule, .group = null, .hash = "abc123", .display_name = "STYLE" },
+        .{ .id = "p-1", .path = "rule/STYLE.md", .kind = .rule, .group = null, .hash = "abc123", .name = "STYLE", .priority = .normal },
     };
     const result = try serializePromptList(allocator, &items);
     defer allocator.free(result);
