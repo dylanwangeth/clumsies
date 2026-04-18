@@ -1372,13 +1372,6 @@ pub const Dashboard = struct {
             ctx.consumeAndRedraw();
             return;
         }
-        if (key.matches('s', .{})) {
-            self.selected_module = .workspace;
-            self.status_line = "Switched to newly created workspace.";
-            self.closeCreateWorkspace();
-            ctx.consumeAndRedraw();
-            return;
-        }
         ctx.consumeEvent();
     }
 

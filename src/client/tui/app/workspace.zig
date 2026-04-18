@@ -6,7 +6,6 @@ const w = @import("../widgets.zig");
 const data = @import("../view_types.zig");
 const api = @import("../api.zig");
 const Modal = @import("../widgets/modal.zig").Modal;
-const TextInput = @import("../widgets/text_input.zig").TextInput;
 
 const MAX_TREE_ROWS = 128;
 
@@ -701,7 +700,7 @@ fn spawnClipboardCopy(alloc: std.mem.Allocator, text: []const u8) void {
 
     if (child.stdin) |stdin| {
         var buf: [128]u8 = undefined;
-        var writer = stdin.writer(&buf);
+        var writer = std.fs.File.Writer.init(stdin, &buf);
         writer.interface.writeAll(text) catch {};
         writer.interface.flush() catch {};
         stdin.close();
@@ -857,7 +856,7 @@ fn drawCreateSuccess(
         .title = "Workspace Created",
         .box_width = CREATE_BOX_W,
         .box_height = CREATE_SUCCESS_BOX_H,
-        .footer = "c copy cmd  s switch  Esc close",
+        .footer = "c copy cmd  Esc close",
         .border_color = theme.OK,
     };
     const dr = try modal.draw(ctx, self.widget());
@@ -897,7 +896,7 @@ fn drawCreateSuccess(
         ctx,
         c0,
         row,
-        "[ c Copy command ]   [ s Switch to this ]   [ Esc Close ]",
+        "c Copy command    Esc Close",
         theme.textOn(bg, theme.TEXT_SOFT),
     );
 
