@@ -99,6 +99,57 @@ pub const pr_comments = dispatcher.RequestSpec(
     .parse_ok = parseCommentsList,
 };
 
+pub const EmptyParams = struct {};
+
+pub const SubmitCommentParams = struct {
+    pr_id: []const u8,
+    body: []const u8,
+};
+
+pub const PrActionParams = struct {
+    pr_id: []const u8,
+    action: []const u8,
+};
+
+pub const sign_out = dispatcher.RequestSpec(EmptyParams, void){
+    .method = .DELETE,
+    .path_builder = dispatcher.staticPath(EmptyParams, "/api/auth/token"),
+    .body_builder = null,
+    .parse_ok = dispatcher.parseVoid,
+};
+
+pub const submit_comment = dispatcher.RequestSpec(SubmitCommentParams, void){
+    .method = .POST,
+    .path_builder = submitCommentPath,
+    .body_builder = submitCommentBody,
+    .parse_ok = dispatcher.parseVoid,
+};
+
+pub const pr_action = dispatcher.RequestSpec(PrActionParams, void){
+    .method = .PUT,
+    .path_builder = prActionPath,
+    .body_builder = prActionBody,
+    .parse_ok = dispatcher.parseVoid,
+};
+
+fn submitCommentPath(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{p.pr_id});
+}
+
+fn submitCommentBody(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror![]const u8 {
+    const Payload = struct { body: []const u8 };
+    return std.json.Stringify.valueAlloc(alloc, Payload{ .body = p.body }, .{});
+}
+
+fn prActionPath(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}", .{p.pr_id});
+}
+
+fn prActionBody(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8 {
+    const Payload = struct { action: []const u8 };
+    return std.json.Stringify.valueAlloc(alloc, Payload{ .action = p.action }, .{});
+}
+
 fn promptContentPath(alloc: std.mem.Allocator, p: PathParams) anyerror![]const u8 {
     const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
         std.fmt.alt(std.Uri.Component{ .raw = p.path }, .formatQuery),

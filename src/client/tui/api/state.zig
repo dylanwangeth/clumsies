@@ -73,6 +73,12 @@ pub const ApiState = struct {
     pr_detail_cache: cache.CacheSlot(cache.StringKey, collab_api.PromptPrDetailResponse) = .{},
     pr_comments_pending: request.PendingRequest(dispatcher.Result([]const data.CommentEntry)) = .{},
     pr_comments_cache: cache.CacheSlot(cache.StringKey, []const data.CommentEntry) = .{},
+
+    // Write endpoints. All three carry void payloads on success: the
+    // consumer only cares about ok / api_error / network_error.
+    sign_out_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
+    submit_comment_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
+    pr_action_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     // Derived pr_detail view state, recomputed by consumers whenever
     // pr_detail_cache or pr_comments_cache changes. Kept here because
     // computing the diff on every draw would be wasteful; the consumer

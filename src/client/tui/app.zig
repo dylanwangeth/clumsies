@@ -276,15 +276,15 @@ pub const Dashboard = struct {
                                 self.status_line = "Workspace deleted (not yet implemented)";
                             },
                             .revoke_token => {
-                                const alloc = self.api_state.allocator();
-                                _ = api.fetch.postAction(self.api_state, alloc, .DELETE, "/api/auth/token", null) catch {
-                                    self.status_line = "Token revoke failed";
-                                    self.show_confirm = false;
-                                    self.confirm_action = .none;
-                                    ctx.consumeAndRedraw();
-                                    return;
-                                };
-                                self.status_line = "Token revoked. Please re-login.";
+                                api.specs.dispatchFromState(
+                                    api.specs.EmptyParams,
+                                    void,
+                                    api.specs.sign_out,
+                                    &self.api_state.sign_out_pending,
+                                    self.api_state,
+                                    .{},
+                                );
+                                self.status_line = "Revoking token...";
                             },
                             .quit => {
                                 ctx.consumeEvent();
@@ -537,6 +537,9 @@ pub const Dashboard = struct {
                 self.consumeWsManifestResult();
                 self.consumePrDetailResult();
                 self.consumePrCommentsResult();
+                self.consumeSignOutResult();
+                self.consumeSubmitCommentResult();
+                self.consumePrActionResult();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -1554,6 +1557,48 @@ pub const Dashboard = struct {
         self.api_state.pr_detail_op_total = op_total;
     }
 
+    /// Pump the three write-path pending slots. Each surfaces the
+    /// outcome on status_line so the user sees the deferred result of
+    /// their action; body payloads are void so the Result carries only
+    /// ok / api_error / network_error / invalid_response.
+    fn consumeSignOutResult(self: *Dashboard) void {
+        const result = self.api_state.sign_out_pending.consume() orelse return;
+        self.status_line = switch (result) {
+            .ok => "Token revoked. Please re-login.",
+            .api_error => |e| writeErrorStatus(self, "Token revoke failed", e),
+            .network_error => "Token revoke failed: network error.",
+            .invalid_response => "Token revoke failed: malformed response.",
+        };
+    }
+
+    fn consumeSubmitCommentResult(self: *Dashboard) void {
+        const result = self.api_state.submit_comment_pending.consume() orelse return;
+        self.status_line = switch (result) {
+            .ok => "Comment submitted.",
+            .api_error => |e| writeErrorStatus(self, "Comment submission failed", e),
+            .network_error => "Comment submission failed: network error.",
+            .invalid_response => "Comment submission failed: malformed response.",
+        };
+    }
+
+    fn consumePrActionResult(self: *Dashboard) void {
+        const result = self.api_state.pr_action_pending.consume() orelse return;
+        self.status_line = switch (result) {
+            .ok => "PR action applied.",
+            .api_error => |e| writeErrorStatus(self, "PR action failed", e),
+            .network_error => "PR action failed: network error.",
+            .invalid_response => "PR action failed: malformed response.",
+        };
+    }
+
+    /// Format `context: <server message> (CODE)` into the Dashboard's
+    /// owned status_line buffer-via-arena. Returns a slice valid until
+    /// the next status_line update.
+    fn writeErrorStatus(self: *Dashboard, context: []const u8, err: api.request.ApiErrorPayload) []const u8 {
+        const alloc = self.api_state.allocator();
+        return std.fmt.allocPrint(alloc, "{s}: {s} ({s})", .{ context, err.message, err.code }) catch context;
+    }
+
     /// Pump the workspace context file content pending slot.
     fn consumeWsContextContentResult(self: *Dashboard) void {
         const result = self.api_state.ws_context_content_pending.consume() orelse return;
@@ -1584,23 +1629,16 @@ pub const Dashboard = struct {
         const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
         if (prs_for.len == 0) return;
 
-        const alloc = self.api_state.allocator();
-        const path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{prs_for[pri].id}) catch {
-            self.status_line = "Failed to submit comment";
-            return;
-        };
-        defer alloc.free(path);
         const comment_text = self.comment_input_buf[0..self.comment_input_len];
-        const body = std.fmt.allocPrint(alloc, "{{\"body\":\"{s}\"}}", .{comment_text}) catch {
-            self.status_line = "Failed to submit comment";
-            return;
-        };
-        defer alloc.free(body);
-        _ = api.fetch.postAction(self.api_state, alloc, .POST, path, body) catch {
-            self.status_line = "Comment submission failed";
-            return;
-        };
-        self.status_line = "Comment submitted.";
+        api.specs.dispatchFromState(
+            api.specs.SubmitCommentParams,
+            void,
+            api.specs.submit_comment,
+            &self.api_state.submit_comment_pending,
+            self.api_state,
+            .{ .pr_id = prs_for[pri].id, .body = comment_text },
+        );
+        self.status_line = "Submitting comment...";
     }
 
     pub fn doPrAction(self: *Dashboard, action: []const u8) void {
@@ -1610,24 +1648,16 @@ pub const Dashboard = struct {
         const prs_for = self.getPrsForPrompt(all_p[si].path);
         const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
         if (prs_for.len == 0) return;
-        const pr_id = prs_for[pri].id;
 
-        const alloc = self.api_state.allocator();
-        const path = std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}", .{pr_id}) catch {
-            self.status_line = "Failed to build request";
-            return;
-        };
-        defer alloc.free(path);
-        const body = std.fmt.allocPrint(alloc, "{{\"action\":\"{s}\"}}", .{action}) catch {
-            self.status_line = "Failed to build request";
-            return;
-        };
-        defer alloc.free(body);
-        _ = api.fetch.postAction(self.api_state, alloc, .PUT, path, body) catch {
-            self.status_line = if (std.mem.eql(u8, action, "accept")) "Accept failed" else "Reject failed";
-            return;
-        };
-        self.status_line = if (std.mem.eql(u8, action, "accept")) "PR accepted" else "PR rejected";
+        api.specs.dispatchFromState(
+            api.specs.PrActionParams,
+            void,
+            api.specs.pr_action,
+            &self.api_state.pr_action_pending,
+            self.api_state,
+            .{ .pr_id = prs_for[pri].id, .action = action },
+        );
+        self.status_line = if (std.mem.eql(u8, action, "accept")) "Accepting PR..." else "Rejecting PR...";
         self.show_pr_diff = false;
     }
 
