@@ -4,6 +4,8 @@ const data = @import("../view_types.zig");
 const model = @import("model.zig");
 const parse = @import("parse.zig");
 const state = @import("state.zig");
+const workspace_api = @import("clumsies_lib").protocol.workspace_api;
+const api_error = @import("clumsies_lib").protocol.api_error;
 
 pub fn startFetch(
     api_state: *state.ApiState,
@@ -801,4 +803,193 @@ fn doFetchParse(
     defer resp.deinit();
     if (resp.status != .ok) return null;
     return parseFn(alloc, resp.body);
+}
+
+pub fn createWorkspaceAsync(
+    api_state: *state.ApiState,
+    ws_name: []const u8,
+    bundle_id: ?[]const u8,
+) void {
+    api_state.mutex.lock();
+    if (api_state.create_ws_inflight) {
+        api_state.mutex.unlock();
+        return;
+    }
+    api_state.create_ws_inflight = true;
+    api_state.mutex.unlock();
+
+    const transient = api_state.backing_allocator;
+    const name_copy = transient.dupe(u8, ws_name) catch {
+        storeCreateResult(api_state, .network_error);
+        return;
+    };
+    const bundle_copy: ?[]const u8 = if (bundle_id) |b|
+        transient.dupe(u8, b) catch {
+            transient.free(name_copy);
+            storeCreateResult(api_state, .network_error);
+            return;
+        }
+    else
+        null;
+
+    _ = std.Thread.spawn(.{}, createWorkspace, .{ api_state, name_copy, bundle_copy }) catch {
+        transient.free(name_copy);
+        if (bundle_copy) |b| transient.free(b);
+        storeCreateResult(api_state, .network_error);
+    };
+}
+
+fn createWorkspace(
+    api_state: *state.ApiState,
+    name_owned: []const u8,
+    bundle_owned: ?[]const u8,
+) void {
+    const transient = api_state.backing_allocator;
+    defer transient.free(name_owned);
+    defer if (bundle_owned) |b| transient.free(b);
+
+    api_state.mutex.lock();
+    const hub_url = api_state.hub_url;
+    const token = api_state.access_token;
+    api_state.mutex.unlock();
+
+    if (hub_url == null or token == null) {
+        storeCreateResult(api_state, .network_error);
+        return;
+    }
+
+    const request = workspace_api.CreateWorkspaceRequest{
+        .name = name_owned,
+        .bundle_id = bundle_owned,
+    };
+    const body = std.json.Stringify.valueAlloc(
+        transient,
+        request,
+        .{ .emit_null_optional_fields = false },
+    ) catch {
+        storeCreateResult(api_state, .network_error);
+        return;
+    };
+    defer transient.free(body);
+
+    var client = HubClient.init(transient, hub_url.?, token.?);
+    const resp = client.post("/api/workspaces", body) catch {
+        storeCreateResult(api_state, .network_error);
+        return;
+    };
+    defer resp.deinit();
+
+    const result_alloc = api_state.allocator();
+    const result = classifyCreateResponse(result_alloc, resp.status, resp.body);
+    storeCreateResult(api_state, result);
+}
+
+fn storeCreateResult(api_state: *state.ApiState, result: state.CreateWsResult) void {
+    api_state.mutex.lock();
+    api_state.create_ws_inflight = false;
+    api_state.create_ws_result = result;
+    api_state.mutex.unlock();
+}
+
+fn classifyCreateResponse(
+    alloc: std.mem.Allocator,
+    status: std.http.Status,
+    body: []const u8,
+) state.CreateWsResult {
+    switch (status) {
+        .ok, .created => {
+            const parsed = std.json.parseFromSlice(
+                workspace_api.CreateWorkspaceResponse,
+                alloc,
+                body,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+            ) catch return .invalid_response;
+            defer parsed.deinit();
+            const ws_id = alloc.dupe(u8, parsed.value.ws_id) catch return .invalid_response;
+            const name = alloc.dupe(u8, parsed.value.name) catch return .invalid_response;
+            return .{ .ok = .{ .ws_id = ws_id, .name = name } };
+        },
+        else => return parseCreateApiError(alloc, status, body),
+    }
+}
+
+fn parseCreateApiError(
+    alloc: std.mem.Allocator,
+    status: std.http.Status,
+    body: []const u8,
+) state.CreateWsResult {
+    const parsed = std.json.parseFromSlice(
+        api_error.ApiErrorEnvelope,
+        alloc,
+        body,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch {
+        const code = alloc.dupe(u8, "UNKNOWN") catch return .invalid_response;
+        const message = alloc.dupe(u8, body) catch return .invalid_response;
+        return .{ .api_error = .{ .status = status, .code = code, .message = message } };
+    };
+    defer parsed.deinit();
+    const code = alloc.dupe(u8, parsed.value.@"error".code) catch return .invalid_response;
+    const message = alloc.dupe(u8, parsed.value.@"error".message) catch return .invalid_response;
+    return .{ .api_error = .{ .status = status, .code = code, .message = message } };
+}
+
+test "classifyCreateResponse maps 201 Created to ok with duped strings" {
+    const body = "{\"ws_id\":\"ws-xyz\",\"name\":\"payments-api\",\"revision\":0}";
+    const result = classifyCreateResponse(std.testing.allocator, .created, body);
+    switch (result) {
+        .ok => |payload| {
+            defer std.testing.allocator.free(payload.ws_id);
+            defer std.testing.allocator.free(payload.name);
+            try std.testing.expectEqualStrings("ws-xyz", payload.ws_id);
+            try std.testing.expectEqualStrings("payments-api", payload.name);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyCreateResponse maps 409 with envelope to api_error carrying code and message" {
+    const body = "{\"error\":{\"code\":\"CONFLICT\",\"message\":\"workspace with this name already exists\"}}";
+    const result = classifyCreateResponse(std.testing.allocator, .conflict, body);
+    switch (result) {
+        .api_error => |payload| {
+            defer std.testing.allocator.free(payload.code);
+            defer std.testing.allocator.free(payload.message);
+            try std.testing.expectEqual(std.http.Status.conflict, payload.status);
+            try std.testing.expectEqualStrings("CONFLICT", payload.code);
+            try std.testing.expectEqualStrings("workspace with this name already exists", payload.message);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyCreateResponse on 401 carries UNAUTHORIZED code" {
+    const body = "{\"error\":{\"code\":\"UNAUTHORIZED\",\"message\":\"invalid or missing token\"}}";
+    const result = classifyCreateResponse(std.testing.allocator, .unauthorized, body);
+    switch (result) {
+        .api_error => |payload| {
+            defer std.testing.allocator.free(payload.code);
+            defer std.testing.allocator.free(payload.message);
+            try std.testing.expectEqualStrings("UNAUTHORIZED", payload.code);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyCreateResponse on malformed 2xx body yields invalid_response" {
+    const result = classifyCreateResponse(std.testing.allocator, .created, "not json");
+    try std.testing.expectEqual(state.CreateWsResult.invalid_response, result);
+}
+
+test "classifyCreateResponse on non-JSON error body falls back to UNKNOWN code" {
+    const result = classifyCreateResponse(std.testing.allocator, .internal_server_error, "plain text crash");
+    switch (result) {
+        .api_error => |payload| {
+            defer std.testing.allocator.free(payload.code);
+            defer std.testing.allocator.free(payload.message);
+            try std.testing.expectEqualStrings("UNKNOWN", payload.code);
+            try std.testing.expectEqualStrings("plain text crash", payload.message);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }
