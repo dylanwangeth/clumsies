@@ -50,40 +50,6 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
     api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
 }
 
-pub fn postAction(
-    api_state: *state.ApiState,
-    alloc: std.mem.Allocator,
-    method: std.http.Method,
-    path: []const u8,
-    body: ?[]const u8,
-) ![]const u8 {
-    api_state.mutex.lock();
-    const hub_url = api_state.hub_url orelse {
-        api_state.mutex.unlock();
-        return error.NotConnected;
-    };
-    const token = api_state.access_token orelse {
-        api_state.mutex.unlock();
-        return error.NotConnected;
-    };
-    api_state.mutex.unlock();
-
-    var client = HubClient.init(alloc, hub_url, token);
-    const resp = switch (method) {
-        .POST => try client.post(path, body orelse "{}"),
-        .PUT => try client.put(path, body orelse "{}"),
-        .PATCH => try client.patch(path, body orelse "{}"),
-        .DELETE => try client.delete(path),
-        else => return error.UnsupportedMethod,
-    };
-    defer resp.deinit();
-
-    if (resp.status == .ok or resp.status == .created or resp.status == .no_content) {
-        return alloc.dupe(u8, resp.body);
-    }
-    return error.RequestFailed;
-}
-
 fn fetchAll(
     api_state: *state.ApiState,
     hub_url: []const u8,
