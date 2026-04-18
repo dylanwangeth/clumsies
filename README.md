@@ -64,7 +64,7 @@ https://github.com/user-attachments/assets/3ae8473c-dac1-45b5-8a72-6ad21906f235
 
 ## Quick start
 
-Build from source (add `zig-out/bin` to your `PATH` for convenience):
+Build from source (requires [Zig 0.15+](https://ziglang.org/download/); add `zig-out/bin` to your `PATH` for convenience):
 
 ```bash
 git clone https://github.com/lilhammerfun/clumsies.git
@@ -114,6 +114,11 @@ Launch the TUI:
 ```bash
 clumsies
 ```
+
+> [!TIP]
+> For iterative development, `just dev` spins up the Hub, seeds representative
+> data, and launches the TUI in one command — no need to run the steps above
+> manually. Requires [just](https://github.com/casey/just).
 
 More commands:
 
