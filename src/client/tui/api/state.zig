@@ -87,7 +87,11 @@ pub const ApiState = struct {
     pr_detail_op_total: u16 = 0,
     hub_url: ?[]const u8 = null,
     access_token: ?[]const u8 = null,
-    fetch_busy: bool = false,
+    /// True while the compound bootstrap fetch (/me + directory + prompts
+    /// + bundles + stats) is running. Prevents overlapping bootstrap
+    /// triggers; does not gate any other endpoint, which now run
+    /// independently via their own PendingRequest slots.
+    bootstrap_inflight: bool = false,
     create_ws_pending: request.PendingRequest(dispatcher.Result(workspace_api.CreateWorkspaceResponse)) = .{},
     thread_registry: dispatcher.ThreadRegistry = .{},
     backing_allocator: std.mem.Allocator,

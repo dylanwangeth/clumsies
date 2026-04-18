@@ -4,38 +4,50 @@ const model = @import("model.zig");
 const parse = @import("parse.zig");
 const state = @import("state.zig");
 
+/// Seed api_state with the auth credentials and kick off the initial
+/// compound bootstrap fetch. The spawned worker registers itself to
+/// the shared thread registry so main.zig's exit path joins it.
 pub fn startFetch(
     api_state: *state.ApiState,
     hub_url: []const u8,
     access_token: []const u8,
-) !std.Thread {
+) !void {
     const alloc = api_state.allocator();
     const url_copy = try alloc.dupe(u8, hub_url);
     const token_copy = try alloc.dupe(u8, access_token);
     api_state.mutex.lock();
     api_state.hub_url = url_copy;
     api_state.access_token = token_copy;
-    api_state.fetch_busy = true;
+    api_state.bootstrap_inflight = true;
     api_state.mutex.unlock();
-    return std.Thread.spawn(.{}, fetchAll, .{ api_state, url_copy, token_copy });
+
+    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, url_copy, token_copy }) catch |err| {
+        api_state.mutex.lock();
+        api_state.bootstrap_inflight = false;
+        api_state.mutex.unlock();
+        return err;
+    };
+    try api_state.thread_registry.register(thread, api_state.backing_allocator);
 }
 
 pub fn refetchAllAsync(api_state: *state.ApiState) void {
     api_state.mutex.lock();
-    if (api_state.fetch_busy or api_state.hub_url == null or api_state.access_token == null) {
+    if (api_state.bootstrap_inflight or api_state.hub_url == null or api_state.access_token == null) {
         api_state.mutex.unlock();
         return;
     }
-    api_state.fetch_busy = true;
+    api_state.bootstrap_inflight = true;
     const hub_url = api_state.hub_url.?;
     const access_token = api_state.access_token.?;
     api_state.mutex.unlock();
 
-    _ = std.Thread.spawn(.{}, fetchAll, .{ api_state, hub_url, access_token }) catch {
+    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, hub_url, access_token }) catch {
         api_state.mutex.lock();
-        api_state.fetch_busy = false;
+        api_state.bootstrap_inflight = false;
         api_state.mutex.unlock();
+        return;
     };
+    api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
 }
 
 pub fn postAction(
@@ -79,7 +91,7 @@ fn fetchAll(
 ) void {
     defer {
         api_state.mutex.lock();
-        api_state.fetch_busy = false;
+        api_state.bootstrap_inflight = false;
         api_state.mutex.unlock();
     }
     api_state.mutex.lock();
