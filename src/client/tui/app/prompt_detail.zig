@@ -607,7 +607,27 @@ fn fetchSelectedPrDetail(self: anytype) void {
     const pr_idx = @min(self.selected_pr_idx, if (prs.len > 0) prs.len - 1 else 0);
     if (prs.len == 0) return;
 
-    api.fetch.fetchPrDetailAsync(self.api_state, prs[pr_idx].id);
+    const pr_id = prs[pr_idx].id;
+    if (self.api_state.pr_detail_cache.lookup(.{ .value = pr_id }) == null) {
+        api.specs.dispatchFromState(
+            api.specs.PrIdParams,
+            @import("clumsies_lib").protocol.collab_api.PromptPrDetailResponse,
+            api.specs.pr_detail,
+            &self.api_state.pr_detail_pending,
+            self.api_state,
+            .{ .pr_id = pr_id },
+        );
+    }
+    if (self.api_state.pr_comments_cache.lookup(.{ .value = pr_id }) == null) {
+        api.specs.dispatchFromState(
+            api.specs.PrIdParams,
+            []const @import("../view_types.zig").CommentEntry,
+            api.specs.pr_comments,
+            &self.api_state.pr_comments_pending,
+            self.api_state,
+            .{ .pr_id = pr_id },
+        );
+    }
 }
 
 fn nextPrFilter(filter: anytype) @TypeOf(filter) {

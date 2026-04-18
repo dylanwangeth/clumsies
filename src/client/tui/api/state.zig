@@ -1,4 +1,5 @@
 const std = @import("std");
+const collab_api = @import("clumsies_lib").protocol.collab_api;
 const library_api = @import("clumsies_lib").protocol.library_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const data = @import("../view_types.zig");
@@ -41,7 +42,6 @@ pub const ApiState = struct {
     prompts: ?[]const model.LibraryPrompt = null,
     bundles: ?[]const model.BundleData = null,
     org_stats: ?model.OrgStats = null,
-    ws_detail: ?model.WsDetail = null,
     local_stats: ?trace_reader.LocalStats = null,
     drafts: ?[]const DraftEntry = null,
     active_sessions: ?[]const ActiveSession = null,
@@ -53,18 +53,32 @@ pub const ApiState = struct {
     // Library prompt PR list, keyed by prompt path (request itself uses prompt_id).
     prompt_prs_pending: request.PendingRequest(dispatcher.Result([]const model.PromptPr)) = .{},
     prompt_prs_cache: cache.CacheSlot(cache.StringKey, []const model.PromptPr) = .{},
-    /// Prompt id that the cached prs list belongs to. Kept as a plain
-    /// field because the (not yet migrated) pr_detail worker reads it
-    /// to match operations against the active prompt. Retires once
-    /// pr_detail also moves onto the dispatcher.
-    prompt_prs_for_id: ?[]const u8 = null,
 
     // Workspace context file content, keyed by (ws_id, path).
     ws_context_content_pending: request.PendingRequest(dispatcher.Result([]const u8)) = .{},
     ws_context_content_cache: cache.CacheSlot(WsPathKey, []const u8) = .{},
+
+    // Workspace detail (compound): two independent fetches keyed by ws_id,
+    // combined on read via `wsDetail(ws_id)`.
+    ws_context_files_pending: request.PendingRequest(dispatcher.Result([]const model.ContextFileData)) = .{},
+    ws_context_files_cache: cache.CacheSlot(cache.StringKey, []const model.ContextFileData) = .{},
+    ws_manifest_pending: request.PendingRequest(dispatcher.Result([]const model.WsPromptData)) = .{},
+    ws_manifest_cache: cache.CacheSlot(cache.StringKey, []const model.WsPromptData) = .{},
+
+    // Pr detail (compound): detail response + comments keyed by pr_id.
+    // The detail response carries operations + trace_summary; the consumer
+    // computes the diff and picks the active operation against the cached
+    // prompt prs list.
+    pr_detail_pending: request.PendingRequest(dispatcher.Result(collab_api.PromptPrDetailResponse)) = .{},
+    pr_detail_cache: cache.CacheSlot(cache.StringKey, collab_api.PromptPrDetailResponse) = .{},
+    pr_comments_pending: request.PendingRequest(dispatcher.Result([]const data.CommentEntry)) = .{},
+    pr_comments_cache: cache.CacheSlot(cache.StringKey, []const data.CommentEntry) = .{},
+    // Derived pr_detail view state, recomputed by consumers whenever
+    // pr_detail_cache or pr_comments_cache changes. Kept here because
+    // computing the diff on every draw would be wasteful; the consumer
+    // caches it once per (pr_id, active prompt_id) transition.
     pr_detail_id: ?[]const u8 = null,
     pr_detail_diff: ?[]const []const u8 = null,
-    pr_detail_comments: ?[]const data.CommentEntry = null,
     pr_detail_trace_refers: u16 = 0,
     pr_detail_op_type: ?[]const u8 = null,
     pr_detail_op_current_path: ?[]const u8 = null,
@@ -128,18 +142,46 @@ pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
     api_state.prompt_prs_cache.invalidate();
     api_state.prompt_content_cache.invalidate();
     api_state.ws_context_content_cache.invalidate();
+    api_state.ws_context_files_cache.invalidate();
+    api_state.ws_manifest_cache.invalidate();
+    api_state.pr_detail_cache.invalidate();
+    api_state.pr_comments_cache.invalidate();
 
     api_state.mutex.lock();
     defer api_state.mutex.unlock();
 
-    api_state.prompt_prs_for_id = null;
     api_state.pr_detail_id = null;
     api_state.pr_detail_diff = null;
-    api_state.pr_detail_comments = null;
     api_state.pr_detail_trace_refers = 0;
     api_state.pr_detail_op_type = null;
     api_state.pr_detail_op_current_path = null;
     api_state.pr_detail_op_new_path = null;
     api_state.pr_detail_op_index = 0;
     api_state.pr_detail_op_total = 0;
+}
+
+/// Combine the two independently-fetched halves into a WsDetail view.
+/// Returns null when either half is not yet cached or they are stale
+/// relative to `ws_id`.
+pub fn wsDetail(api_state: *ApiState, ws_id: []const u8) ?model.WsDetail {
+    const files = api_state.ws_context_files_cache.lookup(.{ .value = ws_id }) orelse return null;
+    const prompts = api_state.ws_manifest_cache.lookup(.{ .value = ws_id }) orelse return null;
+    return .{
+        .ws_id = ws_id,
+        .context_files = files,
+        .ws_prompts = prompts,
+    };
+}
+
+/// Combined pr detail view: raw detail response + comments. Returns
+/// null when either half is still pending.
+pub const PrDetailView = struct {
+    detail: collab_api.PromptPrDetailResponse,
+    comments: []const data.CommentEntry,
+};
+
+pub fn prDetailView(api_state: *ApiState, pr_id: []const u8) ?PrDetailView {
+    const detail = api_state.pr_detail_cache.lookup(.{ .value = pr_id }) orelse return null;
+    const comments = api_state.pr_comments_cache.lookup(.{ .value = pr_id }) orelse return null;
+    return .{ .detail = detail, .comments = comments };
 }

@@ -9,9 +9,11 @@
 //! no boilerplate.
 
 const std = @import("std");
+const collab_api = @import("clumsies_lib").protocol.collab_api;
 const library_api = @import("clumsies_lib").protocol.library_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 
+const data = @import("../view_types.zig");
 const dispatcher = @import("dispatcher.zig");
 const request = @import("request.zig");
 const state = @import("state.zig");
@@ -31,6 +33,8 @@ pub const create_workspace = dispatcher.RequestSpec(
 pub const PathParams = struct { path: []const u8 };
 pub const PromptPrsParams = struct { prompt_id: []const u8 };
 pub const WsContextContentParams = struct { ws_id: []const u8, path: []const u8 };
+pub const WsIdParams = struct { ws_id: []const u8 };
+pub const PrIdParams = struct { pr_id: []const u8 };
 
 pub const library_prompt_content = dispatcher.RequestSpec(
     PathParams,
@@ -59,6 +63,42 @@ pub const workspace_context_content = dispatcher.RequestSpec(
     .parse_ok = dispatcher.parseRawString,
 };
 
+pub const workspace_context_files = dispatcher.RequestSpec(
+    WsIdParams,
+    []const model.ContextFileData,
+){
+    .method = .GET,
+    .path_builder = wsContextFilesPath,
+    .parse_ok = parseContextFilesList,
+};
+
+pub const workspace_manifest = dispatcher.RequestSpec(
+    WsIdParams,
+    []const model.WsPromptData,
+){
+    .method = .GET,
+    .path_builder = wsManifestPath,
+    .parse_ok = parseManifestPromptsList,
+};
+
+pub const pr_detail = dispatcher.RequestSpec(
+    PrIdParams,
+    collab_api.PromptPrDetailResponse,
+){
+    .method = .GET,
+    .path_builder = prDetailPath,
+    .parse_ok = dispatcher.jsonParser(collab_api.PromptPrDetailResponse),
+};
+
+pub const pr_comments = dispatcher.RequestSpec(
+    PrIdParams,
+    []const data.CommentEntry,
+){
+    .method = .GET,
+    .path_builder = prCommentsPath,
+    .parse_ok = parseCommentsList,
+};
+
 fn promptContentPath(alloc: std.mem.Allocator, p: PathParams) anyerror![]const u8 {
     const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
         std.fmt.alt(std.Uri.Component{ .raw = p.path }, .formatQuery),
@@ -79,10 +119,38 @@ fn wsContextContentPath(alloc: std.mem.Allocator, p: WsContextContentParams) any
     return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/file/content?path={s}", .{ p.ws_id, encoded });
 }
 
+fn wsContextFilesPath(alloc: std.mem.Allocator, p: WsIdParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/files", .{p.ws_id});
+}
+
+fn wsManifestPath(alloc: std.mem.Allocator, p: WsIdParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/manifest", .{p.ws_id});
+}
+
+fn prDetailPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}", .{p.pr_id});
+}
+
+fn prCommentsPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{p.pr_id});
+}
+
 /// Wrap the existing `parse.parsePromptPrs` into the `!T` shape that
 /// dispatcher specs expect (the existing helper returns `?T`).
 fn parsePromptPrsList(alloc: std.mem.Allocator, body: []const u8) anyerror![]const model.PromptPr {
     return parse.parsePromptPrs(alloc, body) orelse error.ParseFailed;
+}
+
+fn parseContextFilesList(alloc: std.mem.Allocator, body: []const u8) anyerror![]const model.ContextFileData {
+    return parse.parseContextFiles(alloc, body) orelse error.ParseFailed;
+}
+
+fn parseManifestPromptsList(alloc: std.mem.Allocator, body: []const u8) anyerror![]const model.WsPromptData {
+    return parse.parseManifestPrompts(alloc, body) orelse error.ParseFailed;
+}
+
+fn parseCommentsList(alloc: std.mem.Allocator, body: []const u8) anyerror![]const data.CommentEntry {
+    return parse.parseComments(alloc, body) orelse error.ParseFailed;
 }
 
 /// Dispatch a request using the transport state already held on

@@ -533,6 +533,10 @@ pub const Dashboard = struct {
                 self.consumePromptContentResult();
                 self.consumePromptPrsResult();
                 self.consumeWsContextContentResult();
+                self.consumeWsContextFilesResult();
+                self.consumeWsManifestResult();
+                self.consumePrDetailResult();
+                self.consumePrCommentsResult();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -830,11 +834,25 @@ pub const Dashboard = struct {
 
     fn drawWsList(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         workspace_panel.syncWsRows(self);
-        self.api_state.mutex.lock();
-        const live_ws = self.api_state.ws_detail;
-        self.api_state.mutex.unlock();
+        const live_ws = if (self.activeWsId()) |ws_id|
+            api.state.wsDetail(self.api_state, ws_id)
+        else
+            null;
         const lib_prompts: []const data.PromptEntry = if (self.ws_tab == .prompts) self.getPrompts() else &.{};
         return workspace_panel.drawList(self, ctx, self.currentWsTree(), live_ws, lib_prompts);
+    }
+
+    /// ws_id of the currently-selected workspace, or null when the
+    /// workspace list is empty / not loaded yet. Reads ws_id directly
+    /// off the authoritative `current_user.workspaces` list because
+    /// the view-layer `WorkspaceEntry` intentionally omits it.
+    pub fn activeWsId(self: *Dashboard) ?[]const u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return null;
+        if (user.workspaces.len == 0) return null;
+        const idx = @min(self.ws_sel, user.workspaces.len - 1);
+        return user.workspaces[idx].ws_id;
     }
 
     pub fn resetWorkspaceTrees(self: *Dashboard) void {
@@ -967,9 +985,10 @@ pub const Dashboard = struct {
 
     // Workspace content pane: shows selected item's content
     fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        self.api_state.mutex.lock();
-        const live_ws = self.api_state.ws_detail;
-        self.api_state.mutex.unlock();
+        const live_ws = if (self.activeWsId()) |ws_id|
+            api.state.wsDetail(self.api_state, ws_id)
+        else
+            null;
         workspace_panel.syncWsRows(self);
         if (live_ws) |ws_d| {
             self.requestWorkspaceSelectionContent(&ws_d);
@@ -1394,9 +1413,7 @@ pub const Dashboard = struct {
     /// Pump the library prompt PR list pending slot. The response does
     /// not carry the prompt path directly (only prompt_id), so the
     /// cache key is derived from the currently selected library prompt
-    /// at consume time. Also stashes prompt_prs_for_id so the legacy
-    /// pr_detail fetcher can still match operations — this coupling
-    /// retires once pr_detail also moves onto the dispatcher.
+    /// at consume time.
     fn consumePromptPrsResult(self: *Dashboard) void {
         const result = self.api_state.prompt_prs_pending.consume() orelse return;
         switch (result) {
@@ -1405,16 +1422,136 @@ pub const Dashboard = struct {
                 if (self.selected_prompt >= prompts.len) return;
                 const path = prompts[self.selected_prompt].path;
                 self.api_state.prompt_prs_cache.store(.{ .value = path }, prs);
-
-                const prompt_id = self.lookupPromptId(path) orelse return;
-                const alloc = self.api_state.allocator();
-                const id_copy = alloc.dupe(u8, prompt_id) catch return;
-                self.api_state.mutex.lock();
-                self.api_state.prompt_prs_for_id = id_copy;
-                self.api_state.mutex.unlock();
             },
             else => {},
         }
+    }
+
+    /// Pump the workspace context files pending slot. Stores the
+    /// response in the cache keyed by the active ws_id; `state.wsDetail`
+    /// combines it with the manifest half to form the view.
+    fn consumeWsContextFilesResult(self: *Dashboard) void {
+        const result = self.api_state.ws_context_files_pending.consume() orelse return;
+        switch (result) {
+            .ok => |files| {
+                const ws_id = self.activeWsId() orelse return;
+                self.api_state.ws_context_files_cache.store(.{ .value = ws_id }, files);
+            },
+            else => {},
+        }
+    }
+
+    fn consumeWsManifestResult(self: *Dashboard) void {
+        const result = self.api_state.ws_manifest_pending.consume() orelse return;
+        switch (result) {
+            .ok => |prompts| {
+                const ws_id = self.activeWsId() orelse return;
+                self.api_state.ws_manifest_cache.store(.{ .value = ws_id }, prompts);
+            },
+            else => {},
+        }
+    }
+
+    /// Pump the PR detail pending slot. On .ok, stash the raw response
+    /// in the cache and recompute the derived view fields (picked
+    /// operation, diff lines, trace refers) against the currently
+    /// active prompt_id so the UI can render them directly.
+    fn consumePrDetailResult(self: *Dashboard) void {
+        const result = self.api_state.pr_detail_pending.consume() orelse return;
+        switch (result) {
+            .ok => |resp| {
+                const pr_id = self.activePrId() orelse return;
+                self.api_state.pr_detail_cache.store(.{ .value = pr_id }, resp);
+                self.refreshPrDetailDerivedFields(pr_id, resp);
+            },
+            else => {},
+        }
+    }
+
+    fn consumePrCommentsResult(self: *Dashboard) void {
+        const result = self.api_state.pr_comments_pending.consume() orelse return;
+        switch (result) {
+            .ok => |comments| {
+                const pr_id = self.activePrId() orelse return;
+                self.api_state.pr_comments_cache.store(.{ .value = pr_id }, comments);
+            },
+            else => {},
+        }
+    }
+
+    /// pr_id of the currently-selected PR in the prompt-detail drill-
+    /// down, or null when nothing is selected.
+    fn activePrId(self: *Dashboard) ?[]const u8 {
+        const prompts = self.getPrompts();
+        const prompt_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
+        if (prompts.len == 0) return null;
+        const prs = self.getPrsForPrompt(prompts[prompt_idx].path);
+        if (prs.len == 0) return null;
+        const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
+        return prs[pr_idx].id;
+    }
+
+    /// Recompute the 8 derived pr_detail_* fields from the just-fetched
+    /// response. Picking the active operation requires the currently
+    /// cached library PR list so the op matching the selected prompt
+    /// is surfaced first.
+    fn refreshPrDetailDerivedFields(
+        self: *Dashboard,
+        pr_id: []const u8,
+        resp: @import("clumsies_lib").protocol.collab_api.PromptPrDetailResponse,
+    ) void {
+        const alloc = self.api_state.allocator();
+
+        const prompts = self.getPrompts();
+        const prompt_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
+        const target_prompt_id: ?[]const u8 = if (prompts.len > 0)
+            self.lookupPromptId(prompts[prompt_idx].path)
+        else
+            null;
+
+        var pick_idx: ?usize = null;
+        if (target_prompt_id) |tid| {
+            for (resp.operations, 0..) |op, i| {
+                if (op.prompt_id) |pid| {
+                    if (std.mem.eql(u8, pid, tid)) {
+                        pick_idx = i;
+                        break;
+                    }
+                }
+            }
+        }
+        if (pick_idx == null and resp.operations.len > 0) pick_idx = 0;
+
+        var diff_lines: ?[]const []const u8 = null;
+        var op_type: ?[]const u8 = null;
+        var op_current_path: ?[]const u8 = null;
+        var op_new_path: ?[]const u8 = null;
+        var op_index: u16 = 0;
+        const op_total: u16 = @intCast(@min(resp.operations.len, std.math.maxInt(u16)));
+
+        if (pick_idx) |i| {
+            const op = resp.operations[i];
+            const base = op.base_content orelse "";
+            const proposed = op.content orelse "";
+            diff_lines = api.fetch.computeDiffLines(alloc, base, proposed);
+            op_type = alloc.dupe(u8, op.type) catch null;
+            if (op.current_path) |cp| op_current_path = alloc.dupe(u8, cp) catch null;
+            if (op.path) |np| op_new_path = alloc.dupe(u8, np) catch null;
+            op_index = @intCast(@min(i, std.math.maxInt(u16)));
+        }
+        const trace_refers: u16 = @intCast(@min(resp.trace_summary.refer_count, std.math.maxInt(u16)));
+        const stored_pr_id = alloc.dupe(u8, pr_id) catch null;
+
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        self.api_state.pr_detail_id = stored_pr_id;
+        self.api_state.pr_detail_diff = diff_lines;
+        self.api_state.pr_detail_trace_refers = trace_refers;
+        self.api_state.pr_detail_op_type = op_type;
+        self.api_state.pr_detail_op_current_path = op_current_path;
+        self.api_state.pr_detail_op_new_path = op_new_path;
+        self.api_state.pr_detail_op_index = op_index;
+        self.api_state.pr_detail_op_total = op_total;
     }
 
     /// Pump the workspace context file content pending slot.
@@ -1426,11 +1563,8 @@ pub const Dashboard = struct {
                 // the (ws_id, path) key from the current workspace
                 // selection so the cache entry lines up with what
                 // cachedWorkspaceContextBody will look up later.
-                const ws_d = blk: {
-                    self.api_state.mutex.lock();
-                    defer self.api_state.mutex.unlock();
-                    break :blk self.api_state.ws_detail orelse return;
-                };
+                const ws_id = self.activeWsId() orelse return;
+                const ws_d = api.state.wsDetail(self.api_state, ws_id) orelse return;
                 const context_sel = self.resolveWsContextSelection(&ws_d) orelse return;
                 const file = ws_d.context_files[context_sel];
                 self.api_state.ws_context_content_cache.store(
