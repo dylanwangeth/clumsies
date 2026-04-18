@@ -300,10 +300,12 @@ fn freeDeepCopyField(comptime T: type, alloc: std.mem.Allocator, value: T) void 
 }
 
 /// Path builder that returns a fixed string. Useful for endpoints that
-/// take no parameters, e.g. `POST /api/workspaces`.
-pub fn staticPath(comptime path: []const u8) *const fn (std.mem.Allocator, anytype) anyerror![]const u8 {
+/// take no parameters, e.g. `POST /api/workspaces`. Specialize on the
+/// concrete request type so the returned function pointer matches
+/// `RequestSpec(ReqT, _).path_builder` exactly.
+pub fn staticPath(comptime ReqT: type, comptime path: []const u8) *const fn (std.mem.Allocator, ReqT) anyerror![]const u8 {
     return struct {
-        fn build(alloc: std.mem.Allocator, req: anytype) anyerror![]const u8 {
+        fn build(alloc: std.mem.Allocator, req: ReqT) anyerror![]const u8 {
             _ = req;
             return alloc.dupe(u8, path);
         }
@@ -425,7 +427,8 @@ test "classifyResponse on 2xx with malformed body yields invalid_response" {
 }
 
 test "staticPath returns the path string allocated in the given arena" {
-    const build = staticPath("/api/foo");
+    const EmptyReq = struct {};
+    const build = staticPath(EmptyReq, "/api/foo");
     const out = try build(std.testing.allocator, .{});
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("/api/foo", out);
