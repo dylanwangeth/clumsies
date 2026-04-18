@@ -351,6 +351,13 @@ pub fn parseVoid(alloc: std.mem.Allocator, body: []const u8) anyerror!void {
     _ = body;
 }
 
+/// Parser for endpoints whose success body is a raw string (no JSON
+/// envelope). Dupes the body into `alloc` so the returned slice
+/// outlives the HTTP response.
+pub fn parseRawString(alloc: std.mem.Allocator, body: []const u8) anyerror![]const u8 {
+    return alloc.dupe(u8, body);
+}
+
 test "classifyResponse on 201 Created parses body via spec" {
     const Body = struct { name: []const u8 };
     const spec = .{

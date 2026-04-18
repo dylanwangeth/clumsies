@@ -1,12 +1,26 @@
 const std = @import("std");
+const library_api = @import("clumsies_lib").protocol.library_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const data = @import("../view_types.zig");
 const drafts_reader = @import("../drafts_reader.zig");
 const session_reader = @import("../session_reader.zig");
 const trace_reader = @import("../trace_reader.zig");
 const model = @import("model.zig");
+const cache = @import("cache.zig");
 const dispatcher = @import("dispatcher.zig");
 const request = @import("request.zig");
+
+/// Composite cache key for endpoints scoped to (workspace, path), used
+/// by workspace context file content. `cache.StringKey` would not fit:
+/// pointer equality on two `[]const u8` fields is wrong.
+pub const WsPathKey = struct {
+    ws_id: []const u8,
+    path: []const u8,
+
+    pub fn eql(self: WsPathKey, other: WsPathKey) bool {
+        return std.mem.eql(u8, self.ws_id, other.ws_id) and std.mem.eql(u8, self.path, other.path);
+    }
+};
 
 pub const DraftEntry = drafts_reader.DraftEntry;
 pub const ActiveSession = session_reader.ActiveSession;
@@ -26,19 +40,28 @@ pub const ApiState = struct {
     directory: ?model.DirectoryData = null,
     prompts: ?[]const model.LibraryPrompt = null,
     bundles: ?[]const model.BundleData = null,
-    prompt_prs: ?[]const model.PromptPr = null,
-    prompt_prs_for_path: ?[]const u8 = null,
-    prompt_prs_for_id: ?[]const u8 = null,
     org_stats: ?model.OrgStats = null,
     ws_detail: ?model.WsDetail = null,
     local_stats: ?trace_reader.LocalStats = null,
     drafts: ?[]const DraftEntry = null,
     active_sessions: ?[]const ActiveSession = null,
-    prompt_content: ?[]const u8 = null,
-    prompt_content_name: ?[]const u8 = null,
-    workspace_context_content: ?[]const u8 = null,
-    workspace_context_content_ws_id: ?[]const u8 = null,
-    workspace_context_content_path: ?[]const u8 = null,
+
+    // Library prompt content, keyed by prompt path.
+    prompt_content_pending: request.PendingRequest(dispatcher.Result(library_api.PromptContentResponse)) = .{},
+    prompt_content_cache: cache.CacheSlot(cache.StringKey, library_api.PromptContentResponse) = .{},
+
+    // Library prompt PR list, keyed by prompt path (request itself uses prompt_id).
+    prompt_prs_pending: request.PendingRequest(dispatcher.Result([]const model.PromptPr)) = .{},
+    prompt_prs_cache: cache.CacheSlot(cache.StringKey, []const model.PromptPr) = .{},
+    /// Prompt id that the cached prs list belongs to. Kept as a plain
+    /// field because the (not yet migrated) pr_detail worker reads it
+    /// to match operations against the active prompt. Retires once
+    /// pr_detail also moves onto the dispatcher.
+    prompt_prs_for_id: ?[]const u8 = null,
+
+    // Workspace context file content, keyed by (ws_id, path).
+    ws_context_content_pending: request.PendingRequest(dispatcher.Result([]const u8)) = .{},
+    ws_context_content_cache: cache.CacheSlot(WsPathKey, []const u8) = .{},
     pr_detail_id: ?[]const u8 = null,
     pr_detail_diff: ?[]const []const u8 = null,
     pr_detail_comments: ?[]const data.CommentEntry = null,
@@ -102,17 +125,14 @@ pub fn refreshLocalState(api_state: *ApiState) void {
 }
 
 pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
+    api_state.prompt_prs_cache.invalidate();
+    api_state.prompt_content_cache.invalidate();
+    api_state.ws_context_content_cache.invalidate();
+
     api_state.mutex.lock();
     defer api_state.mutex.unlock();
 
-    api_state.prompt_prs = null;
-    api_state.prompt_prs_for_path = null;
     api_state.prompt_prs_for_id = null;
-    api_state.prompt_content = null;
-    api_state.prompt_content_name = null;
-    api_state.workspace_context_content = null;
-    api_state.workspace_context_content_ws_id = null;
-    api_state.workspace_context_content_path = null;
     api_state.pr_detail_id = null;
     api_state.pr_detail_diff = null;
     api_state.pr_detail_comments = null;

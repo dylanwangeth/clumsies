@@ -145,10 +145,6 @@ pub const Dashboard = struct {
     content_scroll_bars: vxfw.ScrollBars,
     content_widget: [1]vxfw.Widget = undefined,
     content_text: vxfw.Text = .{ .text = "" },
-    prompt_content_request_key: ?u64 = null,
-    prompt_prs_request_key: ?u64 = null,
-    ws_context_request_key: ?u64 = null,
-    ws_prompt_request_key: ?u64 = null,
 
     // PR list within Prompt Detail
     pr_filter: PrFilter = .open,
@@ -534,6 +530,9 @@ pub const Dashboard = struct {
                     api.state.refreshLocalState(self.api_state);
                 }
                 _ = self.consumeCreateWsResult();
+                self.consumePromptContentResult();
+                self.consumePromptPrsResult();
+                self.consumeWsContextContentResult();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -841,8 +840,6 @@ pub const Dashboard = struct {
     pub fn resetWorkspaceTrees(self: *Dashboard) void {
         self.ws_context_tree.reset();
         self.ws_prompts_tree.reset();
-        self.ws_context_request_key = null;
-        self.ws_prompt_request_key = null;
         self.ws_list_sel = 0;
     }
 
@@ -861,102 +858,97 @@ pub const Dashboard = struct {
     };
 
     fn cachedWorkspaceContextBody(self: *Dashboard, ws_id: []const u8, path: []const u8) ?[]const u8 {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
-
-        const cached_ws_id = self.api_state.workspace_context_content_ws_id orelse return null;
-        const cached_path = self.api_state.workspace_context_content_path orelse return null;
-        if (!std.mem.eql(u8, cached_ws_id, ws_id) or !std.mem.eql(u8, cached_path, path)) return null;
-        return self.api_state.workspace_context_content;
+        return self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_id, .path = path });
     }
 
     pub fn cachedPromptBody(self: *Dashboard, path: []const u8) ?[]const u8 {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
-
-        const cached_path = self.api_state.prompt_content_name orelse return null;
-        if (!std.mem.eql(u8, cached_path, path)) return null;
-        return self.api_state.prompt_content;
-    }
-
-    fn contentRequestKey(parts: []const []const u8) u64 {
-        var hasher = std.hash.Wyhash.init(0);
-        const sep = [_]u8{0};
-        for (parts) |part| {
-            hasher.update(part);
-            hasher.update(sep[0..]);
-        }
-        return hasher.final();
+        const resp = self.api_state.prompt_content_cache.lookup(.{ .value = path }) orelse return null;
+        return resp.body;
     }
 
     pub fn invalidateRemoteDetailRequests(self: *Dashboard) void {
-        self.prompt_content_request_key = null;
-        self.prompt_prs_request_key = null;
-        self.ws_context_request_key = null;
-        self.ws_prompt_request_key = null;
+        self.api_state.prompt_content_cache.invalidate();
+        self.api_state.prompt_prs_cache.invalidate();
+        self.api_state.ws_context_content_cache.invalidate();
     }
 
     pub fn requestSelectedPromptDetail(self: *Dashboard) void {
         const prompts = self.getPrompts();
-        if (self.selected_prompt >= prompts.len) {
-            self.prompt_content_request_key = null;
-            self.prompt_prs_request_key = null;
-            return;
-        }
+        if (self.selected_prompt >= prompts.len) return;
 
         const sel_path = prompts[self.selected_prompt].path;
-        const content_key = contentRequestKey(&.{ "library-prompt-content", sel_path });
-        if (self.prompt_content_request_key == null or self.prompt_content_request_key.? != content_key) {
-            if (api.fetch.fetchPromptContentAsync(self.api_state, sel_path)) {
-                self.prompt_content_request_key = content_key;
-            }
+        const key = api.cache.StringKey{ .value = sel_path };
+
+        if (self.api_state.prompt_content_cache.lookup(key) == null) {
+            api.specs.dispatchFromState(
+                api.specs.PathParams,
+                @import("clumsies_lib").protocol.library_api.PromptContentResponse,
+                api.specs.library_prompt_content,
+                &self.api_state.prompt_content_pending,
+                self.api_state,
+                .{ .path = sel_path },
+            );
         }
 
-        const prs_key = contentRequestKey(&.{ "library-prompt-prs", sel_path });
-        if (self.prompt_prs_request_key == null or self.prompt_prs_request_key.? != prs_key) {
-            if (api.fetch.fetchPromptPrsAsync(self.api_state, sel_path)) {
-                self.prompt_prs_request_key = prs_key;
-            }
+        if (self.api_state.prompt_prs_cache.lookup(key) == null) {
+            const prompt_id = self.lookupPromptId(sel_path) orelse return;
+            api.specs.dispatchFromState(
+                api.specs.PromptPrsParams,
+                []const api.model.PromptPr,
+                api.specs.library_prompt_prs,
+                &self.api_state.prompt_prs_pending,
+                self.api_state,
+                .{ .prompt_id = prompt_id },
+            );
         }
+    }
+
+    /// Look up the prompt_id that corresponds to `path` in the cached
+    /// library prompt list. Returns null if the library has not loaded
+    /// yet or the path is unknown.
+    fn lookupPromptId(self: *Dashboard, path: []const u8) ?[]const u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const lib = self.api_state.prompts orelse return null;
+        for (lib) |lp| {
+            if (std.mem.eql(u8, lp.path, path)) return lp.prompt_id;
+        }
+        return null;
     }
 
     fn requestWorkspaceSelectionContent(self: *Dashboard, ws_d: *const api.model.WsDetail) void {
         const dir_sel = self.currentWsDirSelection();
         switch (self.ws_tab) {
             .context => {
-                self.ws_prompt_request_key = null;
-                if (dir_sel != null) {
-                    self.ws_context_request_key = null;
-                    return;
-                }
-                const context_sel = self.resolveWsContextSelection(ws_d) orelse {
-                    self.ws_context_request_key = null;
-                    return;
-                };
+                if (dir_sel != null) return;
+                const context_sel = self.resolveWsContextSelection(ws_d) orelse return;
                 const file = &ws_d.context_files[context_sel];
-                const key = contentRequestKey(&.{ "ws-context", ws_d.ws_id, file.path });
-                if (self.ws_context_request_key != null and self.ws_context_request_key.? == key) return;
+                const key = api.state.WsPathKey{ .ws_id = ws_d.ws_id, .path = file.path };
+                if (self.api_state.ws_context_content_cache.lookup(key) != null) return;
 
-                if (api.fetch.fetchWorkspaceContextContentAsync(self.api_state, ws_d.ws_id, file.path)) {
-                    self.ws_context_request_key = key;
-                }
+                api.specs.dispatchFromState(
+                    api.specs.WsContextContentParams,
+                    []const u8,
+                    api.specs.workspace_context_content,
+                    &self.api_state.ws_context_content_pending,
+                    self.api_state,
+                    .{ .ws_id = ws_d.ws_id, .path = file.path },
+                );
             },
             .prompts => {
-                self.ws_context_request_key = null;
-                if (dir_sel != null) {
-                    self.ws_prompt_request_key = null;
-                    return;
-                }
-                const prompt_sel = self.resolveWsPromptSelection(ws_d) orelse {
-                    self.ws_prompt_request_key = null;
-                    return;
-                };
-                const key = contentRequestKey(&.{ "ws-prompt", ws_d.ws_id, prompt_sel.path });
-                if (self.ws_prompt_request_key != null and self.ws_prompt_request_key.? == key) return;
+                if (dir_sel != null) return;
+                const prompt_sel = self.resolveWsPromptSelection(ws_d) orelse return;
+                const key = api.cache.StringKey{ .value = prompt_sel.path };
+                if (self.api_state.prompt_content_cache.lookup(key) != null) return;
 
-                if (api.fetch.fetchPromptContentAsync(self.api_state, prompt_sel.path)) {
-                    self.ws_prompt_request_key = key;
-                }
+                api.specs.dispatchFromState(
+                    api.specs.PathParams,
+                    @import("clumsies_lib").protocol.library_api.PromptContentResponse,
+                    api.specs.library_prompt_content,
+                    &self.api_state.prompt_content_pending,
+                    self.api_state,
+                    .{ .path = prompt_sel.path },
+                );
             },
         }
     }
@@ -1170,19 +1162,10 @@ pub const Dashboard = struct {
     }
 
     pub fn getPrsForPrompt(self: *Dashboard, prompt_path: []const u8) []const data.PullRequestEntry {
+        const prs = self.api_state.prompt_prs_cache.lookup(.{ .value = prompt_path }) orelse return &.{};
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        const live_prs = self.api_state.prompt_prs;
-        if (live_prs) |prs| {
-            // Only trust the cached PR list when it was fetched for this path.
-            if (self.api_state.prompt_prs_for_path) |cached| {
-                if (!std.mem.eql(u8, cached, prompt_path)) return &.{};
-            } else {
-                return &.{};
-            }
-            return api.view_model.toPrEntries(self.viewAllocator(), prs, prompt_path, self.api_state);
-        }
-        return &.{};
+        return api.view_model.toPrEntries(self.viewAllocator(), prs, prompt_path, self.api_state);
     }
 
     pub fn getPrompts(self: *Dashboard) []const data.PromptEntry {
@@ -1391,6 +1374,72 @@ pub const Dashboard = struct {
         }
         workspace_panel.applyCreateResult(self, result);
         return true;
+    }
+
+    /// Pump the library prompt content pending slot: on .ok, stash the
+    /// response in the cache keyed by path so subsequent draws can
+    /// retrieve it synchronously. Errors are ignored for now — the UI
+    /// stays in "no content yet" state and a future tick will try
+    /// again once the user re-selects.
+    fn consumePromptContentResult(self: *Dashboard) void {
+        const result = self.api_state.prompt_content_pending.consume() orelse return;
+        switch (result) {
+            .ok => |resp| {
+                self.api_state.prompt_content_cache.store(.{ .value = resp.path }, resp);
+            },
+            else => {},
+        }
+    }
+
+    /// Pump the library prompt PR list pending slot. The response does
+    /// not carry the prompt path directly (only prompt_id), so the
+    /// cache key is derived from the currently selected library prompt
+    /// at consume time. Also stashes prompt_prs_for_id so the legacy
+    /// pr_detail fetcher can still match operations — this coupling
+    /// retires once pr_detail also moves onto the dispatcher.
+    fn consumePromptPrsResult(self: *Dashboard) void {
+        const result = self.api_state.prompt_prs_pending.consume() orelse return;
+        switch (result) {
+            .ok => |prs| {
+                const prompts = self.getPrompts();
+                if (self.selected_prompt >= prompts.len) return;
+                const path = prompts[self.selected_prompt].path;
+                self.api_state.prompt_prs_cache.store(.{ .value = path }, prs);
+
+                const prompt_id = self.lookupPromptId(path) orelse return;
+                const alloc = self.api_state.allocator();
+                const id_copy = alloc.dupe(u8, prompt_id) catch return;
+                self.api_state.mutex.lock();
+                self.api_state.prompt_prs_for_id = id_copy;
+                self.api_state.mutex.unlock();
+            },
+            else => {},
+        }
+    }
+
+    /// Pump the workspace context file content pending slot.
+    fn consumeWsContextContentResult(self: *Dashboard) void {
+        const result = self.api_state.ws_context_content_pending.consume() orelse return;
+        switch (result) {
+            .ok => |body| {
+                // The request parameters are not on the result; recover
+                // the (ws_id, path) key from the current workspace
+                // selection so the cache entry lines up with what
+                // cachedWorkspaceContextBody will look up later.
+                const ws_d = blk: {
+                    self.api_state.mutex.lock();
+                    defer self.api_state.mutex.unlock();
+                    break :blk self.api_state.ws_detail orelse return;
+                };
+                const context_sel = self.resolveWsContextSelection(&ws_d) orelse return;
+                const file = ws_d.context_files[context_sel];
+                self.api_state.ws_context_content_cache.store(
+                    .{ .ws_id = ws_d.ws_id, .path = file.path },
+                    body,
+                );
+            },
+            else => {},
+        }
     }
 
     fn submitComment(self: *Dashboard) void {
