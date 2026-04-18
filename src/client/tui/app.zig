@@ -1342,10 +1342,18 @@ pub const Dashboard = struct {
         self.create_ws_phase = .submitting;
         self.create_ws_error_kind = .none;
         self.create_ws_error_len = 0;
-        api.fetch.createWorkspaceAsync(
+
+        const workspace_api = @import("clumsies_lib").protocol.workspace_api;
+        api.specs.dispatchFromState(
+            workspace_api.CreateWorkspaceRequest,
+            workspace_api.CreateWorkspaceResponse,
+            api.specs.create_workspace,
+            &self.api_state.create_ws_pending,
             self.api_state,
-            name,
-            self.createWsSelectedBundleName(),
+            .{
+                .name = name,
+                .bundle_id = self.createWsSelectedBundleName(),
+            },
         );
     }
 
@@ -1376,12 +1384,7 @@ pub const Dashboard = struct {
     }
 
     fn consumeCreateWsResult(self: *Dashboard) bool {
-        self.api_state.mutex.lock();
-        const result_opt = self.api_state.create_ws_result;
-        if (result_opt != null) self.api_state.create_ws_result = null;
-        self.api_state.mutex.unlock();
-
-        const result = result_opt orelse return false;
+        const result = self.api_state.create_ws_pending.consume() orelse return false;
         if (!self.show_create_workspace or self.create_ws_phase != .submitting) {
             // Overlay was closed while request was in flight — drop the result.
             return false;

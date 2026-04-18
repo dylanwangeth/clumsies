@@ -1,10 +1,12 @@
 const std = @import("std");
+const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const data = @import("../view_types.zig");
 const drafts_reader = @import("../drafts_reader.zig");
 const session_reader = @import("../session_reader.zig");
 const trace_reader = @import("../trace_reader.zig");
 const model = @import("model.zig");
 const dispatcher = @import("dispatcher.zig");
+const request = @import("request.zig");
 
 pub const DraftEntry = drafts_reader.DraftEntry;
 pub const ActiveSession = session_reader.ActiveSession;
@@ -15,24 +17,6 @@ pub const ConnectionStatus = enum {
     connected,
     error_auth,
     error_network,
-};
-
-pub const CreateWsOk = struct {
-    ws_id: []const u8,
-    name: []const u8,
-};
-
-pub const CreateWsApiError = struct {
-    status: std.http.Status,
-    code: []const u8,
-    message: []const u8,
-};
-
-pub const CreateWsResult = union(enum) {
-    ok: CreateWsOk,
-    api_error: CreateWsApiError,
-    network_error,
-    invalid_response,
 };
 
 pub const ApiState = struct {
@@ -67,8 +51,7 @@ pub const ApiState = struct {
     hub_url: ?[]const u8 = null,
     access_token: ?[]const u8 = null,
     fetch_busy: bool = false,
-    create_ws_inflight: bool = false,
-    create_ws_result: ?CreateWsResult = null,
+    create_ws_pending: request.PendingRequest(dispatcher.Result(workspace_api.CreateWorkspaceResponse)) = .{},
     thread_registry: dispatcher.ThreadRegistry = .{},
     backing_allocator: std.mem.Allocator,
     arena: *std.heap.ArenaAllocator,

@@ -636,16 +636,21 @@ pub fn setCreateNameRequired(self: anytype) void {
     writeErrorMessage(self, "Name is required");
 }
 
-pub fn applyCreateResult(self: anytype, result: api.state.CreateWsResult) void {
+const workspace_api = @import("clumsies_lib").protocol.workspace_api;
+
+pub fn applyCreateResult(
+    self: anytype,
+    result: api.dispatcher.Result(workspace_api.CreateWorkspaceResponse),
+) void {
     switch (result) {
-        .ok => |payload| {
-            writeFixedBuf(&self.create_ws_created_id_buf, &self.create_ws_created_id_len, payload.ws_id);
-            writeFixedBuf(&self.create_ws_created_name_buf, &self.create_ws_created_name_len, payload.name);
+        .ok => |resp| {
+            writeFixedBuf(&self.create_ws_created_id_buf, &self.create_ws_created_id_len, resp.ws_id);
+            writeFixedBuf(&self.create_ws_created_name_buf, &self.create_ws_created_name_len, resp.name);
             self.create_ws_phase = .success;
             self.create_ws_error_kind = .none;
             self.create_ws_error_len = 0;
-            // Refresh the cached workspace list so the new workspace appears in
-            // the switcher once the user presses `s` or navigates back.
+            // Refresh the cached workspace list so the new workspace
+            // appears in the grid once the background fetch completes.
             api.fetch.refetchAllAsync(self.api_state);
         },
         .api_error => |err| {
