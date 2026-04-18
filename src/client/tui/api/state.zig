@@ -4,6 +4,7 @@ const drafts_reader = @import("../drafts_reader.zig");
 const session_reader = @import("../session_reader.zig");
 const trace_reader = @import("../trace_reader.zig");
 const model = @import("model.zig");
+const dispatcher = @import("dispatcher.zig");
 
 pub const DraftEntry = drafts_reader.DraftEntry;
 pub const ActiveSession = session_reader.ActiveSession;
@@ -68,6 +69,7 @@ pub const ApiState = struct {
     fetch_busy: bool = false,
     create_ws_inflight: bool = false,
     create_ws_result: ?CreateWsResult = null,
+    thread_registry: dispatcher.ThreadRegistry = .{},
     backing_allocator: std.mem.Allocator,
     arena: *std.heap.ArenaAllocator,
     local_arena: *std.heap.ArenaAllocator,
