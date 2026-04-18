@@ -2,6 +2,7 @@
 //! HTTP API responses consumed by CLI, MCP, and TUI to deserialize server data.
 pub const revision = @import("revision.zig");
 pub const manifest = @import("manifest.zig");
+pub const api_error = @import("api_error.zig");
 pub const auth_api = @import("auth_api.zig");
 pub const workspace_api = @import("workspace_api.zig");
 pub const library_api = @import("library_api.zig");
@@ -11,6 +12,7 @@ pub const collab_api = @import("collab_api.zig");
 test {
     _ = revision;
     _ = manifest;
+    _ = api_error;
     _ = auth_api;
     _ = workspace_api;
     _ = library_api;
