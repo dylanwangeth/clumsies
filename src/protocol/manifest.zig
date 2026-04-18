@@ -23,7 +23,8 @@ pub const ManifestMap = struct {
 
         if (.object_begin != try source.next()) return error.UnexpectedToken;
         while (true) {
-            const token = try source.nextAlloc(allocator, options.allocate.?);
+            const alloc_when = options.allocate orelse .alloc_if_needed;
+            const token = try source.nextAlloc(allocator, alloc_when);
             switch (token) {
                 inline .string, .allocated_string => |key| {
                     try items.append(allocator, .{
@@ -32,7 +33,7 @@ pub const ManifestMap = struct {
                     });
                 },
                 .object_end => break,
-                else => unreachable,
+                else => return error.UnexpectedToken,
             }
         }
 
