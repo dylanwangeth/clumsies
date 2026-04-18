@@ -64,13 +64,15 @@ pub fn toPrEntries(
         if (api_state.pr_detail_id) |cached_id| {
             if (std.mem.eql(u8, cached_id, pr.pr_id)) {
                 diff = api_state.pr_detail_diff orelse &.{};
-                comments = api_state.pr_detail_comments orelse &.{};
                 trace_refers = api_state.pr_detail_trace_refers;
                 op_type = api_state.pr_detail_op_type orelse "";
                 op_current_path = api_state.pr_detail_op_current_path orelse "";
                 op_new_path = api_state.pr_detail_op_new_path orelse "";
                 op_index = api_state.pr_detail_op_index;
             }
+        }
+        if (api_state.pr_comments_cache.lookup(.{ .value = pr.pr_id })) |c| {
+            comments = c;
         }
 
         list.append(alloc, .{

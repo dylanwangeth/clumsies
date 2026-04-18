@@ -433,7 +433,7 @@ fn handleBarFocusEvent(
         if (self.ws_sel < ws_list.len) {
             const ws_id = ws_list[self.ws_sel].ws_id;
             self.api_state.mutex.unlock();
-            api.fetch.fetchWorkspaceAsync(self.api_state, ws_id);
+            requestWorkspaceDetail(self, ws_id);
         } else {
             self.api_state.mutex.unlock();
         }
@@ -540,10 +540,38 @@ fn handleContentFocusEvent(
     }
 }
 
+/// Trigger the workspace-detail compound fetch. Issues two dispatches
+/// (context files + manifest) that land independently in their
+/// respective PendingRequest slots; `syncWsRows` composes them once
+/// both caches are populated via `state.wsDetail`.
+pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
+    if (self.api_state.ws_context_files_cache.lookup(.{ .value = ws_id }) == null) {
+        api.specs.dispatchFromState(
+            api.specs.WsIdParams,
+            []const api.model.ContextFileData,
+            api.specs.workspace_context_files,
+            &self.api_state.ws_context_files_pending,
+            self.api_state,
+            .{ .ws_id = ws_id },
+        );
+    }
+    if (self.api_state.ws_manifest_cache.lookup(.{ .value = ws_id }) == null) {
+        api.specs.dispatchFromState(
+            api.specs.WsIdParams,
+            []const api.model.WsPromptData,
+            api.specs.workspace_manifest,
+            &self.api_state.ws_manifest_pending,
+            self.api_state,
+            .{ .ws_id = ws_id },
+        );
+    }
+}
+
 pub fn syncWsRows(self: anytype) void {
-    self.api_state.mutex.lock();
-    const live_ws = self.api_state.ws_detail;
-    self.api_state.mutex.unlock();
+    const live_ws = if (self.activeWsId()) |ws_id|
+        api.state.wsDetail(self.api_state, ws_id)
+    else
+        null;
 
     if (live_ws == null) {
         self.currentWsTree().sync(self.api_state.allocator(), &.{}, &.{});
