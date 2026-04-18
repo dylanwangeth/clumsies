@@ -11,11 +11,8 @@ const apiError = @import("api_error.zig").send;
 const ManifestMap = manifest.ManifestMap;
 const ManifestItem = manifest.ManifestItem;
 const WorkspaceManifestResponse = workspace_api.WorkspaceManifestResponse;
-
-const CreateRequest = struct {
-    name: []const u8,
-    bundle_id: ?[]const u8 = null,
-};
+const CreateWorkspaceRequest = workspace_api.CreateWorkspaceRequest;
+const CreateWorkspaceResponse = workspace_api.CreateWorkspaceResponse;
 
 pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -23,7 +20,7 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     };
     if (!auth.requireScope(user, "workspace:write", res)) return;
 
-    const body = req.json(CreateRequest) catch {
+    const body = req.json(CreateWorkspaceRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
@@ -76,10 +73,10 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     }
 
     res.status = 201;
-    try res.json(.{
-        .ws_id = &ws_id_buf,
+    try res.json(CreateWorkspaceResponse{
+        .ws_id = ws_id_buf[0..],
         .name = body.name,
-        .revision = @as(i32, 0),
+        .revision = 0,
     }, .{});
 }
 

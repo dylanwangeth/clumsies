@@ -4,6 +4,8 @@ const auth_mod = @import("../auth.zig");
 const ws_config = @import("../workspace_config.zig");
 const HubClient = @import("../hub_client.zig").HubClient;
 const styles = @import("../styles.zig");
+const workspace_api = @import("clumsies_lib").protocol.workspace_api;
+const api_error = @import("clumsies_lib").protocol.api_error;
 
 const Color = styles.Color;
 const P = styles.P;
@@ -67,21 +69,22 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     if (create_name) |name| {
         // POST /api/workspaces to create a new workspace
-        const CreateBody = struct { name: []const u8, bundle_id: ?[]const u8 = null };
-        const body = std.json.Stringify.valueAlloc(allocator, CreateBody{ .name = name, .bundle_id = bundle_id }, .{}) catch return error.OutOfMemory;
+        const request = workspace_api.CreateWorkspaceRequest{ .name = name, .bundle_id = bundle_id };
+        const body = std.json.Stringify.valueAlloc(
+            allocator,
+            request,
+            .{ .emit_null_optional_fields = false },
+        ) catch return error.OutOfMemory;
         defer allocator.free(body);
 
         const response = try hub.post("/api/workspaces", body);
         defer response.deinit();
         if (response.status != .ok and response.status != .created) {
-            try stderr.print("{s}{s}{s}Error:{s} Failed to create workspace (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, @intFromEnum(response.status) });
-            if (response.body.len > 0) {
-                try stderr.print("{s}{s}\n", .{ P, response.body });
-            }
+            try reportApiError(stderr, allocator, "Failed to create workspace", response.status, response.body);
             return;
         }
 
-        const parsed = parseWorkspaceResponse(allocator, response.body) catch {
+        const parsed = parseCreatedWorkspace(allocator, response.body) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to parse workspace response\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
@@ -99,11 +102,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         const response = try hub.get(path);
         defer response.deinit();
         if (response.status != .ok) {
-            try stderr.print("{s}{s}{s}Error:{s} Cannot access workspace {s} (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, id, @intFromEnum(response.status) });
+            try reportApiError(stderr, allocator, "Cannot access workspace", response.status, response.body);
             return;
         }
 
-        const parsed = parseWorkspaceResponse(allocator, response.body) catch {
+        const parsed = parseCreatedWorkspace(allocator, response.body) catch {
             try stderr.print("{s}{s}{s}Error:{s} Failed to parse workspace response\n", .{ P, Color.bold, Color.red, Color.reset });
             return;
         };
@@ -146,16 +149,48 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     try stdout.print("{s}{s}{s}Workspace {s} bound to current directory (ws_id: {s}){s}\n", .{ P, Color.bold, Color.green, ws_name, ws_id, Color.reset });
 }
 
-const WorkspaceResponse = struct {
-    ws_id: []const u8,
-    name: []const u8,
-    revision: ?i32 = null,
-};
+fn parseCreatedWorkspace(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+) !std.json.Parsed(workspace_api.CreateWorkspaceResponse) {
+    return std.json.parseFromSlice(
+        workspace_api.CreateWorkspaceResponse,
+        allocator,
+        body,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    );
+}
 
-fn parseWorkspaceResponse(allocator: std.mem.Allocator, body: []const u8) !std.json.Parsed(WorkspaceResponse) {
-    return std.json.parseFromSlice(WorkspaceResponse, allocator, body, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
+fn reportApiError(
+    stderr: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    context: []const u8,
+    status: std.http.Status,
+    body: []const u8,
+) !void {
+    const parsed = std.json.parseFromSlice(
+        api_error.ApiErrorEnvelope,
+        allocator,
+        body,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch {
+        try stderr.print("{s}{s}{s}Error:{s} {s} (HTTP {d})\n", .{
+            P, Color.bold, Color.red, Color.reset, context, @intFromEnum(status),
+        });
+        if (body.len > 0) {
+            try stderr.print("{s}{s}\n", .{ P, body });
+        }
+        return;
+    };
+    defer parsed.deinit();
+    try stderr.print("{s}{s}{s}Error:{s} {s}: {s} ({s})\n", .{
+        P,
+        Color.bold,
+        Color.red,
+        Color.reset,
+        context,
+        parsed.value.@"error".message,
+        parsed.value.@"error".code,
     });
 }
 
@@ -168,15 +203,15 @@ fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}  {s}--bundle <bundle_id>{s} Associate a bundle (with --create)\n", .{ P, Color.cyan, Color.reset });
 }
 
-test "parseWorkspaceResponse ignores added fields from hub responses" {
+test "parseCreatedWorkspace ignores added fields from hub responses" {
     const body =
         \\{"ws_id":"ws-123","name":"clumsiesws","revision":4}
     ;
 
-    const parsed = try parseWorkspaceResponse(std.testing.allocator, body);
+    const parsed = try parseCreatedWorkspace(std.testing.allocator, body);
     defer parsed.deinit();
 
     try std.testing.expectEqualStrings("ws-123", parsed.value.ws_id);
     try std.testing.expectEqualStrings("clumsiesws", parsed.value.name);
-    try std.testing.expectEqual(@as(?i32, 4), parsed.value.revision);
+    try std.testing.expectEqual(@as(i32, 4), parsed.value.revision);
 }
