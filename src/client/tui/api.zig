@@ -2,3 +2,6 @@ pub const model = @import("api/model.zig");
 pub const state = @import("api/state.zig");
 pub const fetch = @import("api/fetch.zig");
 pub const view_model = @import("api/view_model.zig");
+pub const request = @import("api/request.zig");
+pub const cache = @import("api/cache.zig");
+pub const dispatcher = @import("api/dispatcher.zig");

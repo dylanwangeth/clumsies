@@ -21,6 +21,11 @@ pub fn run() !void {
     var api_state = api.state.ApiState.init(allocator);
     api_state.bindAllocator();
     defer api_state.deinit();
+    // Wait for every dispatcher-spawned worker to finish before tearing
+    // down the allocator; otherwise a late worker would write through
+    // freed memory. Runs before api_state.deinit thanks to reverse-defer
+    // order.
+    defer api_state.thread_registry.joinAll(allocator);
 
     var fetch_thread: ?std.Thread = null;
     defer if (fetch_thread) |t| t.join();
