@@ -5,8 +5,45 @@ const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
 const data = @import("../view_types.zig");
 const api = @import("../api.zig");
+const Modal = @import("../widgets/modal.zig").Modal;
+const TextInput = @import("../widgets/text_input.zig").TextInput;
 
 const MAX_TREE_ROWS = 128;
+
+pub const CreateWsPhase = enum { form, submitting, success };
+
+pub const CreateWsFocus = enum {
+    name,
+    description,
+    bundle,
+    submit,
+
+    pub fn next(self: CreateWsFocus, bundle_count: usize) CreateWsFocus {
+        return switch (self) {
+            .name => .description,
+            .description => if (bundle_count == 0) .submit else .bundle,
+            .bundle => .submit,
+            .submit => .name,
+        };
+    }
+
+    pub fn prev(self: CreateWsFocus, bundle_count: usize) CreateWsFocus {
+        return switch (self) {
+            .name => .submit,
+            .description => .name,
+            .bundle => .description,
+            .submit => if (bundle_count == 0) .description else .bundle,
+        };
+    }
+};
+
+pub const CreateWsErrorKind = enum {
+    none,
+    name_required,
+    api,
+    network,
+    invalid_response,
+};
 
 pub const DetailArgs = struct {
     live_ws: ?api.model.WsDetail,
@@ -289,6 +326,12 @@ pub fn handleModuleEvent(
         return;
     }
 
+    if (key.matches('c', .{})) {
+        self.openCreateWorkspace();
+        ctx.consumeAndRedraw();
+        return;
+    }
+
     switch (self.ws_focus) {
         .bar => try handleBarFocusEvent(self, ctx, key),
         .list => try handleListFocusEvent(self, ctx, key),
@@ -544,4 +587,336 @@ pub fn syncWsRows(self: anytype) void {
     } else if (self.ws_list_sel >= ws_tree.rowCount()) {
         self.ws_list_sel = ws_tree.rowCount() - 1;
     }
+}
+
+const CREATE_BOX_W: u16 = 76;
+const CREATE_FORM_BOX_H: u16 = 24;
+const CREATE_SUCCESS_BOX_H: u16 = 14;
+
+pub fn drawCreateOverlay(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+) std.mem.Allocator.Error!vxfw.Surface {
+    return switch (self.create_ws_phase) {
+        .form, .submitting => drawCreateForm(self, ctx),
+        .success => drawCreateSuccess(self, ctx),
+    };
+}
+
+pub fn resetCreate(self: anytype) void {
+    self.create_ws_phase = .form;
+    self.create_ws_focus = .name;
+    self.create_ws_name_len = 0;
+    self.create_ws_desc_len = 0;
+    self.create_ws_selected_bundle = null;
+    self.create_ws_bundle_cursor = 0;
+    self.create_ws_error_kind = .none;
+    self.create_ws_error_len = 0;
+    self.create_ws_created_id_len = 0;
+    self.create_ws_created_name_len = 0;
+}
+
+pub fn createBundleCount(self: anytype) usize {
+    self.api_state.mutex.lock();
+    defer self.api_state.mutex.unlock();
+    if (self.api_state.bundles) |list| return list.len;
+    return 0;
+}
+
+pub fn createSelectedBundleName(self: anytype) ?[]const u8 {
+    const idx = self.create_ws_selected_bundle orelse return null;
+    self.api_state.mutex.lock();
+    defer self.api_state.mutex.unlock();
+    const bundles = self.api_state.bundles orelse return null;
+    if (idx >= bundles.len) return null;
+    return bundles[idx].name;
+}
+
+pub fn setCreateNameRequired(self: anytype) void {
+    self.create_ws_error_kind = .name_required;
+    writeErrorMessage(self, "Name is required");
+}
+
+pub fn applyCreateResult(self: anytype, result: api.state.CreateWsResult) void {
+    switch (result) {
+        .ok => |payload| {
+            writeFixedBuf(&self.create_ws_created_id_buf, &self.create_ws_created_id_len, payload.ws_id);
+            writeFixedBuf(&self.create_ws_created_name_buf, &self.create_ws_created_name_len, payload.name);
+            self.create_ws_phase = .success;
+            self.create_ws_error_kind = .none;
+            self.create_ws_error_len = 0;
+            // Refresh the cached workspace list so the new workspace appears in
+            // the switcher once the user presses `s` or navigates back.
+            api.fetch.refetchAllAsync(self.api_state);
+        },
+        .api_error => |err| {
+            self.create_ws_phase = .form;
+            self.create_ws_error_kind = .api;
+            writeErrorMessage(self, err.message);
+            if (err.status == .conflict) self.create_ws_focus = .name;
+        },
+        .network_error => {
+            self.create_ws_phase = .form;
+            self.create_ws_error_kind = .network;
+            writeErrorMessage(self, "Network error. Check connection and retry.");
+        },
+        .invalid_response => {
+            self.create_ws_phase = .form;
+            self.create_ws_error_kind = .invalid_response;
+            writeErrorMessage(self, "Unexpected response from Hub.");
+        },
+    }
+}
+
+pub fn copyCreateInitCommand(self: anytype) void {
+    const alloc = self.api_state.backing_allocator;
+    const id = self.create_ws_created_id_buf[0..self.create_ws_created_id_len];
+    const cmd = std.fmt.allocPrint(alloc, "clumsies init --ws-id {s}", .{id}) catch return;
+    defer alloc.free(cmd);
+    spawnClipboardCopy(alloc, cmd);
+}
+
+fn writeErrorMessage(self: anytype, message: []const u8) void {
+    writeFixedBuf(&self.create_ws_error_buf, &self.create_ws_error_len, message);
+}
+
+fn writeFixedBuf(buf: []u8, len: *usize, src: []const u8) void {
+    const n = @min(buf.len, src.len);
+    @memcpy(buf[0..n], src[0..n]);
+    len.* = n;
+}
+
+fn spawnClipboardCopy(alloc: std.mem.Allocator, text: []const u8) void {
+    const argv: []const []const u8 = switch (@import("builtin").os.tag) {
+        .macos => &[_][]const u8{"pbcopy"},
+        .linux => &[_][]const u8{ "xclip", "-selection", "clipboard" },
+        else => return,
+    };
+
+    var child = std.process.Child.init(argv, alloc);
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    child.spawn() catch return;
+
+    if (child.stdin) |stdin| {
+        var buf: [128]u8 = undefined;
+        var writer = stdin.writer(&buf);
+        writer.interface.writeAll(text) catch {};
+        writer.interface.flush() catch {};
+        stdin.close();
+        child.stdin = null;
+    }
+
+    _ = child.wait() catch {};
+}
+
+fn drawCreateForm(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+) std.mem.Allocator.Error!vxfw.Surface {
+    const footer = if (self.create_ws_phase == .submitting)
+        "Submitting... Esc to cancel"
+    else
+        "Tab next  Enter advance  Space toggle bundle  Esc cancel";
+
+    const modal = Modal{
+        .title = "Create Workspace",
+        .box_width = CREATE_BOX_W,
+        .box_height = CREATE_FORM_BOX_H,
+        .footer = footer,
+    };
+    const dr = try modal.draw(ctx, self.widget());
+    var surface = dr.surface;
+    const c0 = dr.content_col;
+    const r0 = dr.content_row;
+    const bg = theme.PANEL_ALT;
+
+    var row: u16 = r0;
+    const label_w: u16 = 14;
+
+    row = w.writeKv(
+        &surface,
+        ctx,
+        c0,
+        row,
+        "Name *",
+        self.create_ws_name_buf[0..self.create_ws_name_len],
+        label_w,
+    );
+    if (self.create_ws_focus == .name) w.writeCursorMarker(&surface, c0 - 1, row - 1);
+    row += 1;
+
+    row = w.writeKv(
+        &surface,
+        ctx,
+        c0,
+        row,
+        "Description",
+        self.create_ws_desc_buf[0..self.create_ws_desc_len],
+        label_w,
+    );
+    if (self.create_ws_focus == .description) w.writeCursorMarker(&surface, c0 - 1, row - 1);
+    row += 1;
+
+    w.writeText(&surface, ctx, c0, row, "Bundle", theme.textOn(bg, theme.MUTED));
+    w.writeText(
+        &surface,
+        ctx,
+        c0 + label_w,
+        row,
+        "(optional) seeds workspace with a prompt set",
+        theme.textOn(bg, theme.MUTED),
+    );
+    row += 1;
+    drawCreateBundleList(self, &surface, ctx, c0, row, CREATE_BOX_W - 4, 8, bg);
+    row += 9;
+
+    const focused = self.create_ws_focus == .submit;
+    const button_label = if (self.create_ws_phase == .submitting)
+        "[ Submitting... ]"
+    else
+        "[ Create Workspace ]";
+    const button_style: vaxis.Style = if (focused)
+        theme.boldOn(theme.ACCENT, theme.CANVAS)
+    else
+        theme.boldOn(theme.PANEL_SOFT, theme.TEXT);
+    w.writeText(&surface, ctx, c0, row, button_label, button_style);
+
+    if (self.create_ws_error_kind != .none) {
+        const err_row = r0 + CREATE_FORM_BOX_H - 4;
+        const err_text = self.create_ws_error_buf[0..self.create_ws_error_len];
+        w.writeText(&surface, ctx, c0, err_row, err_text, theme.textOn(bg, theme.DANGER));
+    }
+
+    return surface;
+}
+
+fn drawCreateBundleList(
+    self: anytype,
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+    bg: vaxis.Color,
+) void {
+    _ = width;
+    self.api_state.mutex.lock();
+    const bundles_opt = self.api_state.bundles;
+    self.api_state.mutex.unlock();
+
+    const list_focused = self.create_ws_focus == .bundle;
+
+    const bundles = bundles_opt orelse {
+        w.writeText(surface, ctx, col + 2, row + 1, "(loading bundles...)", theme.textOn(bg, theme.MUTED));
+        return;
+    };
+    if (bundles.len == 0) {
+        w.writeText(surface, ctx, col + 2, row + 1, "(no bundles available)", theme.textOn(bg, theme.MUTED));
+        return;
+    }
+
+    const visible_rows: u16 = height - 2;
+    const cursor = self.create_ws_bundle_cursor;
+    const scroll_start: usize = if (cursor >= visible_rows) cursor - visible_rows + 1 else 0;
+    const end: usize = @min(bundles.len, scroll_start + @as(usize, visible_rows));
+
+    var i: usize = scroll_start;
+    while (i < end) : (i += 1) {
+        const b = bundles[i];
+        const is_cursor = i == cursor;
+        const is_selected = self.create_ws_selected_bundle != null and
+            self.create_ws_selected_bundle.? == i;
+        const marker: []const u8 = if (is_selected) "\xe2\x97\x8f " else "  ";
+
+        const text = std.fmt.allocPrint(
+            ctx.arena,
+            "{s}{s}  ({d} prompts)",
+            .{ marker, b.name, b.prompt_count },
+        ) catch continue;
+
+        const render_row: u16 = row + 1 + @as(u16, @intCast(i - scroll_start));
+        if (is_cursor and list_focused) w.writeCursorMarker(surface, col, render_row);
+        const row_style: vaxis.Style = if (is_cursor and list_focused)
+            theme.boldOn(bg, theme.TEXT)
+        else if (is_selected)
+            theme.boldOn(bg, theme.ACCENT_SOFT)
+        else
+            theme.textOn(bg, theme.TEXT_SOFT);
+        w.writeText(surface, ctx, col + 2, render_row, text, row_style);
+    }
+}
+
+fn drawCreateSuccess(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+) std.mem.Allocator.Error!vxfw.Surface {
+    const modal = Modal{
+        .title = "Workspace Created",
+        .box_width = CREATE_BOX_W,
+        .box_height = CREATE_SUCCESS_BOX_H,
+        .footer = "c copy cmd  s switch  Esc close",
+        .border_color = theme.OK,
+    };
+    const dr = try modal.draw(ctx, self.widget());
+    var surface = dr.surface;
+    const c0 = dr.content_col;
+    const r0 = dr.content_row;
+    const bg = theme.PANEL_ALT;
+
+    var row: u16 = r0;
+    const ws_id = self.create_ws_created_id_buf[0..self.create_ws_created_id_len];
+    const ws_name = self.create_ws_created_name_buf[0..self.create_ws_created_name_len];
+
+    row = w.writeKv(&surface, ctx, c0, row, "ws_id", ws_id, 10);
+    row = w.writeKv(&surface, ctx, c0, row, "name", ws_name, 10);
+    row += 1;
+
+    w.writeText(
+        &surface,
+        ctx,
+        c0,
+        row,
+        "To bind this workspace to a local directory, run from the target dir:",
+        theme.textOn(bg, theme.TEXT),
+    );
+    row += 2;
+
+    const cmd = try std.fmt.allocPrint(
+        ctx.arena,
+        "  $ clumsies init --ws-id {s}",
+        .{ws_id},
+    );
+    w.writeText(&surface, ctx, c0, row, cmd, theme.boldOn(bg, theme.ACCENT));
+    row += 2;
+
+    w.writeText(
+        &surface,
+        ctx,
+        c0,
+        row,
+        "[ c Copy command ]   [ s Switch to this ]   [ Esc Close ]",
+        theme.textOn(bg, theme.TEXT_SOFT),
+    );
+
+    return surface;
+}
+
+test "CreateWsFocus.next cycles through form fields when no bundles" {
+    try std.testing.expectEqual(CreateWsFocus.description, CreateWsFocus.name.next(0));
+    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.description.next(0));
+    try std.testing.expectEqual(CreateWsFocus.name, CreateWsFocus.submit.next(0));
+}
+
+test "CreateWsFocus.next includes bundle when bundles available" {
+    try std.testing.expectEqual(CreateWsFocus.bundle, CreateWsFocus.description.next(3));
+    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.bundle.next(3));
+}
+
+test "CreateWsFocus.prev mirrors next" {
+    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.name.prev(0));
+    try std.testing.expectEqual(CreateWsFocus.description, CreateWsFocus.submit.prev(0));
+    try std.testing.expectEqual(CreateWsFocus.bundle, CreateWsFocus.submit.prev(3));
 }

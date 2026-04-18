@@ -11,9 +11,11 @@ const library_panel = @import("app/library.zig");
 const prompt_detail_panel = @import("app/prompt_detail.zig");
 const settings_panel = @import("app/settings.zig");
 const workspace_panel = @import("app/workspace.zig");
+
 const tree = @import("tree.zig");
 const trace_reader = @import("trace_reader.zig");
 const Modal = @import("widgets/modal.zig").Modal;
+const TextInput = @import("widgets/text_input.zig").TextInput;
 const TableRow = @import("table_row.zig").TableRow;
 const Column = @import("table_row.zig").Column;
 
@@ -170,6 +172,24 @@ pub const Dashboard = struct {
     comment_input_buf: [256]u8 = .{0} ** 256,
     comment_input_len: usize = 0,
 
+    // Create Workspace overlay
+    show_create_workspace: bool = false,
+    create_ws_phase: workspace_panel.CreateWsPhase = .form,
+    create_ws_focus: workspace_panel.CreateWsFocus = .name,
+    create_ws_name_buf: [64]u8 = undefined,
+    create_ws_name_len: usize = 0,
+    create_ws_desc_buf: [256]u8 = undefined,
+    create_ws_desc_len: usize = 0,
+    create_ws_selected_bundle: ?usize = null,
+    create_ws_bundle_cursor: usize = 0,
+    create_ws_error_kind: workspace_panel.CreateWsErrorKind = .none,
+    create_ws_error_buf: [160]u8 = undefined,
+    create_ws_error_len: usize = 0,
+    create_ws_created_id_buf: [64]u8 = undefined,
+    create_ws_created_id_len: usize = 0,
+    create_ws_created_name_buf: [64]u8 = undefined,
+    create_ws_created_name_len: usize = 0,
+
     // Workspace Status
     ws_tab: WsTab = .context,
     ws_focus: WsFocus = .bar,
@@ -299,6 +319,12 @@ pub const Dashboard = struct {
                     return;
                 }
 
+                // Create Workspace overlay absorbs all keys
+                if (self.show_create_workspace) {
+                    self.handleCreateWorkspaceKey(ctx, key);
+                    return;
+                }
+
                 // Comment editor absorbs all keys
                 if (self.show_comment_editor) {
                     if (key.matches(vaxis.Key.escape, .{})) {
@@ -409,11 +435,6 @@ pub const Dashboard = struct {
                         }
                         // Action keys per section
                         if (self.settings_tab == .account) {
-                            if (key.matches('c', .{})) {
-                                self.status_line = "Password change (not yet implemented)";
-                                ctx.consumeAndRedraw();
-                                return;
-                            }
                             if (key.matches(vaxis.Key.enter, .{})) {
                                 const ws_count = self.accountWorkspaceCount();
                                 if (ws_count == 0) return;
@@ -512,6 +533,7 @@ pub const Dashboard = struct {
                 if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.breathing_phase == 0 or self.breathing_phase == 10)) {
                     api.state.refreshLocalState(self.api_state);
                 }
+                _ = self.consumeCreateWsResult();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -548,7 +570,8 @@ pub const Dashboard = struct {
 
         const show_input_overlay = self.analysis_show_input_detail and self.selected_module == .dashboard;
         var child_count: usize = 3;
-        if (self.show_help or self.show_confirm or self.show_comment_editor or show_input_overlay) child_count = 4;
+        if (self.show_help or self.show_confirm or self.show_comment_editor or
+            self.show_create_workspace or show_input_overlay) child_count = 4;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
@@ -586,6 +609,16 @@ pub const Dashboard = struct {
                 .{ .width = box_w, .height = box_h },
             );
             children[3] = .{ .origin = .{ .row = box_row, .col = box_col }, .surface = try self.drawCommentEditorOverlay(comment_ctx) };
+        }
+        if (self.show_create_workspace) {
+            const full_ctx = ctx.withConstraints(
+                .{ .width = size.width, .height = size.height },
+                .{ .width = size.width, .height = size.height },
+            );
+            children[3] = .{
+                .origin = .{ .row = 0, .col = 0 },
+                .surface = try workspace_panel.drawCreateOverlay(self, full_ctx),
+            };
         }
 
         root.children = children;
@@ -662,7 +695,7 @@ pub const Dashboard = struct {
         else if (self.show_settings and self.settings_focus == .sidebar)
             "j/k section  Enter open  Tab focus  Esc close"
         else if (self.show_settings and self.settings_tab == .account)
-            "j/k move  c change password  Enter go to workspace  x sign out  Esc back"
+            "j/k move  Enter go to workspace  x sign out  Esc back"
         else if (self.show_settings and self.settings_tab == .organization)
             "j/k move  a invite  r role  x remove  Esc back"
         else if (self.show_settings and self.settings_tab == .token)
@@ -694,9 +727,9 @@ pub const Dashboard = struct {
             else
                 "j/k move  Enter detail  r refresh  b bundle  S settings  ? help  q quit",
             .workspace => switch (self.ws_focus) {
-                .bar => "j/k select workspace  Tab list  r refresh  ? help  q quit",
-                .list => "h/l tab  j/k move  ←/→ tree  Enter open  Esc bar  ? help",
-                .content => "j/k scroll  d toggle diff  Esc list  ? help",
+                .bar => "j/k select workspace  c create  Tab list  r refresh  ? help  q quit",
+                .list => "h/l tab  j/k move  ←/→ tree  Enter open  c create  Esc bar  ? help",
+                .content => "j/k scroll  d toggle diff  c create  Esc list  ? help",
             },
             .analysis => switch (self.analysis_focus) {
                 .prompts => "j/k move  Enter expand  Tab focus  ? help  q quit",
@@ -1168,6 +1201,200 @@ pub const Dashboard = struct {
             return api.view_model.toBundleEntries(self.viewAllocator(), lb);
         }
         return &.{};
+    }
+
+    pub fn openCreateWorkspace(self: *Dashboard) void {
+        workspace_panel.resetCreate(self);
+        self.show_create_workspace = true;
+    }
+
+    fn closeCreateWorkspace(self: *Dashboard) void {
+        self.show_create_workspace = false;
+        workspace_panel.resetCreate(self);
+    }
+
+    fn createWsBundleCount(self: *Dashboard) usize {
+        return workspace_panel.createBundleCount(self);
+    }
+
+    fn createWsSelectedBundleName(self: *Dashboard) ?[]const u8 {
+        return workspace_panel.createSelectedBundleName(self);
+    }
+
+    fn handleCreateWorkspaceKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        switch (self.create_ws_phase) {
+            .form => self.handleCreateWsFormKey(ctx, key),
+            .submitting => self.handleCreateWsSubmittingKey(ctx, key),
+            .success => self.handleCreateWsSuccessKey(ctx, key),
+        }
+    }
+
+    fn handleCreateWsFormKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (key.matches(vaxis.Key.escape, .{})) {
+            self.closeCreateWorkspace();
+            ctx.consumeAndRedraw();
+            return;
+        }
+
+        const bundles_n = self.createWsBundleCount();
+
+        if (key.matches(vaxis.Key.tab, .{})) {
+            self.create_ws_focus = self.create_ws_focus.next(bundles_n);
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
+            self.create_ws_focus = self.create_ws_focus.prev(bundles_n);
+            ctx.consumeAndRedraw();
+            return;
+        }
+
+        switch (self.create_ws_focus) {
+            .name => self.routeCreateWsTextInput(
+                ctx,
+                key,
+                &self.create_ws_name_buf,
+                &self.create_ws_name_len,
+            ),
+            .description => self.routeCreateWsTextInput(
+                ctx,
+                key,
+                &self.create_ws_desc_buf,
+                &self.create_ws_desc_len,
+            ),
+            .bundle => self.handleCreateWsBundleKey(ctx, key),
+            .submit => self.handleCreateWsSubmitKey(ctx, key),
+        }
+    }
+
+    fn routeCreateWsTextInput(
+        self: *Dashboard,
+        ctx: *vxfw.EventContext,
+        key: vaxis.Key,
+        buf: []u8,
+        len: *usize,
+    ) void {
+        var input = TextInput{ .buf = buf, .len = len };
+        switch (input.handleKey(key)) {
+            .submit => {
+                const bundles_n = self.createWsBundleCount();
+                self.create_ws_focus = self.create_ws_focus.next(bundles_n);
+                ctx.consumeAndRedraw();
+            },
+            .consumed => {
+                self.create_ws_error_kind = .none;
+                self.create_ws_error_len = 0;
+                ctx.consumeAndRedraw();
+            },
+            .cancel, .ignored => ctx.consumeEvent(),
+        }
+    }
+
+    fn handleCreateWsBundleKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        const count = self.createWsBundleCount();
+        if (count == 0) {
+            ctx.consumeEvent();
+            return;
+        }
+        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+            if (self.create_ws_bundle_cursor + 1 < count) self.create_ws_bundle_cursor += 1;
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+            if (self.create_ws_bundle_cursor > 0) self.create_ws_bundle_cursor -= 1;
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(' ', .{}) or key.matches(vaxis.Key.enter, .{})) {
+            if (self.create_ws_selected_bundle) |idx| {
+                if (idx == self.create_ws_bundle_cursor) {
+                    self.create_ws_selected_bundle = null;
+                } else {
+                    self.create_ws_selected_bundle = self.create_ws_bundle_cursor;
+                }
+            } else {
+                self.create_ws_selected_bundle = self.create_ws_bundle_cursor;
+            }
+            ctx.consumeAndRedraw();
+            return;
+        }
+        ctx.consumeEvent();
+    }
+
+    fn handleCreateWsSubmitKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (key.matches(vaxis.Key.enter, .{}) or key.matches(' ', .{})) {
+            self.submitCreateWorkspace();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        ctx.consumeEvent();
+    }
+
+    fn submitCreateWorkspace(self: *Dashboard) void {
+        const name = self.create_ws_name_buf[0..self.create_ws_name_len];
+        if (name.len == 0) {
+            workspace_panel.setCreateNameRequired(self);
+            self.create_ws_focus = .name;
+            return;
+        }
+
+        self.create_ws_phase = .submitting;
+        self.create_ws_error_kind = .none;
+        self.create_ws_error_len = 0;
+        api.fetch.createWorkspaceAsync(
+            self.api_state,
+            name,
+            self.createWsSelectedBundleName(),
+        );
+    }
+
+    fn handleCreateWsSubmittingKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (key.matches(vaxis.Key.escape, .{})) {
+            // Abandon the in-flight result; bg thread still finishes but result will be dropped
+            // in consumeCreateWsResult when phase is no longer .submitting.
+            self.closeCreateWorkspace();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        ctx.consumeEvent();
+    }
+
+    fn handleCreateWsSuccessKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (key.matches(vaxis.Key.escape, .{})) {
+            self.closeCreateWorkspace();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches('c', .{})) {
+            workspace_panel.copyCreateInitCommand(self);
+            self.status_line = "Copied clumsies init command to clipboard.";
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches('s', .{})) {
+            self.selected_module = .workspace;
+            self.status_line = "Switched to newly created workspace.";
+            self.closeCreateWorkspace();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        ctx.consumeEvent();
+    }
+
+    fn consumeCreateWsResult(self: *Dashboard) bool {
+        self.api_state.mutex.lock();
+        const result_opt = self.api_state.create_ws_result;
+        if (result_opt != null) self.api_state.create_ws_result = null;
+        self.api_state.mutex.unlock();
+
+        const result = result_opt orelse return false;
+        if (!self.show_create_workspace or self.create_ws_phase != .submitting) {
+            // Overlay was closed while request was in flight — drop the result.
+            return false;
+        }
+        workspace_panel.applyCreateResult(self, result);
+        return true;
     }
 
     fn submitComment(self: *Dashboard) void {

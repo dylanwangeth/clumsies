@@ -16,6 +16,24 @@ pub const ConnectionStatus = enum {
     error_network,
 };
 
+pub const CreateWsOk = struct {
+    ws_id: []const u8,
+    name: []const u8,
+};
+
+pub const CreateWsApiError = struct {
+    status: std.http.Status,
+    code: []const u8,
+    message: []const u8,
+};
+
+pub const CreateWsResult = union(enum) {
+    ok: CreateWsOk,
+    api_error: CreateWsApiError,
+    network_error,
+    invalid_response,
+};
+
 pub const ApiState = struct {
     mutex: std.Thread.Mutex = .{},
     status: ConnectionStatus = .disconnected,
@@ -48,6 +66,8 @@ pub const ApiState = struct {
     hub_url: ?[]const u8 = null,
     access_token: ?[]const u8 = null,
     fetch_busy: bool = false,
+    create_ws_inflight: bool = false,
+    create_ws_result: ?CreateWsResult = null,
     backing_allocator: std.mem.Allocator,
     arena: *std.heap.ArenaAllocator,
     local_arena: *std.heap.ArenaAllocator,
