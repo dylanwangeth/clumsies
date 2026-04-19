@@ -65,7 +65,6 @@ pub const WorkspaceEntry = struct {
     name: []const u8,
     prompts: u8,
     contexts: u8,
-    overrides: u8,
     local_rev: u16,
     remote_rev: u16,
     paths: u8,
@@ -161,10 +160,8 @@ pub const ContextFile = struct {
 pub const WsPromptEntry = struct {
     name: []const u8,
     kind: []const u8,
-    has_override: bool,
     hash: []const u8,
     state: []const u8,
-    override_diff: []const []const u8,
 };
 
 pub const MemberEntry = struct {

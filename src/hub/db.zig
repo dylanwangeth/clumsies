@@ -309,7 +309,6 @@ const migration_sql =
     \\    prompt_id TEXT,
     \\    prompt_hash TEXT,
     \\    constraint_id TEXT,
-    \\    override_base_hash TEXT,
     \\    reason TEXT,
     \\    content TEXT,
     \\    content_hash TEXT,
@@ -317,6 +316,8 @@ const migration_sql =
     \\);
     \\ALTER TABLE trace_events
     \\    ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(user_id);
+    \\ALTER TABLE trace_events
+    \\    DROP COLUMN IF EXISTS override_base_hash;
     \\CREATE INDEX IF NOT EXISTS trace_events_user_id_idx
     \\    ON trace_events(user_id);
     \\CREATE INDEX IF NOT EXISTS trace_events_ws_ts_idx
