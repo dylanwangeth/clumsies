@@ -196,8 +196,9 @@ pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
     api_state.pr_comments_cache.invalidate();
 
     // Cancel in-flight on-demand requests so a worker completing after
-    // invalidation cannot repopulate the cache with data the caller
-    // explicitly declared stale.
+    // invalidation cannot repopulate the cache (with either a fresh
+    // value or a remembered failure) for data the caller explicitly
+    // declared stale.
     api_state.prompt_prs_pending.cancel();
     api_state.prompt_content_pending.cancel();
     api_state.ws_context_content_pending.cancel();

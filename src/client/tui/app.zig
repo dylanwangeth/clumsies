@@ -900,7 +900,7 @@ pub const Dashboard = struct {
         const sel_path = prompts[self.selected_prompt].path;
         const key = api.cache.StringKey{ .value = sel_path };
 
-        if (self.api_state.prompt_content_cache.lookup(key) == null) {
+        if (self.api_state.prompt_content_cache.shouldDispatch(key)) {
             api.specs.dispatchFromState(
                 api.specs.PathParams,
                 @import("clumsies_lib").protocol.library_api.PromptContentResponse,
@@ -911,7 +911,7 @@ pub const Dashboard = struct {
             );
         }
 
-        if (self.api_state.prompt_prs_cache.lookup(key) == null) {
+        if (self.api_state.prompt_prs_cache.shouldDispatch(key)) {
             const prompt_id = self.lookupPromptId(sel_path) orelse return;
             api.specs.dispatchFromState(
                 api.specs.PromptPrsParams,
@@ -951,6 +951,17 @@ pub const Dashboard = struct {
         return null;
     }
 
+    /// Path of the currently selected library prompt, or null when no
+    /// prompt is in focus. Used by failure-caching in the on-demand
+    /// consumers, which do not have a request-scoped key to attribute
+    /// the failure to and fall back to the current UI selection.
+    fn selectedPromptPath(self: *Dashboard) ?[]const u8 {
+        const prompts = self.getPrompts();
+        if (prompts.len == 0) return null;
+        const idx = @min(self.selected_prompt, prompts.len - 1);
+        return prompts[idx].path;
+    }
+
     fn requestWorkspaceSelectionContent(self: *Dashboard, ws_d: *const api.model.WsDetail) void {
         const dir_sel = self.currentWsDirSelection();
         switch (self.ws_tab) {
@@ -959,7 +970,7 @@ pub const Dashboard = struct {
                 const context_sel = self.resolveWsContextSelection(ws_d) orelse return;
                 const file = &ws_d.context_files[context_sel];
                 const key = api.state.WsPathKey{ .ws_id = ws_d.ws_id, .path = file.path };
-                if (self.api_state.ws_context_content_cache.lookup(key) != null) return;
+                if (!self.api_state.ws_context_content_cache.shouldDispatch(key)) return;
 
                 api.specs.dispatchFromState(
                     api.specs.WsContextContentParams,
@@ -974,7 +985,7 @@ pub const Dashboard = struct {
                 if (dir_sel != null) return;
                 const prompt_sel = self.resolveWsPromptSelection(ws_d) orelse return;
                 const key = api.cache.StringKey{ .value = prompt_sel.path };
-                if (self.api_state.prompt_content_cache.lookup(key) != null) return;
+                if (!self.api_state.prompt_content_cache.shouldDispatch(key)) return;
 
                 api.specs.dispatchFromState(
                     api.specs.PathParams,
@@ -1414,16 +1425,21 @@ pub const Dashboard = struct {
 
     /// Pump the library prompt content pending slot: on .ok, stash the
     /// response in the cache keyed by path so subsequent draws can
-    /// retrieve it synchronously. Errors are ignored for now — the UI
-    /// stays in "no content yet" state and a future tick will try
-    /// again once the user re-selects.
+    /// retrieve it synchronously. On any error outcome, record the
+    /// failure against the selected path so widget sync does not
+    /// re-dispatch on every tick; the next `invalidateOnDemandCaches`
+    /// or a navigation to a different prompt clears the marker.
     fn consumePromptContentResult(self: *Dashboard) void {
         const result = self.api_state.prompt_content_pending.consume() orelse return;
         switch (result) {
             .ok => |resp| {
                 self.api_state.prompt_content_cache.store(.{ .value = resp.path }, resp);
             },
-            else => {},
+            else => {
+                if (self.selectedPromptPath()) |path| {
+                    self.api_state.prompt_content_cache.markFailed(.{ .value = path });
+                }
+            },
         }
     }
 
@@ -1431,6 +1447,8 @@ pub const Dashboard = struct {
     /// write against `payload.prompt_id` — the id the request was
     /// issued for — rather than the current UI selection, so a prompt
     /// switch mid-flight cannot store the list under the wrong path.
+    /// On error, mark the currently selected prompt as failed so the
+    /// widget loop does not re-dispatch on every tick.
     fn consumePromptPrsResult(self: *Dashboard) void {
         const result = self.api_state.prompt_prs_pending.consume() orelse return;
         switch (result) {
@@ -1438,7 +1456,11 @@ pub const Dashboard = struct {
                 const path = self.lookupPromptPath(payload.prompt_id) orelse return;
                 self.api_state.prompt_prs_cache.store(.{ .value = path }, payload.prs);
             },
-            else => {},
+            else => {
+                if (self.selectedPromptPath()) |path| {
+                    self.api_state.prompt_prs_cache.markFailed(.{ .value = path });
+                }
+            },
         }
     }
 
@@ -1451,7 +1473,11 @@ pub const Dashboard = struct {
             .ok => |payload| {
                 self.api_state.ws_context_files_cache.store(.{ .value = payload.ws_id }, payload.files);
             },
-            else => {},
+            else => {
+                if (self.activeWsId()) |ws_id| {
+                    self.api_state.ws_context_files_cache.markFailed(.{ .value = ws_id });
+                }
+            },
         }
     }
 
@@ -1461,7 +1487,11 @@ pub const Dashboard = struct {
             .ok => |payload| {
                 self.api_state.ws_manifest_cache.store(.{ .value = payload.ws_id }, payload.prompts);
             },
-            else => {},
+            else => {
+                if (self.activeWsId()) |ws_id| {
+                    self.api_state.ws_manifest_cache.markFailed(.{ .value = ws_id });
+                }
+            },
         }
     }
 
@@ -1477,7 +1507,11 @@ pub const Dashboard = struct {
                 self.api_state.pr_detail_cache.store(.{ .value = resp.pr_id }, resp);
                 self.refreshPrDetailDerivedFields(resp.pr_id, resp);
             },
-            else => {},
+            else => {
+                if (self.activePrId()) |pr_id| {
+                    self.api_state.pr_detail_cache.markFailed(.{ .value = pr_id });
+                }
+            },
         }
     }
 
@@ -1487,7 +1521,11 @@ pub const Dashboard = struct {
             .ok => |payload| {
                 self.api_state.pr_comments_cache.store(.{ .value = payload.pr_id }, payload.comments);
             },
-            else => {},
+            else => {
+                if (self.activePrId()) |pr_id| {
+                    self.api_state.pr_comments_cache.markFailed(.{ .value = pr_id });
+                }
+            },
         }
     }
 
@@ -1611,7 +1649,9 @@ pub const Dashboard = struct {
     /// Pump the workspace context file content pending slot. The
     /// payload carries the (ws_id, path) key the request was issued
     /// for, so the cache entry is routed against the request rather
-    /// than against whatever the user now has selected.
+    /// than against whatever the user now has selected. On error,
+    /// mark the currently selected (ws_id, path) as failed to stop the
+    /// widget loop from re-dispatching on every tick.
     fn consumeWsContextContentResult(self: *Dashboard) void {
         const result = self.api_state.ws_context_content_pending.consume() orelse return;
         switch (result) {
@@ -1621,7 +1661,15 @@ pub const Dashboard = struct {
                     payload.body,
                 );
             },
-            else => {},
+            else => {
+                const ws_id = self.activeWsId() orelse return;
+                const ws_d = api.state.wsDetail(self.api_state, ws_id) orelse return;
+                const context_sel = self.resolveWsContextSelection(&ws_d) orelse return;
+                const file = ws_d.context_files[context_sel];
+                self.api_state.ws_context_content_cache.markFailed(
+                    .{ .ws_id = ws_d.ws_id, .path = file.path },
+                );
+            },
         }
     }
 
