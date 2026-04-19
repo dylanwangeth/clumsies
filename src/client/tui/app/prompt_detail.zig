@@ -608,7 +608,7 @@ fn fetchSelectedPrDetail(self: anytype) void {
     if (prs.len == 0) return;
 
     const pr_id = prs[pr_idx].id;
-    if (self.api_state.pr_detail_cache.lookup(.{ .value = pr_id }) == null) {
+    if (self.api_state.pr_detail_cache.shouldDispatch(.{ .value = pr_id })) {
         api.specs.dispatchFromState(
             api.specs.PrIdParams,
             @import("clumsies_lib").protocol.collab_api.PromptPrDetailResponse,
@@ -618,7 +618,7 @@ fn fetchSelectedPrDetail(self: anytype) void {
             .{ .pr_id = pr_id },
         );
     }
-    if (self.api_state.pr_comments_cache.lookup(.{ .value = pr_id }) == null) {
+    if (self.api_state.pr_comments_cache.shouldDispatch(.{ .value = pr_id })) {
         api.specs.dispatchFromState(
             api.specs.PrIdParams,
             api.specs.PrCommentsPayload,

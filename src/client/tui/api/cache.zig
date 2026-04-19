@@ -1,8 +1,16 @@
-//! Per-endpoint cache slot. Lookup / store / invalidate with an optional
-//! key. Decoupled from `PendingRequest` so that "is a request in flight"
-//! and "do we have cached data" are two orthogonal questions: cache hit
-//! means we already have fresh enough data to draw; `PendingRequest.consume`
-//! only moves a newly arrived result into the cache.
+//! Per-endpoint cache slot. Lookup / store / invalidate / markFailed with
+//! an optional key. Decoupled from `PendingRequest` so that "is a request
+//! in flight" and "do we have cached data (or a remembered failure)" are
+//! two orthogonal questions: cache hit means we already have fresh enough
+//! data to draw; `PendingRequest.consume` moves a newly arrived result
+//! into the slot as either an `ok` value or a remembered `failed` marker.
+//!
+//! The slot has three states — empty, ok(key, value), and failed(key).
+//! `shouldDispatch(k)` folds both hit kinds together so widget-sync code
+//! does not re-dispatch a request that has just failed: without the
+//! failure arm, a persistently failing endpoint would spawn a fresh
+//! worker on every UI tick until the user navigated away. Invalidation
+//! clears both arms.
 //!
 //! Key comparison is type-based: the caller picks a key type that exposes
 //! an `eql(other: K) bool` method, or uses a slice/scalar that works with
@@ -15,42 +23,90 @@ const std = @import("std");
 pub fn CacheSlot(comptime K: type, comptime V: type) type {
     return struct {
         mutex: std.Thread.Mutex = .{},
-        key: ?K = null,
-        value: V = undefined,
+        state: State = .empty,
 
-        /// Look up the cached value for `k`. Returns null on miss.
-        /// Matches by calling `key.eql(k)` when `K` declares an `eql`
-        /// method; otherwise falls back to `std.meta.eql`.
-        pub fn lookup(self: *@This(), k: K) ?V {
+        const Self = @This();
+
+        /// A slot is in one of three states. `failed` exists so that a
+        /// consume-time failure can be remembered against its key: the
+        /// next `shouldDispatch` for the same key returns false, which
+        /// breaks the retry loop that otherwise fires a fresh worker on
+        /// every UI tick until the user navigates away. Invalidation
+        /// clears both `ok` and `failed`.
+        pub const State = union(enum) {
+            empty,
+            ok: struct { key: K, value: V },
+            failed: struct { key: K },
+        };
+
+        /// Look up the cached value for `k`. Returns null on miss or
+        /// when the slot holds a remembered failure for `k`. Matches by
+        /// calling `key.eql(k)` when `K` declares an `eql` method;
+        /// otherwise falls back to `std.meta.eql`.
+        pub fn lookup(self: *Self, k: K) ?V {
             self.mutex.lock();
             defer self.mutex.unlock();
-            const current = self.key orelse return null;
-            if (!keysEqual(current, k)) return null;
-            return self.value;
+            switch (self.state) {
+                .ok => |entry| if (keysEqual(entry.key, k)) return entry.value,
+                else => {},
+            }
+            return null;
         }
 
-        /// Store a value, replacing any previous entry.
-        pub fn store(self: *@This(), k: K, v: V) void {
+        /// Whether the slot is remembering a failed fetch for `k`.
+        /// Widget-sync code uses this together with `lookup` to avoid
+        /// re-dispatching on every tick when a fetch keeps failing.
+        pub fn isFailed(self: *Self, k: K) bool {
             self.mutex.lock();
             defer self.mutex.unlock();
-            self.key = k;
-            self.value = v;
+            return switch (self.state) {
+                .failed => |entry| keysEqual(entry.key, k),
+                else => false,
+            };
         }
 
-        /// Drop any cached entry. Subsequent lookups miss until the next
-        /// store.
-        pub fn invalidate(self: *@This()) void {
+        /// Whether widget-sync code should dispatch a fresh request for
+        /// `k`. False when the slot already has a cached value for `k`
+        /// or is remembering a failure for `k`; true otherwise.
+        pub fn shouldDispatch(self: *Self, k: K) bool {
             self.mutex.lock();
             defer self.mutex.unlock();
-            self.key = null;
-            self.value = undefined;
+            return switch (self.state) {
+                .empty => true,
+                .ok => |entry| !keysEqual(entry.key, k),
+                .failed => |entry| !keysEqual(entry.key, k),
+            };
         }
 
-        /// Whether the slot currently holds any entry.
-        pub fn isPopulated(self: *@This()) bool {
+        /// Store a value, replacing any previous entry or failure.
+        pub fn store(self: *Self, k: K, v: V) void {
             self.mutex.lock();
             defer self.mutex.unlock();
-            return self.key != null;
+            self.state = .{ .ok = .{ .key = k, .value = v } };
+        }
+
+        /// Remember that a fetch for `k` failed. Subsequent
+        /// `shouldDispatch(k)` calls return false until `invalidate`
+        /// clears the slot or a different key is requested.
+        pub fn markFailed(self: *Self, k: K) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.state = .{ .failed = .{ .key = k } };
+        }
+
+        /// Drop any cached entry or remembered failure.
+        pub fn invalidate(self: *Self) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.state = .empty;
+        }
+
+        /// Whether the slot currently holds any entry — value or
+        /// failure.
+        pub fn isPopulated(self: *Self) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            return self.state != .empty;
         }
 
         /// Equality check for `K`. Uses `K.eql(other)` when the type
@@ -136,4 +192,33 @@ test "CacheSlot isPopulated tracks lifecycle" {
 
     cache.invalidate();
     try std.testing.expect(!cache.isPopulated());
+}
+
+test "CacheSlot markFailed gates shouldDispatch for the same key" {
+    var cache: CacheSlot(u32, u32) = .{};
+    try std.testing.expect(cache.shouldDispatch(1));
+
+    cache.markFailed(1);
+    try std.testing.expect(cache.isFailed(1));
+    try std.testing.expect(!cache.shouldDispatch(1));
+    try std.testing.expect(cache.lookup(1) == null);
+
+    // A different key should still be dispatchable.
+    try std.testing.expect(cache.shouldDispatch(2));
+
+    // invalidate clears the remembered failure.
+    cache.invalidate();
+    try std.testing.expect(!cache.isFailed(1));
+    try std.testing.expect(cache.shouldDispatch(1));
+}
+
+test "CacheSlot store clears a prior failure for the same key" {
+    var cache: CacheSlot(u32, u32) = .{};
+    cache.markFailed(1);
+    try std.testing.expect(cache.isFailed(1));
+
+    cache.store(1, 100);
+    try std.testing.expect(!cache.isFailed(1));
+    try std.testing.expectEqual(@as(u32, 100), cache.lookup(1).?);
+    try std.testing.expect(!cache.shouldDispatch(1));
 }

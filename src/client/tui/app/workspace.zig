@@ -545,7 +545,7 @@ fn handleContentFocusEvent(
 /// respective PendingRequest slots; `syncWsRows` composes them once
 /// both caches are populated via `state.wsDetail`.
 pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
-    if (self.api_state.ws_context_files_cache.lookup(.{ .value = ws_id }) == null) {
+    if (self.api_state.ws_context_files_cache.shouldDispatch(.{ .value = ws_id })) {
         api.specs.dispatchFromState(
             api.specs.WsIdParams,
             api.specs.WsContextFilesPayload,
@@ -555,7 +555,7 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
             .{ .ws_id = ws_id },
         );
     }
-    if (self.api_state.ws_manifest_cache.lookup(.{ .value = ws_id }) == null) {
+    if (self.api_state.ws_manifest_cache.shouldDispatch(.{ .value = ws_id })) {
         api.specs.dispatchFromState(
             api.specs.WsIdParams,
             api.specs.WsManifestPayload,
