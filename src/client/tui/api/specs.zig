@@ -242,6 +242,7 @@ pub fn dispatchFromState(
         api_state.backing_allocator,
         hub_url.?,
         access_token.?,
+        api_state.backing_allocator,
         api_state.allocator(),
         req,
     );
