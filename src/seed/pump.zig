@@ -220,8 +220,8 @@ fn emitScenario(
 fn insertTraceEvent(conn: *pg.Conn, user_id: ?[]const u8, event: local_trace.TraceEvent) void {
     _ = conn.exec(
         \\INSERT INTO trace_events (user_id, ws_id, session_id, event_id, type, timestamp,
-        \\  prompt_id, prompt_hash, constraint_id, override_base_hash, reason, content, content_hash)
-        \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        \\  prompt_id, prompt_hash, constraint_id, reason, content, content_hash)
+        \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
     , .{
         user_id,
@@ -233,7 +233,6 @@ fn insertTraceEvent(conn: *pg.Conn, user_id: ?[]const u8, event: local_trace.Tra
         event.prompt_id,
         event.prompt_hash,
         event.constraint_id,
-        event.override_base_hash,
         event.reason,
         event.content,
         event.content_hash,

@@ -1737,7 +1737,6 @@ pub const Dashboard = struct {
                     .name = ws.name,
                     .prompts = 0,
                     .contexts = 0,
-                    .overrides = 0,
                     .local_rev = 0,
                     .remote_rev = 0,
                     .paths = 0,

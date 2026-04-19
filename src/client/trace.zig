@@ -22,7 +22,6 @@ pub const TraceEvent = struct {
     prompt_id: ?[]const u8 = null,
     prompt_hash: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
-    override_base_hash: ?[]const u8 = null,
     reason: ?[]const u8 = null,
     content: ?[]const u8 = null,
     content_hash: ?[]const u8 = null,
@@ -126,7 +125,6 @@ fn serializeTraceEvent(allocator: std.mem.Allocator, event: TraceEvent) ![]u8 {
     try writeOptionalString(allocator, &buf, "prompt_id", event.prompt_id);
     try writeOptionalString(allocator, &buf, "prompt_hash", event.prompt_hash);
     try writeOptionalString(allocator, &buf, "constraint_id", event.constraint_id);
-    try writeOptionalString(allocator, &buf, "override_base_hash", event.override_base_hash);
     try writeOptionalString(allocator, &buf, "reason", event.reason);
     try writeOptionalString(allocator, &buf, "content", event.content);
     try writeOptionalString(allocator, &buf, "content_hash", event.content_hash);

@@ -192,8 +192,8 @@ const HistoricalTraceEvent = struct {
 fn insertHistoricalTraceEvent(conn: *pg.Conn, user_id: []const u8, event: HistoricalTraceEvent) !void {
     _ = try conn.exec(
         \\INSERT INTO trace_events (user_id, ws_id, session_id, event_id, type, timestamp,
-        \\  prompt_id, prompt_hash, constraint_id, override_base_hash, reason, content, content_hash)
-        \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, $10, NULL, NULL)
+        \\  prompt_id, prompt_hash, constraint_id, reason, content, content_hash)
+        \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, NULL)
         \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
     , .{
         user_id,

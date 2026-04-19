@@ -26,7 +26,6 @@ const TraceEventInput = struct {
     prompt_id: ?[]const u8 = null,
     prompt_hash: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
-    override_base_hash: ?[]const u8 = null,
     reason: ?[]const u8 = null,
     content: ?[]const u8 = null,
     content_hash: ?[]const u8 = null,
@@ -306,15 +305,14 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         }
         const rows_affected = conn.exec(
             \\INSERT INTO trace_events (user_id, ws_id, session_id, event_id, type, timestamp,
-            \\  prompt_id, prompt_hash, constraint_id, override_base_hash, reason, content, content_hash)
-            \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            \\  prompt_id, prompt_hash, constraint_id, reason, content, content_hash)
+            \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
         , .{
             user.user_id,             event.ws_id,       event.session_id,
             @as(i64, event.event_id), event.type,        @as(i64, event.timestamp),
             event.prompt_id,          event.prompt_hash, event.constraint_id,
-            event.override_base_hash, event.reason,      event.content,
-            event.content_hash,
+            event.reason,             event.content,     event.content_hash,
         }) catch {
             deduplicated += 1;
             continue;
