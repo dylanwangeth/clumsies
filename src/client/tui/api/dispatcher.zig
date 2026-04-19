@@ -324,22 +324,18 @@ pub fn jsonBody(comptime T: type) *const fn (std.mem.Allocator, T) anyerror![]co
 }
 
 /// Response parser that deserializes the JSON body into `T`, ignoring
-/// unknown fields for forward-compat.
+/// unknown fields for forward-compat. Uses `parseFromSliceLeaky` so the
+/// parsed value's allocations land directly in `alloc` without a
+/// `Parsed` wrapper arena that would otherwise leak on every call.
 pub fn jsonParser(comptime T: type) *const fn (std.mem.Allocator, []const u8) anyerror!T {
     return struct {
         fn parse(alloc: std.mem.Allocator, body: []const u8) anyerror!T {
-            const parsed = try std.json.parseFromSlice(
+            return std.json.parseFromSliceLeaky(
                 T,
                 alloc,
                 body,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
             );
-            // Leak the Parsed wrapper: its deinit would free the arena it
-            // owns, but callers need the parsed value to outlive the
-            // function. This is consistent with how classifyResponse is
-            // called from the worker thread — the worker's alloc is the
-            // shared ApiState arena, which lives for the TUI session.
-            return parsed.value;
         }
     }.parse;
 }
