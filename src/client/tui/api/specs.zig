@@ -27,7 +27,7 @@ pub const create_workspace = dispatcher.RequestSpec(
     .method = .POST,
     .path_builder = dispatcher.staticPath(workspace_api.CreateWorkspaceRequest, "/api/workspaces"),
     .body_builder = dispatcher.jsonBody(workspace_api.CreateWorkspaceRequest),
-    .parse_ok = dispatcher.jsonParser(workspace_api.CreateWorkspaceResponse),
+    .parse_ok = dispatcher.jsonParser(workspace_api.CreateWorkspaceRequest, workspace_api.CreateWorkspaceResponse),
 };
 
 pub const PathParams = struct { path: []const u8 };
@@ -36,49 +36,55 @@ pub const WsContextContentParams = struct { ws_id: []const u8, path: []const u8 
 pub const WsIdParams = struct { ws_id: []const u8 };
 pub const PrIdParams = struct { pr_id: []const u8 };
 
+pub const PromptPrsPayload = state.PromptPrsPayload;
+pub const WsContextFilesPayload = state.WsContextFilesPayload;
+pub const WsManifestPayload = state.WsManifestPayload;
+pub const WsContextContentPayload = state.WsContextContentPayload;
+pub const PrCommentsPayload = state.PrCommentsPayload;
+
 pub const library_prompt_content = dispatcher.RequestSpec(
     PathParams,
     library_api.PromptContentResponse,
 ){
     .method = .GET,
     .path_builder = promptContentPath,
-    .parse_ok = dispatcher.jsonParser(library_api.PromptContentResponse),
+    .parse_ok = dispatcher.jsonParser(PathParams, library_api.PromptContentResponse),
 };
 
 pub const library_prompt_prs = dispatcher.RequestSpec(
     PromptPrsParams,
-    []const model.PromptPr,
+    PromptPrsPayload,
 ){
     .method = .GET,
     .path_builder = promptPrsPath,
-    .parse_ok = parsePromptPrsList,
+    .parse_ok = parsePromptPrsPayload,
 };
 
 pub const workspace_context_content = dispatcher.RequestSpec(
     WsContextContentParams,
-    []const u8,
+    WsContextContentPayload,
 ){
     .method = .GET,
     .path_builder = wsContextContentPath,
-    .parse_ok = dispatcher.parseRawString,
+    .parse_ok = parseWsContextContentPayload,
 };
 
 pub const workspace_context_files = dispatcher.RequestSpec(
     WsIdParams,
-    []const model.ContextFileData,
+    WsContextFilesPayload,
 ){
     .method = .GET,
     .path_builder = wsContextFilesPath,
-    .parse_ok = parseContextFilesList,
+    .parse_ok = parseWsContextFilesPayload,
 };
 
 pub const workspace_manifest = dispatcher.RequestSpec(
     WsIdParams,
-    []const model.WsPromptData,
+    WsManifestPayload,
 ){
     .method = .GET,
     .path_builder = wsManifestPath,
-    .parse_ok = parseManifestPromptsList,
+    .parse_ok = parseWsManifestPayload,
 };
 
 pub const pr_detail = dispatcher.RequestSpec(
@@ -87,16 +93,16 @@ pub const pr_detail = dispatcher.RequestSpec(
 ){
     .method = .GET,
     .path_builder = prDetailPath,
-    .parse_ok = dispatcher.jsonParser(collab_api.PromptPrDetailResponse),
+    .parse_ok = dispatcher.jsonParser(PrIdParams, collab_api.PromptPrDetailResponse),
 };
 
 pub const pr_comments = dispatcher.RequestSpec(
     PrIdParams,
-    []const data.CommentEntry,
+    PrCommentsPayload,
 ){
     .method = .GET,
     .path_builder = prCommentsPath,
-    .parse_ok = parseCommentsList,
+    .parse_ok = parsePrCommentsPayload,
 };
 
 pub const EmptyParams = struct {};
@@ -115,21 +121,21 @@ pub const sign_out = dispatcher.RequestSpec(EmptyParams, void){
     .method = .DELETE,
     .path_builder = dispatcher.staticPath(EmptyParams, "/api/auth/token"),
     .body_builder = null,
-    .parse_ok = dispatcher.parseVoid,
+    .parse_ok = dispatcher.parseVoid(EmptyParams),
 };
 
 pub const submit_comment = dispatcher.RequestSpec(SubmitCommentParams, void){
     .method = .POST,
     .path_builder = submitCommentPath,
     .body_builder = submitCommentBody,
-    .parse_ok = dispatcher.parseVoid,
+    .parse_ok = dispatcher.parseVoid(SubmitCommentParams),
 };
 
 pub const pr_action = dispatcher.RequestSpec(PrActionParams, void){
     .method = .PUT,
     .path_builder = prActionPath,
     .body_builder = prActionBody,
-    .parse_ok = dispatcher.parseVoid,
+    .parse_ok = dispatcher.parseVoid(PrActionParams),
 };
 
 fn submitCommentPath(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror![]const u8 {
@@ -186,22 +192,68 @@ fn prCommentsPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
     return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{p.pr_id});
 }
 
-/// Wrap the existing `parse.parsePromptPrs` into the `!T` shape that
-/// dispatcher specs expect (the existing helper returns `?T`).
-fn parsePromptPrsList(alloc: std.mem.Allocator, body: []const u8) anyerror![]const model.PromptPr {
-    return parse.parsePromptPrs(alloc, body) orelse error.ParseFailed;
+/// Wrap the existing `parse.parsePromptPrs` into the payload shape that
+/// carries the requested `prompt_id` alongside the parsed list. The
+/// server response is a bare array, so the key is duped out of the
+/// request into the long-lived allocator before returning.
+fn parsePromptPrsPayload(
+    alloc: std.mem.Allocator,
+    req: PromptPrsParams,
+    body: []const u8,
+) anyerror!PromptPrsPayload {
+    const prs = parse.parsePromptPrs(alloc, body) orelse return error.ParseFailed;
+    return .{
+        .prompt_id = try alloc.dupe(u8, req.prompt_id),
+        .prs = prs,
+    };
 }
 
-fn parseContextFilesList(alloc: std.mem.Allocator, body: []const u8) anyerror![]const model.ContextFileData {
-    return parse.parseContextFiles(alloc, body) orelse error.ParseFailed;
+fn parseWsContextFilesPayload(
+    alloc: std.mem.Allocator,
+    req: WsIdParams,
+    body: []const u8,
+) anyerror!WsContextFilesPayload {
+    const files = parse.parseContextFiles(alloc, body) orelse return error.ParseFailed;
+    return .{
+        .ws_id = try alloc.dupe(u8, req.ws_id),
+        .files = files,
+    };
 }
 
-fn parseManifestPromptsList(alloc: std.mem.Allocator, body: []const u8) anyerror![]const model.WsPromptData {
-    return parse.parseManifestPrompts(alloc, body) orelse error.ParseFailed;
+fn parseWsManifestPayload(
+    alloc: std.mem.Allocator,
+    req: WsIdParams,
+    body: []const u8,
+) anyerror!WsManifestPayload {
+    const prompts = parse.parseManifestPrompts(alloc, body) orelse return error.ParseFailed;
+    return .{
+        .ws_id = try alloc.dupe(u8, req.ws_id),
+        .prompts = prompts,
+    };
 }
 
-fn parseCommentsList(alloc: std.mem.Allocator, body: []const u8) anyerror![]const data.CommentEntry {
-    return parse.parseComments(alloc, body) orelse error.ParseFailed;
+fn parseWsContextContentPayload(
+    alloc: std.mem.Allocator,
+    req: WsContextContentParams,
+    body: []const u8,
+) anyerror!WsContextContentPayload {
+    return .{
+        .ws_id = try alloc.dupe(u8, req.ws_id),
+        .path = try alloc.dupe(u8, req.path),
+        .body = try alloc.dupe(u8, body),
+    };
+}
+
+fn parsePrCommentsPayload(
+    alloc: std.mem.Allocator,
+    req: PrIdParams,
+    body: []const u8,
+) anyerror!PrCommentsPayload {
+    const comments = parse.parseComments(alloc, body) orelse return error.ParseFailed;
+    return .{
+        .pr_id = try alloc.dupe(u8, req.pr_id),
+        .comments = comments,
+    };
 }
 
 /// Dispatch a request using the transport state already held on

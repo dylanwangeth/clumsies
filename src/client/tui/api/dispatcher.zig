@@ -44,8 +44,13 @@ pub fn RequestSpec(comptime ReqT: type, comptime RespT: type) type {
         body_builder: ?*const fn (alloc: std.mem.Allocator, req: ReqT) anyerror![]const u8 = null,
 
         /// Parse a 2xx response body into `RespT`. The returned value and
-        /// any owned strings must live in `alloc`.
-        parse_ok: *const fn (alloc: std.mem.Allocator, body: []const u8) anyerror!RespT,
+        /// any owned strings must live in `alloc`. `req` is the request
+        /// payload the dispatcher used to fetch this body; parsers may
+        /// dupe fields out of it into `alloc` to produce a response
+        /// shape that carries the request key, letting the consumer
+        /// route cache writes against the request rather than the
+        /// caller's current UI state.
+        parse_ok: *const fn (alloc: std.mem.Allocator, req: ReqT, body: []const u8) anyerror!RespT,
     };
 }
 
@@ -234,7 +239,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
             };
             defer resp.deinit();
 
-            const result = classifyResponse(RespT, ctx.spec, result_alloc, resp.status, resp.body);
+            const result = classifyResponse(ReqT, RespT, ctx.spec, result_alloc, ctx.req, resp.status, resp.body);
             ctx.pending.complete(ctx.generation, result);
         }
     }.run;
@@ -251,15 +256,17 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
 /// with `code = "UNKNOWN"` and `message = body` so the UI still has
 /// something to show.
 pub fn classifyResponse(
+    comptime ReqT: type,
     comptime RespT: type,
     spec: anytype,
     alloc: std.mem.Allocator,
+    req: ReqT,
     status: std.http.Status,
     body: []const u8,
 ) Result(RespT) {
     switch (status) {
         .ok, .created, .no_content => {
-            const value = spec.parse_ok(alloc, body) catch return .invalid_response;
+            const value = spec.parse_ok(alloc, req, body) catch return .invalid_response;
             return .{ .ok = value };
         },
         else => return parseApiError(RespT, alloc, status, body),
@@ -358,9 +365,12 @@ pub fn jsonBody(comptime T: type) *const fn (std.mem.Allocator, T) anyerror![]co
 /// unknown fields for forward-compat. Uses `parseFromSliceLeaky` so the
 /// parsed value's allocations land directly in `alloc` without a
 /// `Parsed` wrapper arena that would otherwise leak on every call.
-pub fn jsonParser(comptime T: type) *const fn (std.mem.Allocator, []const u8) anyerror!T {
+/// Ignores `req` — use this for endpoints where the response body
+/// already carries the request key the consumer needs.
+pub fn jsonParser(comptime ReqT: type, comptime T: type) *const fn (std.mem.Allocator, ReqT, []const u8) anyerror!T {
     return struct {
-        fn parse(alloc: std.mem.Allocator, body: []const u8) anyerror!T {
+        fn parse(alloc: std.mem.Allocator, req: ReqT, body: []const u8) anyerror!T {
+            _ = req;
             return std.json.parseFromSliceLeaky(
                 T,
                 alloc,
@@ -373,28 +383,40 @@ pub fn jsonParser(comptime T: type) *const fn (std.mem.Allocator, []const u8) an
 
 /// Placeholder parser for endpoints whose success response carries no
 /// body (204 No Content or 2xx with a body the caller does not need).
-pub fn parseVoid(alloc: std.mem.Allocator, body: []const u8) anyerror!void {
-    _ = alloc;
-    _ = body;
+pub fn parseVoid(comptime ReqT: type) *const fn (std.mem.Allocator, ReqT, []const u8) anyerror!void {
+    return struct {
+        fn parse(alloc: std.mem.Allocator, req: ReqT, body: []const u8) anyerror!void {
+            _ = alloc;
+            _ = req;
+            _ = body;
+        }
+    }.parse;
 }
 
 /// Parser for endpoints whose success body is a raw string (no JSON
-/// envelope). Dupes the body into `alloc` so the returned slice
-/// outlives the HTTP response.
-pub fn parseRawString(alloc: std.mem.Allocator, body: []const u8) anyerror![]const u8 {
-    return alloc.dupe(u8, body);
+/// envelope). Ignores `req`; consumers that need to route the body
+/// against a request key should use a custom parser that wraps the
+/// body with the relevant request fields.
+pub fn parseRawString(comptime ReqT: type) *const fn (std.mem.Allocator, ReqT, []const u8) anyerror![]const u8 {
+    return struct {
+        fn parse(alloc: std.mem.Allocator, req: ReqT, body: []const u8) anyerror![]const u8 {
+            _ = req;
+            return alloc.dupe(u8, body);
+        }
+    }.parse;
 }
 
 test "classifyResponse on 201 Created parses body via spec" {
+    const Req = struct {};
     const Body = struct { name: []const u8 };
     const spec = .{
         .method = std.http.Method.POST,
         .path_builder = undefined,
         .body_builder = null,
-        .parse_ok = jsonParser(Body),
+        .parse_ok = jsonParser(Req, Body),
     };
 
-    const result = classifyResponse(Body, spec, std.testing.allocator, .created, "{\"name\":\"foo\"}");
+    const result = classifyResponse(Req, Body, spec, std.testing.allocator, .{}, .created, "{\"name\":\"foo\"}");
     defer switch (result) {
         .ok => |v| std.testing.allocator.free(v.name),
         else => {},
@@ -406,15 +428,16 @@ test "classifyResponse on 201 Created parses body via spec" {
 }
 
 test "classifyResponse on 409 with envelope yields api_error with code and message" {
+    const Req = struct {};
     const spec = .{
         .method = std.http.Method.POST,
         .path_builder = undefined,
         .body_builder = null,
-        .parse_ok = parseVoid,
+        .parse_ok = parseVoid(Req),
     };
 
     const body = "{\"error\":{\"code\":\"CONFLICT\",\"message\":\"dup\"}}";
-    const result = classifyResponse(void, spec, std.testing.allocator, .conflict, body);
+    const result = classifyResponse(Req, void, spec, std.testing.allocator, .{}, .conflict, body);
     switch (result) {
         .api_error => |e| {
             defer std.testing.allocator.free(e.code);
@@ -428,14 +451,15 @@ test "classifyResponse on 409 with envelope yields api_error with code and messa
 }
 
 test "classifyResponse on non-JSON error body falls back to UNKNOWN code" {
+    const Req = struct {};
     const spec = .{
         .method = std.http.Method.POST,
         .path_builder = undefined,
         .body_builder = null,
-        .parse_ok = parseVoid,
+        .parse_ok = parseVoid(Req),
     };
 
-    const result = classifyResponse(void, spec, std.testing.allocator, .internal_server_error, "oops");
+    const result = classifyResponse(Req, void, spec, std.testing.allocator, .{}, .internal_server_error, "oops");
     switch (result) {
         .api_error => |e| {
             defer std.testing.allocator.free(e.code);
@@ -448,16 +472,35 @@ test "classifyResponse on non-JSON error body falls back to UNKNOWN code" {
 }
 
 test "classifyResponse on 2xx with malformed body yields invalid_response" {
+    const Req = struct {};
     const Body = struct { name: []const u8 };
     const spec = .{
         .method = std.http.Method.GET,
         .path_builder = undefined,
         .body_builder = null,
-        .parse_ok = jsonParser(Body),
+        .parse_ok = jsonParser(Req, Body),
     };
 
-    const result = classifyResponse(Body, spec, std.testing.allocator, .ok, "not json");
+    const result = classifyResponse(Req, Body, spec, std.testing.allocator, .{}, .ok, "not json");
     try std.testing.expectEqual(Result(Body).invalid_response, result);
+}
+
+test "jsonParser ignores req and parses body directly" {
+    const Req = struct { key: []const u8 };
+    const Body = struct { value: u32 };
+    const parse = jsonParser(Req, Body);
+
+    const out = try parse(std.testing.allocator, .{ .key = "unused" }, "{\"value\":7}");
+    try std.testing.expectEqual(@as(u32, 7), out.value);
+}
+
+test "parseRawString dupes body into allocator and ignores req" {
+    const Req = struct {};
+    const parse = parseRawString(Req);
+
+    const out = try parse(std.testing.allocator, .{}, "hello");
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("hello", out);
 }
 
 test "staticPath returns the path string allocated in the given arena" {

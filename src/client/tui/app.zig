@@ -915,7 +915,7 @@ pub const Dashboard = struct {
             const prompt_id = self.lookupPromptId(sel_path) orelse return;
             api.specs.dispatchFromState(
                 api.specs.PromptPrsParams,
-                []const api.model.PromptPr,
+                api.specs.PromptPrsPayload,
                 api.specs.library_prompt_prs,
                 &self.api_state.prompt_prs_pending,
                 self.api_state,
@@ -937,6 +937,20 @@ pub const Dashboard = struct {
         return null;
     }
 
+    /// Inverse of `lookupPromptId`: given a prompt_id, return the path
+    /// that the prompt_prs cache is keyed by. Used by the prompt-prs
+    /// consumer so it can route a completed response against its
+    /// request id rather than against the UI's current selection.
+    fn lookupPromptPath(self: *Dashboard, prompt_id: []const u8) ?[]const u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const lib = self.api_state.prompts orelse return null;
+        for (lib) |lp| {
+            if (std.mem.eql(u8, lp.prompt_id, prompt_id)) return lp.path;
+        }
+        return null;
+    }
+
     fn requestWorkspaceSelectionContent(self: *Dashboard, ws_d: *const api.model.WsDetail) void {
         const dir_sel = self.currentWsDirSelection();
         switch (self.ws_tab) {
@@ -949,7 +963,7 @@ pub const Dashboard = struct {
 
                 api.specs.dispatchFromState(
                     api.specs.WsContextContentParams,
-                    []const u8,
+                    api.specs.WsContextContentPayload,
                     api.specs.workspace_context_content,
                     &self.api_state.ws_context_content_pending,
                     self.api_state,
@@ -1413,32 +1427,29 @@ pub const Dashboard = struct {
         }
     }
 
-    /// Pump the library prompt PR list pending slot. The response does
-    /// not carry the prompt path directly (only prompt_id), so the
-    /// cache key is derived from the currently selected library prompt
-    /// at consume time.
+    /// Pump the library prompt PR list pending slot. Routes the cache
+    /// write against `payload.prompt_id` — the id the request was
+    /// issued for — rather than the current UI selection, so a prompt
+    /// switch mid-flight cannot store the list under the wrong path.
     fn consumePromptPrsResult(self: *Dashboard) void {
         const result = self.api_state.prompt_prs_pending.consume() orelse return;
         switch (result) {
-            .ok => |prs| {
-                const prompts = self.getPrompts();
-                if (self.selected_prompt >= prompts.len) return;
-                const path = prompts[self.selected_prompt].path;
-                self.api_state.prompt_prs_cache.store(.{ .value = path }, prs);
+            .ok => |payload| {
+                const path = self.lookupPromptPath(payload.prompt_id) orelse return;
+                self.api_state.prompt_prs_cache.store(.{ .value = path }, payload.prs);
             },
             else => {},
         }
     }
 
-    /// Pump the workspace context files pending slot. Stores the
-    /// response in the cache keyed by the active ws_id; `state.wsDetail`
-    /// combines it with the manifest half to form the view.
+    /// Pump the workspace context files pending slot. Stores under the
+    /// ws_id the request was issued for; `state.wsDetail` combines it
+    /// with the manifest half to form the view.
     fn consumeWsContextFilesResult(self: *Dashboard) void {
         const result = self.api_state.ws_context_files_pending.consume() orelse return;
         switch (result) {
-            .ok => |files| {
-                const ws_id = self.activeWsId() orelse return;
-                self.api_state.ws_context_files_cache.store(.{ .value = ws_id }, files);
+            .ok => |payload| {
+                self.api_state.ws_context_files_cache.store(.{ .value = payload.ws_id }, payload.files);
             },
             else => {},
         }
@@ -1447,9 +1458,8 @@ pub const Dashboard = struct {
     fn consumeWsManifestResult(self: *Dashboard) void {
         const result = self.api_state.ws_manifest_pending.consume() orelse return;
         switch (result) {
-            .ok => |prompts| {
-                const ws_id = self.activeWsId() orelse return;
-                self.api_state.ws_manifest_cache.store(.{ .value = ws_id }, prompts);
+            .ok => |payload| {
+                self.api_state.ws_manifest_cache.store(.{ .value = payload.ws_id }, payload.prompts);
             },
             else => {},
         }
@@ -1457,15 +1467,15 @@ pub const Dashboard = struct {
 
     /// Pump the PR detail pending slot. On .ok, stash the raw response
     /// in the cache and recompute the derived view fields (picked
-    /// operation, diff lines, trace refers) against the currently
-    /// active prompt_id so the UI can render them directly.
+    /// operation, diff lines, trace refers) against the response's
+    /// own pr_id so selection changes mid-flight cannot misroute
+    /// either the cache entry or the derived fields.
     fn consumePrDetailResult(self: *Dashboard) void {
         const result = self.api_state.pr_detail_pending.consume() orelse return;
         switch (result) {
             .ok => |resp| {
-                const pr_id = self.activePrId() orelse return;
-                self.api_state.pr_detail_cache.store(.{ .value = pr_id }, resp);
-                self.refreshPrDetailDerivedFields(pr_id, resp);
+                self.api_state.pr_detail_cache.store(.{ .value = resp.pr_id }, resp);
+                self.refreshPrDetailDerivedFields(resp.pr_id, resp);
             },
             else => {},
         }
@@ -1474,9 +1484,8 @@ pub const Dashboard = struct {
     fn consumePrCommentsResult(self: *Dashboard) void {
         const result = self.api_state.pr_comments_pending.consume() orelse return;
         switch (result) {
-            .ok => |comments| {
-                const pr_id = self.activePrId() orelse return;
-                self.api_state.pr_comments_cache.store(.{ .value = pr_id }, comments);
+            .ok => |payload| {
+                self.api_state.pr_comments_cache.store(.{ .value = payload.pr_id }, payload.comments);
             },
             else => {},
         }
@@ -1599,22 +1608,17 @@ pub const Dashboard = struct {
         return std.fmt.allocPrint(alloc, "{s}: {s} ({s})", .{ context, err.message, err.code }) catch context;
     }
 
-    /// Pump the workspace context file content pending slot.
+    /// Pump the workspace context file content pending slot. The
+    /// payload carries the (ws_id, path) key the request was issued
+    /// for, so the cache entry is routed against the request rather
+    /// than against whatever the user now has selected.
     fn consumeWsContextContentResult(self: *Dashboard) void {
         const result = self.api_state.ws_context_content_pending.consume() orelse return;
         switch (result) {
-            .ok => |body| {
-                // The request parameters are not on the result; recover
-                // the (ws_id, path) key from the current workspace
-                // selection so the cache entry lines up with what
-                // cachedWorkspaceContextBody will look up later.
-                const ws_id = self.activeWsId() orelse return;
-                const ws_d = api.state.wsDetail(self.api_state, ws_id) orelse return;
-                const context_sel = self.resolveWsContextSelection(&ws_d) orelse return;
-                const file = ws_d.context_files[context_sel];
+            .ok => |payload| {
                 self.api_state.ws_context_content_cache.store(
-                    .{ .ws_id = ws_d.ws_id, .path = file.path },
-                    body,
+                    .{ .ws_id = payload.ws_id, .path = payload.path },
+                    payload.body,
                 );
             },
             else => {},
