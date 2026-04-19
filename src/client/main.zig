@@ -189,3 +189,52 @@ test "command_map: unknown command returns null" {
     try testing.expect(command_map.get("foobar") == null);
     try testing.expect(command_map.get("") == null);
 }
+
+// Test aggregator. `zig build test` runs tests declared on the root
+// module's container (this file). Test blocks in files reached only
+// through ordinary `const x = @import(...)` imports are NOT collected.
+// The only way to pull them in is an explicit reference inside a test
+// block — that is what this block does. When adding a new `.zig` file
+// with tests, register it here so CI actually runs them.
+test {
+    _ = @import("clumsies_lib");
+
+    _ = @import("adapter/model.zig");
+    _ = @import("adapter/packages/claude_code.zig");
+    _ = @import("adapter/packages/codex.zig");
+    _ = @import("adapter/primitives/json_mcp_registry.zig");
+    _ = @import("adapter/primitives/json_ops.zig");
+    _ = @import("adapter/primitives/toml_ops.zig");
+    _ = @import("adapter/remove.zig");
+    _ = @import("adapter/root.zig");
+    _ = @import("adapter/store.zig");
+    _ = @import("adapter/workflow_skills.zig");
+
+    _ = @import("batch_upload.zig");
+    _ = @import("drafts.zig");
+    _ = @import("flags.zig");
+    _ = @import("prompt.zig");
+    _ = @import("session_marker.zig");
+    _ = @import("trace.zig");
+    _ = @import("workspace_config.zig");
+
+    _ = @import("commands/init_cmd.zig");
+    _ = @import("commands/login_cmd.zig");
+    _ = @import("commands/sync_cmd.zig");
+
+    _ = @import("mcp/jsonrpc.zig");
+    _ = @import("mcp/server.zig");
+    _ = @import("mcp/tool_result.zig");
+    _ = @import("mcp/tools.zig");
+
+    _ = @import("tui/api/cache.zig");
+    _ = @import("tui/api/dispatcher.zig");
+    _ = @import("tui/api/parse.zig");
+    _ = @import("tui/api/request.zig");
+    _ = @import("tui/api/view_model.zig");
+    _ = @import("tui/app/workspace.zig");
+    _ = @import("tui/editor_host.zig");
+    _ = @import("tui/trace_reader.zig");
+    _ = @import("tui/tree.zig");
+    _ = @import("tui/widgets.zig");
+}

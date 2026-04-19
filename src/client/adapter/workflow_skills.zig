@@ -135,7 +135,7 @@ fn trimWorkflowPrefix(stem: []const u8) []const u8 {
     var idx: usize = 0;
     while (idx < stem.len and std.ascii.isDigit(stem[idx])) : (idx += 1) {}
     while (idx < stem.len and (stem[idx] == '_' or stem[idx] == '-' or stem[idx] == ' ')) : (idx += 1) {}
-    return if (idx < stem.len) stem[idx..] else stem;
+    return stem[idx..];
 }
 
 fn renderSkillContent(

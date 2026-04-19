@@ -29,7 +29,7 @@ pub fn toPromptEntries(
             .revision = 0,
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch &.{};
 }
 
 pub fn toBundleEntries(
@@ -43,7 +43,7 @@ pub fn toBundleEntries(
             .count = @intCast(@min(b.prompt_count, std.math.maxInt(u16))),
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch &.{};
 }
 
 pub fn toPrEntries(
@@ -94,7 +94,7 @@ pub fn toPrEntries(
             .op_index = op_index,
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch &.{};
 }
 
 pub fn analysisFromStats(
@@ -248,6 +248,10 @@ test "toPromptEntries maps library prompts to view entries" {
         .{ .prompt_id = "p2", .path = "workflow/COMMIT.md", .content_hash = "def", .updated_at = "2025-01-02", .refer_count = 1500 },
     };
     const entries = toPromptEntries(alloc, &prompts);
+    defer {
+        for (entries) |entry| alloc.free(entry.refer_count);
+        alloc.free(entries);
+    }
     try std.testing.expectEqual(@as(usize, 2), entries.len);
     try std.testing.expectEqualStrings("rule/STYLE.md", entries[0].path);
     try std.testing.expectEqualStrings("rule", entries[0].kind);
@@ -255,8 +259,6 @@ test "toPromptEntries maps library prompts to view entries" {
     try std.testing.expectEqualStrings("wf", entries[1].kind);
     // 1500 should be formatted as "1.5k"
     try std.testing.expectEqualStrings("1.5k", entries[1].refer_count);
-    alloc.free(entries[1].refer_count);
-    alloc.free(entries[0].refer_count);
 }
 
 test "toBundleEntries maps bundle data to view entries" {
@@ -265,6 +267,7 @@ test "toBundleEntries maps bundle data to view entries" {
         .{ .name = "default", .description = "", .prompt_count = 5 },
     };
     const entries = toBundleEntries(alloc, &bundles);
+    defer alloc.free(entries);
     try std.testing.expectEqual(@as(usize, 1), entries.len);
     try std.testing.expectEqualStrings("default", entries[0].name);
     try std.testing.expectEqual(@as(u16, 5), entries[0].count);
@@ -334,5 +337,5 @@ fn toMemberStatss(
             .models = &.{},
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch &.{};
 }

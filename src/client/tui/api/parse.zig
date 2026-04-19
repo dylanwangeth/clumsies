@@ -24,7 +24,7 @@ pub fn parseComments(alloc: std.mem.Allocator, body: []const u8) ?[]const data.C
             .created = alloc.dupe(u8, c.created_at) catch continue,
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch return null;
 }
 
 pub fn parseContextFiles(alloc: std.mem.Allocator, body: []const u8) ?[]const model.ContextFileData {
@@ -44,7 +44,7 @@ pub fn parseContextFiles(alloc: std.mem.Allocator, body: []const u8) ?[]const mo
             .updated_at = alloc.dupe(u8, f.updated_at) catch continue,
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch return null;
 }
 
 pub fn parseManifestPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const model.WsPromptData {
@@ -62,7 +62,7 @@ pub fn parseManifestPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const
             .path = alloc.dupe(u8, entry.value.path) catch continue,
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch return null;
 }
 
 pub fn parseUser(alloc: std.mem.Allocator, body: []const u8) ?model.UserData {
@@ -127,7 +127,7 @@ pub fn parseLibraryPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const 
             .updated_at = alloc.dupe(u8, p.updated_at) catch continue,
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch return null;
 }
 
 pub fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?model.OrgStats {
@@ -224,7 +224,7 @@ pub fn parseBundles(alloc: std.mem.Allocator, body: []const u8) ?[]const model.B
             .prompt_count = prompt_count,
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch return null;
 }
 
 pub fn parsePromptPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model.PromptPr {
@@ -245,7 +245,7 @@ pub fn parsePromptPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model
             .operation_count = @intCast(@min(pr.operation_count, std.math.maxInt(i32))),
         }) catch continue;
     }
-    return list.items;
+    return list.toOwnedSlice(alloc) catch return null;
 }
 
 test "parseContextFiles accepts content_hash from hub response" {
