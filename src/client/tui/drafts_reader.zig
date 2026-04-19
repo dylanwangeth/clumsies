@@ -1,4 +1,4 @@
-// Read local drafts/_index.json files across all workspaces.
+// Read local drafts/index.json files across all workspaces.
 const std = @import("std");
 
 pub const DraftEntry = struct {
@@ -28,7 +28,7 @@ pub fn readAllDrafts(allocator: std.mem.Allocator) ?[]const DraftEntry {
     var it = dir.iterate();
     while (it.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
-        const index_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "drafts", "_index.json" }) catch continue;
+        const index_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "drafts", "index.json" }) catch continue;
         defer allocator.free(index_path);
         readIndexFile(allocator, index_path, &all);
     }
