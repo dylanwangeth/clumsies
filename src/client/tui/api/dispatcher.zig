@@ -86,9 +86,22 @@ pub const ThreadRegistry = struct {
 
 /// Runtime context carried from the caller into the worker thread. The
 /// caller hands the dispatcher a spec + pending slot + request payload;
-/// the dispatcher copies the payload into `alloc` (so the worker is free
-/// of UI-thread references) and stores the generation it received from
-/// `pending.tryBegin`.
+/// the dispatcher copies the payload into `transient_parent` (so the
+/// worker is free of UI-thread references) and stores the generation it
+/// received from `pending.tryBegin`.
+///
+/// Two allocators travel on the context because they have different
+/// lifetimes:
+///
+/// * `transient_parent` is a stable, thread-safe heap allocator (the
+///   caller's backing GPA). It owns the tiny persistent state the caller
+///   hands across the thread boundary — this struct, the url and token
+///   dupes, and the deep-copied request. The worker frees them at exit.
+///   The worker also creates a per-request `ArenaAllocator` from it to
+///   back path/body/HubClient allocations that live for one request.
+/// * `result_alloc` is the long-lived arena shared with the UI.
+///   `spec.parse_ok` and `parseApiError` write into it so parsed values
+///   and api_error strings outlive the worker and land in caches.
 fn WorkerContext(comptime ReqT: type, comptime RespT: type) type {
     return struct {
         spec: RequestSpec(ReqT, RespT),
@@ -97,7 +110,8 @@ fn WorkerContext(comptime ReqT: type, comptime RespT: type) type {
         generation: u64,
         hub_url: []const u8,
         access_token: []const u8,
-        alloc: std.mem.Allocator,
+        transient_parent: std.mem.Allocator,
+        result_alloc: std.mem.Allocator,
     };
 }
 
@@ -107,7 +121,7 @@ fn WorkerContext(comptime ReqT: type, comptime RespT: type) type {
 ///
 /// The caller retains `req`; if `ReqT` contains slices, they must remain
 /// valid until `dispatch` returns. The dispatcher deep-copies the payload
-/// into `alloc` before handing it to the worker thread.
+/// into `transient_parent` before handing it to the worker thread.
 pub fn dispatch(
     comptime ReqT: type,
     comptime RespT: type,
@@ -117,32 +131,33 @@ pub fn dispatch(
     registry_alloc: std.mem.Allocator,
     hub_url: []const u8,
     access_token: []const u8,
-    alloc: std.mem.Allocator,
+    transient_parent: std.mem.Allocator,
+    result_alloc: std.mem.Allocator,
     req: ReqT,
 ) void {
     const gen = pending.tryBegin() orelse return;
 
-    const req_copy = deepCopy(ReqT, alloc, req) catch {
+    const req_copy = deepCopy(ReqT, transient_parent, req) catch {
         pending.complete(gen, .network_error);
         return;
     };
-    const url_copy = alloc.dupe(u8, hub_url) catch {
-        freeDeepCopy(ReqT, alloc, req_copy);
+    const url_copy = transient_parent.dupe(u8, hub_url) catch {
+        freeDeepCopy(ReqT, transient_parent, req_copy);
         pending.complete(gen, .network_error);
         return;
     };
-    const token_copy = alloc.dupe(u8, access_token) catch {
-        alloc.free(url_copy);
-        freeDeepCopy(ReqT, alloc, req_copy);
+    const token_copy = transient_parent.dupe(u8, access_token) catch {
+        transient_parent.free(url_copy);
+        freeDeepCopy(ReqT, transient_parent, req_copy);
         pending.complete(gen, .network_error);
         return;
     };
 
     const Ctx = WorkerContext(ReqT, RespT);
-    const ctx_ptr = alloc.create(Ctx) catch {
-        alloc.free(token_copy);
-        alloc.free(url_copy);
-        freeDeepCopy(ReqT, alloc, req_copy);
+    const ctx_ptr = transient_parent.create(Ctx) catch {
+        transient_parent.free(token_copy);
+        transient_parent.free(url_copy);
+        freeDeepCopy(ReqT, transient_parent, req_copy);
         pending.complete(gen, .network_error);
         return;
     };
@@ -153,14 +168,15 @@ pub fn dispatch(
         .generation = gen,
         .hub_url = url_copy,
         .access_token = token_copy,
-        .alloc = alloc,
+        .transient_parent = transient_parent,
+        .result_alloc = result_alloc,
     };
 
     const thread = std.Thread.spawn(.{}, runWorker(ReqT, RespT), .{ctx_ptr}) catch {
-        alloc.destroy(ctx_ptr);
-        alloc.free(token_copy);
-        alloc.free(url_copy);
-        freeDeepCopy(ReqT, alloc, req_copy);
+        transient_parent.destroy(ctx_ptr);
+        transient_parent.free(token_copy);
+        transient_parent.free(url_copy);
+        freeDeepCopy(ReqT, transient_parent, req_copy);
         pending.complete(gen, .network_error);
         return;
     };
@@ -175,28 +191,36 @@ pub fn dispatch(
 fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(ReqT, RespT)) void {
     return struct {
         fn run(ctx: *WorkerContext(ReqT, RespT)) void {
-            const alloc = ctx.alloc;
-            defer alloc.destroy(ctx);
-            defer alloc.free(ctx.access_token);
-            defer alloc.free(ctx.hub_url);
-            defer freeDeepCopy(ReqT, alloc, ctx.req);
+            const transient_parent = ctx.transient_parent;
+            const result_alloc = ctx.result_alloc;
 
-            const path = ctx.spec.path_builder(alloc, ctx.req) catch {
+            defer transient_parent.destroy(ctx);
+            defer transient_parent.free(ctx.access_token);
+            defer transient_parent.free(ctx.hub_url);
+            defer freeDeepCopy(ReqT, transient_parent, ctx.req);
+
+            // Per-request arena for path, body, HubClient response
+            // buffers, and any other single-request scratch. Deinit at
+            // end of worker so these do not accumulate in the long-lived
+            // UI arena.
+            var arena = std.heap.ArenaAllocator.init(transient_parent);
+            defer arena.deinit();
+            const t_alloc = arena.allocator();
+
+            const path = ctx.spec.path_builder(t_alloc, ctx.req) catch {
                 ctx.pending.complete(ctx.generation, .network_error);
                 return;
             };
-            defer alloc.free(path);
 
             const body: ?[]const u8 = if (ctx.spec.body_builder) |build_body|
-                build_body(alloc, ctx.req) catch {
+                build_body(t_alloc, ctx.req) catch {
                     ctx.pending.complete(ctx.generation, .network_error);
                     return;
                 }
             else
                 null;
-            defer if (body) |b| alloc.free(b);
 
-            var client = HubClient.init(alloc, ctx.hub_url, ctx.access_token);
+            var client = HubClient.init(t_alloc, ctx.hub_url, ctx.access_token);
             const resp = switch (ctx.spec.method) {
                 .GET => client.get(path),
                 .POST => client.post(path, body orelse "{}"),
@@ -210,7 +234,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
             };
             defer resp.deinit();
 
-            const result = classifyResponse(RespT, ctx.spec, alloc, resp.status, resp.body);
+            const result = classifyResponse(RespT, ctx.spec, result_alloc, resp.status, resp.body);
             ctx.pending.complete(ctx.generation, result);
         }
     }.run;
