@@ -311,7 +311,10 @@ test "collectBatch skips blank lines without counting them" {
     try testing.expectEqual(@as(usize, 2), batch.lines.items.len);
     try testing.expectEqualStrings("a", batch.lines.items[0]);
     try testing.expectEqualStrings("b", batch.lines.items[1]);
-    try testing.expectEqual(@as(u64, 100 + 4), batch.end_offset);
+    // end_offset advances past every byte consumed from the reader
+    // (including the blank line's newline); only the emitted lines
+    // count is reduced by the blank-skip logic.
+    try testing.expectEqual(@as(u64, 100 + sample.len), batch.end_offset);
 }
 
 test "collectBatch drops oversized event and keeps neighbors" {

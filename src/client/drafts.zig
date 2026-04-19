@@ -26,6 +26,7 @@ pub const DraftOperation = enum {
 
 pub const DraftStatus = enum {
     editing,
+    ready,
     submitted,
     merged,
     rejected,
@@ -136,6 +137,8 @@ fn parseEntry(obj: std.json.ObjectMap) ?DraftEntry {
     const status_str = stringField(obj, "status") orelse return null;
     const status: DraftStatus = if (std.mem.eql(u8, status_str, "editing"))
         .editing
+    else if (std.mem.eql(u8, status_str, "ready"))
+        .ready
     else if (std.mem.eql(u8, status_str, "submitted"))
         .submitted
     else if (std.mem.eql(u8, status_str, "merged"))
@@ -330,19 +333,10 @@ fn writeDraftFileAbs(
     draft_path: []const u8,
     content: []const u8,
 ) !void {
-    const category_dir = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString() });
-    defer allocator.free(category_dir);
-    try std.fs.makeDirAbsolute(category_dir);
-    errdefer {}
-
-    const full_path = try std.fs.path.join(allocator, &.{ category_dir, draft_path });
+    const full_path = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString(), draft_path });
     defer allocator.free(full_path);
 
     if (std.fs.path.dirname(full_path)) |parent| {
-        std.fs.makeDirAbsolute(parent) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
         try ensureDirTreeAbsolute(parent);
     }
 
@@ -470,6 +464,7 @@ fn operationToString(op: DraftOperation) []const u8 {
 fn statusToString(status: DraftStatus) []const u8 {
     return switch (status) {
         .editing => "editing",
+        .ready => "ready",
         .submitted => "submitted",
         .merged => "merged",
         .rejected => "rejected",
