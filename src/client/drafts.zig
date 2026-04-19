@@ -69,7 +69,7 @@ pub const DraftsIndex = struct {
     }
 };
 
-/// Load `{ws_dir}/drafts/_index.json` into memory. Returns an empty index if
+/// Load `{ws_dir}/drafts/index.json` into memory. Returns an empty index if
 /// the file does not exist; this is the expected state before any drafts exist.
 pub fn loadIndex(allocator: std.mem.Allocator, ws_dir: []const u8) !DraftsIndex {
     const arena_state = try allocator.create(std.heap.ArenaAllocator);
@@ -80,7 +80,7 @@ pub fn loadIndex(allocator: std.mem.Allocator, ws_dir: []const u8) !DraftsIndex 
     var index: DraftsIndex = .{ .arena_state = arena_state };
     const arena = arena_state.allocator();
 
-    const index_path = try std.fs.path.join(arena, &.{ ws_dir, "drafts", "_index.json" });
+    const index_path = try std.fs.path.join(arena, &.{ ws_dir, "drafts", "index.json" });
 
     const file = std.fs.openFileAbsolute(index_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return index,
@@ -188,6 +188,295 @@ pub fn readDraftFile(
     return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024));
 }
 
+/// Parameters for creating a new draft entry. `draft_path` is the target
+/// path inside `drafts/{category}/`; `current_path` is null for
+/// `create` operations and equals the cache path for `modify` / `delete`
+/// (and equals the source path for `rename`; `draft_path` then carries
+/// the new path).
+pub const CreateDraftParams = struct {
+    category: DraftCategory,
+    operation: DraftOperation,
+    draft_path: []const u8,
+    current_path: ?[]const u8 = null,
+    base_hash: ?[]const u8 = null,
+    prompt_id: ?[]const u8 = null,
+    context_id: ?[]const u8 = null,
+    local_temp_id: ?[]const u8 = null,
+};
+
+/// Create a new draft entry and write its initial content file. Fails
+/// if a draft for the same (category, draft_path) already exists —
+/// callers should use `saveDraftContent` to update an existing draft.
+/// `initial_content` is required except for `.delete` operations.
+///
+/// Both the content file and the `index.json` are written via
+/// temp-file + rename so a mid-write crash cannot leave a torn index.
+pub fn createDraft(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    params: CreateDraftParams,
+    initial_content: []const u8,
+) !void {
+    if (!path_util.isSafeRelative(params.draft_path)) return error.UnsafeDraftPath;
+
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    for (index.entries.items) |entry| {
+        if (entry.category != params.category) continue;
+        if (std.mem.eql(u8, entry.draft_path, params.draft_path)) return error.DraftAlreadyExists;
+    }
+
+    if (params.operation != .delete) {
+        try writeDraftFileAbs(allocator, ws_dir, params.category, params.draft_path, initial_content);
+    }
+
+    const new_entry = DraftEntry{
+        .category = params.category,
+        .prompt_id = params.prompt_id,
+        .context_id = params.context_id,
+        .local_temp_id = params.local_temp_id,
+        .current_path = params.current_path,
+        .draft_path = params.draft_path,
+        .operation = params.operation,
+        .base_hash = params.base_hash,
+        .status = .editing,
+    };
+
+    try index.entries.append(index.arena_state.allocator(), new_entry);
+    try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+}
+
+/// Overwrite the content file of an existing draft. Does not touch the
+/// index. Fails if the draft's entry is a `.delete` operation (which
+/// has no content file by definition).
+pub fn saveDraftContent(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+    content: []const u8,
+) !void {
+    if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
+    try writeDraftFileAbs(allocator, ws_dir, category, draft_path, content);
+}
+
+/// Remove a draft: delete its content file (if any) and drop its entry
+/// from the index. Idempotent when the entry is already absent.
+pub fn discardDraft(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+) !void {
+    if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
+
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    const arena = index.arena_state.allocator();
+    var kept: std.ArrayListUnmanaged(DraftEntry) = .empty;
+    var removed = false;
+    for (index.entries.items) |entry| {
+        if (entry.category == category and std.mem.eql(u8, entry.draft_path, draft_path)) {
+            removed = true;
+            continue;
+        }
+        try kept.append(arena, entry);
+    }
+
+    if (removed) try writeIndexAtomic(allocator, ws_dir, kept.items);
+
+    const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString(), draft_path });
+    defer allocator.free(abs_path);
+    std.fs.deleteFileAbsolute(abs_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+}
+
+/// Transition the status of an existing draft. Fails if the draft does
+/// not exist. Idempotent when the draft is already in `new_status`.
+pub fn setDraftStatus(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+    new_status: DraftStatus,
+) !void {
+    if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
+
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    var found = false;
+    for (index.entries.items) |*entry| {
+        if (entry.category == category and std.mem.eql(u8, entry.draft_path, draft_path)) {
+            if (entry.status == new_status) return;
+            entry.status = new_status;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return error.DraftNotFound;
+
+    try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+}
+
+fn writeDraftFileAbs(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+    content: []const u8,
+) !void {
+    const category_dir = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString() });
+    defer allocator.free(category_dir);
+    try std.fs.makeDirAbsolute(category_dir);
+    errdefer {}
+
+    const full_path = try std.fs.path.join(allocator, &.{ category_dir, draft_path });
+    defer allocator.free(full_path);
+
+    if (std.fs.path.dirname(full_path)) |parent| {
+        std.fs.makeDirAbsolute(parent) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        try ensureDirTreeAbsolute(parent);
+    }
+
+    try atomicWriteAbsolute(allocator, full_path, content);
+}
+
+/// Recursively ensure every ancestor of `abs_path` exists. `makeDirAbsolute`
+/// errors on missing intermediates; this walks up and creates each
+/// segment idempotently.
+fn ensureDirTreeAbsolute(abs_path: []const u8) !void {
+    std.fs.makeDirAbsolute(abs_path) catch |err| switch (err) {
+        error.PathAlreadyExists => return,
+        error.FileNotFound => {
+            const parent = std.fs.path.dirname(abs_path) orelse return err;
+            try ensureDirTreeAbsolute(parent);
+            std.fs.makeDirAbsolute(abs_path) catch |e2| switch (e2) {
+                error.PathAlreadyExists => {},
+                else => return e2,
+            };
+        },
+        else => return err,
+    };
+}
+
+fn atomicWriteAbsolute(allocator: std.mem.Allocator, abs_path: []const u8, content: []const u8) !void {
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{abs_path});
+    defer allocator.free(tmp_path);
+
+    {
+        const file = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var buf: [4096]u8 = undefined;
+        var fw = std.fs.File.Writer.init(file, &buf);
+        try fw.interface.writeAll(content);
+        try fw.interface.flush();
+    }
+
+    try std.fs.renameAbsolute(tmp_path, abs_path);
+}
+
+fn writeIndexAtomic(allocator: std.mem.Allocator, ws_dir: []const u8, entries: []const DraftEntry) !void {
+    const drafts_dir = try std.fs.path.join(allocator, &.{ ws_dir, "drafts" });
+    defer allocator.free(drafts_dir);
+    try ensureDirTreeAbsolute(drafts_dir);
+
+    const index_path = try std.fs.path.join(allocator, &.{ drafts_dir, "index.json" });
+    defer allocator.free(index_path);
+
+    const json = try serializeIndex(allocator, entries);
+    defer allocator.free(json);
+
+    try atomicWriteAbsolute(allocator, index_path, json);
+}
+
+fn serializeIndex(allocator: std.mem.Allocator, entries: []const DraftEntry) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "{\n  \"drafts\": [");
+    for (entries, 0..) |entry, i| {
+        if (i > 0) try buf.appendSlice(allocator, ",");
+        try buf.appendSlice(allocator, "\n    {");
+        try writeStringField(allocator, &buf, "category", entry.category.toString(), true);
+        try writeOptStringField(allocator, &buf, "prompt_id", entry.prompt_id);
+        try writeOptStringField(allocator, &buf, "context_id", entry.context_id);
+        try writeOptStringField(allocator, &buf, "local_temp_id", entry.local_temp_id);
+        try writeOptStringField(allocator, &buf, "current_path", entry.current_path);
+        try writeStringField(allocator, &buf, "draft_path", entry.draft_path, false);
+        try writeStringField(allocator, &buf, "operation", operationToString(entry.operation), false);
+        try writeOptStringField(allocator, &buf, "base_hash", entry.base_hash);
+        try writeStringField(allocator, &buf, "status", statusToString(entry.status), false);
+        try buf.appendSlice(allocator, "\n    }");
+    }
+    if (entries.len > 0) try buf.appendSlice(allocator, "\n  ");
+    try buf.appendSlice(allocator, "]\n}\n");
+
+    return try buf.toOwnedSlice(allocator);
+}
+
+fn writeStringField(
+    allocator: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    key: []const u8,
+    value: []const u8,
+    first: bool,
+) !void {
+    if (!first) try buf.appendSlice(allocator, ",");
+    try buf.appendSlice(allocator, "\n      \"");
+    try buf.appendSlice(allocator, key);
+    try buf.appendSlice(allocator, "\": \"");
+    try appendJsonEscaped(allocator, buf, value);
+    try buf.appendSlice(allocator, "\"");
+}
+
+fn writeOptStringField(
+    allocator: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    key: []const u8,
+    value: ?[]const u8,
+) !void {
+    const v = value orelse return;
+    try writeStringField(allocator, buf, key, v, false);
+}
+
+fn appendJsonEscaped(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
+    for (value) |c| switch (c) {
+        '"' => try buf.appendSlice(allocator, "\\\""),
+        '\\' => try buf.appendSlice(allocator, "\\\\"),
+        '\n' => try buf.appendSlice(allocator, "\\n"),
+        '\r' => try buf.appendSlice(allocator, "\\r"),
+        '\t' => try buf.appendSlice(allocator, "\\t"),
+        else => try buf.append(allocator, c),
+    };
+}
+
+fn operationToString(op: DraftOperation) []const u8 {
+    return switch (op) {
+        .create => "create",
+        .modify => "modify",
+        .rename => "rename",
+        .delete => "delete",
+    };
+}
+
+fn statusToString(status: DraftStatus) []const u8 {
+    return switch (status) {
+        .editing => "editing",
+        .submitted => "submitted",
+        .merged => "merged",
+        .rejected => "rejected",
+        .conflicted => "conflicted",
+    };
+}
+
 fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
     defer file.close();
@@ -219,7 +508,7 @@ test "loadIndex: parses prompt and context entries" {
     defer tmp.cleanup();
 
     try tmp.dir.makePath("drafts");
-    try writeFile(tmp.dir, "drafts/_index.json",
+    try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
         \\    {
@@ -266,7 +555,7 @@ test "loadIndex: invalid drafts array returns error" {
     defer tmp.cleanup();
 
     try tmp.dir.makePath("drafts");
-    try writeFile(tmp.dir, "drafts/_index.json",
+    try writeFile(tmp.dir, "drafts/index.json",
         \\{"drafts": "not an array"}
     );
 
@@ -303,4 +592,208 @@ test "readDraftFile: reads from drafts/{category}/{draft_path}" {
     defer testing.allocator.free(content);
 
     try testing.expectEqualStrings("draft override content", content);
+}
+
+test "createDraft: writes file and index entry round-trip" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .prompt,
+        .operation = .modify,
+        .draft_path = "rule/coding/STYLE.md",
+        .current_path = "rule/coding/STYLE.md",
+        .base_hash = "sha256:abc",
+        .prompt_id = "p-style",
+    }, "# STYLE modified\n");
+
+    const content = try readDraftFile(testing.allocator, root, .prompt, "rule/coding/STYLE.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("# STYLE modified\n", content);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.findByCurrentPath(.prompt, "rule/coding/STYLE.md").?;
+    try testing.expectEqual(DraftOperation.modify, entry.operation);
+    try testing.expectEqualStrings("p-style", entry.prompt_id.?);
+    try testing.expectEqualStrings("sha256:abc", entry.base_hash.?);
+    try testing.expectEqual(DraftStatus.editing, entry.status);
+}
+
+test "createDraft: rejects duplicate draft for same (category, draft_path)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "spec/NEW.md",
+    }, "# NEW\n");
+
+    try testing.expectError(error.DraftAlreadyExists, createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "spec/NEW.md",
+    }, "# NEW again\n"));
+}
+
+test "createDraft: delete operation does not write a content file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .prompt,
+        .operation = .delete,
+        .draft_path = "rule/old/UNUSED.md",
+        .current_path = "rule/old/UNUSED.md",
+        .prompt_id = "p-unused",
+    }, "");
+
+    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .prompt, "rule/old/UNUSED.md"));
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    const entry = index.findByCurrentPath(.prompt, "rule/old/UNUSED.md").?;
+    try testing.expectEqual(DraftOperation.delete, entry.operation);
+}
+
+test "saveDraftContent: overwrites existing draft file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .modify,
+        .draft_path = "spec/API.md",
+        .current_path = "spec/API.md",
+    }, "first version\n");
+
+    try saveDraftContent(testing.allocator, root, .context, "spec/API.md", "second version\n");
+
+    const content = try readDraftFile(testing.allocator, root, .context, "spec/API.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("second version\n", content);
+}
+
+test "discardDraft: removes entry and file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .prompt,
+        .operation = .create,
+        .draft_path = "rule/new/FRESH.md",
+        .local_temp_id = "local-1",
+    }, "# FRESH\n");
+
+    try discardDraft(testing.allocator, root, .prompt, "rule/new/FRESH.md");
+
+    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .prompt, "rule/new/FRESH.md"));
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), index.entries.items.len);
+}
+
+test "discardDraft: idempotent when draft is absent" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try discardDraft(testing.allocator, root, .prompt, "never/existed.md");
+}
+
+test "setDraftStatus: transitions editing to ready and back" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .prompt,
+        .operation = .modify,
+        .draft_path = "rule/x/Y.md",
+        .current_path = "rule/x/Y.md",
+        .prompt_id = "p-y",
+    }, "draft body\n");
+
+    try setDraftStatus(testing.allocator, root, .prompt, "rule/x/Y.md", .ready);
+
+    {
+        var index = try loadIndex(testing.allocator, root);
+        defer index.deinit(testing.allocator);
+        const entry = index.findByCurrentPath(.prompt, "rule/x/Y.md").?;
+        try testing.expectEqual(DraftStatus.ready, entry.status);
+    }
+
+    try setDraftStatus(testing.allocator, root, .prompt, "rule/x/Y.md", .editing);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    const entry = index.findByCurrentPath(.prompt, "rule/x/Y.md").?;
+    try testing.expectEqual(DraftStatus.editing, entry.status);
+}
+
+test "setDraftStatus: returns DraftNotFound for missing draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try testing.expectError(error.DraftNotFound, setDraftStatus(testing.allocator, root, .prompt, "nope.md", .ready));
+}
+
+test "index serialization: multiple entries survive round-trip" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .prompt,
+        .operation = .modify,
+        .draft_path = "rule/a/A.md",
+        .current_path = "rule/a/A.md",
+        .prompt_id = "p-a",
+        .base_hash = "sha256:aaa",
+    }, "a\n");
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "spec/B.md",
+        .local_temp_id = "tmp-b",
+    }, "b\n");
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .rename,
+        .draft_path = "archive/C.md",
+        .current_path = "spec/C.md",
+        .context_id = "c-c",
+        .base_hash = "sha256:ccc",
+    }, "c\n");
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 3), index.entries.items.len);
 }

@@ -308,7 +308,7 @@ fn lessThanPromptItem(_: void, a: PromptItem, b: PromptItem) bool {
 }
 
 /// Load prompt content by hub-issued prompt_id. Resolves each id through
-/// the local manifest, then consults drafts/_index.json: an active draft
+/// the local manifest, then consults drafts/index.json: an active draft
 /// with operation != "delete" wins over the cache copy. Unknown ids return
 /// `error.UnknownPromptId`. Drafts marked for deletion behave as NotFound.
 pub fn loadPrompts(
@@ -827,7 +827,7 @@ test "loadPrompts: draft content overrides cache when indexed" {
 
     try tmp.dir.makePath("drafts/prompt/rule");
     try writeFile(tmp.dir, "drafts/prompt/rule/STYLE.md", "draft override");
-    try writeFile(tmp.dir, "drafts/_index.json",
+    try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
         \\    {
@@ -872,7 +872,7 @@ test "loadPrompts: draft marked delete behaves as UnknownPromptId" {
     try writeFile(tmp.dir, "cache/rule/STYLE.md", "cache content");
 
     try tmp.dir.makePath("drafts");
-    try writeFile(tmp.dir, "drafts/_index.json",
+    try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
         \\    {
