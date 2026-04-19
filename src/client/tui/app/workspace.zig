@@ -548,7 +548,7 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
     if (self.api_state.ws_context_files_cache.lookup(.{ .value = ws_id }) == null) {
         api.specs.dispatchFromState(
             api.specs.WsIdParams,
-            []const api.model.ContextFileData,
+            api.specs.WsContextFilesPayload,
             api.specs.workspace_context_files,
             &self.api_state.ws_context_files_pending,
             self.api_state,
@@ -558,7 +558,7 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
     if (self.api_state.ws_manifest_cache.lookup(.{ .value = ws_id }) == null) {
         api.specs.dispatchFromState(
             api.specs.WsIdParams,
-            []const api.model.WsPromptData,
+            api.specs.WsManifestPayload,
             api.specs.workspace_manifest,
             &self.api_state.ws_manifest_pending,
             self.api_state,

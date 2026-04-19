@@ -23,6 +23,38 @@ pub const WsPathKey = struct {
     }
 };
 
+/// Response wrappers for endpoints whose wire response is a bare list
+/// (or raw body) and thus carries no request key of its own. The
+/// dispatcher parser dupes the relevant request field into the
+/// long-lived allocator and returns it alongside the parsed body, so
+/// the consumer can route the cache write against the request rather
+/// than against whatever the UI happens to select at consume time.
+pub const PromptPrsPayload = struct {
+    prompt_id: []const u8,
+    prs: []const model.PromptPr,
+};
+
+pub const WsContextFilesPayload = struct {
+    ws_id: []const u8,
+    files: []const model.ContextFileData,
+};
+
+pub const WsManifestPayload = struct {
+    ws_id: []const u8,
+    prompts: []const model.WsPromptData,
+};
+
+pub const WsContextContentPayload = struct {
+    ws_id: []const u8,
+    path: []const u8,
+    body: []const u8,
+};
+
+pub const PrCommentsPayload = struct {
+    pr_id: []const u8,
+    comments: []const data.CommentEntry,
+};
+
 pub const DraftEntry = drafts_reader.DraftEntry;
 pub const ActiveSession = session_reader.ActiveSession;
 
@@ -50,28 +82,34 @@ pub const ApiState = struct {
     prompt_content_pending: request.PendingRequest(dispatcher.Result(library_api.PromptContentResponse)) = .{},
     prompt_content_cache: cache.CacheSlot(cache.StringKey, library_api.PromptContentResponse) = .{},
 
-    // Library prompt PR list, keyed by prompt path (request itself uses prompt_id).
-    prompt_prs_pending: request.PendingRequest(dispatcher.Result([]const model.PromptPr)) = .{},
+    // Library prompt PR list. Pending result carries the prompt_id the
+    // request was issued for so the consumer stores under the correct
+    // cache key even if the UI's prompt selection changed mid-flight.
+    prompt_prs_pending: request.PendingRequest(dispatcher.Result(PromptPrsPayload)) = .{},
     prompt_prs_cache: cache.CacheSlot(cache.StringKey, []const model.PromptPr) = .{},
 
-    // Workspace context file content, keyed by (ws_id, path).
-    ws_context_content_pending: request.PendingRequest(dispatcher.Result([]const u8)) = .{},
+    // Workspace context file content, keyed by (ws_id, path). Payload
+    // includes both halves of the key so the consumer routes the body
+    // to the exact request that produced it.
+    ws_context_content_pending: request.PendingRequest(dispatcher.Result(WsContextContentPayload)) = .{},
     ws_context_content_cache: cache.CacheSlot(WsPathKey, []const u8) = .{},
 
     // Workspace detail (compound): two independent fetches keyed by ws_id,
-    // combined on read via `wsDetail(ws_id)`.
-    ws_context_files_pending: request.PendingRequest(dispatcher.Result([]const model.ContextFileData)) = .{},
+    // combined on read via `wsDetail(ws_id)`. Each pending payload carries
+    // its ws_id so a workspace switch mid-flight cannot mis-associate.
+    ws_context_files_pending: request.PendingRequest(dispatcher.Result(WsContextFilesPayload)) = .{},
     ws_context_files_cache: cache.CacheSlot(cache.StringKey, []const model.ContextFileData) = .{},
-    ws_manifest_pending: request.PendingRequest(dispatcher.Result([]const model.WsPromptData)) = .{},
+    ws_manifest_pending: request.PendingRequest(dispatcher.Result(WsManifestPayload)) = .{},
     ws_manifest_cache: cache.CacheSlot(cache.StringKey, []const model.WsPromptData) = .{},
 
     // Pr detail (compound): detail response + comments keyed by pr_id.
     // The detail response carries operations + trace_summary; the consumer
     // computes the diff and picks the active operation against the cached
-    // prompt prs list.
+    // prompt prs list. pr_detail response already echoes pr_id; comments
+    // wrap the bare list with a PrCommentsPayload.
     pr_detail_pending: request.PendingRequest(dispatcher.Result(collab_api.PromptPrDetailResponse)) = .{},
     pr_detail_cache: cache.CacheSlot(cache.StringKey, collab_api.PromptPrDetailResponse) = .{},
-    pr_comments_pending: request.PendingRequest(dispatcher.Result([]const data.CommentEntry)) = .{},
+    pr_comments_pending: request.PendingRequest(dispatcher.Result(PrCommentsPayload)) = .{},
     pr_comments_cache: cache.CacheSlot(cache.StringKey, []const data.CommentEntry) = .{},
 
     // Write endpoints. All three carry void payloads on success: the

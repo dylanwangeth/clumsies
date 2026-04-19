@@ -621,7 +621,7 @@ fn fetchSelectedPrDetail(self: anytype) void {
     if (self.api_state.pr_comments_cache.lookup(.{ .value = pr_id }) == null) {
         api.specs.dispatchFromState(
             api.specs.PrIdParams,
-            []const @import("../view_types.zig").CommentEntry,
+            api.specs.PrCommentsPayload,
             api.specs.pr_comments,
             &self.api_state.pr_comments_pending,
             self.api_state,
