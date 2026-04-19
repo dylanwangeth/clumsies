@@ -62,18 +62,25 @@ pub const ThreadRegistry = struct {
     }
 
     /// Block until every registered thread completes, then drop their
-    /// handles. Safe to call once at process exit.
+    /// handles. Safe to call at process exit. Swaps the active list into
+    /// a local under the lock before joining so a concurrent `register`
+    /// can neither invalidate the slice being iterated nor append a
+    /// thread that silently escapes the join.
     pub fn joinAll(self: *ThreadRegistry, alloc: std.mem.Allocator) void {
-        self.mutex.lock();
-        const threads = self.active.items;
-        self.mutex.unlock();
+        while (true) {
+            self.mutex.lock();
+            var batch = self.active;
+            self.active = .empty;
+            self.mutex.unlock();
 
-        for (threads) |t| t.join();
+            if (batch.items.len == 0) {
+                batch.deinit(alloc);
+                return;
+            }
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.active.deinit(alloc);
-        self.active = .empty;
+            for (batch.items) |t| t.join();
+            batch.deinit(alloc);
+        }
     }
 };
 
