@@ -120,12 +120,10 @@ pub const Dashboard = struct {
     selected_module: TopModule = .dashboard,
     selected_prompt: usize = 0,
     show_help: bool = false,
-    show_detail: bool = false,
     show_settings: bool = false,
     show_confirm: bool = false,
     confirm_message: []const u8 = "",
     confirm_action: ConfirmAction = .none,
-    detail_origin: TopModule = .library,
     detail_tab: DetailTab = .content,
     detail_focus_content: bool = false,
     settings_tab: SettingsTab = .account,
@@ -156,8 +154,6 @@ pub const Dashboard = struct {
     pr_indices: [MAX_PR_ROWS * 2]?usize = .{null} ** (MAX_PR_ROWS * 2),
     pr_desc_bufs: [MAX_PR_ROWS][160]u8 = undefined,
     pr_row_count: usize = 0,
-    // PR drill-down state
-    show_pr_diff: bool = false,
     selected_pr_idx: usize = 0,
     pr_diff_scroll_bars: vxfw.ScrollBars,
     pr_diff_widgets: [32]vxfw.Widget = undefined,
@@ -496,11 +492,6 @@ pub const Dashboard = struct {
                     return;
                 }
 
-                if (self.show_detail) {
-                    try prompt_detail_panel.handleOverlayEvent(self, ctx, event, key);
-                    return;
-                }
-
                 // Top-level tab switching
                 if (key.matches('1', .{})) return self.selectTab(ctx, .dashboard);
                 if (key.matches('2', .{})) return self.selectTab(ctx, .workspace);
@@ -671,7 +662,7 @@ pub const Dashboard = struct {
         var col: u16 = 1;
         for (top_tabs, 0..) |tab, idx| {
             const label = try std.fmt.allocPrint(ctx.arena, "{d} {s}", .{ idx + 1, tab.label() });
-            const is_active = if (self.show_detail or self.show_settings) false else (tab == self.selected_module);
+            const is_active = if (self.show_settings) false else (tab == self.selected_module);
             col = w.drawTabBadge(&surface, ctx, 2, col, label, is_active);
             col +|= 1;
         }
@@ -681,7 +672,6 @@ pub const Dashboard = struct {
 
     fn drawBody(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         if (self.show_settings) return self.drawSettings(ctx);
-        if (self.show_detail) return prompt_detail_panel.drawRoot(self, ctx);
         return switch (self.selected_module) {
             .dashboard => self.drawDashboard(ctx),
             .library => self.drawLibrary(ctx),
@@ -710,28 +700,20 @@ pub const Dashboard = struct {
             "j/k move  Esc back"
         else if (self.show_comment_editor)
             "Enter send  Esc cancel"
-        else if (self.show_detail and self.detail_tab == .pull_requests and self.show_pr_diff)
-            "j/k scroll  a accept  x reject  c comment  Esc back"
-        else if (self.show_detail and self.detail_tab == .pull_requests)
-            "j/k move  Enter view diff  h/l tab  Esc back  ? help"
-        else if (self.show_detail and self.detail_focus_content)
-            "j/k scroll  g/G jump  Tab info pane  Esc back  ? help"
-        else if (self.show_detail)
-            "h/l tab  j/k move  Tab content pane  p create PR  Esc back  ? help"
         else switch (self.selected_module) {
             .dashboard => switch (self.analysis_focus) {
                 .chart => "Tab focus  w scope  Shift-F flush  ? help  q quit",
                 .inputs => "j/k move  Enter detail  Tab focus  w scope  Shift-F flush  ? help  q quit",
                 else => "Tab focus  w scope  Shift-F flush  ? help  q quit",
             },
-            .library => if (self.detail_focus_content and self.detail_tab == .pull_requests and self.show_pr_diff)
-                "j/k scroll  a accept  x reject  c comment  Esc back"
-            else if (self.detail_focus_content and self.detail_tab == .pull_requests)
-                "j/k move  Enter view diff  Esc back  ? help"
+            .library => if (self.detail_focus_content and self.detail_tab == .pull_requests)
+                "j/k scroll  a accept  x reject  c comment  Esc list  ? help"
             else if (self.detail_focus_content)
-                "h/l tab  j/k scroll  Esc list  ? help"
+                "j/k scroll  g/G jump  Esc list  ? help"
+            else if (self.detail_tab == .pull_requests)
+                "j/k move  f filter  T tab  Tab detail  r refresh  ? help  q quit"
             else
-                "j/k move  Enter detail  r refresh  b bundle  S settings  ? help  q quit",
+                "j/k move  T tab  Enter detail  r refresh  b bundle  S settings  ? help  q quit",
             .workspace => switch (self.ws_focus) {
                 .bar => "j/k select workspace  c create  Tab list  r refresh  ? help  q quit",
                 .list => "h/l tab  j/k move  ←/→ tree  Enter open  c create  Esc bar  ? help",
@@ -757,7 +739,7 @@ pub const Dashboard = struct {
 
         // Right-aligned contextual hint for workspace items
         if (!self.show_help and !self.show_confirm and !self.show_settings and
-            !self.show_comment_editor and !self.show_detail and
+            !self.show_comment_editor and
             self.selected_module == .workspace)
         {
             const hint: []const u8 = if (self.ws_focus == .content)
@@ -777,8 +759,9 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    // Library: master-detail. Left = grouped prompt list, right = selected prompt detail.
-    // Enter / Tab switches focus between list and detail pane.
+    // Library: master-detail. Left panel carries a Files / Pull Requests
+    // inner tab strip; right panel is a single detail surface that
+    // follows whichever item the left panel has selected.
     fn drawLibrary(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         library_panel.syncLibraryWidgets(self);
 
@@ -790,7 +773,7 @@ pub const Dashboard = struct {
         const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
         const detail_w: u16 = size.width - list_w - 1;
         const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
-        const list_surface = try self.drawPromptTable(list_ctx);
+        const list_surface = try self.drawListPanel(list_ctx);
         const detail_surface = if (prompts.len > 0)
             try prompt_detail_panel.drawEmbedded(self, detail_ctx, &prompts[sel_idx])
         else
@@ -798,7 +781,7 @@ pub const Dashboard = struct {
         return library_panel.drawRoot(self, ctx, list_surface, detail_surface);
     }
 
-    fn drawPromptTable(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawListPanel(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const bundles_list = self.getBundles();
         const bundle_label: []const u8 = if (self.library_bundle_filter == 0)
             "All"
@@ -812,7 +795,7 @@ pub const Dashboard = struct {
             if (self.api_state.prompts) |p| break :blk p.len;
             break :blk 0;
         };
-        return library_panel.drawPromptTable(self, ctx, bundle_label, prompt_count);
+        return library_panel.drawListPanel(self, ctx, bundle_label, prompt_count);
     }
 
     // Workspace: top workspace bar + bottom master-detail (list | content).
@@ -1710,7 +1693,6 @@ pub const Dashboard = struct {
             .{ .pr_id = prs_for[pri].id, .action = action },
         );
         self.status_line = if (std.mem.eql(u8, action, "accept")) "Accepting PR..." else "Rejecting PR...";
-        self.show_pr_diff = false;
     }
 
     fn orgMemberCount(self: *Dashboard) usize {
@@ -2069,10 +2051,6 @@ pub const Dashboard = struct {
 
     fn contextHint(self: *const Dashboard) []const u8 {
         if (self.show_help) return "Keyboard reference overlay.";
-        if (self.show_detail) return switch (self.detail_tab) {
-            .content => "Full prompt body. j/k to scroll.",
-            .pull_requests => if (self.show_pr_diff) "PR diff view. j/k scroll, a/x/c actions." else "j/k move  f filter  Enter view  c comment  Esc back",
-        };
         return switch (self.selected_module) {
             .dashboard => "Live signal and recent input feed.",
             .library => "Bundle facet, prompt list, and passive preview.",
@@ -2082,7 +2060,6 @@ pub const Dashboard = struct {
     }
 
     fn selectTab(self: *Dashboard, ctx: *vxfw.EventContext, tab: TopModule) void {
-        self.show_detail = false;
         self.selected_module = tab;
         self.analysis_show_input_detail = false;
         self.analysis_show_member_detail = false;
@@ -2104,30 +2081,15 @@ pub const Dashboard = struct {
         ctx.consumeAndRedraw();
     }
 
-    fn openDetail(self: *Dashboard, ctx: *vxfw.EventContext, prompt_idx: usize, origin: TopModule, initial_tab: DetailTab) void {
-        const max_prompt = blk: {
-            const p = self.getPrompts();
-            break :blk if (p.len > 0) p.len - 1 else 0;
-        };
-        self.selected_prompt = @min(prompt_idx, max_prompt);
-        self.library_scroll_bars.scroll_view.cursor = @intCast(self.selected_prompt);
-        self.pr_filter = .open;
-        self.detail_origin = origin;
-        self.detail_tab = initial_tab;
-        self.show_detail = true;
-        self.status_line = "Prompt detail opened.";
-        ctx.consumeAndRedraw();
-    }
-
     pub fn shiftDetailTab(self: *Dashboard, delta: i8) void {
         const current: i8 = @intCast(@intFromEnum(self.detail_tab));
         const count: i8 = @intCast(detail_tabs.len);
         const next = @mod(current + delta + count, count);
         self.detail_tab = @enumFromInt(@as(u8, @intCast(next)));
-        // Reset PR drill-down state when leaving PR tab
-        self.show_pr_diff = false;
         self.show_comment_editor = false;
         self.pr_filter = .open;
+        self.selected_pr_idx = 0;
+        self.pr_scroll_bars.scroll_view.cursor = 0;
     }
 
     pub fn shiftWsTab(self: *Dashboard, delta: i8) void {

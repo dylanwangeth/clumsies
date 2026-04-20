@@ -11,37 +11,21 @@ const PromptDetailLayout = struct {
     inner_w_pad: u16,
     content_origin_col: i17,
     content_origin_row: i17,
-    pr_list_origin_col: i17,
-    pr_list_origin_row: i17,
     pr_diff_origin_col: i17,
     pr_diff_origin_row: i17,
 };
 
-const library_detail_layout: PromptDetailLayout = .{
+const embedded_layout: PromptDetailLayout = .{
     .inner_h_pad = 2,
     .inner_w_pad = 4,
     .content_origin_col = 2,
-    .content_origin_row = 2,
-    .pr_list_origin_col = 1,
-    .pr_list_origin_row = 2,
+    .content_origin_row = 1,
     .pr_diff_origin_col = 2,
-    .pr_diff_origin_row = 4,
-};
-
-const info_detail_layout: PromptDetailLayout = .{
-    .inner_h_pad = 3,
-    .inner_w_pad = 2,
-    .content_origin_col = 2,
-    .content_origin_row = 2,
-    .pr_list_origin_col = 1,
-    .pr_list_origin_row = 2,
-    .pr_diff_origin_col = 2,
-    .pr_diff_origin_row = 4,
+    .pr_diff_origin_row = 3,
 };
 
 const DetailBody = union(enum) {
     content: vxfw.Surface,
-    pull_request_list: vxfw.Surface,
     pull_request_diff: struct {
         title: []const u8,
         op_line: ?[]const u8,
@@ -68,80 +52,14 @@ pub fn drawEmbedded(
     ctx: vxfw.DrawContext,
     prompt: *const data.PromptEntry,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const body = try buildPromptDetailBody(self, ctx, prompt, library_detail_layout, true);
+    const body = try buildPromptDetailBody(self, ctx, prompt, embedded_layout);
 
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
     const border_color = w.focusBorder(self.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
-    try fillPromptDetailSurface(self, &surface, ctx, prompt, library_detail_layout, body);
+    try fillPromptDetailSurface(&surface, ctx, prompt, embedded_layout, body);
     return surface;
-}
-
-pub fn drawRoot(
-    self: anytype,
-    ctx: vxfw.DrawContext,
-) std.mem.Allocator.Error!vxfw.Surface {
-    const prompts = self.getPrompts();
-    const sel_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
-    if (prompts.len == 0) {
-        return drawRootEmpty(self, ctx);
-    }
-    const prompt = &prompts[sel_idx];
-
-    const size = ctx.max.size();
-    const info_w: u16 = size.width / 3;
-    const content_w: u16 = size.width - info_w - 1;
-
-    const info_ctx = ctx.withConstraints(
-        .{ .width = info_w, .height = size.height },
-        .{ .width = info_w, .height = size.height },
-    );
-    const content_ctx = ctx.withConstraints(
-        .{ .width = content_w, .height = size.height },
-        .{ .width = content_w, .height = size.height },
-    );
-    const info_surface = try drawInfoPane(self, info_ctx, prompt);
-    const content_surface = try drawContentPane(self, content_ctx, prompt);
-    return drawRootSplit(self, ctx, info_surface, content_surface);
-}
-
-pub fn handleOverlayEvent(
-    self: anytype,
-    ctx: *vxfw.EventContext,
-    event: vxfw.Event,
-    key: vaxis.Key,
-) anyerror!void {
-    if (key.matches(vaxis.Key.tab, .{})) {
-        self.detail_focus_content = !self.detail_focus_content;
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('p', .{})) {
-        self.status_line = "Create PR (not yet implemented)";
-        ctx.consumeAndRedraw();
-        return;
-    }
-
-    if (self.detail_focus_content) {
-        if (key.matches(vaxis.Key.escape, .{})) {
-            self.show_detail = false;
-            self.detail_focus_content = false;
-            self.selected_module = self.detail_origin;
-            ctx.consumeAndRedraw();
-            return;
-        }
-        try self.content_scroll_bars.scroll_view.handleEvent(ctx, event);
-        return;
-    }
-    if (key.matches(vaxis.Key.escape, .{}) and !(self.detail_tab == .pull_requests and self.show_pr_diff)) {
-        self.show_detail = false;
-        self.detail_focus_content = false;
-        self.selected_module = self.detail_origin;
-        ctx.consumeAndRedraw();
-        return;
-    }
-    try handleDetailBodyEvent(self, ctx, event, key, true);
 }
 
 pub fn handleEmbeddedPaneEvent(
@@ -150,78 +68,15 @@ pub fn handleEmbeddedPaneEvent(
     event: vxfw.Event,
     key: vaxis.Key,
 ) anyerror!void {
-    if (self.detail_tab == .pull_requests and self.show_pr_diff) {
-        try handlePrDiffEvent(self, ctx, event, key);
-        return;
-    }
     if (key.matches(vaxis.Key.escape, .{})) {
         self.detail_focus_content = false;
         ctx.consumeAndRedraw();
         return;
     }
-    try handleDetailBodyEvent(self, ctx, event, key, false);
-}
-
-fn drawRootEmpty(
-    self: anytype,
-    ctx: vxfw.DrawContext,
-) std.mem.Allocator.Error!vxfw.Surface {
-    var root = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-    w.fillSurface(&root, theme.PANEL);
-    w.writeText(&root, ctx, 2, 1, "No prompts loaded.", theme.fg(theme.MUTED));
-    return root;
-}
-
-fn drawRootSplit(
-    self: anytype,
-    ctx: vxfw.DrawContext,
-    info_surface: vxfw.Surface,
-    content_surface: vxfw.Surface,
-) std.mem.Allocator.Error!vxfw.Surface {
-    const size = ctx.max.size();
-    var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-    w.fillSurface(&root, theme.PANEL);
-
-    const info_w: u16 = size.width / 3;
-    const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-    children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = info_surface };
-    children[1] = .{ .origin = .{ .row = 0, .col = info_w + 1 }, .surface = content_surface };
-    root.children = children;
-    return root;
-}
-
-fn drawInfoPane(
-    self: anytype,
-    ctx: vxfw.DrawContext,
-    prompt: *const data.PromptEntry,
-) std.mem.Allocator.Error!vxfw.Surface {
-    const body = try buildPromptDetailBody(self, ctx, prompt, info_detail_layout, false);
-
-    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-    w.fillSurface(&surface, theme.PANEL);
-    const info_border = w.focusBorder(!self.detail_focus_content);
-    w.drawBorder(&surface, info_border, theme.PANEL);
-    try fillPromptDetailSurface(self, &surface, ctx, prompt, info_detail_layout, body);
-    return surface;
-}
-
-fn drawContentPane(
-    self: anytype,
-    ctx: vxfw.DrawContext,
-    prompt: *const data.PromptEntry,
-) std.mem.Allocator.Error!vxfw.Surface {
-    const content_surface = try buildPromptContentSurface(self, ctx, 4, ctx.max.height.? -| 2);
-
-    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-    w.fillSurface(&surface, theme.PANEL);
-    const border_color = w.focusBorder(self.detail_focus_content);
-    w.drawBorder(&surface, border_color, theme.PANEL);
-    w.writeText(&surface, ctx, 2, 0, prompt.path, theme.boldOn(theme.PANEL, theme.TEXT));
-
-    const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-    children[0] = .{ .origin = .{ .row = 1, .col = 2 }, .surface = content_surface };
-    surface.children = children;
-    return surface;
+    switch (self.detail_tab) {
+        .content => try self.content_scroll_bars.scroll_view.handleEvent(ctx, event),
+        .pull_requests => try handlePrDiffEvent(self, ctx, event, key),
+    }
 }
 
 fn buildPromptContentSurface(
@@ -244,12 +99,11 @@ fn buildPromptDetailBody(
     ctx: vxfw.DrawContext,
     prompt: *const data.PromptEntry,
     layout: PromptDetailLayout,
-    show_operation_header: bool,
 ) std.mem.Allocator.Error!DetailBody {
     switch (self.detail_tab) {
         .content => {
             return .{
-                .content = try buildPromptContentSurface(self, ctx, layout.inner_w_pad, ctx.max.height.? -| 3),
+                .content = try buildPromptContentSurface(self, ctx, layout.inner_w_pad, ctx.max.height.? -| 2),
             };
         },
         .pull_requests => {
@@ -259,82 +113,33 @@ fn buildPromptDetailBody(
             const inner_h = ctx.max.height.? -| layout.inner_h_pad;
             const inner_w = ctx.max.width.? -| layout.inner_w_pad;
 
-            if (self.show_pr_diff) {
-                const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
-                const pr = &prs[pr_idx];
-                const title = try std.fmt.allocPrint(
-                    ctx.arena,
-                    "{s} ─ {s} ─ {s} ─ {s} ─ refer:{d}",
-                    .{ pr.id, pr.prompt_name, pr.author, pr.status, pr.trace_refers },
-                );
-                const op_line = if (show_operation_header and pr.operation_count > 0)
-                    try opHeaderLine(ctx.arena, pr)
-                else
-                    null;
+            const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
+            const pr = &prs[pr_idx];
+            const title = try std.fmt.allocPrint(
+                ctx.arena,
+                "{s} ─ {s} ─ {s} ─ {s} ─ refer:{d}",
+                .{ pr.id, pr.prompt_name, pr.author, pr.status, pr.trace_refers },
+            );
+            const op_line = if (pr.operation_count > 0)
+                try opHeaderLine(ctx.arena, pr)
+            else
+                null;
 
-                syncPrDiffAndComments(self, ctx.arena);
-                const diff_h = inner_h -| 2;
-                const diff_ctx = ctx.withConstraints(
-                    .{ .width = inner_w, .height = diff_h },
-                    .{ .width = inner_w, .height = diff_h },
-                );
-                return .{
-                    .pull_request_diff = .{
-                        .title = title,
-                        .op_line = op_line,
-                        .surface = try self.pr_diff_scroll_bars.widget().draw(diff_ctx),
-                    },
-                };
-            }
-
-            syncPrWidgets(self);
-            const list_ctx = ctx.withConstraints(
-                .{ .width = inner_w, .height = inner_h },
-                .{ .width = inner_w, .height = inner_h },
+            syncPrDiffAndComments(self, ctx.arena);
+            const diff_h = inner_h -| 2;
+            const diff_ctx = ctx.withConstraints(
+                .{ .width = inner_w, .height = diff_h },
+                .{ .width = inner_w, .height = diff_h },
             );
             return .{
-                .pull_request_list = try drawPrList(self, list_ctx),
+                .pull_request_diff = .{
+                    .title = title,
+                    .op_line = op_line,
+                    .surface = try self.pr_diff_scroll_bars.widget().draw(diff_ctx),
+                },
             };
         },
     }
-}
-
-fn drawPrList(
-    self: anytype,
-    ctx: vxfw.DrawContext,
-) std.mem.Allocator.Error!vxfw.Surface {
-    self.pr_scroll_bars.scroll_view.draw_cursor = false;
-    defer self.pr_scroll_bars.scroll_view.draw_cursor = true;
-
-    var list_surface = try self.pr_scroll_bars.widget().draw(ctx);
-    const sv = &self.pr_scroll_bars.scroll_view;
-    if (sv.cursor >= sv.scroll.top) {
-        const vis_row = sv.cursor - sv.scroll.top;
-        const crow: i17 = @intCast(vis_row);
-        if (crow < list_surface.size.height) {
-            const cbuf = try ctx.arena.alloc(vaxis.Cell, 1);
-            cbuf[0] = .{
-                .char = .{ .grapheme = "▌", .width = 1 },
-                .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
-            };
-            const csurface: vxfw.Surface = .{
-                .size = .{ .width = 1, .height = 1 },
-                .widget = list_surface.widget,
-                .buffer = cbuf,
-                .children = &.{},
-            };
-            const old = list_surface.children;
-            const new_children = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
-            @memcpy(new_children[0..old.len], old);
-            new_children[old.len] = .{
-                .origin = .{ .col = 0, .row = crow },
-                .surface = csurface,
-                .z_index = 1,
-            };
-            list_surface.children = new_children;
-        }
-    }
-    return list_surface;
 }
 
 fn opHeaderLine(
@@ -358,27 +163,16 @@ fn opHeaderLine(
 }
 
 fn fillPromptDetailSurface(
-    self: anytype,
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
     prompt: *const data.PromptEntry,
     layout: PromptDetailLayout,
     body: DetailBody,
 ) std.mem.Allocator.Error!void {
-    var tab_col: u16 = 2;
-    const detail_tabs = [_]@TypeOf(self.detail_tab){ .content, .pull_requests };
-    for (detail_tabs) |tab| {
-        tab_col = w.drawInnerTabBadge(surface, ctx, 0, tab_col, detailTabLabel(tab), tab == self.detail_tab);
-        tab_col +|= 1;
-    }
-    if (self.detail_tab == .pull_requests) {
-        w.writeRightText(surface, ctx, 0, "f filter", theme.textOn(theme.PANEL, theme.MUTED));
-    } else if (self.detail_tab == .content) {
-        try writePromptMetaOnPanelChrome(surface, ctx, tab_col, prompt);
-    }
-
     switch (body) {
         .content => |content_surface| {
+            w.writeText(surface, ctx, 2, 0, prompt.path, theme.boldOn(theme.PANEL, theme.TEXT));
+            try writePromptMetaOnPanelChrome(surface, ctx, @intCast(2 + ctx.stringWidth(prompt.path) + 2), prompt);
             const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
             children[0] = .{
                 .origin = .{
@@ -390,12 +184,13 @@ fn fillPromptDetailSurface(
             surface.children = children;
         },
         .pull_request_empty => {
+            w.writeText(surface, ctx, 2, 0, "Pull Requests", theme.boldOn(theme.PANEL, theme.TEXT));
             w.writeText(surface, ctx, 2, 2, "No pull requests for this prompt.", theme.fg(theme.MUTED));
         },
         .pull_request_diff => |diff| {
-            w.writeText(surface, ctx, 2, 2, diff.title, theme.boldOn(theme.PANEL, theme.TEXT));
+            w.writeText(surface, ctx, 2, 0, diff.title, theme.boldOn(theme.PANEL, theme.TEXT));
             if (diff.op_line) |line| {
-                w.writeText(surface, ctx, 2, 3, line, theme.fg(theme.TEXT_SOFT));
+                w.writeText(surface, ctx, 2, 1, line, theme.fg(theme.TEXT_SOFT));
             }
 
             const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
@@ -408,25 +203,7 @@ fn fillPromptDetailSurface(
             };
             surface.children = children;
         },
-        .pull_request_list => |list_surface| {
-            const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-            children[0] = .{
-                .origin = .{
-                    .row = layout.pr_list_origin_row,
-                    .col = layout.pr_list_origin_col,
-                },
-                .surface = list_surface,
-            };
-            surface.children = children;
-        },
     }
-}
-
-fn detailTabLabel(tab: anytype) []const u8 {
-    return switch (tab) {
-        .content => "Content",
-        .pull_requests => "Pull Requests",
-    };
 }
 
 fn writePromptMetaOnPanelChrome(
@@ -497,87 +274,12 @@ fn writeHeaderRightIfFits(
     return true;
 }
 
-fn handleDetailBodyEvent(
-    self: anytype,
-    ctx: *vxfw.EventContext,
-    event: vxfw.Event,
-    key: vaxis.Key,
-    fetch_pr_detail_on_enter: bool,
-) anyerror!void {
-    if (self.detail_tab == .pull_requests and self.show_pr_diff) {
-        try handlePrDiffEvent(self, ctx, event, key);
-        return;
-    }
-
-    if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-        self.shiftDetailTab(-1);
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-        self.shiftDetailTab(1);
-        ctx.consumeAndRedraw();
-        return;
-    }
-
-    if (self.detail_tab == .content) {
-        try self.content_scroll_bars.scroll_view.handleEvent(ctx, event);
-        return;
-    }
-
-    if (self.detail_tab == .pull_requests) {
-        if (key.matches('f', .{})) {
-            self.pr_filter = nextPrFilter(self.pr_filter);
-            self.pr_scroll_bars.scroll_view.cursor = 0;
-            self.selected_pr_idx = 0;
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches(vaxis.Key.enter, .{})) {
-            self.show_pr_diff = true;
-            if (fetch_pr_detail_on_enter) fetchSelectedPrDetail(self);
-            ctx.consumeAndRedraw();
-            return;
-        }
-
-        syncPrWidgets(self);
-        if (self.pr_row_count == 0) return;
-
-        const prev = self.pr_scroll_bars.scroll_view.cursor;
-        try self.pr_scroll_bars.scroll_view.handleEvent(ctx, event);
-
-        var pos = @as(usize, @intCast(self.pr_scroll_bars.scroll_view.cursor));
-        if (pos >= self.pr_row_count) pos = if (self.pr_row_count > 0) self.pr_row_count - 1 else 0;
-
-        if (pos < self.pr_row_count and self.pr_indices[pos] == null) {
-            const moving_down = self.pr_scroll_bars.scroll_view.cursor > prev;
-            if (moving_down and pos + 1 < self.pr_row_count and self.pr_indices[pos + 1] != null) {
-                pos += 1;
-            } else {
-                pos = @intCast(prev);
-            }
-        }
-        self.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
-        if (pos < self.pr_row_count) {
-            if (self.pr_indices[pos]) |pr_idx| {
-                self.selected_pr_idx = pr_idx;
-            }
-        }
-    }
-}
-
 fn handlePrDiffEvent(
     self: anytype,
     ctx: *vxfw.EventContext,
     event: vxfw.Event,
     key: vaxis.Key,
 ) anyerror!void {
-    if (key.matches(vaxis.Key.escape, .{})) {
-        self.show_pr_diff = false;
-        self.show_comment_editor = false;
-        ctx.consumeAndRedraw();
-        return;
-    }
     if (key.matches('a', .{})) {
         self.doPrAction("accept");
         ctx.consumeAndRedraw();
@@ -598,7 +300,7 @@ fn handlePrDiffEvent(
     try self.pr_diff_scroll_bars.scroll_view.handleEvent(ctx, event);
 }
 
-fn fetchSelectedPrDetail(self: anytype) void {
+pub fn fetchSelectedPrDetail(self: anytype) void {
     const prompts = self.getPrompts();
     const prompt_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
     if (prompts.len == 0) return;
@@ -628,14 +330,6 @@ fn fetchSelectedPrDetail(self: anytype) void {
             .{ .pr_id = pr_id },
         );
     }
-}
-
-fn nextPrFilter(filter: anytype) @TypeOf(filter) {
-    return switch (filter) {
-        .open => .all,
-        .all => .closed,
-        .closed => .open,
-    };
 }
 
 pub fn syncContentWidget(self: anytype) void {
@@ -744,7 +438,7 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
     if (pr.comments.len > 0) {
         if (count < self.pr_diff_rows.len) {
             self.pr_diff_rows[count] = .{
-                .text = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Comments \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",
+                .text = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Comments \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",
                 .style = theme.fg(theme.MUTED),
             };
             self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
