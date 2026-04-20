@@ -45,11 +45,11 @@ pub const DiffRow = struct {
 };
 
 /// Ceiling on per-side line count before `computeInlineGutter` bails.
-/// LCS is O(m*n) in both time and memory; for 5000-line files the
-/// working table is ~100 MB, which is already past reasonable for a
-/// TUI render path. Callers should fall back to the unified diff view
-/// when this returns null.
-pub const MAX_DIFF_LINES_PER_SIDE: usize = 5000;
+/// LCS is O(m*n) in both time and memory; at 1500 lines per side the
+/// working table is roughly 9 MB, which keeps the render path
+/// responsive on large files. Callers fall back to the unified diff
+/// view when this returns null.
+pub const MAX_DIFF_LINES_PER_SIDE: usize = 1500;
 
 /// Compute an inline-gutter diff between `base` and `proposed`.
 /// Returns a row per aligned line; caller owns the slice.
