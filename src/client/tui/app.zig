@@ -222,6 +222,14 @@ pub const Dashboard = struct {
     drafts_ready: usize = 0,
     pending_discard_path: []const u8 = "",
 
+    // PR Composer overlay state. MVP submits a single-draft modify PR;
+    // multi-draft selection and DiffViewer preview are follow-ups.
+    show_pr_composer: bool = false,
+    pr_composer_desc_buf: [256]u8 = .{0} ** 256,
+    pr_composer_desc_len: usize = 0,
+    pr_composer_prompt_path: []const u8 = "",
+    pr_composer_submitting: bool = false,
+
     pub fn init(
         api_state: *api.state.ApiState,
         app: *vxfw.App,
@@ -372,6 +380,12 @@ pub const Dashboard = struct {
                             ctx.consumeAndRedraw();
                         }
                     }
+                    return;
+                }
+
+                // PR Composer overlay absorbs all keys while open.
+                if (self.show_pr_composer) {
+                    self.handlePrComposerKey(ctx, key);
                     return;
                 }
 
@@ -559,6 +573,7 @@ pub const Dashboard = struct {
                 self.consumeSignOutResult();
                 self.consumeSubmitCommentResult();
                 self.consumePrActionResult();
+                self.consumeCreatePromptPrResult();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -596,7 +611,7 @@ pub const Dashboard = struct {
         const show_input_overlay = self.analysis_show_input_detail and self.selected_module == .dashboard;
         var child_count: usize = 3;
         if (self.show_help or self.show_confirm or self.show_comment_editor or
-            self.show_create_workspace or show_input_overlay) child_count = 4;
+            self.show_create_workspace or self.show_pr_composer or show_input_overlay) child_count = 4;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
@@ -643,6 +658,16 @@ pub const Dashboard = struct {
             children[3] = .{
                 .origin = .{ .row = 0, .col = 0 },
                 .surface = try workspace_panel.drawCreateOverlay(self, full_ctx),
+            };
+        }
+        if (self.show_pr_composer) {
+            const full_ctx = ctx.withConstraints(
+                .{ .width = size.width, .height = size.height },
+                .{ .width = size.width, .height = size.height },
+            );
+            children[3] = .{
+                .origin = .{ .row = 0, .col = 0 },
+                .surface = try self.drawPrComposerOverlay(full_ctx),
             };
         }
 
@@ -2264,6 +2289,181 @@ pub const Dashboard = struct {
         self.status_line = "Draft discarded.";
         self.pending_discard_path = "";
         self.refreshDraftsCache();
+    }
+
+    /// Handler for the `p` key. Opens the PR Composer when the
+    /// selected prompt has a ready draft. The composer is intentionally
+    /// single-op for the initial cut — multi-draft select is deferred
+    /// to a follow-up.
+    pub fn openPrComposer(self: *Dashboard) void {
+        const prompts = self.getPrompts();
+        if (prompts.len == 0 or self.selected_prompt >= prompts.len) return;
+        const prompt = &prompts[self.selected_prompt];
+
+        const status = self.draftStatusFor(prompt.path) orelse {
+            self.status_line = "No draft for this prompt.";
+            return;
+        };
+        if (status != .ready) {
+            self.status_line = "Draft must be marked ready (m) before submit.";
+            return;
+        }
+        self.pr_composer_prompt_path = prompt.path;
+        self.pr_composer_desc_len = 0;
+        self.pr_composer_submitting = false;
+        self.show_pr_composer = true;
+    }
+
+    pub fn cancelPrComposer(self: *Dashboard) void {
+        self.show_pr_composer = false;
+        self.pr_composer_submitting = false;
+        self.pr_composer_desc_len = 0;
+    }
+
+    pub fn submitPrComposer(self: *Dashboard) void {
+        if (self.pr_composer_submitting) return;
+        if (self.pr_composer_desc_len == 0) {
+            self.status_line = "Description is required.";
+            return;
+        }
+        const ws_id = self.active_ws_id orelse {
+            self.status_line = "No workspace bound; cannot submit.";
+            return;
+        };
+        const prompt_id = self.lookupPromptId(self.pr_composer_prompt_path) orelse {
+            self.status_line = "Unknown prompt id.";
+            return;
+        };
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
+            self.status_line = "Could not resolve workspace directory.";
+            return;
+        };
+        defer alloc.free(ws_dir);
+
+        const draft_content = drafts_mod.readDraftFile(alloc, ws_dir, .prompt, self.pr_composer_prompt_path) catch |err| {
+            self.status_line = @errorName(err);
+            return;
+        };
+        defer alloc.free(draft_content);
+
+        const desc_copy = alloc.dupe(u8, self.pr_composer_desc_buf[0..self.pr_composer_desc_len]) catch return;
+        defer alloc.free(desc_copy);
+        const content_copy = alloc.dupe(u8, draft_content) catch return;
+        defer alloc.free(content_copy);
+
+        api.specs.dispatchFromState(
+            api.specs.CreatePromptPrParams,
+            api.specs.CreatePromptPrResponse,
+            api.specs.create_prompt_pr,
+            &self.api_state.create_prompt_pr_pending,
+            self.api_state,
+            .{
+                .description = desc_copy,
+                .prompt_id = prompt_id,
+                .content = content_copy,
+            },
+        );
+        self.pr_composer_submitting = true;
+        self.status_line = "Submitting PR...";
+    }
+
+    fn handlePrComposerKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (self.pr_composer_submitting) {
+            if (key.matches(vaxis.Key.escape, .{})) {
+                self.pr_composer_submitting = false;
+                ctx.consumeAndRedraw();
+            }
+            return;
+        }
+        if (key.matches(vaxis.Key.escape, .{})) {
+            self.cancelPrComposer();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.enter, .{})) {
+            self.submitPrComposer();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.backspace, .{})) {
+            if (self.pr_composer_desc_len > 0) {
+                self.pr_composer_desc_len -= 1;
+                ctx.consumeAndRedraw();
+            }
+            return;
+        }
+        if (key.text) |text| {
+            const remaining = self.pr_composer_desc_buf.len - self.pr_composer_desc_len;
+            if (text.len > 0 and text.len <= remaining) {
+                @memcpy(self.pr_composer_desc_buf[self.pr_composer_desc_len..][0..text.len], text);
+                self.pr_composer_desc_len += text.len;
+                ctx.consumeAndRedraw();
+            }
+        } else if (key.codepoint >= 0x20 and key.codepoint < 0x7f) {
+            if (self.pr_composer_desc_len < self.pr_composer_desc_buf.len) {
+                self.pr_composer_desc_buf[self.pr_composer_desc_len] = @intCast(key.codepoint);
+                self.pr_composer_desc_len += 1;
+                ctx.consumeAndRedraw();
+            }
+        }
+    }
+
+    fn drawPrComposerOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        const box_w = @min(size.width -| 4, 60);
+        const box_h: u16 = 9;
+        const modal = Modal{
+            .title = "New Prompt PR",
+            .box_width = box_w,
+            .box_height = box_h,
+            .anchor = .center,
+            .footer = if (self.pr_composer_submitting) "Submitting... Esc cancel wait" else "Enter submit  Esc cancel",
+        };
+        const result = try modal.draw(ctx, self.widget());
+        var surface = result.surface;
+        const col = result.content_col;
+        const row = result.content_row;
+
+        w.writeText(&surface, ctx, col, row, "prompt:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        w.writeText(&surface, ctx, col + 8, row, self.pr_composer_prompt_path, theme.boldOn(theme.PANEL_ALT, theme.TEXT));
+        w.writeText(&surface, ctx, col, row + 1, "op:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        w.writeText(&surface, ctx, col + 8, row + 1, "modify", theme.textOn(theme.PANEL_ALT, theme.TEXT));
+
+        w.writeText(&surface, ctx, col, row + 3, "description:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        const desc_text = self.pr_composer_desc_buf[0..self.pr_composer_desc_len];
+        const max_visible: usize = @as(usize, box_w -| 4);
+        const visible_start = if (desc_text.len > max_visible) desc_text.len - max_visible else 0;
+        const visible = desc_text[visible_start..];
+        const display = try std.fmt.allocPrint(ctx.arena, "{s}_", .{visible});
+        w.writeText(&surface, ctx, col, row + 4, display, theme.textOn(theme.PANEL_ALT, theme.TEXT));
+
+        return surface;
+    }
+
+    fn consumeCreatePromptPrResult(self: *Dashboard) void {
+        const result = self.api_state.create_prompt_pr_pending.consume() orelse return;
+        self.pr_composer_submitting = false;
+        switch (result) {
+            .ok => |resp| {
+                const ws_id = self.active_ws_id orelse return;
+                const alloc = self.api_state.allocator();
+                const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
+                defer alloc.free(ws_dir);
+                drafts_mod.setDraftStatus(alloc, ws_dir, .prompt, self.pr_composer_prompt_path, .submitted) catch {};
+                self.refreshDraftsCache();
+                self.show_pr_composer = false;
+                self.pr_composer_desc_len = 0;
+                self.status_line = std.fmt.allocPrint(
+                    self.api_state.allocator(),
+                    "PR {s} submitted ({s}).",
+                    .{ resp.pr_id, resp.status },
+                ) catch "PR submitted.";
+            },
+            .api_error => |e| self.status_line = writeErrorStatus(self, "PR submit failed", e),
+            .network_error => self.status_line = "PR submit failed: network error.",
+            .invalid_response => self.status_line = "PR submit failed: malformed response.",
+        }
     }
 
     fn selectTab(self: *Dashboard, ctx: *vxfw.EventContext, tab: TopModule) void {

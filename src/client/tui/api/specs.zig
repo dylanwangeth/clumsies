@@ -41,6 +41,17 @@ pub const WsContextFilesPayload = state.WsContextFilesPayload;
 pub const WsManifestPayload = state.WsManifestPayload;
 pub const WsContextContentPayload = state.WsContextContentPayload;
 pub const PrCommentsPayload = state.PrCommentsPayload;
+pub const CreatePromptPrResponse = state.CreatePromptPrResponse;
+
+/// Parameters for creating a prompt PR with a single modify operation.
+/// Multi-op PRs are a follow-up; the composer UI submits one draft at
+/// a time for now. `base_hash` is null until the cache tracks it.
+pub const CreatePromptPrParams = struct {
+    description: []const u8,
+    prompt_id: []const u8,
+    content: []const u8,
+    base_hash: ?[]const u8 = null,
+};
 
 pub const library_prompt_content = dispatcher.RequestSpec(
     PathParams,
@@ -137,6 +148,36 @@ pub const pr_action = dispatcher.RequestSpec(PrActionParams, void){
     .body_builder = prActionBody,
     .parse_ok = dispatcher.parseVoid(PrActionParams),
 };
+
+pub const create_prompt_pr = dispatcher.RequestSpec(CreatePromptPrParams, CreatePromptPrResponse){
+    .method = .POST,
+    .path_builder = dispatcher.staticPath(CreatePromptPrParams, "/api/org/prompt-prs"),
+    .body_builder = createPromptPrBody,
+    .parse_ok = dispatcher.jsonParser(CreatePromptPrParams, CreatePromptPrResponse),
+};
+
+fn createPromptPrBody(alloc: std.mem.Allocator, p: CreatePromptPrParams) anyerror![]const u8 {
+    const Op = struct {
+        type: []const u8,
+        prompt_id: []const u8,
+        base_hash: ?[]const u8,
+        content: []const u8,
+    };
+    const Body = struct {
+        description: []const u8,
+        operations: []const Op,
+    };
+    const ops = [_]Op{.{
+        .type = "modify",
+        .prompt_id = p.prompt_id,
+        .base_hash = p.base_hash,
+        .content = p.content,
+    }};
+    return std.json.Stringify.valueAlloc(alloc, Body{
+        .description = p.description,
+        .operations = &ops,
+    }, .{});
+}
 
 fn submitCommentPath(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror![]const u8 {
     return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{p.pr_id});

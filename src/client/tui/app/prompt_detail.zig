@@ -91,6 +91,11 @@ pub fn handleEmbeddedPaneEvent(
                 ctx.consumeAndRedraw();
                 return;
             }
+            if (key.matches('p', .{})) {
+                self.openPrComposer();
+                ctx.consumeAndRedraw();
+                return;
+            }
             try self.content_scroll_bars.scroll_view.handleEvent(ctx, event);
         },
         .pull_requests => try handlePrDiffEvent(self, ctx, event, key),
