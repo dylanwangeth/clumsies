@@ -810,13 +810,19 @@ pub const Dashboard = struct {
             else if (self.detail_focus_content)
                 "e edit  D discard  m ready  j/k scroll  Esc list"
             else if (self.detail_tab == .pull_requests)
-                "j/k move  f filter  T tab  Tab detail  r refresh  ? help  q quit"
+                "j/k move  f filter  [/] tab  Tab detail  r refresh  ? help  q quit"
             else
-                "j/k move  n new  T tab  Enter detail  r refresh  b bundle  ? help  q quit",
+                "j/k move  n new  [/] tab  Enter detail  r refresh  b bundle  ? help  q quit",
             .workspace => switch (self.ws_focus) {
-                .bar => "j/k select workspace  c create  Tab list  r refresh  ? help  q quit",
-                .list => "h/l tab  j/k move  ←/→ tree  Enter open  c create  Esc bar  ? help",
-                .content => "j/k scroll  d toggle diff  c create  Esc list  ? help",
+                .bar => if (self.ws_tab == .context)
+                    "j/k select ws  [/] tab  n new file  c create ws  Tab list  r refresh  ? help  q quit"
+                else
+                    "j/k select ws  [/] tab  c create ws  Tab list  r refresh  ? help  q quit",
+                .list => if (self.ws_tab == .context)
+                    "[/] tab  j/k move  h/l tree  Enter open  n new file  c create ws  Esc bar  ? help"
+                else
+                    "[/] tab  j/k move  h/l tree  Enter open  c create ws  Esc bar  ? help",
+                .content => "j/k scroll  d toggle diff  e edit  D discard  m ready  p submit  Esc list  ? help",
             },
             .analysis => switch (self.analysis_focus) {
                 .prompts => "j/k move  Enter expand  Tab focus  ? help  q quit",

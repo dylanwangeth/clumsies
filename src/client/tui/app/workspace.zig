@@ -345,6 +345,32 @@ pub fn handleModuleEvent(
         return;
     }
 
+    if (key.matches(']', .{})) {
+        self.shiftWsTab(1);
+        self.ws_list_sel = 0;
+        self.ws_show_diff = false;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('[', .{})) {
+        self.shiftWsTab(-1);
+        self.ws_list_sel = 0;
+        self.ws_show_diff = false;
+        ctx.consumeAndRedraw();
+        return;
+    }
+
+    // `n` creates a new context-file draft. Bound at module level
+    // (like Library's `n`) rather than inside list-focus so users
+    // can still reach it from the workspace bar without tabbing
+    // into the list first. Prompts are org-owned — workspace does
+    // not create them, so `n` is gated on the Context tab.
+    if (key.matches('n', .{}) and self.ws_tab == .context) {
+        self.openNewDraftForm(.context);
+        ctx.consumeAndRedraw();
+        return;
+    }
+
     switch (self.ws_focus) {
         .bar => try handleBarFocusEvent(self, ctx, key),
         .list => try handleListFocusEvent(self, ctx, key),
@@ -448,21 +474,7 @@ fn handleListFocusEvent(
     syncWsRows(self);
     const ws_tree = self.currentWsTree();
 
-    if (key.matches('h', .{})) {
-        self.shiftWsTab(-1);
-        self.ws_list_sel = 0;
-        self.ws_show_diff = false;
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('l', .{})) {
-        self.shiftWsTab(1);
-        self.ws_list_sel = 0;
-        self.ws_show_diff = false;
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches(vaxis.Key.left, .{})) {
+    if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
         if (ws_tree.dirPathAt(self.ws_list_sel)) |dir| {
             if (ws_tree.collapseDir(dir)) {
                 self.ws_show_diff = false;
@@ -478,7 +490,7 @@ fn handleListFocusEvent(
         }
         return;
     }
-    if (key.matches(vaxis.Key.right, .{})) {
+    if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
         if (ws_tree.dirPathAt(self.ws_list_sel)) |dir| {
             if (ws_tree.expandDir(self.api_state.allocator(), dir)) {
                 self.ws_show_diff = false;
@@ -513,11 +525,6 @@ fn handleListFocusEvent(
         }
         self.ws_focus = .content;
         self.ws_show_diff = false;
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('n', .{}) and self.ws_tab == .context) {
-        self.openNewDraftForm(.context);
         ctx.consumeAndRedraw();
         return;
     }
