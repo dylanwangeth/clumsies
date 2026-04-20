@@ -3,6 +3,15 @@ const testing = std.testing;
 const build_options = @import("build_options");
 const styles = @import("styles.zig");
 
+/// Raise the default log level so third-party debug traffic
+/// (libvaxis, etc.) does not print to stderr while the terminal is
+/// still in cooked mode before the TUI's alt-screen switch —
+/// otherwise lines like `debug (vaxis): enabling mouse mode` flash
+/// above the UI on launch. Warnings and errors still surface.
+pub const std_options: std.Options = .{
+    .log_level = .warn,
+};
+
 // Public re-exports for cross-artifact consumers (e.g., seed).
 pub const trace = @import("trace.zig");
 const tui = @import("tui/main.zig");
