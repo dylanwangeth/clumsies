@@ -71,8 +71,9 @@ pub fn resolveEditor(
 }
 
 /// Spawn a resolved editor command, appending `file_path` as its last
-/// argument. `cmd` is parsed as a whitespace-separated shell-style
-/// string so `"code --wait"` and similar configs work.
+/// argument. `cmd` is tokenized on whitespace, so entries like
+/// `"code --wait"` split into multiple argv tokens; quoted or escaped
+/// arguments are not recognized.
 pub fn runEditor(
     allocator: std.mem.Allocator,
     cmd: []const u8,
@@ -134,14 +135,24 @@ pub fn editFile(
     defer allocator.free(cmd);
 
     const tty_writer = tty.writer();
-    suspendTerminal(vx, tty, tty_writer) catch {};
+    // Surface suspend failures instead of continuing into the editor
+    // with a partially-reset terminal — raw mode or a kitty-keyboard
+    // push that did not pop will corrupt the child's input handling.
+    try suspendTerminal(vx, tty, tty_writer);
 
-    const result = runEditor(allocator, cmd, file_path) catch |err| {
+    // errdefer guarantees resumeTerminal runs even if runEditor or a
+    // later statement returns an error, so the TUI always attempts to
+    // restore its own terminal state. A successful path below clears
+    // `resumed` so the errdefer becomes a no-op.
+    var resumed = false;
+    errdefer if (!resumed) {
         resumeTerminal(vx, tty, tty_writer) catch {};
-        return err;
     };
 
+    const result = try runEditor(allocator, cmd, file_path);
+
     try resumeTerminal(vx, tty, tty_writer);
+    resumed = true;
     return result;
 }
 

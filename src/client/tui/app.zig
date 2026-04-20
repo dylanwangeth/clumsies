@@ -266,6 +266,10 @@ pub const Dashboard = struct {
     pr_composer_desc_buf: [256]u8 = .{0} ** 256,
     pr_composer_desc_len: usize = 0,
     pr_composer_target: ?DraftTarget = null,
+    /// Operation type of the currently-open composer draft, captured
+    /// from the draft index at open time. Used by the overlay to
+    /// render an accurate `op:` line instead of hard-coding "modify".
+    pr_composer_operation: drafts_mod.DraftOperation = .modify,
     /// Dup'd path owned by the composer so overlay render and submit
     /// do not point into drafts_arena. Freed when the composer
     /// closes (cancel, submit success, or re-open).
@@ -2647,9 +2651,29 @@ pub const Dashboard = struct {
             .context_id = target.context_id,
         };
         self.pr_composer_path_owned = path_copy;
+        // Capture the draft's operation so the overlay can label
+        // `op:` correctly (create / modify / rename / delete). Falls
+        // back to .modify when the index lookup fails, which is the
+        // historical default and keeps the overlay usable if the
+        // draft file was tampered with out of band.
+        self.pr_composer_operation = self.lookupDraftOperation(target) orelse .modify;
         self.pr_composer_desc_len = 0;
         self.pr_composer_submitting = false;
         self.show_pr_composer = true;
+    }
+
+    fn lookupDraftOperation(self: *Dashboard, target: DraftTarget) ?drafts_mod.DraftOperation {
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return null;
+        defer alloc.free(ws_dir);
+        var index = drafts_mod.loadIndex(alloc, ws_dir) catch return null;
+        defer index.deinit(alloc);
+        for (index.entries.items) |entry| {
+            if (entry.category != target.category) continue;
+            if (!std.mem.eql(u8, entry.draft_path, target.path)) continue;
+            return entry.operation;
+        }
+        return null;
     }
 
     /// Free the duped strings backing pr_composer_target, if any.
@@ -2955,7 +2979,13 @@ pub const Dashboard = struct {
         w.writeText(&surface, ctx, col, row, path_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
         w.writeText(&surface, ctx, col + 8, row, target.path, theme.boldOn(theme.PANEL_ALT, theme.TEXT));
         w.writeText(&surface, ctx, col, row + 1, "op:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        w.writeText(&surface, ctx, col + 8, row + 1, "modify", theme.textOn(theme.PANEL_ALT, theme.TEXT));
+        const op_label: []const u8 = switch (self.pr_composer_operation) {
+            .create => "create",
+            .modify => "modify",
+            .rename => "rename",
+            .delete => "delete",
+        };
+        w.writeText(&surface, ctx, col + 8, row + 1, op_label, theme.textOn(theme.PANEL_ALT, theme.TEXT));
 
         w.writeText(&surface, ctx, col, row + 3, "description:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         const desc_text = self.pr_composer_desc_buf[0..self.pr_composer_desc_len];
