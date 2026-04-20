@@ -5,6 +5,7 @@ const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
 const api = @import("../api.zig");
 const data = @import("../view_types.zig");
+const diff_viewer = @import("../widgets/diff_viewer.zig");
 
 const PromptDetailLayout = struct {
     inner_h_pad: u16,
@@ -336,15 +337,63 @@ pub fn syncContentWidget(self: anytype) void {
     const prompts = self.getPrompts();
     const selected_path: ?[]const u8 = if (self.selected_prompt < prompts.len) prompts[self.selected_prompt].path else null;
     const content = if (selected_path) |path| self.cachedPromptBody(path) orelse "" else "";
-    self.content_text = .{
+
+    const arena = self.viewAllocator();
+    const rows = diff_viewer.computeInlineGutter(arena, content, content) catch null;
+    if (rows) |r| {
+        renderGutterRows(self, arena, r) catch {
+            renderFlatContent(self, arena, content);
+        };
+    } else {
+        renderFlatContent(self, arena, content);
+    }
+
+    self.requestSelectedPromptDetail();
+}
+
+fn renderGutterRows(
+    self: anytype,
+    arena: std.mem.Allocator,
+    rows: []const diff_viewer.DiffRow,
+) !void {
+    const widgets = try arena.alloc(vxfw.Widget, rows.len);
+    const texts = try arena.alloc(vxfw.Text, rows.len);
+    for (rows, 0..) |row, idx| {
+        const marker: u8 = switch (row.marker) {
+            .unchanged => ' ',
+            .added => '+',
+            .removed => '-',
+        };
+        const lineno = row.new_line orelse row.old_line orelse 0;
+        const prefixed = std.fmt.allocPrint(arena, "{d:>4} {c} {s}", .{ lineno, marker, row.text }) catch row.text;
+        texts[idx] = .{
+            .text = prefixed,
+            .style = gutterRowStyle(row.marker),
+        };
+        widgets[idx] = texts[idx].widget();
+    }
+    self.content_scroll_bars.scroll_view.children = .{ .slice = widgets };
+    self.content_scroll_bars.estimated_content_height = @intCast(@max(rows.len, 24));
+}
+
+fn renderFlatContent(self: anytype, arena: std.mem.Allocator, content: []const u8) void {
+    const widgets = arena.alloc(vxfw.Widget, 1) catch return;
+    const texts = arena.alloc(vxfw.Text, 1) catch return;
+    texts[0] = .{
         .text = content,
         .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
     };
-    self.content_widget[0] = self.content_text.widget();
-    self.content_scroll_bars.scroll_view.children = .{ .slice = self.content_widget[0..1] };
+    widgets[0] = texts[0].widget();
+    self.content_scroll_bars.scroll_view.children = .{ .slice = widgets };
     self.content_scroll_bars.estimated_content_height = @intCast(@max(w.countLines(content), 24));
+}
 
-    self.requestSelectedPromptDetail();
+fn gutterRowStyle(marker: diff_viewer.Marker) vaxis.Style {
+    return switch (marker) {
+        .unchanged => theme.textOn(theme.PANEL, theme.TEXT_SOFT),
+        .added => .{ .fg = theme.OK, .bg = theme.rgb(0x1d2617) },
+        .removed => .{ .fg = theme.DANGER, .bg = theme.rgb(0x2a1b18) },
+    };
 }
 
 pub fn syncPrWidgets(self: anytype) void {
@@ -429,7 +478,7 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
         if (count >= self.pr_diff_rows.len) break;
         self.pr_diff_rows[count] = .{
             .text = line,
-            .style = .{ .fg = diffFg(line), .bg = diffBg(line) },
+            .style = diff_viewer.styleLine(line),
         };
         self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
         count += 1;
@@ -480,15 +529,3 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
     self.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
 }
 
-fn diffBg(line: []const u8) vaxis.Color {
-    if (std.mem.startsWith(u8, line, "+")) return theme.rgb(0x1d2617);
-    if (std.mem.startsWith(u8, line, "-")) return theme.rgb(0x2a1b18);
-    return theme.PANEL;
-}
-
-fn diffFg(line: []const u8) vaxis.Color {
-    if (std.mem.startsWith(u8, line, "+")) return theme.OK;
-    if (std.mem.startsWith(u8, line, "-")) return theme.DANGER;
-    if (std.mem.startsWith(u8, line, "@@")) return theme.INFO;
-    return theme.TEXT_SOFT;
-}
