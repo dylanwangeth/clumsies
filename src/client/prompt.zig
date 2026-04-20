@@ -227,10 +227,15 @@ fn kindFromPath(path: []const u8) ?PromptKind {
 }
 
 fn groupFromPath(path: []const u8) ?[]const u8 {
-    const slash = std.mem.indexOfScalar(u8, path, '/') orelse return null;
-    const after_kind = path[slash + 1 ..];
-    const next_slash = std.mem.indexOfScalar(u8, after_kind, '/') orelse return null;
-    return after_kind[0..next_slash];
+    if (std.mem.eql(u8, path, "META_PROMPT.md")) return null;
+    if (std.mem.eql(u8, path, "PIN.md")) return null;
+    const first_slash = std.mem.indexOfScalar(u8, path, '/') orelse return null;
+    if (std.mem.startsWith(u8, path, "workflow/")) {
+        const after_kind = path[first_slash + 1 ..];
+        const next_slash = std.mem.indexOfScalar(u8, after_kind, '/') orelse return null;
+        return after_kind[0..next_slash];
+    }
+    return path[0..first_slash];
 }
 
 fn matchesGroup(item_group: []const u8, filter: []const u8) bool {
@@ -595,7 +600,7 @@ test "loadManifest: parses prompts and context entries" {
         \\{
         \\  "revision": 7,
         \\  "prompts": {
-        \\    "p-1": {"path": "rule/coding/STYLE.md", "hash": "sha256:abc"},
+        \\    "p-1": {"path": "coding/STYLE.md", "hash": "sha256:abc"},
         \\    "p-2": {"path": "workflow/cmd/COMMIT.md", "hash": "sha256:def"}
         \\  },
         \\  "context": {
@@ -614,7 +619,7 @@ test "loadManifest: parses prompts and context entries" {
     try testing.expectEqual(@as(usize, 1), manifest.context.count());
 
     const p1 = manifest.prompts.get("p-1").?;
-    try testing.expectEqualStrings("rule/coding/STYLE.md", p1.path);
+    try testing.expectEqualStrings("coding/STYLE.md", p1.path);
     try testing.expectEqualStrings("sha256:abc", p1.hash);
 
     const c1 = manifest.context.get("c-1").?;
@@ -639,16 +644,19 @@ test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/rule/coding");
-    try tmp.dir.makePath("cache/prompt/workflow/cmd");
-    try writeFile(tmp.dir, "cache/prompt/rule/coding/STYLE.md", "style");
-    try writeFile(tmp.dir, "cache/prompt/workflow/cmd/COMMIT.md", "commit");
+    try tmp.dir.makePath("cache/prompt/pedagogy");
+    try tmp.dir.makePath("cache/prompt/coding");
+    try tmp.dir.makePath("cache/prompt/workflow");
+    try writeFile(tmp.dir, "cache/prompt/pedagogy/TEACHING.md", "teaching");
+    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "style");
+    try writeFile(tmp.dir, "cache/prompt/workflow/COMMIT.md", "commit");
 
     try writeTestManifest(tmp.dir,
         \\{
         \\  "prompts": {
-        \\    "p-style": {"path": "rule/coding/STYLE.md", "hash": "sha256:1"},
-        \\    "p-commit": {"path": "workflow/cmd/COMMIT.md", "hash": "sha256:2"}
+        \\    "p-teach": {"path": "pedagogy/TEACHING.md", "hash": "sha256:1"},
+        \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:2"},
+        \\    "p-commit": {"path": "workflow/COMMIT.md", "hash": "sha256:3"}
         \\  }
         \\}
     );
@@ -659,25 +667,38 @@ test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
     var items = try discoverSearchable(testing.allocator, root, null, null);
     defer deinitPromptItems(testing.allocator, &items);
 
-    try testing.expectEqual(@as(usize, 2), items.items.len);
+    try testing.expectEqual(@as(usize, 3), items.items.len);
 
+    var found_teach = false;
     var found_style = false;
     var found_commit = false;
     for (items.items) |item| {
+        if (std.mem.eql(u8, item.id, "p-teach")) {
+            found_teach = true;
+            try testing.expectEqual(PromptKind.rule, item.kind);
+            try testing.expectEqualStrings("pedagogy/TEACHING.md", item.path);
+            try testing.expectEqualStrings("pedagogy", item.group.?);
+        }
         if (std.mem.eql(u8, item.id, "p-style")) {
             found_style = true;
             try testing.expectEqual(PromptKind.rule, item.kind);
-            try testing.expectEqualStrings("rule/coding/STYLE.md", item.path);
+            try testing.expectEqualStrings("coding/STYLE.md", item.path);
             try testing.expectEqualStrings("coding", item.group.?);
         }
         if (std.mem.eql(u8, item.id, "p-commit")) {
             found_commit = true;
             try testing.expectEqual(PromptKind.workflow, item.kind);
-            try testing.expectEqualStrings("cmd", item.group.?);
+            try testing.expect(item.group == null);
         }
     }
+    try testing.expect(found_teach);
     try testing.expect(found_style);
     try testing.expect(found_commit);
+
+    var coding_filtered = try discoverSearchable(testing.allocator, root, null, "coding");
+    defer deinitPromptItems(testing.allocator, &coding_filtered);
+    try testing.expectEqual(@as(usize, 1), coding_filtered.items.len);
+    try testing.expectEqualStrings("p-style", coding_filtered.items[0].id);
 }
 
 test "discoverSearchable: kind filter narrows results" {
@@ -687,7 +708,7 @@ test "discoverSearchable: kind filter narrows results" {
     try writeTestManifest(tmp.dir,
         \\{
         \\  "prompts": {
-        \\    "p-style": {"path": "rule/coding/STYLE.md", "hash": "sha256:1"},
+        \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:1"},
         \\    "p-commit": {"path": "workflow/cmd/COMMIT.md", "hash": "sha256:2"}
         \\  }
         \\}
@@ -703,15 +724,15 @@ test "discoverSearchable: kind filter narrows results" {
     try testing.expectEqualStrings("p-style", rules.items[0].id);
 }
 
-test "discoverSearchable: group filter matches first path component after kind" {
+test "discoverSearchable: group filter matches first path component" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try writeTestManifest(tmp.dir,
         \\{
         \\  "prompts": {
-        \\    "p-1": {"path": "rule/coding/STYLE.md", "hash": "sha256:1"},
-        \\    "p-2": {"path": "rule/zig/NAMING.md", "hash": "sha256:2"}
+        \\    "p-1": {"path": "coding/STYLE.md", "hash": "sha256:1"},
+        \\    "p-2": {"path": "zig/NAMING.md", "hash": "sha256:2"}
         \\  }
         \\}
     );
@@ -734,7 +755,7 @@ test "discoverSearchable: META_PROMPT.md is excluded" {
         \\{
         \\  "prompts": {
         \\    "p-mpf": {"path": "META_PROMPT.md", "hash": "sha256:abc"},
-        \\    "p-style": {"path": "rule/coding/STYLE.md", "hash": "sha256:1"}
+        \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:1"}
         \\  }
         \\}
     );
@@ -753,13 +774,13 @@ test "loadPrompts: looks up by hub prompt_id and reads cache file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/rule");
-    try writeFile(tmp.dir, "cache/prompt/rule/STYLE.md", "style content");
+    try tmp.dir.makePath("cache/prompt/coding");
+    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "style content");
 
     try writeTestManifest(tmp.dir,
         \\{
         \\  "prompts": {
-        \\    "p-style": {"path": "rule/STYLE.md", "hash": "sha256:zzz"}
+        \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:zzz"}
         \\  }
         \\}
     );
@@ -780,13 +801,13 @@ test "loadPrompts: known hash matches returns delta with no content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/rule");
-    try writeFile(tmp.dir, "cache/prompt/rule/STYLE.md", "style content");
+    try tmp.dir.makePath("cache/prompt/coding");
+    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "style content");
 
     try writeTestManifest(tmp.dir,
         \\{
         \\  "prompts": {
-        \\    "p-style": {"path": "rule/STYLE.md", "hash": "sha256:zzz"}
+        \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:zzz"}
         \\  }
         \\}
     );
@@ -820,19 +841,19 @@ test "loadPrompts: draft content overrides cache when indexed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/rule");
-    try writeFile(tmp.dir, "cache/prompt/rule/STYLE.md", "cache content");
+    try tmp.dir.makePath("cache/prompt/coding");
+    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "cache content");
 
-    try tmp.dir.makePath("drafts/prompt/rule");
-    try writeFile(tmp.dir, "drafts/prompt/rule/STYLE.md", "draft override");
+    try tmp.dir.makePath("drafts/prompt/coding");
+    try writeFile(tmp.dir, "drafts/prompt/coding/STYLE.md", "draft override");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
         \\    {
         \\      "category": "prompt",
         \\      "prompt_id": "p-style",
-        \\      "current_path": "rule/STYLE.md",
-        \\      "draft_path": "rule/STYLE.md",
+        \\      "current_path": "coding/STYLE.md",
+        \\      "draft_path": "coding/STYLE.md",
         \\      "operation": "modify",
         \\      "base_hash": "sha256:original",
         \\      "status": "editing"
@@ -844,7 +865,7 @@ test "loadPrompts: draft content overrides cache when indexed" {
     try writeTestManifest(tmp.dir,
         \\{
         \\  "prompts": {
-        \\    "p-style": {"path": "rule/STYLE.md", "hash": "sha256:zzz"}
+        \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:zzz"}
         \\  }
         \\}
     );
@@ -866,8 +887,8 @@ test "loadPrompts: draft marked delete behaves as UnknownPromptId" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/rule");
-    try writeFile(tmp.dir, "cache/prompt/rule/STYLE.md", "cache content");
+    try tmp.dir.makePath("cache/prompt/coding");
+    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "cache content");
 
     try tmp.dir.makePath("drafts");
     try writeFile(tmp.dir, "drafts/index.json",
@@ -876,8 +897,8 @@ test "loadPrompts: draft marked delete behaves as UnknownPromptId" {
         \\    {
         \\      "category": "prompt",
         \\      "prompt_id": "p-style",
-        \\      "current_path": "rule/STYLE.md",
-        \\      "draft_path": "rule/STYLE.md",
+        \\      "current_path": "coding/STYLE.md",
+        \\      "draft_path": "coding/STYLE.md",
         \\      "operation": "delete",
         \\      "base_hash": "sha256:original",
         \\      "status": "editing"
@@ -889,7 +910,7 @@ test "loadPrompts: draft marked delete behaves as UnknownPromptId" {
     try writeTestManifest(tmp.dir,
         \\{
         \\  "prompts": {
-        \\    "p-style": {"path": "rule/STYLE.md", "hash": "sha256:zzz"}
+        \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:zzz"}
         \\  }
         \\}
     );
