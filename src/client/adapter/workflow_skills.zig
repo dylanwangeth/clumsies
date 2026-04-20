@@ -54,6 +54,7 @@ pub fn renderImportedWorkflowSkills(
         const base_slug = try workflowSlugFromFilename(allocator, filename);
         defer allocator.free(base_slug);
         const slug = try uniqueSlug(allocator, &slug_counts, base_slug);
+        defer allocator.free(slug);
 
         const relative_id = try std.fmt.allocPrint(allocator, "workflow:{s}", .{entry.path});
         defer allocator.free(relative_id);
