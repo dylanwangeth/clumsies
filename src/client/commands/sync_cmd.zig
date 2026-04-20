@@ -116,7 +116,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         }) catch continue;
         defer content_parsed.deinit();
 
-        writeToCache(allocator, cache_dir, "", prompt_path, content_parsed.value.body) catch continue;
+        writeToCache(allocator, cache_dir, "prompt", prompt_path, content_parsed.value.body) catch continue;
         prompt_count += 1;
     }
 

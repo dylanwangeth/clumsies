@@ -24,7 +24,7 @@ pub fn renderImportedWorkflowSkills(
     const cache_dir = workspace_config.getCachePath(allocator, binding.ws_id) catch return allocator.alloc(model.RenderedAsset, 0);
     defer allocator.free(cache_dir);
 
-    const workflow_root = try std.fs.path.join(allocator, &.{ cache_dir, "workflow" });
+    const workflow_root = try std.fs.path.join(allocator, &.{ cache_dir, "prompt", "workflow" });
     defer allocator.free(workflow_root);
 
     var workflow_dir = std.fs.openDirAbsolute(workflow_root, .{ .iterate = true }) catch |err| switch (err) {
