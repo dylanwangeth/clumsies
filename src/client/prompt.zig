@@ -96,10 +96,10 @@ pub const MetaPromptResult = struct {
 
 /// Load META_PROMPT.md from the workspace cache directory.
 /// `ws_dir` is the workspace root (~/.clumsies/workspaces/{ws_id}).
-/// MPF lives at `{ws_dir}/cache/META_PROMPT.md` per Library reserved-path
-/// convention (see s1-1).
+/// MPF lives at `{ws_dir}/cache/prompt/META_PROMPT.md` per Library
+/// reserved-path convention (see s1-1).
 pub fn loadMpf(allocator: std.mem.Allocator, ws_dir: []const u8, known_hash: ?[]const u8) !MetaPromptResult {
-    const mpf_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
+    const mpf_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "prompt", "META_PROMPT.md" });
     defer allocator.free(mpf_path);
 
     const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return .{ .content = null, .hash = null };
@@ -388,7 +388,7 @@ pub fn loadPrompts(
 fn readCacheFileAlloc(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
     if (!path_util.isSafeRelative(rel_path)) return error.UnsafeCachePath;
 
-    const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", rel_path });
+    const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "prompt", rel_path });
     defer allocator.free(abs_path);
 
     const file = try std.fs.openFileAbsolute(abs_path, .{});
@@ -639,10 +639,10 @@ test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/coding");
-    try tmp.dir.makePath("cache/workflow/cmd");
-    try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style");
-    try writeFile(tmp.dir, "cache/workflow/cmd/COMMIT.md", "commit");
+    try tmp.dir.makePath("cache/prompt/rule/coding");
+    try tmp.dir.makePath("cache/prompt/workflow/cmd");
+    try writeFile(tmp.dir, "cache/prompt/rule/coding/STYLE.md", "style");
+    try writeFile(tmp.dir, "cache/prompt/workflow/cmd/COMMIT.md", "commit");
 
     try writeTestManifest(tmp.dir,
         \\{
@@ -753,8 +753,8 @@ test "loadPrompts: looks up by hub prompt_id and reads cache file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule");
-    try writeFile(tmp.dir, "cache/rule/STYLE.md", "style content");
+    try tmp.dir.makePath("cache/prompt/rule");
+    try writeFile(tmp.dir, "cache/prompt/rule/STYLE.md", "style content");
 
     try writeTestManifest(tmp.dir,
         \\{
@@ -780,8 +780,8 @@ test "loadPrompts: known hash matches returns delta with no content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule");
-    try writeFile(tmp.dir, "cache/rule/STYLE.md", "style content");
+    try tmp.dir.makePath("cache/prompt/rule");
+    try writeFile(tmp.dir, "cache/prompt/rule/STYLE.md", "style content");
 
     try writeTestManifest(tmp.dir,
         \\{
@@ -820,8 +820,8 @@ test "loadPrompts: draft content overrides cache when indexed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule");
-    try writeFile(tmp.dir, "cache/rule/STYLE.md", "cache content");
+    try tmp.dir.makePath("cache/prompt/rule");
+    try writeFile(tmp.dir, "cache/prompt/rule/STYLE.md", "cache content");
 
     try tmp.dir.makePath("drafts/prompt/rule");
     try writeFile(tmp.dir, "drafts/prompt/rule/STYLE.md", "draft override");
@@ -866,8 +866,8 @@ test "loadPrompts: draft marked delete behaves as UnknownPromptId" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule");
-    try writeFile(tmp.dir, "cache/rule/STYLE.md", "cache content");
+    try tmp.dir.makePath("cache/prompt/rule");
+    try writeFile(tmp.dir, "cache/prompt/rule/STYLE.md", "cache content");
 
     try tmp.dir.makePath("drafts");
     try writeFile(tmp.dir, "drafts/index.json",
@@ -904,8 +904,8 @@ test "loadMpf: returns content and hash from cache subdirectory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache");
-    try writeFile(tmp.dir, "cache/META_PROMPT.md", "bootstrap rules");
+    try tmp.dir.makePath("cache/prompt");
+    try writeFile(tmp.dir, "cache/prompt/META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
@@ -922,8 +922,8 @@ test "loadMpf: delta when hash matches" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache");
-    try writeFile(tmp.dir, "cache/META_PROMPT.md", "bootstrap rules");
+    try tmp.dir.makePath("cache/prompt");
+    try writeFile(tmp.dir, "cache/prompt/META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);

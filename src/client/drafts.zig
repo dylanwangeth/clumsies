@@ -334,7 +334,7 @@ pub fn reconcileDrafts(
         const cur = entry.current_path orelse continue;
 
         const rel_dir: []const u8 = switch (entry.category) {
-            .prompt => "",
+            .prompt => "prompt",
             .context => "context",
         };
         const cache_path = try std.fs.path.join(allocator, &.{ cache_dir, rel_dir, cur });
@@ -837,8 +837,8 @@ test "reconcileDrafts: leaves matching base_hash untouched" {
         .base_hash = seed_hash[0..],
     }, seed);
 
-    try tmp.dir.makePath("cache/rule");
-    try writeFile(tmp.dir, "cache/rule/A.md", seed);
+    try tmp.dir.makePath("cache/prompt/rule");
+    try writeFile(tmp.dir, "cache/prompt/rule/A.md", seed);
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
     defer testing.allocator.free(cache_dir);
@@ -869,8 +869,8 @@ test "reconcileDrafts: marks conflicted when cache drifted" {
         .base_hash = seed_hash[0..],
     }, seed);
 
-    try tmp.dir.makePath("cache/rule");
-    try writeFile(tmp.dir, "cache/rule/A.md", "v2 body (someone else merged)\n");
+    try tmp.dir.makePath("cache/prompt/rule");
+    try writeFile(tmp.dir, "cache/prompt/rule/A.md", "v2 body (someone else merged)\n");
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
     defer testing.allocator.free(cache_dir);
@@ -926,8 +926,8 @@ test "reconcileDrafts: leaves terminal states sticky" {
     }, seed);
     try setDraftStatus(testing.allocator, root, .prompt, "rule/A.md", .merged);
 
-    try tmp.dir.makePath("cache/rule");
-    try writeFile(tmp.dir, "cache/rule/A.md", "totally different body\n");
+    try tmp.dir.makePath("cache/prompt/rule");
+    try writeFile(tmp.dir, "cache/prompt/rule/A.md", "totally different body\n");
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
     defer testing.allocator.free(cache_dir);
