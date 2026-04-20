@@ -175,8 +175,13 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('T', .{ .shift = true }) or key.matches('t', .{ .shift = true })) {
+    if (key.matches(']', .{})) {
         self.shiftDetailTab(1);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('[', .{})) {
+        self.shiftDetailTab(-1);
         ctx.consumeAndRedraw();
         return;
     }
