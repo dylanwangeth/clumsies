@@ -181,7 +181,7 @@ pub fn handleModuleEvent(
         return;
     }
     if (key.matches('n', .{}) and self.detail_tab == .content and !self.detail_focus_content) {
-        self.openNewDraftForm();
+        self.openNewDraftForm(.prompt);
         ctx.consumeAndRedraw();
         return;
     }
@@ -366,7 +366,7 @@ pub fn syncLibraryWidgets(self: anytype) void {
                 else => "\xe2\x80\xa2+",
             };
             const row_sel = i == selected_row;
-            const labeled_text = if (self.draftStatusFor(p.path)) |_|
+            const labeled_text = if (self.draftStatusFor(.prompt, p.path)) |_|
                 (std.fmt.allocPrint(self.viewAllocator(), "{s}*", .{row_text}) catch row_text)
             else
                 row_text;

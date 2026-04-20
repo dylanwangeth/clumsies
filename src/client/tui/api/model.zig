@@ -102,6 +102,7 @@ pub const WsDetail = struct {
 };
 
 pub const ContextFileData = struct {
+    context_id: []const u8,
     path: []const u8,
     hash: []const u8,
     size: i64,

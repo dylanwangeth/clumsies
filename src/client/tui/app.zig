@@ -120,6 +120,19 @@ const MAX_PR_ROWS = 64;
 const detail_tabs = [_]DetailTab{ .content, .pull_requests };
 const PathTreeState = tree.State(MAX_TREE_ROWS, 96);
 
+/// Identifies the draft the user's editing action should affect.
+/// Derived from the currently-focused module and list selection; all
+/// draft handlers (`edit`, `toggleReady`, `discard`, `openComposer`)
+/// accept a DraftTarget so the same implementation serves both the
+/// Library side and the Workspace side.
+pub const DraftTarget = struct {
+    ws_id: []const u8,
+    category: drafts_mod.DraftCategory,
+    path: []const u8,
+    prompt_id: ?[]const u8 = null,
+    context_id: ?[]const u8 = null,
+};
+
 pub const Dashboard = struct {
     api_state: *api.state.ApiState,
     selected_module: TopModule = .dashboard,
@@ -217,25 +230,33 @@ pub const Dashboard = struct {
     env_map: *const std.process.EnvMap,
 
     // Drafts cache. Refreshed on startup and after every edit op so
-    // list rows and the footer counter stay in sync with disk.
+    // list rows and the footer counter stay in sync with disk. Prompt
+    // and context drafts live in separate maps because their path
+    // namespaces are distinct (library prompts are org-wide, context
+    // files are workspace-local).
     drafts_arena: std.heap.ArenaAllocator,
-    drafts_by_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
+    drafts_by_prompt_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
+    drafts_by_context_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
     drafts_total: usize = 0,
     drafts_ready: usize = 0,
-    pending_discard_path: []const u8 = "",
+    pending_discard_target: ?DraftTarget = null,
 
-    // PR Composer overlay state. MVP submits a single-draft modify PR;
-    // multi-draft selection and DiffViewer preview are follow-ups.
+    // PR Composer overlay state. MVP submits a single-draft PR; multi-
+    // draft selection and DiffViewer preview are follow-ups.
     show_pr_composer: bool = false,
     pr_composer_desc_buf: [256]u8 = .{0} ** 256,
     pr_composer_desc_len: usize = 0,
-    pr_composer_prompt_path: []const u8 = "",
+    pr_composer_target_path: []const u8 = "",
+    pr_composer_category: drafts_mod.DraftCategory = .prompt,
     pr_composer_submitting: bool = false,
 
-    // New-draft form. Opened from Library Files tab via `n`.
+    // New-draft form. Opened from Library Files tab or Workspace
+    // Context tab via `n`. Category is set by the caller to route the
+    // draft into the right scope.
     show_new_draft_form: bool = false,
     new_draft_path_buf: [128]u8 = .{0} ** 128,
     new_draft_path_len: usize = 0,
+    new_draft_category: drafts_mod.DraftCategory = .prompt,
 
     pub fn init(
         api_state: *api.state.ApiState,
@@ -2147,12 +2168,13 @@ pub const Dashboard = struct {
         };
     }
 
-    /// Reload `drafts/index.json` into `drafts_by_path` and recompute
-    /// the totals. Called once at init and again after every edit op
-    /// (`e`, `D`, `m`). No-op when no workspace is bound to `cwd` —
+    /// Reload `drafts/index.json` into the per-category lookup maps
+    /// and recompute totals. Called once at init and again after every
+    /// edit op (`e`, `D`, `m`). No-op when no workspace is active —
     /// draft features just stay silent rather than surface an error.
     pub fn refreshDraftsCache(self: *Dashboard) void {
-        self.drafts_by_path = .{};
+        self.drafts_by_prompt_path = .{};
+        self.drafts_by_context_path = .{};
         self.drafts_total = 0;
         self.drafts_ready = 0;
         const ws_id = self.activeWsId() orelse return;
@@ -2172,55 +2194,124 @@ pub const Dashboard = struct {
             if (entry.status == .ready) self.drafts_ready += 1;
             const cur = entry.current_path orelse continue;
             const key = arena.dupe(u8, cur) catch continue;
-            self.drafts_by_path.put(arena, key, entry.status) catch {};
+            const target_map = switch (entry.category) {
+                .prompt => &self.drafts_by_prompt_path,
+                .context => &self.drafts_by_context_path,
+            };
+            target_map.put(arena, key, entry.status) catch {};
         }
     }
 
-    pub fn draftStatusFor(self: *const Dashboard, prompt_path: []const u8) ?drafts_mod.DraftStatus {
-        return self.drafts_by_path.get(prompt_path);
+    pub fn draftStatusFor(
+        self: *const Dashboard,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    ) ?drafts_mod.DraftStatus {
+        return switch (category) {
+            .prompt => self.drafts_by_prompt_path.get(path),
+            .context => self.drafts_by_context_path.get(path),
+        };
     }
 
-    /// Read the current draft bytes for `prompt_path`, allocated in
+    /// Read the current draft bytes for a prompt, allocated in
     /// view_arena so the caller can use the slice for the remainder of
     /// the current frame. Returns null when no draft is tracked or the
-    /// file is missing / unreadable.
+    /// file is missing / unreadable. Prompt-only helper because only
+    /// prompt_detail.zig renders working-copy bytes at the moment.
     pub fn draftContentForView(self: *Dashboard, prompt_path: []const u8) ?[]const u8 {
         const ws_id = self.activeWsId() orelse return null;
-        if (!self.drafts_by_path.contains(prompt_path)) return null;
+        if (!self.drafts_by_prompt_path.contains(prompt_path)) return null;
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
         return drafts_mod.readDraftFile(arena, ws_dir, .prompt, prompt_path) catch null;
     }
 
+    /// Derive the draft target from the currently focused module and
+    /// its selection. Returns null when the active module doesn't have
+    /// an editable selection (e.g. no workspace bound, a directory row
+    /// is highlighted, or the workspace detail hasn't loaded).
+    pub fn selectedDraftTarget(self: *Dashboard) ?DraftTarget {
+        const ws_id = self.activeWsId() orelse return null;
+        switch (self.selected_module) {
+            .library => {
+                const prompts = self.getPrompts();
+                if (prompts.len == 0 or self.selected_prompt >= prompts.len) return null;
+                const prompt = &prompts[self.selected_prompt];
+                return .{
+                    .ws_id = ws_id,
+                    .category = .prompt,
+                    .path = prompt.path,
+                    .prompt_id = self.lookupPromptId(prompt.path),
+                };
+            },
+            .workspace => {
+                const live = api.state.wsDetail(self.api_state, ws_id) orelse return null;
+                const ws_tree = self.currentWsTree();
+                if (ws_tree.dirPathAt(self.ws_list_sel) != null) return null;
+                const leaf = ws_tree.leafIndexAt(self.ws_list_sel) orelse return null;
+                switch (self.ws_tab) {
+                    .context => {
+                        if (leaf >= live.context_files.len) return null;
+                        const f = live.context_files[leaf];
+                        return .{
+                            .ws_id = ws_id,
+                            .category = .context,
+                            .path = f.path,
+                            .context_id = f.context_id,
+                        };
+                    },
+                    .prompts => {
+                        if (leaf >= live.ws_prompts.len) return null;
+                        const wp = live.ws_prompts[leaf];
+                        const path = if (wp.path.len > 0) wp.path else blk: {
+                            for (self.getPrompts()) |lp| {
+                                if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break :blk lp.path;
+                            }
+                            return null;
+                        };
+                        return .{
+                            .ws_id = ws_id,
+                            .category = .prompt,
+                            .path = path,
+                            .prompt_id = self.lookupPromptId(path),
+                        };
+                    },
+                }
+            },
+            else => return null,
+        }
+    }
+
     /// Entry point for the `e` key. Finds or creates a modify-draft for
-    /// the currently selected prompt, shells out to $EDITOR via
-    /// editor_host, then refreshes caches so the right panel picks up
-    /// the new draft bytes on the next render.
+    /// the currently selected file, shells out to $EDITOR, then
+    /// refreshes caches so the right panel picks up the new draft
+    /// bytes on the next render.
     pub fn editSelectedDraft(self: *Dashboard) void {
-        const ws_id = self.activeWsId() orelse {
-            self.status_line = "No workspace loaded yet; wait for bootstrap.";
+        const target = self.selectedDraftTarget() orelse {
+            self.status_line = "No editable selection.";
             return;
         };
-        const prompts = self.getPrompts();
-        if (prompts.len == 0 or self.selected_prompt >= prompts.len) return;
-        const prompt = &prompts[self.selected_prompt];
+        self.editDraft(target);
+    }
 
+    fn editDraft(self: *Dashboard, target: DraftTarget) void {
         const alloc = self.api_state.allocator();
-        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
+        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch {
             self.status_line = "Could not resolve workspace directory.";
             return;
         };
         defer alloc.free(ws_dir);
 
-        if (self.draftStatusFor(prompt.path) == null) {
-            const seed = self.cachedPromptBody(prompt.path) orelse "";
+        if (self.draftStatusFor(target.category, target.path) == null) {
+            const seed = self.seedContentForTarget(target) orelse "";
             const seed_hash = util_hash.contentHash(seed);
             drafts_mod.createDraft(alloc, ws_dir, .{
-                .category = .prompt,
+                .category = target.category,
                 .operation = .modify,
-                .draft_path = prompt.path,
-                .current_path = prompt.path,
-                .prompt_id = self.lookupPromptId(prompt.path),
+                .draft_path = target.path,
+                .current_path = target.path,
+                .prompt_id = target.prompt_id,
+                .context_id = target.context_id,
                 .base_hash = seed_hash[0..],
             }, seed) catch |err| {
                 self.status_line = @errorName(err);
@@ -2228,7 +2319,10 @@ pub const Dashboard = struct {
             };
         }
 
-        const draft_abs = std.fs.path.join(alloc, &.{ ws_dir, "drafts", "prompt", prompt.path }) catch return;
+        const draft_abs = std.fs.path.join(
+            alloc,
+            &.{ ws_dir, "drafts", @tagName(target.category), target.path },
+        ) catch return;
         defer alloc.free(draft_abs);
 
         const result = editor_host.editFile(
@@ -2250,16 +2344,22 @@ pub const Dashboard = struct {
         self.refreshDraftsCache();
     }
 
+    /// Pull the authoritative bytes for a file so a new modify-draft
+    /// can seed its copy. Prompts pull from the library cache; context
+    /// files from the workspace context content cache.
+    fn seedContentForTarget(self: *Dashboard, target: DraftTarget) ?[]const u8 {
+        return switch (target.category) {
+            .prompt => self.cachedPromptBody(target.path),
+            .context => self.cachedWorkspaceContextBody(target.ws_id, target.path),
+        };
+    }
+
     /// Handler for the `m` key. Flips between `editing` and `ready`.
     /// Submitted / merged / rejected / conflicted drafts are not
     /// toggled — they represent terminal or pending-review state.
     pub fn toggleSelectedDraftReady(self: *Dashboard) void {
-        const ws_id = self.activeWsId() orelse return;
-        const prompts = self.getPrompts();
-        if (prompts.len == 0 or self.selected_prompt >= prompts.len) return;
-        const prompt = &prompts[self.selected_prompt];
-
-        const current = self.draftStatusFor(prompt.path) orelse {
+        const target = self.selectedDraftTarget() orelse return;
+        const current = self.draftStatusFor(target.category, target.path) orelse {
             self.status_line = "No draft to mark ready.";
             return;
         };
@@ -2273,9 +2373,9 @@ pub const Dashboard = struct {
         };
 
         const alloc = self.api_state.allocator();
-        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
+        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
         defer alloc.free(ws_dir);
-        drafts_mod.setDraftStatus(alloc, ws_dir, .prompt, prompt.path, next_status) catch |err| {
+        drafts_mod.setDraftStatus(alloc, ws_dir, target.category, target.path, next_status) catch |err| {
             self.status_line = @errorName(err);
             return;
         };
@@ -2287,52 +2387,50 @@ pub const Dashboard = struct {
     /// from the confirm `y` branch so it matches the rest of the
     /// destructive-operation UX.
     pub fn requestDiscardSelectedDraft(self: *Dashboard) void {
-        const prompts = self.getPrompts();
-        if (prompts.len == 0 or self.selected_prompt >= prompts.len) return;
-        const prompt = &prompts[self.selected_prompt];
-        if (self.draftStatusFor(prompt.path) == null) {
+        const target = self.selectedDraftTarget() orelse return;
+        if (self.draftStatusFor(target.category, target.path) == null) {
             self.status_line = "No draft to discard.";
             return;
         }
-        self.pending_discard_path = prompt.path;
-        self.confirm_message = prompt.path;
+        self.pending_discard_target = target;
+        self.confirm_message = target.path;
         self.confirm_action = .discard_draft;
         self.show_confirm = true;
     }
 
     fn commitDiscardDraft(self: *Dashboard) void {
-        const ws_id = self.activeWsId() orelse return;
-        if (self.pending_discard_path.len == 0) return;
+        const target = self.pending_discard_target orelse return;
         const alloc = self.api_state.allocator();
-        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
+        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
         defer alloc.free(ws_dir);
-        drafts_mod.discardDraft(alloc, ws_dir, .prompt, self.pending_discard_path) catch |err| {
+        drafts_mod.discardDraft(alloc, ws_dir, target.category, target.path) catch |err| {
             self.status_line = @errorName(err);
             return;
         };
         self.status_line = "Draft discarded.";
-        self.pending_discard_path = "";
+        self.pending_discard_target = null;
         self.refreshDraftsCache();
     }
 
     /// Handler for the `p` key. Opens the PR Composer when the
-    /// selected prompt has a ready draft. The composer is intentionally
+    /// selected file has a ready draft. The composer is intentionally
     /// single-op for the initial cut — multi-draft select is deferred
     /// to a follow-up.
     pub fn openPrComposer(self: *Dashboard) void {
-        const prompts = self.getPrompts();
-        if (prompts.len == 0 or self.selected_prompt >= prompts.len) return;
-        const prompt = &prompts[self.selected_prompt];
-
-        const status = self.draftStatusFor(prompt.path) orelse {
-            self.status_line = "No draft for this prompt.";
+        const target = self.selectedDraftTarget() orelse {
+            self.status_line = "No editable selection.";
+            return;
+        };
+        const status = self.draftStatusFor(target.category, target.path) orelse {
+            self.status_line = "No draft for this selection.";
             return;
         };
         if (status != .ready) {
             self.status_line = "Draft must be marked ready (m) before submit.";
             return;
         }
-        self.pr_composer_prompt_path = prompt.path;
+        self.pr_composer_target_path = target.path;
+        self.pr_composer_category = target.category;
         self.pr_composer_desc_len = 0;
         self.pr_composer_submitting = false;
         self.show_pr_composer = true;
@@ -2350,11 +2448,20 @@ pub const Dashboard = struct {
             self.status_line = "Description is required.";
             return;
         }
+        switch (self.pr_composer_category) {
+            .prompt => self.submitPromptPr(),
+            .context => {
+                self.status_line = "Context PR submission not yet wired.";
+            },
+        }
+    }
+
+    fn submitPromptPr(self: *Dashboard) void {
         const ws_id = self.activeWsId() orelse {
             self.status_line = "No workspace loaded yet; cannot submit.";
             return;
         };
-        const prompt_id = self.lookupPromptId(self.pr_composer_prompt_path) orelse {
+        const prompt_id = self.lookupPromptId(self.pr_composer_target_path) orelse {
             self.status_line = "Unknown prompt id.";
             return;
         };
@@ -2365,7 +2472,7 @@ pub const Dashboard = struct {
         };
         defer alloc.free(ws_dir);
 
-        const draft_content = drafts_mod.readDraftFile(alloc, ws_dir, .prompt, self.pr_composer_prompt_path) catch |err| {
+        const draft_content = drafts_mod.readDraftFile(alloc, ws_dir, .prompt, self.pr_composer_target_path) catch |err| {
             self.status_line = @errorName(err);
             return;
         };
@@ -2437,8 +2544,16 @@ pub const Dashboard = struct {
         const size = ctx.max.size();
         const box_w = @min(size.width -| 4, 60);
         const box_h: u16 = 9;
+        const title = switch (self.pr_composer_category) {
+            .prompt => "New Prompt PR",
+            .context => "New Context PR",
+        };
+        const path_label = switch (self.pr_composer_category) {
+            .prompt => "prompt:",
+            .context => "file:",
+        };
         const modal = Modal{
-            .title = "New Prompt PR",
+            .title = title,
             .box_width = box_w,
             .box_height = box_h,
             .anchor = .center,
@@ -2449,8 +2564,8 @@ pub const Dashboard = struct {
         const col = result.content_col;
         const row = result.content_row;
 
-        w.writeText(&surface, ctx, col, row, "prompt:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        w.writeText(&surface, ctx, col + 8, row, self.pr_composer_prompt_path, theme.boldOn(theme.PANEL_ALT, theme.TEXT));
+        w.writeText(&surface, ctx, col, row, path_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        w.writeText(&surface, ctx, col + 8, row, self.pr_composer_target_path, theme.boldOn(theme.PANEL_ALT, theme.TEXT));
         w.writeText(&surface, ctx, col, row + 1, "op:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         w.writeText(&surface, ctx, col + 8, row + 1, "modify", theme.textOn(theme.PANEL_ALT, theme.TEXT));
 
@@ -2465,12 +2580,13 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    pub fn openNewDraftForm(self: *Dashboard) void {
+    pub fn openNewDraftForm(self: *Dashboard, category: drafts_mod.DraftCategory) void {
         if (self.activeWsId() == null) {
             self.status_line = "No workspace loaded yet; wait for bootstrap.";
             return;
         }
         self.new_draft_path_len = 0;
+        self.new_draft_category = category;
         self.show_new_draft_form = true;
     }
 
@@ -2496,8 +2612,9 @@ pub const Dashboard = struct {
         const path_copy = alloc.dupe(u8, path) catch return;
         defer alloc.free(path_copy);
 
+        const category = self.new_draft_category;
         drafts_mod.createDraft(alloc, ws_dir, .{
-            .category = .prompt,
+            .category = category,
             .operation = .create,
             .draft_path = path_copy,
         }, "") catch |err| {
@@ -2509,7 +2626,7 @@ pub const Dashboard = struct {
         self.new_draft_path_len = 0;
         self.refreshDraftsCache();
 
-        const draft_abs = std.fs.path.join(alloc, &.{ ws_dir, "drafts", "prompt", path_copy }) catch return;
+        const draft_abs = std.fs.path.join(alloc, &.{ ws_dir, "drafts", @tagName(category), path_copy }) catch return;
         defer alloc.free(draft_abs);
 
         const result = editor_host.editFile(
@@ -2569,8 +2686,16 @@ pub const Dashboard = struct {
         const size = ctx.max.size();
         const box_w = @min(size.width -| 4, 54);
         const box_h: u16 = 7;
+        const title = switch (self.new_draft_category) {
+            .prompt => "New Prompt Draft",
+            .context => "New Context Draft",
+        };
+        const hint = switch (self.new_draft_category) {
+            .prompt => "e.g. rule/00_MY_RULE.md",
+            .context => "e.g. spec/NEW_SPEC.md",
+        };
         const modal = Modal{
-            .title = "New Prompt Draft",
+            .title = title,
             .box_width = box_w,
             .box_height = box_h,
             .anchor = .center,
@@ -2588,7 +2713,7 @@ pub const Dashboard = struct {
         const visible = path_text[visible_start..];
         const display = try std.fmt.allocPrint(ctx.arena, "{s}_", .{visible});
         w.writeText(&surface, ctx, col, row + 1, display, theme.textOn(theme.PANEL_ALT, theme.TEXT));
-        w.writeText(&surface, ctx, col, row + 3, "e.g. rule/00_MY_RULE.md", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, col, row + 3, hint, theme.fg(theme.MUTED));
 
         return surface;
     }
@@ -2602,7 +2727,7 @@ pub const Dashboard = struct {
                 const alloc = self.api_state.allocator();
                 const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
                 defer alloc.free(ws_dir);
-                drafts_mod.setDraftStatus(alloc, ws_dir, .prompt, self.pr_composer_prompt_path, .submitted) catch {};
+                drafts_mod.setDraftStatus(alloc, ws_dir, .prompt, self.pr_composer_target_path, .submitted) catch {};
                 self.refreshDraftsCache();
                 self.show_pr_composer = false;
                 self.pr_composer_desc_len = 0;

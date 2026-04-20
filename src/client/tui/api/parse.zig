@@ -37,6 +37,7 @@ pub fn parseContextFiles(alloc: std.mem.Allocator, body: []const u8) ?[]const mo
     var list: std.ArrayList(model.ContextFileData) = .empty;
     for (parsed.value.files) |f| {
         list.append(alloc, .{
+            .context_id = alloc.dupe(u8, f.context_id) catch continue,
             .path = alloc.dupe(u8, f.path) catch continue,
             .hash = alloc.dupe(u8, f.content_hash) catch continue,
             .size = f.size,
@@ -251,12 +252,13 @@ pub fn parsePromptPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model
 test "parseContextFiles accepts content_hash from hub response" {
     const testing = std.testing;
     const body =
-        \\{"files":[{"path":"spec/ARCHITECTURE.md","content_hash":"sha256:abc","size":123,"author":"admin","updated_at":"2026-04-14T00:00:00Z"}]}
+        \\{"files":[{"context_id":"ctx-1","path":"spec/ARCHITECTURE.md","content_hash":"sha256:abc","size":123,"author":"admin","updated_at":"2026-04-14T00:00:00Z"}]}
     ;
 
     const files = parseContextFiles(testing.allocator, body) orelse return error.TestUnexpectedResult;
     defer {
         for (files) |file| {
+            testing.allocator.free(file.context_id);
             testing.allocator.free(file.path);
             testing.allocator.free(file.hash);
             testing.allocator.free(file.author);
@@ -265,6 +267,7 @@ test "parseContextFiles accepts content_hash from hub response" {
         testing.allocator.free(files);
     }
     try testing.expectEqual(@as(usize, 1), files.len);
+    try testing.expectEqualStrings("ctx-1", files[0].context_id);
     try testing.expectEqualStrings("spec/ARCHITECTURE.md", files[0].path);
     try testing.expectEqualStrings("sha256:abc", files[0].hash);
 }
