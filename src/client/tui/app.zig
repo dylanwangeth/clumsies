@@ -14,6 +14,7 @@ const workspace_panel = @import("app/workspace.zig");
 const drafts_mod = @import("../drafts.zig");
 const workspace_config = @import("../workspace_config.zig");
 const editor_host = @import("editor_host.zig");
+const util_hash = @import("clumsies_lib").util.hash;
 
 const tree = @import("tree.zig");
 const trace_reader = @import("trace_reader.zig");
@@ -2214,12 +2215,14 @@ pub const Dashboard = struct {
 
         if (self.draftStatusFor(prompt.path) == null) {
             const seed = self.cachedPromptBody(prompt.path) orelse "";
+            const seed_hash = util_hash.contentHash(seed);
             drafts_mod.createDraft(alloc, ws_dir, .{
                 .category = .prompt,
                 .operation = .modify,
                 .draft_path = prompt.path,
                 .current_path = prompt.path,
                 .prompt_id = self.lookupPromptId(prompt.path),
+                .base_hash = seed_hash[0..],
             }, seed) catch |err| {
                 self.status_line = @errorName(err);
                 return;

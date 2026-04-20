@@ -4,6 +4,7 @@
 const std = @import("std");
 const testing = std.testing;
 const path_util = @import("clumsies_lib").util.path_util;
+const util_hash = @import("clumsies_lib").util.hash;
 
 pub const DraftCategory = enum {
     prompt,
@@ -296,6 +297,66 @@ pub fn discardDraft(
         error.FileNotFound => {},
         else => return err,
     };
+}
+
+pub const ReconcileSummary = struct {
+    conflicted: usize = 0,
+};
+
+/// Re-run drift detection on every non-terminal draft in
+/// `{ws_dir}/drafts/index.json`. When a modify / rename / delete draft's
+/// `base_hash` no longer matches the current cache content at
+/// `current_path`, the entry is moved to `.conflicted`. Create-ops
+/// have no cache base to compare against and are skipped. Drafts
+/// already in `.merged`, `.rejected`, or `.conflicted` are left
+/// untouched — terminal and already-flagged states are sticky.
+///
+/// Hub-PR reconciliation (submitted → merged / rejected) needs the
+/// draft's pr_id, which is not tracked yet; that reconciliation is a
+/// follow-up. For now submitted drafts stay submitted.
+pub fn reconcileDrafts(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    cache_dir: []const u8,
+) !ReconcileSummary {
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    var summary: ReconcileSummary = .{};
+    var changed = false;
+    for (index.entries.items) |*entry| {
+        switch (entry.status) {
+            .merged, .rejected, .conflicted => continue,
+            else => {},
+        }
+        if (entry.operation == .create) continue;
+        const base_hash = entry.base_hash orelse continue;
+        const cur = entry.current_path orelse continue;
+
+        const rel_dir: []const u8 = switch (entry.category) {
+            .prompt => "",
+            .context => "context",
+        };
+        const cache_path = try std.fs.path.join(allocator, &.{ cache_dir, rel_dir, cur });
+        defer allocator.free(cache_path);
+
+        const file = std.fs.openFileAbsolute(cache_path, .{}) catch continue;
+        defer file.close();
+
+        var read_buf: [4096]u8 = undefined;
+        var fr = std.fs.File.Reader.init(file, &read_buf);
+        const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch continue;
+        defer allocator.free(content);
+
+        const current_hash = util_hash.contentHash(content);
+        if (!std.mem.eql(u8, current_hash[0..], base_hash)) {
+            entry.status = .conflicted;
+            summary.conflicted += 1;
+            changed = true;
+        }
+    }
+    if (changed) try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+    return summary;
 }
 
 /// Transition the status of an existing draft. Fails if the draft does
@@ -756,6 +817,127 @@ test "setDraftStatus: returns DraftNotFound for missing draft" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     try testing.expectError(error.DraftNotFound, setDraftStatus(testing.allocator, root, .prompt, "nope.md", .ready));
+}
+
+test "reconcileDrafts: leaves matching base_hash untouched" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const seed = "hello world\n";
+    const seed_hash = util_hash.contentHash(seed);
+    try createDraft(testing.allocator, root, .{
+        .category = .prompt,
+        .operation = .modify,
+        .draft_path = "rule/A.md",
+        .current_path = "rule/A.md",
+        .prompt_id = "p-a",
+        .base_hash = seed_hash[0..],
+    }, seed);
+
+    try tmp.dir.makePath("cache/rule");
+    try writeFile(tmp.dir, "cache/rule/A.md", seed);
+
+    const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
+    defer testing.allocator.free(cache_dir);
+
+    const summary = try reconcileDrafts(testing.allocator, root, cache_dir);
+    try testing.expectEqual(@as(usize, 0), summary.conflicted);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(DraftStatus.editing, index.entries.items[0].status);
+}
+
+test "reconcileDrafts: marks conflicted when cache drifted" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const seed = "v1 body\n";
+    const seed_hash = util_hash.contentHash(seed);
+    try createDraft(testing.allocator, root, .{
+        .category = .prompt,
+        .operation = .modify,
+        .draft_path = "rule/A.md",
+        .current_path = "rule/A.md",
+        .prompt_id = "p-a",
+        .base_hash = seed_hash[0..],
+    }, seed);
+
+    try tmp.dir.makePath("cache/rule");
+    try writeFile(tmp.dir, "cache/rule/A.md", "v2 body (someone else merged)\n");
+
+    const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
+    defer testing.allocator.free(cache_dir);
+
+    const summary = try reconcileDrafts(testing.allocator, root, cache_dir);
+    try testing.expectEqual(@as(usize, 1), summary.conflicted);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(DraftStatus.conflicted, index.entries.items[0].status);
+}
+
+test "reconcileDrafts: skips create-operation drafts" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .prompt,
+        .operation = .create,
+        .draft_path = "rule/new.md",
+    }, "brand new\n");
+
+    const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
+    defer testing.allocator.free(cache_dir);
+
+    const summary = try reconcileDrafts(testing.allocator, root, cache_dir);
+    try testing.expectEqual(@as(usize, 0), summary.conflicted);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(DraftStatus.editing, index.entries.items[0].status);
+}
+
+test "reconcileDrafts: leaves terminal states sticky" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const seed = "merged body\n";
+    const seed_hash = util_hash.contentHash(seed);
+    try createDraft(testing.allocator, root, .{
+        .category = .prompt,
+        .operation = .modify,
+        .draft_path = "rule/A.md",
+        .current_path = "rule/A.md",
+        .prompt_id = "p-a",
+        .base_hash = seed_hash[0..],
+    }, seed);
+    try setDraftStatus(testing.allocator, root, .prompt, "rule/A.md", .merged);
+
+    try tmp.dir.makePath("cache/rule");
+    try writeFile(tmp.dir, "cache/rule/A.md", "totally different body\n");
+
+    const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
+    defer testing.allocator.free(cache_dir);
+
+    const summary = try reconcileDrafts(testing.allocator, root, cache_dir);
+    try testing.expectEqual(@as(usize, 0), summary.conflicted);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(DraftStatus.merged, index.entries.items[0].status);
 }
 
 test "index serialization: multiple entries survive round-trip" {
