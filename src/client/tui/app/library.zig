@@ -357,8 +357,12 @@ pub fn syncLibraryWidgets(self: anytype) void {
                 else => "\xe2\x80\xa2+",
             };
             const row_sel = i == selected_row;
+            const labeled_text = if (self.draftStatusFor(p.path)) |_|
+                (std.fmt.allocPrint(self.viewAllocator(), "{s}*", .{row_text}) catch row_text)
+            else
+                row_text;
             self.library_table_cols[i] = .{
-                .{ .text = row_text, .flex = 1 },
+                .{ .text = labeled_text, .flex = 1 },
                 .{ .text = pr_label, .flex = 0, .min_width = 2, .alignment = .right },
             };
             self.library_table_rows[i] = .{

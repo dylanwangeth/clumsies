@@ -75,7 +75,24 @@ pub fn handleEmbeddedPaneEvent(
         return;
     }
     switch (self.detail_tab) {
-        .content => try self.content_scroll_bars.scroll_view.handleEvent(ctx, event),
+        .content => {
+            if (key.matches('e', .{})) {
+                self.editSelectedDraft();
+                ctx.consumeAndRedraw();
+                return;
+            }
+            if (key.matches('D', .{ .shift = true })) {
+                self.requestDiscardSelectedDraft();
+                ctx.consumeAndRedraw();
+                return;
+            }
+            if (key.matches('m', .{})) {
+                self.toggleSelectedDraftReady();
+                ctx.consumeAndRedraw();
+                return;
+            }
+            try self.content_scroll_bars.scroll_view.handleEvent(ctx, event);
+        },
         .pull_requests => try handlePrDiffEvent(self, ctx, event, key),
     }
 }
@@ -336,16 +353,18 @@ pub fn fetchSelectedPrDetail(self: anytype) void {
 pub fn syncContentWidget(self: anytype) void {
     const prompts = self.getPrompts();
     const selected_path: ?[]const u8 = if (self.selected_prompt < prompts.len) prompts[self.selected_prompt].path else null;
-    const content = if (selected_path) |path| self.cachedPromptBody(path) orelse "" else "";
+    const cache_content: []const u8 = if (selected_path) |path| self.cachedPromptBody(path) orelse "" else "";
+    const draft_content: ?[]const u8 = if (selected_path) |path| self.draftContentForView(path) else null;
+    const proposed = draft_content orelse cache_content;
 
     const arena = self.viewAllocator();
-    const rows = diff_viewer.computeInlineGutter(arena, content, content) catch null;
+    const rows = diff_viewer.computeInlineGutter(arena, cache_content, proposed) catch null;
     if (rows) |r| {
         renderGutterRows(self, arena, r) catch {
-            renderFlatContent(self, arena, content);
+            renderFlatContent(self, arena, proposed);
         };
     } else {
-        renderFlatContent(self, arena, content);
+        renderFlatContent(self, arena, proposed);
     }
 
     self.requestSelectedPromptDetail();

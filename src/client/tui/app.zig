@@ -11,6 +11,9 @@ const library_panel = @import("app/library.zig");
 const prompt_detail_panel = @import("app/prompt_detail.zig");
 const settings_panel = @import("app/settings.zig");
 const workspace_panel = @import("app/workspace.zig");
+const drafts_mod = @import("../drafts.zig");
+const workspace_config = @import("../workspace_config.zig");
+const editor_host = @import("editor_host.zig");
 
 const tree = @import("tree.zig");
 const trace_reader = @import("trace_reader.zig");
@@ -55,6 +58,7 @@ const ConfirmAction = enum {
     delete_bundle,
     delete_workspace,
     revoke_token,
+    discard_draft,
     quit,
 };
 
@@ -204,7 +208,26 @@ pub const Dashboard = struct {
     dashboard_input_capacity: usize = 1,
     view_arena: std.heap.ArenaAllocator,
 
-    pub fn init(api_state: *api.state.ApiState) Dashboard {
+    // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
+    // main.zig for the lifetime of the Dashboard.
+    app: *vxfw.App,
+    env_map: *const std.process.EnvMap,
+    active_ws_id: ?[]const u8 = null,
+
+    // Drafts cache. Refreshed on startup and after every edit op so
+    // list rows and the footer counter stay in sync with disk.
+    drafts_arena: std.heap.ArenaAllocator,
+    drafts_by_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
+    drafts_total: usize = 0,
+    drafts_ready: usize = 0,
+    pending_discard_path: []const u8 = "",
+
+    pub fn init(
+        api_state: *api.state.ApiState,
+        app: *vxfw.App,
+        env_map: *const std.process.EnvMap,
+        active_ws_id: ?[]const u8,
+    ) Dashboard {
         return .{
             .api_state = api_state,
             .library_scroll_bars = w.initCursorScrollBars(theme.PANEL),
@@ -212,11 +235,16 @@ pub const Dashboard = struct {
             .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
             .view_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
+            .app = app,
+            .env_map = env_map,
+            .active_ws_id = active_ws_id,
+            .drafts_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
         };
     }
 
     pub fn deinit(self: *Dashboard) void {
         self.view_arena.deinit();
+        self.drafts_arena.deinit();
         const alloc = self.api_state.allocator();
         self.library_tree.deinit(alloc);
         self.ws_context_tree.deinit(alloc);
@@ -280,6 +308,7 @@ pub const Dashboard = struct {
                                 );
                                 self.status_line = "Revoking token...";
                             },
+                            .discard_draft => self.commitDiscardDraft(),
                             .quit => {
                                 ctx.consumeEvent();
                                 ctx.quit = true;
@@ -509,6 +538,7 @@ pub const Dashboard = struct {
                 return;
             },
             .init => {
+                self.refreshDraftsCache();
                 // Start breathing animation
                 try ctx.tick(100, self.widget());
             },
@@ -707,7 +737,7 @@ pub const Dashboard = struct {
             .library => if (self.detail_focus_content and self.detail_tab == .pull_requests)
                 "j/k scroll  a accept  x reject  c comment  Esc list  ? help"
             else if (self.detail_focus_content)
-                "j/k scroll  g/G jump  Esc list  ? help"
+                "e edit  D discard  m ready  j/k scroll  Esc list"
             else if (self.detail_tab == .pull_requests)
                 "j/k move  f filter  T tab  Tab detail  r refresh  ? help  q quit"
             else
@@ -724,6 +754,18 @@ pub const Dashboard = struct {
             },
         };
         w.writeText(&surface, ctx, 1, 0, keys, theme.fg(theme.MUTED));
+
+        if (self.drafts_total > 0) {
+            const counter = std.fmt.allocPrint(
+                ctx.arena,
+                "drafts: {d} ({d} ready)",
+                .{ self.drafts_total, self.drafts_ready },
+            ) catch "";
+            if (counter.len > 0) {
+                const keys_w: u16 = @intCast(ctx.stringWidth(keys));
+                w.writeText(&surface, ctx, 2 + keys_w + 2, 0, counter, theme.fg(theme.ACCENT));
+            }
+        }
 
         // Status line on the right side of footer
         if (!std.mem.eql(u8, self.status_line, "Ready.")) {
@@ -1991,6 +2033,7 @@ pub const Dashboard = struct {
             .delete_bundle => "Delete bundle:",
             .delete_workspace => "Delete workspace:",
             .revoke_token => "Revoke token?",
+            .discard_draft => "Discard draft:",
             .quit => "Quit clumsies?",
             .none => "Confirm:",
         };
@@ -2055,6 +2098,172 @@ pub const Dashboard = struct {
             .workspace => "Workspace list and sync status detail.",
             .analysis => "Prompt and member aggregates.",
         };
+    }
+
+    /// Reload `drafts/index.json` into `drafts_by_path` and recompute
+    /// the totals. Called once at init and again after every edit op
+    /// (`e`, `D`, `m`). No-op when no workspace is bound to `cwd` —
+    /// draft features just stay silent rather than surface an error.
+    pub fn refreshDraftsCache(self: *Dashboard) void {
+        self.drafts_by_path = .{};
+        self.drafts_total = 0;
+        self.drafts_ready = 0;
+        const ws_id = self.active_ws_id orelse return;
+        _ = self.drafts_arena.reset(.retain_capacity);
+        const arena = self.drafts_arena.allocator();
+
+        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return;
+        var index = drafts_mod.loadIndex(arena, ws_dir) catch return;
+        defer index.deinit(arena);
+
+        for (index.entries.items) |entry| {
+            switch (entry.status) {
+                .merged, .rejected => continue,
+                else => {},
+            }
+            self.drafts_total += 1;
+            if (entry.status == .ready) self.drafts_ready += 1;
+            const cur = entry.current_path orelse continue;
+            const key = arena.dupe(u8, cur) catch continue;
+            self.drafts_by_path.put(arena, key, entry.status) catch {};
+        }
+    }
+
+    pub fn draftStatusFor(self: *const Dashboard, prompt_path: []const u8) ?drafts_mod.DraftStatus {
+        return self.drafts_by_path.get(prompt_path);
+    }
+
+    /// Read the current draft bytes for `prompt_path`, allocated in
+    /// view_arena so the caller can use the slice for the remainder of
+    /// the current frame. Returns null when no draft is tracked or the
+    /// file is missing / unreadable.
+    pub fn draftContentForView(self: *Dashboard, prompt_path: []const u8) ?[]const u8 {
+        const ws_id = self.active_ws_id orelse return null;
+        if (!self.drafts_by_path.contains(prompt_path)) return null;
+        const arena = self.viewAllocator();
+        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
+        return drafts_mod.readDraftFile(arena, ws_dir, .prompt, prompt_path) catch null;
+    }
+
+    /// Entry point for the `e` key. Finds or creates a modify-draft for
+    /// the currently selected prompt, shells out to $EDITOR via
+    /// editor_host, then refreshes caches so the right panel picks up
+    /// the new draft bytes on the next render.
+    pub fn editSelectedDraft(self: *Dashboard) void {
+        const ws_id = self.active_ws_id orelse {
+            self.status_line = "No workspace bound to cwd; drafts disabled.";
+            return;
+        };
+        const prompts = self.getPrompts();
+        if (prompts.len == 0 or self.selected_prompt >= prompts.len) return;
+        const prompt = &prompts[self.selected_prompt];
+
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
+            self.status_line = "Could not resolve workspace directory.";
+            return;
+        };
+        defer alloc.free(ws_dir);
+
+        if (self.draftStatusFor(prompt.path) == null) {
+            const seed = self.cachedPromptBody(prompt.path) orelse "";
+            drafts_mod.createDraft(alloc, ws_dir, .{
+                .category = .prompt,
+                .operation = .modify,
+                .draft_path = prompt.path,
+                .current_path = prompt.path,
+                .prompt_id = self.lookupPromptId(prompt.path),
+            }, seed) catch |err| {
+                self.status_line = @errorName(err);
+                return;
+            };
+        }
+
+        const draft_abs = std.fs.path.join(alloc, &.{ ws_dir, "drafts", "prompt", prompt.path }) catch return;
+        defer alloc.free(draft_abs);
+
+        const result = editor_host.editFile(
+            alloc,
+            &self.app.vx,
+            self.app.tty.writer(),
+            self.env_map,
+            draft_abs,
+        ) catch |err| {
+            self.status_line = @errorName(err);
+            return;
+        };
+        self.status_line = switch (result) {
+            .completed => "Draft saved.",
+            .failed => "Editor exited non-zero.",
+            .editor_not_found => "No $EDITOR resolved.",
+            .spawn_failed => "Editor spawn failed.",
+        };
+        self.refreshDraftsCache();
+    }
+
+    /// Handler for the `m` key. Flips between `editing` and `ready`.
+    /// Submitted / merged / rejected / conflicted drafts are not
+    /// toggled — they represent terminal or pending-review state.
+    pub fn toggleSelectedDraftReady(self: *Dashboard) void {
+        const ws_id = self.active_ws_id orelse return;
+        const prompts = self.getPrompts();
+        if (prompts.len == 0 or self.selected_prompt >= prompts.len) return;
+        const prompt = &prompts[self.selected_prompt];
+
+        const current = self.draftStatusFor(prompt.path) orelse {
+            self.status_line = "No draft to mark ready.";
+            return;
+        };
+        const next_status: drafts_mod.DraftStatus = switch (current) {
+            .editing => .ready,
+            .ready => .editing,
+            else => {
+                self.status_line = "Draft status is locked.";
+                return;
+            },
+        };
+
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
+        defer alloc.free(ws_dir);
+        drafts_mod.setDraftStatus(alloc, ws_dir, .prompt, prompt.path, next_status) catch |err| {
+            self.status_line = @errorName(err);
+            return;
+        };
+        self.status_line = if (next_status == .ready) "Draft marked ready." else "Draft marked editing.";
+        self.refreshDraftsCache();
+    }
+
+    /// Arms the confirm overlay for a discard. The actual discard runs
+    /// from the confirm `y` branch so it matches the rest of the
+    /// destructive-operation UX.
+    pub fn requestDiscardSelectedDraft(self: *Dashboard) void {
+        const prompts = self.getPrompts();
+        if (prompts.len == 0 or self.selected_prompt >= prompts.len) return;
+        const prompt = &prompts[self.selected_prompt];
+        if (self.draftStatusFor(prompt.path) == null) {
+            self.status_line = "No draft to discard.";
+            return;
+        }
+        self.pending_discard_path = prompt.path;
+        self.confirm_message = prompt.path;
+        self.confirm_action = .discard_draft;
+        self.show_confirm = true;
+    }
+
+    fn commitDiscardDraft(self: *Dashboard) void {
+        const ws_id = self.active_ws_id orelse return;
+        if (self.pending_discard_path.len == 0) return;
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
+        defer alloc.free(ws_dir);
+        drafts_mod.discardDraft(alloc, ws_dir, .prompt, self.pending_discard_path) catch |err| {
+            self.status_line = @errorName(err);
+            return;
+        };
+        self.status_line = "Draft discarded.";
+        self.pending_discard_path = "";
+        self.refreshDraftsCache();
     }
 
     fn selectTab(self: *Dashboard, ctx: *vxfw.EventContext, tab: TopModule) void {
