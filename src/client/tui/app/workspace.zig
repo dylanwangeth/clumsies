@@ -6,6 +6,7 @@ const w = @import("../widgets.zig");
 const data = @import("../view_types.zig");
 const api = @import("../api.zig");
 const drafts_mod = @import("../../drafts.zig");
+const prompt_detail = @import("prompt_detail.zig");
 const Modal = @import("../widgets/modal.zig").Modal;
 
 const MAX_TREE_ROWS = 128;
@@ -48,11 +49,16 @@ pub const CreateWsErrorKind = enum {
 pub const DetailArgs = struct {
     live_ws: ?api.model.WsDetail,
     dir_sel: ?[]const u8,
+    /// Server-side index into `live_ws.context_files`. Null when
+    /// the selection is a virtual (create-op) draft.
     context_sel: ?usize,
+    /// Path of the selected context file — set for both server-side
+    /// files and virtual create-op drafts. drawDetail treats this as
+    /// the primary identity and only uses `context_sel` to pull
+    /// hub-side metadata (hash / author / updated_at).
+    context_sel_path: ?[]const u8,
     prompt_sel_idx: ?usize,
     prompt_sel_path: ?[]const u8,
-    context_body: ?[]const u8,
-    prompt_body: ?[]const u8,
 };
 
 pub fn drawStatus(
@@ -172,38 +178,56 @@ pub fn drawList(
             const style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.boldOn(theme.PANEL, theme.TEXT_SOFT);
             w.writeText(&surface, ctx, row_col, kv_row, rendered, style);
         } else {
-            const style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-            w.writeText(&surface, ctx, row_col, kv_row, rendered, style);
-
-            if (live_ws) |ws_d| {
-                if (ws_tree.leafIndexAt(r)) |idx| {
-                    const MarkerInfo = struct {
-                        category: drafts_mod.DraftCategory,
-                        path: []const u8,
-                    };
-                    const marker_info: ?MarkerInfo = switch (self.ws_tab) {
-                        .context => if (idx < ws_d.context_files.len) MarkerInfo{
-                            .category = .context,
-                            .path = ws_d.context_files[idx].path,
-                        } else null,
-                        .prompts => blk: {
-                            if (idx >= ws_d.ws_prompts.len) break :blk null;
-                            const wp = ws_d.ws_prompts[idx];
-                            const prompt_path = if (wp.path.len > 0)
-                                wp.path
-                            else for (lib_prompts) |lp| {
-                                if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-                            } else wp.prompt_id;
-                            break :blk MarkerInfo{ .category = .prompt, .path = prompt_path };
-                        },
-                    };
-                    if (marker_info) |m| {
-                        if (self.draftStatusFor(m.category, m.path)) |_| {
-                            const nw: u16 = @intCast(ctx.stringWidth(rendered));
-                            w.writeText(&surface, ctx, row_col + nw + 1, kv_row, "*", theme.fg(theme.WARN));
+            const draft_status = blk: {
+                const ws_d = live_ws orelse break :blk null;
+                const leaf = ws_tree.leafIndexAt(r) orelse break :blk null;
+                const MarkerInfo = struct {
+                    category: drafts_mod.DraftCategory,
+                    path: []const u8,
+                };
+                const marker_info: ?MarkerInfo = switch (self.ws_tab) {
+                    .context => inner: {
+                        if (leaf < ws_d.context_files.len) {
+                            break :inner MarkerInfo{
+                                .category = .context,
+                                .path = ws_d.context_files[leaf].path,
+                            };
                         }
-                    }
-                }
+                        // Virtual row: create-op draft. Path lives
+                        // in drafts_create_context_paths, offset past
+                        // the server-side context file count.
+                        const k = leaf - ws_d.context_files.len;
+                        if (k >= self.drafts_create_context_paths.len) break :inner null;
+                        break :inner MarkerInfo{
+                            .category = .context,
+                            .path = self.drafts_create_context_paths[k],
+                        };
+                    },
+                    .prompts => inner: {
+                        if (leaf >= ws_d.ws_prompts.len) break :inner null;
+                        const wp = ws_d.ws_prompts[leaf];
+                        const prompt_path = if (wp.path.len > 0)
+                            wp.path
+                        else for (lib_prompts) |lp| {
+                            if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
+                        } else wp.prompt_id;
+                        break :inner MarkerInfo{ .category = .prompt, .path = prompt_path };
+                    },
+                };
+                const m = marker_info orelse break :blk null;
+                break :blk self.draftStatusFor(m.category, m.path);
+            };
+            const row_fg = if (draft_status) |s|
+                theme.draftStatusColor(s)
+            else if (sel)
+                theme.TEXT
+            else
+                theme.TEXT_SOFT;
+            const row_style = if (sel) theme.boldOn(theme.PANEL, row_fg) else theme.fg(row_fg);
+            w.writeText(&surface, ctx, row_col, kv_row, rendered, row_style);
+            if (draft_status != null) {
+                const nw: u16 = @intCast(ctx.stringWidth(rendered));
+                w.writeText(&surface, ctx, row_col + nw + 1, kv_row, "*", row_style);
             }
         }
         kv_row += 1;
@@ -230,91 +254,38 @@ pub fn drawDetail(
     const ws_d = args.live_ws.?;
 
     const title: []const u8 = switch (self.ws_tab) {
-        .context => if (args.dir_sel) |dir| dir else if (args.context_sel) |sel| ws_d.context_files[sel].path else "no files",
+        .context => if (args.dir_sel) |dir| dir else if (args.context_sel_path) |p| p else "no files",
         .prompts => if (args.dir_sel) |dir| dir else if (args.prompt_sel_path) |path| path else "no prompts",
     };
-    const has_diff = false;
-    w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, if (has_diff) theme.WARN else theme.TEXT));
+    w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
+    // Reserve min_col past the title (plus one space) so the
+    // right-aligned metadata badge never overlaps the path.
+    const title_w: u16 = @intCast(ctx.stringWidth(title));
+    const meta_min_col: u16 = 2 + title_w + 2;
     if (self.ws_show_diff) {
-        const tw: u16 = @intCast(ctx.stringWidth(title));
-        w.writeText(&surface, ctx, 2 + tw + 2, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
+        w.writeText(&surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
+    } else if (args.dir_sel == null) {
+        try writeWsMetaOnHeader(&surface, ctx, meta_min_col, self, ws_d, args);
     }
 
-    var kv_row: u16 = 2;
+    const kv_row: u16 = 2;
     const max_row = ctx.max.height.? -| 1;
 
     switch (self.ws_tab) {
         .context => {
             if (args.dir_sel != null) {
-                w.writeText(&surface, ctx, 2, kv_row, "Directory selected.", theme.fg(theme.TEXT_SOFT));
-                kv_row += 1;
-                if (kv_row < max_row) {
-                    w.writeText(&surface, ctx, 2, kv_row, "Enter toggles expansion. Left collapses or jumps to parent. Right expands.", theme.fg(theme.MUTED));
-                }
-            } else if (args.context_sel) |sel| {
-                const f = &ws_d.context_files[sel];
-                if (self.ws_show_diff) {
-                    w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
-                } else {
-                    w.writeText(&surface, ctx, 2, kv_row, f.path, theme.fg(theme.TEXT_SOFT));
-                    kv_row += 1;
-                    if (kv_row < max_row) {
-                        const hash_label = try std.fmt.allocPrint(ctx.arena, "hash: {s}", .{f.hash});
-                        w.writeText(&surface, ctx, 2, kv_row, hash_label, theme.fg(theme.MUTED));
-                        kv_row += 1;
-                    }
-                    if (kv_row < max_row and f.author.len > 0) {
-                        const author_label = try std.fmt.allocPrint(ctx.arena, "author: {s}", .{f.author});
-                        w.writeText(&surface, ctx, 2, kv_row, author_label, theme.fg(theme.MUTED));
-                        kv_row += 1;
-                    }
-                    if (kv_row < max_row and f.updated_at.len > 0) {
-                        const updated_label = try std.fmt.allocPrint(ctx.arena, "updated: {s}", .{f.updated_at});
-                        w.writeText(&surface, ctx, 2, kv_row, updated_label, theme.fg(theme.MUTED));
-                        kv_row += 1;
-                    }
-                    if (kv_row < max_row) kv_row += 1;
-                    if (kv_row < max_row) {
-                        if (args.context_body) |body| {
-                            drawTextBlock(&surface, ctx, 2, kv_row, max_row, body, theme.textOn(theme.PANEL, theme.TEXT_SOFT));
-                        } else {
-                            w.writeText(&surface, ctx, 2, kv_row, "Loading context content...", theme.fg(theme.MUTED));
-                        }
-                    }
-                }
+                try drawDirSelected(&surface, ctx, kv_row, max_row);
+            } else if (args.context_sel_path) |sel_path| {
+                try drawContextFileDetail(self, &surface, ctx, kv_row, max_row, ws_d, sel_path);
             } else {
                 w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
             }
         },
         .prompts => {
             if (args.dir_sel != null) {
-                w.writeText(&surface, ctx, 2, kv_row, "Directory selected.", theme.fg(theme.TEXT_SOFT));
-                kv_row += 1;
-                if (kv_row < max_row) {
-                    w.writeText(&surface, ctx, 2, kv_row, "Enter toggles expansion. Left collapses or jumps to parent. Right expands.", theme.fg(theme.MUTED));
-                }
-            } else if (args.prompt_sel_idx) |prompt_idx| {
-                const p = &ws_d.ws_prompts[prompt_idx];
-                if (self.ws_show_diff) {
-                    w.writeText(&surface, ctx, 2, kv_row, "No diff available", theme.fg(theme.MUTED));
-                } else {
-                    const prompt_path = args.prompt_sel_path orelse "no prompts";
-                    w.writeText(&surface, ctx, 2, kv_row, prompt_path, theme.fg(theme.TEXT_SOFT));
-                    kv_row += 1;
-                    if (kv_row < max_row) {
-                        const hash_label = try std.fmt.allocPrint(ctx.arena, "hash: {s}", .{p.content_hash});
-                        w.writeText(&surface, ctx, 2, kv_row, hash_label, theme.fg(theme.MUTED));
-                        kv_row += 1;
-                    }
-                    if (kv_row < max_row) kv_row += 1;
-                    if (kv_row < max_row) {
-                        if (args.prompt_body) |body| {
-                            drawTextBlock(&surface, ctx, 2, kv_row, max_row, body, theme.textOn(theme.PANEL, theme.TEXT_SOFT));
-                        } else {
-                            w.writeText(&surface, ctx, 2, kv_row, "Loading prompt content...", theme.fg(theme.MUTED));
-                        }
-                    }
-                }
+                try drawDirSelected(&surface, ctx, kv_row, max_row);
+            } else if (args.prompt_sel_path) |p| {
+                try drawPromptFileDetail(self, &surface, ctx, kv_row, max_row, p);
             } else {
                 w.writeText(&surface, ctx, 2, kv_row, "No workspace prompts.", theme.fg(theme.MUTED));
             }
@@ -322,6 +293,158 @@ pub fn drawDetail(
     }
 
     return surface;
+}
+
+/// Render a one-line metadata badge at the top-right of the header,
+/// mirroring Library's `rev{N} pr{N} c{N} {updated}` convention. For
+/// context files we render `hash7 author updated`; for workspace
+/// prompts the hash is all we have from the manifest; for virtual
+/// (create-op) drafts we render an accent-colored `(new)` banner so
+/// the user knows the file is unsubmitted.
+fn writeWsMetaOnHeader(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    min_col: u16,
+    self: anytype,
+    ws_d: api.model.WsDetail,
+    args: DetailArgs,
+) !void {
+    switch (self.ws_tab) {
+        .context => {
+            if (args.context_sel) |idx| {
+                if (idx >= ws_d.context_files.len) return;
+                const f = &ws_d.context_files[idx];
+                const hash7 = hashBadge(f.hash);
+                const meta = try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{s}  {s}  {s}",
+                    .{ hash7, f.author, f.updated_at },
+                );
+                _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
+            } else if (args.context_sel_path != null) {
+                // Virtual row: local create-op draft, no hub metadata.
+                _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
+            }
+        },
+        .prompts => {
+            if (args.prompt_sel_idx) |idx| {
+                if (idx >= ws_d.ws_prompts.len) return;
+                const p = &ws_d.ws_prompts[idx];
+                const hash7 = hashBadge(p.content_hash);
+                _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, hash7, theme.fg(theme.MUTED));
+            }
+        },
+    }
+}
+
+fn hashBadge(raw: []const u8) []const u8 {
+    // Hashes usually arrive as "sha256:hex"; keep 7 hex chars after
+    // the colon so they land roughly in git's abbreviated-SHA range
+    // without padding the header badge.
+    const colon = std.mem.indexOfScalar(u8, raw, ':');
+    const start = if (colon) |c| c + 1 else 0;
+    const slice = raw[start..];
+    return slice[0..@min(7, slice.len)];
+}
+
+fn writeHeaderRightIfFits(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    row: u16,
+    min_col: u16,
+    text: []const u8,
+    style: vaxis.Style,
+) bool {
+    const width: u16 = @intCast(ctx.stringWidth(text));
+    if (width == 0 or width >= surface.size.width) return false;
+    const start_col = surface.size.width - width - 1;
+    if (start_col <= min_col) return false;
+    w.writeText(surface, ctx, start_col, row, text, style);
+    return true;
+}
+
+fn drawDirSelected(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    start_row: u16,
+    max_row: u16,
+) !void {
+    w.writeText(surface, ctx, 2, start_row, "Directory selected.", theme.fg(theme.TEXT_SOFT));
+    if (start_row + 1 < max_row) {
+        w.writeText(surface, ctx, 2, start_row + 1, "Enter toggles expansion. Left collapses or jumps to parent. Right expands.", theme.fg(theme.MUTED));
+    }
+}
+
+fn drawContextFileDetail(
+    self: anytype,
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    start_row: u16,
+    max_row: u16,
+    ws_d: api.model.WsDetail,
+    path: []const u8,
+) !void {
+    if (self.ws_show_diff) {
+        w.writeText(surface, ctx, 2, start_row, "No diff available", theme.fg(theme.MUTED));
+        return;
+    }
+    try attachContentSurface(self, surface, ctx, start_row, max_row, .{
+        .context = .{ .ws_id = ws_d.ws_id, .path = path },
+    });
+}
+
+fn drawPromptFileDetail(
+    self: anytype,
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    start_row: u16,
+    max_row: u16,
+    prompt_path: []const u8,
+) !void {
+    if (self.ws_show_diff) {
+        w.writeText(surface, ctx, 2, start_row, "No diff available", theme.fg(theme.MUTED));
+        return;
+    }
+    try attachContentSurface(self, surface, ctx, start_row, max_row, .{
+        .prompt = .{ .path = prompt_path },
+    });
+}
+
+const ContentSource = union(enum) {
+    context: struct { ws_id: []const u8, path: []const u8 },
+    prompt: struct { path: []const u8 },
+};
+
+/// Seed the shared content_scroll_bars with working-copy bytes for
+/// the source and attach the scroll view as a child surface below
+/// the metadata rows. Library's prompt_detail path uses the same
+/// scroll bars, so switching modules redraws content into the same
+/// widget state — no per-module scroll state today.
+fn attachContentSurface(
+    self: anytype,
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    start_row: u16,
+    max_row: u16,
+    source: ContentSource,
+) !void {
+    switch (source) {
+        .context => |c| prompt_detail.syncWsContextContentWidget(self, c.ws_id, c.path),
+        .prompt => |p| prompt_detail.syncWsPromptContentWidget(self, p.path),
+    }
+    const content_h: u16 = if (max_row > start_row) max_row - start_row else 0;
+    if (content_h == 0) return;
+    const width_pad: u16 = 4;
+    const inner_ctx = ctx.withConstraints(
+        .{ .width = ctx.max.width.? -| width_pad, .height = content_h },
+        .{ .width = ctx.max.width.? -| width_pad, .height = content_h },
+    );
+    const body = try prompt_detail.buildContentSurface(self, inner_ctx, width_pad, content_h);
+    const prev = surface.children;
+    const children = try ctx.arena.alloc(vxfw.SubSurface, prev.len + 1);
+    for (prev, 0..) |c, i| children[i] = c;
+    children[prev.len] = .{ .origin = .{ .row = start_row, .col = 2 }, .surface = body };
+    surface.children = children;
 }
 
 pub fn handleModuleEvent(
@@ -391,24 +514,6 @@ fn wsTabLabel(tab: anytype) []const u8 {
         .context => "Context",
         .prompts => "Prompts",
     };
-}
-
-fn drawTextBlock(
-    surface: *vxfw.Surface,
-    ctx: vxfw.DrawContext,
-    col: u16,
-    start_row: u16,
-    max_row: u16,
-    text: []const u8,
-    style: vaxis.Style,
-) void {
-    var row = start_row;
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |line| {
-        if (row >= max_row) break;
-        w.writeText(surface, ctx, col, row, line, style);
-        row += 1;
-    }
 }
 
 fn handleBarFocusEvent(
@@ -569,6 +674,12 @@ fn handleContentFocusEvent(
         ctx.consumeAndRedraw();
         return;
     }
+    // Forward scroll keys to the shared content_scroll_bars so j/k,
+    // arrow keys, PgUp/PgDn, g/G drive the content panel identically
+    // to the Library prompt-detail pane. vxfw's ScrollView consumes
+    // the ones it knows and ignores the rest, so this is safe as a
+    // catch-all.
+    try self.content_scroll_bars.scroll_view.handleEvent(ctx, .{ .key_press = key });
 }
 
 /// Trigger the workspace-detail compound fetch. Issues two dispatches
@@ -622,6 +733,17 @@ pub fn syncWsRows(self: anytype) void {
                 paths_buf[i] = ws_d.context_files[i].path;
                 orig_idx[i] = i;
             }
+            // Append local create-op context drafts as virtual rows.
+            // Leaf index is offset by ws_d.context_files.len so
+            // selectedDraftTarget can distinguish server rows from
+            // create-only drafts.
+            const create_paths = self.drafts_create_context_paths;
+            var k: usize = 0;
+            while (k < create_paths.len and item_count < MAX_TREE_ROWS) : (k += 1) {
+                paths_buf[item_count] = create_paths[k];
+                orig_idx[item_count] = ws_d.context_files.len + k;
+                item_count += 1;
+            }
         },
         .prompts => {
             const lib_prompts = self.getPrompts();
@@ -635,6 +757,10 @@ pub fn syncWsRows(self: anytype) void {
                 } else wp.prompt_id;
                 orig_idx[i] = i;
             }
+            // Workspace does not own prompt creation, so no virtual
+            // rows are appended here. Library is the place to create
+            // a new prompt draft; once submitted and merged it shows
+            // up through the workspace manifest.
         },
     }
 

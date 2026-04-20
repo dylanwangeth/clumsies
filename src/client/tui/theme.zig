@@ -62,6 +62,21 @@ pub const WARN = rgb(0xe0b14b);
 pub const DANGER = rgb(0xd3745a);
 pub const INFO = rgb(0xe7b868);
 
+/// Foreground color for a draft marker (and the row name when a row
+/// has a draft), keyed by draft status. Kept in this file so every
+/// renderer — Library Files rows, Workspace list rows — maps the
+/// same status onto the same hue. See `design/12_CONTENT_EDITING.md`
+/// for the spec.
+pub fn draftStatusColor(status: anytype) vaxis.Color {
+    return switch (status) {
+        .editing => WARN,
+        .ready => OK,
+        .submitted => ACCENT,
+        .conflicted => DANGER,
+        else => MUTED,
+    };
+}
+
 pub const CANVAS_CELL: vaxis.Cell = .{
     .char = .{ .grapheme = " ", .width = 1 },
     .style = style(TEXT, CANVAS),

@@ -109,12 +109,7 @@ fn buildPromptContentSurface(
     child_height: u16,
 ) std.mem.Allocator.Error!vxfw.Surface {
     syncContentWidget(self);
-    const inner_w = ctx.max.width.? -| width_pad;
-    const child_ctx = ctx.withConstraints(
-        .{ .width = inner_w, .height = child_height },
-        .{ .width = inner_w, .height = child_height },
-    );
-    return self.content_scroll_bars.widget().draw(child_ctx);
+    return buildContentSurface(self, ctx, width_pad, child_height);
 }
 
 fn buildPromptDetailBody(
@@ -235,6 +230,16 @@ fn writePromptMetaOnPanelChrome(
     min_col: u16,
     prompt: *const data.PromptEntry,
 ) std.mem.Allocator.Error!void {
+    // Virtual row (local create-op draft not yet submitted) has
+    // zero revision / prs / constraints / updated. Rendering
+    // `rev0 pr0 c0` would be technically accurate but misleading
+    // beside a file that is genuinely new. Show `(new)` instead,
+    // mirroring the workspace context panel convention.
+    if (prompt.revision == 0 and prompt.content_hash.len == 0 and prompt.updated.len == 0) {
+        _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
+        return;
+    }
+
     const full = try formatPromptMeta(ctx.arena, prompt, true);
     if (writeHeaderRightIfFits(surface, ctx, 0, min_col, full, theme.fg(theme.MUTED))) return;
 
@@ -357,11 +362,36 @@ pub fn fetchSelectedPrDetail(self: anytype) void {
 
 pub fn syncContentWidget(self: anytype) void {
     const prompts = self.getPrompts();
-    const selected_path: ?[]const u8 = if (self.selected_prompt < prompts.len) prompts[self.selected_prompt].path else null;
+    // Virtual rows (create-op drafts) land at indices past
+    // prompts.len and have no server-side entry — their path lives
+    // in drafts_create_prompt_paths. Without this branch the
+    // content panel renders empty for any draft created via `n`.
+    const selected_path: ?[]const u8 = if (self.selected_prompt < prompts.len)
+        prompts[self.selected_prompt].path
+    else blk: {
+        const k = self.selected_prompt - prompts.len;
+        if (k >= self.drafts_create_prompt_paths.len) break :blk null;
+        break :blk self.drafts_create_prompt_paths[k];
+    };
     const cache_content: []const u8 = if (selected_path) |path| self.cachedPromptBody(path) orelse "" else "";
-    const draft_content: ?[]const u8 = if (selected_path) |path| self.draftContentForView(path) else null;
-    const proposed = draft_content orelse cache_content;
+    const draft_content: ?[]const u8 = if (selected_path) |path| self.draftContentForView(.prompt, path) else null;
+    syncContentWidgetBytes(self, cache_content, draft_content);
+    self.requestSelectedPromptDetail();
+}
 
+/// Render the working-copy view for an arbitrary (cache, draft)
+/// byte pair into Dashboard.content_scroll_bars. Shared by the
+/// Library prompt detail pane and the Workspace context / prompts
+/// content panes so both surfaces scroll identically and use the
+/// same DiffViewer gutter formatter. When draft_content is null the
+/// cache bytes are rendered flat (no diff symbols); otherwise we
+/// compute an inline gutter against the cache.
+pub fn syncContentWidgetBytes(
+    self: anytype,
+    cache_content: []const u8,
+    draft_content: ?[]const u8,
+) void {
+    const proposed = draft_content orelse cache_content;
     const arena = self.viewAllocator();
     const rows = diff_viewer.computeInlineGutter(arena, cache_content, proposed) catch null;
     if (rows) |r| {
@@ -371,8 +401,55 @@ pub fn syncContentWidget(self: anytype) void {
     } else {
         renderFlatContent(self, arena, proposed);
     }
+}
 
-    self.requestSelectedPromptDetail();
+/// Workspace-side entrypoint: render the working copy for a
+/// workspace context file at `path`. Pulls cache bytes from the
+/// ws_context_content cache and overlays the local context draft
+/// if one exists. Safe to call with empty bytes (e.g. pure
+/// create-op draft with no cache backing) — renders a flat view of
+/// whatever the draft file contains.
+pub fn syncWsContextContentWidget(
+    self: anytype,
+    ws_id: []const u8,
+    path: []const u8,
+) void {
+    const cache_content: []const u8 = self.cachedWorkspaceContextBody(ws_id, path) orelse "";
+    const draft_content: ?[]const u8 = self.draftContentForView(.context, path);
+    syncContentWidgetBytes(self, cache_content, draft_content);
+}
+
+/// Workspace-side entrypoint mirroring syncWsContextContentWidget
+/// for the Prompts tab. Workspace prompt bodies come from the same
+/// org-wide prompt_content cache that Library reads, but the draft
+/// overlay is keyed by prompt path so this helper threads both
+/// into the shared renderer.
+pub fn syncWsPromptContentWidget(
+    self: anytype,
+    path: []const u8,
+) void {
+    const cache_content: []const u8 = self.cachedPromptBody(path) orelse "";
+    const draft_content: ?[]const u8 = self.draftContentForView(.prompt, path);
+    syncContentWidgetBytes(self, cache_content, draft_content);
+}
+
+/// Build the scrollable content surface against the current
+/// Dashboard.content_scroll_bars state. Call syncContentWidgetBytes
+/// before this (or another `sync*` variant) so the scroll view's
+/// children slice is populated. Layout params match
+/// buildPromptContentSurface's contract.
+pub fn buildContentSurface(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+    width_pad: u16,
+    child_height: u16,
+) std.mem.Allocator.Error!vxfw.Surface {
+    const inner_w = ctx.max.width.? -| width_pad;
+    const child_ctx = ctx.withConstraints(
+        .{ .width = inner_w, .height = child_height },
+        .{ .width = inner_w, .height = child_height },
+    );
+    return self.content_scroll_bars.widget().draw(child_ctx);
 }
 
 fn renderGutterRows(

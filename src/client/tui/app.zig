@@ -237,9 +237,25 @@ pub const Dashboard = struct {
     drafts_arena: std.heap.ArenaAllocator,
     drafts_by_prompt_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
     drafts_by_context_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
+    /// Paths of local `operation=create` drafts per category. These do
+    /// not exist on the hub yet, so the server-side prompts /
+    /// context_files lists never carry them — the list renderers
+    /// append these as virtual rows so the user can see (and edit)
+    /// newly-created drafts before they are submitted.
+    drafts_create_prompt_paths: []const []const u8 = &.{},
+    drafts_create_context_paths: []const []const u8 = &.{},
     drafts_total: usize = 0,
     drafts_ready: usize = 0,
+    /// Tracks whether refreshDraftsCache has ever run against a
+    /// resolved workspace. The cache is seeded once current_user
+    /// appears on the tick loop so `*` markers and the footer
+    /// counter populate without a user-triggered draft op.
+    drafts_cache_seeded: bool = false,
     pending_discard_target: ?DraftTarget = null,
+    /// Dup'd path owned by this struct for the pending discard so
+    /// confirm-overlay render and commit do not depend on
+    /// drafts_arena, which refreshDraftsCache resets.
+    pending_discard_path_owned: ?[]const u8 = null,
 
     // PR Composer overlay state. MVP submits a single-draft PR; multi-
     // draft selection and DiffViewer preview are follow-ups. The target
@@ -250,6 +266,10 @@ pub const Dashboard = struct {
     pr_composer_desc_buf: [256]u8 = .{0} ** 256,
     pr_composer_desc_len: usize = 0,
     pr_composer_target: ?DraftTarget = null,
+    /// Dup'd path owned by the composer so overlay render and submit
+    /// do not point into drafts_arena. Freed when the composer
+    /// closes (cancel, submit success, or re-open).
+    pr_composer_path_owned: ?[]const u8 = null,
     pr_composer_submitting: bool = false,
 
     // New-draft form. Opened from Library Files tab or Workspace
@@ -279,6 +299,8 @@ pub const Dashboard = struct {
     }
 
     pub fn deinit(self: *Dashboard) void {
+        self.releaseComposerTarget();
+        self.releasePendingDiscardTarget();
         self.view_arena.deinit();
         self.drafts_arena.deinit();
         const alloc = self.api_state.allocator();
@@ -357,6 +379,10 @@ pub const Dashboard = struct {
                         ctx.consumeAndRedraw();
                     }
                     if (key.matches('n', .{}) or key.matches(vaxis.Key.escape, .{})) {
+                        // Releasing here keeps the pending-discard
+                        // path owned slice from leaking when the
+                        // user declines the confirm overlay.
+                        self.releasePendingDiscardTarget();
                         self.show_confirm = false;
                         self.confirm_action = .none;
                         self.status_line = "Cancelled.";
@@ -595,6 +621,13 @@ pub const Dashboard = struct {
                 self.breathing_phase = (self.breathing_phase + 1) % 21;
                 if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.breathing_phase == 0 or self.breathing_phase == 10)) {
                     api.state.refreshLocalState(self.api_state);
+                }
+                // First tick after current_user lands (the /me fetch
+                // completes asynchronously, so activeWsId() was null
+                // at .init). Seed the drafts map now so row markers
+                // and the footer counter come up populated.
+                if (!self.drafts_cache_seeded and self.activeWsId() != null) {
+                    self.refreshDraftsCache();
                 }
                 _ = self.consumeCreateWsResult();
                 self.consumePromptContentResult();
@@ -885,14 +918,46 @@ pub const Dashboard = struct {
         const size = ctx.max.size();
         const list_w: u16 = size.width / 3;
         const prompts = self.getPrompts();
-        const sel_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
+        const create_paths = self.drafts_create_prompt_paths;
 
         const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
         const detail_w: u16 = size.width - list_w - 1;
         const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
         const list_surface = try self.drawListPanel(list_ctx);
-        const detail_surface = if (prompts.len > 0)
-            try prompt_detail_panel.drawEmbedded(self, detail_ctx, &prompts[sel_idx])
+
+        // selected_prompt >= prompts.len means a virtual (create-op
+        // draft) row. Clamping into `prompts` would render the last
+        // server prompt's header over a draft's body, which is what
+        // led to a mismatched title + stale rev/pr/c badge. Instead
+        // build a minimal PromptEntry stub for the virtual row so
+        // the header stays in sync with the content.
+        var virtual_entry: data.PromptEntry = undefined;
+        const selected_entry: ?*const data.PromptEntry = blk: {
+            if (self.selected_prompt < prompts.len) break :blk &prompts[self.selected_prompt];
+            const k = self.selected_prompt - prompts.len;
+            if (k >= create_paths.len) break :blk null;
+            virtual_entry = .{
+                .path = create_paths[k],
+                .kind = "",
+                .refer_count = "",
+                .constraint_count = 0,
+                .bundle_count = 0,
+                .bundle_names = "",
+                .updated = "",
+                .age = "",
+                .summary = "",
+                .trend = .{0} ** 8,
+                .content_hash = "",
+                .open_pr_count = 0,
+                .workspace_count = 0,
+                .workspace_names = "",
+                .revision = 0,
+            };
+            break :blk &virtual_entry;
+        };
+
+        const detail_surface = if (selected_entry) |entry|
+            try prompt_detail_panel.drawEmbedded(self, detail_ctx, entry)
         else
             try prompt_detail_panel.drawEmbeddedEmpty(self, detail_ctx);
         return library_panel.drawRoot(self, ctx, list_surface, detail_surface);
@@ -969,8 +1034,15 @@ pub const Dashboard = struct {
     }
 
     fn resolveWsContextSelection(self: *Dashboard, ws_d: *const api.model.WsDetail) ?usize {
-        _ = ws_d;
-        return self.currentWsTree().leafIndexAt(self.ws_list_sel);
+        const leaf = self.currentWsTree().leafIndexAt(self.ws_list_sel) orelse return null;
+        // Virtual rows (local create-op drafts) sit at indices past
+        // the server-side context_files range. The detail-pane and
+        // cache-fetch call sites index into ws_d.context_files
+        // directly, so returning the virtual index would crash; the
+        // content panel's unified-renderer commit handles virtual
+        // rows properly, here we just refuse them.
+        if (leaf >= ws_d.context_files.len) return null;
+        return leaf;
     }
 
     const ResolvedWsPrompt = struct {
@@ -978,7 +1050,7 @@ pub const Dashboard = struct {
         path: []const u8,
     };
 
-    fn cachedWorkspaceContextBody(self: *Dashboard, ws_id: []const u8, path: []const u8) ?[]const u8 {
+    pub fn cachedWorkspaceContextBody(self: *Dashboard, ws_id: []const u8, path: []const u8) ?[]const u8 {
         return self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_id, .path = path });
     }
 
@@ -1101,6 +1173,7 @@ pub const Dashboard = struct {
 
     fn resolveWsPromptSelection(self: *Dashboard, ws_d: *const api.model.WsDetail) ?ResolvedWsPrompt {
         const idx = self.currentWsTree().leafIndexAt(self.ws_list_sel) orelse return null;
+        if (idx >= ws_d.ws_prompts.len) return null;
         const lib_prompts = self.getPrompts();
         const wp = ws_d.ws_prompts[idx];
         const path = if (wp.path.len > 0)
@@ -1130,22 +1203,26 @@ pub const Dashboard = struct {
             self.resolveWsPromptSelection(&ws_d)
         else
             null;
-        const context_body: ?[]const u8 = if (live_ws != null and dir_sel == null and self.ws_tab == .context and context_sel != null)
-            self.cachedWorkspaceContextBody(live_ws.?.ws_id, live_ws.?.context_files[context_sel.?].path)
-        else
-            null;
-        const prompt_body: ?[]const u8 = if (dir_sel == null and self.ws_tab == .prompts and prompt_sel != null)
-            self.cachedPromptBody(prompt_sel.?.path)
-        else
-            null;
+        // context_sel_path is the unified identity for the context
+        // selection: server-side files contribute their path via
+        // context_sel, virtual rows contribute theirs via the local
+        // drafts_create_context_paths side-table.
+        const context_sel_path: ?[]const u8 = if (live_ws) |ws_d| blk: {
+            if (dir_sel != null) break :blk null;
+            if (context_sel) |idx| break :blk ws_d.context_files[idx].path;
+            const leaf = self.currentWsTree().leafIndexAt(self.ws_list_sel) orelse break :blk null;
+            if (leaf < ws_d.context_files.len) break :blk ws_d.context_files[leaf].path;
+            const k = leaf - ws_d.context_files.len;
+            if (k >= self.drafts_create_context_paths.len) break :blk null;
+            break :blk self.drafts_create_context_paths[k];
+        } else null;
         return workspace_panel.drawDetail(self, ctx, .{
             .live_ws = live_ws,
             .dir_sel = dir_sel,
             .context_sel = context_sel,
+            .context_sel_path = context_sel_path,
             .prompt_sel_idx = if (prompt_sel) |sel| sel.idx else null,
             .prompt_sel_path = if (prompt_sel) |sel| sel.path else null,
-            .context_body = context_body,
-            .prompt_body = prompt_body,
         });
     }
 
@@ -2184,15 +2261,33 @@ pub const Dashboard = struct {
     pub fn refreshDraftsCache(self: *Dashboard) void {
         self.drafts_by_prompt_path = .{};
         self.drafts_by_context_path = .{};
+        // drafts_create_*_paths are handed to the file tree, which
+        // stores them in its `expanded` StringHashMap and `dir_paths`
+        // array without duping. Both the hashmap key and the dir
+        // path slice survive across subsequent refreshes (the tree
+        // only rebuilds rows on sync, not keys). So these strings
+        // must live in a long-lived allocator, NOT drafts_arena
+        // (which is reset on every refresh). Allocate via the
+        // api_state allocator, which is backed by a session-lifetime
+        // arena. Individual `free` calls are no-ops there, so the
+        // old slices leak within the arena until session end — that
+        // is acceptable for the few bytes per refresh this costs.
+        self.drafts_create_prompt_paths = &.{};
+        self.drafts_create_context_paths = &.{};
         self.drafts_total = 0;
         self.drafts_ready = 0;
         const ws_id = self.activeWsId() orelse return;
+        self.drafts_cache_seeded = true;
         _ = self.drafts_arena.reset(.retain_capacity);
         const arena = self.drafts_arena.allocator();
+        const api_alloc = self.api_state.allocator();
 
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return;
         var index = drafts_mod.loadIndex(arena, ws_dir) catch return;
         defer index.deinit(arena);
+
+        var create_prompts: std.ArrayListUnmanaged([]const u8) = .empty;
+        var create_contexts: std.ArrayListUnmanaged([]const u8) = .empty;
 
         for (index.entries.items) |entry| {
             switch (entry.status) {
@@ -2201,14 +2296,33 @@ pub const Dashboard = struct {
             }
             self.drafts_total += 1;
             if (entry.status == .ready) self.drafts_ready += 1;
-            const cur = entry.current_path orelse continue;
-            const key = arena.dupe(u8, cur) catch continue;
+
+            // Lookup map keys can live in drafts_arena: the maps are
+            // rebuilt from scratch on every refresh, so no key is
+            // ever observed after its arena reset.
+            const key_src = entry.current_path orelse entry.draft_path;
+            const key = arena.dupe(u8, key_src) catch continue;
             const target_map = switch (entry.category) {
                 .prompt => &self.drafts_by_prompt_path,
                 .context => &self.drafts_by_context_path,
             };
             target_map.put(arena, key, entry.status) catch {};
+
+            if (entry.operation == .create) {
+                // Long-lived dup — see the note at the top of this
+                // function. The tree borrows these slices beyond a
+                // single refresh so drafts_arena is unsafe.
+                const path_copy = api_alloc.dupe(u8, entry.draft_path) catch continue;
+                const dest = switch (entry.category) {
+                    .prompt => &create_prompts,
+                    .context => &create_contexts,
+                };
+                dest.append(api_alloc, path_copy) catch {};
+            }
         }
+
+        self.drafts_create_prompt_paths = create_prompts.toOwnedSlice(api_alloc) catch &.{};
+        self.drafts_create_context_paths = create_contexts.toOwnedSlice(api_alloc) catch &.{};
     }
 
     pub fn draftStatusFor(
@@ -2222,17 +2336,26 @@ pub const Dashboard = struct {
         };
     }
 
-    /// Read the current draft bytes for a prompt, allocated in
+    /// Read the current draft bytes for a file, allocated in
     /// view_arena so the caller can use the slice for the remainder of
-    /// the current frame. Returns null when no draft is tracked or the
-    /// file is missing / unreadable. Prompt-only helper because only
-    /// prompt_detail.zig renders working-copy bytes at the moment.
-    pub fn draftContentForView(self: *Dashboard, prompt_path: []const u8) ?[]const u8 {
+    /// the current frame. Returns null when no draft is tracked or
+    /// the file is missing / unreadable. Both Library and Workspace
+    /// content panels call this to overlay the working copy on top of
+    /// the authoritative cache.
+    pub fn draftContentForView(
+        self: *Dashboard,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    ) ?[]const u8 {
         const ws_id = self.activeWsId() orelse return null;
-        if (!self.drafts_by_prompt_path.contains(prompt_path)) return null;
+        const has_draft = switch (category) {
+            .prompt => self.drafts_by_prompt_path.contains(path),
+            .context => self.drafts_by_context_path.contains(path),
+        };
+        if (!has_draft) return null;
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
-        return drafts_mod.readDraftFile(arena, ws_dir, .prompt, prompt_path) catch null;
+        return drafts_mod.readDraftFile(arena, ws_dir, category, path) catch null;
     }
 
     /// Derive the draft target from the currently focused module and
@@ -2244,13 +2367,25 @@ pub const Dashboard = struct {
         switch (self.selected_module) {
             .library => {
                 const prompts = self.getPrompts();
-                if (prompts.len == 0 or self.selected_prompt >= prompts.len) return null;
-                const prompt = &prompts[self.selected_prompt];
+                if (self.selected_prompt < prompts.len) {
+                    const prompt = &prompts[self.selected_prompt];
+                    return .{
+                        .ws_id = ws_id,
+                        .category = .prompt,
+                        .path = prompt.path,
+                        .prompt_id = self.lookupPromptId(prompt.path),
+                    };
+                }
+                // Virtual row: a local create-op draft that has no
+                // server-side prompt yet. The index is offset by
+                // `prompts.len` so we can recover the create-draft
+                // path from drafts_create_prompt_paths.
+                const k = self.selected_prompt - prompts.len;
+                if (k >= self.drafts_create_prompt_paths.len) return null;
                 return .{
                     .ws_id = ws_id,
                     .category = .prompt,
-                    .path = prompt.path,
-                    .prompt_id = self.lookupPromptId(prompt.path),
+                    .path = self.drafts_create_prompt_paths[k],
                 };
             },
             .workspace => {
@@ -2260,13 +2395,22 @@ pub const Dashboard = struct {
                 const leaf = ws_tree.leafIndexAt(self.ws_list_sel) orelse return null;
                 switch (self.ws_tab) {
                     .context => {
-                        if (leaf >= live.context_files.len) return null;
-                        const f = live.context_files[leaf];
+                        if (leaf < live.context_files.len) {
+                            const f = live.context_files[leaf];
+                            return .{
+                                .ws_id = ws_id,
+                                .category = .context,
+                                .path = f.path,
+                                .context_id = f.context_id,
+                            };
+                        }
+                        // Virtual row: create-op context draft.
+                        const k = leaf - live.context_files.len;
+                        if (k >= self.drafts_create_context_paths.len) return null;
                         return .{
                             .ws_id = ws_id,
                             .category = .context,
-                            .path = f.path,
-                            .context_id = f.context_id,
+                            .path = self.drafts_create_context_paths[k],
                         };
                     },
                     .prompts => {
@@ -2296,6 +2440,13 @@ pub const Dashboard = struct {
     /// refreshes caches so the right panel picks up the new draft
     /// bytes on the next render.
     pub fn editSelectedDraft(self: *Dashboard) void {
+        // Refresh must run BEFORE target capture. refreshDraftsCache
+        // resets drafts_arena, which backs the virtual-row path
+        // slices in drafts_create_*_paths. A target captured before
+        // refresh for a create-op draft would point into freed arena
+        // memory on the next access. Same reasoning applies to every
+        // draft handler below.
+        self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse {
             self.status_line = "No editable selection.";
             return;
@@ -2322,9 +2473,17 @@ pub const Dashboard = struct {
                 .prompt_id = target.prompt_id,
                 .context_id = target.context_id,
                 .base_hash = seed_hash[0..],
-            }, seed) catch |err| {
-                self.status_line = @errorName(err);
-                return;
+            }, seed) catch |err| switch (err) {
+                // Index and in-memory map raced (e.g., the user ran a
+                // previous session that left entries, then restarted
+                // before current_user had a chance to re-seed the
+                // map). The draft genuinely exists on disk — just
+                // open it instead of aborting.
+                error.DraftAlreadyExists => {},
+                else => {
+                    self.status_line = @errorName(err);
+                    return;
+                },
             };
         }
 
@@ -2367,6 +2526,7 @@ pub const Dashboard = struct {
     /// Submitted / merged / rejected / conflicted drafts are not
     /// toggled — they represent terminal or pending-review state.
     pub fn toggleSelectedDraftReady(self: *Dashboard) void {
+        self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse return;
         const current = self.draftStatusFor(target.category, target.path) orelse {
             self.status_line = "No draft to mark ready.";
@@ -2396,15 +2556,42 @@ pub const Dashboard = struct {
     /// from the confirm `y` branch so it matches the rest of the
     /// destructive-operation UX.
     pub fn requestDiscardSelectedDraft(self: *Dashboard) void {
+        self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse return;
         if (self.draftStatusFor(target.category, target.path) == null) {
             self.status_line = "No draft to discard.";
             return;
         }
-        self.pending_discard_target = target;
-        self.confirm_message = target.path;
+        // Target may have been captured from drafts_arena (virtual
+        // rows) — dup its path into the api_state allocator so the
+        // confirm overlay can outlive any subsequent refresh call
+        // without reading freed memory.
+        self.releasePendingDiscardTarget();
+        const path_copy = self.api_state.allocator().dupe(u8, target.path) catch {
+            self.status_line = "Out of memory capturing draft target.";
+            return;
+        };
+        self.pending_discard_target = .{
+            .ws_id = target.ws_id,
+            .category = target.category,
+            .path = path_copy,
+            .prompt_id = target.prompt_id,
+            .context_id = target.context_id,
+        };
+        self.pending_discard_path_owned = path_copy;
+        self.confirm_message = path_copy;
         self.confirm_action = .discard_draft;
         self.show_confirm = true;
+    }
+
+    /// Free the duped strings backing pending_discard_target, if any.
+    /// Safe to call with no pending discard.
+    fn releasePendingDiscardTarget(self: *Dashboard) void {
+        if (self.pending_discard_path_owned) |p| {
+            self.api_state.allocator().free(p);
+            self.pending_discard_path_owned = null;
+        }
+        self.pending_discard_target = null;
     }
 
     fn commitDiscardDraft(self: *Dashboard) void {
@@ -2417,7 +2604,7 @@ pub const Dashboard = struct {
             return;
         };
         self.status_line = "Draft discarded.";
-        self.pending_discard_target = null;
+        self.releasePendingDiscardTarget();
         self.refreshDraftsCache();
     }
 
@@ -2426,6 +2613,7 @@ pub const Dashboard = struct {
     /// single-op for the initial cut — multi-draft select is deferred
     /// to a follow-up.
     pub fn openPrComposer(self: *Dashboard) void {
+        self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse {
             self.status_line = "No editable selection.";
             return;
@@ -2438,16 +2626,44 @@ pub const Dashboard = struct {
             self.status_line = "Draft must be marked ready (m) before submit.";
             return;
         }
-        self.pr_composer_target = target;
+        // Composer state persists across frames while the overlay is
+        // open; between open and submit the user might never trigger
+        // another refresh, but a future code path (tick, background
+        // consumer) could. Dup path into the stable allocator so the
+        // overlay draw and submit paths cannot read freed bytes.
+        self.releaseComposerTarget();
+        const path_copy = self.api_state.allocator().dupe(u8, target.path) catch {
+            self.status_line = "Out of memory opening composer.";
+            return;
+        };
+        self.pr_composer_target = .{
+            .ws_id = target.ws_id,
+            .category = target.category,
+            .path = path_copy,
+            .prompt_id = target.prompt_id,
+            .context_id = target.context_id,
+        };
+        self.pr_composer_path_owned = path_copy;
         self.pr_composer_desc_len = 0;
         self.pr_composer_submitting = false;
         self.show_pr_composer = true;
+    }
+
+    /// Free the duped strings backing pr_composer_target, if any.
+    /// Safe to call when no composer is open.
+    fn releaseComposerTarget(self: *Dashboard) void {
+        if (self.pr_composer_path_owned) |p| {
+            self.api_state.allocator().free(p);
+            self.pr_composer_path_owned = null;
+        }
+        self.pr_composer_target = null;
     }
 
     pub fn cancelPrComposer(self: *Dashboard) void {
         self.show_pr_composer = false;
         self.pr_composer_submitting = false;
         self.pr_composer_desc_len = 0;
+        self.releaseComposerTarget();
     }
 
     pub fn submitPrComposer(self: *Dashboard) void {
@@ -2875,7 +3091,7 @@ pub const Dashboard = struct {
         self.refreshDraftsCache();
         self.show_pr_composer = false;
         self.pr_composer_desc_len = 0;
-        self.pr_composer_target = null;
+        self.releaseComposerTarget();
         self.status_line = std.fmt.allocPrint(
             self.api_state.allocator(),
             "PR {s} submitted ({s}).",
