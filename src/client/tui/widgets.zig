@@ -583,6 +583,22 @@ pub fn countLines(text: []const u8) usize {
     return 1 + std.mem.count(u8, text, "\n");
 }
 
+/// Format a server timestamp (ISO-8601 or Postgres `YYYY-MM-DD HH:MM:SS.uuuuuu+zz`)
+/// as a compact `YYYY-MM-DD HH:MM` for TUI row display. Shared by the
+/// prompt metadata badge, PR list rows, PR comment headers, and the
+/// workspace context/prompts panel header so all timestamps in the
+/// UI render in one consistent shape. Falls back to the trimmed raw
+/// string when the input is shorter than a date, and to the date
+/// portion alone when there is no time component.
+pub fn formatShortTimestamp(arena: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len < 10) return arena.dupe(u8, trimmed);
+    if (trimmed.len >= 16 and (trimmed[10] == 'T' or trimmed[10] == ' ')) {
+        return std.fmt.allocPrint(arena, "{s} {s}", .{ trimmed[0..10], trimmed[11..16] });
+    }
+    return arena.dupe(u8, trimmed[0..10]);
+}
+
 /// Create a horizontal two-column layout. Left column is `left_width` cells;
 /// right column fills the rest, separated by a 1-cell gap.
 pub fn splitHorizontal(

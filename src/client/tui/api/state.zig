@@ -139,6 +139,7 @@ pub const ApiState = struct {
     pr_detail_op_type: ?[]const u8 = null,
     pr_detail_op_current_path: ?[]const u8 = null,
     pr_detail_op_new_path: ?[]const u8 = null,
+    pr_detail_op_base_hash: ?[]const u8 = null,
     pr_detail_op_index: u16 = 0,
     pr_detail_op_total: u16 = 0,
     hub_url: ?[]const u8 = null,
@@ -228,6 +229,7 @@ pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
     api_state.pr_detail_op_type = null;
     api_state.pr_detail_op_current_path = null;
     api_state.pr_detail_op_new_path = null;
+    api_state.pr_detail_op_base_hash = null;
     api_state.pr_detail_op_index = 0;
     api_state.pr_detail_op_total = 0;
 }

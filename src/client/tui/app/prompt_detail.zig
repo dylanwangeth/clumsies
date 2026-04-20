@@ -133,15 +133,17 @@ fn buildPromptDetailBody(
 
             const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
             const pr = &prs[pr_idx];
+            // Title matches design/04 drill-down layout:
+            // "{pr_id} ─ {prompt_path} ─ {status} ─ {author} ─ {created}"
+            // Dropped `refer:N` — it's not in the design and the hub
+            // does not populate trace_summary on prompt PRs today.
+            const created_short = w.formatShortTimestamp(ctx.arena, pr.created) catch pr.created;
             const title = try std.fmt.allocPrint(
                 ctx.arena,
-                "{s} ─ {s} ─ {s} ─ {s} ─ refer:{d}",
-                .{ pr.id, pr.prompt_name, pr.author, pr.status, pr.trace_refers },
+                "{s} ─ {s} ─ {s} ─ {s} ─ {s}",
+                .{ pr.id, pr.prompt_name, pr.status, pr.author, created_short },
             );
-            const op_line = if (pr.operation_count > 0)
-                try opHeaderLine(ctx.arena, pr)
-            else
-                null;
+            const op_line = try buildPrSubtitle(ctx.arena, pr);
 
             syncPrDiffAndComments(self, ctx.arena);
             const diff_h = inner_h -| 2;
@@ -160,7 +162,27 @@ fn buildPromptDetailBody(
     }
 }
 
-fn opHeaderLine(
+/// Compose the PR drill-down subtitle in the design/04 shape:
+/// "{op_desc}   base: sha256:abc…   comments: N". When the operation
+/// metadata has not been populated yet (detail fetch in flight),
+/// fall back to just the base_hash + comments segment so the bar
+/// still conveys review-context even with op fields empty.
+fn buildPrSubtitle(
+    arena: std.mem.Allocator,
+    pr: *const data.PullRequestEntry,
+) std.mem.Allocator.Error![]const u8 {
+    var parts: std.ArrayListUnmanaged([]const u8) = .empty;
+    if (pr.operation_count > 0) {
+        try parts.append(arena, try opDescriptor(arena, pr));
+    }
+    if (pr.base_hash.len > 0) {
+        try parts.append(arena, try std.fmt.allocPrint(arena, "base: {s}", .{shortHash(pr.base_hash)}));
+    }
+    try parts.append(arena, try std.fmt.allocPrint(arena, "comments: {d}", .{pr.comments.len}));
+    return std.mem.join(arena, "   ", parts.items);
+}
+
+fn opDescriptor(
     arena: std.mem.Allocator,
     pr: *const data.PullRequestEntry,
 ) std.mem.Allocator.Error![]const u8 {
@@ -178,6 +200,15 @@ fn opHeaderLine(
     }
     const target = if (pr.op_current_path.len > 0) pr.op_current_path else pr.op_new_path;
     return std.fmt.allocPrint(arena, "{s}: {s} {s}", .{ position, pr.op_type, target });
+}
+
+/// Trim a "sha256:HEX…" hash to the first 7 hex chars, matching the
+/// workspace panel header convention (see workspace.zig::hashBadge).
+fn shortHash(raw: []const u8) []const u8 {
+    const colon = std.mem.indexOfScalar(u8, raw, ':');
+    const start = if (colon) |c| c + 1 else 0;
+    const slice = raw[start..];
+    return slice[0..@min(7, slice.len)];
 }
 
 fn fillPromptDetailSurface(
@@ -259,7 +290,7 @@ fn formatPromptMeta(
             .{ prompt.revision, prompt.open_pr_count, prompt.constraint_count },
         );
     }
-    const updated = try compactPromptUpdated(arena, prompt.updated);
+    const updated = try w.formatShortTimestamp(arena, prompt.updated);
     if (updated.len == 0) {
         return std.fmt.allocPrint(
             arena,
@@ -274,17 +305,6 @@ fn formatPromptMeta(
     );
 }
 
-fn compactPromptUpdated(
-    arena: std.mem.Allocator,
-    raw: []const u8,
-) std.mem.Allocator.Error![]const u8 {
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    if (trimmed.len < 10) return arena.dupe(u8, trimmed);
-    if (trimmed.len >= 16 and (trimmed[10] == 'T' or trimmed[10] == ' ')) {
-        return std.fmt.allocPrint(arena, "{s} {s}", .{ trimmed[0..10], trimmed[11..16] });
-    }
-    return arena.dupe(u8, trimmed[0..10]);
-}
 
 fn writeHeaderRightIfFits(
     surface: *vxfw.Surface,
@@ -508,6 +528,7 @@ pub fn syncPrWidgets(self: anytype) void {
     const sel_idx = @min(self.selected_prompt, all_prompts.len - 1);
     const p = &all_prompts[sel_idx];
     const prs = self.getPrsForPrompt(p.path);
+    const view_alloc = self.viewAllocator();
     var row_idx: usize = 0;
     for (prs, 0..) |pr, pi| {
         if (row_idx + 1 >= self.pr_widgets.len) break;
@@ -518,17 +539,21 @@ pub fn syncPrWidgets(self: anytype) void {
         };
         if (!show) continue;
         const sel = pi == self.selected_pr_idx;
-        // Row 1: id, status, author, created
+        const created_short = w.formatShortTimestamp(view_alloc, pr.created) catch pr.created;
+        // Row 1: id, status, author, created. padding_left = 0 so
+        // the first cell of the row sits immediately to the right
+        // of the cursor bar, matching the Library file list.
         self.pr_table_cols[pi] = .{
             .{ .text = pr.id, .flex = 0 },
             .{ .text = pr.status, .flex = 0 },
             .{ .text = pr.author, .flex = 0 },
-            .{ .text = pr.created, .flex = 1, .alignment = .right },
+            .{ .text = created_short, .flex = 1, .alignment = .right },
         };
         self.pr_table_rows[pi] = .{
             .columns = &self.pr_table_cols[pi],
             .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
             .gap = 2,
+            .padding_left = 0,
         };
         self.pr_widgets[row_idx] = self.pr_table_rows[pi].widget();
         self.pr_indices[row_idx] = pi;
@@ -557,6 +582,11 @@ pub fn syncPrWidgets(self: anytype) void {
     if (cur < row_idx) {
         if (self.pr_indices[cur]) |pi| self.selected_pr_idx = pi;
     }
+    // Kick a detail fetch for the current selection so the diff /
+    // description / comment count populate without requiring the
+    // user to move the cursor or press Enter. shouldDispatch de-dupes
+    // concurrent requests, so this is cheap on re-renders.
+    if (row_idx > 0) fetchSelectedPrDetail(self);
 }
 
 pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
@@ -595,9 +625,12 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
             count += 1;
         }
         for (pr.comments) |comment| {
-            // Header: "author · created"
+            // Header: "author · created". Timestamp is compacted
+            // through the shared formatter so comment rows match PR
+            // list + prompt panel timestamp layout.
             if (count < self.pr_diff_rows.len) {
-                const header = std.fmt.allocPrint(allocator, "{s} \xc2\xb7 {s}", .{ comment.author, comment.created }) catch "??";
+                const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
+                const header = std.fmt.allocPrint(allocator, "{s} \xc2\xb7 {s}", .{ comment.author, created_short }) catch "??";
                 self.pr_diff_rows[count] = .{
                     .text = header,
                     .style = theme.fgBold(theme.TEXT_SOFT),

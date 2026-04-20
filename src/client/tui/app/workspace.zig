@@ -315,10 +315,11 @@ fn writeWsMetaOnHeader(
                 if (idx >= ws_d.context_files.len) return;
                 const f = &ws_d.context_files[idx];
                 const hash7 = hashBadge(f.hash);
+                const updated_short = try w.formatShortTimestamp(ctx.arena, f.updated_at);
                 const meta = try std.fmt.allocPrint(
                     ctx.arena,
                     "{s}  {s}  {s}",
-                    .{ hash7, f.author, f.updated_at },
+                    .{ hash7, f.author, updated_short },
                 );
                 _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
             } else if (args.context_sel_path != null) {
