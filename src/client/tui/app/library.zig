@@ -20,41 +20,129 @@ pub fn drawRoot(
     return w.splitHorizontal(ctx, self.widget(), theme.PANEL, list_surface, detail_surface, ctx.max.size().width / 3);
 }
 
-pub fn drawPromptTable(
+pub fn drawListPanel(
     self: anytype,
     ctx: vxfw.DrawContext,
     bundle_label: []const u8,
     prompt_count: usize,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    self.library_scroll_bars.scroll_view.draw_cursor = false;
-    defer self.library_scroll_bars.scroll_view.draw_cursor = true;
+    const size = ctx.max.size();
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    const border_color = w.focusBorder(!self.detail_focus_content);
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, border_color, theme.PANEL);
+    w.writeText(&surface, ctx, 2, 0, "Library", theme.boldOn(theme.PANEL, theme.TEXT));
 
-    const subtitle = try std.fmt.allocPrint(
-        ctx.arena,
-        "{d} prompts  bundle: {s}  / search  b filter",
-        .{ prompt_count, bundle_label },
-    );
-    const list_border = w.focusBorder(!self.detail_focus_content);
-    const panel: w.Panel = .{
-        .owner = self.widget(),
-        .title = "Library",
-        .subtitle = subtitle,
-        .background = theme.PANEL,
-        .border_color = list_border,
-        .child = self.library_scroll_bars.widget(),
-        .padding = .{ .left = 1 },
+    const hint = switch (self.detail_tab) {
+        .content => try std.fmt.allocPrint(
+            ctx.arena,
+            "{d} prompts  bundle: {s}  / search  b filter",
+            .{ prompt_count, bundle_label },
+        ),
+        .pull_requests => blk: {
+            const prompts = self.getPrompts();
+            const sel_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
+            if (prompts.len == 0) break :blk @as([]const u8, "no prompts");
+            const prs = self.getPrsForPrompt(prompts[sel_idx].path);
+            break :blk try std.fmt.allocPrint(
+                ctx.arena,
+                "{d} PRs  filter:{s}  f cycle",
+                .{ prs.len, @tagName(self.pr_filter) },
+            );
+        },
     };
-    var surface = try panel.draw(ctx);
-    if (self.library_tree.rowCount() == 0) {
-        const status = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            break :blk self.api_state.status;
-        };
-        w.drawEmptyState(&surface, ctx, 2, 2, status, "prompts");
-        return surface;
+    w.writeRightText(&surface, ctx, 0, hint, theme.textOn(theme.PANEL, theme.MUTED));
+
+    var tab_col: u16 = 2;
+    const tabs = [_]@TypeOf(self.detail_tab){ .content, .pull_requests };
+    for (tabs) |tab| {
+        tab_col = w.drawInnerTabBadge(&surface, ctx, 2, tab_col, listTabLabel(tab), tab == self.detail_tab);
+        tab_col +|= 1;
     }
-    return w.applyCursorOverlay(ctx, &surface, &self.library_scroll_bars.scroll_view, theme.PANEL);
+
+    const body_origin_row: i17 = 4;
+    const body_h: u16 = size.height -| @as(u16, @intCast(body_origin_row)) -| 1;
+    const body_w: u16 = size.width -| 3;
+    const body_ctx = ctx.withConstraints(
+        .{ .width = body_w, .height = body_h },
+        .{ .width = body_w, .height = body_h },
+    );
+
+    switch (self.detail_tab) {
+        .content => {
+            self.library_scroll_bars.scroll_view.draw_cursor = false;
+            defer self.library_scroll_bars.scroll_view.draw_cursor = true;
+            var body = try self.library_scroll_bars.widget().draw(body_ctx);
+            if (self.library_tree.rowCount() == 0) {
+                const status = blk: {
+                    self.api_state.mutex.lock();
+                    defer self.api_state.mutex.unlock();
+                    break :blk self.api_state.status;
+                };
+                w.drawEmptyState(&body, ctx, 0, 0, status, "prompts");
+            } else {
+                try drawListCursor(ctx, &body, &self.library_scroll_bars.scroll_view, theme.PANEL);
+            }
+            const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+            children[0] = .{ .origin = .{ .row = body_origin_row, .col = 2 }, .surface = body };
+            surface.children = children;
+        },
+        .pull_requests => {
+            prompt_detail_panel.syncPrWidgets(self);
+            self.pr_scroll_bars.scroll_view.draw_cursor = false;
+            defer self.pr_scroll_bars.scroll_view.draw_cursor = true;
+            var body = try self.pr_scroll_bars.widget().draw(body_ctx);
+            if (self.pr_row_count == 0) {
+                w.writeText(&body, ctx, 0, 0, "No pull requests for this prompt.", theme.fg(theme.MUTED));
+            } else {
+                try drawListCursor(ctx, &body, &self.pr_scroll_bars.scroll_view, theme.PANEL);
+            }
+            const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+            children[0] = .{ .origin = .{ .row = body_origin_row, .col = 1 }, .surface = body };
+            surface.children = children;
+        },
+    }
+    return surface;
+}
+
+fn drawListCursor(
+    ctx: vxfw.DrawContext,
+    body: *vxfw.Surface,
+    scroll_view: *const vxfw.ScrollView,
+    bg: vaxis.Color,
+) std.mem.Allocator.Error!void {
+    const cursor_pos = scroll_view.cursor;
+    const scroll_top = scroll_view.scroll.top;
+    if (cursor_pos < scroll_top) return;
+    const visible_row: i17 = @intCast(cursor_pos - scroll_top);
+    if (visible_row >= body.size.height) return;
+    const cbuf = try ctx.arena.alloc(vaxis.Cell, 1);
+    cbuf[0] = .{
+        .char = .{ .grapheme = "▌", .width = 1 },
+        .style = .{ .fg = theme.ACCENT_SOFT, .bg = bg },
+    };
+    const csurface: vxfw.Surface = .{
+        .size = .{ .width = 1, .height = 1 },
+        .widget = body.widget,
+        .buffer = cbuf,
+        .children = &.{},
+    };
+    const old = body.children;
+    const new_children = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
+    @memcpy(new_children[0..old.len], old);
+    new_children[old.len] = .{
+        .origin = .{ .col = 0, .row = visible_row },
+        .surface = csurface,
+        .z_index = 1,
+    };
+    body.children = new_children;
+}
+
+fn listTabLabel(tab: anytype) []const u8 {
+    return switch (tab) {
+        .content => "Files",
+        .pull_requests => "Pull Requests",
+    };
 }
 
 pub fn handleModuleEvent(
@@ -71,7 +159,7 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('b', .{})) {
+    if (key.matches('b', .{}) and self.detail_tab == .content) {
         const bundle_count = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
@@ -80,6 +168,11 @@ pub fn handleModuleEvent(
         };
         self.library_bundle_filter = (self.library_bundle_filter + 1) % (bundle_count + 1);
         self.library_scroll_bars.scroll_view.cursor = 0;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('T', .{ .shift = true }) or key.matches('t', .{ .shift = true })) {
+        self.shiftDetailTab(1);
         ctx.consumeAndRedraw();
         return;
     }
@@ -93,10 +186,13 @@ pub fn handleModuleEvent(
         try prompt_detail_panel.handleEmbeddedPaneEvent(self, ctx, event, key);
         return;
     }
-    try handleListPaneEvent(self, ctx, event, key);
+    switch (self.detail_tab) {
+        .content => try handleFileListEvent(self, ctx, event, key),
+        .pull_requests => try handlePrListEvent(self, ctx, event, key),
+    }
 }
 
-fn handleListPaneEvent(
+fn handleFileListEvent(
     self: anytype,
     ctx: *vxfw.EventContext,
     event: vxfw.Event,
@@ -153,11 +249,58 @@ fn handleListPaneEvent(
     if (self.library_tree.leafIndexAt(pos)) |prompt_idx| {
         if (self.selected_prompt != prompt_idx) {
             self.selected_prompt = prompt_idx;
-            self.show_pr_diff = false;
-            self.show_comment_editor = false;
             self.selected_pr_idx = 0;
             self.pr_scroll_bars.scroll_view.cursor = 0;
             self.pr_filter = .open;
+        }
+    }
+}
+
+fn handlePrListEvent(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    event: vxfw.Event,
+    key: vaxis.Key,
+) anyerror!void {
+    if (key.matches('f', .{})) {
+        self.pr_filter = switch (self.pr_filter) {
+            .open => .all,
+            .all => .closed,
+            .closed => .open,
+        };
+        self.pr_scroll_bars.scroll_view.cursor = 0;
+        self.selected_pr_idx = 0;
+        prompt_detail_panel.fetchSelectedPrDetail(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
+
+    prompt_detail_panel.syncPrWidgets(self);
+    if (self.pr_row_count == 0) {
+        ctx.consumeEvent();
+        return;
+    }
+
+    const prev = self.pr_scroll_bars.scroll_view.cursor;
+    try self.pr_scroll_bars.scroll_view.handleEvent(ctx, event);
+
+    var pos = @as(usize, @intCast(self.pr_scroll_bars.scroll_view.cursor));
+    if (pos >= self.pr_row_count) pos = if (self.pr_row_count > 0) self.pr_row_count - 1 else 0;
+    if (pos < self.pr_row_count and self.pr_indices[pos] == null) {
+        const moving_down = self.pr_scroll_bars.scroll_view.cursor > prev;
+        if (moving_down and pos + 1 < self.pr_row_count and self.pr_indices[pos + 1] != null) {
+            pos += 1;
+        } else {
+            pos = @intCast(prev);
+        }
+    }
+    self.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
+    if (pos < self.pr_row_count) {
+        if (self.pr_indices[pos]) |pr_idx| {
+            if (self.selected_pr_idx != pr_idx) {
+                self.selected_pr_idx = pr_idx;
+                prompt_detail_panel.fetchSelectedPrDetail(self);
+            }
         }
     }
 }
