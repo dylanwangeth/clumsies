@@ -230,6 +230,11 @@ pub const Dashboard = struct {
     pr_composer_prompt_path: []const u8 = "",
     pr_composer_submitting: bool = false,
 
+    // New-draft form. Opened from Library Files tab via `n`.
+    show_new_draft_form: bool = false,
+    new_draft_path_buf: [128]u8 = .{0} ** 128,
+    new_draft_path_len: usize = 0,
+
     pub fn init(
         api_state: *api.state.ApiState,
         app: *vxfw.App,
@@ -386,6 +391,12 @@ pub const Dashboard = struct {
                 // PR Composer overlay absorbs all keys while open.
                 if (self.show_pr_composer) {
                     self.handlePrComposerKey(ctx, key);
+                    return;
+                }
+
+                // New-draft form absorbs all keys while open.
+                if (self.show_new_draft_form) {
+                    self.handleNewDraftFormKey(ctx, key);
                     return;
                 }
 
@@ -611,7 +622,8 @@ pub const Dashboard = struct {
         const show_input_overlay = self.analysis_show_input_detail and self.selected_module == .dashboard;
         var child_count: usize = 3;
         if (self.show_help or self.show_confirm or self.show_comment_editor or
-            self.show_create_workspace or self.show_pr_composer or show_input_overlay) child_count = 4;
+            self.show_create_workspace or self.show_pr_composer or
+            self.show_new_draft_form or show_input_overlay) child_count = 4;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
@@ -668,6 +680,16 @@ pub const Dashboard = struct {
             children[3] = .{
                 .origin = .{ .row = 0, .col = 0 },
                 .surface = try self.drawPrComposerOverlay(full_ctx),
+            };
+        }
+        if (self.show_new_draft_form) {
+            const full_ctx = ctx.withConstraints(
+                .{ .width = size.width, .height = size.height },
+                .{ .width = size.width, .height = size.height },
+            );
+            children[3] = .{
+                .origin = .{ .row = 0, .col = 0 },
+                .surface = try self.drawNewDraftFormOverlay(full_ctx),
             };
         }
 
@@ -766,7 +788,7 @@ pub const Dashboard = struct {
             else if (self.detail_tab == .pull_requests)
                 "j/k move  f filter  T tab  Tab detail  r refresh  ? help  q quit"
             else
-                "j/k move  T tab  Enter detail  r refresh  b bundle  S settings  ? help  q quit",
+                "j/k move  n new  T tab  Enter detail  r refresh  b bundle  ? help  q quit",
             .workspace => switch (self.ws_focus) {
                 .bar => "j/k select workspace  c create  Tab list  r refresh  ? help  q quit",
                 .list => "h/l tab  j/k move  ←/→ tree  Enter open  c create  Esc bar  ? help",
@@ -2437,6 +2459,134 @@ pub const Dashboard = struct {
         const visible = desc_text[visible_start..];
         const display = try std.fmt.allocPrint(ctx.arena, "{s}_", .{visible});
         w.writeText(&surface, ctx, col, row + 4, display, theme.textOn(theme.PANEL_ALT, theme.TEXT));
+
+        return surface;
+    }
+
+    pub fn openNewDraftForm(self: *Dashboard) void {
+        if (self.active_ws_id == null) {
+            self.status_line = "No workspace bound to cwd; drafts disabled.";
+            return;
+        }
+        self.new_draft_path_len = 0;
+        self.show_new_draft_form = true;
+    }
+
+    pub fn cancelNewDraftForm(self: *Dashboard) void {
+        self.show_new_draft_form = false;
+        self.new_draft_path_len = 0;
+    }
+
+    pub fn submitNewDraftForm(self: *Dashboard) void {
+        if (self.new_draft_path_len == 0) {
+            self.status_line = "Path is required.";
+            return;
+        }
+        const ws_id = self.active_ws_id orelse return;
+        const path = self.new_draft_path_buf[0..self.new_draft_path_len];
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
+            self.status_line = "Could not resolve workspace directory.";
+            return;
+        };
+        defer alloc.free(ws_dir);
+
+        const path_copy = alloc.dupe(u8, path) catch return;
+        defer alloc.free(path_copy);
+
+        drafts_mod.createDraft(alloc, ws_dir, .{
+            .category = .prompt,
+            .operation = .create,
+            .draft_path = path_copy,
+        }, "") catch |err| {
+            self.status_line = @errorName(err);
+            return;
+        };
+
+        self.show_new_draft_form = false;
+        self.new_draft_path_len = 0;
+        self.refreshDraftsCache();
+
+        const draft_abs = std.fs.path.join(alloc, &.{ ws_dir, "drafts", "prompt", path_copy }) catch return;
+        defer alloc.free(draft_abs);
+
+        const result = editor_host.editFile(
+            alloc,
+            &self.app.vx,
+            self.app.tty.writer(),
+            self.env_map,
+            draft_abs,
+        ) catch |err| {
+            self.status_line = @errorName(err);
+            return;
+        };
+        self.status_line = switch (result) {
+            .completed => "New draft saved.",
+            .failed => "Editor exited non-zero.",
+            .editor_not_found => "No $EDITOR resolved.",
+            .spawn_failed => "Editor spawn failed.",
+        };
+        self.refreshDraftsCache();
+    }
+
+    fn handleNewDraftFormKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (key.matches(vaxis.Key.escape, .{})) {
+            self.cancelNewDraftForm();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.enter, .{})) {
+            self.submitNewDraftForm();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.backspace, .{})) {
+            if (self.new_draft_path_len > 0) {
+                self.new_draft_path_len -= 1;
+                ctx.consumeAndRedraw();
+            }
+            return;
+        }
+        if (key.text) |text| {
+            const remaining = self.new_draft_path_buf.len - self.new_draft_path_len;
+            if (text.len > 0 and text.len <= remaining) {
+                @memcpy(self.new_draft_path_buf[self.new_draft_path_len..][0..text.len], text);
+                self.new_draft_path_len += text.len;
+                ctx.consumeAndRedraw();
+            }
+        } else if (key.codepoint >= 0x20 and key.codepoint < 0x7f) {
+            if (self.new_draft_path_len < self.new_draft_path_buf.len) {
+                self.new_draft_path_buf[self.new_draft_path_len] = @intCast(key.codepoint);
+                self.new_draft_path_len += 1;
+                ctx.consumeAndRedraw();
+            }
+        }
+    }
+
+    fn drawNewDraftFormOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        const box_w = @min(size.width -| 4, 54);
+        const box_h: u16 = 7;
+        const modal = Modal{
+            .title = "New Prompt Draft",
+            .box_width = box_w,
+            .box_height = box_h,
+            .anchor = .center,
+            .footer = "Enter create & edit  Esc cancel",
+        };
+        const result = try modal.draw(ctx, self.widget());
+        var surface = result.surface;
+        const col = result.content_col;
+        const row = result.content_row;
+
+        w.writeText(&surface, ctx, col, row, "path:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        const path_text = self.new_draft_path_buf[0..self.new_draft_path_len];
+        const max_visible: usize = @as(usize, box_w -| 4);
+        const visible_start = if (path_text.len > max_visible) path_text.len - max_visible else 0;
+        const visible = path_text[visible_start..];
+        const display = try std.fmt.allocPrint(ctx.arena, "{s}_", .{visible});
+        w.writeText(&surface, ctx, col, row + 1, display, theme.textOn(theme.PANEL_ALT, theme.TEXT));
+        w.writeText(&surface, ctx, col, row + 3, "e.g. rule/00_MY_RULE.md", theme.fg(theme.MUTED));
 
         return surface;
     }

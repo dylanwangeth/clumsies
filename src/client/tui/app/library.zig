@@ -176,6 +176,11 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
+    if (key.matches('n', .{}) and self.detail_tab == .content and !self.detail_focus_content) {
+        self.openNewDraftForm();
+        ctx.consumeAndRedraw();
+        return;
+    }
     if (key.matches(vaxis.Key.tab, .{})) {
         self.detail_focus_content = !self.detail_focus_content;
         ctx.consumeAndRedraw();
