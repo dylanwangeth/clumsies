@@ -305,7 +305,6 @@ fn formatPromptMeta(
     );
 }
 
-
 fn writeHeaderRightIfFits(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
@@ -662,4 +661,3 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
     self.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.pr_diff_widgets[0..count] };
     self.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
 }
-
