@@ -210,10 +210,11 @@ pub const Dashboard = struct {
     view_arena: std.heap.ArenaAllocator,
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
-    // main.zig for the lifetime of the Dashboard.
+    // main.zig for the lifetime of the Dashboard. Active workspace is
+    // resolved dynamically from `ws_sel` against the hub-provided
+    // workspace list (see `activeWsId()`), not from a cwd binding.
     app: *vxfw.App,
     env_map: *const std.process.EnvMap,
-    active_ws_id: ?[]const u8 = null,
 
     // Drafts cache. Refreshed on startup and after every edit op so
     // list rows and the footer counter stay in sync with disk.
@@ -240,7 +241,6 @@ pub const Dashboard = struct {
         api_state: *api.state.ApiState,
         app: *vxfw.App,
         env_map: *const std.process.EnvMap,
-        active_ws_id: ?[]const u8,
     ) Dashboard {
         return .{
             .api_state = api_state,
@@ -251,7 +251,6 @@ pub const Dashboard = struct {
             .view_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
             .app = app,
             .env_map = env_map,
-            .active_ws_id = active_ws_id,
             .drafts_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
         };
     }
@@ -2156,7 +2155,7 @@ pub const Dashboard = struct {
         self.drafts_by_path = .{};
         self.drafts_total = 0;
         self.drafts_ready = 0;
-        const ws_id = self.active_ws_id orelse return;
+        const ws_id = self.activeWsId() orelse return;
         _ = self.drafts_arena.reset(.retain_capacity);
         const arena = self.drafts_arena.allocator();
 
@@ -2186,7 +2185,7 @@ pub const Dashboard = struct {
     /// the current frame. Returns null when no draft is tracked or the
     /// file is missing / unreadable.
     pub fn draftContentForView(self: *Dashboard, prompt_path: []const u8) ?[]const u8 {
-        const ws_id = self.active_ws_id orelse return null;
+        const ws_id = self.activeWsId() orelse return null;
         if (!self.drafts_by_path.contains(prompt_path)) return null;
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
@@ -2198,8 +2197,8 @@ pub const Dashboard = struct {
     /// editor_host, then refreshes caches so the right panel picks up
     /// the new draft bytes on the next render.
     pub fn editSelectedDraft(self: *Dashboard) void {
-        const ws_id = self.active_ws_id orelse {
-            self.status_line = "No workspace bound to cwd; drafts disabled.";
+        const ws_id = self.activeWsId() orelse {
+            self.status_line = "No workspace loaded yet; wait for bootstrap.";
             return;
         };
         const prompts = self.getPrompts();
@@ -2255,7 +2254,7 @@ pub const Dashboard = struct {
     /// Submitted / merged / rejected / conflicted drafts are not
     /// toggled — they represent terminal or pending-review state.
     pub fn toggleSelectedDraftReady(self: *Dashboard) void {
-        const ws_id = self.active_ws_id orelse return;
+        const ws_id = self.activeWsId() orelse return;
         const prompts = self.getPrompts();
         if (prompts.len == 0 or self.selected_prompt >= prompts.len) return;
         const prompt = &prompts[self.selected_prompt];
@@ -2302,7 +2301,7 @@ pub const Dashboard = struct {
     }
 
     fn commitDiscardDraft(self: *Dashboard) void {
-        const ws_id = self.active_ws_id orelse return;
+        const ws_id = self.activeWsId() orelse return;
         if (self.pending_discard_path.len == 0) return;
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
@@ -2351,8 +2350,8 @@ pub const Dashboard = struct {
             self.status_line = "Description is required.";
             return;
         }
-        const ws_id = self.active_ws_id orelse {
-            self.status_line = "No workspace bound; cannot submit.";
+        const ws_id = self.activeWsId() orelse {
+            self.status_line = "No workspace loaded yet; cannot submit.";
             return;
         };
         const prompt_id = self.lookupPromptId(self.pr_composer_prompt_path) orelse {
@@ -2467,8 +2466,8 @@ pub const Dashboard = struct {
     }
 
     pub fn openNewDraftForm(self: *Dashboard) void {
-        if (self.active_ws_id == null) {
-            self.status_line = "No workspace bound to cwd; drafts disabled.";
+        if (self.activeWsId() == null) {
+            self.status_line = "No workspace loaded yet; wait for bootstrap.";
             return;
         }
         self.new_draft_path_len = 0;
@@ -2485,7 +2484,7 @@ pub const Dashboard = struct {
             self.status_line = "Path is required.";
             return;
         }
-        const ws_id = self.active_ws_id orelse return;
+        const ws_id = self.activeWsId() orelse return;
         const path = self.new_draft_path_buf[0..self.new_draft_path_len];
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
@@ -2599,7 +2598,7 @@ pub const Dashboard = struct {
         self.pr_composer_submitting = false;
         switch (result) {
             .ok => |resp| {
-                const ws_id = self.active_ws_id orelse return;
+                const ws_id = self.activeWsId() orelse return;
                 const alloc = self.api_state.allocator();
                 const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
                 defer alloc.free(ws_dir);
