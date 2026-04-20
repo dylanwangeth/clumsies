@@ -44,13 +44,20 @@ pub const PrCommentsPayload = state.PrCommentsPayload;
 pub const CreatePromptPrResponse = state.CreatePromptPrResponse;
 pub const CreateContextPrResponse = state.CreateContextPrResponse;
 
-/// Parameters for creating a prompt PR with a single modify operation.
-/// Multi-op PRs are a follow-up; the composer UI submits one draft at
-/// a time for now. `base_hash` is null until the cache tracks it.
+/// Parameters for creating a prompt PR with a single operation.
+/// Mirrors CreateContextPrParams so the composer submit path is
+/// symmetric across the two categories. Multi-op PRs remain a
+/// follow-up; the composer UI submits one draft at a time. Which
+/// fields must be non-null depends on `operation_type` (per
+/// s1-5 §2.2): modify/rename/delete carry `prompt_id`, create
+/// carries `path`, only modify/rename carry `base_hash`. The body
+/// builder enforces this and omits fields the hub does not want.
 pub const CreatePromptPrParams = struct {
     description: []const u8,
-    prompt_id: []const u8,
-    content: []const u8,
+    operation_type: []const u8,
+    prompt_id: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+    content: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
 };
 
@@ -179,21 +186,31 @@ pub const create_context_pr = dispatcher.RequestSpec(CreateContextPrParams, Crea
 };
 
 fn createPromptPrBody(alloc: std.mem.Allocator, p: CreatePromptPrParams) anyerror![]const u8 {
+    // Every op-type field is optional on the wire — the hub tolerates
+    // `"field": null` as equivalent to "field absent" (see
+    // hub/collab.zig `Operation`), so emitting all fields keeps the
+    // body shape uniform and lets the validator branch on `type`.
+    // submit code in app.zig decides which fields to populate per
+    // operation_type based on the draft index entry; this function
+    // just serializes the decision.
     const Op = struct {
         type: []const u8,
-        prompt_id: []const u8,
-        base_hash: ?[]const u8,
-        content: []const u8,
+        prompt_id: ?[]const u8 = null,
+        base_hash: ?[]const u8 = null,
+        content: ?[]const u8 = null,
+        path: ?[]const u8 = null,
+        new_path: ?[]const u8 = null,
     };
     const Body = struct {
         description: []const u8,
         operations: []const Op,
     };
     const ops = [_]Op{.{
-        .type = "modify",
+        .type = p.operation_type,
         .prompt_id = p.prompt_id,
         .base_hash = p.base_hash,
         .content = p.content,
+        .path = p.path,
     }};
     return std.json.Stringify.valueAlloc(alloc, Body{
         .description = p.description,

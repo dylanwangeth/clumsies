@@ -60,6 +60,7 @@ pub fn toPrEntries(
         var op_type: []const u8 = "";
         var op_current_path: []const u8 = "";
         var op_new_path: []const u8 = "";
+        var op_base_hash: []const u8 = "";
         var op_index: u16 = 0;
         if (api_state.pr_detail_id) |cached_id| {
             if (std.mem.eql(u8, cached_id, pr.pr_id)) {
@@ -68,6 +69,7 @@ pub fn toPrEntries(
                 op_type = api_state.pr_detail_op_type orelse "";
                 op_current_path = api_state.pr_detail_op_current_path orelse "";
                 op_new_path = api_state.pr_detail_op_new_path orelse "";
+                op_base_hash = api_state.pr_detail_op_base_hash orelse "";
                 op_index = api_state.pr_detail_op_index;
             }
         }
@@ -82,7 +84,7 @@ pub fn toPrEntries(
             .author = pr.author,
             .created = pr.created_at,
             .description = pr.description,
-            .base_hash = "",
+            .base_hash = op_base_hash,
             .diff = diff,
             .comments = comments,
             .trace_refers = trace_refers,

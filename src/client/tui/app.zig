@@ -1753,6 +1753,7 @@ pub const Dashboard = struct {
         var op_type: ?[]const u8 = null;
         var op_current_path: ?[]const u8 = null;
         var op_new_path: ?[]const u8 = null;
+        var op_base_hash: ?[]const u8 = null;
         var op_index: u16 = 0;
         const op_total: u16 = @intCast(@min(resp.operations.len, std.math.maxInt(u16)));
 
@@ -1764,6 +1765,7 @@ pub const Dashboard = struct {
             op_type = alloc.dupe(u8, op.type) catch null;
             if (op.current_path) |cp| op_current_path = alloc.dupe(u8, cp) catch null;
             if (op.path) |np| op_new_path = alloc.dupe(u8, np) catch null;
+            if (op.base_hash) |bh| op_base_hash = alloc.dupe(u8, bh) catch null;
             op_index = @intCast(@min(i, std.math.maxInt(u16)));
         }
         const trace_refers: u16 = @intCast(@min(resp.trace_summary.refer_count, std.math.maxInt(u16)));
@@ -1777,6 +1779,7 @@ pub const Dashboard = struct {
         self.api_state.pr_detail_op_type = op_type;
         self.api_state.pr_detail_op_current_path = op_current_path;
         self.api_state.pr_detail_op_new_path = op_new_path;
+        self.api_state.pr_detail_op_base_hash = op_base_hash;
         self.api_state.pr_detail_op_index = op_index;
         self.api_state.pr_detail_op_total = op_total;
     }
@@ -2729,10 +2732,6 @@ pub const Dashboard = struct {
     };
 
     fn submitPromptPr(self: *Dashboard, target: DraftTarget) void {
-        const prompt_id = target.prompt_id orelse self.lookupPromptId(target.path) orelse {
-            self.status_line = "Unknown prompt id.";
-            return;
-        };
         const alloc = self.api_state.allocator();
         const read = self.readDraftForSubmit(alloc, target) orelse return;
         defer alloc.free(read.ws_dir);
@@ -2741,10 +2740,61 @@ pub const Dashboard = struct {
             if (e.base_hash) |h| alloc.free(h);
         };
 
+        const entry = read.entry orelse {
+            self.status_line = "Draft entry missing; try again.";
+            return;
+        };
+        // Spec s1-5 §2.2: modify/rename/delete must carry prompt_id +
+        // base_hash; create must carry path + content. The hub
+        // rejects any operation that is missing a required field.
+        const operation_type: []const u8 = switch (entry.operation) {
+            .create => "create",
+            .modify => "modify",
+            .rename => "rename",
+            .delete => "delete",
+        };
+
         const desc_copy = alloc.dupe(u8, self.pr_composer_desc_buf[0..self.pr_composer_desc_len]) catch return;
         defer alloc.free(desc_copy);
-        const content_copy = alloc.dupe(u8, read.content) catch return;
-        defer alloc.free(content_copy);
+        const content_copy: ?[]const u8 = if (entry.operation == .delete)
+            null
+        else
+            (alloc.dupe(u8, read.content) catch return);
+        defer if (content_copy) |c| alloc.free(c);
+
+        // Modify/rename/delete need prompt_id; resolve from the draft
+        // target first (authoritative) then fall back to a library
+        // lookup by path. Create drafts have neither — that's the
+        // expected missing prompt_id, not an error.
+        const prompt_id_copy_opt: ?[]const u8 = if (entry.operation == .create)
+            null
+        else blk: {
+            const pid = target.prompt_id orelse self.lookupPromptId(target.path) orelse {
+                self.status_line = "Unknown prompt id for this draft.";
+                return;
+            };
+            break :blk (alloc.dupe(u8, pid) catch return);
+        };
+        defer if (prompt_id_copy_opt) |pid| alloc.free(pid);
+
+        const path_copy_opt: ?[]const u8 = if (entry.operation == .create)
+            (alloc.dupe(u8, target.path) catch return)
+        else
+            null;
+        defer if (path_copy_opt) |p| alloc.free(p);
+
+        const base_hash_copy_opt: ?[]const u8 = if (entry.base_hash) |h|
+            (alloc.dupe(u8, h) catch return)
+        else
+            null;
+        defer if (base_hash_copy_opt) |h| alloc.free(h);
+
+        if (entry.operation == .modify or entry.operation == .rename) {
+            if (base_hash_copy_opt == null) {
+                self.status_line = "Missing base_hash for modify/rename draft.";
+                return;
+            }
+        }
 
         api.specs.dispatchFromState(
             api.specs.CreatePromptPrParams,
@@ -2754,8 +2804,11 @@ pub const Dashboard = struct {
             self.api_state,
             .{
                 .description = desc_copy,
-                .prompt_id = prompt_id,
+                .operation_type = operation_type,
+                .prompt_id = prompt_id_copy_opt,
+                .path = path_copy_opt,
                 .content = content_copy,
+                .base_hash = base_hash_copy_opt,
             },
         );
         self.pr_composer_submitting = true;
@@ -3089,6 +3142,11 @@ pub const Dashboard = struct {
         defer alloc.free(ws_dir);
         drafts_mod.setDraftStatus(alloc, ws_dir, target.category, target.path, .submitted) catch {};
         self.refreshDraftsCache();
+        // A new PR exists on the hub, but prompt_prs_cache still
+        // holds the pre-submit snapshot — the Pull Requests tab
+        // would render stale rows until a manual `r` refresh. Drop
+        // the cached details so the next render re-fetches.
+        self.invalidateRemoteDetailRequests();
         self.show_pr_composer = false;
         self.pr_composer_desc_len = 0;
         self.releaseComposerTarget();
