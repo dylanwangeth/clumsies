@@ -31,7 +31,17 @@ pub fn drawListPanel(
     const border_color = w.focusBorder(!self.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
-    w.writeText(&surface, ctx, 2, 0, "Library", theme.boldOn(theme.PANEL, theme.TEXT));
+
+    // Inner tab strip sits on the top border line (row 0), the same
+    // shape the right panel uses for its section badges. The subtitle
+    // goes on row 0 top-right only if what's left after the tab strip
+    // has room for it — otherwise drop it rather than stomp the tabs.
+    var tab_col: u16 = 2;
+    const tabs = [_]@TypeOf(self.detail_tab){ .content, .pull_requests };
+    for (tabs) |tab| {
+        tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, listTabLabel(tab), tab == self.detail_tab);
+        tab_col +|= 1;
+    }
 
     const hint = switch (self.detail_tab) {
         .content => try std.fmt.allocPrint(
@@ -51,18 +61,19 @@ pub fn drawListPanel(
             );
         },
     };
-    w.writeRightText(&surface, ctx, 0, hint, theme.textOn(theme.PANEL, theme.MUTED));
-
-    var tab_col: u16 = 2;
-    const tabs = [_]@TypeOf(self.detail_tab){ .content, .pull_requests };
-    for (tabs) |tab| {
-        tab_col = w.drawInnerTabBadge(&surface, ctx, 2, tab_col, listTabLabel(tab), tab == self.detail_tab);
-        tab_col +|= 1;
+    const hint_w: u16 = @intCast(ctx.stringWidth(hint));
+    if (hint_w > 0 and hint_w < size.width -| tab_col -| 2) {
+        w.writeRightText(&surface, ctx, 0, hint, theme.textOn(theme.PANEL, theme.MUTED));
     }
 
-    const body_origin_row: i17 = 4;
-    const body_h: u16 = size.height -| @as(u16, @intCast(body_origin_row)) -| 1;
-    const body_w: u16 = size.width -| 3;
+    // Body sits one row below the top border (row 1) and two
+    // columns in (col=2). The cursor bar is written directly onto
+    // the outer surface at col=1 — the left-border inside — so it
+    // does not overlap tree text, which starts at col=2.
+    const body_origin_row: u16 = 1;
+    const body_origin_col: u16 = 2;
+    const body_h: u16 = size.height -| body_origin_row -| 1;
+    const body_w: u16 = size.width -| body_origin_col -| 1;
     const body_ctx = ctx.withConstraints(
         .{ .width = body_w, .height = body_h },
         .{ .width = body_w, .height = body_h },
@@ -79,66 +90,56 @@ pub fn drawListPanel(
                 // Write on the outer panel surface: the ScrollBars
                 // composite returns a buffer-less surface whose
                 // writeCell would trip the vxfw assert.
-                w.drawEmptyState(&surface, ctx, 2, @intCast(body_origin_row), status, "prompts");
+                w.drawEmptyState(&surface, ctx, body_origin_col, body_origin_row, status, "prompts");
             } else {
                 self.library_scroll_bars.scroll_view.draw_cursor = false;
                 defer self.library_scroll_bars.scroll_view.draw_cursor = true;
-                var body = try self.library_scroll_bars.widget().draw(body_ctx);
-                try drawListCursor(ctx, &body, &self.library_scroll_bars.scroll_view, theme.PANEL);
+                const body = try self.library_scroll_bars.widget().draw(body_ctx);
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = body_origin_row, .col = 2 }, .surface = body };
+                children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
                 surface.children = children;
+                writeCursorBar(&surface, &self.library_scroll_bars.scroll_view, body_origin_row, body_h);
             }
         },
         .pull_requests => {
             prompt_detail_panel.syncPrWidgets(self);
             if (self.pr_row_count == 0) {
-                w.writeText(&surface, ctx, 2, @intCast(body_origin_row), "No pull requests for this prompt.", theme.fg(theme.MUTED));
+                w.writeText(&surface, ctx, body_origin_col, body_origin_row, "No pull requests for this prompt.", theme.fg(theme.MUTED));
             } else {
                 self.pr_scroll_bars.scroll_view.draw_cursor = false;
                 defer self.pr_scroll_bars.scroll_view.draw_cursor = true;
-                var body = try self.pr_scroll_bars.widget().draw(body_ctx);
-                try drawListCursor(ctx, &body, &self.pr_scroll_bars.scroll_view, theme.PANEL);
+                const body = try self.pr_scroll_bars.widget().draw(body_ctx);
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = body_origin_row, .col = 1 }, .surface = body };
+                children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
                 surface.children = children;
+                writeCursorBar(&surface, &self.pr_scroll_bars.scroll_view, body_origin_row, body_h);
             }
         },
     }
     return surface;
 }
 
-fn drawListCursor(
-    ctx: vxfw.DrawContext,
-    body: *vxfw.Surface,
+/// Draw the accent cursor bar directly on the panel surface at
+/// col=1, which is the one-cell gutter between the left border and
+/// the body at col=2. Keeping the cursor on the outer surface lets
+/// the body render tree text from col=0 without the bar colliding
+/// with the first character of each row.
+fn writeCursorBar(
+    surface: *vxfw.Surface,
     scroll_view: *const vxfw.ScrollView,
-    bg: vaxis.Color,
-) std.mem.Allocator.Error!void {
+    body_origin_row: u16,
+    body_h: u16,
+) void {
     const cursor_pos = scroll_view.cursor;
     const scroll_top = scroll_view.scroll.top;
     if (cursor_pos < scroll_top) return;
-    const visible_row: i17 = @intCast(cursor_pos - scroll_top);
-    if (visible_row >= body.size.height) return;
-    const cbuf = try ctx.arena.alloc(vaxis.Cell, 1);
-    cbuf[0] = .{
+    const visible_row = cursor_pos - scroll_top;
+    if (visible_row >= body_h) return;
+    const row = body_origin_row + @as(u16, @intCast(visible_row));
+    surface.writeCell(1, row, .{
         .char = .{ .grapheme = "▌", .width = 1 },
-        .style = .{ .fg = theme.ACCENT_SOFT, .bg = bg },
-    };
-    const csurface: vxfw.Surface = .{
-        .size = .{ .width = 1, .height = 1 },
-        .widget = body.widget,
-        .buffer = cbuf,
-        .children = &.{},
-    };
-    const old = body.children;
-    const new_children = try ctx.arena.alloc(vxfw.SubSurface, old.len + 1);
-    @memcpy(new_children[0..old.len], old);
-    new_children[old.len] = .{
-        .origin = .{ .col = 0, .row = visible_row },
-        .surface = csurface,
-        .z_index = 1,
-    };
-    body.children = new_children;
+        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+    });
 }
 
 fn listTabLabel(tab: anytype) []const u8 {
