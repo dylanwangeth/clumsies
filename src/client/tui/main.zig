@@ -4,6 +4,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const Dashboard = @import("app.zig").Dashboard;
 const auth_mod = @import("../auth.zig");
+const workspace_config = @import("../workspace_config.zig");
 const api = @import("api.zig");
 
 fn recoverPanic(msg: []const u8, ra: ?usize) noreturn {
@@ -44,7 +45,19 @@ pub fn run() !void {
         title_writer.interface.writeAll("\x1b]2;clumsies hub\x07") catch {};
     }
 
-    var dashboard = Dashboard.init(&api_state);
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+
+    const active_ws_id: ?[]const u8 = blk: {
+        const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch break :blk null;
+        defer allocator.free(cwd);
+        const binding = workspace_config.resolveWorkspace(allocator, cwd) catch break :blk null;
+        allocator.free(binding.name);
+        break :blk binding.ws_id;
+    };
+    defer if (active_ws_id) |id| allocator.free(id);
+
+    var dashboard = Dashboard.init(&api_state, &app, &env_map, active_ws_id);
     defer dashboard.deinit();
     try app.run(dashboard.widget(), .{});
 }

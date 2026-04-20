@@ -110,7 +110,7 @@ pub fn runEditor(
 pub fn editFile(
     allocator: std.mem.Allocator,
     vx: *vaxis.Vaxis,
-    tty_writer: *vaxis.tty.IoWriter,
+    tty_writer: *std.io.Writer,
     env: *const std.process.EnvMap,
     file_path: []const u8,
 ) !Result {
