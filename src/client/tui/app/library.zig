@@ -70,36 +70,39 @@ pub fn drawListPanel(
 
     switch (self.detail_tab) {
         .content => {
-            self.library_scroll_bars.scroll_view.draw_cursor = false;
-            defer self.library_scroll_bars.scroll_view.draw_cursor = true;
-            var body = try self.library_scroll_bars.widget().draw(body_ctx);
             if (self.library_tree.rowCount() == 0) {
                 const status = blk: {
                     self.api_state.mutex.lock();
                     defer self.api_state.mutex.unlock();
                     break :blk self.api_state.status;
                 };
-                w.drawEmptyState(&body, ctx, 0, 0, status, "prompts");
+                // Write on the outer panel surface: the ScrollBars
+                // composite returns a buffer-less surface whose
+                // writeCell would trip the vxfw assert.
+                w.drawEmptyState(&surface, ctx, 2, @intCast(body_origin_row), status, "prompts");
             } else {
+                self.library_scroll_bars.scroll_view.draw_cursor = false;
+                defer self.library_scroll_bars.scroll_view.draw_cursor = true;
+                var body = try self.library_scroll_bars.widget().draw(body_ctx);
                 try drawListCursor(ctx, &body, &self.library_scroll_bars.scroll_view, theme.PANEL);
+                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+                children[0] = .{ .origin = .{ .row = body_origin_row, .col = 2 }, .surface = body };
+                surface.children = children;
             }
-            const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-            children[0] = .{ .origin = .{ .row = body_origin_row, .col = 2 }, .surface = body };
-            surface.children = children;
         },
         .pull_requests => {
             prompt_detail_panel.syncPrWidgets(self);
-            self.pr_scroll_bars.scroll_view.draw_cursor = false;
-            defer self.pr_scroll_bars.scroll_view.draw_cursor = true;
-            var body = try self.pr_scroll_bars.widget().draw(body_ctx);
             if (self.pr_row_count == 0) {
-                w.writeText(&body, ctx, 0, 0, "No pull requests for this prompt.", theme.fg(theme.MUTED));
+                w.writeText(&surface, ctx, 2, @intCast(body_origin_row), "No pull requests for this prompt.", theme.fg(theme.MUTED));
             } else {
+                self.pr_scroll_bars.scroll_view.draw_cursor = false;
+                defer self.pr_scroll_bars.scroll_view.draw_cursor = true;
+                var body = try self.pr_scroll_bars.widget().draw(body_ctx);
                 try drawListCursor(ctx, &body, &self.pr_scroll_bars.scroll_view, theme.PANEL);
+                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+                children[0] = .{ .origin = .{ .row = body_origin_row, .col = 1 }, .surface = body };
+                surface.children = children;
             }
-            const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-            children[0] = .{ .origin = .{ .row = body_origin_row, .col = 1 }, .surface = body };
-            surface.children = children;
         },
     }
     return surface;
