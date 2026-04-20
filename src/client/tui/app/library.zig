@@ -322,6 +322,7 @@ fn handlePrListEvent(
 pub fn syncLibraryWidgets(self: anytype) void {
     const prompts = self.getPrompts();
     const bundles = self.getBundles();
+    const create_paths = self.drafts_create_prompt_paths;
     const filter_name: ?[]const u8 = if (self.library_bundle_filter == 0)
         null
     else if (self.library_bundle_filter - 1 < bundles.len)
@@ -339,6 +340,18 @@ pub fn syncLibraryWidgets(self: anytype) void {
         if (filtered_len >= MAX_TREE_ROWS) break;
         filtered_paths[filtered_len] = p.path;
         filtered_orig[filtered_len] = pidx;
+        filtered_len += 1;
+    }
+
+    // Append local create-op drafts as virtual rows. Tree-leaf index
+    // is `prompts.len + k` so selectedDraftTarget can tell virtual
+    // rows from server-backed rows by the index range. Bundle filter
+    // does not constrain create drafts — the user created them
+    // locally, they should always be visible.
+    for (create_paths, 0..) |path, k| {
+        if (filtered_len >= MAX_TREE_ROWS) break;
+        filtered_paths[filtered_len] = path;
+        filtered_orig[filtered_len] = prompts.len + k;
         filtered_len += 1;
     }
 
@@ -362,8 +375,13 @@ pub fn syncLibraryWidgets(self: anytype) void {
             self.library_widgets[i] = self.library_text_rows[i].widget();
         } else {
             const orig_pidx = self.library_tree.leafIndexAt(i) orelse continue;
-            const p = prompts[orig_pidx];
-            const pr_label: []const u8 = switch (p.open_pr_count) {
+            const is_virtual = orig_pidx >= prompts.len;
+            const row_path: []const u8 = if (is_virtual) blk: {
+                const k = orig_pidx - prompts.len;
+                if (k >= create_paths.len) continue;
+                break :blk create_paths[k];
+            } else prompts[orig_pidx].path;
+            const pr_label: []const u8 = if (is_virtual) "" else switch (prompts[orig_pidx].open_pr_count) {
                 0 => "",
                 1 => "\xe2\x80\xa21",
                 2 => "\xe2\x80\xa22",
@@ -371,17 +389,24 @@ pub fn syncLibraryWidgets(self: anytype) void {
                 else => "\xe2\x80\xa2+",
             };
             const row_sel = i == selected_row;
-            const labeled_text = if (self.draftStatusFor(.prompt, p.path)) |_|
-                (std.fmt.allocPrint(self.viewAllocator(), "{s}*", .{row_text}) catch row_text)
+            const draft_status_opt = self.draftStatusFor(.prompt, row_path);
+            const labeled_text = if (draft_status_opt != null)
+                (std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{row_text}) catch row_text)
             else
                 row_text;
+            const row_fg = if (draft_status_opt) |s|
+                theme.draftStatusColor(s)
+            else if (row_sel)
+                theme.TEXT
+            else
+                theme.TEXT_SOFT;
             self.library_table_cols[i] = .{
                 .{ .text = labeled_text, .flex = 1 },
                 .{ .text = pr_label, .flex = 0, .min_width = 2, .alignment = .right },
             };
             self.library_table_rows[i] = .{
                 .columns = &self.library_table_cols[i],
-                .style = theme.textOn(theme.PANEL, if (row_sel) theme.TEXT else theme.TEXT_SOFT),
+                .style = if (row_sel) theme.boldOn(theme.PANEL, row_fg) else theme.textOn(theme.PANEL, row_fg),
                 .gap = 2,
                 .padding_left = 0,
             };
