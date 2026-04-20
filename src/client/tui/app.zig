@@ -2331,7 +2331,7 @@ pub const Dashboard = struct {
         const result = editor_host.editFile(
             alloc,
             &self.app.vx,
-            self.app.tty.writer(),
+            &self.app.tty,
             self.env_map,
             draft_abs,
         ) catch |err| {
@@ -2745,7 +2745,7 @@ pub const Dashboard = struct {
         const result = editor_host.editFile(
             alloc,
             &self.app.vx,
-            self.app.tty.writer(),
+            &self.app.tty,
             self.env_map,
             draft_abs,
         ) catch |err| {

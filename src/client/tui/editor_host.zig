@@ -8,8 +8,19 @@
 //! together with libvaxis' alt-screen teardown/restore. Callers do
 //! not re-read the file themselves — they decide what to refresh after
 //! the host returns (draft index, diff, selected rows).
+//!
+//! The terminal-state handoff has three layers that all have to flip
+//! together: (1) the alt-screen / mouse / bracketed-paste / kitty
+//! keyboard CSI modes managed by libvaxis, (2) the POSIX termios line
+//! discipline (raw vs canonical — the child editor expects canonical
+//! with ECHO and ISIG on), and (3) the libvaxis internal state flags
+//! that track which CSI modes are currently active. Failing to flip
+//! any one of these leaves the child reading CSI `u` keyboard reports
+//! as text (the symptom pico shows as `1;1:3u...` noise) or the shell
+//! in raw mode with mouse tracking live after a crash.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const vaxis = @import("vaxis");
 
 /// Outcome of an edit attempt. Anything that is not `completed`
@@ -29,9 +40,11 @@ pub const Result = enum {
 };
 
 /// Default fallback list used when both $EDITOR and $VISUAL are
-/// unset. `nano` comes before `vi` because it has a more forgiving
-/// UX; a user who actively prefers `vi` is expected to set $EDITOR.
-pub const default_fallbacks: []const []const u8 = &.{ "nano", "vi" };
+/// unset. `vim` comes first because dev environments usually have
+/// it and it is the expected default for engineers editing config
+/// inside a Zig TUI. `nano` and `vi` trail as pure-ubiquity
+/// fallbacks for minimal systems that lack vim.
+pub const default_fallbacks: []const []const u8 = &.{ "vim", "nano", "vi" };
 
 /// Resolve the command string to invoke. Preference order:
 ///   1. `$EDITOR` if non-empty
@@ -99,18 +112,20 @@ pub fn runEditor(
     };
 }
 
-/// Full edit flow. Releases libvaxis' alt-screen before spawning so
-/// the editor owns the terminal, and re-enters the alt-screen after
-/// the editor exits. Callers are expected to redraw and re-read any
-/// state that the editor may have mutated (draft file contents,
-/// diffs, row markers) after this function returns.
+/// Full edit flow. Hands the terminal to `$EDITOR`: drops all CSI
+/// modes libvaxis had enabled (alt screen, kitty keyboard, mouse,
+/// bracketed paste) and restores the original termios so the editor
+/// sees a canonical cooked terminal. On return, re-enters raw mode,
+/// the alt screen, and every CSI feature libvaxis detected at
+/// startup, then requests a full refresh so the UI redraws from
+/// scratch.
 ///
 /// If no editor resolves, `.editor_not_found` is returned without
-/// touching the alt-screen.
+/// touching terminal state — nothing to suspend or resume.
 pub fn editFile(
     allocator: std.mem.Allocator,
     vx: *vaxis.Vaxis,
-    tty_writer: *std.io.Writer,
+    tty: *vaxis.Tty,
     env: *const std.process.EnvMap,
     file_path: []const u8,
 ) !Result {
@@ -118,16 +133,55 @@ pub fn editFile(
         return .editor_not_found;
     defer allocator.free(cmd);
 
-    try vx.exitAltScreen(tty_writer);
-    try vx.resetState(tty_writer);
+    const tty_writer = tty.writer();
+    suspendTerminal(vx, tty, tty_writer) catch {};
 
     const result = runEditor(allocator, cmd, file_path) catch |err| {
-        vx.enterAltScreen(tty_writer) catch {};
+        resumeTerminal(vx, tty, tty_writer) catch {};
         return err;
     };
 
-    try vx.enterAltScreen(tty_writer);
+    try resumeTerminal(vx, tty, tty_writer);
     return result;
+}
+
+/// Release the terminal so a child process sees a canonical TTY.
+/// Libvaxis' `resetState` writes the disable sequences for every CSI
+/// mode it has flipped on (kitty keyboard pop, mouse reset, bracketed
+/// paste reset, alt-screen leave). Termios then goes back to the
+/// pre-raw snapshot libvaxis saved at `Tty.init` time, so the child
+/// gets line-buffered input with ECHO and ISIG back on. Both pieces
+/// are necessary: if termios stays raw, Ctrl-C/Ctrl-Q cannot signal
+/// the child; if CSI modes stay on, kitty keyboard reports arrive
+/// inside the child as literal `1;1:3u` text.
+fn suspendTerminal(vx: *vaxis.Vaxis, tty: *vaxis.Tty, tty_writer: *std.io.Writer) !void {
+    try vx.resetState(tty_writer);
+    try tty_writer.flush();
+    if (builtin.os.tag != .windows) {
+        std.posix.tcsetattr(tty.fd, .FLUSH, tty.termios) catch {};
+    }
+}
+
+/// Rebuild the TUI-owned terminal state the user had before the
+/// shell-out. `makeRaw` puts the line discipline back into raw mode;
+/// `enableDetectedFeatures` re-pushes kitty keyboard and unicode 2027
+/// based on the capability flags libvaxis already detected at
+/// startup, so a second round-trip of DA1/XTVERSION queries is not
+/// needed. Mouse tracking and bracketed paste are re-enabled
+/// unconditionally because `App.run` also turns them on
+/// unconditionally. Finally request a full refresh so the next render
+/// pushes every cell again — otherwise libvaxis' diff renderer
+/// believes the screen still matches `screen_last` and the TUI comes
+/// up blank on top of the editor's last frame.
+fn resumeTerminal(vx: *vaxis.Vaxis, tty: *vaxis.Tty, tty_writer: *std.io.Writer) !void {
+    if (builtin.os.tag != .windows) {
+        _ = vaxis.tty.PosixTty.makeRaw(tty.fd) catch {};
+    }
+    try vx.enterAltScreen(tty_writer);
+    try vx.enableDetectedFeatures(tty_writer);
+    try vx.setMouseMode(tty_writer, true);
+    try vx.setBracketedPaste(tty_writer, true);
+    vx.queueRefresh();
 }
 
 fn hasExecutable(
