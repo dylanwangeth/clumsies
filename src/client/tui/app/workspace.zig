@@ -5,6 +5,7 @@ const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
 const data = @import("../view_types.zig");
 const api = @import("../api.zig");
+const drafts_mod = @import("../../drafts.zig");
 const Modal = @import("../widgets/modal.zig").Modal;
 
 const MAX_TREE_ROWS = 128;
@@ -174,17 +175,30 @@ pub fn drawList(
             const style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
             w.writeText(&surface, ctx, row_col, kv_row, rendered, style);
 
-            if (self.ws_tab == .prompts) {
-                if (live_ws) |ws_d| {
-                    if (ws_tree.leafIndexAt(r)) |idx| {
-                        const wp = ws_d.ws_prompts[idx];
-                        const prompt_path = if (wp.path.len > 0)
-                            wp.path
-                        else for (lib_prompts) |lp| {
-                            if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-                        } else wp.prompt_id;
-
-                        if (hasDraftFor(self, prompt_path)) {
+            if (live_ws) |ws_d| {
+                if (ws_tree.leafIndexAt(r)) |idx| {
+                    const MarkerInfo = struct {
+                        category: drafts_mod.DraftCategory,
+                        path: []const u8,
+                    };
+                    const marker_info: ?MarkerInfo = switch (self.ws_tab) {
+                        .context => if (idx < ws_d.context_files.len) MarkerInfo{
+                            .category = .context,
+                            .path = ws_d.context_files[idx].path,
+                        } else null,
+                        .prompts => blk: {
+                            if (idx >= ws_d.ws_prompts.len) break :blk null;
+                            const wp = ws_d.ws_prompts[idx];
+                            const prompt_path = if (wp.path.len > 0)
+                                wp.path
+                            else for (lib_prompts) |lp| {
+                                if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
+                            } else wp.prompt_id;
+                            break :blk MarkerInfo{ .category = .prompt, .path = prompt_path };
+                        },
+                    };
+                    if (marker_info) |m| {
+                        if (self.draftStatusFor(m.category, m.path)) |_| {
                             const nw: u16 = @intCast(ctx.stringWidth(rendered));
                             w.writeText(&surface, ctx, row_col + nw + 1, kv_row, "*", theme.fg(theme.WARN));
                         }
@@ -353,21 +367,6 @@ fn wsTabLabel(tab: anytype) []const u8 {
     };
 }
 
-fn hasDraftFor(self: anytype, prompt_path: []const u8) bool {
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
-    const drafts = self.api_state.drafts orelse return false;
-    for (drafts) |d| {
-        if (!std.mem.eql(u8, d.category, "prompt")) continue;
-        if (std.mem.eql(u8, d.status, "merged")) continue;
-        if (d.current_path) |cp| {
-            if (std.mem.eql(u8, cp, prompt_path)) return true;
-        }
-        if (std.mem.eql(u8, d.draft_path, prompt_path)) return true;
-    }
-    return false;
-}
-
 fn drawTextBlock(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
@@ -517,6 +516,11 @@ fn handleListFocusEvent(
         ctx.consumeAndRedraw();
         return;
     }
+    if (key.matches('n', .{}) and self.ws_tab == .context) {
+        self.openNewDraftForm(.context);
+        ctx.consumeAndRedraw();
+        return;
+    }
     if (key.matches(vaxis.Key.escape, .{})) {
         self.ws_focus = .bar;
         ctx.consumeAndRedraw();
@@ -535,6 +539,26 @@ fn handleContentFocusEvent(
     }
     if (key.matches('d', .{})) {
         self.ws_show_diff = !self.ws_show_diff;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('e', .{})) {
+        self.editSelectedDraft();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('D', .{ .shift = true })) {
+        self.requestDiscardSelectedDraft();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('m', .{})) {
+        self.toggleSelectedDraftReady();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('p', .{})) {
+        self.openPrComposer();
         ctx.consumeAndRedraw();
         return;
     }
