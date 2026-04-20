@@ -60,6 +60,11 @@ pub const CreatePromptPrResponse = struct {
     status: []const u8,
 };
 
+pub const CreateContextPrResponse = struct {
+    pr_id: []const u8,
+    status: []const u8,
+};
+
 pub const DraftEntry = drafts_reader.DraftEntry;
 pub const ActiveSession = session_reader.ActiveSession;
 
@@ -123,6 +128,7 @@ pub const ApiState = struct {
     submit_comment_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     pr_action_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     create_prompt_pr_pending: request.PendingRequest(dispatcher.Result(CreatePromptPrResponse)) = .{},
+    create_context_pr_pending: request.PendingRequest(dispatcher.Result(CreateContextPrResponse)) = .{},
     // Derived pr_detail view state, recomputed by consumers whenever
     // pr_detail_cache or pr_comments_cache changes. Kept here because
     // computing the diff on every draw would be wasteful; the consumer

@@ -42,6 +42,7 @@ pub const WsManifestPayload = state.WsManifestPayload;
 pub const WsContextContentPayload = state.WsContextContentPayload;
 pub const PrCommentsPayload = state.PrCommentsPayload;
 pub const CreatePromptPrResponse = state.CreatePromptPrResponse;
+pub const CreateContextPrResponse = state.CreateContextPrResponse;
 
 /// Parameters for creating a prompt PR with a single modify operation.
 /// Multi-op PRs are a follow-up; the composer UI submits one draft at
@@ -49,6 +50,20 @@ pub const CreatePromptPrResponse = state.CreatePromptPrResponse;
 pub const CreatePromptPrParams = struct {
     description: []const u8,
     prompt_id: []const u8,
+    content: []const u8,
+    base_hash: ?[]const u8 = null,
+};
+
+/// Parameters for creating a context PR. Mirrors the prompt PR shape
+/// but against a workspace-scoped endpoint. `context_id` identifies
+/// an existing file (modify/rename/delete); create-ops leave it null
+/// and populate `path` instead.
+pub const CreateContextPrParams = struct {
+    ws_id: []const u8,
+    description: []const u8,
+    operation_type: []const u8,
+    context_id: ?[]const u8 = null,
+    path: ?[]const u8 = null,
     content: []const u8,
     base_hash: ?[]const u8 = null,
 };
@@ -156,6 +171,13 @@ pub const create_prompt_pr = dispatcher.RequestSpec(CreatePromptPrParams, Create
     .parse_ok = dispatcher.jsonParser(CreatePromptPrParams, CreatePromptPrResponse),
 };
 
+pub const create_context_pr = dispatcher.RequestSpec(CreateContextPrParams, CreateContextPrResponse){
+    .method = .POST,
+    .path_builder = createContextPrPath,
+    .body_builder = createContextPrBody,
+    .parse_ok = dispatcher.jsonParser(CreateContextPrParams, CreateContextPrResponse),
+};
+
 fn createPromptPrBody(alloc: std.mem.Allocator, p: CreatePromptPrParams) anyerror![]const u8 {
     const Op = struct {
         type: []const u8,
@@ -172,6 +194,35 @@ fn createPromptPrBody(alloc: std.mem.Allocator, p: CreatePromptPrParams) anyerro
         .prompt_id = p.prompt_id,
         .base_hash = p.base_hash,
         .content = p.content,
+    }};
+    return std.json.Stringify.valueAlloc(alloc, Body{
+        .description = p.description,
+        .operations = &ops,
+    }, .{});
+}
+
+fn createContextPrPath(alloc: std.mem.Allocator, p: CreateContextPrParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs", .{p.ws_id});
+}
+
+fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyerror![]const u8 {
+    const Op = struct {
+        type: []const u8,
+        context_id: ?[]const u8,
+        base_hash: ?[]const u8,
+        content: []const u8,
+        path: ?[]const u8,
+    };
+    const Body = struct {
+        description: []const u8,
+        operations: []const Op,
+    };
+    const ops = [_]Op{.{
+        .type = p.operation_type,
+        .context_id = p.context_id,
+        .base_hash = p.base_hash,
+        .content = p.content,
+        .path = p.path,
     }};
     return std.json.Stringify.valueAlloc(alloc, Body{
         .description = p.description,

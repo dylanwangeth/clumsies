@@ -242,12 +242,14 @@ pub const Dashboard = struct {
     pending_discard_target: ?DraftTarget = null,
 
     // PR Composer overlay state. MVP submits a single-draft PR; multi-
-    // draft selection and DiffViewer preview are follow-ups.
+    // draft selection and DiffViewer preview are follow-ups. The target
+    // captures category + path + ids at open time so the submit path
+    // doesn't need to re-derive them against a selection that may have
+    // moved.
     show_pr_composer: bool = false,
     pr_composer_desc_buf: [256]u8 = .{0} ** 256,
     pr_composer_desc_len: usize = 0,
-    pr_composer_target_path: []const u8 = "",
-    pr_composer_category: drafts_mod.DraftCategory = .prompt,
+    pr_composer_target: ?DraftTarget = null,
     pr_composer_submitting: bool = false,
 
     // New-draft form. Opened from Library Files tab or Workspace
@@ -606,6 +608,7 @@ pub const Dashboard = struct {
                 self.consumeSubmitCommentResult();
                 self.consumePrActionResult();
                 self.consumeCreatePromptPrResult();
+                self.consumeCreateContextPrResult();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -2429,8 +2432,7 @@ pub const Dashboard = struct {
             self.status_line = "Draft must be marked ready (m) before submit.";
             return;
         }
-        self.pr_composer_target_path = target.path;
-        self.pr_composer_category = target.category;
+        self.pr_composer_target = target;
         self.pr_composer_desc_len = 0;
         self.pr_composer_submitting = false;
         self.show_pr_composer = true;
@@ -2448,39 +2450,78 @@ pub const Dashboard = struct {
             self.status_line = "Description is required.";
             return;
         }
-        switch (self.pr_composer_category) {
-            .prompt => self.submitPromptPr(),
-            .context => {
-                self.status_line = "Context PR submission not yet wired.";
-            },
+        const target = self.pr_composer_target orelse {
+            self.status_line = "No composer target set.";
+            return;
+        };
+        switch (target.category) {
+            .prompt => self.submitPromptPr(target),
+            .context => self.submitContextPr(target),
         }
     }
 
-    fn submitPromptPr(self: *Dashboard) void {
-        const ws_id = self.activeWsId() orelse {
-            self.status_line = "No workspace loaded yet; cannot submit.";
-            return;
+    fn readDraftForSubmit(
+        self: *Dashboard,
+        alloc: std.mem.Allocator,
+        target: DraftTarget,
+    ) ?struct {
+        ws_dir: []const u8,
+        content: []const u8,
+        entry: ?DraftSubmitEntry,
+    } {
+        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch {
+            self.status_line = "Could not resolve workspace directory.";
+            return null;
         };
-        const prompt_id = self.lookupPromptId(self.pr_composer_target_path) orelse {
+        errdefer alloc.free(ws_dir);
+
+        const content = drafts_mod.readDraftFile(alloc, ws_dir, target.category, target.path) catch |err| {
+            self.status_line = @errorName(err);
+            return null;
+        };
+        errdefer alloc.free(content);
+
+        var index = drafts_mod.loadIndex(alloc, ws_dir) catch |err| {
+            self.status_line = @errorName(err);
+            return null;
+        };
+        defer index.deinit(alloc);
+
+        var entry_out: ?DraftSubmitEntry = null;
+        for (index.entries.items) |e| {
+            if (e.category != target.category) continue;
+            if (!std.mem.eql(u8, e.draft_path, target.path)) continue;
+            entry_out = .{
+                .operation = e.operation,
+                .base_hash = if (e.base_hash) |h| (alloc.dupe(u8, h) catch null) else null,
+            };
+            break;
+        }
+
+        return .{ .ws_dir = ws_dir, .content = content, .entry = entry_out };
+    }
+
+    const DraftSubmitEntry = struct {
+        operation: drafts_mod.DraftOperation,
+        base_hash: ?[]const u8,
+    };
+
+    fn submitPromptPr(self: *Dashboard, target: DraftTarget) void {
+        const prompt_id = target.prompt_id orelse self.lookupPromptId(target.path) orelse {
             self.status_line = "Unknown prompt id.";
             return;
         };
         const alloc = self.api_state.allocator();
-        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
-            self.status_line = "Could not resolve workspace directory.";
-            return;
+        const read = self.readDraftForSubmit(alloc, target) orelse return;
+        defer alloc.free(read.ws_dir);
+        defer alloc.free(read.content);
+        defer if (read.entry) |e| {
+            if (e.base_hash) |h| alloc.free(h);
         };
-        defer alloc.free(ws_dir);
-
-        const draft_content = drafts_mod.readDraftFile(alloc, ws_dir, .prompt, self.pr_composer_target_path) catch |err| {
-            self.status_line = @errorName(err);
-            return;
-        };
-        defer alloc.free(draft_content);
 
         const desc_copy = alloc.dupe(u8, self.pr_composer_desc_buf[0..self.pr_composer_desc_len]) catch return;
         defer alloc.free(desc_copy);
-        const content_copy = alloc.dupe(u8, draft_content) catch return;
+        const content_copy = alloc.dupe(u8, read.content) catch return;
         defer alloc.free(content_copy);
 
         api.specs.dispatchFromState(
@@ -2493,6 +2534,73 @@ pub const Dashboard = struct {
                 .description = desc_copy,
                 .prompt_id = prompt_id,
                 .content = content_copy,
+            },
+        );
+        self.pr_composer_submitting = true;
+        self.status_line = "Submitting PR...";
+    }
+
+    fn submitContextPr(self: *Dashboard, target: DraftTarget) void {
+        const alloc = self.api_state.allocator();
+        const read = self.readDraftForSubmit(alloc, target) orelse return;
+        defer alloc.free(read.ws_dir);
+        defer alloc.free(read.content);
+        defer if (read.entry) |e| {
+            if (e.base_hash) |h| alloc.free(h);
+        };
+
+        const entry = read.entry orelse {
+            self.status_line = "Draft entry missing; try again.";
+            return;
+        };
+        const operation_type: []const u8 = switch (entry.operation) {
+            .create => "create",
+            .modify => "modify",
+            .rename => "rename",
+            .delete => "delete",
+        };
+
+        const desc_copy = alloc.dupe(u8, self.pr_composer_desc_buf[0..self.pr_composer_desc_len]) catch return;
+        defer alloc.free(desc_copy);
+        const content_copy = alloc.dupe(u8, read.content) catch return;
+        defer alloc.free(content_copy);
+        const ws_id_copy = alloc.dupe(u8, target.ws_id) catch return;
+        defer alloc.free(ws_id_copy);
+        const path_copy_opt: ?[]const u8 = if (entry.operation == .create)
+            (alloc.dupe(u8, target.path) catch return)
+        else
+            null;
+        defer if (path_copy_opt) |p| alloc.free(p);
+        const context_id_copy_opt: ?[]const u8 = if (entry.operation != .create)
+            if (target.context_id) |cid| (alloc.dupe(u8, cid) catch return) else null
+        else
+            null;
+        defer if (context_id_copy_opt) |cid| alloc.free(cid);
+        const base_hash_copy_opt: ?[]const u8 = if (entry.base_hash) |h|
+            (alloc.dupe(u8, h) catch return)
+        else
+            null;
+        defer if (base_hash_copy_opt) |h| alloc.free(h);
+
+        if (entry.operation != .create and context_id_copy_opt == null) {
+            self.status_line = "Missing context_id for modify/rename/delete.";
+            return;
+        }
+
+        api.specs.dispatchFromState(
+            api.specs.CreateContextPrParams,
+            api.specs.CreateContextPrResponse,
+            api.specs.create_context_pr,
+            &self.api_state.create_context_pr_pending,
+            self.api_state,
+            .{
+                .ws_id = ws_id_copy,
+                .description = desc_copy,
+                .operation_type = operation_type,
+                .context_id = context_id_copy_opt,
+                .path = path_copy_opt,
+                .content = content_copy,
+                .base_hash = base_hash_copy_opt,
             },
         );
         self.pr_composer_submitting = true;
@@ -2544,11 +2652,16 @@ pub const Dashboard = struct {
         const size = ctx.max.size();
         const box_w = @min(size.width -| 4, 60);
         const box_h: u16 = 9;
-        const title = switch (self.pr_composer_category) {
+        const target = self.pr_composer_target orelse DraftTarget{
+            .ws_id = "",
+            .category = .prompt,
+            .path = "",
+        };
+        const title = switch (target.category) {
             .prompt => "New Prompt PR",
             .context => "New Context PR",
         };
-        const path_label = switch (self.pr_composer_category) {
+        const path_label = switch (target.category) {
             .prompt => "prompt:",
             .context => "file:",
         };
@@ -2565,7 +2678,7 @@ pub const Dashboard = struct {
         const row = result.content_row;
 
         w.writeText(&surface, ctx, col, row, path_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        w.writeText(&surface, ctx, col + 8, row, self.pr_composer_target_path, theme.boldOn(theme.PANEL_ALT, theme.TEXT));
+        w.writeText(&surface, ctx, col + 8, row, target.path, theme.boldOn(theme.PANEL_ALT, theme.TEXT));
         w.writeText(&surface, ctx, col, row + 1, "op:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         w.writeText(&surface, ctx, col + 8, row + 1, "modify", theme.textOn(theme.PANEL_ALT, theme.TEXT));
 
@@ -2723,24 +2836,45 @@ pub const Dashboard = struct {
         self.pr_composer_submitting = false;
         switch (result) {
             .ok => |resp| {
-                const ws_id = self.activeWsId() orelse return;
-                const alloc = self.api_state.allocator();
-                const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
-                defer alloc.free(ws_dir);
-                drafts_mod.setDraftStatus(alloc, ws_dir, .prompt, self.pr_composer_target_path, .submitted) catch {};
-                self.refreshDraftsCache();
-                self.show_pr_composer = false;
-                self.pr_composer_desc_len = 0;
-                self.status_line = std.fmt.allocPrint(
-                    self.api_state.allocator(),
-                    "PR {s} submitted ({s}).",
-                    .{ resp.pr_id, resp.status },
-                ) catch "PR submitted.";
+                self.markComposerSubmitted(resp.pr_id, resp.status);
             },
             .api_error => |e| self.status_line = writeErrorStatus(self, "PR submit failed", e),
             .network_error => self.status_line = "PR submit failed: network error.",
             .invalid_response => self.status_line = "PR submit failed: malformed response.",
         }
+    }
+
+    fn consumeCreateContextPrResult(self: *Dashboard) void {
+        const result = self.api_state.create_context_pr_pending.consume() orelse return;
+        self.pr_composer_submitting = false;
+        switch (result) {
+            .ok => |resp| {
+                self.markComposerSubmitted(resp.pr_id, resp.status);
+            },
+            .api_error => |e| self.status_line = writeErrorStatus(self, "PR submit failed", e),
+            .network_error => self.status_line = "PR submit failed: network error.",
+            .invalid_response => self.status_line = "PR submit failed: malformed response.",
+        }
+    }
+
+    /// Shared post-submit path for both prompt and context PRs. Marks
+    /// the draft as submitted against disk, refreshes the in-memory
+    /// cache, closes the composer, and posts a user-facing confirmation.
+    fn markComposerSubmitted(self: *Dashboard, pr_id: []const u8, status: []const u8) void {
+        const target = self.pr_composer_target orelse return;
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
+        defer alloc.free(ws_dir);
+        drafts_mod.setDraftStatus(alloc, ws_dir, target.category, target.path, .submitted) catch {};
+        self.refreshDraftsCache();
+        self.show_pr_composer = false;
+        self.pr_composer_desc_len = 0;
+        self.pr_composer_target = null;
+        self.status_line = std.fmt.allocPrint(
+            self.api_state.allocator(),
+            "PR {s} submitted ({s}).",
+            .{ pr_id, status },
+        ) catch "PR submitted.";
     }
 
     fn selectTab(self: *Dashboard, ctx: *vxfw.EventContext, tab: TopModule) void {
