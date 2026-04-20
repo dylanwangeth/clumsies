@@ -237,4 +237,5 @@ test {
     _ = @import("tui/trace_reader.zig");
     _ = @import("tui/tree.zig");
     _ = @import("tui/widgets.zig");
+    _ = @import("tui/widgets/diff_viewer.zig");
 }

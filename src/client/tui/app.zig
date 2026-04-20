@@ -141,8 +141,6 @@ pub const Dashboard = struct {
     library_table_cols: [MAX_TREE_ROWS][2]Column = undefined,
 
     content_scroll_bars: vxfw.ScrollBars,
-    content_widget: [1]vxfw.Widget = undefined,
-    content_text: vxfw.Text = .{ .text = "" },
 
     // PR list within Prompt Detail
     pr_filter: PrFilter = .open,
@@ -243,7 +241,7 @@ pub const Dashboard = struct {
         return self.draw(ctx);
     }
 
-    fn viewAllocator(self: *Dashboard) std.mem.Allocator {
+    pub fn viewAllocator(self: *Dashboard) std.mem.Allocator {
         return self.view_arena.allocator();
     }
 
