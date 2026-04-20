@@ -19,7 +19,6 @@ fn displayNameFromFilename(filename: []const u8) []const u8 {
 pub const PromptKind = enum {
     rule,
     workflow,
-    context,
 };
 
 pub const SetupPriority = enum(u8) {
@@ -74,7 +73,7 @@ pub const LoadResult = struct {
 
 fn priorityForKind(kind: PromptKind) SetupPriority {
     return switch (kind) {
-        .rule, .workflow, .context => .normal,
+        .rule, .workflow => .normal,
     };
 }
 
@@ -82,7 +81,6 @@ pub fn kindToString(kind: PromptKind) []const u8 {
     return switch (kind) {
         .rule => "rule",
         .workflow => "workflow",
-        .context => "context",
     };
 }
 
@@ -222,10 +220,10 @@ pub fn deinitPromptItems(allocator: std.mem.Allocator, items: *std.ArrayList(Pro
 }
 
 fn kindFromPath(path: []const u8) ?PromptKind {
-    if (std.mem.startsWith(u8, path, "rule/")) return .rule;
+    if (std.mem.eql(u8, path, "META_PROMPT.md")) return null;
+    if (std.mem.eql(u8, path, "PIN.md")) return null;
     if (std.mem.startsWith(u8, path, "workflow/")) return .workflow;
-    if (std.mem.startsWith(u8, path, "context/")) return .context;
-    return null;
+    return .rule;
 }
 
 fn groupFromPath(path: []const u8) ?[]const u8 {

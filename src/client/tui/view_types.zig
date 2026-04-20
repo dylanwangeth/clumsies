@@ -213,13 +213,12 @@ pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
     .{ .name = "pr:merge", .description = "Accept/reject pull requests" },
 };
 
-// Derives kind short label from path prefix.
-// e.g. "rule/..." -> "rule", "workflow/..." -> "wf"
+// Derives kind short label from path prefix. Rule is the default kind;
+// workflow/ is the only explicit prefix. Reserved top-level paths (META_PROMPT.md,
+// PIN.md) produce an empty label since they are not searchable prompts.
 pub fn kindFromPath(path: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, path, '/')) |idx| {
-        const category = path[0..idx];
-        if (std.mem.eql(u8, category, "rule")) return "rule";
-        if (std.mem.eql(u8, category, "workflow")) return "wf";
-    }
-    return "";
+    if (std.mem.eql(u8, path, "META_PROMPT.md")) return "";
+    if (std.mem.eql(u8, path, "PIN.md")) return "";
+    if (std.mem.startsWith(u8, path, "workflow/")) return "wf";
+    return "rule";
 }
