@@ -4,6 +4,7 @@ const library_api = @import("clumsies_lib").protocol.library_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const path_util = @import("clumsies_lib").util.path_util;
 const auth_mod = @import("../auth.zig");
+const drafts_mod = @import("../drafts.zig");
 const ws_config = @import("../workspace_config.zig");
 const HubClient = @import("../hub_client.zig").HubClient;
 const styles = @import("../styles.zig");
@@ -150,7 +151,12 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         try w.interface.flush();
     }
 
-    try stdout.print("{s}{s}{s}Synced:{s} {d} prompts, {d} context files\n", .{ P, Color.bold, Color.green, Color.reset, prompt_count, context_count });
+    const reconcile = drafts_mod.reconcileDrafts(allocator, ws_dir, cache_dir) catch drafts_mod.ReconcileSummary{};
+    if (reconcile.conflicted > 0) {
+        try stdout.print("{s}{s}{s}Synced:{s} {d} prompts, {d} context files, {d} drafts flagged conflicted\n", .{ P, Color.bold, Color.green, Color.reset, prompt_count, context_count, reconcile.conflicted });
+    } else {
+        try stdout.print("{s}{s}{s}Synced:{s} {d} prompts, {d} context files\n", .{ P, Color.bold, Color.green, Color.reset, prompt_count, context_count });
+    }
 }
 
 fn ensureDir(path: []const u8) void {
