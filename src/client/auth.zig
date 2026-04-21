@@ -4,8 +4,6 @@ const std = @import("std");
 const build_options = @import("build_options");
 const enable_keychain = build_options.enable_keychain;
 const log = std.log.scoped(.auth);
-const auth_api = @import("clumsies_lib").protocol.auth_api;
-const HubClient = @import("hub_client.zig").HubClient;
 
 pub const AuthInfo = struct {
     hub_url: []const u8,
@@ -61,75 +59,18 @@ pub fn saveAuth(allocator: std.mem.Allocator, hub_url: []const u8, username: []c
     }
 }
 
-/// Load credentials and, if the access token is rejected by Hub,
-/// transparently refresh using the stored refresh token before
-/// returning. Callers that previously used `loadAuth` directly and
-/// subsequently saw unexplained 401s are the target consumers —
-/// sync, init, trace upload. Falls back to a plain loadAuth result
-/// when the refresh round-trip fails; callers still see that as a
-/// normal `NotAuthenticated` at the next Hub call and can surface
-/// "Run clumsies login" to the user.
-pub fn loadAuthAndRefresh(allocator: std.mem.Allocator) !AuthInfo {
-    var auth_info = try loadAuth(allocator);
-    errdefer auth_info.deinit(allocator);
-
-    var probe = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
-    defer probe.deinit();
-
-    const probe_resp = probe.get("/api/auth/me") catch {
-        // Network failure — don't try to refresh; let the caller's
-        // actual Hub request fail with the real network error so the
-        // user sees a coherent message.
-        return auth_info;
-    };
-    defer probe_resp.deinit();
-
-    if (probe_resp.status != .unauthorized) return auth_info;
-
-    const refresh_body = std.json.Stringify.valueAlloc(
-        allocator,
-        auth_api.RefreshRequest{ .refresh_token = auth_info.refresh_token },
-        .{},
-    ) catch return error.OutOfMemory;
-    defer allocator.free(refresh_body);
-
-    const refresh_resp = probe.post("/api/auth/refresh", refresh_body) catch {
-        return auth_info;
-    };
-    defer refresh_resp.deinit();
-
-    if (refresh_resp.status != .ok) {
-        // Refresh token itself is rejected (expired / revoked).
-        // Surface a recognisable error so callers can prompt for
-        // re-login instead of looping into "Run clumsies login" via
-        // a raw 401 from the actual sync request.
-        return error.NotAuthenticated;
-    }
-
-    const parsed = std.json.parseFromSlice(auth_api.RefreshResponse, allocator, refresh_resp.body, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    }) catch return auth_info;
-    defer parsed.deinit();
-
-    const new_access = try allocator.dupe(u8, parsed.value.access_token);
-    const new_refresh = try allocator.dupe(u8, parsed.value.refresh_token);
-
-    _ = saveAuth(
-        allocator,
-        auth_info.hub_url,
-        auth_info.username,
-        new_access,
-        new_refresh,
-    ) catch |err| {
-        log.warn("saveAuth after refresh failed ({s}); using new tokens in-memory only", .{@errorName(err)});
-    };
-
-    allocator.free(auth_info.access_token);
-    allocator.free(auth_info.refresh_token);
-    auth_info.access_token = new_access;
-    auth_info.refresh_token = new_refresh;
-    return auth_info;
+/// `HubClient.PersistFn`-shaped callback. Saves the rotated token
+/// pair after HubClient has refreshed in response to a 401. Thin
+/// wrapper around `saveAuth` so the HubClient module doesn't have
+/// to import the keychain plumbing directly.
+pub fn persistRotatedTokens(
+    allocator: std.mem.Allocator,
+    hub_url: []const u8,
+    username: []const u8,
+    access_token: []const u8,
+    refresh_token: []const u8,
+) anyerror!void {
+    _ = try saveAuth(allocator, hub_url, username, access_token, refresh_token);
 }
 
 pub fn loadAuth(allocator: std.mem.Allocator) !AuthInfo {
