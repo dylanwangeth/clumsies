@@ -13,6 +13,13 @@ const styles = @import("../styles.zig");
 const Color = styles.Color;
 const P = styles.P;
 
+/// Must stay ≤ the hub-side cap (`BATCH_MAX_IDS` / `BATCH_MAX_PATHS`
+/// in src/hub/library.zig and context.zig). Oversized batches
+/// currently 400 with "too many prompt_ids" / "too many paths";
+/// chunking here keeps sync working on workspaces with more than
+/// that many changed entries.
+const BATCH_CHUNK_SIZE: usize = 1024;
+
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const SPECS = [_]flag.FlagSpec{};
 
@@ -157,22 +164,32 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     try stdout.flush();
 
     var prompt_fetched: usize = 0;
-    if (prompts_to_fetch.items.len > 0) {
-        prompt_fetched = fetchPromptsBatch(allocator, &hub, stderr, cache_dir, prompts_to_fetch.items, &prompts_path_for_id) catch |err| {
-            try stderr.print("{s}{s}{s}Error:{s} Prompt batch fetch failed: {s}\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
-            return;
-        };
+    {
+        var start: usize = 0;
+        while (start < prompts_to_fetch.items.len) {
+            const end = @min(start + BATCH_CHUNK_SIZE, prompts_to_fetch.items.len);
+            prompt_fetched += fetchPromptsBatch(allocator, &hub, stderr, cache_dir, prompts_to_fetch.items[start..end], &prompts_path_for_id) catch |err| {
+                try stderr.print("{s}{s}{s}Error:{s} Prompt batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
+                return;
+            };
+            start = end;
+        }
     }
 
     try stdout.print("{s}\xe2\x86\x92 Context: {d} unchanged, {d} to fetch\n", .{ P, context_skipped, contexts_to_fetch.items.len });
     try stdout.flush();
 
     var context_fetched: usize = 0;
-    if (contexts_to_fetch.items.len > 0) {
-        context_fetched = fetchContextBatch(allocator, &hub, stderr, cache_dir, ws_id, contexts_to_fetch.items) catch |err| {
-            try stderr.print("{s}{s}{s}Error:{s} Context batch fetch failed: {s}\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
-            return;
-        };
+    {
+        var start: usize = 0;
+        while (start < contexts_to_fetch.items.len) {
+            const end = @min(start + BATCH_CHUNK_SIZE, contexts_to_fetch.items.len);
+            context_fetched += fetchContextBatch(allocator, &hub, stderr, cache_dir, ws_id, contexts_to_fetch.items[start..end]) catch |err| {
+                try stderr.print("{s}{s}{s}Error:{s} Context batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
+                return;
+            };
+            start = end;
+        }
     }
 
     // MPF is intentionally excluded from `prompt_skipped` so the
