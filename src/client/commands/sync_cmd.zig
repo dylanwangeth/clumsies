@@ -51,13 +51,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(binding.name);
     const ws_id = binding.ws_id;
 
-    // Load auth, auto-refreshing the access token if Hub says it
-    // expired. Previously any 1h-idle session forced re-login; the
-    // stored refresh token now handles that transparently. On a
-    // definitive refresh failure (refresh token itself rejected),
-    // `loadAuthAndRefresh` returns `NotAuthenticated` exactly like
-    // plain `loadAuth`, preserving the "Run clumsies login" prompt.
-    const auth_info = auth_mod.loadAuthAndRefresh(allocator) catch {
+    const auth_info = auth_mod.loadAuth(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Not logged in. Run {s}clumsies login{s} first.\n", .{ P, Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
         return;
     };
@@ -65,6 +59,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
     defer hub.deinit();
+    // Wire refresh-on-401 so a long-idle access token rotates
+    // transparently during sync instead of forcing `clumsies login`.
+    try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
 
     // GET /api/workspaces/{ws_id}/manifest
     const manifest_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/manifest", .{ws_id});

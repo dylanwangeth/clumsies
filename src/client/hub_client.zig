@@ -3,6 +3,7 @@
 //! fetching, and trace upload.
 const std = @import("std");
 const http = std.http;
+const auth_api = @import("clumsies_lib").protocol.auth_api;
 
 pub const Response = struct {
     status: http.Status,
@@ -13,6 +14,20 @@ pub const Response = struct {
         self.allocator.free(self.body);
     }
 };
+
+/// Callback invoked after a successful token refresh so the caller
+/// can persist the rotated pair (typically to the keychain or the
+/// auth.json fallback). Failures are swallowed inside HubClient —
+/// the in-memory tokens are already updated and the current request
+/// will succeed with them; the next process will simply have to
+/// refresh again.
+pub const PersistFn = *const fn (
+    allocator: std.mem.Allocator,
+    hub_url: []const u8,
+    username: []const u8,
+    access_token: []const u8,
+    refresh_token: []const u8,
+) anyerror!void;
 
 pub const HubClient = struct {
     allocator: std.mem.Allocator,
@@ -26,6 +41,22 @@ pub const HubClient = struct {
     // requests) became minutes of handshake overhead.
     client: http.Client,
 
+    // Optional refresh plumbing. When `refresh_token` is set, any
+    // request that returns 401 triggers a single
+    // POST /api/auth/refresh attempt; on success the rotated access
+    // token replaces `access_token_rotated`, the rotated refresh
+    // token replaces `refresh_token`, and the original request is
+    // retried exactly once. Callers that do not need refresh leave
+    // these null and HubClient behaves identically to the pre-refresh
+    // version. Owned memory; freed in deinit.
+    refresh_token: ?[]u8 = null,
+    username: ?[]u8 = null,
+    persist_fn: ?PersistFn = null,
+    /// Holds the post-refresh access token. Preferred over
+    /// `access_token` once set. Separate field so the initial token
+    /// can stay borrowed from the caller's AuthInfo.
+    access_token_rotated: ?[]u8 = null,
+
     pub fn init(allocator: std.mem.Allocator, hub_url: []const u8, access_token: ?[]const u8) HubClient {
         return .{
             .allocator = allocator,
@@ -35,7 +66,27 @@ pub const HubClient = struct {
         };
     }
 
+    /// Wire refresh-on-401 for this client. `username` is the owner
+    /// of the credentials (passed through to `persist_fn`). `persist_fn`
+    /// is invoked after a successful refresh so the caller can save
+    /// the rotated tokens; its failure does not abort the in-flight
+    /// request.
+    pub fn enableRefresh(
+        self: *HubClient,
+        refresh_token: []const u8,
+        username: []const u8,
+        persist_fn: PersistFn,
+    ) !void {
+        self.refresh_token = try self.allocator.dupe(u8, refresh_token);
+        errdefer self.allocator.free(self.refresh_token.?);
+        self.username = try self.allocator.dupe(u8, username);
+        self.persist_fn = persist_fn;
+    }
+
     pub fn deinit(self: *HubClient) void {
+        if (self.refresh_token) |t| self.allocator.free(t);
+        if (self.username) |u| self.allocator.free(u);
+        if (self.access_token_rotated) |t| self.allocator.free(t);
         self.client.deinit();
     }
 
@@ -59,7 +110,70 @@ pub const HubClient = struct {
         return self.doFetch(.PATCH, path, body);
     }
 
+    fn effectiveToken(self: *const HubClient) ?[]const u8 {
+        return self.access_token_rotated orelse self.access_token;
+    }
+
     fn doFetch(self: *HubClient, method: http.Method, path: []const u8, payload: ?[]const u8) !Response {
+        const first = try self.doFetchOnce(method, path, payload);
+        // A 401 with no refresh plumbing is passed through unchanged
+        // — callers have always handled the status code themselves.
+        // With refresh enabled, we try exactly one rotation + retry
+        // so long-idle sessions recover transparently.
+        if (first.status != .unauthorized) return first;
+        if (self.refresh_token == null) return first;
+
+        first.deinit();
+        self.refreshAndPersist() catch |err| {
+            // Surface the refresh failure rather than the stale 401
+            // so the caller sees a recognisable error code. The most
+            // common case is a server-revoked refresh token, which
+            // this path maps to `error.NotAuthenticated`.
+            return err;
+        };
+        return self.doFetchOnce(method, path, payload);
+    }
+
+    fn refreshAndPersist(self: *HubClient) !void {
+        const rt = self.refresh_token orelse return error.NotAuthenticated;
+        const un = self.username orelse return error.NotAuthenticated;
+        const persist = self.persist_fn orelse return error.NotAuthenticated;
+
+        const body = std.json.Stringify.valueAlloc(
+            self.allocator,
+            auth_api.RefreshRequest{ .refresh_token = rt },
+            .{},
+        ) catch return error.OutOfMemory;
+        defer self.allocator.free(body);
+
+        const resp = try self.doFetchOnce(.POST, "/api/auth/refresh", body);
+        defer resp.deinit();
+
+        if (resp.status != .ok) return error.NotAuthenticated;
+
+        const parsed = std.json.parseFromSlice(auth_api.RefreshResponse, self.allocator, resp.body, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch return error.NotAuthenticated;
+        defer parsed.deinit();
+
+        // Swap tokens in place. The previous refresh_token is now
+        // revoked server-side, so keeping the old value around would
+        // guarantee a 401 on the next refresh attempt.
+        const new_access = try self.allocator.dupe(u8, parsed.value.access_token);
+        if (self.access_token_rotated) |old| self.allocator.free(old);
+        self.access_token_rotated = new_access;
+
+        const new_refresh = try self.allocator.dupe(u8, parsed.value.refresh_token);
+        self.allocator.free(rt);
+        self.refresh_token = new_refresh;
+
+        // Persist failure is non-fatal — the in-memory tokens are
+        // still correct for the rest of this process's lifetime.
+        persist(self.allocator, self.hub_url, un, parsed.value.access_token, parsed.value.refresh_token) catch {};
+    }
+
+    fn doFetchOnce(self: *HubClient, method: http.Method, path: []const u8, payload: ?[]const u8) !Response {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.hub_url, path });
         defer self.allocator.free(url);
 
@@ -70,7 +184,7 @@ pub const HubClient = struct {
         header_count += 1;
 
         var auth_value: ?[]const u8 = null;
-        if (self.access_token) |token| {
+        if (self.effectiveToken()) |token| {
             auth_value = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{token});
             extra_headers[header_count] = .{ .name = "authorization", .value = auth_value.? };
             header_count += 1;
