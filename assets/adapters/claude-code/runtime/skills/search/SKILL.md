@@ -1,6 +1,6 @@
 ---
 name: search
-description: Discover available prompts in .prompts/
+description: Discover available prompts in the Library
 argument-hint: "[-k rule|workflow|context] [-g group]"
 user-invocable: true
 ---
