@@ -116,7 +116,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         const prompt_id = entry.key;
         const prompt_path = entry.value.path;
         const remote_hash = stripHashPrefix(entry.value.hash);
-        if (try localFileMatchesHash(allocator, cache_dir, "prompt", prompt_path, remote_hash)) {
+        if (try localFileMatchesHash(allocator, cache_dir, cacheSubDirForPromptPath(prompt_path), prompt_path, remote_hash)) {
             prompt_skipped += 1;
             continue;
         }
@@ -234,13 +234,23 @@ fn fetchPromptsBatch(
                 try stderr.print("  ! prompt {s}: missing path in response\n", .{item.prompt_id});
                 continue;
             };
-        writeToCache(allocator, cache_dir, "prompt", target_path, item.body) catch |err| {
+        writeToCache(allocator, cache_dir, cacheSubDirForPromptPath(target_path), target_path, item.body) catch |err| {
             try stderr.print("  ! prompt {s}: write failed ({s})\n", .{ target_path, @errorName(err) });
             continue;
         };
         written += 1;
     }
     return written;
+}
+
+/// Decide the cache subdirectory a given library prompt path writes
+/// to. Reserved top-level names (`META_PROMPT.md`) land at the cache
+/// root so loaders can read them without knowing the prompt
+/// namespace layout. Everything else lives under `cache/prompt/` so
+/// the prompt namespace cannot collide with context.
+fn cacheSubDirForPromptPath(prompt_path: []const u8) []const u8 {
+    if (std.mem.eql(u8, prompt_path, "META_PROMPT.md")) return "";
+    return "prompt";
 }
 
 /// Batch-fetch context file bodies. Mirrors `fetchPromptsBatch` but

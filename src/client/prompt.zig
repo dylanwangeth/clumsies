@@ -96,10 +96,11 @@ pub const MetaPromptResult = struct {
 
 /// Load META_PROMPT.md from the workspace cache directory.
 /// `ws_dir` is the workspace root (~/.clumsies/workspaces/{ws_id}).
-/// MPF lives at `{ws_dir}/cache/prompt/META_PROMPT.md` per Library
-/// reserved-path convention (see s1-1).
+/// MPF lives at `{ws_dir}/cache/META_PROMPT.md` — reserved paths
+/// sit at the cache root rather than under the `prompt/` namespace
+/// so a future MPF rename does not reshuffle the prompt tree.
 pub fn loadMpf(allocator: std.mem.Allocator, ws_dir: []const u8, known_hash: ?[]const u8) !MetaPromptResult {
-    const mpf_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "prompt", "META_PROMPT.md" });
+    const mpf_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
     defer allocator.free(mpf_path);
 
     const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return .{ .content = null, .hash = null };
@@ -925,8 +926,8 @@ test "loadMpf: returns content and hash from cache subdirectory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt");
-    try writeFile(tmp.dir, "cache/prompt/META_PROMPT.md", "bootstrap rules");
+    try tmp.dir.makePath("cache");
+    try writeFile(tmp.dir, "cache/META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
@@ -943,8 +944,8 @@ test "loadMpf: delta when hash matches" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt");
-    try writeFile(tmp.dir, "cache/prompt/META_PROMPT.md", "bootstrap rules");
+    try tmp.dir.makePath("cache");
+    try writeFile(tmp.dir, "cache/META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
