@@ -1,4 +1,4 @@
-//! Hub trace endpoints. Ingests trace events uploaded by clients (POST /api/traces), stores them
+//! Hub attestation endpoints. Ingests attestation events uploaded by clients (POST /api/attestations), stores them
 //! in PostgreSQL, and serves aggregated statistics: refer counts, signal ratios, per-prompt and
 //! per-user trends for the TUI dashboard.
 const std = @import("std");
@@ -7,7 +7,7 @@ const stats_api = @import("clumsies_lib").protocol.stats_api;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("api_error.zig").send;
-const log = std.log.scoped(.trace_stats);
+const log = std.log.scoped(.attestation_stats);
 const OrgPromptStats = stats_api.OrgPromptStat;
 const OrgStatsResponse = stats_api.OrgStatsResponse;
 const OrgUserStats = stats_api.OrgUserStat;
@@ -17,7 +17,7 @@ const UserTopPromptStat = stats_api.OrgUserTopPromptStat;
 const WorkspacePromptStat = stats_api.WorkspacePromptStat;
 const WorkspaceStatsResponse = stats_api.WorkspaceStatsResponse;
 
-const TraceEventInput = struct {
+const AttestationEventInput = struct {
     event_id: i64,
     session_id: []const u8,
     ws_id: []const u8,
@@ -32,7 +32,7 @@ const TraceEventInput = struct {
 };
 
 const BatchRequest = struct {
-    events: []const TraceEventInput,
+    events: []const AttestationEventInput,
 };
 
 const ConstraintStat = struct {
@@ -67,7 +67,7 @@ fn queryTrend(
     const query = std.fmt.allocPrint(
         arena,
         "SELECT date_trunc('{s}', to_timestamp(timestamp/1000))::date::text as date, count(*) as refer_count" ++
-            " FROM trace_events WHERE {s} AND type = 'refer'{s}" ++
+            " FROM attestation_events WHERE {s} AND type = 'refer'{s}" ++
             " GROUP BY 1 ORDER BY 1",
         .{ sql_trunc, where_clause, days_filter },
     ) catch return &.{};
@@ -120,7 +120,7 @@ fn queryPromptTrendSeries(
         \\SELECT te.prompt_id,
         \\  floor(extract(epoch from (date_trunc('day', now()) - date_trunc('day', to_timestamp(te.timestamp / 1000)))) / 86400)::bigint as age_days,
         \\  count(*) as refer_count
-        \\FROM trace_events te
+        \\FROM attestation_events te
         \\JOIN workspaces w ON w.ws_id = te.ws_id
         \\WHERE w.org_id = $1::uuid
         \\  AND te.type = 'refer'
@@ -166,7 +166,7 @@ fn queryUserTrendSeries(
         \\SELECT te.user_id,
         \\  floor(extract(epoch from (date_trunc('day', now()) - date_trunc('day', to_timestamp(te.timestamp / 1000)))) / 86400)::bigint as age_days,
         \\  count(*) as refer_count
-        \\FROM trace_events te
+        \\FROM attestation_events te
         \\JOIN workspaces w ON w.ws_id = te.ws_id
         \\WHERE w.org_id = $1::uuid
         \\  AND te.type = 'refer'
@@ -208,7 +208,7 @@ fn queryUserTopPrompts(
 
     var result = conn.query(
         \\SELECT te.user_id, te.prompt_id, count(*) as refer_count
-        \\FROM trace_events te
+        \\FROM attestation_events te
         \\JOIN workspaces w ON w.ws_id = te.ws_id
         \\WHERE w.org_id = $1::uuid
         \\  AND te.type = 'refer'
@@ -263,7 +263,7 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "trace:write", res)) return;
+    if (!auth.requireScope(user, "attestation:write", res)) return;
 
     const batch = req.json(BatchRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
@@ -304,7 +304,7 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
             }
         }
         const rows_affected = conn.exec(
-            \\INSERT INTO trace_events (user_id, ws_id, session_id, event_id, type, timestamp,
+            \\INSERT INTO attestation_events (user_id, ws_id, session_id, event_id, type, timestamp,
             \\  prompt_id, prompt_hash, constraint_id, reason, content, content_hash)
             \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
@@ -360,7 +360,7 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 
     var row = conn.row(
         \\SELECT
-        \\  (SELECT count(*) FROM trace_events te JOIN workspaces w ON w.ws_id = te.ws_id WHERE w.org_id = $1::uuid AND te.type = 'refer') as refer_count,
+        \\  (SELECT count(*) FROM attestation_events te JOIN workspaces w ON w.ws_id = te.ws_id WHERE w.org_id = $1::uuid AND te.type = 'refer') as refer_count,
         \\  (SELECT count(*) FROM workspaces WHERE org_id = $1::uuid) as ws_count,
         \\  (SELECT count(*) FROM prompts WHERE org_id = $1::uuid) as prompt_count
     , .{user.org_id}) catch {
@@ -400,7 +400,7 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         \\  SELECT te.prompt_id, count(*) as refer_count,
         \\    count(DISTINCT te.constraint_id) as active_constraints,
         \\    max(te.timestamp) as last_referred_at
-        \\  FROM trace_events te JOIN workspaces w ON w.ws_id = te.ws_id
+        \\  FROM attestation_events te JOIN workspaces w ON w.ws_id = te.ws_id
         \\  WHERE w.org_id = $1::uuid AND te.type = 'refer' AND te.prompt_id IS NOT NULL
         \\  GROUP BY te.prompt_id
         \\) te_stats ON te_stats.prompt_id = p.prompt_id
@@ -483,7 +483,7 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         \\    count(*) as refer_count,
         \\    count(DISTINCT date_trunc('day', to_timestamp(te.timestamp / 1000))) as active_days,
         \\    max(te.timestamp) as last_referred_at
-        \\  FROM trace_events te
+        \\  FROM attestation_events te
         \\  JOIN workspaces w ON w.ws_id = te.ws_id
         \\  WHERE w.org_id = $1::uuid
         \\    AND te.type = 'refer'
@@ -582,7 +582,7 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     defer conn.release();
 
     var row = conn.row(
-        "SELECT count(*) FROM trace_events WHERE ws_id = $1 AND type = 'refer'",
+        "SELECT count(*) FROM attestation_events WHERE ws_id = $1 AND type = 'refer'",
         .{ws_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -604,7 +604,7 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     var cov_row = conn.row(
         \\SELECT count(DISTINCT te.prompt_id)::float / GREATEST(count(DISTINCT wp.prompt_id), 1)
         \\FROM workspace_prompts wp
-        \\LEFT JOIN trace_events te ON te.prompt_id = wp.prompt_id AND te.ws_id = wp.ws_id AND te.type = 'refer'
+        \\LEFT JOIN attestation_events te ON te.prompt_id = wp.prompt_id AND te.ws_id = wp.ws_id AND te.type = 'refer'
         \\WHERE wp.ws_id = $1
     , .{ws_id}) catch null;
     if (cov_row != null) {
@@ -616,7 +616,7 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     var prompt_list: std.ArrayList(WorkspacePromptStat) = .empty;
 
     var prompt_result = conn.query(
-        "SELECT prompt_id, count(*) FROM trace_events WHERE ws_id = $1 AND type = 'refer' AND prompt_id IS NOT NULL GROUP BY prompt_id ORDER BY count(*) DESC",
+        "SELECT prompt_id, count(*) FROM attestation_events WHERE ws_id = $1 AND type = 'refer' AND prompt_id IS NOT NULL GROUP BY prompt_id ORDER BY count(*) DESC",
         .{ws_id},
     ) catch |err| blk: {
         log.err("workspace stats prompt query failed: {}", .{err});
@@ -685,7 +685,7 @@ pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer conn.release();
 
     var row = conn.row(
-        "SELECT count(*) FROM trace_events WHERE prompt_id = $1 AND type = 'refer'",
+        "SELECT count(*) FROM attestation_events WHERE prompt_id = $1 AND type = 'refer'",
         .{prompt_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -698,7 +698,7 @@ pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 
     // Query per-constraint breakdown
     var constraint_result = conn.query(
-        "SELECT constraint_id, count(*) as cnt FROM trace_events WHERE prompt_id = $1 AND type = 'refer' AND constraint_id IS NOT NULL GROUP BY constraint_id ORDER BY cnt DESC",
+        "SELECT constraint_id, count(*) as cnt FROM attestation_events WHERE prompt_id = $1 AND type = 'refer' AND constraint_id IS NOT NULL GROUP BY constraint_id ORDER BY cnt DESC",
         .{prompt_id},
     ) catch {
         try res.json(.{ .prompt_id = prompt_id, .total_refer_count = total_refer_count, .constraints = @as([]const ConstraintStat, &.{}), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});

@@ -3,7 +3,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
-const trace_reader = @import("../trace_reader.zig");
+const attestation_reader = @import("../attestation_reader.zig");
 const Modal = @import("../widgets/modal.zig").Modal;
 
 pub fn drawRoot(
@@ -124,7 +124,7 @@ pub fn drawInputs(
     ctx: vxfw.DrawContext,
     width: u16,
     height: u16,
-    visible_inputs: []const trace_reader.InputEvent,
+    visible_inputs: []const attestation_reader.InputEvent,
     scope_label: []const u8,
 ) std.mem.Allocator.Error!vxfw.Surface {
     const border_color = w.focusBorder(self.analysis_focus == .inputs);
@@ -257,7 +257,7 @@ pub fn handleModuleEvent(
         return;
     }
     if (key.matches('F', .{ .shift = true })) {
-        self.flushTrace();
+        self.flushAttestation();
         ctx.consumeAndRedraw();
         return;
     }

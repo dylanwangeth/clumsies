@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook: capture developer prompt text as a session_input trace.
+# UserPromptSubmit hook: capture developer prompt text as a user_prompt attestation.
 # Best-effort only. Parsing failures must never block CC.
 
 set -euo pipefail
@@ -17,4 +17,4 @@ if [ -z "$PROMPT_TEXT" ]; then
   exit 0
 fi
 
-"$CLUMSIES" trace append --type session_input --content "$PROMPT_TEXT" >/dev/null 2>&1 || true
+"$CLUMSIES" _agent attestation-append --type user_prompt --content "$PROMPT_TEXT" >/dev/null 2>&1 || true

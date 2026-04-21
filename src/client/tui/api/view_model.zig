@@ -1,6 +1,6 @@
 const std = @import("std");
 const data = @import("../view_types.zig");
-const trace_reader = @import("../trace_reader.zig");
+const attestation_reader = @import("../attestation_reader.zig");
 const model = @import("model.zig");
 const state = @import("state.zig");
 
@@ -56,7 +56,7 @@ pub fn toPrEntries(
     for (prs) |pr| {
         var diff: []const []const u8 = &.{};
         var comments: []const data.CommentEntry = &.{};
-        var trace_refers: u16 = 0;
+        var attestation_refers: u16 = 0;
         var op_type: []const u8 = "";
         var op_current_path: []const u8 = "";
         var op_new_path: []const u8 = "";
@@ -65,7 +65,7 @@ pub fn toPrEntries(
         if (api_state.pr_detail_id) |cached_id| {
             if (std.mem.eql(u8, cached_id, pr.pr_id)) {
                 diff = api_state.pr_detail_diff orelse &.{};
-                trace_refers = api_state.pr_detail_trace_refers;
+                attestation_refers = api_state.pr_detail_attestation_refers;
                 op_type = api_state.pr_detail_op_type orelse "";
                 op_current_path = api_state.pr_detail_op_current_path orelse "";
                 op_new_path = api_state.pr_detail_op_new_path orelse "";
@@ -87,8 +87,8 @@ pub fn toPrEntries(
             .base_hash = op_base_hash,
             .diff = diff,
             .comments = comments,
-            .trace_refers = trace_refers,
-            .trace_sessions = 0,
+            .attestation_refers = attestation_refers,
+            .attestation_sessions = 0,
             .operation_count = @intCast(@max(pr.operation_count, 0)),
             .op_type = op_type,
             .op_current_path = op_current_path,
@@ -103,7 +103,7 @@ pub fn analysisFromStats(
     alloc: std.mem.Allocator,
     stats: model.OrgStats,
     library: ?[]const model.LibraryPrompt,
-    local: ?trace_reader.LocalStats,
+    local: ?attestation_reader.LocalStats,
 ) data.AnalysisData {
     var trend: [30]u16 = .{0} ** 30;
     const tcount = @min(stats.trend.len, 30);

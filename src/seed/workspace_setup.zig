@@ -1,7 +1,7 @@
 //! Creates workspace directory structure under ~/.clumsies/workspaces/{ws_id}/ with initial
-//! trace.jsonl and cursor files for seed workspaces.
+//! attestation.jsonl and cursor files for seed workspaces.
 const std = @import("std");
-const local_trace = @import("clumsies_client").trace;
+const local_attestation = @import("clumsies_client").attestation;
 
 pub fn ensureWorkspaceFiles(ws_id: []const u8) !void {
     if (!isSafeWorkspaceId(ws_id)) return error.InvalidWorkspaceId;
@@ -11,11 +11,11 @@ pub fn ensureWorkspaceFiles(ws_id: []const u8) !void {
     defer alloc.free(ws_dir);
     try ensureWorkspaceDirTree(ws_dir);
 
-    const trace_path = try local_trace.traceFilePath(alloc, ws_id);
-    defer alloc.free(trace_path);
-    try ensureFileExists(trace_path);
+    const attestation_path = try local_attestation.attestationFilePath(alloc, ws_id);
+    defer alloc.free(attestation_path);
+    try ensureFileExists(attestation_path);
 
-    const cursor_path = try local_trace.cursorFilePath(alloc, ws_id);
+    const cursor_path = try local_attestation.cursorFilePath(alloc, ws_id);
     defer alloc.free(cursor_path);
     try ensureCursorFile(cursor_path);
 }
@@ -34,10 +34,10 @@ pub fn deleteWorkspaceFiles(ws_id: []const u8) void {
 }
 
 fn workspaceDirPath(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
-    const trace_path = try local_trace.traceFilePath(allocator, ws_id);
-    defer allocator.free(trace_path);
+    const attestation_path = try local_attestation.attestationFilePath(allocator, ws_id);
+    defer allocator.free(attestation_path);
 
-    const ws_dir = std.fs.path.dirname(trace_path) orelse return error.InvalidTracePath;
+    const ws_dir = std.fs.path.dirname(attestation_path) orelse return error.InvalidAttestationPath;
     return try allocator.dupe(u8, ws_dir);
 }
 

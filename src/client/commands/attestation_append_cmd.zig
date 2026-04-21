@@ -2,27 +2,27 @@ const std = @import("std");
 const flag = @import("../flags.zig");
 const session_marker = @import("../session_marker.zig");
 const util_hash = @import("clumsies_lib").util.hash;
-const trace = @import("../trace.zig");
+const attestation = @import("../attestation.zig");
 const ws_config = @import("../workspace_config.zig");
 const styles = @import("../styles.zig");
 
 const Color = styles.Color;
 const P = styles.P;
 
-const ALLOWED_TYPES = [_][]const u8{ "session_input", "setup", "search", "load", "refer" };
+const ALLOWED_TYPES = [_][]const u8{ "setup", "user_prompt", "search", "load", "refer", "agent_report" };
 
 const FLAG_TYPE: usize = 0;
 const FLAG_CONTENT: usize = 1;
 
-/// `clumsies trace append --type <type> [--content <text>]`
+/// `clumsies attestation append --type <type> [--content <text>]`
 ///
-/// Append a single trace event to the current workspace's trace.jsonl. The
-/// session_id comes from current_session.json, written by the active MCP
-/// serve process. The event_id uses microseconds-since-epoch so it never
-/// collides with the in-process counter MCP uses for its own events.
+/// Append a single attestation event to the current workspace's
+/// attestation.jsonl. The session_id comes from current_session.json, written
+/// by the active MCP serve process. The event_id uses microseconds-since-epoch
+/// so it never collides with the in-process counter MCP uses for its own events.
 ///
 /// Best-effort: silent failure on missing binding, missing session marker,
-/// or trace write errors. Designed to be called from adapter hook scripts
+/// or attestation write errors. Designed to be called from adapter hook scripts
 /// where blocking the user is unacceptable.
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     _ = stdout;
@@ -66,7 +66,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         }
     }
     if (!allowed) {
-        try stderr.writeAll("Error: --type must be one of session_input/setup/search/load/refer\n");
+        try stderr.writeAll("Error: --type must be one of setup/user_prompt/search/load/refer/agent_report\n");
         return;
     }
 
@@ -94,24 +94,42 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     const event_id = std.time.microTimestamp();
 
-    trace.appendTraceEvent(allocator, .{
+    // Build the payload based on event_type. The CLI hook command primarily
+    // writes user_prompt events; other event types use void/empty variants.
+    const payload: attestation.AttestationEvent.Payload = if (std.mem.eql(u8, event_type, "user_prompt"))
+        .{ .user_prompt = .{
+            .content_hash = content_hash_owned orelse "",
+            .content = content_opt,
+        } }
+    else if (std.mem.eql(u8, event_type, "setup"))
+        .setup
+    else if (std.mem.eql(u8, event_type, "search"))
+        .search
+    else if (std.mem.eql(u8, event_type, "load"))
+        .search // CLI hook doesn't carry prompt_id; fallback to void variant
+    else if (std.mem.eql(u8, event_type, "refer"))
+        .search // CLI hook doesn't carry prompt_id/constraint_id; fallback to void variant
+    else if (std.mem.eql(u8, event_type, "agent_report"))
+        .search // CLI hook doesn't carry summary; fallback to void variant
+    else
+        .setup;
+
+    attestation.appendAttestationEvent(allocator, .{
         .ws_id = binding.ws_id,
         .session_id = marker.session_id,
         .event_id = event_id,
-        .type = event_type,
-        .timestamp = std.time.milliTimestamp(),
-        .content = content_opt,
-        .content_hash = content_hash_owned,
+        .ts = std.time.milliTimestamp(),
+        .payload = payload,
     }) catch |err| {
-        std.log.warn("trace append failed: {}", .{err});
+        std.log.warn("attestation append failed: {}", .{err});
         return;
     };
 }
 
 fn printHelp(out: *std.Io.Writer) !void {
-    try out.print("{s}{s}clumsies trace append{s}\n\n", .{ P, Color.bold, Color.reset });
-    try out.print("Append a single trace event to the current workspace's trace.jsonl.\n", .{});
+    try out.print("{s}{s}clumsies attestation append{s}\n\n", .{ P, Color.bold, Color.reset });
+    try out.print("Append a single attestation event to the current workspace's attestation.jsonl.\n", .{});
     try out.print("Intended for adapter hooks (UserPromptSubmit, etc).\n\n", .{});
     try out.print("{s}Usage:{s}\n", .{ Color.bold, Color.reset });
-    try out.print("  clumsies trace append --type session_input --content \"hello\"\n", .{});
+    try out.print("  clumsies attestation append --type user_prompt --content \"hello\"\n", .{});
 }

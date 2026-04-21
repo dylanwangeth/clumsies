@@ -441,19 +441,19 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
         });
     }
 
-    var trace_summary = PromptPrUsageSummary{};
+    var attestation_summary = PromptPrUsageSummary{};
 
-    var trace_row = conn.row(
+    var attestation_row = conn.row(
         \\SELECT count(*), count(DISTINCT session_id), max(to_timestamp(timestamp/1000))::text
-        \\FROM trace_events
+        \\FROM attestation_events
         \\WHERE prompt_id IN (SELECT prompt_id FROM prompt_pr_operations WHERE pr_id = $1 AND prompt_id IS NOT NULL)
         \\  AND type = 'refer'
     , .{pr_id}) catch null;
-    if (trace_row) |*tr| {
-        trace_summary.refer_count = tr.get(i64, 0) catch 0;
-        trace_summary.sessions_used = tr.get(i64, 1) catch 0;
+    if (attestation_row) |*tr| {
+        attestation_summary.refer_count = tr.get(i64, 0) catch 0;
+        attestation_summary.sessions_used = tr.get(i64, 1) catch 0;
         if (tr.get(?[]const u8, 2) catch null) |last_ref| {
-            trace_summary.last_referred = req.arena.dupe(u8, last_ref) catch null;
+            attestation_summary.last_referred = req.arena.dupe(u8, last_ref) catch null;
         }
         tr.deinit() catch {};
     }
@@ -464,7 +464,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
         .description = description,
         .created_at = created_at,
         .operations = ops.items,
-        .trace_summary = trace_summary,
+        .attestation_summary = attestation_summary,
     }, .{});
 }
 

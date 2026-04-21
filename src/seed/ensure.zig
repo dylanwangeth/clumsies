@@ -1,5 +1,5 @@
 //! Ensures seed prerequisites exist: database tables, workspace directories, and initial state
-//! required before the pump can generate synthetic trace events.
+//! required before the pump can generate synthetic attestation events.
 const std = @import("std");
 const pg = @import("pg");
 const bcrypt = std.crypto.pwhash.bcrypt;

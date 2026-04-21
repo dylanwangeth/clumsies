@@ -17,7 +17,7 @@ const editor_host = @import("editor_host.zig");
 const util_hash = @import("clumsies_lib").util.hash;
 
 const tree = @import("tree.zig");
-const trace_reader = @import("trace_reader.zig");
+const attestation_reader = @import("attestation_reader.zig");
 const Modal = @import("widgets/modal.zig").Modal;
 const TextInput = @import("widgets/text_input.zig").TextInput;
 const TableRow = @import("table_row.zig").TableRow;
@@ -1245,9 +1245,9 @@ pub const Dashboard = struct {
         const scope = self.currentAnalysisScope();
         const server_signal_ratio = self.serverSignalRatio();
 
-        const scoped_trace = self.scopedTraceData();
+        const scoped_attestation = self.scopedAttestationData();
         const signal_value_text: []const u8 = blk: {
-            if (scoped_trace) |st| {
+            if (scoped_attestation) |st| {
                 if (st.constraint_count > 0) {
                     break :blk std.fmt.allocPrint(ctx.arena, "{d}%", .{st.signal_ratio}) catch "n/a";
                 }
@@ -1259,12 +1259,12 @@ pub const Dashboard = struct {
             }
             break :blk "n/a";
         };
-        const chart_series: ChartSeries = if (scoped_trace) |st|
+        const chart_series: ChartSeries = if (scoped_attestation) |st|
             self.buildLocalChartSeries(ctx.arena, st.refers)
         else
             .{ .values = &.{}, .left_label = "60s ago", .right_label = "now" };
 
-        const inputs: []const trace_reader.InputEvent = if (scoped_trace) |st| st.inputs else &.{};
+        const inputs: []const attestation_reader.InputEvent = if (scoped_attestation) |st| st.inputs else &.{};
 
         const chart_h: u16 = if (size.height > 40) 10 else 8;
         const inputs_h: u16 = size.height -| chart_h;
@@ -1324,13 +1324,13 @@ pub const Dashboard = struct {
         return settings_panel.drawSettings(self, ctx);
     }
 
-    // Spawn `clumsies trace flush` synchronously and report the result in
+    // Spawn `clumsies flush` synchronously and report the result in
     // the status line. Synchronous is fine here: the upload worker is a
-    // short-lived CLI that flushes buffered trace events and exits.
-    pub fn flushTrace(self: *Dashboard) void {
-        self.status_line = "Flushing trace...";
+    // short-lived CLI that flushes buffered attestation events and exits.
+    pub fn flushAttestation(self: *Dashboard) void {
+        self.status_line = "Flushing attestation...";
         const alloc = self.api_state.allocator();
-        var child = std.process.Child.init(&.{ "clumsies", "trace", "flush" }, alloc);
+        var child = std.process.Child.init(&.{ "clumsies", "flush" }, alloc);
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
         child.spawn() catch {
@@ -1678,7 +1678,7 @@ pub const Dashboard = struct {
 
     /// Pump the PR detail pending slot. On .ok, stash the raw response
     /// in the cache and recompute the derived view fields (picked
-    /// operation, diff lines, trace refers) against the response's
+    /// operation, diff lines, attestation refers) against the response's
     /// own pr_id so selection changes mid-flight cannot misroute
     /// either the cache entry or the derived fields.
     fn consumePrDetailResult(self: *Dashboard) void {
@@ -1772,14 +1772,14 @@ pub const Dashboard = struct {
             if (op.base_hash) |bh| op_base_hash = alloc.dupe(u8, bh) catch null;
             op_index = @intCast(@min(i, std.math.maxInt(u16)));
         }
-        const trace_refers: u16 = @intCast(@min(resp.trace_summary.refer_count, std.math.maxInt(u16)));
+        const attestation_refers: u16 = @intCast(@min(resp.attestation_summary.refer_count, std.math.maxInt(u16)));
         const stored_pr_id = alloc.dupe(u8, pr_id) catch null;
 
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         self.api_state.pr_detail_id = stored_pr_id;
         self.api_state.pr_detail_diff = diff_lines;
-        self.api_state.pr_detail_trace_refers = trace_refers;
+        self.api_state.pr_detail_attestation_refers = attestation_refers;
         self.api_state.pr_detail_op_type = op_type;
         self.api_state.pr_detail_op_current_path = op_current_path;
         self.api_state.pr_detail_op_new_path = op_new_path;
@@ -1954,12 +1954,12 @@ pub const Dashboard = struct {
         ws_id: ?[]const u8,
     };
 
-    const ScopedTraceData = struct {
+    const ScopedAttestationData = struct {
         label: []const u8,
         signal_ratio: u8,
         constraint_count: u32,
-        refers: []const trace_reader.ReferEvent,
-        inputs: []const trace_reader.InputEvent,
+        refers: []const attestation_reader.ReferEvent,
+        inputs: []const attestation_reader.InputEvent,
     };
 
     const ChartSeries = struct {
@@ -2045,7 +2045,7 @@ pub const Dashboard = struct {
         return @intCast(@min(@as(u64, @intFromFloat(stats.signal_ratio * 100)), 100));
     }
 
-    fn scopedTraceData(self: *const Dashboard) ?ScopedTraceData {
+    fn scopedAttestationData(self: *const Dashboard) ?ScopedAttestationData {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
 
@@ -2078,7 +2078,7 @@ pub const Dashboard = struct {
         };
     }
 
-    fn buildLocalChartSeries(self: *const Dashboard, arena: std.mem.Allocator, refers: []const trace_reader.ReferEvent) ChartSeries {
+    fn buildLocalChartSeries(self: *const Dashboard, arena: std.mem.Allocator, refers: []const attestation_reader.ReferEvent) ChartSeries {
         _ = self;
         const bucket_ms: i64 = std.time.ms_per_s;
         const bucket_count: usize = 60;
@@ -2138,7 +2138,7 @@ pub const Dashboard = struct {
     // truncates if the prompt is longer than the box can display.
     fn drawInputDetailOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const content_and_ts: struct { content: []const u8, ts: i64 } = blk: {
-            const scoped = self.scopedTraceData() orelse break :blk .{ .content = "", .ts = 0 };
+            const scoped = self.scopedAttestationData() orelse break :blk .{ .content = "", .ts = 0 };
             const visible = latestInputs(scoped.inputs, self.dashboard_input_capacity);
             if (visible.len == 0) break :blk .{ .content = "", .ts = 0 };
             const idx = @min(self.analysis_input_cursor, visible.len - 1);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook: append the submitted prompt as a session_input trace.
+# UserPromptSubmit hook: append the submitted prompt as a user_prompt attestation.
 # Best effort only. Parsing failures must never block Codex.
 
 set -euo pipefail
@@ -40,4 +40,4 @@ fi
 
 cd "$PROJECT_ROOT"
 
-"$CLUMSIES" trace append --type session_input --content "$PROMPT_TEXT" >/dev/null 2>&1 || true
+"$CLUMSIES" _agent attestation-append --type user_prompt --content "$PROMPT_TEXT" >/dev/null 2>&1 || true

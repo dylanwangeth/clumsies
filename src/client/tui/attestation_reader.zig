@@ -1,4 +1,4 @@
-// Read local trace.jsonl files and compute analysis stats.
+// Read local attestation.jsonl files and compute analysis stats.
 const std = @import("std");
 const workspace_prompt = @import("../prompt.zig");
 const data = @import("view_types.zig");
@@ -46,7 +46,7 @@ pub const InputEvent = struct {
     content: []const u8,
 };
 
-const TraceEvent = struct {
+const AttestationEvent = struct {
     ws_id: []const u8 = "",
     session_id: []const u8 = "",
     type: []const u8 = "",
@@ -69,7 +69,7 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     var dir = std.fs.openDirAbsolute(ws_root, .{ .iterate = true }) catch return null;
     defer dir.close();
 
-    var all_events: std.ArrayList(TraceEvent) = .empty;
+    var all_events: std.ArrayList(AttestationEvent) = .empty;
     var workspace_stats: std.ArrayList(WorkspaceLocalStats) = .empty;
     var all_prompt_totals: PromptConstraintTotals = .init(allocator);
     defer deinitPromptConstraintTotals(allocator, &all_prompt_totals);
@@ -81,10 +81,10 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
         defer if (!keep_ws_id) allocator.free(ws_id);
         const ws_dir = std.fs.path.join(allocator, &.{ ws_root, entry.name }) catch continue;
         defer allocator.free(ws_dir);
-        const trace_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "trace.jsonl" }) catch continue;
-        defer allocator.free(trace_path);
-        var ws_events: std.ArrayList(TraceEvent) = .empty;
-        readEventsFromFile(allocator, trace_path, ws_id, &ws_events);
+        const attestation_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "attestation.jsonl" }) catch continue;
+        defer allocator.free(attestation_path);
+        var ws_events: std.ArrayList(AttestationEvent) = .empty;
+        readEventsFromFile(allocator, attestation_path, ws_id, &ws_events);
         if (ws_events.items.len == 0) continue;
         keep_ws_id = true;
 
@@ -124,15 +124,15 @@ fn getBaseDir(allocator: std.mem.Allocator) ?[]const u8 {
     return std.fs.path.join(allocator, &.{ home, ".clumsies" }) catch null;
 }
 
-fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, ws_id: []const u8, events: *std.ArrayList(TraceEvent)) void {
+fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, ws_id: []const u8, events: *std.ArrayList(AttestationEvent)) void {
     const file = std.fs.openFileAbsolute(path, .{}) catch return;
     defer file.close();
 
-    const max_trace_bytes: u64 = 8 * 1024 * 1024;
+    const max_attestation_bytes: u64 = 8 * 1024 * 1024;
     const end_pos = file.getEndPos() catch return;
     if (end_pos == 0) return;
 
-    const read_from: u64 = if (end_pos > max_trace_bytes) end_pos - max_trace_bytes else 0;
+    const read_from: u64 = if (end_pos > max_attestation_bytes) end_pos - max_attestation_bytes else 0;
     file.seekTo(read_from) catch return;
 
     const read_len: usize = @intCast(end_pos - read_from);
@@ -154,22 +154,22 @@ fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, ws_id: []c
     var line_it = std.mem.splitScalar(u8, contents, '\n');
     while (line_it.next()) |line| {
         if (line.len == 0) continue;
-        const parsed = std.json.parseFromSlice(TraceEvent, allocator, line, .{
+        const parsed = std.json.parseFromSlice(AttestationEvent, allocator, line, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         }) catch continue;
         defer parsed.deinit();
 
-        const ev = cloneTraceEvent(allocator, ws_id, parsed.value) catch continue;
+        const ev = cloneAttestationEvent(allocator, ws_id, parsed.value) catch continue;
         events.append(allocator, ev) catch {
-            freeTraceEventOwned(allocator, ev);
+            freeAttestationEventOwned(allocator, ev);
             continue;
         };
     }
 }
 
-fn cloneTraceEvent(allocator: std.mem.Allocator, ws_id: []const u8, src: TraceEvent) !TraceEvent {
-    var out = TraceEvent{
+fn cloneAttestationEvent(allocator: std.mem.Allocator, ws_id: []const u8, src: AttestationEvent) !AttestationEvent {
+    var out = AttestationEvent{
         .ws_id = ws_id,
         .session_id = try allocator.dupe(u8, src.session_id),
         .type = try allocator.dupe(u8, src.type),
@@ -205,7 +205,7 @@ fn dupeOptional(allocator: std.mem.Allocator, maybe: ?[]const u8) !?[]const u8 {
     return if (maybe) |value| try allocator.dupe(u8, value) else null;
 }
 
-fn freeTraceEventOwned(allocator: std.mem.Allocator, ev: TraceEvent) void {
+fn freeAttestationEventOwned(allocator: std.mem.Allocator, ev: AttestationEvent) void {
     allocator.free(ev.session_id);
     allocator.free(ev.type);
     if (ev.prompt_id) |s| allocator.free(s);
@@ -288,7 +288,7 @@ fn deinitPromptConstraintTotals(allocator: std.mem.Allocator, totals: *PromptCon
 
 fn computeStats(
     allocator: std.mem.Allocator,
-    events: []const TraceEvent,
+    events: []const AttestationEvent,
     prompt_totals: *const PromptConstraintTotals,
 ) LocalStats {
     var stats: LocalStats = .{};
@@ -306,7 +306,7 @@ fn computeStats(
     const day_ms: i64 = 86400 * 1000;
 
     for (events) |ev| {
-        if (std.mem.eql(u8, ev.type, "session_input")) {
+        if (std.mem.eql(u8, ev.type, "user_prompt")) {
             if (ev.content) |c| {
                 inputs_list.append(allocator, .{
                     .ws_id = ev.ws_id,
@@ -433,7 +433,7 @@ test "computeStats uses prompt totals to derive non-100 signal ratios" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const events = [_]TraceEvent{
+    const events = [_]AttestationEvent{
         .{
             .ws_id = "ws-1",
             .session_id = "ses-1",
@@ -472,7 +472,7 @@ test "computeStats falls back to active constraint counts when prompt totals are
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const events = [_]TraceEvent{
+    const events = [_]AttestationEvent{
         .{
             .ws_id = "ws-1",
             .session_id = "ses-1",

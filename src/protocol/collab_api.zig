@@ -37,7 +37,7 @@ pub const PromptPrDetailResponse = struct {
     description: []const u8,
     created_at: []const u8,
     operations: []const PromptPrChange = &.{},
-    trace_summary: PromptPrUsageSummary = .{},
+    attestation_summary: PromptPrUsageSummary = .{},
 };
 
 pub const PromptPrComment = struct {

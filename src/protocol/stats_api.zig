@@ -1,4 +1,4 @@
-//! Statistics API response shapes. Stats aggregate trace events into constraint-level usage
+//! Statistics API response shapes. Stats aggregate attestation events into constraint-level usage
 //! metrics: refer counts, signal ratios, per-prompt trends, and per-user activity. These feed
 //! the TUI Analysis and Dashboard panels.
 pub const TrendPoint = struct {
