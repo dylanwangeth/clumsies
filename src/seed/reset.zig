@@ -24,7 +24,7 @@ pub fn rebuild(conn: *pg.Conn) !void {
         \\TRUNCATE orgs, users, tokens, workspaces, workspace_members, prompts, workspace_prompts,
         \\  context_files, context_prs, context_pr_operations, context_pr_comments,
         \\  bundles, bundle_prompts, prompt_prs, prompt_pr_operations, prompt_pr_comments,
-        \\  trace_events, library_manifest, prompt_history
+        \\  attestation_events, library_manifest, prompt_history
         \\CASCADE
     , .{}) catch |err| {
         log.err("truncate failed: {}", .{err});
@@ -38,7 +38,7 @@ pub fn rebuild(conn: *pg.Conn) !void {
     try seedWorkspaceMembers(conn);
     try seedWorkspacePrompts(conn);
     try seedContexts(conn);
-    try seedHistoricalTrace(conn);
+    try seedHistoricalAttestation(conn);
     try ensureLocalWorkspaceState();
 
     log.info("seed fixtures rebuilt", .{});
@@ -127,7 +127,7 @@ fn seedContexts(conn: *pg.Conn) !void {
     }
 }
 
-fn seedHistoricalTrace(conn: *pg.Conn) !void {
+fn seedHistoricalAttestation(conn: *pg.Conn) !void {
     const day_ms = std.time.ms_per_day;
     const hour_ms = std.time.ms_per_hour;
     const now_ms = std.time.milliTimestamp();
@@ -149,7 +149,7 @@ fn seedHistoricalTrace(conn: *pg.Conn) !void {
                 for (scenario.refers, 0..) |refer, refer_idx| {
                     const prompt = data.promptById(refer.prompt_id) orelse continue;
                     const prompt_hash = util_hash.contentHash(prompt.content);
-                    try insertHistoricalTraceEvent(conn, scenario.user_id, .{
+                    try insertHistoricalAttestationEvent(conn, scenario.user_id, .{
                         .ws_id = scenario.ws_id,
                         .session_id = session_id,
                         .event_id = @as(i64, @intCast(refer_idx)),
@@ -177,7 +177,7 @@ fn historicalRepeats(age_days: usize, scenario_idx: usize) usize {
     };
 }
 
-const HistoricalTraceEvent = struct {
+const HistoricalAttestationEvent = struct {
     ws_id: []const u8,
     session_id: []const u8,
     event_id: i64,
@@ -189,9 +189,9 @@ const HistoricalTraceEvent = struct {
     reason: ?[]const u8 = null,
 };
 
-fn insertHistoricalTraceEvent(conn: *pg.Conn, user_id: []const u8, event: HistoricalTraceEvent) !void {
+fn insertHistoricalAttestationEvent(conn: *pg.Conn, user_id: []const u8, event: HistoricalAttestationEvent) !void {
     _ = try conn.exec(
-        \\INSERT INTO trace_events (user_id, ws_id, session_id, event_id, type, timestamp,
+        \\INSERT INTO attestation_events (user_id, ws_id, session_id, event_id, type, timestamp,
         \\  prompt_id, prompt_hash, constraint_id, reason, content, content_hash)
         \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, NULL)
         \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING

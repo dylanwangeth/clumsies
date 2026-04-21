@@ -1,5 +1,5 @@
 //! Hub HTTP server setup. Configures routes for all API endpoints (auth, library, workspace,
-//! context, collab, trace, stats), applies CORS and rate limiting, and starts listening.
+//! context, collab, attestation, stats), applies CORS and rate limiting, and starts listening.
 const std = @import("std");
 const httpz = @import("httpz");
 const pg = @import("pg");
@@ -7,7 +7,7 @@ const auth = @import("auth.zig");
 const workspace_handler = @import("workspace.zig");
 const context_handler = @import("context.zig");
 const library_handler = @import("library.zig");
-const trace_handler = @import("trace.zig");
+const attestation_handler = @import("attestation.zig");
 const collab_handler = @import("collab.zig");
 const RateLimiter = @import("rate_limit.zig");
 const Config = @import("config.zig");
@@ -98,11 +98,11 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.put("/api/org/bundles/:name", library_handler.handleUpdateBundle, .{});
     router.delete("/api/org/bundles/:name", library_handler.handleDeleteBundle, .{});
 
-    // Trace & Stats
-    router.post("/api/traces", trace_handler.handleUpload, .{});
-    router.get("/api/stats", trace_handler.handleOrgStats, .{});
-    router.get("/api/stats/workspace/:ws_id", trace_handler.handleWorkspaceStats, .{});
-    router.get("/api/stats/prompt/:prompt_id", trace_handler.handlePromptStats, .{});
+    // Attestation & Stats
+    router.post("/api/attestations", attestation_handler.handleUpload, .{});
+    router.get("/api/stats", attestation_handler.handleOrgStats, .{});
+    router.get("/api/stats/workspace/:ws_id", attestation_handler.handleWorkspaceStats, .{});
+    router.get("/api/stats/prompt/:prompt_id", attestation_handler.handlePromptStats, .{});
 
     // Prompt PRs
     router.post("/api/org/prompt-prs", collab_handler.handleCreatePr, .{});

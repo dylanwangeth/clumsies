@@ -299,7 +299,7 @@ const migration_sql =
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS trace_events (
+    \\CREATE TABLE IF NOT EXISTS attestation_events (
     \\    user_id TEXT REFERENCES users(user_id),
     \\    ws_id TEXT NOT NULL,
     \\    session_id TEXT NOT NULL,
@@ -314,16 +314,16 @@ const migration_sql =
     \\    content_hash TEXT,
     \\    PRIMARY KEY (ws_id, session_id, event_id)
     \\);
-    \\ALTER TABLE trace_events
+    \\ALTER TABLE attestation_events
     \\    ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(user_id);
-    \\ALTER TABLE trace_events
+    \\ALTER TABLE attestation_events
     \\    DROP COLUMN IF EXISTS override_base_hash;
-    \\CREATE INDEX IF NOT EXISTS trace_events_user_id_idx
-    \\    ON trace_events(user_id);
-    \\CREATE INDEX IF NOT EXISTS trace_events_ws_ts_idx
-    \\    ON trace_events(ws_id, timestamp DESC);
-    \\CREATE INDEX IF NOT EXISTS trace_events_prompt_ts_idx
-    \\    ON trace_events(prompt_id, timestamp DESC);
+    \\CREATE INDEX IF NOT EXISTS attestation_events_user_id_idx
+    \\    ON attestation_events(user_id);
+    \\CREATE INDEX IF NOT EXISTS attestation_events_ws_ts_idx
+    \\    ON attestation_events(ws_id, timestamp DESC);
+    \\CREATE INDEX IF NOT EXISTS attestation_events_prompt_ts_idx
+    \\    ON attestation_events(prompt_id, timestamp DESC);
     \\
     \\CREATE TABLE IF NOT EXISTS library_manifest (
     \\    org_id UUID PRIMARY KEY REFERENCES orgs(org_id),

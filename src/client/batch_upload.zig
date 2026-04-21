@@ -1,9 +1,9 @@
-//! Batch upload mechanism for trace events. Reads trace.jsonl in bounded batches, tracks a
+//! Batch upload mechanism for attestation events. Reads attestation.jsonl in bounded batches, tracks a
 //! cursor file to avoid re-uploading, and posts each batch via an injected uploader function.
 //! The cursor persists across process restarts.
 const std = @import("std");
 const testing = std.testing;
-const trace = @import("trace.zig");
+const attestation = @import("attestation.zig");
 
 pub const FlushResult = struct {
     events_read: usize = 0,
@@ -26,11 +26,11 @@ pub const MAX_BYTES_PER_BATCH: usize = 512 * 1024;
 /// Hard upper bound on a single event's size. The hub server rejects bodies
 /// larger than 1 MB, so any single event above ~900 KB can never be uploaded
 /// successfully. Such events are logged and skipped so the pipeline cannot be
-/// wedged by a malformed or pathologically large trace line.
+/// wedged by a malformed or pathologically large attestation line.
 pub const MAX_SINGLE_EVENT_BYTES: usize = 900 * 1024;
 
-/// A single batch collected from trace.jsonl, ready to POST as
-/// {"events":[line1, line2, ...]} to /api/traces.
+/// A single batch collected from attestation.jsonl, ready to POST as
+/// {"events":[line1, line2, ...]} to /api/attestations.
 pub const Batch = struct {
     lines: std.ArrayList([]const u8),
     total_bytes: usize,
@@ -44,7 +44,7 @@ pub const Batch = struct {
 
 /// Upload helper injected by callers. flushOnce is agnostic to the transport
 /// so the library can be tested without a live hub server. Implementations
-/// should POST {"events": [...]} to /api/traces and return true on 2xx.
+/// should POST {"events": [...]} to /api/attestations and return true on 2xx.
 pub const Uploader = struct {
     ctx: *anyopaque,
     postFn: *const fn (ctx: *anyopaque, body: []const u8) anyerror!bool,
@@ -54,9 +54,9 @@ pub const Uploader = struct {
     }
 };
 
-/// Flush pending trace events for a workspace to the hub server.
+/// Flush pending attestation events for a workspace to the hub server.
 ///
-/// Cursor semantics: byte offset into trace.jsonl. A successful batch POST
+/// Cursor semantics: byte offset into attestation.jsonl. A successful batch POST
 /// advances the cursor atomically via temp file + rename. Network failures
 /// leave the cursor untouched so the next run replays the same bytes.
 /// Duplicate events are deduplicated server-side via ON CONFLICT.
@@ -73,10 +73,10 @@ pub fn flushOnce(
         else => return error.ReadCursorFailed,
     };
 
-    const trace_path = trace.traceFilePath(allocator, ws_id) catch return error.OutOfMemory;
-    defer allocator.free(trace_path);
+    const attestation_path = attestation.attestationFilePath(allocator, ws_id) catch return error.OutOfMemory;
+    defer allocator.free(attestation_path);
 
-    var file = std.fs.openFileAbsolute(trace_path, .{}) catch |err| switch (err) {
+    var file = std.fs.openFileAbsolute(attestation_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return result,
         else => return error.ReadTraceFailed,
     };
@@ -152,7 +152,7 @@ fn collectBatch(
 
         if (trimmed.len > MAX_SINGLE_EVENT_BYTES) {
             std.log.warn(
-                "dropping oversized trace event at offset {d}: {d} bytes exceeds {d} limit",
+                "dropping oversized attestation event at offset {d}: {d} bytes exceeds {d} limit",
                 .{ end_offset, trimmed.len, MAX_SINGLE_EVENT_BYTES },
             );
             end_offset += line_bytes;
@@ -164,7 +164,7 @@ fn collectBatch(
             if (lines.items.len > 0) break;
 
             std.log.warn(
-                "dropping trace event at offset {d}: {d} bytes exceeds {d} batch budget",
+                "dropping attestation event at offset {d}: {d} bytes exceeds {d} batch budget",
                 .{ end_offset, trimmed.len, MAX_BYTES_PER_BATCH },
             );
             end_offset += line_bytes;
@@ -200,7 +200,7 @@ fn buildBatchBody(allocator: std.mem.Allocator, lines: []const []const u8) ![]u8
 }
 
 fn readCursor(allocator: std.mem.Allocator, ws_id: []const u8) !u64 {
-    const cursor_path = try trace.cursorFilePath(allocator, ws_id);
+    const cursor_path = try attestation.cursorFilePath(allocator, ws_id);
     defer allocator.free(cursor_path);
 
     var file = try std.fs.openFileAbsolute(cursor_path, .{});
@@ -216,7 +216,7 @@ fn readCursor(allocator: std.mem.Allocator, ws_id: []const u8) !u64 {
 }
 
 fn writeCursor(allocator: std.mem.Allocator, ws_id: []const u8, offset: u64) !void {
-    const cursor_path = try trace.cursorFilePath(allocator, ws_id);
+    const cursor_path = try attestation.cursorFilePath(allocator, ws_id);
     defer allocator.free(cursor_path);
 
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{cursor_path});

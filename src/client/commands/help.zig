@@ -13,7 +13,7 @@ pub fn run(stdout: *std.Io.Writer) !void {
     try stdout.print("{s}    {s}clumsies sync{s}         Sync local cache from Hub\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}clumsies adapt{s}        Interactively install or update an agent adapter\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}clumsies remove-adapter{s} Remove an installed agent adapter\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("{s}    {s}clumsies trace flush{s}  Upload pending trace events to Hub\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("{s}    {s}clumsies flush{s}         Upload pending attestation events to Hub\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}clumsies mcp serve{s}    Start MCP server for AI agents\n\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}{s}Run {s}clumsies <command> -h{s}{s} for details.{s}\n", .{ P, Color.dim, Color.reset, Color.dim, Color.dim, Color.reset });
 }

@@ -25,8 +25,8 @@ You own the rules. The agent loads them on demand. Every interaction is traced a
 
 - **Persistent context at scale.** Agents load rules on demand instead of stuffing everything into one context window. Large projects with dozens of rule files do not silently lose instructions under context pressure.
 - **Organization-owned library.** Update a rule once, sync everywhere. No more copying `.cursorrules` between repos or hoping everyone has the latest version.
-- **Built-in observability.** Every rule interaction is traced at the individual rule level. You know which rules are working and prune the ones agents ignore — with data, not guesswork.
-- **Agent-agnostic adapters.** An adapter layer sits between your rules and the agent runtime. Claude Code, Codex, Cursor — same rules, same traces, no vendor lock-in.
+- **Built-in observability.** Every agent interaction is recorded as an attestation event — which constraints were loaded, which were applied, and the agent's self-assessment. The event lifecycle (`user_prompt` → `search`/`load`/`refer` → `agent_report`) gives you data-driven insight into which rules work and which get ignored. Agent adapters enforce turn closure: the stop hook ensures the agent submits a summary before finishing.
+- **Agent-agnostic adapters.** An adapter layer sits between your rules and the agent runtime. Claude Code, Codex, Cursor — same rules, same attestations, no vendor lock-in.
 - **Self-hosted, zero vendor lock-in.** Runs entirely in your infrastructure with PostgreSQL and Zig.
 
 ## TUI preview
@@ -45,15 +45,15 @@ https://github.com/user-attachments/assets/3ae8473c-dac1-45b5-8a72-6ad21906f235
 
 ## What is in the repo
 
-**Hub server.** The single source of truth. Manages prompt libraries, workspace manifests, context, collaboration workflows, and trace aggregation — all behind a REST API that every client talks to.
+**Hub server.** The single source of truth. Manages prompt libraries, workspace manifests, context, collaboration workflows, and attestation aggregation — all behind a REST API that every client talks to.
 
-**CLI.** Your local command surface. Login, workspace binding, cache sync, adapter install/remove, trace flush, and TUI entry point.
+**CLI.** Your local command surface. Login, workspace binding, cache sync, adapter install/remove, attestation flush, and TUI entry point.
 
-**MCP runtime.** How agents talk to clumsies. Exposes `memory.setup`, `memory.search`, `memory.load`, and `memory.refer` — each call automatically produces a trace event.
+**MCP runtime.** How agents talk to clumsies. Exposes `memory.setup`, `memory.search`, `memory.load`, `memory.refer`, and `memory.submit` — each call automatically produces an attestation event.
 
 **Adapter layer.** Bridges your rules to agent runtimes without vendor lock-in. Currently supports Claude Code and Codex. Cursor, Windsurf, Copilot, Cline, Kimi Code, Qwen Code, and OpenCode coming soon.
 
-**TUI.** See what is happening. Library browsing, workspace state, drafts, pull requests, and trace-driven analysis — all in the terminal.
+**TUI.** See what is happening. Library browsing, workspace state, drafts, pull requests, and attestation-driven analysis — all in the terminal.
 
 ## Current state
 

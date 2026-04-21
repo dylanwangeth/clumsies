@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop hook: remind agent to declare constraint references.
+# Stop hook: remind agent to submit turn summary via memory.submit.
 
 set -euo pipefail
 
@@ -13,9 +13,13 @@ if echo "$INPUT" | grep -q '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; th
   exit 0
 fi
 
+if "$CLUMSIES" _agent submit-check 2>/dev/null; then
+  exit 0
+fi
+
 cat <<'EOF'
 {
   "decision": "block",
-  "reason": "Before finishing, check: did you apply any constraint from a prompt loaded via `memory.load` in THIS response? Each response is tracked independently — call `memory.refer` for every constraint you applied in this turn, even if you referred the same constraint in a previous turn. If you applied no constraints this turn, say so explicitly."
+  "reason": "Before finishing, call memory.submit with a summary of your work this turn."
 }
 EOF

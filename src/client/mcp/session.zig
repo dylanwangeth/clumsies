@@ -1,8 +1,8 @@
 //! MCP session state. Holds the workspace ID and session ID for the current agent interaction.
-//! Provides recordEvent() to append trace events — the session ID links all trace events from
-//! one agent run together for aggregation.
+//! Provides recordEvent() to append attestation events — the session ID links all attestation
+//! events from one agent run together for aggregation.
 const std = @import("std");
-const trace = @import("../trace.zig");
+const attestation = @import("../attestation.zig");
 const workspace_config = @import("../workspace_config.zig");
 
 pub const Session = struct {
@@ -21,27 +21,19 @@ pub const Session = struct {
     pub fn recordEvent(
         self: *Session,
         allocator: std.mem.Allocator,
-        event_type: []const u8,
-        prompt_id: ?[]const u8,
-        prompt_hash: ?[]const u8,
-        constraint_id: ?[]const u8,
-        reason: ?[]const u8,
+        payload: attestation.AttestationEvent.Payload,
     ) void {
         const event_id = self.nextEventId();
-        trace.appendTraceEvent(allocator, .{
+        attestation.appendAttestationEvent(allocator, .{
             .ws_id = self.ws_id,
             .session_id = self.session_id[0..],
             .event_id = event_id,
-            .type = event_type,
-            .timestamp = std.time.milliTimestamp(),
-            .prompt_id = prompt_id,
-            .prompt_hash = prompt_hash,
-            .constraint_id = constraint_id,
-            .reason = reason,
+            .ts = std.time.milliTimestamp(),
+            .payload = payload,
         }) catch |err| {
             std.log.err(
-                "failed to append trace event type='{s}' session_id='{s}': {}",
-                .{ event_type, self.session_id[0..], err },
+                "failed to append attestation event type='{s}' session_id='{s}': {}",
+                .{ attestation.payloadTypeTag(payload), self.session_id[0..], err },
             );
         };
     }
@@ -66,6 +58,6 @@ pub fn init(allocator: std.mem.Allocator, workspace_root: []const u8) !Session {
         .event_counter = std.atomic.Value(i64).init(0),
     };
 
-    session.recordEvent(allocator, "setup", null, null, null, null);
+    session.recordEvent(allocator, .setup);
     return session;
 }

@@ -6,7 +6,7 @@ const testing = std.testing;
 const encoding = @import("clumsies_lib").util.encoding;
 const protocol = @import("jsonrpc.zig");
 const session_mod = @import("session.zig");
-const trace_upload = @import("../trace_upload.zig");
+const attestation_upload = @import("../attestation_upload.zig");
 const tool_names = @import("tool_names.zig");
 const tools = @import("tools.zig");
 
@@ -59,18 +59,18 @@ pub fn runWithRoot(
 }
 
 fn flushOnExit(allocator: std.mem.Allocator, state: *State) void {
-    const outcome = trace_upload.flushWorkspace(allocator, state.session.ws_id);
+    const outcome = attestation_upload.flushWorkspace(allocator, state.session.ws_id);
     switch (outcome) {
         .flushed => |result| {
             if (result.events_sent > 0) {
                 std.log.info(
-                    "trace flush on shutdown: sent {d} events in {d} batches",
+                    "attestation flush on shutdown: sent {d} events in {d} batches",
                     .{ result.events_sent, result.batches_sent },
                 );
             }
         },
         .not_authenticated => {},
-        .failed => |err| std.log.warn("trace flush on shutdown failed: {}", .{err}),
+        .failed => |err| std.log.warn("attestation flush on shutdown failed: {}", .{err}),
     }
 }
 

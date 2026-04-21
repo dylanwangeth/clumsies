@@ -5,7 +5,7 @@ const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const data = @import("../view_types.zig");
 const drafts_reader = @import("../drafts_reader.zig");
 const session_reader = @import("../session_reader.zig");
-const trace_reader = @import("../trace_reader.zig");
+const attestation_reader = @import("../attestation_reader.zig");
 const model = @import("model.zig");
 const cache = @import("cache.zig");
 const dispatcher = @import("dispatcher.zig");
@@ -84,7 +84,7 @@ pub const ApiState = struct {
     prompts: ?[]const model.LibraryPrompt = null,
     bundles: ?[]const model.BundleData = null,
     org_stats: ?model.OrgStats = null,
-    local_stats: ?trace_reader.LocalStats = null,
+    local_stats: ?attestation_reader.LocalStats = null,
     drafts: ?[]const DraftEntry = null,
     active_sessions: ?[]const ActiveSession = null,
 
@@ -113,7 +113,7 @@ pub const ApiState = struct {
     ws_manifest_cache: cache.CacheSlot(cache.StringKey, []const model.WsPromptData) = .{},
 
     // Pr detail (compound): detail response + comments keyed by pr_id.
-    // The detail response carries operations + trace_summary; the consumer
+    // The detail response carries operations + attestation_summary; the consumer
     // computes the diff and picks the active operation against the cached
     // prompt prs list. pr_detail response already echoes pr_id; comments
     // wrap the bare list with a PrCommentsPayload.
@@ -135,7 +135,7 @@ pub const ApiState = struct {
     // caches it once per (pr_id, active prompt_id) transition.
     pr_detail_id: ?[]const u8 = null,
     pr_detail_diff: ?[]const []const u8 = null,
-    pr_detail_trace_refers: u16 = 0,
+    pr_detail_attestation_refers: u16 = 0,
     pr_detail_op_type: ?[]const u8 = null,
     pr_detail_op_current_path: ?[]const u8 = null,
     pr_detail_op_new_path: ?[]const u8 = null,
@@ -194,7 +194,7 @@ pub fn refreshLocalState(api_state: *ApiState) void {
     _ = api_state.local_arena.reset(.retain_capacity);
     const alloc = api_state.local_arena.allocator();
 
-    api_state.local_stats = trace_reader.readLocalStats(alloc);
+    api_state.local_stats = attestation_reader.readLocalStats(alloc);
     api_state.drafts = drafts_reader.readAllDrafts(alloc);
     api_state.active_sessions = session_reader.readAllSessions(alloc);
 }
@@ -225,7 +225,7 @@ pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
 
     api_state.pr_detail_id = null;
     api_state.pr_detail_diff = null;
-    api_state.pr_detail_trace_refers = 0;
+    api_state.pr_detail_attestation_refers = 0;
     api_state.pr_detail_op_type = null;
     api_state.pr_detail_op_current_path = null;
     api_state.pr_detail_op_new_path = null;

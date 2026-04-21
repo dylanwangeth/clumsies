@@ -1,5 +1,5 @@
-//! Trace upload orchestrator. Authenticates with the Hub, wraps batch_upload with an HTTP POST
-//! uploader targeting /api/traces, and provides flushWorkspace() called by CLI and the MCP
+//! Attestation upload orchestrator. Authenticates with the Hub, wraps batch_upload with an HTTP POST
+//! uploader targeting /api/attestations, and provides flushWorkspace() called by CLI and the MCP
 //! server on session end.
 const std = @import("std");
 const upload_worker = @import("batch_upload.zig");
@@ -21,8 +21,8 @@ const HubUploader = struct {
 
     fn post(ctx: *anyopaque, body: []const u8) !bool {
         const self: *HubUploader = @ptrCast(@alignCast(ctx));
-        var response = self.client.post("/api/traces", body) catch |err| {
-            std.log.warn("POST /api/traces transport error: {}", .{err});
+        var response = self.client.post("/api/attestations", body) catch |err| {
+            std.log.warn("POST /api/attestations transport error: {}", .{err});
             return err;
         };
         defer response.deinit();
@@ -31,7 +31,7 @@ const HubUploader = struct {
             return true;
         }
         std.log.warn(
-            "POST /api/traces rejected status={d} body={s}",
+            "POST /api/attestations rejected status={d} body={s}",
             .{ @intFromEnum(response.status), response.body },
         );
         return false;
@@ -42,7 +42,7 @@ const HubUploader = struct {
     }
 };
 
-/// Flush pending trace events for the given workspace to the hub server.
+/// Flush pending attestation events for the given workspace to the hub server.
 /// Loads credentials from `auth.loadAuth`; returns `not_authenticated` if
 /// no credentials are available so callers can skip silently.
 pub fn flushWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) FlushOutcome {

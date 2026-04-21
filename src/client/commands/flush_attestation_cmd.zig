@@ -1,7 +1,7 @@
 const std = @import("std");
 const flag = @import("../flags.zig");
 const ws_config = @import("../workspace_config.zig");
-const trace_upload = @import("../trace_upload.zig");
+const attestation_upload = @import("../attestation_upload.zig");
 const styles = @import("../styles.zig");
 
 const Color = styles.Color;
@@ -42,7 +42,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(binding.ws_id);
     defer allocator.free(binding.name);
 
-    const outcome = trace_upload.flushWorkspace(allocator, binding.ws_id);
+    const outcome = attestation_upload.flushWorkspace(allocator, binding.ws_id);
     switch (outcome) {
         .flushed => |flush_result| {
             try stdout.print(
@@ -60,8 +60,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 }
 
 fn printHelp(w: *std.Io.Writer) !void {
-    try w.print("{s}{s}clumsies trace flush{s}\n\n", .{ P, Color.bold, Color.reset });
-    try w.print("Upload pending trace events from this workspace to the hub.\n\n", .{});
+    try w.print("{s}{s}clumsies attestation flush{s}\n\n", .{ P, Color.bold, Color.reset });
+    try w.print("Upload pending attestation events from this workspace to the hub.\n\n", .{});
     try w.print("{s}Usage:{s}\n", .{ Color.bold, Color.reset });
-    try w.print("  clumsies trace flush\n", .{});
+    try w.print("  clumsies attestation flush\n", .{});
 }

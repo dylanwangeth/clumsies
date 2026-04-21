@@ -1,6 +1,6 @@
 //! HTTP client for the Hub server REST API. Handles Bearer token auth, content-type headers,
 //! and provides typed request methods (GET/POST/PUT/DELETE). Used by CLI commands, TUI data
-//! fetching, and trace upload.
+//! fetching, and attestation upload.
 const std = @import("std");
 const http = std.http;
 const auth_api = @import("clumsies_lib").protocol.auth_api;

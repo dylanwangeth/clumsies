@@ -1,6 +1,7 @@
-//! MCP tool definitions and dispatch. Exposes four tools to the agent: memory.setup (bootstrap
+//! MCP tool definitions and dispatch. Exposes five tools to the agent: memory.setup (bootstrap
 //! workspace context), memory.search (discover prompts), memory.load (fetch content with
-//! constraints), memory.refer (declare constraint usage). Each call generates a trace event.
+//! constraints), memory.refer (declare constraint usage), memory.submit (close turn with
+//! self-assessment). Each call generates an attestation event.
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("clumsies_lib").util.encoding;
@@ -25,6 +26,10 @@ const refer_schema =
     "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare constraint references from loaded prompts. Pass an array of refs, each with promptId and optional constraintId.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"},\"promptHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"promptId\"]}}},\"required\":[\"refs\"],\"additionalProperties\":false}}";
 
+const submit_schema =
+    "{\"name\":\"" ++ tool_names.submit ++ "\",\"title\":\"Submit\",\"description\":\"Submit your turn summary. Call this before finishing to close the current turn.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"],\"additionalProperties\":false}}";
+
 pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(
         u8,
@@ -32,7 +37,8 @@ pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
             setup_schema ++ "," ++
             search_schema ++ "," ++
             load_schema ++ "," ++
-            refer_schema ++
+            refer_schema ++ "," ++
+            submit_schema ++
             "]}",
     );
 }
@@ -78,6 +84,9 @@ pub fn handleCall(
     }
     if (std.mem.eql(u8, name, tool_names.refer)) {
         return try handleRefer(allocator, session, args_obj);
+    }
+    if (std.mem.eql(u8, name, tool_names.submit)) {
+        return try handleSubmit(allocator, session, args_obj);
     }
 
     return try tool_result.buildErrorResult(allocator, "Unknown tool");
@@ -153,7 +162,7 @@ fn handleSearch(
     var items = try workspace_prompt.discoverSearchable(allocator, workspace_root, kind, group);
     defer workspace_prompt.deinitPromptItems(allocator, &items);
 
-    session.recordEvent(allocator, "search", null, null, null, null);
+    session.recordEvent(allocator, .search);
 
     const structured = try tool_result.serializePromptList(allocator, items.items);
     defer allocator.free(structured);
@@ -181,7 +190,7 @@ fn handleLoad(
     defer result.deinit(allocator);
 
     for (result.items.items) |item| {
-        session.recordEvent(allocator, "load", item.id, item.hash, null, null);
+        session.recordEvent(allocator, .{ .load = .{ .prompt_id = item.id, .prompt_hash = item.hash } });
     }
 
     const structured = try tool_result.serializeLoadResultWithConstraints(
@@ -233,7 +242,12 @@ fn handleRefer(
             else => null,
         } else null;
 
-        session.recordEvent(allocator, "refer", prompt_id, prompt_hash, constraint_id, reason);
+        session.recordEvent(allocator, .{ .refer = .{
+            .prompt_id = prompt_id,
+            .prompt_hash = prompt_hash,
+            .constraint_id = constraint_id orelse continue,
+            .reason = reason,
+        } });
         count += 1;
     }
 
@@ -313,6 +327,33 @@ fn parseKnownHashes(
     return known;
 }
 
+fn handleSubmit(
+    allocator: std.mem.Allocator,
+    session: *session_mod.Session,
+    args: std.json.ObjectMap,
+) ![]u8 {
+    const summary = blk: {
+        const val = args.get("summary") orelse
+            return try tool_result.buildErrorResult(allocator, "summary is required");
+        break :blk switch (val) {
+            .string => |s| s,
+            else => return try tool_result.buildErrorResult(allocator, "summary must be a string"),
+        };
+    };
+    if (summary.len == 0) {
+        return try tool_result.buildErrorResult(allocator, "summary must not be empty");
+    }
+
+    session.recordEvent(allocator, .{
+        .agent_report = .{
+            .summary = summary,
+        },
+    });
+
+    const ok_json = "{\"ok\":true}";
+    return try tool_result.buildSuccessResult(allocator, ok_json);
+}
+
 test "buildListResult: exposes all memory tools" {
     const result = try buildListResult(testing.allocator);
     defer testing.allocator.free(result);
@@ -321,6 +362,7 @@ test "buildListResult: exposes all memory tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.search ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.load ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.refer ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.submit ++ "\"") != null);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.begin\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.complete\"") == null);

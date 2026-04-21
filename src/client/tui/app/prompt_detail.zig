@@ -136,7 +136,7 @@ fn buildPromptDetailBody(
             // Title matches design/04 drill-down layout:
             // "{pr_id} ─ {prompt_path} ─ {status} ─ {author} ─ {created}"
             // Dropped `refer:N` — it's not in the design and the hub
-            // does not populate trace_summary on prompt PRs today.
+            // does not populate attestation_summary on prompt PRs today.
             const created_short = w.formatShortTimestamp(ctx.arena, pr.created) catch pr.created;
             const title = try std.fmt.allocPrint(
                 ctx.arena,

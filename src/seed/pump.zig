@@ -1,11 +1,11 @@
-//! Synthetic trace event generator. Simulates realistic user activity (multiple users, varying
-//! session lengths, different refer frequencies) to populate the trace pipeline with data for
+//! Synthetic attestation event generator. Simulates realistic user activity (multiple users, varying
+//! session lengths, different refer frequencies) to populate the attestation pipeline with data for
 //! TUI dashboard and analysis development.
 const std = @import("std");
 const pg = @import("pg");
 const data = @import("data.zig");
 const util_hash = @import("clumsies_lib").util.hash;
-const local_trace = @import("clumsies_client").trace;
+const local_attestation = @import("clumsies_client").attestation;
 
 const log = std.log.scoped(.pump);
 
@@ -136,7 +136,7 @@ pub fn run(pool: *pg.Pool, interval_ms: u64) !void {
 
         tick += 1;
         if (tick % data.CLEANUP_INTERVAL == 0) {
-            cleanupTrace(conn);
+            cleanupAttestation(conn);
             logBatchSummary(planner.total_sessions, plan.active_profile, batch, true);
         } else if (plan.profile_switched) {
             logActiveProfile(plan.active_profile);
@@ -179,47 +179,81 @@ fn emitScenario(
         session_serial,
     }) catch return;
 
-    insertTraceEvent(conn, scenario.user_id, .{
+    insertAttestationEvent(conn, scenario.user_id, .{
         .ws_id = scenario.ws_id,
         .session_id = session_id,
         .event_id = 0,
-        .type = "setup",
-        .timestamp = timestamp_base,
+        .ts = timestamp_base,
+        .payload = .setup,
     });
 
     const input_hash = util_hash.sha256HexAlloc(std.heap.page_allocator, scenario.input) catch null;
     defer if (input_hash) |hash| std.heap.page_allocator.free(hash);
 
-    insertTraceEvent(conn, scenario.user_id, .{
+    insertAttestationEvent(conn, scenario.user_id, .{
         .ws_id = scenario.ws_id,
         .session_id = session_id,
         .event_id = 1,
-        .type = "session_input",
-        .timestamp = timestamp_base + 1,
-        .content = scenario.input,
-        .content_hash = input_hash,
+        .ts = timestamp_base + 1,
+        .payload = .{
+            .user_prompt = .{
+                .content = scenario.input,
+                .content_hash = input_hash orelse "",
+            },
+        },
     });
 
     for (scenario.refers, 0..) |refer, idx| {
         const prompt = data.promptById(refer.prompt_id) orelse continue;
         const prompt_hash = util_hash.contentHash(prompt.content);
-        insertTraceEvent(conn, scenario.user_id, .{
+        insertAttestationEvent(conn, scenario.user_id, .{
             .ws_id = scenario.ws_id,
             .session_id = session_id,
             .event_id = @as(i64, @intCast(idx + 2)),
-            .type = "refer",
-            .timestamp = timestamp_base + 2 + @as(i64, @intCast(idx)),
-            .prompt_id = prompt.id,
-            .prompt_hash = prompt_hash[0..],
-            .constraint_id = refer.constraint_id,
-            .reason = refer.reason,
+            .ts = timestamp_base + 2 + @as(i64, @intCast(idx)),
+            .payload = .{
+                .refer = .{
+                    .prompt_id = prompt.id,
+                    .prompt_hash = prompt_hash[0..],
+                    .constraint_id = refer.constraint_id,
+                    .reason = refer.reason,
+                },
+            },
         });
     }
 }
 
-fn insertTraceEvent(conn: *pg.Conn, user_id: ?[]const u8, event: local_trace.TraceEvent) void {
+fn insertAttestationEvent(conn: *pg.Conn, user_id: ?[]const u8, event: local_attestation.AttestationEvent) void {
+    const type_tag = local_attestation.payloadTypeTag(event.payload);
+    const prompt_id: ?[]const u8 = switch (event.payload) {
+        .load => |p| p.prompt_id,
+        .refer => |p| p.prompt_id,
+        else => null,
+    };
+    const prompt_hash: ?[]const u8 = switch (event.payload) {
+        .load => |p| p.prompt_hash,
+        .refer => |p| p.prompt_hash,
+        else => null,
+    };
+    const constraint_id: ?[]const u8 = switch (event.payload) {
+        .refer => |p| p.constraint_id,
+        else => null,
+    };
+    const reason: ?[]const u8 = switch (event.payload) {
+        .refer => |p| p.reason,
+        else => null,
+    };
+    const content: ?[]const u8 = switch (event.payload) {
+        .user_prompt => |p| p.content,
+        else => null,
+    };
+    const content_hash: ?[]const u8 = switch (event.payload) {
+        .user_prompt => |p| p.content_hash,
+        else => null,
+    };
+
     _ = conn.exec(
-        \\INSERT INTO trace_events (user_id, ws_id, session_id, event_id, type, timestamp,
+        \\INSERT INTO attestation_events (user_id, ws_id, session_id, event_id, type, timestamp,
         \\  prompt_id, prompt_hash, constraint_id, reason, content, content_hash)
         \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
@@ -228,34 +262,34 @@ fn insertTraceEvent(conn: *pg.Conn, user_id: ?[]const u8, event: local_trace.Tra
         event.ws_id,
         event.session_id,
         event.event_id,
-        event.type,
-        event.timestamp,
-        event.prompt_id,
-        event.prompt_hash,
-        event.constraint_id,
-        event.reason,
-        event.content,
-        event.content_hash,
+        type_tag,
+        event.ts,
+        prompt_id,
+        prompt_hash,
+        constraint_id,
+        reason,
+        content,
+        content_hash,
     }) catch |err| {
-        log.warn("db trace insert failed: {}", .{err});
+        log.warn("db attestation insert failed: {}", .{err});
     };
 
-    local_trace.appendTraceEvent(std.heap.page_allocator, event) catch |err| {
-        log.warn("local trace append failed: {}", .{err});
+    local_attestation.appendAttestationEvent(std.heap.page_allocator, event) catch |err| {
+        log.warn("local attestation append failed: {}", .{err});
     };
 }
 
-fn cleanupTrace(conn: *pg.Conn) void {
+fn cleanupAttestation(conn: *pg.Conn) void {
     _ = conn.exec(
-        \\DELETE FROM trace_events
+        \\DELETE FROM attestation_events
         \\WHERE (ws_id, session_id, event_id) IN (
         \\  SELECT ws_id, session_id, event_id
-        \\  FROM trace_events
+        \\  FROM attestation_events
         \\  ORDER BY timestamp DESC
         \\  OFFSET $1
         \\)
-    , .{data.CAP_TRACE_EVENTS}) catch |err| {
-        log.warn("trace cleanup failed: {}", .{err});
+    , .{data.CAP_ATTESTATION_EVENTS}) catch |err| {
+        log.warn("attestation cleanup failed: {}", .{err});
     };
 }
 

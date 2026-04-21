@@ -13,7 +13,7 @@ pub const std_options: std.Options = .{
 };
 
 // Public re-exports for cross-artifact consumers (e.g., seed).
-pub const trace = @import("trace.zig");
+pub const attestation = @import("attestation.zig");
 const tui = @import("tui/main.zig");
 
 const cmd_login = @import("commands/login_cmd.zig");
@@ -24,8 +24,9 @@ const cmd_adapt = @import("commands/adapt_cmd.zig");
 const cmd_remove_adapter = @import("commands/remove_adapter_cmd.zig");
 const cmd_setup = @import("commands/setup_cmd.zig");
 const cmd_workspace_info = @import("commands/workspace_info_cmd.zig");
-const cmd_flush_trace = @import("commands/flush_trace_cmd.zig");
-const cmd_trace_append = @import("commands/trace_append_cmd.zig");
+const cmd_flush_attestation = @import("commands/flush_attestation_cmd.zig");
+const cmd_attestation_append = @import("commands/attestation_append_cmd.zig");
+const cmd_submit_check = @import("commands/submit_check_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const Color = styles.Color;
@@ -40,7 +41,7 @@ const Command = enum {
     adapt,
     remove_adapter,
     mcp,
-    trace,
+    flush,
     help,
     version,
     none,
@@ -53,7 +54,7 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "adapt", .adapt },
     .{ "remove-adapter", .remove_adapter },
     .{ "mcp", .mcp },
-    .{ "trace", .trace },
+    .{ "flush", .flush },
     .{ "help", .help },
     .{ "-h", .help },
     .{ "--help", .help },
@@ -111,6 +112,10 @@ pub fn main() !void {
             try cmd_setup.run(stdout_writer, stderr_writer, allocator);
         } else if (std.mem.eql(u8, subcmd, "workspace-info")) {
             try cmd_workspace_info.run(stdout_writer, stderr_writer, allocator);
+        } else if (std.mem.eql(u8, subcmd, "attestation-append")) {
+            try cmd_attestation_append.run(stdout_writer, stderr_writer, allocator, cmd_args[1..]);
+        } else if (std.mem.eql(u8, subcmd, "submit-check")) {
+            try cmd_submit_check.run(stdout_writer, stderr_writer, allocator);
         } else {
             try stderr_writer.print("{s}{s}{s}Error:{s} unknown agent command: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
             stderr_file_writer.interface.flush() catch {};
@@ -136,17 +141,8 @@ pub fn main() !void {
         .adapt => try cmd_adapt.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .remove_adapter => try cmd_remove_adapter.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
-        .trace => {
-            const subcmd = if (cmd_args.len > 0) cmd_args[0] else "";
-            if (std.mem.eql(u8, subcmd, "flush")) {
-                try cmd_flush_trace.run(stdout_writer, stderr_writer, allocator, cmd_args[1..]);
-            } else if (std.mem.eql(u8, subcmd, "append")) {
-                try cmd_trace_append.run(stdout_writer, stderr_writer, allocator, cmd_args[1..]);
-            } else {
-                try stderr_writer.print("{s}{s}{s}Error:{s} unknown trace subcommand: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
-                stderr_file_writer.interface.flush() catch {};
-                std.process.exit(1);
-            }
+        .flush => {
+            try cmd_flush_attestation.run(stdout_writer, stderr_writer, allocator, cmd_args);
         },
         .none => {
             if (args.len > 1) {
@@ -179,7 +175,7 @@ test "command_map: all commands resolve" {
         .{ .str = "sync", .cmd = .sync },
         .{ .str = "adapt", .cmd = .adapt },
         .{ .str = "remove-adapter", .cmd = .remove_adapter },
-        .{ .str = "trace", .cmd = .trace },
+        .{ .str = "flush", .cmd = .flush },
         .{ .str = "mcp", .cmd = .mcp },
         .{ .str = "help", .cmd = .help },
         .{ .str = "-h", .cmd = .help },
@@ -224,7 +220,7 @@ test {
     _ = @import("flags.zig");
     _ = @import("prompt.zig");
     _ = @import("session_marker.zig");
-    _ = @import("trace.zig");
+    _ = @import("attestation.zig");
     _ = @import("workspace_config.zig");
 
     _ = @import("commands/init_cmd.zig");
@@ -243,7 +239,7 @@ test {
     _ = @import("tui/api/view_model.zig");
     _ = @import("tui/app/workspace.zig");
     _ = @import("tui/editor_host.zig");
-    _ = @import("tui/trace_reader.zig");
+    _ = @import("tui/attestation_reader.zig");
     _ = @import("tui/tree.zig");
     _ = @import("tui/widgets.zig");
     _ = @import("tui/widgets/diff_viewer.zig");

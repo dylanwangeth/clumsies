@@ -9,7 +9,7 @@ pub const ORG_ID = "a0000000-0000-0000-0000-000000000001";
 pub const ORG_NAME = "clumsies-seed-lab";
 pub const SEED_PASSWORD = "admin";
 pub const CLEANUP_INTERVAL: u64 = 100;
-pub const CAP_TRACE_EVENTS: i64 = 5000;
+pub const CAP_ATTESTATION_EVENTS: i64 = 5000;
 pub const SEED_WORKSPACE_PREFIX = "ws-seed-";
 
 pub const UserFixture = struct {
@@ -146,23 +146,23 @@ pub const CODING_WORKFLOW_CONTENT =
 ;
 
 pub const TRACE_DISCIPLINE_CONTENT =
-    \\# Trace Discipline
+    \\# Attestation Discipline
     \\
-    \\Keep trace behavior strict and observable:
+    \\Keep attestation behavior strict and observable:
     \\
-    \\1. Treat the hub-issued `prompt_id` as the only prompt identity in trace events.
-    \\2. Write local `trace.jsonl` lines in the same JSON shape accepted by `POST /api/traces`.
-    \\3. Emit `session_input` before `refer` so Recent Inputs and Insights stay meaningful.
+    \\1. Treat the hub-issued `prompt_id` as the only prompt identity in attestation events.
+    \\2. Write local `attestation.jsonl` lines in the same JSON shape accepted by `POST /api/attestations`.
+    \\3. Emit `user_prompt` before `refer` so Recent Inputs and Insights stay meaningful.
     \\4. Keep the seed pump focused on observability traffic. Do not mutate workspace structure during activity generation.
 ;
 
 pub const HUB_SINGLE_SOURCE_CONTENT =
     \\# Hub Is The Single Source Of Truth
     \\
-    \\- The hub server owns business logic for auth, library, workspace, context, collaboration, and trace stats.
+    \\- The hub server owns business logic for auth, library, workspace, context, collaboration, and attestation stats.
     \\- CLI, MCP, and TUI are clients. They should talk to the hub over REST instead of duplicating policy.
     \\- Library prompts are organization-wide. Workspace context stays local to a workspace.
-    \\- Trace data is a signal for refinement. It should not trigger automatic edits on its own.
+    \\- Attestation data is a signal for refinement. It should not trigger automatic edits on its own.
 ;
 
 pub const ZIG_TOOLCHAIN_CONTENT =
@@ -192,26 +192,26 @@ pub const ARCHITECTURE_CONTEXT =
     \\- The hub server is the only layer that owns business logic.
     \\- CLI, MCP, and TUI are clients that integrate over HTTP APIs.
     \\- Library prompts are shared at the organization level, while context is workspace-scoped.
-    \\- Trace data exists to support observability and prompt refinement decisions.
+    \\- Attestation data exists to support observability and prompt refinement decisions.
 ;
 
 pub const TRACE_ALIGNMENT_CONTEXT =
-    \\# MCP Trace Alignment Snapshot
+    \\# MCP Attestation Alignment Snapshot
     \\
     \\This seed context is derived from `.prompts/plan/MCP_TRACE_ALIGNMENT.md`.
     \\
-    \\- Local `trace.jsonl` should match the server `POST /api/traces` payload shape.
+    \\- Local `attestation.jsonl` should match the server `POST /api/attestations` payload shape.
     \\- `ws_id` must be the hub workspace id, not a local hash.
-    \\- `session_input` events are required if the TUI should render a Recent Inputs feed.
+    \\- `user_prompt` events are required if the TUI should render a Recent Inputs feed.
     \\- `prompt_id` must always be the hub-issued identifier.
 ;
 
 pub const RECENT_INPUTS_CONTEXT =
     \\# Recent Inputs Snapshot
     \\
-    \\- The TUI Recent Inputs panel reads local trace files from `~/.clumsies/workspaces/{ws_id}/trace.jsonl`.
-    \\- `session_input` drives the feed; `refer` enriches the prompt-level stats.
-    \\- If the pump only mutates server tables and skips local trace writes, Recent Inputs will look empty.
+    \\- The TUI Recent Inputs panel reads local attestation files from `~/.clumsies/workspaces/{ws_id}/attestation.jsonl`.
+    \\- `user_prompt` drives the feed; `refer` enriches the prompt-level stats.
+    \\- If the pump only mutates server tables and skips local attestation writes, Recent Inputs will look empty.
 ;
 
 pub const PLUGIN_SETUP_CONTEXT =
@@ -219,7 +219,7 @@ pub const PLUGIN_SETUP_CONTEXT =
     \\
     \\- Agent adapters should bridge `setup -> search -> load -> refer` without adding business logic.
     \\- Cache-backed lookup is preferable to scanning arbitrary project files.
-    \\- Local trace should stay readable when the hub is offline so the dashboard can still explain recent work.
+    \\- Local attestation should stay readable when the hub is offline so the dashboard can still explain recent work.
 ;
 
 pub const USERS = [_]UserFixture{
@@ -342,7 +342,7 @@ pub const PUMP_SCENARIOS = [_]PumpScenario{
     .{
         .user_id = "usr-seed-admin",
         .ws_id = "ws-seed-tui",
-        .input = "Confirm that insights are sourced from local trace.jsonl instead of only server stats.",
+        .input = "Confirm that insights are sourced from local attestation.jsonl instead of only server stats.",
         .refers = &TUI_REFERS,
     },
     .{
