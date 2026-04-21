@@ -18,13 +18,25 @@ pub const HubClient = struct {
     allocator: std.mem.Allocator,
     hub_url: []const u8,
     access_token: ?[]const u8,
+    // Persistent std.http.Client lets sequential requests reuse the
+    // underlying TCP/TLS connection via the client's internal
+    // connection pool. Prior to this, every doFetch built and tore
+    // down its own Client, which forced a fresh handshake per call —
+    // particularly costly over SSH-tunneled links where sync (~170
+    // requests) became minutes of handshake overhead.
+    client: http.Client,
 
     pub fn init(allocator: std.mem.Allocator, hub_url: []const u8, access_token: ?[]const u8) HubClient {
         return .{
             .allocator = allocator,
             .hub_url = hub_url,
             .access_token = access_token,
+            .client = .{ .allocator = allocator },
         };
+    }
+
+    pub fn deinit(self: *HubClient) void {
+        self.client.deinit();
     }
 
     pub fn get(self: *HubClient, path: []const u8) !Response {
@@ -48,9 +60,6 @@ pub const HubClient = struct {
     }
 
     fn doFetch(self: *HubClient, method: http.Method, path: []const u8, payload: ?[]const u8) !Response {
-        var client: http.Client = .{ .allocator = self.allocator };
-        defer client.deinit();
-
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.hub_url, path });
         defer self.allocator.free(url);
 
@@ -72,7 +81,7 @@ pub const HubClient = struct {
         var response_writer = std.Io.Writer.Allocating.init(self.allocator);
         errdefer response_writer.deinit();
 
-        const result = try client.fetch(.{
+        const result = try self.client.fetch(.{
             .location = .{ .url = url },
             .method = method,
             .payload = payload,

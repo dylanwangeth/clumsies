@@ -91,6 +91,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     // POST /api/auth/login
     var client = HubClient.init(allocator, hub_url, null);
+    defer client.deinit();
     const response = try postOrPrintClientError(stderr, &client, hub_url, "/api/auth/login", body);
     defer response.deinit();
 
