@@ -112,16 +112,27 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     var prompts_path_for_id: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer prompts_path_for_id.deinit(allocator);
     var prompt_skipped: usize = 0;
+    var regular_prompts_to_fetch: usize = 0;
+    // Reserved paths (MPF) are reported on their own line so the
+    // "Prompts: N unchanged, M to fetch" summary refers only to
+    // regular rules + workflows. The reserved file still shares the
+    // batch fetch below — it is just accounted for separately in
+    // the human-readable output.
+    var mpf_status: enum { absent, unchanged, to_fetch } = .absent;
     for (manifest.prompts.items) |entry| {
         const prompt_id = entry.key;
         const prompt_path = entry.value.path;
         const remote_hash = stripHashPrefix(entry.value.hash);
-        if (try localFileMatchesHash(allocator, cache_dir, cacheSubDirForPromptPath(prompt_path), prompt_path, remote_hash)) {
-            prompt_skipped += 1;
+        const matches = try localFileMatchesHash(allocator, cache_dir, cacheSubDirForPromptPath(prompt_path), prompt_path, remote_hash);
+        const is_mpf = std.mem.eql(u8, prompt_path, "META_PROMPT.md");
+        if (is_mpf) mpf_status = if (matches) .unchanged else .to_fetch;
+        if (matches) {
+            if (!is_mpf) prompt_skipped += 1;
             continue;
         }
         try prompts_to_fetch.append(allocator, prompt_id);
         try prompts_path_for_id.put(allocator, prompt_id, prompt_path);
+        if (!is_mpf) regular_prompts_to_fetch += 1;
     }
 
     var contexts_to_fetch: std.ArrayList([]const u8) = .empty;
@@ -137,7 +148,12 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         try contexts_to_fetch.append(allocator, ctx_path);
     }
 
-    try stdout.print("{s}\xe2\x86\x92 Prompts: {d} unchanged, {d} to fetch\n", .{ P, prompt_skipped, prompts_to_fetch.items.len });
+    switch (mpf_status) {
+        .absent => {},
+        .unchanged => try stdout.print("{s}\xe2\x86\x92 META_PROMPT.md: unchanged\n", .{P}),
+        .to_fetch => try stdout.print("{s}\xe2\x86\x92 META_PROMPT.md: to fetch\n", .{P}),
+    }
+    try stdout.print("{s}\xe2\x86\x92 Prompts: {d} unchanged, {d} to fetch\n", .{ P, prompt_skipped, regular_prompts_to_fetch });
     try stdout.flush();
 
     var prompt_fetched: usize = 0;
@@ -159,7 +175,12 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         };
     }
 
-    const prompt_count = prompt_fetched + prompt_skipped;
+    // MPF is intentionally excluded from `prompt_skipped` so the
+    // "Prompts" line only reports regular rules + workflows. Re-add
+    // it to the final prompt_count when MPF was unchanged this sync
+    // so the totals still reflect every manifest entry.
+    const mpf_in_unchanged: usize = if (mpf_status == .unchanged) 1 else 0;
+    const prompt_count = prompt_fetched + prompt_skipped + mpf_in_unchanged;
     const context_count = context_fetched + context_skipped;
 
     // Write manifest.json to cache
