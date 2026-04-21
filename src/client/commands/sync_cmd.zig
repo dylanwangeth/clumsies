@@ -352,17 +352,20 @@ fn writeToCache(allocator: std.mem.Allocator, ws_cache_dir: []const u8, sub_dir:
     if (!path_util.isSafeRelative(name)) return error.UnsafePath;
     const dir_path = try std.fs.path.join(allocator, &.{ ws_cache_dir, sub_dir });
     defer allocator.free(dir_path);
-    ensureDir(dir_path);
 
-    // Handle nested paths by creating parent directories
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, name });
     defer allocator.free(file_path);
 
-    // Ensure parent directory exists for nested names like "group/file.md"
+    // Create every intermediate directory, not just the immediate
+    // parent. Nested context paths like `archive/2026-03-22/foo.md`
+    // have multiple levels between `cache/context/` and the file;
+    // the previous single-level makeDirAbsolute failed with
+    // FileNotFound whenever a grandparent was missing, dropping the
+    // write silently into a per-item error on a cold sync. makePath
+    // treats an already-existing directory as success, so it covers
+    // both the first-write and repeat-sync paths.
     if (std.fs.path.dirname(file_path)) |parent| {
-        const parent_owned = try allocator.dupe(u8, parent);
-        defer allocator.free(parent_owned);
-        std.fs.makeDirAbsolute(parent_owned) catch {};
+        try std.fs.cwd().makePath(parent);
     }
 
     const file = try std.fs.createFileAbsolute(file_path, .{ .truncate = true });
