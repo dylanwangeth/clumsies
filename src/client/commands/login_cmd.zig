@@ -3,6 +3,8 @@ const testing = std.testing;
 const flag = @import("../flags.zig");
 const hub_client = @import("../hub_client.zig");
 const auth_mod = @import("../auth.zig");
+const auth_api = @import("clumsies_lib").protocol.auth_api;
+const LoginResponse = auth_api.LoginResponse;
 const HubClient = hub_client.HubClient;
 const HubResponse = hub_client.Response;
 const styles = @import("../styles.zig");
@@ -206,11 +208,6 @@ fn readPassword(allocator: std.mem.Allocator) ![]const u8 {
     defer std.posix.tcsetattr(stdin_fd, .FLUSH, old_termios) catch {};
     return readLine(allocator);
 }
-
-const LoginResponse = struct {
-    access_token: []const u8,
-    refresh_token: []const u8,
-};
 
 fn postOrPrintClientError(
     stderr: *std.Io.Writer,
