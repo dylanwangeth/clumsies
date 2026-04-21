@@ -77,9 +77,19 @@ pub const HubClient = struct {
         username: []const u8,
         persist_fn: PersistFn,
     ) !void {
-        self.refresh_token = try self.allocator.dupe(u8, refresh_token);
-        errdefer self.allocator.free(self.refresh_token.?);
-        self.username = try self.allocator.dupe(u8, username);
+        // Dupe both buffers into owned locals first, then commit into
+        // `self.*` only once both succeed. Writing into `self.refresh_token`
+        // before the second dupe completes would leave the field pointing at
+        // a buffer that errdefer has already freed, so deinit would
+        // double-free and any intervening read of `effectiveToken` would
+        // touch freed memory.
+        const owned_refresh_token = try self.allocator.dupe(u8, refresh_token);
+        errdefer self.allocator.free(owned_refresh_token);
+        const owned_username = try self.allocator.dupe(u8, username);
+        errdefer self.allocator.free(owned_username);
+
+        self.refresh_token = owned_refresh_token;
+        self.username = owned_username;
         self.persist_fn = persist_fn;
     }
 
