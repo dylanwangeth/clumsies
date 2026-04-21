@@ -67,7 +67,10 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const manifest_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/manifest", .{ws_id});
     defer allocator.free(manifest_path);
 
-    const manifest_response = try hub.get(manifest_path);
+    const manifest_response = hub.get(manifest_path) catch |err| {
+        try stderr.print("{s}{s}{s}Error:{s} Failed to reach Hub at {s}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, auth_info.hub_url, @errorName(err) });
+        return;
+    };
     defer manifest_response.deinit();
     if (manifest_response.status != .ok) {
         try stderr.print("{s}{s}{s}Error:{s} Failed to fetch manifest (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, @intFromEnum(manifest_response.status) });
@@ -139,7 +142,10 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     var prompt_fetched: usize = 0;
     if (prompts_to_fetch.items.len > 0) {
-        prompt_fetched = try fetchPromptsBatch(allocator, &hub, cache_dir, prompts_to_fetch.items, &prompts_path_for_id);
+        prompt_fetched = fetchPromptsBatch(allocator, &hub, stderr, cache_dir, prompts_to_fetch.items, &prompts_path_for_id) catch |err| {
+            try stderr.print("{s}{s}{s}Error:{s} Prompt batch fetch failed: {s}\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
+            return;
+        };
     }
 
     try stdout.print("{s}\xe2\x86\x92 Context: {d} unchanged, {d} to fetch\n", .{ P, context_skipped, contexts_to_fetch.items.len });
@@ -147,7 +153,10 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     var context_fetched: usize = 0;
     if (contexts_to_fetch.items.len > 0) {
-        context_fetched = try fetchContextBatch(allocator, &hub, cache_dir, ws_id, contexts_to_fetch.items);
+        context_fetched = fetchContextBatch(allocator, &hub, stderr, cache_dir, ws_id, contexts_to_fetch.items) catch |err| {
+            try stderr.print("{s}{s}{s}Error:{s} Context batch fetch failed: {s}\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
+            return;
+        };
     }
 
     const prompt_count = prompt_fetched + prompt_skipped;
@@ -178,13 +187,15 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }
 }
 
-/// Batch-fetch prompt bodies in a single POST. Prompts not returned
-/// (per-item `error` set, or silently missing from the response) are
-/// skipped rather than retried — the next sync will pick them up.
-/// Returns the count of prompts successfully written to cache.
+/// Batch-fetch prompt bodies in a single POST. Per-item errors from
+/// the Hub response and local write failures are printed to stderr
+/// so the user can tell why a "46 of 46" manifest only produced
+/// "44 written"; the overall return value is the count of prompts
+/// successfully written to cache.
 fn fetchPromptsBatch(
     allocator: std.mem.Allocator,
     hub: *HubClient,
+    stderr: *std.Io.Writer,
     cache_dir: []const u8,
     prompt_ids: []const []const u8,
     path_for_id: *const std.StringHashMapUnmanaged([]const u8),
@@ -208,7 +219,10 @@ fn fetchPromptsBatch(
 
     var written: usize = 0;
     for (parsed.value.items) |item| {
-        if (item.@"error".len > 0) continue;
+        if (item.@"error".len > 0) {
+            try stderr.print("  ! prompt {s}: {s}\n", .{ item.prompt_id, item.@"error" });
+            continue;
+        }
         // Prefer the path the server reports (authoritative) but fall
         // back to the manifest-side path we had when building the
         // request, so a blank server path (older Hub, partial row)
@@ -216,19 +230,25 @@ fn fetchPromptsBatch(
         const target_path = if (item.path.len > 0)
             item.path
         else
-            path_for_id.get(item.prompt_id) orelse continue;
-        writeToCache(allocator, cache_dir, "prompt", target_path, item.body) catch continue;
+            path_for_id.get(item.prompt_id) orelse {
+                try stderr.print("  ! prompt {s}: missing path in response\n", .{item.prompt_id});
+                continue;
+            };
+        writeToCache(allocator, cache_dir, "prompt", target_path, item.body) catch |err| {
+            try stderr.print("  ! prompt {s}: write failed ({s})\n", .{ target_path, @errorName(err) });
+            continue;
+        };
         written += 1;
     }
     return written;
 }
 
 /// Batch-fetch context file bodies. Mirrors `fetchPromptsBatch` but
-/// keyed by path inside a single workspace. Same per-item error
-/// tolerance.
+/// keyed by path inside a single workspace.
 fn fetchContextBatch(
     allocator: std.mem.Allocator,
     hub: *HubClient,
+    stderr: *std.Io.Writer,
     cache_dir: []const u8,
     ws_id: []const u8,
     paths: []const []const u8,
@@ -255,8 +275,14 @@ fn fetchContextBatch(
 
     var written: usize = 0;
     for (parsed.value.items) |item| {
-        if (item.@"error".len > 0) continue;
-        writeToCache(allocator, cache_dir, "context", item.path, item.body) catch continue;
+        if (item.@"error".len > 0) {
+            try stderr.print("  ! context {s}: {s}\n", .{ item.path, item.@"error" });
+            continue;
+        }
+        writeToCache(allocator, cache_dir, "context", item.path, item.body) catch |err| {
+            try stderr.print("  ! context {s}: write failed ({s})\n", .{ item.path, @errorName(err) });
+            continue;
+        };
         written += 1;
     }
     return written;
