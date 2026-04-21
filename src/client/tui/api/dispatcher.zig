@@ -226,6 +226,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
                 null;
 
             var client = HubClient.init(t_alloc, ctx.hub_url, ctx.access_token);
+            defer client.deinit();
             const resp = switch (ctx.spec.method) {
                 .GET => client.get(path),
                 .POST => client.post(path, body orelse "{}"),

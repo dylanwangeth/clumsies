@@ -69,6 +69,7 @@ fn fetchAll(
     state.refreshLocalState(api_state);
 
     var client = HubClient.init(alloc, hub_url, access_token);
+    defer client.deinit();
 
     const me_resp = client.get("/api/auth/me") catch {
         setStatus(api_state, .error_network);
