@@ -14,8 +14,13 @@ const LibraryManifestResponse = library_api.LibraryManifestResponse;
 const PromptListResponse = library_api.PromptListResponse;
 const PromptMeta = library_api.PromptMeta;
 const PromptContentResponse = library_api.PromptContentResponse;
+const BatchPromptContentRequest = library_api.BatchPromptContentRequest;
+const BatchPromptContentResponse = library_api.BatchPromptContentResponse;
+const BatchPromptItem = library_api.BatchPromptItem;
 const ManifestMap = manifest.ManifestMap;
 const ManifestItem = manifest.ManifestItem;
+
+const BATCH_MAX_IDS: usize = 1024;
 
 pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -263,6 +268,60 @@ pub fn handleGetPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *h
         .content_hash = content_hash,
         .body = body,
     }, .{});
+}
+
+/// Batch prompt content fetch. Clients (notably `clumsies sync`)
+/// send a list of prompt_ids in one POST; the response carries a
+/// per-id item, each either populated or tagged with a per-item
+/// error. A single fetch replaces what used to be N sequential GETs
+/// and dominates sync wall time over tunneled links.
+pub fn handleBatchPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = auth.authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!auth.requireScope(user, "library:read", res)) return;
+
+    const body = req.json(BatchPromptContentRequest) catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "missing request body");
+    };
+
+    if (body.prompt_ids.len > BATCH_MAX_IDS) {
+        return apiError(res, 400, "BAD_REQUEST", "too many prompt_ids");
+    }
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    var items: std.ArrayList(BatchPromptItem) = .empty;
+    for (body.prompt_ids) |prompt_id| {
+        var row = (conn.row(
+            "SELECT prompt_id, content_hash, content, path FROM prompts WHERE org_id = $1::uuid AND prompt_id = $2",
+            .{ user.org_id, prompt_id },
+        ) catch null) orelse {
+            try items.append(req.arena, .{
+                .prompt_id = try req.arena.dupe(u8, prompt_id),
+                .@"error" = "NOT_FOUND",
+            });
+            continue;
+        };
+        const pid = try req.arena.dupe(u8, try row.get([]const u8, 0));
+        const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 1));
+        const content = try req.arena.dupe(u8, try row.get([]const u8, 2));
+        const path = try req.arena.dupe(u8, try row.get([]const u8, 3));
+        row.deinit() catch {};
+        try items.append(req.arena, .{
+            .prompt_id = pid,
+            .path = path,
+            .content_hash = content_hash,
+            .body = content,
+        });
+    }
+
+    try res.json(BatchPromptContentResponse{ .items = items.items }, .{});
 }
 
 pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {

@@ -9,6 +9,11 @@ const auth = @import("auth.zig");
 const apiError = @import("api_error.zig").send;
 const ContextFile = workspace_api.ContextFile;
 const ContextFilesResponse = workspace_api.ContextFilesResponse;
+const BatchContextContentRequest = workspace_api.BatchContextContentRequest;
+const BatchContextContentResponse = workspace_api.BatchContextContentResponse;
+const BatchContextItem = workspace_api.BatchContextItem;
+
+const BATCH_MAX_PATHS: usize = 1024;
 
 pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -97,6 +102,64 @@ pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *htt
 
     res.header("Content-Type", "application/octet-stream");
     res.body = content;
+}
+
+/// Batch context content fetch. Paths are scoped to the caller's
+/// workspace membership; same-per-item error model as the library
+/// batch endpoint. Replaces the N-GET pattern used by `clumsies
+/// sync` for context files.
+pub fn handleBatchFileContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = auth.authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
+
+    const ws_id = req.param("ws_id") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
+    };
+
+    const body = req.json(BatchContextContentRequest) catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "missing request body");
+    };
+
+    if (body.paths.len > BATCH_MAX_PATHS) {
+        return apiError(res, 400, "BAD_REQUEST", "too many paths");
+    }
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
+
+    var items: std.ArrayList(BatchContextItem) = .empty;
+    for (body.paths) |path| {
+        var row = (conn.row(
+            "SELECT content_hash, content FROM context_files WHERE ws_id = $1 AND path = $2",
+            .{ ws_id, path },
+        ) catch null) orelse {
+            try items.append(req.arena, .{
+                .path = try req.arena.dupe(u8, path),
+                .@"error" = "NOT_FOUND",
+            });
+            continue;
+        };
+        const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 0));
+        const content = try req.arena.dupe(u8, try row.get([]const u8, 1));
+        row.deinit() catch {};
+        try items.append(req.arena, .{
+            .path = try req.arena.dupe(u8, path),
+            .content_hash = content_hash,
+            .body = content,
+        });
+    }
+
+    try res.json(BatchContextContentResponse{ .items = items.items }, .{});
 }
 
 const Operation = struct {

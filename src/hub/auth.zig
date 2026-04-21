@@ -161,12 +161,21 @@ pub fn handleRefresh(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
 
     _ = conn.exec("UPDATE tokens SET revoked = true WHERE token_hash = $1", .{@as([]const u8, &token_hash)}) catch {};
 
+    // Rotate both tokens: a refresh that only minted a new access
+    // token left the client with a revoked refresh token and no way
+    // to refresh again, forcing re-login after one hop. Issue a new
+    // refresh token alongside the access token so clients can keep
+    // rolling forward as long as they stay within the refresh TTL.
     const access_token = generateToken(req.arena, conn, user_id, "access", scopes, ctx.config.token_ttl_seconds) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
+    };
+    const new_refresh_token = generateToken(req.arena, conn, user_id, "refresh", scopes, ctx.config.token_ttl_seconds * 24) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
 
     try res.json(.{
         .access_token = access_token,
+        .refresh_token = new_refresh_token,
         .expires_in = ctx.config.token_ttl_seconds,
     }, .{});
 }

@@ -1,6 +1,29 @@
-//! Auth API response shapes. MeResponse carries the authenticated user's profile plus their
-//! accessible workspaces — the first call every client makes after login. DirectoryResponse
-//! lists org members for workspace access management.
+//! Auth API request and response shapes. MeResponse carries the authenticated user's profile
+//! plus their accessible workspaces — the first call every client makes after login.
+//! LoginResponse / RefreshRequest / RefreshResponse describe the token lifecycle.
+//! DirectoryResponse lists org members for workspace access management.
+pub const LoginResponse = struct {
+    access_token: []const u8,
+    refresh_token: []const u8,
+    expires_in: i64 = 0,
+};
+
+pub const RefreshRequest = struct {
+    refresh_token: []const u8,
+};
+
+/// Refresh rotates BOTH tokens: the presented refresh token is
+/// revoked server-side, and a new access + refresh pair is issued.
+/// Clients must persist both new tokens; reusing the old refresh
+/// token on a subsequent refresh will 401. Fixes the original
+/// refresh handler which only issued a new access token, leaving
+/// clients unable to refresh a second time.
+pub const RefreshResponse = struct {
+    access_token: []const u8,
+    refresh_token: []const u8,
+    expires_in: i64 = 0,
+};
+
 pub const MeWorkspace = struct {
     ws_id: []const u8,
     name: []const u8,
