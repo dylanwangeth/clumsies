@@ -364,7 +364,6 @@ test "chartDotY maps higher values toward the top" {
 // (needs draw_cursor=false to avoid the bug).
 //
 // Upstream fix: https://github.com/rockorager/libvaxis/pull/256
-// See .prompts/context/issues/001_scrollview_cursor_clipping.md
 pub fn initCursorScrollBars(background: vaxis.Color) vxfw.ScrollBars {
     return .{
         .scroll_view = .{
