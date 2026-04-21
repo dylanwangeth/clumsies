@@ -46,13 +46,14 @@ const HubUploader = struct {
 /// Loads credentials from `auth.loadAuth`; returns `not_authenticated` if
 /// no credentials are available so callers can skip silently.
 pub fn flushWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) FlushOutcome {
-    const auth_info = auth_mod.loadAuth(allocator) catch |err| switch (err) {
+    const auth_info = auth_mod.loadAuthAndRefresh(allocator) catch |err| switch (err) {
         error.NotAuthenticated => return .not_authenticated,
         else => return .{ .failed = err },
     };
     defer auth_info.deinit(allocator);
 
     var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
+    defer hub.deinit();
     var adapter: HubUploader = .{ .allocator = allocator, .client = &hub };
 
     const result = upload_worker.flushOnce(allocator, ws_id, adapter.uploader()) catch |err| {

@@ -51,13 +51,14 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }
 
     // Load auth (must be logged in)
-    const auth_info = auth_mod.loadAuth(allocator) catch {
+    const auth_info = auth_mod.loadAuthAndRefresh(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Not logged in. Run {s}clumsies login{s} first.\n", .{ P, Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
         return;
     };
     defer auth_info.deinit(allocator);
 
     var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
+    defer hub.deinit();
 
     var ws_id_owned: ?[]const u8 = null;
     defer if (ws_id_owned) |o| allocator.free(o);
