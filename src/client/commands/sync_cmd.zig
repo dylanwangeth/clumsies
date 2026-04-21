@@ -411,3 +411,93 @@ test "percentEncode passes unreserved characters" {
     defer allocator.free(result);
     try testing.expectEqualStrings("hello-world_v1.0~beta", result);
 }
+
+test "stripHashPrefix removes sha256 algo prefix" {
+    try testing.expectEqualStrings("abcdef", stripHashPrefix("sha256:abcdef"));
+}
+
+test "stripHashPrefix passes bare hex through unchanged" {
+    try testing.expectEqualStrings("abcdef", stripHashPrefix("abcdef"));
+}
+
+test "stripHashPrefix handles empty input" {
+    try testing.expectEqualStrings("", stripHashPrefix(""));
+}
+
+test "cacheSubDirForPromptPath routes META_PROMPT to cache root" {
+    try testing.expectEqualStrings("", cacheSubDirForPromptPath("META_PROMPT.md"));
+}
+
+test "cacheSubDirForPromptPath routes regular paths under prompt/" {
+    try testing.expectEqualStrings("prompt", cacheSubDirForPromptPath("coding/STYLE.md"));
+    try testing.expectEqualStrings("prompt", cacheSubDirForPromptPath("workflow/CODING.md"));
+}
+
+test "localFileMatchesHash returns true on hash match" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/prompt");
+    {
+        const f = try tmp.dir.createFile("cache/prompt/file.md", .{});
+        defer f.close();
+        try f.writeAll("hello");
+    }
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cache_path = try tmp.dir.realpath("cache", &buf);
+
+    // sha256 of "hello" is 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+    const hello_sha = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    const matches = try localFileMatchesHash(testing.allocator, cache_path, "prompt", "file.md", hello_sha);
+    try testing.expect(matches);
+}
+
+test "localFileMatchesHash returns false on hash mismatch" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/prompt");
+    {
+        const f = try tmp.dir.createFile("cache/prompt/file.md", .{});
+        defer f.close();
+        try f.writeAll("hello");
+    }
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cache_path = try tmp.dir.realpath("cache", &buf);
+
+    const matches = try localFileMatchesHash(testing.allocator, cache_path, "prompt", "file.md", "0000000000000000000000000000000000000000000000000000000000000000");
+    try testing.expect(!matches);
+}
+
+test "localFileMatchesHash returns false when file is missing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/prompt");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cache_path = try tmp.dir.realpath("cache", &buf);
+
+    const matches = try localFileMatchesHash(testing.allocator, cache_path, "prompt", "missing.md", "anyhashvalue");
+    try testing.expect(!matches);
+}
+
+test "localFileMatchesHash returns false on empty remote hash" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/prompt");
+    {
+        const f = try tmp.dir.createFile("cache/prompt/file.md", .{});
+        defer f.close();
+        try f.writeAll("hello");
+    }
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cache_path = try tmp.dir.realpath("cache", &buf);
+
+    const matches = try localFileMatchesHash(testing.allocator, cache_path, "prompt", "file.md", "");
+    try testing.expect(!matches);
+}
