@@ -298,21 +298,36 @@ pub fn handleBatchPromptContent(ctx: *Server.Context, req: *httpz.Request, res: 
 
     var items: std.ArrayList(BatchPromptItem) = .empty;
     for (body.prompt_ids) |prompt_id| {
-        var row = (conn.row(
+        // Distinguish query failure (INTERNAL_ERROR) from a missing
+        // row (NOT_FOUND). Previously both collapsed into NOT_FOUND,
+        // so a transient database outage presented to the client as
+        // "every prompt is missing" — misleading and impossible to
+        // debug without server logs.
+        const row_result = conn.row(
             "SELECT prompt_id, content_hash, content, path FROM prompts WHERE org_id = $1::uuid AND prompt_id = $2",
             .{ user.org_id, prompt_id },
-        ) catch null) orelse {
+        ) catch {
+            try items.append(req.arena, .{
+                .prompt_id = try req.arena.dupe(u8, prompt_id),
+                .@"error" = "INTERNAL_ERROR",
+            });
+            continue;
+        };
+        var row = row_result orelse {
             try items.append(req.arena, .{
                 .prompt_id = try req.arena.dupe(u8, prompt_id),
                 .@"error" = "NOT_FOUND",
             });
             continue;
         };
+        // Defer the release so a row.get / dupe failure mid-iteration
+        // still returns the pg row handle to the pool.
+        defer row.deinit() catch {};
+
         const pid = try req.arena.dupe(u8, try row.get([]const u8, 0));
         const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 1));
         const content = try req.arena.dupe(u8, try row.get([]const u8, 2));
         const path = try req.arena.dupe(u8, try row.get([]const u8, 3));
-        row.deinit() catch {};
         try items.append(req.arena, .{
             .prompt_id = pid,
             .path = path,

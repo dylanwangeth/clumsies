@@ -139,19 +139,31 @@ pub fn handleBatchFileContent(ctx: *Server.Context, req: *httpz.Request, res: *h
 
     var items: std.ArrayList(BatchContextItem) = .empty;
     for (body.paths) |path| {
-        var row = (conn.row(
+        // Same split as the library batch handler: a real DB error
+        // reports INTERNAL_ERROR, a missing row reports NOT_FOUND.
+        // Collapsing both into NOT_FOUND masked transient outages as
+        // "every file is missing".
+        const row_result = conn.row(
             "SELECT content_hash, content FROM context_files WHERE ws_id = $1 AND path = $2",
             .{ ws_id, path },
-        ) catch null) orelse {
+        ) catch {
+            try items.append(req.arena, .{
+                .path = try req.arena.dupe(u8, path),
+                .@"error" = "INTERNAL_ERROR",
+            });
+            continue;
+        };
+        var row = row_result orelse {
             try items.append(req.arena, .{
                 .path = try req.arena.dupe(u8, path),
                 .@"error" = "NOT_FOUND",
             });
             continue;
         };
+        defer row.deinit() catch {};
+
         const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 0));
         const content = try req.arena.dupe(u8, try row.get([]const u8, 1));
-        row.deinit() catch {};
         try items.append(req.arena, .{
             .path = try req.arena.dupe(u8, path),
             .content_hash = content_hash,
