@@ -89,15 +89,6 @@ pub fn renderRuntimeAssets(
         .file_mode = 0o644,
         .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_skill_search),
     });
-    try assets.append(allocator, .{
-        .resource_id = "claude-code.skills.stats",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, scope, "skills/stats/SKILL.md"),
-        .ownership = "exclusive",
-        .label = "Claude Code stats skill",
-        .file_mode = 0o644,
-        .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_skill_stats),
-    });
 
     if (scope == .workspace) {
         const skills_root_absolute = try std.fs.path.join(allocator, &.{ target_root, ".claude", "skills" });

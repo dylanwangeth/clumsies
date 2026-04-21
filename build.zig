@@ -284,10 +284,6 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/skills/search/SKILL.md",
     ));
-    options.addOption([]const u8, "adapter_claude_code_runtime_skill_stats", readSourceAsset(
-        b,
-        "assets/adapters/claude-code/runtime/skills/stats/SKILL.md",
-    ));
 }
 
 fn readSourceAsset(b: *std.Build, relative_path: []const u8) []const u8 {
