@@ -3,6 +3,7 @@ const flag = @import("../flags.zig");
 const library_api = @import("clumsies_lib").protocol.library_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const path_util = @import("clumsies_lib").util.path_util;
+const util_hash = @import("clumsies_lib").util.hash;
 const auth_mod = @import("../auth.zig");
 const drafts_mod = @import("../drafts.zig");
 const ws_config = @import("../workspace_config.zig");
@@ -50,14 +51,20 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(binding.name);
     const ws_id = binding.ws_id;
 
-    // Load auth
-    const auth_info = auth_mod.loadAuth(allocator) catch {
+    // Load auth, auto-refreshing the access token if Hub says it
+    // expired. Previously any 1h-idle session forced re-login; the
+    // stored refresh token now handles that transparently. On a
+    // definitive refresh failure (refresh token itself rejected),
+    // `loadAuthAndRefresh` returns `NotAuthenticated` exactly like
+    // plain `loadAuth`, preserving the "Run clumsies login" prompt.
+    const auth_info = auth_mod.loadAuthAndRefresh(allocator) catch {
         try stderr.print("{s}{s}{s}Error:{s} Not logged in. Run {s}clumsies login{s} first.\n", .{ P, Color.bold, Color.red, Color.reset, Color.cyan, Color.reset });
         return;
     };
     defer auth_info.deinit(allocator);
 
     var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
+    defer hub.deinit();
 
     // GET /api/workspaces/{ws_id}/manifest
     const manifest_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/manifest", .{ws_id});
@@ -96,46 +103,58 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     ensureDir(ws_dir);
     ensureDir(cache_dir);
 
-    var prompt_count: usize = 0;
+    // Classify: hash-compare every manifest entry against the local
+    // cache so we only ship the IDs/paths that genuinely need
+    // refetching. On a warm cache this trims the batch request down
+    // to zero items and sync finishes on the manifest call alone.
+    var prompts_to_fetch: std.ArrayList([]const u8) = .empty;
+    defer prompts_to_fetch.deinit(allocator);
+    var prompts_path_for_id: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer prompts_path_for_id.deinit(allocator);
+    var prompt_skipped: usize = 0;
     for (manifest.prompts.items) |entry| {
         const prompt_id = entry.key;
         const prompt_path = entry.value.path;
-
-        const encoded_prompt_id = try percentEncode(allocator, prompt_id);
-        defer allocator.free(encoded_prompt_id);
-        const content_api_path = try std.fmt.allocPrint(allocator, "/api/org/library/prompt/content?prompt_id={s}", .{encoded_prompt_id});
-        defer allocator.free(content_api_path);
-
-        const content_response = hub.get(content_api_path) catch continue;
-        defer content_response.deinit();
-        if (content_response.status != .ok) continue;
-
-        const content_parsed = std.json.parseFromSlice(library_api.PromptContentResponse, allocator, content_response.body, .{
-            .allocate = .alloc_always,
-            .ignore_unknown_fields = true,
-        }) catch continue;
-        defer content_parsed.deinit();
-
-        writeToCache(allocator, cache_dir, "prompt", prompt_path, content_parsed.value.body) catch continue;
-        prompt_count += 1;
+        const remote_hash = stripHashPrefix(entry.value.hash);
+        if (try localFileMatchesHash(allocator, cache_dir, "prompt", prompt_path, remote_hash)) {
+            prompt_skipped += 1;
+            continue;
+        }
+        try prompts_to_fetch.append(allocator, prompt_id);
+        try prompts_path_for_id.put(allocator, prompt_id, prompt_path);
     }
 
-    var context_count: usize = 0;
+    var contexts_to_fetch: std.ArrayList([]const u8) = .empty;
+    defer contexts_to_fetch.deinit(allocator);
+    var context_skipped: usize = 0;
     for (manifest.context.items) |entry| {
         const ctx_path = entry.value.path;
-
-        const encoded_path = try percentEncode(allocator, ctx_path);
-        defer allocator.free(encoded_path);
-        const api_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/context/file/content?path={s}", .{ ws_id, encoded_path });
-        defer allocator.free(api_path);
-
-        const response = hub.get(api_path) catch continue;
-        defer response.deinit();
-        if (response.status != .ok) continue;
-
-        writeToCache(allocator, cache_dir, "context", ctx_path, response.body) catch continue;
-        context_count += 1;
+        const remote_hash = stripHashPrefix(entry.value.hash);
+        if (try localFileMatchesHash(allocator, cache_dir, "context", ctx_path, remote_hash)) {
+            context_skipped += 1;
+            continue;
+        }
+        try contexts_to_fetch.append(allocator, ctx_path);
     }
+
+    try stdout.print("{s}\xe2\x86\x92 Prompts: {d} unchanged, {d} to fetch\n", .{ P, prompt_skipped, prompts_to_fetch.items.len });
+    try stdout.flush();
+
+    var prompt_fetched: usize = 0;
+    if (prompts_to_fetch.items.len > 0) {
+        prompt_fetched = try fetchPromptsBatch(allocator, &hub, cache_dir, prompts_to_fetch.items, &prompts_path_for_id);
+    }
+
+    try stdout.print("{s}\xe2\x86\x92 Context: {d} unchanged, {d} to fetch\n", .{ P, context_skipped, contexts_to_fetch.items.len });
+    try stdout.flush();
+
+    var context_fetched: usize = 0;
+    if (contexts_to_fetch.items.len > 0) {
+        context_fetched = try fetchContextBatch(allocator, &hub, cache_dir, ws_id, contexts_to_fetch.items);
+    }
+
+    const prompt_count = prompt_fetched + prompt_skipped;
+    const context_count = context_fetched + context_skipped;
 
     // Write manifest.json to cache
     {
@@ -152,11 +171,140 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }
 
     const reconcile = drafts_mod.reconcileDrafts(allocator, ws_dir, cache_dir) catch drafts_mod.ReconcileSummary{};
+    const skipped_suffix = try std.fmt.allocPrint(allocator, " ({d} prompts + {d} context unchanged)", .{ prompt_skipped, context_skipped });
+    defer allocator.free(skipped_suffix);
+    const skipped_note: []const u8 = if (prompt_skipped + context_skipped > 0) skipped_suffix else "";
     if (reconcile.conflicted > 0) {
-        try stdout.print("{s}{s}{s}Synced:{s} {d} prompts, {d} context files, {d} drafts flagged conflicted\n", .{ P, Color.bold, Color.green, Color.reset, prompt_count, context_count, reconcile.conflicted });
+        try stdout.print("{s}{s}{s}Synced:{s} {d} prompts, {d} context files{s}, {d} drafts flagged conflicted\n", .{ P, Color.bold, Color.green, Color.reset, prompt_count, context_count, skipped_note, reconcile.conflicted });
     } else {
-        try stdout.print("{s}{s}{s}Synced:{s} {d} prompts, {d} context files\n", .{ P, Color.bold, Color.green, Color.reset, prompt_count, context_count });
+        try stdout.print("{s}{s}{s}Synced:{s} {d} prompts, {d} context files{s}\n", .{ P, Color.bold, Color.green, Color.reset, prompt_count, context_count, skipped_note });
     }
+}
+
+/// Batch-fetch prompt bodies in a single POST. Prompts not returned
+/// (per-item `error` set, or silently missing from the response) are
+/// skipped rather than retried — the next sync will pick them up.
+/// Returns the count of prompts successfully written to cache.
+fn fetchPromptsBatch(
+    allocator: std.mem.Allocator,
+    hub: *HubClient,
+    cache_dir: []const u8,
+    prompt_ids: []const []const u8,
+    path_for_id: *const std.StringHashMapUnmanaged([]const u8),
+) !usize {
+    const body_json = try std.json.Stringify.valueAlloc(
+        allocator,
+        library_api.BatchPromptContentRequest{ .prompt_ids = prompt_ids },
+        .{},
+    );
+    defer allocator.free(body_json);
+
+    const resp = try hub.post("/api/org/library/prompts/content", body_json);
+    defer resp.deinit();
+    if (resp.status != .ok) return error.BatchFetchFailed;
+
+    const parsed = try std.json.parseFromSlice(library_api.BatchPromptContentResponse, allocator, resp.body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    var written: usize = 0;
+    for (parsed.value.items) |item| {
+        if (item.@"error".len > 0) continue;
+        // Prefer the path the server reports (authoritative) but fall
+        // back to the manifest-side path we had when building the
+        // request, so a blank server path (older Hub, partial row)
+        // still lands in the right cache slot.
+        const target_path = if (item.path.len > 0)
+            item.path
+        else
+            path_for_id.get(item.prompt_id) orelse continue;
+        writeToCache(allocator, cache_dir, "prompt", target_path, item.body) catch continue;
+        written += 1;
+    }
+    return written;
+}
+
+/// Batch-fetch context file bodies. Mirrors `fetchPromptsBatch` but
+/// keyed by path inside a single workspace. Same per-item error
+/// tolerance.
+fn fetchContextBatch(
+    allocator: std.mem.Allocator,
+    hub: *HubClient,
+    cache_dir: []const u8,
+    ws_id: []const u8,
+    paths: []const []const u8,
+) !usize {
+    const body_json = try std.json.Stringify.valueAlloc(
+        allocator,
+        workspace_api.BatchContextContentRequest{ .paths = paths },
+        .{},
+    );
+    defer allocator.free(body_json);
+
+    const api_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/context/files/content", .{ws_id});
+    defer allocator.free(api_path);
+
+    const resp = try hub.post(api_path, body_json);
+    defer resp.deinit();
+    if (resp.status != .ok) return error.BatchFetchFailed;
+
+    const parsed = try std.json.parseFromSlice(workspace_api.BatchContextContentResponse, allocator, resp.body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    var written: usize = 0;
+    for (parsed.value.items) |item| {
+        if (item.@"error".len > 0) continue;
+        writeToCache(allocator, cache_dir, "context", item.path, item.body) catch continue;
+        written += 1;
+    }
+    return written;
+}
+
+/// Compare a manifest-declared hash against the local cache file's
+/// sha256 so we can skip the fetch for unchanged files. Returns false
+/// when the cache file is missing / unreadable or the hashes diverge,
+/// which forces a fetch. Accepts either a bare hex hash or a
+/// `sha256:HEX` prefixed form (the manifest currently uses the
+/// prefixed form); callers should pass the stripped hex for the
+/// remote side.
+fn localFileMatchesHash(
+    allocator: std.mem.Allocator,
+    ws_cache_dir: []const u8,
+    sub_dir: []const u8,
+    rel_path: []const u8,
+    remote_hash_hex: []const u8,
+) !bool {
+    if (remote_hash_hex.len == 0) return false;
+    if (!path_util.isSafeRelative(rel_path)) return false;
+    const dir_path = try std.fs.path.join(allocator, &.{ ws_cache_dir, sub_dir });
+    defer allocator.free(dir_path);
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, rel_path });
+    defer allocator.free(file_path);
+
+    const file = std.fs.openFileAbsolute(file_path, .{}) catch return false;
+    defer file.close();
+
+    var read_buf: [8192]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch return false;
+    defer allocator.free(content);
+
+    const local_hash = util_hash.sha256HexAlloc(allocator, content) catch return false;
+    defer allocator.free(local_hash);
+    return std.mem.eql(u8, local_hash, remote_hash_hex);
+}
+
+/// Manifest hashes arrive as `"sha256:HEX"`; our local hasher emits
+/// just `HEX`. Normalize by stripping the algo prefix so callers can
+/// compare hex-to-hex.
+fn stripHashPrefix(raw: []const u8) []const u8 {
+    const colon = std.mem.indexOfScalar(u8, raw, ':') orelse return raw;
+    return raw[colon + 1 ..];
 }
 
 fn ensureDir(path: []const u8) void {
