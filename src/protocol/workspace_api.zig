@@ -18,6 +18,24 @@ pub const ContextFilesResponse = struct {
     files: []const ContextFile = &.{},
 };
 
+/// Batch context content fetch. Used by `clumsies sync` to pull many
+/// context files in one request instead of one GET per file. The
+/// single GET endpoint (used by TUI) remains.
+pub const BatchContextContentRequest = struct {
+    paths: []const []const u8,
+};
+
+pub const BatchContextItem = struct {
+    path: []const u8,
+    content_hash: []const u8 = "",
+    body: []const u8 = "",
+    @"error": []const u8 = "",
+};
+
+pub const BatchContextContentResponse = struct {
+    items: []const BatchContextItem = &.{},
+};
+
 pub const WorkspaceManifestResponse = struct {
     ws_id: []const u8,
     name: []const u8,

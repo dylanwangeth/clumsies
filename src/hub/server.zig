@@ -73,6 +73,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     // Context
     router.get("/api/workspaces/:ws_id/context/files", context_handler.handleListFiles, .{});
     router.get("/api/workspaces/:ws_id/context/file/content", context_handler.handleGetFileContent, .{});
+    router.post("/api/workspaces/:ws_id/context/files/content", context_handler.handleBatchFileContent, .{});
     router.post("/api/workspaces/:ws_id/context/prs", context_handler.handleCreatePr, .{});
     router.get("/api/workspaces/:ws_id/context/prs", context_handler.handleListPrs, .{});
     router.get("/api/workspaces/:ws_id/context/prs/:pr_id", context_handler.handleGetPr, .{});
@@ -90,6 +91,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.get("/api/org/library/prompts", library_handler.handleListPrompts, .{});
     router.get("/api/org/library/prompt", library_handler.handleGetPrompt, .{});
     router.get("/api/org/library/prompt/content", library_handler.handleGetPromptContent, .{});
+    router.post("/api/org/library/prompts/content", library_handler.handleBatchPromptContent, .{});
     router.get("/api/org/bundles", library_handler.handleListBundles, .{});
     router.get("/api/org/bundles/:name", library_handler.handleGetBundle, .{});
     router.post("/api/org/bundles", library_handler.handleCreateBundle, .{});
