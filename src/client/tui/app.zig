@@ -18,8 +18,8 @@ const util_hash = @import("clumsies_lib").util.hash;
 
 const tree = @import("tree.zig");
 const attestation_reader = @import("attestation_reader.zig");
-const Modal = @import("widgets/modal.zig").Modal;
-const TextInput = @import("widgets/text_input.zig").TextInput;
+const Modal = w.Modal;
+const TextInput = w.TextInput;
 const TableRow = @import("table_row.zig").TableRow;
 const Column = @import("table_row.zig").Column;
 

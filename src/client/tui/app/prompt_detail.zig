@@ -40,7 +40,7 @@ pub fn drawEmbeddedEmpty(
     ctx: vxfw.DrawContext,
 ) std.mem.Allocator.Error!vxfw.Surface {
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-    const border_color = w.focusBorder(self.detail_focus_content);
+    const border_color = theme.focusBorder(self.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Detail", theme.boldOn(theme.PANEL, theme.TEXT));
@@ -56,7 +56,7 @@ pub fn drawEmbedded(
     const body = try buildPromptDetailBody(self, ctx, prompt, embedded_layout);
 
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-    const border_color = w.focusBorder(self.detail_focus_content);
+    const border_color = theme.focusBorder(self.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
     try fillPromptDetailSurface(&surface, ctx, prompt, embedded_layout, body);
@@ -266,15 +266,15 @@ fn writePromptMetaOnPanelChrome(
     // beside a file that is genuinely new. Show `(new)` instead,
     // mirroring the workspace context panel convention.
     if (prompt.revision == 0 and prompt.content_hash.len == 0 and prompt.updated.len == 0) {
-        _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
+        _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
         return;
     }
 
     const full = try formatPromptMeta(ctx.arena, prompt, true);
-    if (writeHeaderRightIfFits(surface, ctx, 0, min_col, full, theme.fg(theme.MUTED))) return;
+    if (w.writeHeaderRightIfFits(surface, ctx, 0, min_col, full, theme.fg(theme.MUTED))) return;
 
     const compact = try formatPromptMeta(ctx.arena, prompt, false);
-    _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, compact, theme.fg(theme.MUTED));
+    _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, compact, theme.fg(theme.MUTED));
 }
 
 fn formatPromptMeta(
@@ -302,22 +302,6 @@ fn formatPromptMeta(
         "rev{d} pr{d} c{d} {s}",
         .{ prompt.revision, prompt.open_pr_count, prompt.constraint_count, updated },
     );
-}
-
-fn writeHeaderRightIfFits(
-    surface: *vxfw.Surface,
-    ctx: vxfw.DrawContext,
-    row: u16,
-    min_col: u16,
-    text: []const u8,
-    style: vaxis.Style,
-) bool {
-    const width: u16 = @intCast(ctx.stringWidth(text));
-    if (width == 0 or width >= surface.size.width) return false;
-    const start_col = surface.size.width - width - 1;
-    if (start_col <= min_col) return false;
-    w.writeText(surface, ctx, start_col, row, text, style);
-    return true;
 }
 
 fn handlePrDiffEvent(

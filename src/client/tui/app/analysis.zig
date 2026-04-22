@@ -41,7 +41,7 @@ pub fn drawPrompts(
     insights: *const data.AnalysisData,
     available: bool,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const border_color = w.focusBorder(self.analysis_focus == .prompts);
+    const border_color = theme.focusBorder(self.analysis_focus == .prompts);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
@@ -218,7 +218,7 @@ pub fn drawMembers(
     insights: *const data.AnalysisData,
     available: bool,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const border_color = w.focusBorder(self.analysis_focus == .members);
+    const border_color = theme.focusBorder(self.analysis_focus == .members);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);

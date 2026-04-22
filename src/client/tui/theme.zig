@@ -107,3 +107,7 @@ pub fn blank(bg: vaxis.Color) vaxis.Cell {
         .style = .{ .fg = TEXT, .bg = bg },
     };
 }
+
+pub fn focusBorder(has_focus: bool) vaxis.Color {
+    return if (has_focus) ACCENT else BORDER;
+}
