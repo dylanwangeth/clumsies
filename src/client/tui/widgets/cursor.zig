@@ -106,9 +106,9 @@ pub fn applyCursorOverlay(
     if (cursor_pos < scroll_top) return surface.*;
 
     const visible_row = cursor_pos - scroll_top;
-    const target_row: i17 = @intCast(1 + visible_row);
+    const target_u16: u16 = @intCast(1 + visible_row);
 
-    if (target_row >= surface.size.height -| 1) return surface.*;
+    if (target_u16 >= surface.size.height -| 1) return surface.*;
 
     const cursor_buf = try ctx.arena.alloc(vaxis.Cell, 1);
     cursor_buf[0] = .{
@@ -126,7 +126,7 @@ pub fn applyCursorOverlay(
     const new_children = try ctx.arena.alloc(vxfw.SubSurface, old_children.len + 1);
     @memcpy(new_children[0..old_children.len], old_children);
     new_children[old_children.len] = .{
-        .origin = .{ .col = 1, .row = target_row },
+        .origin = .{ .col = 1, .row = @as(i17, @intCast(target_u16)) },
         .surface = cursor_surface,
         .z_index = 1,
     };
