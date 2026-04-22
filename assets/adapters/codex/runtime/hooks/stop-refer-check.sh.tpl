@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Stop hook: remind the agent to declare clumsies references before finishing.
-# On the second invocation (`stop_hook_active: true`), allow stop to continue.
+# Stop hook: remind agent to submit turn summary via memory.submit.
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/resolve-binary.sh"
 
 INPUT="$(cat)"
 
@@ -10,9 +13,13 @@ if printf '%s' "$INPUT" | grep -q '"stop_hook_active"[[:space:]]*:[[:space:]]*tr
   exit 0
 fi
 
+if "$CLUMSIES" _agent submit-check 2>/dev/null; then
+  exit 0
+fi
+
 cat <<'EOF'
 {
   "decision": "block",
-  "reason": "Before finishing, check whether you applied any clumsies constraint in this response. If you did, declare it with the clumsies refer MCP tool in this turn. If you applied none, say so explicitly."
+  "reason": "Before finishing, call memory.submit with a summary of your work this turn."
 }
 EOF
