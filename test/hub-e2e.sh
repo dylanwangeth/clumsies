@@ -62,13 +62,13 @@ INSERT INTO users (user_id, org_id, username, password_hash, role, status) VALUE
   ON CONFLICT DO NOTHING;
 INSERT INTO library_manifest (org_id, revision) VALUES ('a0000000-0000-0000-0000-000000000001', 0)
   ON CONFLICT DO NOTHING;
-INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES
+INSERT INTO rules (rule_id, org_id, path, content, content_hash) VALUES
   ('p-test-001', 'a0000000-0000-0000-0000-000000000001', 'rule/coding/STYLE.md', '# STYLE', 'sha256:abc123')
   ON CONFLICT DO NOTHING;
-INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES
+INSERT INTO rules (rule_id, org_id, path, content, content_hash) VALUES
   ('p-test-002', 'a0000000-0000-0000-0000-000000000001', 'workflow/cmd/COMMIT.md', '# COMMIT', 'sha256:def456')
   ON CONFLICT DO NOTHING;
-INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES
+INSERT INTO rules (rule_id, org_id, path, content, content_hash) VALUES
   ('p-test-mpf', 'a0000000-0000-0000-0000-000000000001', 'META_PROMPT.md', '# clumsies Protocol Bootstrap', 'sha256:mpf001')
   ON CONFLICT DO NOTHING;
 SQL
@@ -208,27 +208,27 @@ parse_response "$RAW"
 assert_status "remove member" "204" "$STATUS"
 
 # Library
-step "Library: list prompts"
-RAW=$(call GET "/api/org/library/prompts")
+step "Library: list rules"
+RAW=$(call GET "/api/org/library/rules")
 parse_response "$RAW"
-assert_status "list prompts" "200" "$STATUS"
+assert_status "list rules" "200" "$STATUS"
 assert_json "contains STYLE path" "rule/coding/STYLE.md" "$BODY"
 assert_json "returns path field" '"path":' "$BODY"
 
-step "Library: get prompt by prompt_id"
-RAW=$(call GET "/api/org/library/prompt?prompt_id=p-test-001")
+step "Library: get rule by rule_id"
+RAW=$(call GET "/api/org/library/rule?rule_id=p-test-001")
 parse_response "$RAW"
-assert_status "get by prompt_id" "200" "$STATUS"
+assert_status "get by rule_id" "200" "$STATUS"
 assert_json "contains path" "rule/coding/STYLE.md" "$BODY"
 
-step "Library: get prompt by path"
-RAW=$(call GET "/api/org/library/prompt?path=rule/coding/STYLE.md")
+step "Library: get rule by path"
+RAW=$(call GET "/api/org/library/rule?path=rule/coding/STYLE.md")
 parse_response "$RAW"
 assert_status "get by path" "200" "$STATUS"
-assert_json "contains prompt_id" "p-test-001" "$BODY"
+assert_json "contains rule_id" "p-test-001" "$BODY"
 
-step "Library: get prompt content by prompt_id"
-RAW=$(call GET "/api/org/library/prompt/content?prompt_id=p-test-001")
+step "Library: get rule content by rule_id"
+RAW=$(call GET "/api/org/library/rule/content?rule_id=p-test-001")
 parse_response "$RAW"
 assert_status "get content" "200" "$STATUS"
 assert_json "contains body" "STYLE" "$BODY"
@@ -238,78 +238,78 @@ RAW=$(call GET "/api/org/library/manifest")
 parse_response "$RAW"
 assert_status "get manifest" "200" "$STATUS"
 assert_json "contains revision" "revision" "$BODY"
-assert_json "prompt entries carry path" '"path":"rule/coding/STYLE.md"' "$BODY"
-assert_json "prompt entries carry hash" '"hash":"sha256:abc123"' "$BODY"
+assert_json "rule entries carry path" '"path":"rule/coding/STYLE.md"' "$BODY"
+assert_json "rule entries carry hash" '"hash":"sha256:abc123"' "$BODY"
 assert_json "includes reserved MPF path" '"path":"META_PROMPT.md"' "$BODY"
 
-# Prompt PRs (multi-operation model)
-step "Prompt PR: create with modify operation"
-RAW=$(call POST "/api/org/prompt-prs" '{"description":"Tighten STYLE rules","operations":[{"type":"modify","prompt_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened.\n\n## Rules\n\n- Rule one"}]}')
+# Rule PRs (multi-operation model)
+step "Rule PR: create with modify operation"
+RAW=$(call POST "/api/org/rule-prs" '{"description":"Tighten STYLE rules","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened.\n\n## Rules\n\n- Rule one"}]}')
 parse_response "$RAW"
-assert_status "create prompt PR" "201" "$STATUS"
+assert_status "create rule PR" "201" "$STATUS"
 assert_json "returns pr_id" "pr_id" "$BODY"
 assert_json "status open" "open" "$BODY"
 PPR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 
-step "Prompt PR: reject empty operations"
-RAW=$(call POST "/api/org/prompt-prs" '{"description":"empty","operations":[]}')
+step "Rule PR: reject empty operations"
+RAW=$(call POST "/api/org/rule-prs" '{"description":"empty","operations":[]}')
 parse_response "$RAW"
 assert_status "empty ops rejected" "400" "$STATUS"
 
-step "Prompt PR: reject stale base_hash"
-RAW=$(call POST "/api/org/prompt-prs" '{"description":"stale","operations":[{"type":"modify","prompt_id":"p-test-001","base_hash":"sha256:wrong","content":"# X\n\nD\n\n## S\n\n- R"}]}')
+step "Rule PR: reject stale base_hash"
+RAW=$(call POST "/api/org/rule-prs" '{"description":"stale","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:wrong","content":"# X\n\nD\n\n## S\n\n- R"}]}')
 parse_response "$RAW"
 assert_status "stale base_hash 409" "409" "$STATUS"
 
-step "Prompt PR: list"
-RAW=$(call GET "/api/org/prompt-prs")
+step "Rule PR: list"
+RAW=$(call GET "/api/org/rule-prs")
 parse_response "$RAW"
-assert_status "list prompt PRs" "200" "$STATUS"
+assert_status "list rule PRs" "200" "$STATUS"
 assert_json "contains PR" "$PPR_ID" "$BODY"
 
-step "Prompt PR: get detail"
-RAW=$(call GET "/api/org/prompt-prs/$PPR_ID")
+step "Rule PR: get detail"
+RAW=$(call GET "/api/org/rule-prs/$PPR_ID")
 parse_response "$RAW"
-assert_status "get prompt PR" "200" "$STATUS"
+assert_status "get rule PR" "200" "$STATUS"
 assert_json "has operations" "operations" "$BODY"
 assert_json "operation type modify" '"type":"modify"' "$BODY"
 
-step "Prompt PR: accept as maintainer"
-RAW=$(call PUT "/api/org/prompt-prs/$PPR_ID" '{"action":"accept"}')
+step "Rule PR: accept as maintainer"
+RAW=$(call PUT "/api/org/rule-prs/$PPR_ID" '{"action":"accept"}')
 parse_response "$RAW"
-assert_status "accept prompt PR" "200" "$STATUS"
+assert_status "accept rule PR" "200" "$STATUS"
 assert_json "status accepted" "accepted" "$BODY"
 
-step "Prompt PR: library now reflects merged content"
-RAW=$(call GET "/api/org/library/prompt/content?prompt_id=p-test-001")
+step "Rule PR: library now reflects merged content"
+RAW=$(call GET "/api/org/library/rule/content?rule_id=p-test-001")
 parse_response "$RAW"
 assert_status "get updated content" "200" "$STATUS"
 assert_json "contains Tightened" "Tightened" "$BODY"
 
-step "Prompt PR: create with rename operation"
+step "Rule PR: create with rename operation"
 # First get current hash of p-test-002
-RAW=$(call GET "/api/org/library/prompt?prompt_id=p-test-002")
+RAW=$(call GET "/api/org/library/rule?rule_id=p-test-002")
 parse_response "$RAW"
 P002_HASH=$(echo "$BODY" | grep -o '"content_hash":"[^"]*"' | cut -d'"' -f4)
-RAW=$(call POST "/api/org/prompt-prs" "{\"description\":\"Relocate COMMIT\",\"operations\":[{\"type\":\"rename\",\"prompt_id\":\"p-test-002\",\"base_hash\":\"$P002_HASH\",\"new_path\":\"workflow/git/COMMIT.md\"}]}")
+RAW=$(call POST "/api/org/rule-prs" "{\"description\":\"Relocate COMMIT\",\"operations\":[{\"type\":\"rename\",\"rule_id\":\"p-test-002\",\"base_hash\":\"$P002_HASH\",\"new_path\":\"workflow/git/COMMIT.md\"}]}")
 parse_response "$RAW"
 assert_status "create rename PR" "201" "$STATUS"
 RENAME_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 
-step "Prompt PR: accept rename"
-RAW=$(call PUT "/api/org/prompt-prs/$RENAME_PR_ID" '{"action":"accept"}')
+step "Rule PR: accept rename"
+RAW=$(call PUT "/api/org/rule-prs/$RENAME_PR_ID" '{"action":"accept"}')
 parse_response "$RAW"
 assert_status "accept rename" "200" "$STATUS"
 
-step "Prompt PR: path updated, prompt_id preserved"
-RAW=$(call GET "/api/org/library/prompt?prompt_id=p-test-002")
+step "Rule PR: path updated, rule_id preserved"
+RAW=$(call GET "/api/org/library/rule?rule_id=p-test-002")
 parse_response "$RAW"
 assert_status "get by id after rename" "200" "$STATUS"
 assert_json "path is new" "workflow/git/COMMIT.md" "$BODY"
 
 # Bundles
 step "Bundle: create"
-RAW=$(call POST "/api/org/bundles" '{"name":"test-bundle","description":"test","prompt_ids":["p-test-001","p-test-002"]}')
+RAW=$(call POST "/api/org/bundles" '{"name":"test-bundle","description":"test","rule_ids":["p-test-001","p-test-002"]}')
 parse_response "$RAW"
 assert_status "create bundle" "201" "$STATUS"
 assert_json "returns name" "test-bundle" "$BODY"
@@ -324,10 +324,10 @@ step "Bundle: get"
 RAW=$(call GET "/api/org/bundles/test-bundle")
 parse_response "$RAW"
 assert_status "get bundle" "200" "$STATUS"
-assert_json "contains prompt_ids" "p-test-001" "$BODY"
+assert_json "contains rule_ids" "p-test-001" "$BODY"
 
 step "Bundle: update"
-RAW=$(call PUT "/api/org/bundles/test-bundle" '{"description":"updated desc","prompt_ids":["p-test-001"]}')
+RAW=$(call PUT "/api/org/bundles/test-bundle" '{"description":"updated desc","rule_ids":["p-test-001"]}')
 parse_response "$RAW"
 assert_status "update bundle" "200" "$STATUS"
 
@@ -384,7 +384,7 @@ assert_status "remove member" "204" "$STATUS"
 # The CLI upload_worker is unit-tested separately; this section exercises
 # the hub ingest endpoint that the worker posts to.
 step "Trace: upload setup + refer batch"
-TRACE_BATCH='{"events":[{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":0,"type":"setup","timestamp":1000},{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":1,"type":"refer","timestamp":1001,"prompt_id":"p-test-001","constraint_id":"c-1"},{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":2,"type":"refer","timestamp":1002,"prompt_id":"p-test-001","constraint_id":"c-2"}]}'
+TRACE_BATCH='{"events":[{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":0,"type":"setup","timestamp":1000},{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":1,"type":"refer","timestamp":1001,"rule_id":"p-test-001","constraint_id":"c-1"},{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":2,"type":"refer","timestamp":1002,"rule_id":"p-test-001","constraint_id":"c-2"}]}'
 RAW=$(call POST "/api/attestations" "$TRACE_BATCH")
 parse_response "$RAW"
 assert_status "upload batch" "200" "$STATUS"
@@ -407,7 +407,7 @@ parse_response "$RAW"
 assert_json "replay did not double count" '"total_refer_count":2' "$BODY"
 
 step "Trace: append new event advances stats"
-APPEND_BATCH='{"events":[{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":3,"type":"refer","timestamp":1003,"prompt_id":"p-test-001","constraint_id":"c-3"}]}'
+APPEND_BATCH='{"events":[{"ws_id":"'"$WS_ID"'","session_id":"sess-e2e-1","event_id":3,"type":"refer","timestamp":1003,"rule_id":"p-test-001","constraint_id":"c-3"}]}'
 RAW=$(call POST "/api/attestations" "$APPEND_BATCH")
 parse_response "$RAW"
 assert_status "append batch" "200" "$STATUS"
@@ -458,7 +458,7 @@ assert_status "me with scopes" "200" "$STATUS"
 assert_json "scopes field present" "library:read" "$BODY"
 
 step "Scope: limited token cannot create bundle"
-RAW=$(call POST "/api/org/bundles" '{"name":"scope-test","description":"test","prompt_ids":[]}')
+RAW=$(call POST "/api/org/bundles" '{"name":"scope-test","description":"test","rule_ids":[]}')
 parse_response "$RAW"
 assert_status "limited scope blocked" "403" "$STATUS"
 
