@@ -31,6 +31,7 @@ pub const AttestationEvent = struct {
         load: LoadPayload,
         refer: ReferPayload,
         agent_report: AgentReportPayload,
+        reject: RejectPayload,
         context_propose_create: ProposeCreatePayload,
         context_propose_update: ProposeUpdatePayload,
         context_propose_rename: ProposeRenamePayload,
@@ -62,6 +63,10 @@ pub const AttestationEvent = struct {
         summary: []const u8,
     };
 
+    pub const RejectPayload = struct {
+        reason: ?[]const u8 = null,
+    };
+
     pub const ProposeCreatePayload = struct {
         path: []const u8,
     };
@@ -89,6 +94,7 @@ pub fn payloadTypeTag(payload: AttestationEvent.Payload) []const u8 {
         .load => "load",
         .refer => "refer",
         .agent_report => "agent_report",
+        .reject => "reject",
         .context_propose_create => "context_propose_create",
         .context_propose_update => "context_propose_update",
         .context_propose_rename => "context_propose_rename",
@@ -217,6 +223,11 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
         },
         .agent_report => |p| {
             try writeOptionalString(allocator, &buf, "summary", p.summary);
+        },
+        .reject => |p| {
+            if (p.reason) |r| {
+                try writeOptionalString(allocator, &buf, "reason", r);
+            }
         },
         .context_propose_create => |p| {
             try writeOptionalString(allocator, &buf, "path", p.path);

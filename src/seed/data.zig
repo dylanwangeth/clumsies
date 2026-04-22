@@ -105,6 +105,12 @@ pub const META_PROMPT_CONTENT =
     \\
     \\Filter with `memory.search({kind: "rule"})` or `memory.search({group: "zig"})`.
     \\
+    \\## Accountability
+    \\
+    \\If you fail to follow loaded rules, the user may call `/ntmd` to reject the turn.
+    \\This records a `memory.reject()` event. When this happens, review which rules you
+    \\missed and correct your approach.
+    \\
     \\## Priority
     \\
     \\Loaded rules > this meta-prompt > your defaults.
