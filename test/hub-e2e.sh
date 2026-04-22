@@ -244,7 +244,7 @@ assert_json "includes reserved MPF path" '"path":"META_PROMPT.md"' "$BODY"
 
 # Prompt PRs (multi-operation model)
 step "Prompt PR: create with modify operation"
-RAW=$(call POST "/api/org/prompt-prs" '{"description":"Tighten STYLE rules","operations":[{"type":"modify","prompt_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened."}]}')
+RAW=$(call POST "/api/org/prompt-prs" '{"description":"Tighten STYLE rules","operations":[{"type":"modify","prompt_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened.\n\n## Rules\n\n- Rule one"}]}')
 parse_response "$RAW"
 assert_status "create prompt PR" "201" "$STATUS"
 assert_json "returns pr_id" "pr_id" "$BODY"
@@ -257,7 +257,7 @@ parse_response "$RAW"
 assert_status "empty ops rejected" "400" "$STATUS"
 
 step "Prompt PR: reject stale base_hash"
-RAW=$(call POST "/api/org/prompt-prs" '{"description":"stale","operations":[{"type":"modify","prompt_id":"p-test-001","base_hash":"sha256:wrong","content":"x"}]}')
+RAW=$(call POST "/api/org/prompt-prs" '{"description":"stale","operations":[{"type":"modify","prompt_id":"p-test-001","base_hash":"sha256:wrong","content":"# X\n\nD\n\n## S\n\n- R"}]}')
 parse_response "$RAW"
 assert_status "stale base_hash 409" "409" "$STATUS"
 
@@ -486,7 +486,7 @@ assert_status "list files on main" "200" "$STATUS"
 assert_json "returns files array" "files" "$BODY"
 
 step "Context: create PR with create operation"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add API spec","operations":[{"type":"create","path":"spec/API.md","content":"# API Design"}]}')
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add API spec","operations":[{"type":"create","path":"spec/API.md","content":"# API Design\n\nREST API specification.\n\n## Endpoints\n\n- GET /api"}]}')
 parse_response "$RAW"
 assert_status "create context PR" "201" "$STATUS"
 assert_json "returns pr_id" "pr_id" "$BODY"
@@ -582,7 +582,7 @@ assert_status "PUT file endpoint 404" "404" "$STATUS"
 
 step "Context: member cannot merge"
 TOKEN="$BOB_TOKEN"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add research","operations":[{"type":"create","path":"research/notes.md","content":"# Research Notes"}]}')
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add research","operations":[{"type":"create","path":"research/notes.md","content":"# Research Notes\n\nFindings from literature review.\n\n## Sources\n\n- Paper A"}]}')
 parse_response "$RAW"
 BOB_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 RAW=$(call PUT "/api/workspaces/$CTX_WS/context/prs/$BOB_PR_ID" '{"action":"merge"}')
