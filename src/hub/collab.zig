@@ -7,6 +7,7 @@ const collab_api = @import("clumsies_lib").protocol.collab_api;
 const util_hash = @import("clumsies_lib").util.hash;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
+const db_mod = @import("db.zig");
 const apiError = @import("api_error.zig").send;
 const PromptPrComment = collab_api.PromptPrComment;
 const PromptPrCommentsResponse = collab_api.PromptPrCommentsResponse;
@@ -632,8 +633,8 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                 return false;
             };
             _ = conn.exec(
-                "UPDATE prompts SET content = $1, content_hash = $2, updated_at = now() WHERE prompt_id = $3",
-                .{ new_content, hash_slice, pid },
+                "UPDATE prompts SET content = $1, content_hash = $2, description = $3, updated_at = now() WHERE prompt_id = $4",
+                .{ new_content, hash_slice, db_mod.extractDescription(new_content), pid },
             ) catch {
                 conn.rollback() catch {};
                 try apiError(res, 500, "INTERNAL_ERROR", "failed to update prompt");
@@ -676,8 +677,8 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                     return false;
                 };
                 _ = conn.exec(
-                    "UPDATE prompts SET path = $1, content = $2, content_hash = $3, updated_at = now() WHERE prompt_id = $4",
-                    .{ new_path, new_content, hash_slice, pid },
+                    "UPDATE prompts SET path = $1, content = $2, content_hash = $3, description = $4, updated_at = now() WHERE prompt_id = $5",
+                    .{ new_path, new_content, hash_slice, db_mod.extractDescription(new_content), pid },
                 ) catch {
                     conn.rollback() catch {};
                     try apiError(res, 500, "INTERNAL_ERROR", "failed to update prompt");
@@ -722,8 +723,8 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                 return false;
             };
             _ = conn.exec(
-                "INSERT INTO prompts (prompt_id, org_id, path, content, content_hash) VALUES ($1, $2::uuid, $3, $4, $5)",
-                .{ new_pid, org_id, path, new_content, hash_slice },
+                "INSERT INTO prompts (prompt_id, org_id, path, content, content_hash, description) VALUES ($1, $2::uuid, $3, $4, $5, $6)",
+                .{ new_pid, org_id, path, new_content, hash_slice, db_mod.extractDescription(new_content) },
             ) catch {
                 conn.rollback() catch {};
                 try apiError(res, 409, "CONFLICT", "target path conflict on create");

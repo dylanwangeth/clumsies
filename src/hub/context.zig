@@ -6,6 +6,7 @@ const util_hash = @import("clumsies_lib").util.hash;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
+const db_mod = @import("db.zig");
 const apiError = @import("api_error.zig").send;
 const ContextFile = workspace_api.ContextFile;
 const ContextFilesResponse = workspace_api.ContextFilesResponse;
@@ -767,8 +768,8 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 return false;
             };
             _ = conn.exec(
-                "UPDATE context_files SET content = $1, content_hash = $2, author = $3, updated_at = now() WHERE ws_id = $4 AND context_id = $5",
-                .{ new_content, hash_slice, author, ws_id, cid },
+                "UPDATE context_files SET content = $1, content_hash = $2, description = $3, author = $4, updated_at = now() WHERE ws_id = $5 AND context_id = $6",
+                .{ new_content, hash_slice, db_mod.extractDescription(new_content), author, ws_id, cid },
             ) catch {
                 conn.rollback() catch {};
                 try apiError(res, 500, "INTERNAL_ERROR", "failed to update file");
@@ -806,8 +807,8 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                     return false;
                 };
                 _ = conn.exec(
-                    "UPDATE context_files SET path = $1, content = $2, content_hash = $3, author = $4, updated_at = now() WHERE ws_id = $5 AND context_id = $6",
-                    .{ new_path, new_content, hash_slice, author, ws_id, cid },
+                    "UPDATE context_files SET path = $1, content = $2, content_hash = $3, description = $4, author = $5, updated_at = now() WHERE ws_id = $6 AND context_id = $7",
+                    .{ new_path, new_content, hash_slice, db_mod.extractDescription(new_content), author, ws_id, cid },
                 ) catch {
                     conn.rollback() catch {};
                     try apiError(res, 500, "INTERNAL_ERROR", "failed to update file");
@@ -847,8 +848,8 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 return false;
             };
             _ = conn.exec(
-                "INSERT INTO context_files (context_id, ws_id, path, content, content_hash, author) VALUES ($1, $2, $3, $4, $5, $6)",
-                .{ new_cid, ws_id, path, new_content, hash_slice, author },
+                "INSERT INTO context_files (context_id, ws_id, path, content, content_hash, author, description) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                .{ new_cid, ws_id, path, new_content, hash_slice, author, db_mod.extractDescription(new_content) },
             ) catch {
                 conn.rollback() catch {};
                 try apiError(res, 409, "CONFLICT", "target path conflict on create");

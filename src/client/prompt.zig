@@ -35,6 +35,7 @@ pub const PromptItem = struct {
     group: ?[]const u8,
     hash: []const u8,
     priority: SetupPriority,
+    description: ?[]const u8 = null,
 };
 
 pub const KnownHash = struct {
@@ -129,6 +130,7 @@ pub fn loadMpf(allocator: std.mem.Allocator, ws_dir: []const u8, known_hash: ?[]
 pub const ManifestEntry = struct {
     path: []const u8,
     hash: []const u8,
+    description: []const u8 = "",
 };
 
 /// Parsed local manifest. Both maps borrow strings from an arena owned by
@@ -205,7 +207,12 @@ fn parseManifestSection(
             else => continue,
         } else continue;
 
-        try map.put(arena, entry.key_ptr.*, .{ .path = path_str, .hash = hash_str });
+        const desc_str = if (obj.get("description")) |v| switch (v) {
+            .string => |s| s,
+            else => "",
+        } else "";
+
+        try map.put(arena, entry.key_ptr.*, .{ .path = path_str, .hash = hash_str, .description = desc_str });
     }
 }
 
@@ -215,6 +222,7 @@ fn freePromptItem(allocator: std.mem.Allocator, item: PromptItem) void {
     allocator.free(item.name);
     if (item.group) |group| allocator.free(group);
     allocator.free(item.hash);
+    if (item.description) |desc| allocator.free(desc);
 }
 
 pub fn deinitPromptItems(allocator: std.mem.Allocator, items: *std.ArrayList(PromptItem)) void {
@@ -293,6 +301,8 @@ pub fn discoverSearchable(
         errdefer if (group_owned) |g| allocator.free(g);
         const hash_owned = try allocator.dupe(u8, m_entry.hash);
         errdefer allocator.free(hash_owned);
+        const desc_owned = if (m_entry.description.len > 0) try allocator.dupe(u8, m_entry.description) else null;
+        errdefer if (desc_owned) |d| allocator.free(d);
 
         try items.append(allocator, .{
             .id = id_owned,
@@ -302,6 +312,7 @@ pub fn discoverSearchable(
             .group = group_owned,
             .hash = hash_owned,
             .priority = priorityForKind(kind),
+            .description = desc_owned,
         });
     }
 
@@ -328,6 +339,8 @@ pub fn discoverSearchable(
             errdefer if (group_owned) |g| allocator.free(g);
             const hash_owned = try allocator.dupe(u8, m_entry.hash);
             errdefer allocator.free(hash_owned);
+            const ctx_desc_owned = if (m_entry.description.len > 0) try allocator.dupe(u8, m_entry.description) else null;
+            errdefer if (ctx_desc_owned) |d| allocator.free(d);
 
             try items.append(allocator, .{
                 .id = id_owned,
@@ -337,6 +350,7 @@ pub fn discoverSearchable(
                 .group = group_owned,
                 .hash = hash_owned,
                 .priority = .normal,
+                .description = ctx_desc_owned,
             });
         }
     }

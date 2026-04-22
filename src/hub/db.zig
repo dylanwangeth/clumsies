@@ -38,6 +38,40 @@ pub fn migrate(pool: *Pool) !void {
     };
 }
 
+/// Extract a short description from markdown content: the first paragraph
+/// after the initial heading, skipping `---` separators and blank lines.
+pub fn extractDescription(content: []const u8) []const u8 {
+    var lines = std.mem.splitSequence(u8, content, "\n");
+    var past_heading = false;
+    var start: usize = 0;
+    var end: usize = 0;
+
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+
+        if (!past_heading) {
+            if (trimmed.len > 0 and trimmed[0] == '#') {
+                past_heading = true;
+            }
+            continue;
+        }
+
+        if (trimmed.len == 0) {
+            if (start > 0 and end > start) break;
+            continue;
+        }
+        if (std.mem.eql(u8, trimmed, "---")) continue;
+
+        if (start == 0) {
+            start = @intFromPtr(line.ptr) - @intFromPtr(content.ptr);
+        }
+        end = @intFromPtr(line.ptr) + line.len - @intFromPtr(content.ptr);
+    }
+
+    if (end > start) return content[start..end];
+    return "";
+}
+
 pub fn bootstrap(pool: *Pool) !void {
     const alloc = std.heap.page_allocator;
     const log = std.log.scoped(.bootstrap);
@@ -198,6 +232,7 @@ const migration_sql =
     \\    path TEXT NOT NULL,
     \\    content TEXT NOT NULL DEFAULT '',
     \\    content_hash TEXT NOT NULL DEFAULT '',
+    \\    description TEXT NOT NULL DEFAULT '',
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    UNIQUE(org_id, path)
     \\);
@@ -214,6 +249,7 @@ const migration_sql =
     \\    path TEXT NOT NULL,
     \\    content TEXT NOT NULL,
     \\    content_hash TEXT NOT NULL,
+    \\    description TEXT NOT NULL DEFAULT '',
     \\    author TEXT NOT NULL,
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    UNIQUE(ws_id, path)

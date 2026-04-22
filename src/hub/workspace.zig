@@ -206,9 +206,9 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         }
     }
 
-    const prompts = try collectManifestMap(req.arena, conn, "SELECT wp.prompt_id, p.path, p.content_hash FROM workspace_prompts wp JOIN prompts p ON p.prompt_id = wp.prompt_id WHERE wp.ws_id = $1", .{ws_id});
+    const prompts = try collectManifestMap(req.arena, conn, "SELECT wp.prompt_id, p.path, p.content_hash, p.description FROM workspace_prompts wp JOIN prompts p ON p.prompt_id = wp.prompt_id WHERE wp.ws_id = $1", .{ws_id});
 
-    const context = try collectManifestMap(req.arena, conn, "SELECT context_id, path, content_hash FROM context_files WHERE ws_id = $1", .{ws_id});
+    const context = try collectManifestMap(req.arena, conn, "SELECT context_id, path, content_hash, description FROM context_files WHERE ws_id = $1", .{ws_id});
 
     var etag_buf: [32]u8 = undefined;
     const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
@@ -706,6 +706,7 @@ fn collectManifestMap(arena: std.mem.Allocator, conn: anytype, sql: []const u8, 
             .value = .{
                 .path = try arena.dupe(u8, try row.get([]const u8, 1)),
                 .hash = try arena.dupe(u8, try row.get([]const u8, 2)),
+                .description = try arena.dupe(u8, try row.get([]const u8, 3)),
             },
         });
     }
