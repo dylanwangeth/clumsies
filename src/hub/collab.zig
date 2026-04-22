@@ -120,10 +120,14 @@ fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, res: *htt
             try apiError(res, 400, "BAD_REQUEST", "modify requires base_hash");
             return false;
         };
-        if (op.content == null) {
+        const content = op.content orelse {
             try apiError(res, 400, "BAD_REQUEST", "modify requires content");
             return false;
-        }
+        };
+        db_mod.validateContentFormat(content) catch {
+            try apiError(res, 422, "INVALID_FORMAT", "content must have a heading, description paragraph, and at least one section");
+            return false;
+        };
         return try verifyPromptBaseHash(conn, org_id, pid, base_hash, res);
     } else if (std.mem.eql(u8, op.type, "rename")) {
         const pid = op.prompt_id orelse {
@@ -138,6 +142,12 @@ fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, res: *htt
             try apiError(res, 400, "BAD_REQUEST", "rename requires new_path");
             return false;
         };
+        if (op.content) |content| {
+            db_mod.validateContentFormat(content) catch {
+                try apiError(res, 422, "INVALID_FORMAT", "content must have a heading, description paragraph, and at least one section");
+                return false;
+            };
+        }
         if (!try verifyPromptBaseHash(conn, org_id, pid, base_hash, res)) return false;
         return try verifyPathAvailable(conn, org_id, new_path, pid, res);
     } else if (std.mem.eql(u8, op.type, "create")) {
@@ -145,10 +155,14 @@ fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, res: *htt
             try apiError(res, 400, "BAD_REQUEST", "create requires path");
             return false;
         };
-        if (op.content == null) {
+        const content = op.content orelse {
             try apiError(res, 400, "BAD_REQUEST", "create requires content");
             return false;
-        }
+        };
+        db_mod.validateContentFormat(content) catch {
+            try apiError(res, 422, "INVALID_FORMAT", "content must have a heading, description paragraph, and at least one section");
+            return false;
+        };
         return try verifyPathAvailable(conn, org_id, path, null, res);
     } else if (std.mem.eql(u8, op.type, "delete")) {
         const pid = op.prompt_id orelse {
@@ -597,6 +611,11 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
             const pid = op.prompt_id.?;
             const bh = op.base_hash.?;
             const new_content = op.content.?;
+            db_mod.validateContentFormat(new_content) catch {
+                conn.rollback() catch {};
+                try apiError(res, 422, "INVALID_FORMAT", "content must start with a heading followed by a description paragraph");
+                return false;
+            };
             var row = conn.row(
                 "SELECT content_hash, path FROM prompts WHERE prompt_id = $1",
                 .{pid},
@@ -670,6 +689,11 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                 return false;
             }
             if (op.content) |new_content| {
+                db_mod.validateContentFormat(new_content) catch {
+                    conn.rollback() catch {};
+                    try apiError(res, 422, "INVALID_FORMAT", "content must start with a heading followed by a description paragraph");
+                    return false;
+                };
                 const new_hash = util_hash.contentHash(new_content);
                 const hash_slice: []const u8 = arena.dupe(u8, &new_hash) catch {
                     conn.rollback() catch {};
@@ -702,6 +726,11 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
         } else if (std.mem.eql(u8, op.type, "create")) {
             const path = op.path.?;
             const new_content = op.content.?;
+            db_mod.validateContentFormat(new_content) catch {
+                conn.rollback() catch {};
+                try apiError(res, 422, "INVALID_FORMAT", "content must start with a heading followed by a description paragraph");
+                return false;
+            };
             var rand_bytes: [16]u8 = undefined;
             std.crypto.random.bytes(&rand_bytes);
             var new_pid_buf: [36]u8 = undefined;
