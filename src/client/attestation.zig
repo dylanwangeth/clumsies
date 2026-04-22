@@ -294,7 +294,7 @@ test "serializeAttestationEvent: refer event with all fields" {
     try testing.expect(std.mem.indexOf(u8, line, "\"session_id\":\"sess-xyz\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"event_id\":3") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"type\":\"refer\"") != null);
-    try testing.expect(std.mem.indexOf(u8, line, "\"ts\":1743753000000") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"timestamp\":1743753000000") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"prompt_id\":\"p-550e8400\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"constraint_id\":\"c-2\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"reason\":\"applying style\"") != null);
