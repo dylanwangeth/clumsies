@@ -44,6 +44,7 @@ pub const DraftEntry = struct {
     operation: DraftOperation,
     base_hash: ?[]const u8 = null,
     status: DraftStatus,
+    description: ?[]const u8 = null,
 };
 
 /// Parsed drafts index. Strings borrow from an arena; deinit drops the arena.
@@ -161,6 +162,7 @@ fn parseEntry(obj: std.json.ObjectMap) ?DraftEntry {
         .operation = operation,
         .base_hash = stringField(obj, "base_hash"),
         .status = status,
+        .description = stringField(obj, "description"),
     };
 }
 
@@ -206,6 +208,7 @@ pub const CreateDraftParams = struct {
     prompt_id: ?[]const u8 = null,
     context_id: ?[]const u8 = null,
     local_temp_id: ?[]const u8 = null,
+    description: ?[]const u8 = null,
 };
 
 /// Create a new draft entry and write its initial content file. Fails
@@ -245,6 +248,7 @@ pub fn createDraft(
         .operation = params.operation,
         .base_hash = params.base_hash,
         .status = .editing,
+        .description = params.description,
     };
 
     try index.entries.append(index.arena_state.allocator(), new_entry);
@@ -469,6 +473,7 @@ fn serializeIndex(allocator: std.mem.Allocator, entries: []const DraftEntry) ![]
         try writeStringField(allocator, &buf, "operation", operationToString(entry.operation), false);
         try writeOptStringField(allocator, &buf, "base_hash", entry.base_hash);
         try writeStringField(allocator, &buf, "status", statusToString(entry.status), false);
+        try writeOptStringField(allocator, &buf, "description", entry.description);
         try buf.appendSlice(allocator, "\n    }");
     }
     if (entries.len > 0) try buf.appendSlice(allocator, "\n  ");
