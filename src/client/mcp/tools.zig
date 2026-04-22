@@ -18,7 +18,7 @@ const setup_schema =
 
 const search_schema =
     "{\"name\":\"" ++ tool_names.search ++ "\",\"title\":\"Search\",\"description\":\"Discover available rules, workflows, and context files. Returns fresh metadata from the workspace.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const load_schema =
     "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load prompt content by ids. Returns delta based on knownHashes. Rule/Workflow content includes a refer reminder.\"," ++
@@ -240,8 +240,12 @@ fn handleSearch(
         .string => |s| s,
         else => return error.InvalidParams,
     } else null;
+    const query = if (args_obj.get("query")) |value| switch (value) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    } else null;
 
-    var items = try workspace_prompt.discoverSearchable(allocator, workspace_root, kind, group);
+    var items = try workspace_prompt.discoverSearchable(allocator, workspace_root, kind, group, query);
     defer workspace_prompt.deinitPromptItems(allocator, &items);
 
     session.recordEvent(allocator, .search);
