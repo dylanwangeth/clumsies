@@ -757,7 +757,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
             const new_content = op.content.?;
             db_mod.validateContentFormat(new_content) catch {
                 conn.rollback() catch {};
-                try apiError(res, 422, "INVALID_FORMAT", "content must start with a heading followed by a description paragraph");
+                try apiError(res, 422, "INVALID_FORMAT", "content must have an H1 heading, a description paragraph, and at least one H2 section");
                 return false;
             };
             var row = conn.row(
@@ -821,7 +821,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
             if (op.content) |new_content| {
                 db_mod.validateContentFormat(new_content) catch {
                     conn.rollback() catch {};
-                    try apiError(res, 422, "INVALID_FORMAT", "content must start with a heading followed by a description paragraph");
+                    try apiError(res, 422, "INVALID_FORMAT", "content must have an H1 heading, a description paragraph, and at least one H2 section");
                     return false;
                 };
                 const new_hash = util_hash.contentHash(new_content);
@@ -853,7 +853,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
             const new_content = op.content.?;
             db_mod.validateContentFormat(new_content) catch {
                 conn.rollback() catch {};
-                try apiError(res, 422, "INVALID_FORMAT", "content must start with a heading followed by a description paragraph");
+                try apiError(res, 422, "INVALID_FORMAT", "content must have an H1 heading, a description paragraph, and at least one H2 section");
                 return false;
             };
             var rand_bytes: [16]u8 = undefined;

@@ -406,3 +406,46 @@ const migration_sql =
     \\    PRIMARY KEY (prompt_id, content_hash)
     \\);
 ;
+
+test "validateContentFormat accepts valid markdown" {
+    const valid = "# Title\n\nDescription text.\n\n## Section\n\n- Item";
+    try validateContentFormat(valid);
+}
+
+test "validateContentFormat rejects missing heading" {
+    const no_h1 = "No heading here\n\n## Section\n\n- Item";
+    try std.testing.expectError(error.MissingHeading, validateContentFormat(no_h1));
+}
+
+test "validateContentFormat rejects missing description" {
+    const no_desc = "# Title\n\n## Section\n\n- Item";
+    try std.testing.expectError(error.MissingDescription, validateContentFormat(no_desc));
+}
+
+test "validateContentFormat rejects missing section" {
+    const no_h2 = "# Title\n\nDescription.\n";
+    try std.testing.expectError(error.MissingSection, validateContentFormat(no_h2));
+}
+
+test "validateContentFormat rejects H2-only file" {
+    const h2_only = "## Not a title\n\n## Section\n\n- Item";
+    try std.testing.expectError(error.MissingHeading, validateContentFormat(h2_only));
+}
+
+test "extractDescription returns text between H1 and H2" {
+    const content = "# Title\n\nFirst paragraph.\n\nSecond line.\n\n## Section\n\n- Item";
+    const desc = extractDescription(content);
+    try std.testing.expectEqualStrings("First paragraph.\n\nSecond line.", desc);
+}
+
+test "extractDescription returns empty for no content between H1 and H2" {
+    const content = "# Title\n\n## Section\n\n- Item";
+    const desc = extractDescription(content);
+    try std.testing.expectEqualStrings("", desc);
+}
+
+test "extractDescription skips front matter separators" {
+    const content = "# Title\n\n---\n\nDescription here.\n\n## Section\n\n- Item";
+    const desc = extractDescription(content);
+    try std.testing.expectEqualStrings("Description here.", desc);
+}
