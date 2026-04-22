@@ -600,7 +600,7 @@ fn handleProposeRename(
         .prompt_id = if (category == .prompt) id else null,
         .context_id = if (category == .context) id else null,
         .description = description,
-}, "");
+    }, "");
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_rename = .{ .id = id, .new_path = new_path } },

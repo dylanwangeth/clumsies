@@ -38,7 +38,7 @@ pub fn migrate(pool: *Pool) !void {
     };
 }
 
-pub const ContentFormatError = error{MissingHeading, MissingDescription, MissingSection};
+pub const ContentFormatError = error{ MissingHeading, MissingDescription, MissingSection };
 
 /// Validate that markdown content follows the required structure:
 /// H1 title, description paragraph(s) between H1 and first H2, at least one H2 section.
