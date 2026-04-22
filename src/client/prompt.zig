@@ -19,6 +19,7 @@ fn displayNameFromFilename(filename: []const u8) []const u8 {
 pub const PromptKind = enum {
     rule,
     workflow,
+    context,
 };
 
 pub const SetupPriority = enum(u8) {
@@ -73,7 +74,7 @@ pub const LoadResult = struct {
 
 fn priorityForKind(kind: PromptKind) SetupPriority {
     return switch (kind) {
-        .rule, .workflow => .normal,
+        .rule, .workflow, .context => .normal,
     };
 }
 
@@ -81,6 +82,7 @@ pub fn kindToString(kind: PromptKind) []const u8 {
     return switch (kind) {
         .rule => "rule",
         .workflow => "workflow",
+        .context => "context",
     };
 }
 
@@ -245,9 +247,11 @@ fn matchesGroup(item_group: []const u8, filter: []const u8) bool {
     return false;
 }
 
-/// Discover prompts available for memory.search. Iterates the local
-/// manifest, classifies each entry by path prefix, and applies optional
-/// kind/group filters. Reserved paths (META_PROMPT.md) are excluded.
+/// Discover prompts and context available for memory.search. Iterates the
+/// local manifest, classifies each entry by path prefix or category, and
+/// applies optional kind/group filters. Reserved paths (META_PROMPT.md) are
+/// excluded. Context entries have kind = .context and group derived from
+/// their path's first component.
 pub fn discoverSearchable(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
@@ -299,6 +303,42 @@ pub fn discoverSearchable(
             .hash = hash_owned,
             .priority = priorityForKind(kind),
         });
+    }
+
+    if (kind_filter == null or kind_filter.? == .context) {
+        var ctx_it = manifest.context.iterator();
+        while (ctx_it.next()) |entry| {
+            const m_entry = entry.value_ptr.*;
+
+            const group_slice = groupFromPath(m_entry.path);
+            if (group_filter) |gf| {
+                const g = group_slice orelse continue;
+                if (!matchesGroup(g, gf)) continue;
+            }
+
+            const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
+
+            const id_owned = try allocator.dupe(u8, entry.key_ptr.*);
+            errdefer allocator.free(id_owned);
+            const path_owned = try allocator.dupe(u8, m_entry.path);
+            errdefer allocator.free(path_owned);
+            const name_owned = try allocator.dupe(u8, display_name);
+            errdefer allocator.free(name_owned);
+            const group_owned = if (group_slice) |g| try allocator.dupe(u8, g) else null;
+            errdefer if (group_owned) |g| allocator.free(g);
+            const hash_owned = try allocator.dupe(u8, m_entry.hash);
+            errdefer allocator.free(hash_owned);
+
+            try items.append(allocator, .{
+                .id = id_owned,
+                .kind = .context,
+                .path = path_owned,
+                .name = name_owned,
+                .group = group_owned,
+                .hash = hash_owned,
+                .priority = .normal,
+            });
+        }
     }
 
     std.mem.sort(PromptItem, items.items, {}, lessThanPromptItem);
@@ -393,8 +433,25 @@ pub fn loadPrompts(
 
 fn readCacheFileAlloc(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
     if (!path_util.isSafeRelative(rel_path)) return error.UnsafeCachePath;
+    return readPromptCacheFile(allocator, ws_dir, rel_path);
+}
 
+pub fn readPromptCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
     const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "prompt", rel_path });
+    defer allocator.free(abs_path);
+
+    const file = try std.fs.openFileAbsolute(abs_path, .{});
+    defer file.close();
+
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE));
+}
+
+pub fn readContextCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
+    if (!path_util.isSafeRelative(rel_path)) return error.UnsafeCachePath;
+
+    const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "context", rel_path });
     defer allocator.free(abs_path);
 
     const file = try std.fs.openFileAbsolute(abs_path, .{});

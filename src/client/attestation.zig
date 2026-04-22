@@ -31,6 +31,14 @@ pub const AttestationEvent = struct {
         load: LoadPayload,
         refer: ReferPayload,
         agent_report: AgentReportPayload,
+        context_propose_create: ProposeCreatePayload,
+        context_propose_update: ProposeUpdatePayload,
+        context_propose_rename: ProposeRenamePayload,
+        context_propose_delete: ProposeDeletePayload,
+        prompt_propose_create: ProposeCreatePayload,
+        prompt_propose_update: ProposeUpdatePayload,
+        prompt_propose_rename: ProposeRenamePayload,
+        prompt_propose_delete: ProposeDeletePayload,
     };
 
     pub const UserPromptPayload = struct {
@@ -53,6 +61,23 @@ pub const AttestationEvent = struct {
     pub const AgentReportPayload = struct {
         summary: []const u8,
     };
+
+    pub const ProposeCreatePayload = struct {
+        path: []const u8,
+    };
+
+    pub const ProposeUpdatePayload = struct {
+        id: []const u8,
+    };
+
+    pub const ProposeRenamePayload = struct {
+        id: []const u8,
+        new_path: []const u8,
+    };
+
+    pub const ProposeDeletePayload = struct {
+        id: []const u8,
+    };
 };
 
 /// Map Payload tag to the JSON "type" string.
@@ -64,6 +89,14 @@ pub fn payloadTypeTag(payload: AttestationEvent.Payload) []const u8 {
         .load => "load",
         .refer => "refer",
         .agent_report => "agent_report",
+        .context_propose_create => "context_propose_create",
+        .context_propose_update => "context_propose_update",
+        .context_propose_rename => "context_propose_rename",
+        .context_propose_delete => "context_propose_delete",
+        .prompt_propose_create => "prompt_propose_create",
+        .prompt_propose_update => "prompt_propose_update",
+        .prompt_propose_rename => "prompt_propose_rename",
+        .prompt_propose_delete => "prompt_propose_delete",
     };
 }
 
@@ -184,6 +217,32 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
         },
         .agent_report => |p| {
             try writeOptionalString(allocator, &buf, "summary", p.summary);
+        },
+        .context_propose_create => |p| {
+            try writeOptionalString(allocator, &buf, "path", p.path);
+        },
+        .context_propose_update => |p| {
+            try writeOptionalString(allocator, &buf, "context_id", p.id);
+        },
+        .context_propose_rename => |p| {
+            try writeOptionalString(allocator, &buf, "context_id", p.id);
+            try writeOptionalString(allocator, &buf, "new_path", p.new_path);
+        },
+        .context_propose_delete => |p| {
+            try writeOptionalString(allocator, &buf, "context_id", p.id);
+        },
+        .prompt_propose_create => |p| {
+            try writeOptionalString(allocator, &buf, "path", p.path);
+        },
+        .prompt_propose_update => |p| {
+            try writeOptionalString(allocator, &buf, "prompt_id", p.id);
+        },
+        .prompt_propose_rename => |p| {
+            try writeOptionalString(allocator, &buf, "prompt_id", p.id);
+            try writeOptionalString(allocator, &buf, "new_path", p.new_path);
+        },
+        .prompt_propose_delete => |p| {
+            try writeOptionalString(allocator, &buf, "prompt_id", p.id);
         },
     }
 
