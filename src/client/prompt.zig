@@ -255,6 +255,15 @@ fn matchesGroup(item_group: []const u8, filter: []const u8) bool {
     return false;
 }
 
+fn matchesQuery(haystack: []const u8, query: []const u8) bool {
+    if (query.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + query.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + query.len], query)) return true;
+    }
+    return false;
+}
+
 /// Discover prompts and context available for memory.search. Iterates the
 /// local manifest, classifies each entry by path prefix or category, and
 /// applies optional kind/group filters. Reserved paths (META_PROMPT.md) are
@@ -265,6 +274,7 @@ pub fn discoverSearchable(
     ws_dir: []const u8,
     kind_filter: ?PromptKind,
     group_filter: ?[]const u8,
+    query_filter: ?[]const u8,
 ) !std.ArrayList(PromptItem) {
     var items: std.ArrayList(PromptItem) = .empty;
     errdefer deinitPromptItems(allocator, &items);
@@ -287,6 +297,12 @@ pub fn discoverSearchable(
         if (group_filter) |gf| {
             const g = group_slice orelse continue;
             if (!matchesGroup(g, gf)) continue;
+        }
+
+        if (query_filter) |q| {
+            const in_path = matchesQuery(m_entry.path, q);
+            const in_desc = m_entry.description.len > 0 and matchesQuery(m_entry.description, q);
+            if (!in_path and !in_desc) continue;
         }
 
         const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
@@ -325,6 +341,12 @@ pub fn discoverSearchable(
             if (group_filter) |gf| {
                 const g = group_slice orelse continue;
                 if (!matchesGroup(g, gf)) continue;
+            }
+
+            if (query_filter) |q| {
+                const in_path = matchesQuery(m_entry.path, q);
+                const in_desc = m_entry.description.len > 0 and matchesQuery(m_entry.description, q);
+                if (!in_path and !in_desc) continue;
             }
 
             const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
@@ -736,7 +758,7 @@ test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    var items = try discoverSearchable(testing.allocator, root, null, null);
+    var items = try discoverSearchable(testing.allocator, root, null, null, null);
     defer deinitPromptItems(testing.allocator, &items);
 
     try testing.expectEqual(@as(usize, 3), items.items.len);
@@ -767,7 +789,7 @@ test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
     try testing.expect(found_style);
     try testing.expect(found_commit);
 
-    var coding_filtered = try discoverSearchable(testing.allocator, root, null, "coding");
+    var coding_filtered = try discoverSearchable(testing.allocator, root, null, "coding", null);
     defer deinitPromptItems(testing.allocator, &coding_filtered);
     try testing.expectEqual(@as(usize, 1), coding_filtered.items.len);
     try testing.expectEqualStrings("p-style", coding_filtered.items[0].id);
@@ -789,7 +811,7 @@ test "discoverSearchable: kind filter narrows results" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    var rules = try discoverSearchable(testing.allocator, root, .rule, null);
+    var rules = try discoverSearchable(testing.allocator, root, .rule, null, null);
     defer deinitPromptItems(testing.allocator, &rules);
 
     try testing.expectEqual(@as(usize, 1), rules.items.len);
@@ -812,7 +834,7 @@ test "discoverSearchable: group filter matches first path component" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    var zig_rules = try discoverSearchable(testing.allocator, root, .rule, "zig");
+    var zig_rules = try discoverSearchable(testing.allocator, root, .rule, "zig", null);
     defer deinitPromptItems(testing.allocator, &zig_rules);
 
     try testing.expectEqual(@as(usize, 1), zig_rules.items.len);
@@ -835,7 +857,7 @@ test "discoverSearchable: META_PROMPT.md is excluded" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    var items = try discoverSearchable(testing.allocator, root, null, null);
+    var items = try discoverSearchable(testing.allocator, root, null, null, null);
     defer deinitPromptItems(testing.allocator, &items);
 
     try testing.expectEqual(@as(usize, 1), items.items.len);
