@@ -68,55 +68,48 @@ pub const PumpProfile = struct {
 };
 
 pub const META_PROMPT_CONTENT =
-    \\# clumsies Meta-Prompt File
+    \\# clumsies
     \\
-    \\This project uses clumsies to manage user-level constraints for AI agents. Your behavior in this workspace is guided by constraint files in `.prompts/`.
+    \\This workspace uses [clumsies](https://github.com/lilhammerfun/clumsies/blob/main/README.md)
+    \\to manage rules and context for AI agents. These coexist with your own memory,
+    \\but take priority when they conflict.
     \\
-    \\## How clumsies works
+    \\## Protocol
     \\
-    \\Constraints are markdown files organized in `.prompts/`. Each constraint file contains rules you should follow, workflows you should execute, or context you should reference. The system tracks which constraints you actually use - this data helps the user refine their prompts over time.
+    \\Follow this loop every turn:
     \\
-    \\The tracking mechanism: when you apply a constraint in your work, you declare it via `memory.refer`. Over time, constraints that are never referred become candidates for removal or revision. This is the core value of the system - making prompt quality measurable.
+    \\1. **Discover.** Call `memory.search()` to list all available rules,
+    \\   workflows, and context. Read their descriptions to decide what is relevant.
+    \\2. **Load.** Call `memory.load()` with the ids you need. Loaded content includes
+    \\   parsed rule ids.
+    \\3. **Apply.** Follow loaded rules in your work. Rules override your defaults.
+    \\4. **Refer.** Call `memory.refer()` for each rule you applied. This is
+    \\   not optional — it is how the system measures rule effectiveness.
+    \\5. **Refine.** When the user asks you to create, update, or delete rules or
+    \\   context, use `context.propose_create()`, `context.propose_update()`,
+    \\   `context.propose_rename()`, `context.propose_delete()` for workspace context,
+    \\   and `prompt.propose_create()`, `prompt.propose_update()`,
+    \\   `prompt.propose_rename()`, `prompt.propose_delete()` for library rules.
+    \\6. **Submit.** Call `memory.submit()` with a short summary of your work before
+    \\   finishing every response. The stop hook will block if you forget.
     \\
-    \\## What the plugin handles for you
+    \\## Resource types
     \\
-    \\The Claude Code plugin automates the protocol lifecycle. You do not need to manage these yourself:
+    \\- **rule** (`<category>/<name>.md`) — rules to follow in your work.
+    \\- **workflow** (`workflow/<name>.md`) — ordered procedures, exposed as
+    \\  slash commands by the adapter.
+    \\- **context** — workspace-scoped reference material (design docs, research,
+    \\  specs).
     \\
-    \\- **Session start**: The plugin calls `memory.setup` and `memory.begin` automatically. Your task is already active when you see this message.
-    \\- **Task completion**: The user triggers `/complete-task` when they decide the task is done. Do not call `memory.complete` yourself.
-    \\- **Refer reminder**: The plugin reminds you at the end of each response to declare constraint references. Pay attention to this reminder.
-    \\- **Workflow skills**: Workflow files in `.prompts/workflow/` are available as slash commands (e.g., `/gen-commit-msg`). The user invokes them, not you.
+    \\Categories are organizational only (e.g. `coding/`, `zig/`, `writing/`).
     \\
-    \\## What you are responsible for
+    \\Filter with `memory.search({kind: "rule"})` or `memory.search({group: "zig"})`.
     \\
-    \\1. **Search for relevant constraints** before starting work. Call `memory.search` to discover what rules and workflows exist for the task at hand.
-    \\2. **Load constraints** you intend to follow. Call `memory.load` with the prompt ids from search results. The response includes a list of parsed constraints with their ids.
-    \\3. **Follow the constraints** in your work. These take priority over your default behavior and training knowledge.
-    \\4. **Declare references** when you apply a constraint. Call `memory.refer` with the prompt id and constraint id. This is not optional bookkeeping - it is how the system measures whether constraints are effective.
+    \\## Priority
     \\
-    \\## Priority model
+    \\Loaded rules > this meta-prompt > your defaults.
     \\
-    \\`.prompts/PIN.md` (if present) > constraints loaded via `memory.load` > this meta-prompt > your system prompt and defaults.
-    \\
-    \\When a constraint conflicts with your training knowledge, follow the constraint.
-    \\
-    \\## Directory structure
-    \\
-    \\```
-    \\.prompts/
-    \\|- META_PROMPT.md     # This file (loaded by the plugin on session start)
-    \\|- PIN.md             # Highest priority rules (read before every task)
-    \\|- rule/              # Constraints (coding rules, project context, etc.)
-    \\|- workflow/          # Ordered procedures (commit messages, architecture, etc.)
-    \\|- context/           # Reference material (research, specs, documentation)
-    \\`- journal/           # Development logs (consult when hitting problems)
-    \\```
-    \\
-    \\File naming: `NN_UPPER_SNAKE_CASE.md`. Sequence numbers allow quick reference.
-    \\
-    \\## Without MCP
-    \\
-    \\If no MCP server is connected, read `.prompts/` files directly. The directory structure above tells you where to find what you need. Follow constraints you find relevant and note which ones you applied.
+    \\When a rule conflicts with your training, follow the rule.
 ;
 
 pub const CODING_WORKFLOW_CONTENT =
