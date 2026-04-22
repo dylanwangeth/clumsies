@@ -7,7 +7,7 @@ const data = @import("../view_types.zig");
 const api = @import("../api.zig");
 const drafts_mod = @import("../../drafts.zig");
 const prompt_detail = @import("prompt_detail.zig");
-const Modal = @import("../widgets/modal.zig").Modal;
+const Modal = w.Modal;
 
 const MAX_TREE_ROWS = 128;
 
@@ -80,7 +80,7 @@ pub fn drawStatus(
     const grid_rows: u16 = (ws_count + cols - 1) / cols;
     const bar_h: u16 = 1 + grid_rows + 1;
 
-    const bar_border = w.focusBorder(self.ws_focus == .bar);
+    const bar_border = theme.focusBorder(self.ws_focus == .bar);
     var bar = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = bar_h });
     w.fillSurface(&bar, theme.PANEL);
     w.drawBorder(&bar, bar_border, theme.PANEL);
@@ -141,7 +141,7 @@ pub fn drawList(
     live_ws: ?api.model.WsDetail,
     lib_prompts: []const data.PromptEntry,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const list_border = w.focusBorder(self.ws_focus == .list);
+    const list_border = theme.focusBorder(self.ws_focus == .list);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, list_border, theme.PANEL);
@@ -217,18 +217,8 @@ pub fn drawList(
                 const m = marker_info orelse break :blk null;
                 break :blk self.draftStatusFor(m.category, m.path);
             };
-            const row_fg = if (draft_status) |s|
-                theme.draftStatusColor(s)
-            else if (sel)
-                theme.TEXT
-            else
-                theme.TEXT_SOFT;
-            const row_style = if (sel) theme.boldOn(theme.PANEL, row_fg) else theme.fg(row_fg);
-            w.writeText(&surface, ctx, row_col, kv_row, rendered, row_style);
-            if (draft_status != null) {
-                const nw: u16 = @intCast(ctx.stringWidth(rendered));
-                w.writeText(&surface, ctx, row_col + nw + 1, kv_row, "*", row_style);
-            }
+            const row_style = w.draftRowStyle(sel, draft_status);
+            w.writeDraftMarker(&surface, ctx, row_col, kv_row, rendered, draft_status != null, row_style);
         }
         kv_row += 1;
     }
@@ -242,7 +232,7 @@ pub fn drawDetail(
     args: DetailArgs,
 ) std.mem.Allocator.Error!vxfw.Surface {
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-    const content_border = w.focusBorder(self.ws_focus == .content);
+    const content_border = theme.focusBorder(self.ws_focus == .content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, content_border, theme.PANEL);
 
@@ -321,10 +311,10 @@ fn writeWsMetaOnHeader(
                     "{s}  {s}  {s}",
                     .{ hash7, f.author, updated_short },
                 );
-                _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
+                _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
             } else if (args.context_sel_path != null) {
                 // Virtual row: local create-op draft, no hub metadata.
-                _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
+                _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
             }
         },
         .prompts => {
@@ -332,7 +322,7 @@ fn writeWsMetaOnHeader(
                 if (idx >= ws_d.ws_prompts.len) return;
                 const p = &ws_d.ws_prompts[idx];
                 const hash7 = hashBadge(p.content_hash);
-                _ = writeHeaderRightIfFits(surface, ctx, 0, min_col, hash7, theme.fg(theme.MUTED));
+                _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, hash7, theme.fg(theme.MUTED));
             }
         },
     }
@@ -346,22 +336,6 @@ fn hashBadge(raw: []const u8) []const u8 {
     const start = if (colon) |c| c + 1 else 0;
     const slice = raw[start..];
     return slice[0..@min(7, slice.len)];
-}
-
-fn writeHeaderRightIfFits(
-    surface: *vxfw.Surface,
-    ctx: vxfw.DrawContext,
-    row: u16,
-    min_col: u16,
-    text: []const u8,
-    style: vaxis.Style,
-) bool {
-    const width: u16 = @intCast(ctx.stringWidth(text));
-    if (width == 0 or width >= surface.size.width) return false;
-    const start_col = surface.size.width - width - 1;
-    if (start_col <= min_col) return false;
-    w.writeText(surface, ctx, start_col, row, text, style);
-    return true;
 }
 
 fn drawDirSelected(

@@ -14,7 +14,7 @@ pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Erro
     w.fillSurface(&root, theme.PANEL);
 
     const sidebar_w: u16 = 18;
-    const sidebar_border = w.focusBorder(self.settings_focus == .sidebar);
+    const sidebar_border = theme.focusBorder(self.settings_focus == .sidebar);
     var sidebar = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = sidebar_w, .height = size.height });
     w.fillSurface(&sidebar, theme.PANEL);
     w.drawBorder(&sidebar, sidebar_border, theme.PANEL);
@@ -109,7 +109,7 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
 
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
     w.fillSurface(&surface, theme.PANEL);
-    w.drawBorder(&surface, w.focusBorder(focused), theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(focused), theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Account", theme.boldOn(theme.PANEL, theme.TEXT));
 
     var row: u16 = 2;
@@ -213,7 +213,7 @@ fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error
     const focused = self.settings_focus == .content;
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
     w.fillSurface(&surface, theme.PANEL);
-    w.drawBorder(&surface, w.focusBorder(focused), theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(focused), theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Organization", theme.boldOn(theme.PANEL, theme.TEXT));
 
     var row: u16 = 2;
@@ -277,7 +277,7 @@ fn drawSettingsToken(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Err
     const t: data.TokenInfo = .{ .scopes = &.{}, .expires = "\xe2\x80\x94" };
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
     w.fillSurface(&surface, theme.PANEL);
-    w.drawBorder(&surface, w.focusBorder(focused), theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(focused), theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Token", theme.boldOn(theme.PANEL, theme.TEXT));
 
     var row: u16 = 2;

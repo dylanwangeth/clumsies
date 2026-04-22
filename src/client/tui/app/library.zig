@@ -28,7 +28,7 @@ pub fn drawListPanel(
 ) std.mem.Allocator.Error!vxfw.Surface {
     const size = ctx.max.size();
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-    const border_color = w.focusBorder(!self.detail_focus_content);
+    const border_color = theme.focusBorder(!self.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
 
@@ -394,19 +394,14 @@ pub fn syncLibraryWidgets(self: anytype) void {
                 (std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{row_text}) catch row_text)
             else
                 row_text;
-            const row_fg = if (draft_status_opt) |s|
-                theme.draftStatusColor(s)
-            else if (row_sel)
-                theme.TEXT
-            else
-                theme.TEXT_SOFT;
+            const row_style = w.draftRowStyle(row_sel, draft_status_opt);
             self.library_table_cols[i] = .{
                 .{ .text = labeled_text, .flex = 1 },
                 .{ .text = pr_label, .flex = 0, .min_width = 2, .alignment = .right },
             };
             self.library_table_rows[i] = .{
                 .columns = &self.library_table_cols[i],
-                .style = if (row_sel) theme.boldOn(theme.PANEL, row_fg) else theme.textOn(theme.PANEL, row_fg),
+                .style = row_style,
                 .gap = 2,
                 .padding_left = 0,
             };

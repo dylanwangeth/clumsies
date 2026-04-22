@@ -4,7 +4,7 @@ const vxfw = vaxis.vxfw;
 const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
 const attestation_reader = @import("../attestation_reader.zig");
-const Modal = @import("../widgets/modal.zig").Modal;
+const Modal = w.Modal;
 
 pub fn drawRoot(
     self: anytype,
@@ -34,7 +34,7 @@ pub fn drawChart(
     scope_label: []const u8,
     active_session_count: usize,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const border_color = w.focusBorder(self.analysis_focus == .chart);
+    const border_color = theme.focusBorder(self.analysis_focus == .chart);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
@@ -127,7 +127,7 @@ pub fn drawInputs(
     visible_inputs: []const attestation_reader.InputEvent,
     scope_label: []const u8,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const border_color = w.focusBorder(self.analysis_focus == .inputs);
+    const border_color = theme.focusBorder(self.analysis_focus == .inputs);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
