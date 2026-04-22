@@ -32,6 +32,8 @@ plugins/
 CLAUDE.md
 prompts/
 GEMINI.md
+.mcp.json
 
 # Local developer environment
+.env
 .env.local
