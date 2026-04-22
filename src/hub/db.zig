@@ -206,6 +206,28 @@ pub fn bootstrap(pool: *Pool) !void {
 }
 
 const migration_sql =
+    \\-- Rename existing tables from old schema (idempotent for new installs).
+    \\DO $$ BEGIN ALTER TABLE prompts RENAME TO rules; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE workspace_prompts RENAME TO workspace_rules; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE bundle_prompts RENAME TO bundle_rules; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE prompt_prs RENAME TO rule_prs; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE prompt_pr_operations RENAME TO rule_pr_operations; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE prompt_pr_comments RENAME TO rule_pr_comments; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE prompt_history RENAME TO rule_history; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+    \\
+    \\-- Rename existing columns from old schema.
+    \\DO $$ BEGIN ALTER TABLE rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE workspace_rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE bundle_rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE rule_pr_operations RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE attestation_events RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE attestation_events RENAME COLUMN prompt_hash TO rule_hash; EXCEPTION WHEN undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE rule_history RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
+    \\
+    \\-- Rename existing indexes.
+    \\DO $$ BEGIN ALTER INDEX IF EXISTS prompt_pr_operations_prompt_id_idx RENAME TO rule_pr_operations_rule_id_idx; EXCEPTION WHEN OTHERS THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER INDEX IF EXISTS attestation_events_prompt_ts_idx RENAME TO attestation_events_rule_ts_idx; EXCEPTION WHEN OTHERS THEN NULL; END $$;
+    \\
     \\CREATE TABLE IF NOT EXISTS orgs (
     \\    org_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     \\    name TEXT NOT NULL UNIQUE,
@@ -256,8 +278,8 @@ const migration_sql =
     \\CREATE INDEX IF NOT EXISTS workspace_members_user_id_idx
     \\    ON workspace_members(user_id);
     \\
-    \\CREATE TABLE IF NOT EXISTS prompts (
-    \\    prompt_id TEXT PRIMARY KEY,
+    \\CREATE TABLE IF NOT EXISTS rules (
+    \\    rule_id TEXT PRIMARY KEY,
     \\    org_id UUID NOT NULL REFERENCES orgs(org_id),
     \\    path TEXT NOT NULL,
     \\    content TEXT NOT NULL DEFAULT '',
@@ -267,10 +289,10 @@ const migration_sql =
     \\    UNIQUE(org_id, path)
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS workspace_prompts (
+    \\CREATE TABLE IF NOT EXISTS workspace_rules (
     \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id),
-    \\    prompt_id TEXT NOT NULL REFERENCES prompts(prompt_id),
-    \\    PRIMARY KEY (ws_id, prompt_id)
+    \\    rule_id TEXT NOT NULL REFERENCES rules(rule_id),
+    \\    PRIMARY KEY (ws_id, rule_id)
     \\);
     \\
     \\CREATE TABLE IF NOT EXISTS context_files (
@@ -328,13 +350,13 @@ const migration_sql =
     \\    UNIQUE(org_id, name)
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS bundle_prompts (
+    \\CREATE TABLE IF NOT EXISTS bundle_rules (
     \\    bundle_id TEXT NOT NULL REFERENCES bundles(bundle_id),
-    \\    prompt_id TEXT NOT NULL REFERENCES prompts(prompt_id),
-    \\    PRIMARY KEY (bundle_id, prompt_id)
+    \\    rule_id TEXT NOT NULL REFERENCES rules(rule_id),
+    \\    PRIMARY KEY (bundle_id, rule_id)
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS prompt_prs (
+    \\CREATE TABLE IF NOT EXISTS rule_prs (
     \\    pr_id TEXT PRIMARY KEY,
     \\    org_id UUID NOT NULL REFERENCES orgs(org_id),
     \\    author_id TEXT NOT NULL REFERENCES users(user_id),
@@ -344,22 +366,22 @@ const migration_sql =
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS prompt_pr_operations (
-    \\    pr_id TEXT NOT NULL REFERENCES prompt_prs(pr_id) ON DELETE CASCADE,
+    \\CREATE TABLE IF NOT EXISTS rule_pr_operations (
+    \\    pr_id TEXT NOT NULL REFERENCES rule_prs(pr_id) ON DELETE CASCADE,
     \\    op_index INTEGER NOT NULL,
     \\    type TEXT NOT NULL CHECK (type IN ('modify', 'rename', 'create', 'delete')),
-    \\    prompt_id TEXT,
+    \\    rule_id TEXT,
     \\    base_hash TEXT,
     \\    content TEXT,
     \\    path TEXT,
     \\    PRIMARY KEY (pr_id, op_index)
     \\);
-    \\CREATE INDEX IF NOT EXISTS prompt_pr_operations_prompt_id_idx
-    \\    ON prompt_pr_operations(prompt_id);
+    \\CREATE INDEX IF NOT EXISTS rule_pr_operations_rule_id_idx
+    \\    ON rule_pr_operations(rule_id);
     \\
-    \\CREATE TABLE IF NOT EXISTS prompt_pr_comments (
+    \\CREATE TABLE IF NOT EXISTS rule_pr_comments (
     \\    comment_id TEXT PRIMARY KEY,
-    \\    pr_id TEXT NOT NULL REFERENCES prompt_prs(pr_id),
+    \\    pr_id TEXT NOT NULL REFERENCES rule_prs(pr_id),
     \\    author_id TEXT NOT NULL REFERENCES users(user_id),
     \\    body TEXT NOT NULL,
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -372,8 +394,8 @@ const migration_sql =
     \\    event_id BIGINT NOT NULL,
     \\    type TEXT NOT NULL,
     \\    timestamp BIGINT NOT NULL,
-    \\    prompt_id TEXT,
-    \\    prompt_hash TEXT,
+    \\    rule_id TEXT,
+    \\    rule_hash TEXT,
     \\    constraint_id TEXT,
     \\    reason TEXT,
     \\    content TEXT,
@@ -388,22 +410,22 @@ const migration_sql =
     \\    ON attestation_events(user_id);
     \\CREATE INDEX IF NOT EXISTS attestation_events_ws_ts_idx
     \\    ON attestation_events(ws_id, timestamp DESC);
-    \\CREATE INDEX IF NOT EXISTS attestation_events_prompt_ts_idx
-    \\    ON attestation_events(prompt_id, timestamp DESC);
+    \\CREATE INDEX IF NOT EXISTS attestation_events_rule_ts_idx
+    \\    ON attestation_events(rule_id, timestamp DESC);
     \\
     \\CREATE TABLE IF NOT EXISTS library_manifest (
     \\    org_id UUID PRIMARY KEY REFERENCES orgs(org_id),
     \\    revision INTEGER NOT NULL DEFAULT 0
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS prompt_history (
-    \\    prompt_id TEXT NOT NULL REFERENCES prompts(prompt_id),
+    \\CREATE TABLE IF NOT EXISTS rule_history (
+    \\    rule_id TEXT NOT NULL REFERENCES rules(rule_id),
     \\    content_hash TEXT NOT NULL,
     \\    path TEXT NOT NULL DEFAULT '',
     \\    content TEXT NOT NULL DEFAULT '',
     \\    merged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    pr_id TEXT,
-    \\    PRIMARY KEY (prompt_id, content_hash)
+    \\    PRIMARY KEY (rule_id, content_hash)
     \\);
 ;
 

@@ -1,5 +1,5 @@
-//! Hub Library endpoints. The Library is the org's prompt collection and single source of truth.
-//! Serves the library manifest (content index), prompt metadata, prompt content by hash, and
+//! Hub Library endpoints. The Library is the org's rule collection and single source of truth.
+//! Serves the library manifest (content index), rule metadata, rule content by hash, and
 //! bundle definitions.
 const std = @import("std");
 const httpz = @import("httpz");
@@ -11,12 +11,12 @@ const apiError = @import("api_error.zig").send;
 const BundleListResponse = library_api.BundleListResponse;
 const BundleMeta = library_api.BundleMeta;
 const LibraryManifestResponse = library_api.LibraryManifestResponse;
-const PromptListResponse = library_api.PromptListResponse;
-const PromptMeta = library_api.PromptMeta;
-const PromptContentResponse = library_api.PromptContentResponse;
-const BatchPromptContentRequest = library_api.BatchPromptContentRequest;
-const BatchPromptContentResponse = library_api.BatchPromptContentResponse;
-const BatchPromptItem = library_api.BatchPromptItem;
+const RuleListResponse = library_api.RuleListResponse;
+const RuleMeta = library_api.RuleMeta;
+const RuleContentResponse = library_api.RuleContentResponse;
+const BatchRuleContentRequest = library_api.BatchRuleContentRequest;
+const BatchRuleContentResponse = library_api.BatchRuleContentResponse;
+const BatchRuleItem = library_api.BatchRuleItem;
 const ManifestMap = manifest.ManifestMap;
 const ManifestItem = manifest.ManifestItem;
 
@@ -41,7 +41,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     } orelse {
         try res.json(LibraryManifestResponse{
             .revision = @as(i32, 0),
-            .prompts = ManifestMap{ .items = &.{} },
+            .rules = ManifestMap{ .items = &.{} },
         }, .{});
         return;
     };
@@ -59,7 +59,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     }
 
     var result = conn.query(
-        "SELECT prompt_id, path, content_hash FROM prompts WHERE org_id = $1::uuid",
+        "SELECT rule_id, path, content_hash FROM rules WHERE org_id = $1::uuid",
         .{user.org_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -83,11 +83,11 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 
     try res.json(LibraryManifestResponse{
         .revision = revision,
-        .prompts = ManifestMap{ .items = items.items },
+        .rules = ManifestMap{ .items = items.items },
     }, .{});
 }
 
-pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleListRules(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
@@ -106,23 +106,23 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     var result = if (path_prefix) |prefix| blk: {
         const like_arg = try std.fmt.allocPrint(req.arena, "{s}%", .{prefix});
         break :blk conn.query(
-            "SELECT p.prompt_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.path LIKE $2 ORDER BY p.path",
+            "SELECT p.rule_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM rules p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.path LIKE $2 ORDER BY p.path",
             .{ user.org_id, like_arg },
         ) catch {
             return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
         };
     } else conn.query(
-        "SELECT p.prompt_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid ORDER BY p.path",
+        "SELECT p.rule_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM rules p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid ORDER BY p.path",
         .{user.org_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
     defer result.deinit();
 
-    var list: std.ArrayList(PromptMeta) = .empty;
+    var list: std.ArrayList(RuleMeta) = .empty;
     while (try result.next()) |row| {
         try list.append(req.arena, .{
-            .prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .rule_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
             .path = try req.arena.dupe(u8, try row.get([]const u8, 1)),
             .content_hash = try req.arena.dupe(u8, try row.get([]const u8, 2)),
             .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
@@ -130,7 +130,7 @@ pub fn handleListPrompts(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         });
     }
 
-    try res.json(PromptListResponse{ .prompts = list.items }, .{});
+    try res.json(RuleListResponse{ .rules = list.items }, .{});
 }
 
 const HistoryEntry = struct {
@@ -140,7 +140,7 @@ const HistoryEntry = struct {
     pr_id: ?[]const u8,
 };
 
-pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleGetRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
@@ -149,10 +149,10 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
     };
-    const prompt_id_q = qs.get("prompt_id");
+    const rule_id_q = qs.get("rule_id");
     const path_q = qs.get("path");
-    if (prompt_id_q == null and path_q == null) {
-        return apiError(res, 400, "BAD_REQUEST", "prompt_id or path query parameter is required");
+    if (rule_id_q == null and path_q == null) {
+        return apiError(res, 400, "BAD_REQUEST", "rule_id or path query parameter is required");
     }
 
     const conn = ctx.pool.acquire() catch {
@@ -160,19 +160,19 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     };
     defer conn.release();
 
-    var row = (if (prompt_id_q) |pid| conn.row(
-        "SELECT p.prompt_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.prompt_id = $2",
+    var row = (if (rule_id_q) |pid| conn.row(
+        "SELECT p.rule_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM rules p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.rule_id = $2",
         .{ user.org_id, pid },
     ) else conn.row(
-        "SELECT p.prompt_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM prompts p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.path = $2",
+        "SELECT p.rule_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM rules p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.path = $2",
         .{ user.org_id, path_q.? },
     )) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        return apiError(res, 404, "NOT_FOUND", "prompt not found");
+        return apiError(res, 404, "NOT_FOUND", "rule not found");
     };
 
-    const prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    const rule_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     const path = try req.arena.dupe(u8, try row.get([]const u8, 1));
     const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 2));
     const updated_at = try req.arena.dupe(u8, try row.get([]const u8, 3));
@@ -180,8 +180,8 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     row.deinit() catch {};
 
     var history_result = conn.query(
-        "SELECT content_hash, path, merged_at::text, pr_id FROM prompt_history WHERE prompt_id = $1 ORDER BY merged_at DESC",
-        .{prompt_id},
+        "SELECT content_hash, path, merged_at::text, pr_id FROM rule_history WHERE rule_id = $1 ORDER BY merged_at DESC",
+        .{rule_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
@@ -205,7 +205,7 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     }
 
     try res.json(.{
-        .prompt_id = prompt_id,
+        .rule_id = rule_id,
         .path = path,
         .content_hash = content_hash,
         .updated_at = updated_at,
@@ -214,7 +214,7 @@ pub fn handleGetPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     }, .{});
 }
 
-pub fn handleGetPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleGetRuleContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
@@ -223,10 +223,10 @@ pub fn handleGetPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *h
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
     };
-    const prompt_id_q = qs.get("prompt_id");
+    const rule_id_q = qs.get("rule_id");
     const path_q = qs.get("path");
-    if (prompt_id_q == null and path_q == null) {
-        return apiError(res, 400, "BAD_REQUEST", "prompt_id or path query parameter is required");
+    if (rule_id_q == null and path_q == null) {
+        return apiError(res, 400, "BAD_REQUEST", "rule_id or path query parameter is required");
     }
 
     const conn = ctx.pool.acquire() catch {
@@ -234,16 +234,16 @@ pub fn handleGetPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *h
     };
     defer conn.release();
 
-    var row = (if (prompt_id_q) |pid| conn.row(
-        "SELECT prompt_id, content_hash, content, path FROM prompts WHERE org_id = $1::uuid AND prompt_id = $2",
+    var row = (if (rule_id_q) |pid| conn.row(
+        "SELECT rule_id, content_hash, content, path FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
         .{ user.org_id, pid },
     ) else conn.row(
-        "SELECT prompt_id, content_hash, content, path FROM prompts WHERE org_id = $1::uuid AND path = $2",
+        "SELECT rule_id, content_hash, content, path FROM rules WHERE org_id = $1::uuid AND path = $2",
         .{ user.org_id, path_q.? },
     )) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        return apiError(res, 404, "NOT_FOUND", "prompt not found");
+        return apiError(res, 404, "NOT_FOUND", "rule not found");
     };
 
     const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 1));
@@ -256,39 +256,39 @@ pub fn handleGetPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *h
         }
     }
 
-    const prompt_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+    const rule_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     const body = try req.arena.dupe(u8, try row.get([]const u8, 2));
     const path = try req.arena.dupe(u8, try row.get([]const u8, 3));
     row.deinit() catch {};
 
     res.header("ETag", content_hash);
-    try res.json(PromptContentResponse{
-        .prompt_id = prompt_id,
+    try res.json(RuleContentResponse{
+        .rule_id = rule_id,
         .path = path,
         .content_hash = content_hash,
         .body = body,
     }, .{});
 }
 
-/// Batch prompt content fetch. Clients (notably `clumsies sync`)
-/// send a list of prompt_ids in one POST; the response carries a
+/// Batch rule content fetch. Clients (notably `clumsies sync`)
+/// send a list of rule_ids in one POST; the response carries a
 /// per-id item, each either populated or tagged with a per-item
 /// error. A single fetch replaces what used to be N sequential GETs
 /// and dominates sync wall time over tunneled links.
-pub fn handleBatchPromptContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleBatchRuleContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
     if (!auth.requireScope(user, "library:read", res)) return;
 
-    const body = req.json(BatchPromptContentRequest) catch {
+    const body = req.json(BatchRuleContentRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
     };
 
-    if (body.prompt_ids.len > BATCH_MAX_IDS) {
-        return apiError(res, 400, "BAD_REQUEST", "too many prompt_ids");
+    if (body.rule_ids.len > BATCH_MAX_IDS) {
+        return apiError(res, 400, "BAD_REQUEST", "too many rule_ids");
     }
 
     const conn = ctx.pool.acquire() catch {
@@ -296,26 +296,26 @@ pub fn handleBatchPromptContent(ctx: *Server.Context, req: *httpz.Request, res: 
     };
     defer conn.release();
 
-    var items: std.ArrayList(BatchPromptItem) = .empty;
-    for (body.prompt_ids) |prompt_id| {
+    var items: std.ArrayList(BatchRuleItem) = .empty;
+    for (body.rule_ids) |rule_id| {
         // Distinguish query failure (INTERNAL_ERROR) from a missing
         // row (NOT_FOUND). Previously both collapsed into NOT_FOUND,
         // so a transient database outage presented to the client as
-        // "every prompt is missing" — misleading and impossible to
+        // "every rule is missing" — misleading and impossible to
         // debug without server logs.
         const row_result = conn.row(
-            "SELECT prompt_id, content_hash, content, path FROM prompts WHERE org_id = $1::uuid AND prompt_id = $2",
-            .{ user.org_id, prompt_id },
+            "SELECT rule_id, content_hash, content, path FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
+            .{ user.org_id, rule_id },
         ) catch {
             try items.append(req.arena, .{
-                .prompt_id = try req.arena.dupe(u8, prompt_id),
+                .rule_id = try req.arena.dupe(u8, rule_id),
                 .@"error" = "INTERNAL_ERROR",
             });
             continue;
         };
         var row = row_result orelse {
             try items.append(req.arena, .{
-                .prompt_id = try req.arena.dupe(u8, prompt_id),
+                .rule_id = try req.arena.dupe(u8, rule_id),
                 .@"error" = "NOT_FOUND",
             });
             continue;
@@ -329,14 +329,14 @@ pub fn handleBatchPromptContent(ctx: *Server.Context, req: *httpz.Request, res: 
         const content = try req.arena.dupe(u8, try row.get([]const u8, 2));
         const path = try req.arena.dupe(u8, try row.get([]const u8, 3));
         try items.append(req.arena, .{
-            .prompt_id = pid,
+            .rule_id = pid,
             .path = path,
             .content_hash = content_hash,
             .body = content,
         });
     }
 
-    try res.json(BatchPromptContentResponse{ .items = items.items }, .{});
+    try res.json(BatchRuleContentResponse{ .items = items.items }, .{});
 }
 
 pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -351,9 +351,9 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer conn.release();
 
     var result = conn.query(
-        \\SELECT b.name, b.description, b.updated_at::text, count(bp.prompt_id)::bigint
+        \\SELECT b.name, b.description, b.updated_at::text, count(bp.rule_id)::bigint
         \\FROM bundles b
-        \\LEFT JOIN bundle_prompts bp ON bp.bundle_id = b.bundle_id
+        \\LEFT JOIN bundle_rules bp ON bp.bundle_id = b.bundle_id
         \\WHERE b.org_id = $1::uuid
         \\GROUP BY b.bundle_id, b.name, b.description, b.updated_at
         \\ORDER BY b.name
@@ -370,7 +370,7 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
             .name = try req.arena.dupe(u8, try row.get([]const u8, 0)),
             .description = try req.arena.dupe(u8, try row.get([]const u8, 1)),
             .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            .prompt_count = try row.get(i64, 3),
+            .rule_count = try row.get(i64, 3),
         });
     }
 
@@ -408,23 +408,23 @@ pub fn handleGetBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const updated_at = try req.arena.dupe(u8, try row.get([]const u8, 4));
     row.deinit() catch {};
 
-    var prompt_result = conn.query(
-        "SELECT prompt_id FROM bundle_prompts WHERE bundle_id = $1",
+    var rule_result = conn.query(
+        "SELECT rule_id FROM bundle_rules WHERE bundle_id = $1",
         .{bundle_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
-    defer prompt_result.deinit();
+    defer rule_result.deinit();
 
     var ids: std.ArrayList([]const u8) = .empty;
-    while (try prompt_result.next()) |prow| {
+    while (try rule_result.next()) |prow| {
         try ids.append(req.arena, try req.arena.dupe(u8, try prow.get([]const u8, 0)));
     }
 
     try res.json(.{
         .name = bundle_name,
         .description = description,
-        .prompt_ids = ids.items,
+        .rule_ids = ids.items,
         .created_at = created_at,
         .updated_at = updated_at,
     }, .{});
@@ -433,7 +433,7 @@ pub fn handleGetBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
 const CreateBundleRequest = struct {
     name: []const u8,
     description: ?[]const u8 = null,
-    prompt_ids: []const []const u8,
+    rule_ids: []const []const u8,
 };
 
 pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -456,10 +456,10 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     };
     defer conn.release();
 
-    // Validate all prompt_ids exist
-    for (body.prompt_ids) |pid| {
+    // Validate all rule_ids exist
+    for (body.rule_ids) |pid| {
         var exists = conn.row(
-            "SELECT 1 FROM prompts WHERE org_id = $1::uuid AND prompt_id = $2",
+            "SELECT 1 FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
             .{ user.org_id, pid },
         ) catch {
             return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -467,7 +467,7 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         if (exists) |*r| {
             r.deinit() catch {};
         } else {
-            return apiError(res, 400, "BAD_REQUEST", "prompt_id not found in Library");
+            return apiError(res, 400, "BAD_REQUEST", "rule_id not found in Library");
         }
     }
 
@@ -498,9 +498,9 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         return apiError(res, 500, "INTERNAL_ERROR", "database insert failed");
     };
 
-    for (body.prompt_ids) |pid| {
+    for (body.rule_ids) |pid| {
         _ = conn.exec(
-            "INSERT INTO bundle_prompts (bundle_id, prompt_id) VALUES ($1, $2)",
+            "INSERT INTO bundle_rules (bundle_id, rule_id) VALUES ($1, $2)",
             .{ bundle_id, pid },
         ) catch {};
     }
@@ -509,13 +509,13 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     try res.json(.{
         .name = body.name,
         .description = desc,
-        .prompt_ids = body.prompt_ids,
+        .rule_ids = body.rule_ids,
     }, .{});
 }
 
 const UpdateBundleRequest = struct {
     description: ?[]const u8 = null,
-    prompt_ids: ?[]const []const u8 = null,
+    rule_ids: ?[]const []const u8 = null,
 };
 
 pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -564,11 +564,11 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         };
     }
 
-    // Replace prompt_ids if provided
-    if (body.prompt_ids) |pids| {
+    // Replace rule_ids if provided
+    if (body.rule_ids) |pids| {
         for (pids) |pid| {
             var exists2 = conn.row(
-                "SELECT 1 FROM prompts WHERE org_id = $1::uuid AND prompt_id = $2",
+                "SELECT 1 FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
                 .{ user.org_id, pid },
             ) catch {
                 return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -576,14 +576,14 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
             if (exists2) |*r| {
                 r.deinit() catch {};
             } else {
-                return apiError(res, 400, "BAD_REQUEST", "prompt_id not found in Library");
+                return apiError(res, 400, "BAD_REQUEST", "rule_id not found in Library");
             }
         }
 
-        _ = conn.exec("DELETE FROM bundle_prompts WHERE bundle_id = $1", .{bundle_id}) catch {};
+        _ = conn.exec("DELETE FROM bundle_rules WHERE bundle_id = $1", .{bundle_id}) catch {};
         for (pids) |pid| {
             _ = conn.exec(
-                "INSERT INTO bundle_prompts (bundle_id, prompt_id) VALUES ($1, $2)",
+                "INSERT INTO bundle_rules (bundle_id, rule_id) VALUES ($1, $2)",
                 .{ bundle_id, pid },
             ) catch {};
         }
@@ -625,7 +625,7 @@ pub fn handleDeleteBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const bundle_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     row.deinit() catch {};
 
-    _ = conn.exec("DELETE FROM bundle_prompts WHERE bundle_id = $1", .{bundle_id}) catch {};
+    _ = conn.exec("DELETE FROM bundle_rules WHERE bundle_id = $1", .{bundle_id}) catch {};
     _ = conn.exec("DELETE FROM bundles WHERE bundle_id = $1", .{bundle_id}) catch {};
 
     res.status = 204;

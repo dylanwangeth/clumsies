@@ -21,10 +21,10 @@ pub fn rebuild(conn: *pg.Conn) !void {
     clearSeedLocalState();
 
     _ = conn.exec(
-        \\TRUNCATE orgs, users, tokens, workspaces, workspace_members, prompts, workspace_prompts,
+        \\TRUNCATE orgs, users, tokens, workspaces, workspace_members, rules, workspace_rules,
         \\  context_files, context_prs, context_pr_operations, context_pr_comments,
-        \\  bundles, bundle_prompts, prompt_prs, prompt_pr_operations, prompt_pr_comments,
-        \\  attestation_events, library_manifest, prompt_history
+        \\  bundles, bundle_rules, rule_prs, rule_pr_operations, rule_pr_comments,
+        \\  attestation_events, library_manifest, rule_history
         \\CASCADE
     , .{}) catch |err| {
         log.err("truncate failed: {}", .{err});
@@ -33,10 +33,10 @@ pub fn rebuild(conn: *pg.Conn) !void {
 
     try seedOrg(conn);
     try seedUsers(conn);
-    try seedPrompts(conn);
+    try seedRules(conn);
     try seedWorkspaces(conn);
     try seedWorkspaceMembers(conn);
-    try seedWorkspacePrompts(conn);
+    try seedWorkspaceRules(conn);
     try seedContexts(conn);
     try seedHistoricalAttestation(conn);
     try ensureLocalWorkspaceState();
@@ -80,13 +80,13 @@ fn seedUsers(conn: *pg.Conn) !void {
     }
 }
 
-fn seedPrompts(conn: *pg.Conn) !void {
-    for (data.PROMPTS) |prompt| {
-        const content_hash = util_hash.contentHash(prompt.content);
+fn seedRules(conn: *pg.Conn) !void {
+    for (data.PROMPTS) |rule| {
+        const content_hash = util_hash.contentHash(rule.content);
         _ = try conn.exec(
-            \\INSERT INTO prompts (prompt_id, org_id, path, content, content_hash)
+            \\INSERT INTO rules (rule_id, org_id, path, content, content_hash)
             \\VALUES ($1, $2::uuid, $3, $4, $5)
-        , .{ prompt.id, data.ORG_ID, prompt.path, prompt.content, content_hash[0..] });
+        , .{ rule.id, data.ORG_ID, rule.path, rule.content, content_hash[0..] });
     }
 }
 
@@ -108,12 +108,12 @@ fn seedWorkspaceMembers(conn: *pg.Conn) !void {
     }
 }
 
-fn seedWorkspacePrompts(conn: *pg.Conn) !void {
+fn seedWorkspaceRules(conn: *pg.Conn) !void {
     for (data.WORKSPACE_PROMPTS) |binding| {
         _ = try conn.exec(
-            \\INSERT INTO workspace_prompts (ws_id, prompt_id)
+            \\INSERT INTO workspace_rules (ws_id, rule_id)
             \\VALUES ($1, $2)
-        , .{ binding.ws_id, binding.prompt_id });
+        , .{ binding.ws_id, binding.rule_id });
     }
 }
 
@@ -147,16 +147,16 @@ fn seedHistoricalAttestation(conn: *pg.Conn) !void {
                 ) catch continue;
 
                 for (scenario.refers, 0..) |refer, refer_idx| {
-                    const prompt = data.promptById(refer.prompt_id) orelse continue;
-                    const prompt_hash = util_hash.contentHash(prompt.content);
+                    const rule = data.ruleById(refer.rule_id) orelse continue;
+                    const rule_hash = util_hash.contentHash(rule.content);
                     try insertHistoricalAttestationEvent(conn, scenario.user_id, .{
                         .ws_id = scenario.ws_id,
                         .session_id = session_id,
                         .event_id = @as(i64, @intCast(refer_idx)),
                         .type = "refer",
                         .timestamp = base_ts + @as(i64, @intCast(refer_idx)),
-                        .prompt_id = prompt.id,
-                        .prompt_hash = prompt_hash[0..],
+                        .rule_id = rule.id,
+                        .rule_hash = rule_hash[0..],
                         .constraint_id = refer.constraint_id,
                         .reason = refer.reason,
                     });
@@ -183,8 +183,8 @@ const HistoricalAttestationEvent = struct {
     event_id: i64,
     type: []const u8,
     timestamp: i64,
-    prompt_id: ?[]const u8 = null,
-    prompt_hash: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
+    rule_hash: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
     reason: ?[]const u8 = null,
 };
@@ -192,7 +192,7 @@ const HistoricalAttestationEvent = struct {
 fn insertHistoricalAttestationEvent(conn: *pg.Conn, user_id: []const u8, event: HistoricalAttestationEvent) !void {
     _ = try conn.exec(
         \\INSERT INTO attestation_events (user_id, ws_id, session_id, event_id, type, timestamp,
-        \\  prompt_id, prompt_hash, constraint_id, reason, content, content_hash)
+        \\  rule_id, rule_hash, constraint_id, reason, content, content_hash)
         \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, NULL)
         \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
     , .{
@@ -202,8 +202,8 @@ fn insertHistoricalAttestationEvent(conn: *pg.Conn, user_id: []const u8, event: 
         event.event_id,
         event.type,
         event.timestamp,
-        event.prompt_id,
-        event.prompt_hash,
+        event.rule_id,
+        event.rule_hash,
         event.constraint_id,
         event.reason,
     });

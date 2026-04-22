@@ -1,6 +1,6 @@
 // Read local attestation.jsonl files and compute analysis stats.
 const std = @import("std");
-const workspace_prompt = @import("../prompt.zig");
+const workspace_rule = @import("../rule.zig");
 const data = @import("view_types.zig");
 
 pub const LocalStats = struct {
@@ -10,7 +10,7 @@ pub const LocalStats = struct {
     signal_ratio: u8 = 0,
     refer_trend: [30]u16 = .{0} ** 30,
     refers: []const ReferEvent = &.{},
-    prompts: []const data.AnalysisPrompt = &.{},
+    rules: []const data.AnalysisRule = &.{},
     inputs: []const InputEvent = &.{},
     workspaces: []const WorkspaceLocalStats = &.{},
 
@@ -30,7 +30,7 @@ pub const WorkspaceLocalStats = struct {
     signal_ratio: u8 = 0,
     refer_trend: [30]u16 = .{0} ** 30,
     refers: []const ReferEvent = &.{},
-    prompts: []const data.AnalysisPrompt = &.{},
+    rules: []const data.AnalysisRule = &.{},
     inputs: []const InputEvent = &.{},
 };
 
@@ -51,14 +51,14 @@ const AttestationEvent = struct {
     session_id: []const u8 = "",
     type: []const u8 = "",
     timestamp: i64 = 0,
-    prompt_id: ?[]const u8 = null,
-    prompt_hash: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
+    rule_hash: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
     reason: ?[]const u8 = null,
     content: ?[]const u8 = null,
 };
 
-const PromptConstraintTotals = std.StringHashMap(u16);
+const RuleConstraintTotals = std.StringHashMap(u16);
 
 pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     const base = getBaseDir(allocator) orelse return null;
@@ -71,8 +71,8 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
 
     var all_events: std.ArrayList(AttestationEvent) = .empty;
     var workspace_stats: std.ArrayList(WorkspaceLocalStats) = .empty;
-    var all_prompt_totals: PromptConstraintTotals = .init(allocator);
-    defer deinitPromptConstraintTotals(allocator, &all_prompt_totals);
+    var all_rule_totals: RuleConstraintTotals = .init(allocator);
+    defer deinitRuleConstraintTotals(allocator, &all_rule_totals);
     var it = dir.iterate();
     while (it.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
@@ -88,12 +88,12 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
         if (ws_events.items.len == 0) continue;
         keep_ws_id = true;
 
-        var ws_prompt_totals = loadPromptConstraintTotals(allocator, ws_dir) catch PromptConstraintTotals.init(allocator);
-        defer deinitPromptConstraintTotals(allocator, &ws_prompt_totals);
+        var ws_rule_totals = loadRuleConstraintTotals(allocator, ws_dir) catch RuleConstraintTotals.init(allocator);
+        defer deinitRuleConstraintTotals(allocator, &ws_rule_totals);
 
-        mergePromptConstraintTotals(allocator, &all_prompt_totals, &ws_prompt_totals);
+        mergeRuleConstraintTotals(allocator, &all_rule_totals, &ws_rule_totals);
 
-        const ws_stats = computeStats(allocator, ws_events.items, &ws_prompt_totals);
+        const ws_stats = computeStats(allocator, ws_events.items, &ws_rule_totals);
         workspace_stats.append(allocator, .{
             .ws_id = ws_id,
             .total_refer_count = ws_stats.total_refer_count,
@@ -102,7 +102,7 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
             .signal_ratio = ws_stats.signal_ratio,
             .refer_trend = ws_stats.refer_trend,
             .refers = ws_stats.refers,
-            .prompts = ws_stats.prompts,
+            .rules = ws_stats.rules,
             .inputs = ws_stats.inputs,
         }) catch continue;
 
@@ -112,7 +112,7 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     }
 
     if (all_events.items.len == 0) return null;
-    var all_stats = computeStats(allocator, all_events.items, &all_prompt_totals);
+    var all_stats = computeStats(allocator, all_events.items, &all_rule_totals);
     all_stats.workspaces = workspace_stats.items;
     return all_stats;
 }
@@ -174,8 +174,8 @@ fn cloneAttestationEvent(allocator: std.mem.Allocator, ws_id: []const u8, src: A
         .session_id = try allocator.dupe(u8, src.session_id),
         .type = try allocator.dupe(u8, src.type),
         .timestamp = src.timestamp,
-        .prompt_id = null,
-        .prompt_hash = null,
+        .rule_id = null,
+        .rule_hash = null,
         .constraint_id = null,
         .reason = null,
         .content = null,
@@ -183,11 +183,11 @@ fn cloneAttestationEvent(allocator: std.mem.Allocator, ws_id: []const u8, src: A
     errdefer allocator.free(out.session_id);
     errdefer allocator.free(out.type);
 
-    out.prompt_id = try dupeOptional(allocator, src.prompt_id);
-    errdefer if (out.prompt_id) |s| allocator.free(s);
+    out.rule_id = try dupeOptional(allocator, src.rule_id);
+    errdefer if (out.rule_id) |s| allocator.free(s);
 
-    out.prompt_hash = try dupeOptional(allocator, src.prompt_hash);
-    errdefer if (out.prompt_hash) |s| allocator.free(s);
+    out.rule_hash = try dupeOptional(allocator, src.rule_hash);
+    errdefer if (out.rule_hash) |s| allocator.free(s);
 
     out.constraint_id = try dupeOptional(allocator, src.constraint_id);
     errdefer if (out.constraint_id) |s| allocator.free(s);
@@ -208,18 +208,18 @@ fn dupeOptional(allocator: std.mem.Allocator, maybe: ?[]const u8) !?[]const u8 {
 fn freeAttestationEventOwned(allocator: std.mem.Allocator, ev: AttestationEvent) void {
     allocator.free(ev.session_id);
     allocator.free(ev.type);
-    if (ev.prompt_id) |s| allocator.free(s);
-    if (ev.prompt_hash) |s| allocator.free(s);
+    if (ev.rule_id) |s| allocator.free(s);
+    if (ev.rule_hash) |s| allocator.free(s);
     if (ev.constraint_id) |s| allocator.free(s);
     if (ev.reason) |s| allocator.free(s);
     if (ev.content) |s| allocator.free(s);
 }
 
-fn loadPromptConstraintTotals(allocator: std.mem.Allocator, ws_dir: []const u8) !PromptConstraintTotals {
-    var totals: PromptConstraintTotals = .init(allocator);
-    errdefer deinitPromptConstraintTotals(allocator, &totals);
+fn loadRuleConstraintTotals(allocator: std.mem.Allocator, ws_dir: []const u8) !RuleConstraintTotals {
+    var totals: RuleConstraintTotals = .init(allocator);
+    errdefer deinitRuleConstraintTotals(allocator, &totals);
 
-    var manifest = workspace_prompt.loadManifest(allocator, ws_dir) catch |err| switch (err) {
+    var manifest = workspace_rule.loadManifest(allocator, ws_dir) catch |err| switch (err) {
         error.InvalidManifest, error.FileNotFound => return totals,
         else => return err,
     };
@@ -228,59 +228,59 @@ fn loadPromptConstraintTotals(allocator: std.mem.Allocator, ws_dir: []const u8) 
     var ids: std.ArrayList([]const u8) = .empty;
     defer ids.deinit(allocator);
 
-    var it = manifest.prompts.iterator();
+    var it = manifest.rules.iterator();
     while (it.next()) |entry| {
         ids.append(allocator, entry.key_ptr.*) catch continue;
     }
 
     if (ids.items.len == 0) return totals;
 
-    var loaded = workspace_prompt.loadPrompts(allocator, ws_dir, ids.items, &.{}) catch |err| switch (err) {
-        error.UnknownPromptId, error.FileNotFound, error.UnsafeCachePath => return totals,
+    var loaded = workspace_rule.loadRules(allocator, ws_dir, ids.items, &.{}) catch |err| switch (err) {
+        error.UnknownRuleId, error.FileNotFound, error.UnsafeCachePath => return totals,
         else => return err,
     };
     defer loaded.deinit(allocator);
 
-    for (loaded.items.items) |prompt_item| {
-        const content = prompt_item.content orelse continue;
-        var parsed = workspace_prompt.parseConstraints(allocator, content) catch continue;
+    for (loaded.items.items) |rule_item| {
+        const content = rule_item.content orelse continue;
+        var parsed = workspace_rule.parseConstraints(allocator, content) catch continue;
         defer parsed.deinit(allocator);
 
         const constraint_total: u16 = @intCast(@min(parsed.constraints.items.len, std.math.maxInt(u16)));
-        putPromptConstraintTotal(allocator, &totals, prompt_item.id, constraint_total) catch continue;
+        putRuleConstraintTotal(allocator, &totals, rule_item.id, constraint_total) catch continue;
     }
 
     return totals;
 }
 
-fn mergePromptConstraintTotals(
+fn mergeRuleConstraintTotals(
     allocator: std.mem.Allocator,
-    target: *PromptConstraintTotals,
-    source: *const PromptConstraintTotals,
+    target: *RuleConstraintTotals,
+    source: *const RuleConstraintTotals,
 ) void {
     var it = source.iterator();
     while (it.next()) |entry| {
-        putPromptConstraintTotal(allocator, target, entry.key_ptr.*, entry.value_ptr.*) catch continue;
+        putRuleConstraintTotal(allocator, target, entry.key_ptr.*, entry.value_ptr.*) catch continue;
     }
 }
 
-fn putPromptConstraintTotal(
+fn putRuleConstraintTotal(
     allocator: std.mem.Allocator,
-    totals: *PromptConstraintTotals,
-    prompt_id: []const u8,
+    totals: *RuleConstraintTotals,
+    rule_id: []const u8,
     constraint_total: u16,
 ) !void {
-    if (totals.getPtr(prompt_id)) |value_ptr| {
+    if (totals.getPtr(rule_id)) |value_ptr| {
         if (constraint_total > value_ptr.*) value_ptr.* = constraint_total;
         return;
     }
 
-    const key = try allocator.dupe(u8, prompt_id);
+    const key = try allocator.dupe(u8, rule_id);
     errdefer allocator.free(key);
     try totals.put(key, constraint_total);
 }
 
-fn deinitPromptConstraintTotals(allocator: std.mem.Allocator, totals: *PromptConstraintTotals) void {
+fn deinitRuleConstraintTotals(allocator: std.mem.Allocator, totals: *RuleConstraintTotals) void {
     var key_it = totals.keyIterator();
     while (key_it.next()) |key| allocator.free(key.*);
     totals.deinit();
@@ -289,15 +289,15 @@ fn deinitPromptConstraintTotals(allocator: std.mem.Allocator, totals: *PromptCon
 fn computeStats(
     allocator: std.mem.Allocator,
     events: []const AttestationEvent,
-    prompt_totals: *const PromptConstraintTotals,
+    rule_totals: *const RuleConstraintTotals,
 ) LocalStats {
     var stats: LocalStats = .{};
 
-    const PromptAcc = struct {
+    const RuleAcc = struct {
         refer_count: u32 = 0,
         constraints: std.StringHashMap(u32),
     };
-    var prompt_map: std.StringHashMap(PromptAcc) = .init(allocator);
+    var rule_map: std.StringHashMap(RuleAcc) = .init(allocator);
 
     var refers_list: std.ArrayList(ReferEvent) = .empty;
     var inputs_list: std.ArrayList(InputEvent) = .empty;
@@ -330,8 +330,8 @@ fn computeStats(
             stats.refer_trend[bucket] += 1;
         }
 
-        const pid = ev.prompt_id orelse continue;
-        const entry = prompt_map.getOrPut(pid) catch continue;
+        const pid = ev.rule_id orelse continue;
+        const entry = rule_map.getOrPut(pid) catch continue;
         if (!entry.found_existing) {
             entry.value_ptr.* = .{ .refer_count = 0, .constraints = .init(allocator) };
         }
@@ -344,14 +344,14 @@ fn computeStats(
         }
     }
 
-    var prompts_list: std.ArrayList(data.AnalysisPrompt) = .empty;
+    var rules_list: std.ArrayList(data.AnalysisRule) = .empty;
     var total_constraints: u32 = 0;
     var active_constraints: u32 = 0;
 
-    var map_it = prompt_map.iterator();
+    var map_it = rule_map.iterator();
     while (map_it.next()) |kv| {
         const active_count_u32: u32 = @intCast(kv.value_ptr.constraints.count());
-        const total_count_u32: u32 = if (prompt_totals.get(kv.key_ptr.*)) |count|
+        const total_count_u32: u32 = if (rule_totals.get(kv.key_ptr.*)) |count|
             @max(@as(u32, count), active_count_u32)
         else
             active_count_u32;
@@ -387,7 +387,7 @@ fn computeStats(
             }
         }.cmp);
 
-        prompts_list.append(allocator, .{
+        rules_list.append(allocator, .{
             .name = kv.key_ptr.*,
             .constraint_count = total_count,
             .active_constraint_count = active_count,
@@ -403,8 +403,8 @@ fn computeStats(
         }) catch continue;
     }
 
-    std.mem.sort(data.AnalysisPrompt, prompts_list.items, {}, struct {
-        fn cmp(_: void, a: data.AnalysisPrompt, b: data.AnalysisPrompt) bool {
+    std.mem.sort(data.AnalysisRule, rules_list.items, {}, struct {
+        fn cmp(_: void, a: data.AnalysisRule, b: data.AnalysisRule) bool {
             return a.refer_count > b.refer_count;
         }
     }.cmp);
@@ -416,7 +416,7 @@ fn computeStats(
     else
         0;
     stats.refers = refers_list.items;
-    stats.prompts = prompts_list.items;
+    stats.rules = rules_list.items;
 
     std.mem.sort(InputEvent, inputs_list.items, {}, struct {
         fn cmp(_: void, a: InputEvent, b: InputEvent) bool {
@@ -428,7 +428,7 @@ fn computeStats(
     return stats;
 }
 
-test "computeStats uses prompt totals to derive non-100 signal ratios" {
+test "computeStats uses rule totals to derive non-100 signal ratios" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -439,7 +439,7 @@ test "computeStats uses prompt totals to derive non-100 signal ratios" {
             .session_id = "ses-1",
             .type = "refer",
             .timestamp = std.time.milliTimestamp(),
-            .prompt_id = "p-1",
+            .rule_id = "p-1",
             .constraint_id = "c-1",
         },
         .{
@@ -447,27 +447,27 @@ test "computeStats uses prompt totals to derive non-100 signal ratios" {
             .session_id = "ses-1",
             .type = "refer",
             .timestamp = std.time.milliTimestamp(),
-            .prompt_id = "p-1",
+            .rule_id = "p-1",
             .constraint_id = "c-2",
         },
     };
 
-    var totals: PromptConstraintTotals = .init(alloc);
-    defer deinitPromptConstraintTotals(alloc, &totals);
-    try putPromptConstraintTotal(alloc, &totals, "p-1", 4);
+    var totals: RuleConstraintTotals = .init(alloc);
+    defer deinitRuleConstraintTotals(alloc, &totals);
+    try putRuleConstraintTotal(alloc, &totals, "p-1", 4);
 
     const stats = computeStats(alloc, &events, &totals);
 
     try std.testing.expectEqual(@as(u32, 4), stats.constraint_count);
     try std.testing.expectEqual(@as(u32, 2), stats.active_constraint_count);
     try std.testing.expectEqual(@as(u8, 50), stats.signal_ratio);
-    try std.testing.expectEqual(@as(u8, 4), stats.prompts[0].constraint_count);
-    try std.testing.expectEqual(@as(u8, 2), stats.prompts[0].active_constraint_count);
-    try std.testing.expectEqual(@as(u8, 2), stats.prompts[0].idle_constraint_count);
-    try std.testing.expectEqual(@as(u8, 50), stats.prompts[0].signal_ratio);
+    try std.testing.expectEqual(@as(u8, 4), stats.rules[0].constraint_count);
+    try std.testing.expectEqual(@as(u8, 2), stats.rules[0].active_constraint_count);
+    try std.testing.expectEqual(@as(u8, 2), stats.rules[0].idle_constraint_count);
+    try std.testing.expectEqual(@as(u8, 50), stats.rules[0].signal_ratio);
 }
 
-test "computeStats falls back to active constraint counts when prompt totals are unavailable" {
+test "computeStats falls back to active constraint counts when rule totals are unavailable" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -478,13 +478,13 @@ test "computeStats falls back to active constraint counts when prompt totals are
             .session_id = "ses-1",
             .type = "refer",
             .timestamp = std.time.milliTimestamp(),
-            .prompt_id = "p-1",
+            .rule_id = "p-1",
             .constraint_id = "c-1",
         },
     };
 
-    var totals: PromptConstraintTotals = .init(alloc);
-    defer deinitPromptConstraintTotals(alloc, &totals);
+    var totals: RuleConstraintTotals = .init(alloc);
+    defer deinitRuleConstraintTotals(alloc, &totals);
 
     const stats = computeStats(alloc, &events, &totals);
 

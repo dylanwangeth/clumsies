@@ -1,11 +1,11 @@
 //! MCP tool definitions and dispatch. Exposes tools to the agent:
-//! memory.setup/search/load/refer/submit and context.*/prompt.* propose
+//! memory.setup/search/load/refer/submit and context.*/rule.* propose
 //! operations. Each call generates an attestation event.
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("clumsies_lib").util.encoding;
 const util_hash = @import("clumsies_lib").util.hash;
-const workspace_prompt = @import("../prompt.zig");
+const workspace_rule = @import("../rule.zig");
 const drafts_mod = @import("../drafts.zig");
 const session_mod = @import("session.zig");
 const tool_names = @import("tool_names.zig");
@@ -13,7 +13,7 @@ const tool_result = @import("tool_result.zig");
 const attestation = @import("../attestation.zig");
 
 const setup_schema =
-    "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bootstrap the protocol. Returns workspace_id and meta-prompt content with usage instructions (delta based on knownHash).\"," ++
+    "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bootstrap the protocol. Returns workspace_id and meta-rule content with usage instructions (delta based on knownHash).\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"knownHash\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const search_schema =
@@ -21,12 +21,12 @@ const search_schema =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const load_schema =
-    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load prompt content by ids. Returns delta based on knownHashes. Rule/Workflow content includes a refer reminder.\"," ++
+    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule content by ids. Returns delta based on knownHashes. Rule/Workflow content includes a refer reminder.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\"],\"additionalProperties\":false}}";
 
 const refer_schema =
-    "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare constraint references from loaded prompts. Pass an array of refs, each with promptId and constraintId.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"promptId\":{\"type\":\"string\"},\"promptHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"promptId\",\"constraintId\"]}}},\"required\":[\"refs\"],\"additionalProperties\":false}}";
+    "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare constraint references from loaded rules. Pass an array of refs, each with ruleId and constraintId.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"ruleId\":{\"type\":\"string\"},\"ruleHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"ruleId\",\"constraintId\"]}}},\"required\":[\"refs\"],\"additionalProperties\":false}}";
 
 const submit_schema =
     "{\"name\":\"" ++ tool_names.submit ++ "\",\"title\":\"Submit\",\"description\":\"Submit your turn summary. Call this before finishing to close the current turn.\"," ++
@@ -38,7 +38,7 @@ const reject_schema =
 
 const propose_base_props = "\"path\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
 const propose_id_ctx = "\"context_id\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
-const propose_id_prompt = "\"prompt_id\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
+const propose_id_rule = "\"rule_id\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
 
 const context_propose_create_schema =
     "{\"name\":\"" ++ tool_names.context_propose_create ++ "\",\"title\":\"Propose Context Create\"," ++
@@ -60,25 +60,25 @@ const context_propose_delete_schema =
     "\"description\":\"Propose deleting a workspace context file. Creates a draft for user review.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"context_id\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"context_id\"],\"additionalProperties\":false}}";
 
-const prompt_propose_create_schema =
-    "{\"name\":\"" ++ tool_names.prompt_propose_create ++ "\",\"title\":\"Propose Prompt Create\"," ++
-    "\"description\":\"Propose creating a new Library prompt file. Creates a draft for user review.\"," ++
+const rule_propose_create_schema =
+    "{\"name\":\"" ++ tool_names.rule_propose_create ++ "\",\"title\":\"Propose Rule Create\"," ++
+    "\"description\":\"Propose creating a new Library rule file. Creates a draft for user review.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++ propose_base_props ++ "},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}}";
 
-const prompt_propose_update_schema =
-    "{\"name\":\"" ++ tool_names.prompt_propose_update ++ "\",\"title\":\"Propose Prompt Update\"," ++
-    "\"description\":\"Propose updating an existing Library prompt. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++ propose_id_prompt ++ "},\"required\":[\"prompt_id\",\"body\"],\"additionalProperties\":false}}";
+const rule_propose_update_schema =
+    "{\"name\":\"" ++ tool_names.rule_propose_update ++ "\",\"title\":\"Propose Rule Update\"," ++
+    "\"description\":\"Propose updating an existing Library rule. Creates a draft for user review.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++ propose_id_rule ++ "},\"required\":[\"rule_id\",\"body\"],\"additionalProperties\":false}}";
 
-const prompt_propose_rename_schema =
-    "{\"name\":\"" ++ tool_names.prompt_propose_rename ++ "\",\"title\":\"Propose Prompt Rename\"," ++
-    "\"description\":\"Propose renaming a Library prompt file. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"prompt_id\":{\"type\":\"string\"},\"new_path\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"prompt_id\",\"new_path\"],\"additionalProperties\":false}}";
+const rule_propose_rename_schema =
+    "{\"name\":\"" ++ tool_names.rule_propose_rename ++ "\",\"title\":\"Propose Rule Rename\"," ++
+    "\"description\":\"Propose renaming a Library rule file. Creates a draft for user review.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"rule_id\":{\"type\":\"string\"},\"new_path\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"rule_id\",\"new_path\"],\"additionalProperties\":false}}";
 
-const prompt_propose_delete_schema =
-    "{\"name\":\"" ++ tool_names.prompt_propose_delete ++ "\",\"title\":\"Propose Prompt Delete\"," ++
-    "\"description\":\"Propose deleting a Library prompt. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"prompt_id\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"prompt_id\"],\"additionalProperties\":false}}";
+const rule_propose_delete_schema =
+    "{\"name\":\"" ++ tool_names.rule_propose_delete ++ "\",\"title\":\"Propose Rule Delete\"," ++
+    "\"description\":\"Propose deleting a Library rule. Creates a draft for user review.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"rule_id\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"rule_id\"],\"additionalProperties\":false}}";
 
 pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(
@@ -94,10 +94,10 @@ pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
             context_propose_update_schema ++ "," ++
             context_propose_rename_schema ++ "," ++
             context_propose_delete_schema ++ "," ++
-            prompt_propose_create_schema ++ "," ++
-            prompt_propose_update_schema ++ "," ++
-            prompt_propose_rename_schema ++ "," ++
-            prompt_propose_delete_schema ++
+            rule_propose_create_schema ++ "," ++
+            rule_propose_update_schema ++ "," ++
+            rule_propose_rename_schema ++ "," ++
+            rule_propose_delete_schema ++
             "]}",
     );
 }
@@ -134,9 +134,9 @@ pub fn handleCall(
     }
     if (std.mem.eql(u8, name, tool_names.load)) {
         return handleLoad(allocator, workspace_root, session, args_obj) catch |err| switch (err) {
-            error.UnknownPromptId => try tool_result.buildErrorResult(
+            error.UnknownRuleId => try tool_result.buildErrorResult(
                 allocator,
-                "Unknown prompt id",
+                "Unknown rule id",
             ),
             else => return err,
         };
@@ -166,17 +166,17 @@ pub fn handleCall(
     }
 
     // Prompt propose operations
-    if (std.mem.eql(u8, name, tool_names.prompt_propose_create)) {
-        return handleProposeCreate(allocator, workspace_root, session, args_obj, .prompt) catch |err| proposeErr(allocator, err);
+    if (std.mem.eql(u8, name, tool_names.rule_propose_create)) {
+        return handleProposeCreate(allocator, workspace_root, session, args_obj, .rule) catch |err| proposeErr(allocator, err);
     }
-    if (std.mem.eql(u8, name, tool_names.prompt_propose_update)) {
-        return handleProposeUpdate(allocator, workspace_root, session, args_obj, .prompt) catch |err| proposeErr(allocator, err);
+    if (std.mem.eql(u8, name, tool_names.rule_propose_update)) {
+        return handleProposeUpdate(allocator, workspace_root, session, args_obj, .rule) catch |err| proposeErr(allocator, err);
     }
-    if (std.mem.eql(u8, name, tool_names.prompt_propose_rename)) {
-        return handleProposeRename(allocator, workspace_root, session, args_obj, .prompt) catch |err| proposeErr(allocator, err);
+    if (std.mem.eql(u8, name, tool_names.rule_propose_rename)) {
+        return handleProposeRename(allocator, workspace_root, session, args_obj, .rule) catch |err| proposeErr(allocator, err);
     }
-    if (std.mem.eql(u8, name, tool_names.prompt_propose_delete)) {
-        return handleProposeDelete(allocator, workspace_root, session, args_obj, .prompt) catch |err| proposeErr(allocator, err);
+    if (std.mem.eql(u8, name, tool_names.rule_propose_delete)) {
+        return handleProposeDelete(allocator, workspace_root, session, args_obj, .rule) catch |err| proposeErr(allocator, err);
     }
 
     return try tool_result.buildErrorResult(allocator, "Unknown tool");
@@ -193,7 +193,7 @@ fn handleSetup(
         else => null,
     } else null;
 
-    var mpf = try workspace_prompt.loadMpf(allocator, workspace_root, known_hash);
+    var mpf = try workspace_rule.loadMpf(allocator, workspace_root, known_hash);
     defer mpf.deinit(allocator);
 
     const esc_ws = try encoding.jsonEscapeAlloc(allocator, session.ws_id);
@@ -241,7 +241,7 @@ fn handleSearch(
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     const kind = if (args_obj.get("kind")) |value|
-        try parsePromptKind(value)
+        try parseRuleKind(value)
     else
         null;
     const group = if (args_obj.get("group")) |value| switch (value) {
@@ -253,8 +253,8 @@ fn handleSearch(
         else => return error.InvalidParams,
     } else null;
 
-    var items = try workspace_prompt.discoverSearchable(allocator, workspace_root, kind, group, query);
-    defer workspace_prompt.deinitPromptItems(allocator, &items);
+    var items = try workspace_rule.discoverSearchable(allocator, workspace_root, kind, group, query);
+    defer workspace_rule.deinitRuleItems(allocator, &items);
 
     session.recordEvent(allocator, .search);
 
@@ -275,7 +275,7 @@ fn handleLoad(
     var known = try parseKnownHashes(allocator, args_obj.get("knownHashes"));
     defer known.deinit(allocator);
 
-    var result = try workspace_prompt.loadPrompts(
+    var result = try workspace_rule.loadRules(
         allocator,
         workspace_root,
         ids.items,
@@ -284,7 +284,7 @@ fn handleLoad(
     defer result.deinit(allocator);
 
     for (result.items.items) |item| {
-        session.recordEvent(allocator, .{ .load = .{ .prompt_id = item.id, .prompt_hash = item.hash } });
+        session.recordEvent(allocator, .{ .load = .{ .rule_id = item.id, .rule_hash = item.hash } });
     }
 
     const structured = try tool_result.serializeLoadResultWithConstraints(
@@ -316,12 +316,12 @@ fn handleRefer(
             else => continue,
         };
 
-        const prompt_id = if (ref_obj.get("promptId")) |v| switch (v) {
+        const rule_id = if (ref_obj.get("ruleId")) |v| switch (v) {
             .string => |s| s,
             else => continue,
         } else continue;
 
-        const prompt_hash = if (ref_obj.get("promptHash")) |v| switch (v) {
+        const rule_hash = if (ref_obj.get("ruleHash")) |v| switch (v) {
             .string => |s| s,
             else => null,
         } else null;
@@ -337,8 +337,8 @@ fn handleRefer(
         } else null;
 
         session.recordEvent(allocator, .{ .refer = .{
-            .prompt_id = prompt_id,
-            .prompt_hash = prompt_hash,
+            .rule_id = rule_id,
+            .rule_hash = rule_hash,
             .constraint_id = constraint_id orelse continue,
             .reason = reason,
         } });
@@ -351,7 +351,7 @@ fn handleRefer(
     return try tool_result.buildSuccessResult(allocator, structured);
 }
 
-fn parsePromptKind(value: std.json.Value) !?workspace_prompt.PromptKind {
+fn parseRuleKind(value: std.json.Value) !?workspace_rule.RuleKind {
     const str = switch (value) {
         .string => |s| s,
         else => return error.InvalidParams,
@@ -400,8 +400,8 @@ fn parseStringList(
 fn parseKnownHashes(
     allocator: std.mem.Allocator,
     value_opt: ?std.json.Value,
-) !std.ArrayList(workspace_prompt.KnownHash) {
-    var known: std.ArrayList(workspace_prompt.KnownHash) = .empty;
+) !std.ArrayList(workspace_rule.KnownHash) {
+    var known: std.ArrayList(workspace_rule.KnownHash) = .empty;
     errdefer known.deinit(allocator);
 
     const value = value_opt orelse return known;
@@ -500,7 +500,7 @@ fn handleProposeCreate(
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_create = .{ .path = path } },
-        .prompt => .{ .prompt_propose_create = .{ .path = path } },
+        .rule => .{ .rule_propose_create = .{ .path = path } },
     };
     session.recordEvent(allocator, payload);
 
@@ -516,24 +516,24 @@ fn handleProposeUpdate(
 ) ![]u8 {
     const id = switch (category) {
         .context => requiredString(args, "context_id") orelse return error.InvalidParams,
-        .prompt => requiredString(args, "prompt_id") orelse return error.InvalidParams,
+        .rule => requiredString(args, "rule_id") orelse return error.InvalidParams,
     };
     if (id.len == 0) return error.InvalidParams;
     const body = requiredString(args, "body") orelse return error.InvalidParams;
     if (body.len == 0) return error.InvalidParams;
     const description = optionalString(args, "description");
 
-    var manifest = try workspace_prompt.loadManifest(allocator, workspace_root);
+    var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
     defer manifest.deinit(allocator);
 
     const m_entry = switch (category) {
         .context => manifest.context.get(id) orelse return error.FileNotFound,
-        .prompt => manifest.prompts.get(id) orelse return error.FileNotFound,
+        .rule => manifest.rules.get(id) orelse return error.FileNotFound,
     };
 
     const cache_content = switch (category) {
-        .context => try workspace_prompt.readContextCacheFile(allocator, workspace_root, m_entry.path),
-        .prompt => try readPromptCacheFile(allocator, workspace_root, m_entry.path),
+        .context => try workspace_rule.readContextCacheFile(allocator, workspace_root, m_entry.path),
+        .rule => try readRuleCacheFile(allocator, workspace_root, m_entry.path),
     };
     defer allocator.free(cache_content);
 
@@ -545,14 +545,14 @@ fn handleProposeUpdate(
         .draft_path = m_entry.path,
         .current_path = m_entry.path,
         .base_hash = base_hash[0..],
-        .prompt_id = if (category == .prompt) id else null,
+        .rule_id = if (category == .rule) id else null,
         .context_id = if (category == .context) id else null,
         .description = description,
     }, body);
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_update = .{ .id = id } },
-        .prompt => .{ .prompt_propose_update = .{ .id = id } },
+        .rule => .{ .rule_propose_update = .{ .id = id } },
     };
     session.recordEvent(allocator, payload);
 
@@ -568,24 +568,24 @@ fn handleProposeRename(
 ) ![]u8 {
     const id = switch (category) {
         .context => requiredString(args, "context_id") orelse return error.InvalidParams,
-        .prompt => requiredString(args, "prompt_id") orelse return error.InvalidParams,
+        .rule => requiredString(args, "rule_id") orelse return error.InvalidParams,
     };
     if (id.len == 0) return error.InvalidParams;
     const new_path = requiredString(args, "new_path") orelse return error.InvalidParams;
     if (new_path.len == 0) return error.InvalidParams;
     const description = optionalString(args, "description");
 
-    var manifest = try workspace_prompt.loadManifest(allocator, workspace_root);
+    var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
     defer manifest.deinit(allocator);
 
     const m_entry = switch (category) {
         .context => manifest.context.get(id) orelse return error.FileNotFound,
-        .prompt => manifest.prompts.get(id) orelse return error.FileNotFound,
+        .rule => manifest.rules.get(id) orelse return error.FileNotFound,
     };
 
     const cache_content = switch (category) {
-        .context => try workspace_prompt.readContextCacheFile(allocator, workspace_root, m_entry.path),
-        .prompt => try readPromptCacheFile(allocator, workspace_root, m_entry.path),
+        .context => try workspace_rule.readContextCacheFile(allocator, workspace_root, m_entry.path),
+        .rule => try readRuleCacheFile(allocator, workspace_root, m_entry.path),
     };
     defer allocator.free(cache_content);
 
@@ -597,14 +597,14 @@ fn handleProposeRename(
         .draft_path = new_path,
         .current_path = m_entry.path,
         .base_hash = base_hash[0..],
-        .prompt_id = if (category == .prompt) id else null,
+        .rule_id = if (category == .rule) id else null,
         .context_id = if (category == .context) id else null,
         .description = description,
     }, "");
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_rename = .{ .id = id, .new_path = new_path } },
-        .prompt => .{ .prompt_propose_rename = .{ .id = id, .new_path = new_path } },
+        .rule => .{ .rule_propose_rename = .{ .id = id, .new_path = new_path } },
     };
     session.recordEvent(allocator, payload);
 
@@ -620,17 +620,17 @@ fn handleProposeDelete(
 ) ![]u8 {
     const id = switch (category) {
         .context => requiredString(args, "context_id") orelse return error.InvalidParams,
-        .prompt => requiredString(args, "prompt_id") orelse return error.InvalidParams,
+        .rule => requiredString(args, "rule_id") orelse return error.InvalidParams,
     };
     if (id.len == 0) return error.InvalidParams;
     const description = optionalString(args, "description");
 
-    var manifest = try workspace_prompt.loadManifest(allocator, workspace_root);
+    var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
     defer manifest.deinit(allocator);
 
     const m_entry = switch (category) {
         .context => manifest.context.get(id) orelse return error.FileNotFound,
-        .prompt => manifest.prompts.get(id) orelse return error.FileNotFound,
+        .rule => manifest.rules.get(id) orelse return error.FileNotFound,
     };
 
     try drafts_mod.createDraft(allocator, workspace_root, .{
@@ -638,14 +638,14 @@ fn handleProposeDelete(
         .operation = .delete,
         .draft_path = m_entry.path,
         .current_path = m_entry.path,
-        .prompt_id = if (category == .prompt) id else null,
+        .rule_id = if (category == .rule) id else null,
         .context_id = if (category == .context) id else null,
         .description = description,
     }, "");
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_delete = .{ .id = id } },
-        .prompt => .{ .prompt_propose_delete = .{ .id = id } },
+        .rule => .{ .rule_propose_delete = .{ .id = id } },
     };
     session.recordEvent(allocator, payload);
 
@@ -664,8 +664,8 @@ fn optionalString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return requiredString(obj, key);
 }
 
-fn readPromptCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
-    return workspace_prompt.readPromptCacheFile(allocator, ws_dir, rel_path);
+fn readRuleCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
+    return workspace_rule.readRuleCacheFile(allocator, ws_dir, rel_path);
 }
 
 fn buildOkDraftPath(allocator: std.mem.Allocator, draft_path: []const u8) ![]u8 {
@@ -689,10 +689,10 @@ test "buildListResult: exposes all memory and propose tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.context_propose_update ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.context_propose_rename ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.context_propose_delete ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.prompt_propose_create ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.prompt_propose_update ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.prompt_propose_rename ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.prompt_propose_delete ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.rule_propose_create ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.rule_propose_update ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.rule_propose_rename ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.rule_propose_delete ++ "\"") != null);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.begin\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.complete\"") == null);
@@ -702,7 +702,7 @@ test "buildListResult: exposes all memory and propose tools" {
 }
 
 // The next three tests exercise full handleCall flows against
-// synthetic .prompts fixtures. They were added before the test
+// synthetic .rules fixtures. They were added before the test
 // aggregator was wired into client/main.zig, so they never ran — and
 // silently drifted out of sync with handleCall's actual response
 // format. Skipping them keeps CI honest while the mismatch is

@@ -1,9 +1,9 @@
 //! MCP tool response formatting. Builds the content envelope agents consume: success results
-//! include human-readable text + machine-readable structuredContent; loaded prompts include
+//! include human-readable text + machine-readable structuredContent; loaded rules include
 //! parsed constraint IDs for the agent to reference in memory.refer calls.
 const std = @import("std");
 const encoding = @import("clumsies_lib").util.encoding;
-const workspace_prompt = @import("../prompt.zig");
+const workspace_rule = @import("../rule.zig");
 const tool_names = @import("tool_names.zig");
 
 pub fn buildSuccessResult(allocator: std.mem.Allocator, structured_json: []const u8) ![]u8 {
@@ -30,7 +30,7 @@ pub fn buildErrorResult(allocator: std.mem.Allocator, message: []const u8) ![]u8
 
 pub fn serializePromptList(
     allocator: std.mem.Allocator,
-    items: []const workspace_prompt.PromptItem,
+    items: []const workspace_rule.RuleItem,
 ) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
@@ -47,7 +47,7 @@ pub fn serializePromptList(
 
 pub fn serializeLoadResultWithConstraints(
     allocator: std.mem.Allocator,
-    result: *workspace_prompt.LoadResult,
+    result: *workspace_rule.LoadResult,
     workspace_id: []const u8,
 ) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
@@ -61,10 +61,10 @@ pub fn serializeLoadResultWithConstraints(
         if (idx > 0) try buf.append(allocator, ',');
 
         if ((item.kind == .rule or item.kind == .workflow) and item.content != null) {
-            var parsed = try workspace_prompt.parseConstraints(allocator, item.content.?);
+            var parsed = try workspace_rule.parseConstraints(allocator, item.content.?);
             defer parsed.deinit(allocator);
 
-            try appendLoadedPromptWithConstraints(allocator, &buf, item, parsed.constraints.items);
+            try appendLoadedRuleWithConstraints(allocator, &buf, item, parsed.constraints.items);
 
             if (buf.items.len > 0 and buf.items[buf.items.len - 1] == '}') {
                 buf.items.len -= 1;
@@ -84,7 +84,7 @@ pub fn serializeLoadResultWithConstraints(
             }
             try buf.appendSlice(allocator, "]}");
         } else {
-            try appendLoadedPrompt(allocator, &buf, item);
+            try appendLoadedRule(allocator, &buf, item);
         }
     }
     try buf.appendSlice(allocator, "]}");
@@ -95,7 +95,7 @@ pub fn serializeLoadResultWithConstraints(
 fn appendPromptMetadata(
     allocator: std.mem.Allocator,
     buf: *std.ArrayList(u8),
-    item: workspace_prompt.PromptItem,
+    item: workspace_rule.RuleItem,
 ) !void {
     const esc_id = try encoding.jsonEscapeAlloc(allocator, item.id);
     defer allocator.free(esc_id);
@@ -106,7 +106,7 @@ fn appendPromptMetadata(
 
     try buf.writer(allocator).print(
         "{{\"id\":\"{s}\",\"kind\":\"{s}\",\"path\":\"{s}\",\"name\":\"{s}\",\"group\":",
-        .{ esc_id, workspace_prompt.kindToString(item.kind), esc_path, esc_name },
+        .{ esc_id, workspace_rule.kindToString(item.kind), esc_path, esc_name },
     );
     if (item.group) |group| {
         const esc_group = try encoding.jsonEscapeAlloc(allocator, group);
@@ -124,19 +124,19 @@ fn appendPromptMetadata(
     try buf.appendSlice(allocator, "}");
 }
 
-fn appendLoadedPrompt(
+fn appendLoadedRule(
     allocator: std.mem.Allocator,
     buf: *std.ArrayList(u8),
-    item: workspace_prompt.LoadedPrompt,
+    item: workspace_rule.LoadedRule,
 ) !void {
-    return appendLoadedPromptWithConstraints(allocator, buf, item, &.{});
+    return appendLoadedRuleWithConstraints(allocator, buf, item, &.{});
 }
 
-fn appendLoadedPromptWithConstraints(
+fn appendLoadedRuleWithConstraints(
     allocator: std.mem.Allocator,
     buf: *std.ArrayList(u8),
-    item: workspace_prompt.LoadedPrompt,
-    constraints: []const workspace_prompt.ParsedConstraint,
+    item: workspace_rule.LoadedRule,
+    constraints: []const workspace_rule.ParsedConstraint,
 ) !void {
     const esc_id = try encoding.jsonEscapeAlloc(allocator, item.id);
     defer allocator.free(esc_id);
@@ -147,7 +147,7 @@ fn appendLoadedPromptWithConstraints(
         "{{\"id\":\"{s}\",\"kind\":\"{s}\",\"path\":\"{s}\",\"changed\":{s},\"hash\":\"{s}\",\"hasDraft\":{s},",
         .{
             esc_id,
-            workspace_prompt.kindToString(item.kind),
+            workspace_rule.kindToString(item.kind),
             esc_path,
             if (item.changed) "true" else "false",
             item.hash,
@@ -175,7 +175,7 @@ fn appendLoadedPromptWithConstraints(
 
             const reminder = try std.fmt.allocPrint(
                 allocator,
-                "{s}\n\n---\n[clumsies] When you apply constraints from this prompt, include them in a single {s} call at the end of your response.\nrefs entry fields: promptId: {s}, promptHash: {s}, constraintId: pick from below\n{s}---",
+                "{s}\n\n---\n[clumsies] When you apply constraints from this rule, include them in a single {s} call at the end of your response.\nrefs entry fields: ruleId: {s}, ruleHash: {s}, constraintId: pick from below\n{s}---",
                 .{ content, tool_names.refer, item.id, item.hash, constraint_list },
             );
             defer allocator.free(reminder);
@@ -220,7 +220,7 @@ test "buildErrorResult escapes special characters in message" {
 
 test "serializePromptList produces valid items array" {
     const allocator = std.testing.allocator;
-    const items = [_]workspace_prompt.PromptItem{
+    const items = [_]workspace_rule.RuleItem{
         .{ .id = "p-1", .path = "rule/STYLE.md", .kind = .rule, .group = null, .hash = "abc123", .name = "STYLE", .priority = .normal },
     };
     const result = try serializePromptList(allocator, &items);

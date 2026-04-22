@@ -7,7 +7,7 @@ const api = @import("../api.zig");
 const data = @import("../view_types.zig");
 const diff_viewer = @import("../widgets/diff_viewer.zig");
 
-const PromptDetailLayout = struct {
+const RuleDetailLayout = struct {
     inner_h_pad: u16,
     inner_w_pad: u16,
     content_origin_col: i17,
@@ -16,7 +16,7 @@ const PromptDetailLayout = struct {
     pr_diff_origin_row: i17,
 };
 
-const embedded_layout: PromptDetailLayout = .{
+const embedded_layout: RuleDetailLayout = .{
     .inner_h_pad = 2,
     .inner_w_pad = 4,
     .content_origin_col = 2,
@@ -44,22 +44,22 @@ pub fn drawEmbeddedEmpty(
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Detail", theme.boldOn(theme.PANEL, theme.TEXT));
-    w.writeText(&surface, ctx, 2, 2, "No prompts loaded.", theme.fg(theme.MUTED));
+    w.writeText(&surface, ctx, 2, 2, "No rules loaded.", theme.fg(theme.MUTED));
     return surface;
 }
 
 pub fn drawEmbedded(
     self: anytype,
     ctx: vxfw.DrawContext,
-    prompt: *const data.PromptEntry,
+    rule: *const data.RuleEntry,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const body = try buildPromptDetailBody(self, ctx, prompt, embedded_layout);
+    const body = try buildRuleDetailBody(self, ctx, rule, embedded_layout);
 
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
     const border_color = theme.focusBorder(self.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
-    try fillPromptDetailSurface(&surface, ctx, prompt, embedded_layout, body);
+    try fillRuleDetailSurface(&surface, ctx, rule, embedded_layout, body);
     return surface;
 }
 
@@ -102,7 +102,7 @@ pub fn handleEmbeddedPaneEvent(
     }
 }
 
-fn buildPromptContentSurface(
+fn buildRuleContentSurface(
     self: anytype,
     ctx: vxfw.DrawContext,
     width_pad: u16,
@@ -112,20 +112,20 @@ fn buildPromptContentSurface(
     return buildContentSurface(self, ctx, width_pad, child_height);
 }
 
-fn buildPromptDetailBody(
+fn buildRuleDetailBody(
     self: anytype,
     ctx: vxfw.DrawContext,
-    prompt: *const data.PromptEntry,
-    layout: PromptDetailLayout,
+    rule: *const data.RuleEntry,
+    layout: RuleDetailLayout,
 ) std.mem.Allocator.Error!DetailBody {
     switch (self.detail_tab) {
         .content => {
             return .{
-                .content = try buildPromptContentSurface(self, ctx, layout.inner_w_pad, ctx.max.height.? -| 2),
+                .content = try buildRuleContentSurface(self, ctx, layout.inner_w_pad, ctx.max.height.? -| 2),
             };
         },
         .pull_requests => {
-            const prs = self.getPrsForPrompt(prompt.path);
+            const prs = self.getPrsForRule(rule.path);
             if (prs.len == 0) return .pull_request_empty;
 
             const inner_h = ctx.max.height.? -| layout.inner_h_pad;
@@ -134,13 +134,13 @@ fn buildPromptDetailBody(
             const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
             const pr = &prs[pr_idx];
             // Title matches design/04 drill-down layout:
-            // "{pr_id} ─ {prompt_path} ─ {status} ─ {author} ─ {created}"
+            // "{pr_id} ─ {rule_path} ─ {status} ─ {author} ─ {created}"
             // Dropped `refer:N` — it's not in the design.
             const created_short = w.formatShortTimestamp(ctx.arena, pr.created) catch pr.created;
             const title = try std.fmt.allocPrint(
                 ctx.arena,
                 "{s} ─ {s} ─ {s} ─ {s} ─ {s}",
-                .{ pr.id, pr.prompt_name, pr.status, pr.author, created_short },
+                .{ pr.id, pr.rule_name, pr.status, pr.author, created_short },
             );
             const op_line = try buildPrSubtitle(ctx.arena, pr);
 
@@ -210,17 +210,17 @@ fn shortHash(raw: []const u8) []const u8 {
     return slice[0..@min(7, slice.len)];
 }
 
-fn fillPromptDetailSurface(
+fn fillRuleDetailSurface(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
-    prompt: *const data.PromptEntry,
-    layout: PromptDetailLayout,
+    rule: *const data.RuleEntry,
+    layout: RuleDetailLayout,
     body: DetailBody,
 ) std.mem.Allocator.Error!void {
     switch (body) {
         .content => |content_surface| {
-            w.writeText(surface, ctx, 2, 0, prompt.path, theme.boldOn(theme.PANEL, theme.TEXT));
-            try writePromptMetaOnPanelChrome(surface, ctx, @intCast(2 + ctx.stringWidth(prompt.path) + 2), prompt);
+            w.writeText(surface, ctx, 2, 0, rule.path, theme.boldOn(theme.PANEL, theme.TEXT));
+            try writeRuleMetaOnPanelChrome(surface, ctx, @intCast(2 + ctx.stringWidth(rule.path) + 2), rule);
             const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
             children[0] = .{
                 .origin = .{
@@ -233,7 +233,7 @@ fn fillPromptDetailSurface(
         },
         .pull_request_empty => {
             w.writeText(surface, ctx, 2, 0, "Pull Requests", theme.boldOn(theme.PANEL, theme.TEXT));
-            w.writeText(surface, ctx, 2, 2, "No pull requests for this prompt.", theme.fg(theme.MUTED));
+            w.writeText(surface, ctx, 2, 2, "No pull requests for this rule.", theme.fg(theme.MUTED));
         },
         .pull_request_diff => |diff| {
             w.writeText(surface, ctx, 2, 0, diff.title, theme.boldOn(theme.PANEL, theme.TEXT));
@@ -254,53 +254,53 @@ fn fillPromptDetailSurface(
     }
 }
 
-fn writePromptMetaOnPanelChrome(
+fn writeRuleMetaOnPanelChrome(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
     min_col: u16,
-    prompt: *const data.PromptEntry,
+    rule: *const data.RuleEntry,
 ) std.mem.Allocator.Error!void {
     // Virtual row (local create-op draft not yet submitted) has
     // zero revision / prs / constraints / updated. Rendering
     // `rev0 pr0 c0` would be technically accurate but misleading
     // beside a file that is genuinely new. Show `(new)` instead,
     // mirroring the workspace context panel convention.
-    if (prompt.revision == 0 and prompt.content_hash.len == 0 and prompt.updated.len == 0) {
+    if (rule.revision == 0 and rule.content_hash.len == 0 and rule.updated.len == 0) {
         _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
         return;
     }
 
-    const full = try formatPromptMeta(ctx.arena, prompt, true);
+    const full = try formatRuleMeta(ctx.arena, rule, true);
     if (w.writeHeaderRightIfFits(surface, ctx, 0, min_col, full, theme.fg(theme.MUTED))) return;
 
-    const compact = try formatPromptMeta(ctx.arena, prompt, false);
+    const compact = try formatRuleMeta(ctx.arena, rule, false);
     _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, compact, theme.fg(theme.MUTED));
 }
 
-fn formatPromptMeta(
+fn formatRuleMeta(
     arena: std.mem.Allocator,
-    prompt: *const data.PromptEntry,
+    rule: *const data.RuleEntry,
     include_updated: bool,
 ) std.mem.Allocator.Error![]const u8 {
     if (!include_updated) {
         return std.fmt.allocPrint(
             arena,
             "rev{d} pr{d} c{d}",
-            .{ prompt.revision, prompt.open_pr_count, prompt.constraint_count },
+            .{ rule.revision, rule.open_pr_count, rule.constraint_count },
         );
     }
-    const updated = try w.formatShortTimestamp(arena, prompt.updated);
+    const updated = try w.formatShortTimestamp(arena, rule.updated);
     if (updated.len == 0) {
         return std.fmt.allocPrint(
             arena,
             "rev{d} pr{d} c{d}",
-            .{ prompt.revision, prompt.open_pr_count, prompt.constraint_count },
+            .{ rule.revision, rule.open_pr_count, rule.constraint_count },
         );
     }
     return std.fmt.allocPrint(
         arena,
         "rev{d} pr{d} c{d} {s}",
-        .{ prompt.revision, prompt.open_pr_count, prompt.constraint_count, updated },
+        .{ rule.revision, rule.open_pr_count, rule.constraint_count, updated },
     );
 }
 
@@ -331,11 +331,11 @@ fn handlePrDiffEvent(
 }
 
 pub fn fetchSelectedPrDetail(self: anytype) void {
-    const prompts = self.getPrompts();
-    const prompt_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
-    if (prompts.len == 0) return;
+    const rules = self.getRules();
+    const rule_idx = @min(self.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+    if (rules.len == 0) return;
 
-    const prs = self.getPrsForPrompt(prompts[prompt_idx].path);
+    const prs = self.getPrsForRule(rules[rule_idx].path);
     const pr_idx = @min(self.selected_pr_idx, if (prs.len > 0) prs.len - 1 else 0);
     if (prs.len == 0) return;
 
@@ -343,7 +343,7 @@ pub fn fetchSelectedPrDetail(self: anytype) void {
     if (self.api_state.pr_detail_cache.shouldDispatch(.{ .value = pr_id })) {
         api.specs.dispatchFromState(
             api.specs.PrIdParams,
-            @import("clumsies_lib").protocol.collab_api.PromptPrDetailResponse,
+            @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
             api.specs.pr_detail,
             &self.api_state.pr_detail_pending,
             self.api_state,
@@ -363,27 +363,27 @@ pub fn fetchSelectedPrDetail(self: anytype) void {
 }
 
 pub fn syncContentWidget(self: anytype) void {
-    const prompts = self.getPrompts();
+    const rules = self.getRules();
     // Virtual rows (create-op drafts) land at indices past
-    // prompts.len and have no server-side entry — their path lives
-    // in drafts_create_prompt_paths. Without this branch the
+    // rules.len and have no server-side entry — their path lives
+    // in drafts_create_rule_paths. Without this branch the
     // content panel renders empty for any draft created via `n`.
-    const selected_path: ?[]const u8 = if (self.selected_prompt < prompts.len)
-        prompts[self.selected_prompt].path
+    const selected_path: ?[]const u8 = if (self.selected_rule < rules.len)
+        rules[self.selected_rule].path
     else blk: {
-        const k = self.selected_prompt - prompts.len;
-        if (k >= self.drafts_create_prompt_paths.len) break :blk null;
-        break :blk self.drafts_create_prompt_paths[k];
+        const k = self.selected_rule - rules.len;
+        if (k >= self.drafts_create_rule_paths.len) break :blk null;
+        break :blk self.drafts_create_rule_paths[k];
     };
-    const cache_content: []const u8 = if (selected_path) |path| self.cachedPromptBody(path) orelse "" else "";
-    const draft_content: ?[]const u8 = if (selected_path) |path| self.draftContentForView(.prompt, path) else null;
+    const cache_content: []const u8 = if (selected_path) |path| self.cachedRuleBody(path) orelse "" else "";
+    const draft_content: ?[]const u8 = if (selected_path) |path| self.draftContentForView(.rule, path) else null;
     syncContentWidgetBytes(self, cache_content, draft_content);
-    self.requestSelectedPromptDetail();
+    self.requestSelectedRuleDetail();
 }
 
 /// Render the working-copy view for an arbitrary (cache, draft)
 /// byte pair into Dashboard.content_scroll_bars. Shared by the
-/// Library prompt detail pane and the Workspace context / prompts
+/// Library rule detail pane and the Workspace context / rules
 /// content panes so both surfaces scroll identically and use the
 /// same DiffViewer gutter formatter. When draft_content is null the
 /// cache bytes are rendered flat (no diff symbols); otherwise we
@@ -422,16 +422,16 @@ pub fn syncWsContextContentWidget(
 }
 
 /// Workspace-side entrypoint mirroring syncWsContextContentWidget
-/// for the Prompts tab. Workspace prompt bodies come from the same
-/// org-wide prompt_content cache that Library reads, but the draft
-/// overlay is keyed by prompt path so this helper threads both
+/// for the Rules tab. Workspace rule bodies come from the same
+/// org-wide rule_content cache that Library reads, but the draft
+/// overlay is keyed by rule path so this helper threads both
 /// into the shared renderer.
-pub fn syncWsPromptContentWidget(
+pub fn syncWsRuleContentWidget(
     self: anytype,
     path: []const u8,
 ) void {
-    const cache_content: []const u8 = self.cachedPromptBody(path) orelse "";
-    const draft_content: ?[]const u8 = self.draftContentForView(.prompt, path);
+    const cache_content: []const u8 = self.cachedRuleBody(path) orelse "";
+    const draft_content: ?[]const u8 = self.draftContentForView(.rule, path);
     syncContentWidgetBytes(self, cache_content, draft_content);
 }
 
@@ -439,7 +439,7 @@ pub fn syncWsPromptContentWidget(
 /// Dashboard.content_scroll_bars state. Call syncContentWidgetBytes
 /// before this (or another `sync*` variant) so the scroll view's
 /// children slice is populated. Layout params match
-/// buildPromptContentSurface's contract.
+/// buildRuleContentSurface's contract.
 pub fn buildContentSurface(
     self: anytype,
     ctx: vxfw.DrawContext,
@@ -500,16 +500,16 @@ fn gutterRowStyle(marker: diff_viewer.Marker) vaxis.Style {
 }
 
 pub fn syncPrWidgets(self: anytype) void {
-    const all_prompts = self.getPrompts();
-    if (all_prompts.len == 0) {
+    const all_rules = self.getRules();
+    if (all_rules.len == 0) {
         self.pr_row_count = 0;
         self.pr_scroll_bars.scroll_view.children = .{ .slice = self.pr_widgets[0..0] };
         self.pr_scroll_bars.estimated_content_height = 0;
         return;
     }
-    const sel_idx = @min(self.selected_prompt, all_prompts.len - 1);
-    const p = &all_prompts[sel_idx];
-    const prs = self.getPrsForPrompt(p.path);
+    const sel_idx = @min(self.selected_rule, all_rules.len - 1);
+    const p = &all_rules[sel_idx];
+    const prs = self.getPrsForRule(p.path);
     const view_alloc = self.viewAllocator();
     var row_idx: usize = 0;
     for (prs, 0..) |pr, pi| {
@@ -572,14 +572,14 @@ pub fn syncPrWidgets(self: anytype) void {
 }
 
 pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
-    const all_prompts = self.getPrompts();
-    if (all_prompts.len == 0) {
+    const all_rules = self.getRules();
+    if (all_rules.len == 0) {
         self.pr_diff_count = 0;
         return;
     }
-    const sel_idx = @min(self.selected_prompt, all_prompts.len - 1);
-    const p = &all_prompts[sel_idx];
-    const prs = self.getPrsForPrompt(p.path);
+    const sel_idx = @min(self.selected_rule, all_rules.len - 1);
+    const p = &all_rules[sel_idx];
+    const prs = self.getPrsForRule(p.path);
     if (prs.len == 0) {
         self.pr_diff_count = 0;
         return;
@@ -609,7 +609,7 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
         for (pr.comments) |comment| {
             // Header: "author · created". Timestamp is compacted
             // through the shared formatter so comment rows match PR
-            // list + prompt panel timestamp layout.
+            // list + rule panel timestamp layout.
             if (count < self.pr_diff_rows.len) {
                 const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
                 const header = std.fmt.allocPrint(allocator, "{s} \xc2\xb7 {s}", .{ comment.author, created_short }) catch "??";

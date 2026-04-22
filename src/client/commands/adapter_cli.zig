@@ -52,7 +52,7 @@ pub fn defaultPackageOrPrint(stderr: *std.Io.Writer) ?adapter.packages.AdapterPa
 pub fn choosePackage(
     stdout: *std.Io.Writer,
     allocator: std.mem.Allocator,
-    prompt: []const u8,
+    rule: []const u8,
 ) !adapter.packages.AdapterPackage {
     const all_packages = adapter.packages.all();
     if (all_packages.len == 0) return error.NoAdapterPackages;
@@ -68,7 +68,7 @@ pub fn choosePackage(
         };
     }
 
-    const index = try adapter.ui.promptChoice(stdout, allocator, prompt, choices, 0);
+    const index = try adapter.ui.promptChoice(stdout, allocator, rule, choices, 0);
     return all_packages[index];
 }
 

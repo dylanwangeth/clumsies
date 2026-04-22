@@ -1,4 +1,4 @@
-//! Content hashing with SHA-256. Content hashes are the version identity of prompts and context
+//! Content hashing with SHA-256. Content hashes are the version identity of rules and context
 //! files — same hash means same content, no ambiguity. Output format: "sha256:{hex}".
 const std = @import("std");
 const encoding = @import("encoding.zig");

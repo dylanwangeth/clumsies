@@ -6,7 +6,7 @@ const w = @import("../widgets.zig");
 const data = @import("../view_types.zig");
 const api = @import("../api.zig");
 const drafts_mod = @import("../../drafts.zig");
-const prompt_detail = @import("prompt_detail.zig");
+const rule_detail = @import("rule_detail.zig");
 const Modal = w.Modal;
 
 const MAX_TREE_ROWS = 128;
@@ -57,8 +57,8 @@ pub const DetailArgs = struct {
     /// the primary identity and only uses `context_sel` to pull
     /// hub-side metadata (hash / author / updated_at).
     context_sel_path: ?[]const u8,
-    prompt_sel_idx: ?usize,
-    prompt_sel_path: ?[]const u8,
+    rule_sel_idx: ?usize,
+    rule_sel_path: ?[]const u8,
 };
 
 pub fn drawStatus(
@@ -139,7 +139,7 @@ pub fn drawList(
     ctx: vxfw.DrawContext,
     ws_tree: anytype,
     live_ws: ?api.model.WsDetail,
-    lib_prompts: []const data.PromptEntry,
+    lib_rules: []const data.RuleEntry,
 ) std.mem.Allocator.Error!vxfw.Surface {
     const list_border = theme.focusBorder(self.ws_focus == .list);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
@@ -149,7 +149,7 @@ pub fn drawList(
     const cursor_col: u16 = 1;
 
     var tab_col: u16 = 2;
-    const ws_tabs = [_]@TypeOf(self.ws_tab){ .context, .prompts };
+    const ws_tabs = [_]@TypeOf(self.ws_tab){ .context, .rules };
     for (ws_tabs) |tab| {
         tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, wsTabLabel(tab), tab == self.ws_tab);
         tab_col +|= 1;
@@ -159,7 +159,7 @@ pub fn drawList(
     if (ws_tree.rowCount() == 0) {
         const empty_msg = switch (self.ws_tab) {
             .context => "No context files.",
-            .prompts => "No workspace prompts.",
+            .rules => "No workspace rules.",
         };
         w.writeText(&surface, ctx, row_col, 1, empty_msg, theme.fg(theme.MUTED));
         return surface;
@@ -203,15 +203,15 @@ pub fn drawList(
                             .path = self.drafts_create_context_paths[k],
                         };
                     },
-                    .prompts => inner: {
-                        if (leaf >= ws_d.ws_prompts.len) break :inner null;
-                        const wp = ws_d.ws_prompts[leaf];
-                        const prompt_path = if (wp.path.len > 0)
+                    .rules => inner: {
+                        if (leaf >= ws_d.ws_rules.len) break :inner null;
+                        const wp = ws_d.ws_rules[leaf];
+                        const rule_path = if (wp.path.len > 0)
                             wp.path
-                        else for (lib_prompts) |lp| {
+                        else for (lib_rules) |lp| {
                             if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-                        } else wp.prompt_id;
-                        break :inner MarkerInfo{ .category = .prompt, .path = prompt_path };
+                        } else wp.rule_id;
+                        break :inner MarkerInfo{ .category = .rule, .path = rule_path };
                     },
                 };
                 const m = marker_info orelse break :blk null;
@@ -245,7 +245,7 @@ pub fn drawDetail(
 
     const title: []const u8 = switch (self.ws_tab) {
         .context => if (args.dir_sel) |dir| dir else if (args.context_sel_path) |p| p else "no files",
-        .prompts => if (args.dir_sel) |dir| dir else if (args.prompt_sel_path) |path| path else "no prompts",
+        .rules => if (args.dir_sel) |dir| dir else if (args.rule_sel_path) |path| path else "no rules",
     };
     w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
     // Reserve min_col past the title (plus one space) so the
@@ -271,13 +271,13 @@ pub fn drawDetail(
                 w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
             }
         },
-        .prompts => {
+        .rules => {
             if (args.dir_sel != null) {
                 try drawDirSelected(&surface, ctx, kv_row, max_row);
-            } else if (args.prompt_sel_path) |p| {
-                try drawPromptFileDetail(self, &surface, ctx, kv_row, max_row, p);
+            } else if (args.rule_sel_path) |p| {
+                try drawRuleFileDetail(self, &surface, ctx, kv_row, max_row, p);
             } else {
-                w.writeText(&surface, ctx, 2, kv_row, "No workspace prompts.", theme.fg(theme.MUTED));
+                w.writeText(&surface, ctx, 2, kv_row, "No workspace rules.", theme.fg(theme.MUTED));
             }
         },
     }
@@ -288,7 +288,7 @@ pub fn drawDetail(
 /// Render a one-line metadata badge at the top-right of the header,
 /// mirroring Library's `rev{N} pr{N} c{N} {updated}` convention. For
 /// context files we render `hash7 author updated`; for workspace
-/// prompts the hash is all we have from the manifest; for virtual
+/// rules the hash is all we have from the manifest; for virtual
 /// (create-op) drafts we render an accent-colored `(new)` banner so
 /// the user knows the file is unsubmitted.
 fn writeWsMetaOnHeader(
@@ -317,10 +317,10 @@ fn writeWsMetaOnHeader(
                 _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
             }
         },
-        .prompts => {
-            if (args.prompt_sel_idx) |idx| {
-                if (idx >= ws_d.ws_prompts.len) return;
-                const p = &ws_d.ws_prompts[idx];
+        .rules => {
+            if (args.rule_sel_idx) |idx| {
+                if (idx >= ws_d.ws_rules.len) return;
+                const p = &ws_d.ws_rules[idx];
                 const hash7 = hashBadge(p.content_hash);
                 _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, hash7, theme.fg(theme.MUTED));
             }
@@ -368,31 +368,31 @@ fn drawContextFileDetail(
     });
 }
 
-fn drawPromptFileDetail(
+fn drawRuleFileDetail(
     self: anytype,
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
     start_row: u16,
     max_row: u16,
-    prompt_path: []const u8,
+    rule_path: []const u8,
 ) !void {
     if (self.ws_show_diff) {
         w.writeText(surface, ctx, 2, start_row, "No diff available", theme.fg(theme.MUTED));
         return;
     }
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
-        .prompt = .{ .path = prompt_path },
+        .rule = .{ .path = rule_path },
     });
 }
 
 const ContentSource = union(enum) {
     context: struct { ws_id: []const u8, path: []const u8 },
-    prompt: struct { path: []const u8 },
+    rule: struct { path: []const u8 },
 };
 
 /// Seed the shared content_scroll_bars with working-copy bytes for
 /// the source and attach the scroll view as a child surface below
-/// the metadata rows. Library's prompt_detail path uses the same
+/// the metadata rows. Library's rule_detail path uses the same
 /// scroll bars, so switching modules redraws content into the same
 /// widget state — no per-module scroll state today.
 fn attachContentSurface(
@@ -404,8 +404,8 @@ fn attachContentSurface(
     source: ContentSource,
 ) !void {
     switch (source) {
-        .context => |c| prompt_detail.syncWsContextContentWidget(self, c.ws_id, c.path),
-        .prompt => |p| prompt_detail.syncWsPromptContentWidget(self, p.path),
+        .context => |c| rule_detail.syncWsContextContentWidget(self, c.ws_id, c.path),
+        .rule => |p| rule_detail.syncWsRuleContentWidget(self, p.path),
     }
     const content_h: u16 = if (max_row > start_row) max_row - start_row else 0;
     if (content_h == 0) return;
@@ -414,7 +414,7 @@ fn attachContentSurface(
         .{ .width = ctx.max.width.? -| width_pad, .height = content_h },
         .{ .width = ctx.max.width.? -| width_pad, .height = content_h },
     );
-    const body = try prompt_detail.buildContentSurface(self, inner_ctx, width_pad, content_h);
+    const body = try rule_detail.buildContentSurface(self, inner_ctx, width_pad, content_h);
     const prev = surface.children;
     const children = try ctx.arena.alloc(vxfw.SubSurface, prev.len + 1);
     for (prev, 0..) |c, i| children[i] = c;
@@ -461,7 +461,7 @@ pub fn handleModuleEvent(
     // `n` creates a new context-file draft. Bound at module level
     // (like Library's `n`) rather than inside list-focus so users
     // can still reach it from the workspace bar without tabbing
-    // into the list first. Prompts are org-owned — workspace does
+    // into the list first. Rules are org-owned — workspace does
     // not create them, so `n` is gated on the Context tab.
     if (key.matches('n', .{}) and self.ws_tab == .context) {
         self.openNewDraftForm(.context);
@@ -487,7 +487,7 @@ pub fn handleModuleEvent(
 fn wsTabLabel(tab: anytype) []const u8 {
     return switch (tab) {
         .context => "Context",
-        .prompts => "Prompts",
+        .rules => "Rules",
     };
 }
 
@@ -651,7 +651,7 @@ fn handleContentFocusEvent(
     }
     // Forward scroll keys to the shared content_scroll_bars so j/k,
     // arrow keys, PgUp/PgDn, g/G drive the content panel identically
-    // to the Library prompt-detail pane. vxfw's ScrollView consumes
+    // to the Library rule-detail pane. vxfw's ScrollView consumes
     // the ones it knows and ignores the rest, so this is safe as a
     // catch-all.
     try self.content_scroll_bars.scroll_view.handleEvent(ctx, .{ .key_press = key });
@@ -720,21 +720,21 @@ pub fn syncWsRows(self: anytype) void {
                 item_count += 1;
             }
         },
-        .prompts => {
-            const lib_prompts = self.getPrompts();
-            item_count = @min(ws_d.ws_prompts.len, MAX_TREE_ROWS);
+        .rules => {
+            const lib_rules = self.getRules();
+            item_count = @min(ws_d.ws_rules.len, MAX_TREE_ROWS);
             for (0..item_count) |i| {
-                const wp = ws_d.ws_prompts[i];
+                const wp = ws_d.ws_rules[i];
                 paths_buf[i] = if (wp.path.len > 0)
                     wp.path
-                else for (lib_prompts) |lp| {
+                else for (lib_rules) |lp| {
                     if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-                } else wp.prompt_id;
+                } else wp.rule_id;
                 orig_idx[i] = i;
             }
-            // Workspace does not own prompt creation, so no virtual
+            // Workspace does not own rule creation, so no virtual
             // rows are appended here. Library is the place to create
-            // a new prompt draft; once submitted and merged it shows
+            // a new rule draft; once submitted and merged it shows
             // up through the workspace manifest.
         },
     }
@@ -929,7 +929,7 @@ fn drawCreateForm(
         ctx,
         c0 + label_w,
         row,
-        "(optional) seeds workspace with a prompt set",
+        "(optional) seeds workspace with a rule set",
         theme.textOn(bg, theme.MUTED),
     );
     row += 1;
@@ -997,8 +997,8 @@ fn drawCreateBundleList(
 
         const text = std.fmt.allocPrint(
             ctx.arena,
-            "{s}{s}  ({d} prompts)",
-            .{ marker, b.name, b.prompt_count },
+            "{s}{s}  ({d} rules)",
+            .{ marker, b.name, b.rule_count },
         ) catch continue;
 
         const render_row: u16 = row + 1 + @as(u16, @intCast(i - scroll_start));

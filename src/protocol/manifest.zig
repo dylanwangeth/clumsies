@@ -1,6 +1,6 @@
-//! Manifest format: the content index at the heart of the sync protocol. A manifest maps prompt
+//! Manifest format: the content index at the heart of the sync protocol. A manifest maps rule
 //! paths to content hashes. During sync, the client diffs its local manifest against the
-//! server's — only prompts with changed hashes get downloaded.
+//! server's — only rules with changed hashes get downloaded.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -71,7 +71,7 @@ pub const ManifestMap = struct {
 test "ManifestMap parses object entries" {
     const testing = std.testing;
     const body =
-        \\{"prompt-a":{"path":"rule/coding/00_COMPATIBILITY.md","hash":"sha256:abc"}}
+        \\{"rule-a":{"path":"rule/coding/00_COMPATIBILITY.md","hash":"sha256:abc"}}
     ;
 
     const parsed = try std.json.parseFromSlice(ManifestMap, testing.allocator, body, .{
@@ -80,7 +80,7 @@ test "ManifestMap parses object entries" {
     defer parsed.deinit();
 
     try testing.expectEqual(@as(usize, 1), parsed.value.items.len);
-    try testing.expectEqualStrings("prompt-a", parsed.value.items[0].key);
+    try testing.expectEqualStrings("rule-a", parsed.value.items[0].key);
     try testing.expectEqualStrings("rule/coding/00_COMPATIBILITY.md", parsed.value.items[0].value.path);
     try testing.expectEqualStrings("sha256:abc", parsed.value.items[0].value.hash);
 }

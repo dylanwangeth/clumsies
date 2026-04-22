@@ -45,11 +45,11 @@ https://github.com/user-attachments/assets/3ae8473c-dac1-45b5-8a72-6ad21906f235
 
 ## What is in the repo
 
-**Hub server.** The single source of truth. Manages prompt libraries, workspace manifests, context, collaboration workflows, and attestation aggregation — all behind a REST API that every client talks to.
+**Hub server.** The single source of truth. Manages rule libraries, workspace manifests, context, collaboration workflows, and attestation aggregation — all behind a REST API that every client talks to.
 
 **CLI.** Your local command surface. Login, workspace binding, cache sync, adapter install/remove, attestation flush, and TUI entry point.
 
-**MCP runtime.** How agents talk to clumsies. Exposes `memory.setup`, `memory.search`, `memory.load`, `memory.refer`, `memory.submit`, and `memory.reject` — each call automatically produces an attestation event. Agents can also propose changes via `context.propose_create/update/rename/delete` (workspace context) and `prompt.propose_create/update/rename/delete` (library rules).
+**MCP runtime.** How agents talk to clumsies. Exposes `memory.setup`, `memory.search`, `memory.load`, `memory.refer`, `memory.submit`, and `memory.reject` — each call automatically produces an attestation event. Agents can also propose changes via `context.propose_create/update/rename/delete` (workspace context) and `rule.propose_create/update/rename/delete` (library rules).
 
 **Adapter layer.** Bridges your rules to agent runtimes without vendor lock-in. Currently supports Claude Code and Codex. Cursor, Windsurf, Copilot, Cline, Kimi Code, Qwen Code, and OpenCode coming soon.
 

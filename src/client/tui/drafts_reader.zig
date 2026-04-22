@@ -3,7 +3,7 @@ const std = @import("std");
 
 pub const DraftEntry = struct {
     category: []const u8,
-    prompt_id: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
     current_path: ?[]const u8 = null,
     draft_path: []const u8,
     operation: []const u8,
@@ -54,7 +54,7 @@ fn readIndexFile(allocator: std.mem.Allocator, path: []const u8, out: *std.Array
         version: u32 = 1,
         drafts: []const struct {
             category: []const u8 = "",
-            prompt_id: ?[]const u8 = null,
+            rule_id: ?[]const u8 = null,
             current_path: ?[]const u8 = null,
             draft_path: []const u8 = "",
             operation: []const u8 = "",
@@ -70,7 +70,7 @@ fn readIndexFile(allocator: std.mem.Allocator, path: []const u8, out: *std.Array
     for (parsed.value.drafts) |d| {
         out.append(allocator, .{
             .category = allocator.dupe(u8, d.category) catch continue,
-            .prompt_id = if (d.prompt_id) |pid| (allocator.dupe(u8, pid) catch continue) else null,
+            .rule_id = if (d.rule_id) |pid| (allocator.dupe(u8, pid) catch continue) else null,
             .current_path = if (d.current_path) |cp| (allocator.dupe(u8, cp) catch continue) else null,
             .draft_path = allocator.dupe(u8, d.draft_path) catch continue,
             .operation = allocator.dupe(u8, d.operation) catch continue,

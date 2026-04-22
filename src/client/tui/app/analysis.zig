@@ -16,16 +16,16 @@ pub fn drawRoot(
     w.fillSurface(&root, theme.CANVAS);
 
     const members_w: u16 = 18;
-    const prompts_w: u16 = size.width -| members_w;
+    const rules_w: u16 = size.width -| members_w;
     const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
 
     const main_surface = if (self.analysis_show_member_detail)
-        try drawMemberDetail(self, ctx, prompts_w, size.height, insights)
+        try drawMemberDetail(self, ctx, rules_w, size.height, insights)
     else
-        try drawPrompts(self, ctx, prompts_w, size.height, insights, available);
+        try drawRules(self, ctx, rules_w, size.height, insights, available);
     children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = main_surface };
     children[1] = .{
-        .origin = .{ .row = 0, .col = prompts_w },
+        .origin = .{ .row = 0, .col = rules_w },
         .surface = try drawMembers(self, ctx, members_w, size.height, insights, available),
     };
 
@@ -33,7 +33,7 @@ pub fn drawRoot(
     return root;
 }
 
-pub fn drawPrompts(
+pub fn drawRules(
     self: anytype,
     ctx: vxfw.DrawContext,
     width: u16,
@@ -41,12 +41,12 @@ pub fn drawPrompts(
     insights: *const data.AnalysisData,
     available: bool,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const border_color = theme.focusBorder(self.analysis_focus == .prompts);
+    const border_color = theme.focusBorder(self.analysis_focus == .rules);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
 
-    w.writeText(&surface, ctx, 3, 0, "Prompts Rank", theme.boldOn(theme.PANEL, theme.TEXT));
+    w.writeText(&surface, ctx, 3, 0, "Rules Rank", theme.boldOn(theme.PANEL, theme.TEXT));
     const col_reach: u16 = width -| 24;
     const col_trend: u16 = width -| 16;
     const col_last: u16 = width -| 8;
@@ -67,22 +67,22 @@ pub fn drawPrompts(
         return surface;
     }
 
-    if (insights.prompts.len == 0) {
-        w.writeText(&surface, ctx, 2, 2, "No prompt analysis data returned by the hub.", theme.fg(theme.MUTED));
+    if (insights.rules.len == 0) {
+        w.writeText(&surface, ctx, 2, 2, "No rule analysis data returned by the hub.", theme.fg(theme.MUTED));
         return surface;
     }
 
     var max_refer: u32 = 1;
-    for (insights.prompts) |prompt| {
-        if (prompt.refer_count > max_refer) max_refer = prompt.refer_count;
+    for (insights.rules) |rule| {
+        if (rule.refer_count > max_refer) max_refer = rule.refer_count;
     }
 
     const name_col: u16 = 2;
     const min_name_w: u16 = 18;
     const max_name_w: u16 = @max(min_name_w, @min(@as(u16, 40), col_reach -| name_col -| 24));
     var measured_name_w: u16 = min_name_w;
-    for (insights.prompts) |prompt| {
-        const candidate = @as(u16, @intCast(ctx.stringWidth(firstLineTrimmed(prompt.name, max_name_w))));
+    for (insights.rules) |rule| {
+        const candidate = @as(u16, @intCast(ctx.stringWidth(firstLineTrimmed(rule.name, max_name_w))));
         if (candidate > measured_name_w) measured_name_w = candidate;
     }
     const name_w: u16 = @min(max_name_w, measured_name_w);
@@ -90,12 +90,12 @@ pub fn drawPrompts(
     const bar_end: u16 = col_reach -| 2;
     const bar_max_w: u16 = bar_end -| bar_start;
 
-    const focused = self.analysis_focus == .prompts;
+    const focused = self.analysis_focus == .rules;
     var row: u16 = 1;
-    for (insights.prompts, 0..) |prompt, prompt_idx| {
+    for (insights.rules, 0..) |rule, rule_idx| {
         if (row >= height -| 1) break;
-        const is_idle = prompt.refer_count == 0;
-        const is_sel = prompt_idx == self.analysis_prompt_cursor and focused;
+        const is_idle = rule.refer_count == 0;
+        const is_sel = rule_idx == self.analysis_rule_cursor and focused;
 
         if (is_sel) {
             w.writeCursorMarker(&surface, 1, row);
@@ -107,11 +107,11 @@ pub fn drawPrompts(
             theme.boldOn(theme.PANEL, theme.TEXT)
         else
             theme.fg(theme.TEXT_SOFT);
-        w.writeText(&surface, ctx, name_col, row, firstLineTrimmed(prompt.name, name_w), name_style);
+        w.writeText(&surface, ctx, name_col, row, firstLineTrimmed(rule.name, name_w), name_style);
 
         if (!is_idle) {
-            const bar_w_raw: u16 = @intCast(@as(u32, bar_max_w) * prompt.refer_count / max_refer);
-            const bar_w: u16 = if (prompt.refer_count > 0 and bar_w_raw == 0 and bar_max_w > 0) 1 else bar_w_raw;
+            const bar_w_raw: u16 = @intCast(@as(u32, bar_max_w) * rule.refer_count / max_refer);
+            const bar_w: u16 = if (rule.refer_count > 0 and bar_w_raw == 0 and bar_max_w > 0) 1 else bar_w_raw;
             for (0..bar_w) |offset| {
                 const bc: u16 = bar_start + @as(u16, @intCast(offset));
                 if (bc >= bar_end) break;
@@ -124,16 +124,16 @@ pub fn drawPrompts(
                     .style = .{ .fg = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, t), .bg = theme.PANEL },
                 });
             }
-            const ref_text = try std.fmt.allocPrint(ctx.arena, " {d}", .{prompt.refer_count});
+            const ref_text = try std.fmt.allocPrint(ctx.arena, " {d}", .{rule.refer_count});
             const ref_col: u16 = bar_start + bar_w;
             if (ref_col + @as(u16, @intCast(ctx.stringWidth(ref_text))) < col_reach) {
                 w.writeText(&surface, ctx, ref_col, row, ref_text, theme.fg(theme.TEXT));
             }
         }
 
-        const reach_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{prompt.workspace_count});
+        const reach_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{rule.workspace_count});
         w.writeText(&surface, ctx, col_reach, row, reach_txt, theme.fg(theme.MUTED));
-        const trend_summary = try promptTrendSummary(ctx.arena, prompt.trend);
+        const trend_summary = try ruleTrendSummary(ctx.arena, rule.trend);
         const trend_style: vaxis.Style = switch (trend_summary.kind) {
             .up => theme.fg(theme.OK),
             .down => theme.fg(theme.DANGER),
@@ -141,22 +141,22 @@ pub fn drawPrompts(
             .none => theme.fg(theme.DIM),
         };
         w.writeText(&surface, ctx, col_trend, row, trend_summary.text, trend_style);
-        const last_txt = if (prompt.last_referred_days_ago) |days|
+        const last_txt = if (rule.last_referred_days_ago) |days|
             (try std.fmt.allocPrint(ctx.arena, "{d}d", .{days}))
         else
             "\xe2\x80\x94";
         w.writeText(&surface, ctx, col_last, row, last_txt, theme.fg(theme.MUTED));
         row += 1;
 
-        if (self.analysis_expanded_prompt == prompt_idx) {
+        if (self.analysis_expanded_rule == rule_idx) {
             var constraint_max: u32 = 1;
-            for (prompt.constraints) |constraint| {
+            for (rule.constraints) |constraint| {
                 if (constraint.refer_count > constraint_max) constraint_max = constraint.refer_count;
             }
-            for (prompt.constraints, 0..) |constraint, constraint_idx| {
+            for (rule.constraints, 0..) |constraint, constraint_idx| {
                 if (row >= height -| 1) break;
                 const is_constraint_idle = constraint.refer_count == 0;
-                const is_last = constraint_idx + 1 == prompt.constraints.len;
+                const is_last = constraint_idx + 1 == rule.constraints.len;
                 const show_child_id = !std.mem.eql(u8, constraint.id, constraint.label);
                 const child_label_col: u16 = if (show_child_id) 12 else 9;
                 const child_label = firstLineTrimmed(constraint.label, bar_start -| child_label_col -| 2);
@@ -317,30 +317,30 @@ pub fn drawMemberDetail(
     w.writeText(&surface, ctx, 3, row, summary, theme.fg(theme.TEXT));
     row += 2;
 
-    w.writeText(&surface, ctx, 3, row, "Top Prompts", theme.fgBold(theme.TEXT));
+    w.writeText(&surface, ctx, 3, row, "Top Rules", theme.fgBold(theme.TEXT));
     row += 1;
     var max_ref: u32 = 1;
-    for (member.top_prompts) |top_prompt| {
-        if (top_prompt.refer_count > max_ref) max_ref = top_prompt.refer_count;
+    for (member.top_rules) |top_rule| {
+        if (top_rule.refer_count > max_ref) max_ref = top_rule.refer_count;
     }
     const name_col: u16 = 5;
     const count_col: u16 = width -| 7;
     const min_name_w: u16 = 14;
     const max_name_w: u16 = @max(min_name_w, @min(@as(u16, 32), count_col -| name_col -| 12));
     var measured_name_w: u16 = min_name_w;
-    for (member.top_prompts) |top_prompt| {
-        const candidate = @as(u16, @intCast(ctx.stringWidth(firstLineTrimmed(top_prompt.name, max_name_w))));
+    for (member.top_rules) |top_rule| {
+        const candidate = @as(u16, @intCast(ctx.stringWidth(firstLineTrimmed(top_rule.name, max_name_w))));
         if (candidate > measured_name_w) measured_name_w = candidate;
     }
     const name_w: u16 = @min(max_name_w, measured_name_w);
     const bar_start: u16 = name_col + name_w + 1;
     const bar_end: u16 = count_col -| 1;
     const bar_max_w: u16 = bar_end -| bar_start;
-    for (member.top_prompts) |top_prompt| {
+    for (member.top_rules) |top_rule| {
         if (row >= height -| 5) break;
-        w.writeText(&surface, ctx, name_col, row, firstLineTrimmed(top_prompt.name, name_w), theme.fg(theme.TEXT_SOFT));
-        const bar_w_raw: u16 = @intCast(@as(u32, bar_max_w) * top_prompt.refer_count / max_ref);
-        const bar_w: u16 = if (top_prompt.refer_count > 0 and bar_w_raw == 0 and bar_max_w > 0) 1 else bar_w_raw;
+        w.writeText(&surface, ctx, name_col, row, firstLineTrimmed(top_rule.name, name_w), theme.fg(theme.TEXT_SOFT));
+        const bar_w_raw: u16 = @intCast(@as(u32, bar_max_w) * top_rule.refer_count / max_ref);
+        const bar_w: u16 = if (top_rule.refer_count > 0 and bar_w_raw == 0 and bar_max_w > 0) 1 else bar_w_raw;
         for (0..bar_w) |offset| {
             const bc: u16 = bar_start + @as(u16, @intCast(offset));
             if (bc >= bar_end) break;
@@ -353,7 +353,7 @@ pub fn drawMemberDetail(
                 .style = .{ .fg = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, t), .bg = theme.PANEL },
             });
         }
-        const ref_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{top_prompt.refer_count});
+        const ref_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{top_rule.refer_count});
         w.writeText(&surface, ctx, count_col, row, ref_txt, theme.fg(theme.MUTED));
         row += 1;
     }
@@ -365,24 +365,24 @@ pub fn handleModuleEvent(
     self: anytype,
     ctx: *vxfw.EventContext,
     key: vaxis.Key,
-    prompt_count: usize,
+    rule_count: usize,
     member_count: usize,
 ) anyerror!void {
     if (key.matches(vaxis.Key.tab, .{})) {
         self.analysis_focus = switch (self.analysis_focus) {
-            .prompts => .members,
-            else => .prompts,
+            .rules => .members,
+            else => .rules,
         };
-        self.analysis_expanded_prompt = null;
+        self.analysis_expanded_rule = null;
         self.analysis_show_member_detail = false;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
         switch (self.analysis_focus) {
-            .prompts => {
-                if (prompt_count > 0 and self.analysis_prompt_cursor < prompt_count - 1)
-                    self.analysis_prompt_cursor += 1;
+            .rules => {
+                if (rule_count > 0 and self.analysis_rule_cursor < rule_count - 1)
+                    self.analysis_rule_cursor += 1;
                 ctx.consumeAndRedraw();
                 return;
             },
@@ -397,8 +397,8 @@ pub fn handleModuleEvent(
     }
     if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
         switch (self.analysis_focus) {
-            .prompts => {
-                self.analysis_prompt_cursor -|= 1;
+            .rules => {
+                self.analysis_rule_cursor -|= 1;
                 ctx.consumeAndRedraw();
                 return;
             },
@@ -412,11 +412,11 @@ pub fn handleModuleEvent(
     }
     if (key.matches(vaxis.Key.enter, .{})) {
         switch (self.analysis_focus) {
-            .prompts => {
-                if (self.analysis_expanded_prompt == self.analysis_prompt_cursor) {
-                    self.analysis_expanded_prompt = null;
+            .rules => {
+                if (self.analysis_expanded_rule == self.analysis_rule_cursor) {
+                    self.analysis_expanded_rule = null;
                 } else {
-                    self.analysis_expanded_prompt = self.analysis_prompt_cursor;
+                    self.analysis_expanded_rule = self.analysis_rule_cursor;
                 }
                 ctx.consumeAndRedraw();
                 return;
@@ -430,12 +430,12 @@ pub fn handleModuleEvent(
         }
     }
     if (key.matches(vaxis.Key.escape, .{})) {
-        if (self.analysis_expanded_prompt != null) {
-            self.analysis_expanded_prompt = null;
+        if (self.analysis_expanded_rule != null) {
+            self.analysis_expanded_rule = null;
         } else if (self.analysis_show_member_detail) {
             self.analysis_show_member_detail = false;
         } else {
-            self.analysis_focus = .prompts;
+            self.analysis_focus = .rules;
         }
         ctx.consumeAndRedraw();
     }
@@ -453,7 +453,7 @@ const TrendSummary = struct {
     kind: TrendSummaryKind,
 };
 
-fn promptTrendSummary(
+fn ruleTrendSummary(
     arena: std.mem.Allocator,
     trend: [30]u16,
 ) std.mem.Allocator.Error!TrendSummary {

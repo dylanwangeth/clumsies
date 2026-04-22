@@ -98,12 +98,12 @@ fn fetchAll(
         model.DirectoryData,
         parse.parseDirectory,
     );
-    const prompts_list = doFetchParse(
+    const rules_list = doFetchParse(
         &client,
         alloc,
-        "/api/org/library/prompts",
-        []const model.LibraryPrompt,
-        parse.parseLibraryPrompts,
+        "/api/org/library/rules",
+        []const model.LibraryRule,
+        parse.parseLibraryRules,
     );
     const org_stats = doFetchParse(
         &client,
@@ -123,7 +123,7 @@ fn fetchAll(
     api_state.mutex.lock();
     api_state.current_user = user;
     api_state.directory = directory;
-    api_state.prompts = prompts_list;
+    api_state.rules = rules_list;
     api_state.bundles = bundles;
     api_state.org_stats = org_stats;
     api_state.status = .connected;

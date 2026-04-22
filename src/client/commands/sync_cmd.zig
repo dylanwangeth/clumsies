@@ -15,7 +15,7 @@ const P = styles.P;
 
 /// Must stay ≤ the hub-side cap (`BATCH_MAX_IDS` / `BATCH_MAX_PATHS`
 /// in src/hub/library.zig and context.zig). Oversized batches
-/// currently 400 with "too many prompt_ids" / "too many paths";
+/// currently 400 with "too many rule_ids" / "too many paths";
 /// chunking here keeps sync working on workspaces with more than
 /// that many changed entries.
 const BATCH_CHUNK_SIZE: usize = 1024;
@@ -126,8 +126,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     // batch fetch below — it is just accounted for separately in
     // the human-readable output.
     var mpf_status: enum { absent, unchanged, to_fetch } = .absent;
-    for (manifest.prompts.items) |entry| {
-        const prompt_id = entry.key;
+    for (manifest.rules.items) |entry| {
+        const rule_id = entry.key;
         const prompt_path = entry.value.path;
         const remote_hash = stripHashPrefix(entry.value.hash);
         const matches = try localFileMatchesHash(allocator, cache_dir, cacheSubDirForPromptPath(prompt_path), prompt_path, remote_hash);
@@ -137,8 +137,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             if (!is_mpf) prompt_skipped += 1;
             continue;
         }
-        try prompts_to_fetch.append(allocator, prompt_id);
-        try prompts_path_for_id.put(allocator, prompt_id, prompt_path);
+        try prompts_to_fetch.append(allocator, rule_id);
+        try prompts_path_for_id.put(allocator, rule_id, prompt_path);
         if (!is_mpf) regular_prompts_to_fetch += 1;
     }
 
@@ -194,10 +194,10 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     // MPF is intentionally excluded from `prompt_skipped` so the
     // "Prompts" line only reports regular rules + workflows. Re-add
-    // it to the final prompt_count when MPF was unchanged this sync
+    // it to the final rule_count when MPF was unchanged this sync
     // so the totals still reflect every manifest entry.
     const mpf_in_unchanged: usize = if (mpf_status == .unchanged) 1 else 0;
-    const prompt_count = prompt_fetched + prompt_skipped + mpf_in_unchanged;
+    const rule_count = prompt_fetched + prompt_skipped + mpf_in_unchanged;
     const context_count = context_fetched + context_skipped;
 
     // Write manifest.json to cache
@@ -215,41 +215,41 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }
 
     const reconcile = drafts_mod.reconcileDrafts(allocator, ws_dir, cache_dir) catch drafts_mod.ReconcileSummary{};
-    const skipped_suffix = try std.fmt.allocPrint(allocator, " ({d} prompts + {d} context unchanged)", .{ prompt_skipped, context_skipped });
+    const skipped_suffix = try std.fmt.allocPrint(allocator, " ({d} rules + {d} context unchanged)", .{ prompt_skipped, context_skipped });
     defer allocator.free(skipped_suffix);
     const skipped_note: []const u8 = if (prompt_skipped + context_skipped > 0) skipped_suffix else "";
     if (reconcile.conflicted > 0) {
-        try stdout.print("{s}{s}{s}Synced:{s} {d} prompts, {d} context files{s}, {d} drafts flagged conflicted\n", .{ P, Color.bold, Color.green, Color.reset, prompt_count, context_count, skipped_note, reconcile.conflicted });
+        try stdout.print("{s}{s}{s}Synced:{s} {d} rules, {d} context files{s}, {d} drafts flagged conflicted\n", .{ P, Color.bold, Color.green, Color.reset, rule_count, context_count, skipped_note, reconcile.conflicted });
     } else {
-        try stdout.print("{s}{s}{s}Synced:{s} {d} prompts, {d} context files{s}\n", .{ P, Color.bold, Color.green, Color.reset, prompt_count, context_count, skipped_note });
+        try stdout.print("{s}{s}{s}Synced:{s} {d} rules, {d} context files{s}\n", .{ P, Color.bold, Color.green, Color.reset, rule_count, context_count, skipped_note });
     }
 }
 
-/// Batch-fetch prompt bodies in a single POST. Per-item errors from
+/// Batch-fetch rule bodies in a single POST. Per-item errors from
 /// the Hub response and local write failures are printed to stderr
 /// so the user can tell why a "46 of 46" manifest only produced
-/// "44 written"; the overall return value is the count of prompts
+/// "44 written"; the overall return value is the count of rules
 /// successfully written to cache.
 fn fetchPromptsBatch(
     allocator: std.mem.Allocator,
     hub: *HubClient,
     stderr: *std.Io.Writer,
     cache_dir: []const u8,
-    prompt_ids: []const []const u8,
+    rule_ids: []const []const u8,
     path_for_id: *const std.StringHashMapUnmanaged([]const u8),
 ) !usize {
     const body_json = try std.json.Stringify.valueAlloc(
         allocator,
-        library_api.BatchPromptContentRequest{ .prompt_ids = prompt_ids },
+        library_api.BatchRuleContentRequest{ .rule_ids = rule_ids },
         .{},
     );
     defer allocator.free(body_json);
 
-    const resp = try hub.post("/api/org/library/prompts/content", body_json);
+    const resp = try hub.post("/api/org/library/rules/content", body_json);
     defer resp.deinit();
     if (resp.status != .ok) return error.BatchFetchFailed;
 
-    const parsed = try std.json.parseFromSlice(library_api.BatchPromptContentResponse, allocator, resp.body, .{
+    const parsed = try std.json.parseFromSlice(library_api.BatchRuleContentResponse, allocator, resp.body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     });
@@ -258,7 +258,7 @@ fn fetchPromptsBatch(
     var written: usize = 0;
     for (parsed.value.items) |item| {
         if (item.@"error".len > 0) {
-            try stderr.print("  ! prompt {s}: {s}\n", .{ item.prompt_id, item.@"error" });
+            try stderr.print("  ! rule {s}: {s}\n", .{ item.rule_id, item.@"error" });
             continue;
         }
         // Prefer the path the server reports (authoritative) but fall
@@ -268,12 +268,12 @@ fn fetchPromptsBatch(
         const target_path = if (item.path.len > 0)
             item.path
         else
-            path_for_id.get(item.prompt_id) orelse {
-                try stderr.print("  ! prompt {s}: missing path in response\n", .{item.prompt_id});
+            path_for_id.get(item.rule_id) orelse {
+                try stderr.print("  ! rule {s}: missing path in response\n", .{item.rule_id});
                 continue;
             };
         writeToCache(allocator, cache_dir, cacheSubDirForPromptPath(target_path), target_path, item.body) catch |err| {
-            try stderr.print("  ! prompt {s}: write failed ({s})\n", .{ target_path, @errorName(err) });
+            try stderr.print("  ! rule {s}: write failed ({s})\n", .{ target_path, @errorName(err) });
             continue;
         };
         written += 1;
@@ -281,14 +281,14 @@ fn fetchPromptsBatch(
     return written;
 }
 
-/// Decide the cache subdirectory a given library prompt path writes
+/// Decide the cache subdirectory a given library rule path writes
 /// to. Reserved top-level names (`META_PROMPT.md`) land at the cache
-/// root so loaders can read them without knowing the prompt
-/// namespace layout. Everything else lives under `cache/prompt/` so
-/// the prompt namespace cannot collide with context.
+/// root so loaders can read them without knowing the rule
+/// namespace layout. Everything else lives under `cache/rule/` so
+/// the rule namespace cannot collide with context.
 fn cacheSubDirForPromptPath(prompt_path: []const u8) []const u8 {
     if (std.mem.eql(u8, prompt_path, "META_PROMPT.md")) return "";
-    return "prompt";
+    return "rule";
 }
 
 /// Batch-fetch context file bodies. Mirrors `fetchPromptsBatch` but
@@ -391,7 +391,7 @@ fn writeToCache(allocator: std.mem.Allocator, ws_cache_dir: []const u8, sub_dir:
     const dir_path = try std.fs.path.join(allocator, &.{ ws_cache_dir, sub_dir });
     defer allocator.free(dir_path);
 
-    // Ensure the namespace subdirectory exists (cache/prompt or
+    // Ensure the namespace subdirectory exists (cache/rule or
     // cache/context). `makeDirAbsolute` is the absolute-safe single-
     // level creator; the cache root above it is created by the
     // caller's `ensureDir(cache_dir)` before the loops start.
@@ -439,7 +439,7 @@ fn percentEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
 
 fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies sync{s}\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}Sync workspace prompts and context files from Hub to local cache.\n", .{P});
+    try out.print("{s}Sync workspace rules and context files from Hub to local cache.\n", .{P});
     try out.print("{s}Requires workspace binding (run {s}clumsies init{s} first).\n", .{ P, Color.cyan, Color.reset });
 }
 
@@ -475,18 +475,18 @@ test "cacheSubDirForPromptPath routes META_PROMPT to cache root" {
     try testing.expectEqualStrings("", cacheSubDirForPromptPath("META_PROMPT.md"));
 }
 
-test "cacheSubDirForPromptPath routes regular paths under prompt/" {
-    try testing.expectEqualStrings("prompt", cacheSubDirForPromptPath("coding/STYLE.md"));
-    try testing.expectEqualStrings("prompt", cacheSubDirForPromptPath("workflow/CODING.md"));
+test "cacheSubDirForPromptPath routes regular paths under rule/" {
+    try testing.expectEqualStrings("rule", cacheSubDirForPromptPath("coding/STYLE.md"));
+    try testing.expectEqualStrings("rule", cacheSubDirForPromptPath("workflow/CODING.md"));
 }
 
 test "localFileMatchesHash returns true on hash match" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt");
+    try tmp.dir.makePath("cache/rule");
     {
-        const f = try tmp.dir.createFile("cache/prompt/file.md", .{});
+        const f = try tmp.dir.createFile("cache/rule/file.md", .{});
         defer f.close();
         try f.writeAll("hello");
     }
@@ -496,7 +496,7 @@ test "localFileMatchesHash returns true on hash match" {
 
     // sha256 of "hello" is 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
     const hello_sha = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
-    const matches = try localFileMatchesHash(testing.allocator, cache_path, "prompt", "file.md", hello_sha);
+    const matches = try localFileMatchesHash(testing.allocator, cache_path, "rule", "file.md", hello_sha);
     try testing.expect(matches);
 }
 
@@ -504,9 +504,9 @@ test "localFileMatchesHash returns false on hash mismatch" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt");
+    try tmp.dir.makePath("cache/rule");
     {
-        const f = try tmp.dir.createFile("cache/prompt/file.md", .{});
+        const f = try tmp.dir.createFile("cache/rule/file.md", .{});
         defer f.close();
         try f.writeAll("hello");
     }
@@ -514,7 +514,7 @@ test "localFileMatchesHash returns false on hash mismatch" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const cache_path = try tmp.dir.realpath("cache", &buf);
 
-    const matches = try localFileMatchesHash(testing.allocator, cache_path, "prompt", "file.md", "0000000000000000000000000000000000000000000000000000000000000000");
+    const matches = try localFileMatchesHash(testing.allocator, cache_path, "rule", "file.md", "0000000000000000000000000000000000000000000000000000000000000000");
     try testing.expect(!matches);
 }
 
@@ -522,12 +522,12 @@ test "localFileMatchesHash returns false when file is missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt");
+    try tmp.dir.makePath("cache/rule");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const cache_path = try tmp.dir.realpath("cache", &buf);
 
-    const matches = try localFileMatchesHash(testing.allocator, cache_path, "prompt", "missing.md", "anyhashvalue");
+    const matches = try localFileMatchesHash(testing.allocator, cache_path, "rule", "missing.md", "anyhashvalue");
     try testing.expect(!matches);
 }
 
@@ -535,9 +535,9 @@ test "localFileMatchesHash returns false on empty remote hash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt");
+    try tmp.dir.makePath("cache/rule");
     {
-        const f = try tmp.dir.createFile("cache/prompt/file.md", .{});
+        const f = try tmp.dir.createFile("cache/rule/file.md", .{});
         defer f.close();
         try f.writeAll("hello");
     }
@@ -545,6 +545,6 @@ test "localFileMatchesHash returns false on empty remote hash" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const cache_path = try tmp.dir.realpath("cache", &buf);
 
-    const matches = try localFileMatchesHash(testing.allocator, cache_path, "prompt", "file.md", "");
+    const matches = try localFileMatchesHash(testing.allocator, cache_path, "rule", "file.md", "");
     try testing.expect(!matches);
 }

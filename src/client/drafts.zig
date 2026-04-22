@@ -1,5 +1,5 @@
-//! Local drafts: tracks in-progress edits to prompts and context files per workspace. When a
-//! user modifies a Library prompt locally (creating a "local edit"), the draft is stored under
+//! Local drafts: tracks in-progress edits to rules and context files per workspace. When a
+//! user modifies a Library rule locally (creating a "local edit"), the draft is stored under
 //! ~/.clumsies/workspaces/{ws_id}/drafts/ with an index mapping original paths to draft files.
 const std = @import("std");
 const testing = std.testing;
@@ -7,12 +7,12 @@ const path_util = @import("clumsies_lib").util.path_util;
 const util_hash = @import("clumsies_lib").util.hash;
 
 pub const DraftCategory = enum {
-    prompt,
+    rule,
     context,
 
     fn toString(self: DraftCategory) []const u8 {
         return switch (self) {
-            .prompt => "prompt",
+            .rule => "rule",
             .context => "context",
         };
     }
@@ -36,7 +36,7 @@ pub const DraftStatus = enum {
 
 pub const DraftEntry = struct {
     category: DraftCategory,
-    prompt_id: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
     context_id: ?[]const u8 = null,
     local_temp_id: ?[]const u8 = null,
     current_path: ?[]const u8 = null,
@@ -115,8 +115,8 @@ pub fn loadIndex(allocator: std.mem.Allocator, ws_dir: []const u8) !DraftsIndex 
 
 fn parseEntry(obj: std.json.ObjectMap) ?DraftEntry {
     const category_str = stringField(obj, "category") orelse return null;
-    const category: DraftCategory = if (std.mem.eql(u8, category_str, "prompt"))
-        .prompt
+    const category: DraftCategory = if (std.mem.eql(u8, category_str, "rule"))
+        .rule
     else if (std.mem.eql(u8, category_str, "context"))
         .context
     else
@@ -154,7 +154,7 @@ fn parseEntry(obj: std.json.ObjectMap) ?DraftEntry {
 
     return .{
         .category = category,
-        .prompt_id = stringField(obj, "prompt_id"),
+        .rule_id = stringField(obj, "rule_id"),
         .context_id = stringField(obj, "context_id"),
         .local_temp_id = stringField(obj, "local_temp_id"),
         .current_path = stringField(obj, "current_path"),
@@ -205,7 +205,7 @@ pub const CreateDraftParams = struct {
     draft_path: []const u8,
     current_path: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
-    prompt_id: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
     context_id: ?[]const u8 = null,
     local_temp_id: ?[]const u8 = null,
     description: ?[]const u8 = null,
@@ -240,7 +240,7 @@ pub fn createDraft(
 
     const new_entry = DraftEntry{
         .category = params.category,
-        .prompt_id = params.prompt_id,
+        .rule_id = params.rule_id,
         .context_id = params.context_id,
         .local_temp_id = params.local_temp_id,
         .current_path = params.current_path,
@@ -338,7 +338,7 @@ pub fn reconcileDrafts(
         const cur = entry.current_path orelse continue;
 
         const rel_dir: []const u8 = switch (entry.category) {
-            .prompt => "prompt",
+            .rule => "rule",
             .context => "context",
         };
         const cache_path = try std.fs.path.join(allocator, &.{ cache_dir, rel_dir, cur });
@@ -465,7 +465,7 @@ fn serializeIndex(allocator: std.mem.Allocator, entries: []const DraftEntry) ![]
         if (i > 0) try buf.appendSlice(allocator, ",");
         try buf.appendSlice(allocator, "\n    {");
         try writeStringField(allocator, &buf, "category", entry.category.toString(), true);
-        try writeOptStringField(allocator, &buf, "prompt_id", entry.prompt_id);
+        try writeOptStringField(allocator, &buf, "rule_id", entry.rule_id);
         try writeOptStringField(allocator, &buf, "context_id", entry.context_id);
         try writeOptStringField(allocator, &buf, "local_temp_id", entry.local_temp_id);
         try writeOptStringField(allocator, &buf, "current_path", entry.current_path);
@@ -564,7 +564,7 @@ test "loadIndex: missing file returns empty index" {
     try testing.expectEqual(@as(usize, 0), index.entries.items.len);
 }
 
-test "loadIndex: parses prompt and context entries" {
+test "loadIndex: parses rule and context entries" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -573,8 +573,8 @@ test "loadIndex: parses prompt and context entries" {
         \\{
         \\  "drafts": [
         \\    {
-        \\      "category": "prompt",
-        \\      "prompt_id": "p-style",
+        \\      "category": "rule",
+        \\      "rule_id": "p-style",
         \\      "current_path": "coding/STYLE.md",
         \\      "draft_path": "coding/STYLE.md",
         \\      "operation": "modify",
@@ -602,9 +602,9 @@ test "loadIndex: parses prompt and context entries" {
 
     try testing.expectEqual(@as(usize, 2), index.entries.items.len);
 
-    const prompt_entry = index.findByCurrentPath(.prompt, "coding/STYLE.md").?;
-    try testing.expectEqual(DraftOperation.modify, prompt_entry.operation);
-    try testing.expectEqualStrings("p-style", prompt_entry.prompt_id.?);
+    const rule_entry = index.findByCurrentPath(.rule, "coding/STYLE.md").?;
+    try testing.expectEqual(DraftOperation.modify, rule_entry.operation);
+    try testing.expectEqualStrings("p-style", rule_entry.rule_id.?);
 
     const ctx_entry = index.findByCurrentPath(.context, "spec/API.md").?;
     try testing.expectEqual(DraftCategory.context, ctx_entry.category);
@@ -636,20 +636,20 @@ test "findByCurrentPath: returns null for unknown path" {
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
 
-    try testing.expect(index.findByCurrentPath(.prompt, "anything") == null);
+    try testing.expect(index.findByCurrentPath(.rule, "anything") == null);
 }
 
 test "readDraftFile: reads from drafts/{category}/{draft_path}" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("drafts/prompt/coding");
-    try writeFile(tmp.dir, "drafts/prompt/coding/STYLE.md", "draft override content");
+    try tmp.dir.makePath("drafts/rule/coding");
+    try writeFile(tmp.dir, "drafts/rule/coding/STYLE.md", "draft override content");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    const content = try readDraftFile(testing.allocator, root, .prompt, "coding/STYLE.md");
+    const content = try readDraftFile(testing.allocator, root, .rule, "coding/STYLE.md");
     defer testing.allocator.free(content);
 
     try testing.expectEqualStrings("draft override content", content);
@@ -663,24 +663,24 @@ test "createDraft: writes file and index entry round-trip" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     try createDraft(testing.allocator, root, .{
-        .category = .prompt,
+        .category = .rule,
         .operation = .modify,
         .draft_path = "coding/STYLE.md",
         .current_path = "coding/STYLE.md",
         .base_hash = "sha256:abc",
-        .prompt_id = "p-style",
+        .rule_id = "p-style",
     }, "# STYLE modified\n");
 
-    const content = try readDraftFile(testing.allocator, root, .prompt, "coding/STYLE.md");
+    const content = try readDraftFile(testing.allocator, root, .rule, "coding/STYLE.md");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("# STYLE modified\n", content);
 
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), index.entries.items.len);
-    const entry = index.findByCurrentPath(.prompt, "coding/STYLE.md").?;
+    const entry = index.findByCurrentPath(.rule, "coding/STYLE.md").?;
     try testing.expectEqual(DraftOperation.modify, entry.operation);
-    try testing.expectEqualStrings("p-style", entry.prompt_id.?);
+    try testing.expectEqualStrings("p-style", entry.rule_id.?);
     try testing.expectEqualStrings("sha256:abc", entry.base_hash.?);
     try testing.expectEqual(DraftStatus.editing, entry.status);
 }
@@ -713,18 +713,18 @@ test "createDraft: delete operation does not write a content file" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     try createDraft(testing.allocator, root, .{
-        .category = .prompt,
+        .category = .rule,
         .operation = .delete,
         .draft_path = "old/UNUSED.md",
         .current_path = "old/UNUSED.md",
-        .prompt_id = "p-unused",
+        .rule_id = "p-unused",
     }, "");
 
-    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .prompt, "old/UNUSED.md"));
+    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .rule, "old/UNUSED.md"));
 
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
-    const entry = index.findByCurrentPath(.prompt, "old/UNUSED.md").?;
+    const entry = index.findByCurrentPath(.rule, "old/UNUSED.md").?;
     try testing.expectEqual(DraftOperation.delete, entry.operation);
 }
 
@@ -757,15 +757,15 @@ test "discardDraft: removes entry and file" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     try createDraft(testing.allocator, root, .{
-        .category = .prompt,
+        .category = .rule,
         .operation = .create,
         .draft_path = "new/FRESH.md",
         .local_temp_id = "local-1",
     }, "# FRESH\n");
 
-    try discardDraft(testing.allocator, root, .prompt, "new/FRESH.md");
+    try discardDraft(testing.allocator, root, .rule, "new/FRESH.md");
 
-    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .prompt, "new/FRESH.md"));
+    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .rule, "new/FRESH.md"));
 
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
@@ -779,7 +779,7 @@ test "discardDraft: idempotent when draft is absent" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    try discardDraft(testing.allocator, root, .prompt, "never/existed.md");
+    try discardDraft(testing.allocator, root, .rule, "never/existed.md");
 }
 
 test "setDraftStatus: transitions editing to ready and back" {
@@ -790,27 +790,27 @@ test "setDraftStatus: transitions editing to ready and back" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     try createDraft(testing.allocator, root, .{
-        .category = .prompt,
+        .category = .rule,
         .operation = .modify,
         .draft_path = "x/Y.md",
         .current_path = "x/Y.md",
-        .prompt_id = "p-y",
+        .rule_id = "p-y",
     }, "draft body\n");
 
-    try setDraftStatus(testing.allocator, root, .prompt, "x/Y.md", .ready);
+    try setDraftStatus(testing.allocator, root, .rule, "x/Y.md", .ready);
 
     {
         var index = try loadIndex(testing.allocator, root);
         defer index.deinit(testing.allocator);
-        const entry = index.findByCurrentPath(.prompt, "x/Y.md").?;
+        const entry = index.findByCurrentPath(.rule, "x/Y.md").?;
         try testing.expectEqual(DraftStatus.ready, entry.status);
     }
 
-    try setDraftStatus(testing.allocator, root, .prompt, "x/Y.md", .editing);
+    try setDraftStatus(testing.allocator, root, .rule, "x/Y.md", .editing);
 
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
-    const entry = index.findByCurrentPath(.prompt, "x/Y.md").?;
+    const entry = index.findByCurrentPath(.rule, "x/Y.md").?;
     try testing.expectEqual(DraftStatus.editing, entry.status);
 }
 
@@ -821,7 +821,7 @@ test "setDraftStatus: returns DraftNotFound for missing draft" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    try testing.expectError(error.DraftNotFound, setDraftStatus(testing.allocator, root, .prompt, "nope.md", .ready));
+    try testing.expectError(error.DraftNotFound, setDraftStatus(testing.allocator, root, .rule, "nope.md", .ready));
 }
 
 test "reconcileDrafts: leaves matching base_hash untouched" {
@@ -834,16 +834,16 @@ test "reconcileDrafts: leaves matching base_hash untouched" {
     const seed = "hello world\n";
     const seed_hash = util_hash.contentHash(seed);
     try createDraft(testing.allocator, root, .{
-        .category = .prompt,
+        .category = .rule,
         .operation = .modify,
         .draft_path = "coding/A.md",
         .current_path = "coding/A.md",
-        .prompt_id = "p-a",
+        .rule_id = "p-a",
         .base_hash = seed_hash[0..],
     }, seed);
 
-    try tmp.dir.makePath("cache/prompt/coding");
-    try writeFile(tmp.dir, "cache/prompt/coding/A.md", seed);
+    try tmp.dir.makePath("cache/rule/coding");
+    try writeFile(tmp.dir, "cache/rule/coding/A.md", seed);
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
     defer testing.allocator.free(cache_dir);
@@ -866,16 +866,16 @@ test "reconcileDrafts: marks conflicted when cache drifted" {
     const seed = "v1 body\n";
     const seed_hash = util_hash.contentHash(seed);
     try createDraft(testing.allocator, root, .{
-        .category = .prompt,
+        .category = .rule,
         .operation = .modify,
         .draft_path = "coding/A.md",
         .current_path = "coding/A.md",
-        .prompt_id = "p-a",
+        .rule_id = "p-a",
         .base_hash = seed_hash[0..],
     }, seed);
 
-    try tmp.dir.makePath("cache/prompt/coding");
-    try writeFile(tmp.dir, "cache/prompt/coding/A.md", "v2 body (someone else merged)\n");
+    try tmp.dir.makePath("cache/rule/coding");
+    try writeFile(tmp.dir, "cache/rule/coding/A.md", "v2 body (someone else merged)\n");
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
     defer testing.allocator.free(cache_dir);
@@ -896,7 +896,7 @@ test "reconcileDrafts: skips create-operation drafts" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     try createDraft(testing.allocator, root, .{
-        .category = .prompt,
+        .category = .rule,
         .operation = .create,
         .draft_path = "coding/NEW.md",
     }, "brand new\n");
@@ -922,17 +922,17 @@ test "reconcileDrafts: leaves terminal states sticky" {
     const seed = "merged body\n";
     const seed_hash = util_hash.contentHash(seed);
     try createDraft(testing.allocator, root, .{
-        .category = .prompt,
+        .category = .rule,
         .operation = .modify,
         .draft_path = "coding/A.md",
         .current_path = "coding/A.md",
-        .prompt_id = "p-a",
+        .rule_id = "p-a",
         .base_hash = seed_hash[0..],
     }, seed);
-    try setDraftStatus(testing.allocator, root, .prompt, "coding/A.md", .merged);
+    try setDraftStatus(testing.allocator, root, .rule, "coding/A.md", .merged);
 
-    try tmp.dir.makePath("cache/prompt/coding");
-    try writeFile(tmp.dir, "cache/prompt/coding/A.md", "totally different body\n");
+    try tmp.dir.makePath("cache/rule/coding");
+    try writeFile(tmp.dir, "cache/rule/coding/A.md", "totally different body\n");
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
     defer testing.allocator.free(cache_dir);
@@ -953,11 +953,11 @@ test "index serialization: multiple entries survive round-trip" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     try createDraft(testing.allocator, root, .{
-        .category = .prompt,
+        .category = .rule,
         .operation = .modify,
         .draft_path = "a/A.md",
         .current_path = "a/A.md",
-        .prompt_id = "p-a",
+        .rule_id = "p-a",
         .base_hash = "sha256:aaa",
     }, "a\n");
     try createDraft(testing.allocator, root, .{
