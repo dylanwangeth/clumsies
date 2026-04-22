@@ -216,13 +216,13 @@ const migration_sql =
     \\DO $$ BEGIN ALTER TABLE prompt_history RENAME TO rule_history; EXCEPTION WHEN undefined_table THEN NULL; END $$;
     \\
     \\-- Rename existing columns from old schema.
-    \\DO $$ BEGIN ALTER TABLE rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE workspace_rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE bundle_rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE rule_pr_operations RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE attestation_events RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE attestation_events RENAME COLUMN prompt_hash TO rule_hash; EXCEPTION WHEN undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE rule_history RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE workspace_rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE bundle_rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE rule_pr_operations RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE attestation_events RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE attestation_events RENAME COLUMN prompt_hash TO rule_hash; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
+    \\DO $$ BEGIN ALTER TABLE rule_history RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
     \\
     \\-- Rename existing indexes.
     \\DO $$ BEGIN ALTER INDEX IF EXISTS prompt_pr_operations_prompt_id_idx RENAME TO rule_pr_operations_rule_id_idx; EXCEPTION WHEN OTHERS THEN NULL; END $$;
