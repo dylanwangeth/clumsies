@@ -1,7 +1,6 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
-const theme = @import("../theme.zig");
 const d = @import("draw.zig");
 
 /// Create a horizontal two-column layout. Left column is `left_width` cells;
