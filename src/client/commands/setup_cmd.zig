@@ -20,7 +20,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     if (cache_path) |cp| {
         defer allocator.free(cp);
-        const mpf_path = std.fs.path.join(allocator, &.{ cp, "prompt", "META_PROMPT.md" }) catch return;
+        const mpf_path = std.fs.path.join(allocator, &.{ cp, "rule", "META_PROMPT.md" }) catch return;
         defer allocator.free(mpf_path);
 
         const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return;

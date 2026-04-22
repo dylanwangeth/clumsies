@@ -1,7 +1,7 @@
-//! Prompt resolution engine. Resolves prompts from the workspace cache (synced from Hub via
+//! Rule resolution engine. Resolves rules from the workspace cache (synced from Hub via
 //! manifest) with draft overlay support. Handles discovery (listing by kind/group), content
 //! loading (drafts override cache), and constraint parsing (extracting atomic tracking units
-//! from prompt markdown for the refer protocol).
+//! from rule markdown for the refer protocol).
 const std = @import("std");
 const testing = std.testing;
 const util_hash = @import("clumsies_lib").util.hash;
@@ -10,13 +10,13 @@ const path_util = @import("clumsies_lib").util.path_util;
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-/// Strip file extension from a prompt filename to get the display name.
+/// Strip file extension from a rule filename to get the display name.
 fn displayNameFromFilename(filename: []const u8) []const u8 {
     const ext_idx = std.mem.lastIndexOfScalar(u8, filename, '.');
     return if (ext_idx) |idx| filename[0..idx] else filename;
 }
 
-pub const PromptKind = enum {
+pub const RuleKind = enum {
     rule,
     workflow,
     context,
@@ -27,9 +27,9 @@ pub const SetupPriority = enum(u8) {
     normal,
 };
 
-pub const PromptItem = struct {
+pub const RuleItem = struct {
     id: []const u8,
-    kind: PromptKind,
+    kind: RuleKind,
     path: []const u8,
     name: []const u8,
     group: ?[]const u8,
@@ -43,9 +43,9 @@ pub const KnownHash = struct {
     hash: []const u8,
 };
 
-pub const LoadedPrompt = struct {
+pub const LoadedRule = struct {
     id: []const u8,
-    kind: PromptKind,
+    kind: RuleKind,
     path: []const u8,
     name: []const u8,
     group: ?[]const u8,
@@ -57,7 +57,7 @@ pub const LoadedPrompt = struct {
 };
 
 pub const LoadResult = struct {
-    items: std.ArrayList(LoadedPrompt) = .empty,
+    items: std.ArrayList(LoadedRule) = .empty,
 
     pub fn deinit(self: *LoadResult, allocator: std.mem.Allocator) void {
         for (self.items.items) |item| {
@@ -73,13 +73,13 @@ pub const LoadResult = struct {
     }
 };
 
-fn priorityForKind(kind: PromptKind) SetupPriority {
+fn priorityForKind(kind: RuleKind) SetupPriority {
     return switch (kind) {
         .rule, .workflow, .context => .normal,
     };
 }
 
-pub fn kindToString(kind: PromptKind) []const u8 {
+pub fn kindToString(kind: RuleKind) []const u8 {
     return switch (kind) {
         .rule => "rule",
         .workflow => "workflow",
@@ -100,8 +100,8 @@ pub const MetaPromptResult = struct {
 /// Load META_PROMPT.md from the workspace cache directory.
 /// `ws_dir` is the workspace root (~/.clumsies/workspaces/{ws_id}).
 /// MPF lives at `{ws_dir}/cache/META_PROMPT.md` — reserved paths
-/// sit at the cache root rather than under the `prompt/` namespace
-/// so a future MPF rename does not reshuffle the prompt tree.
+/// sit at the cache root rather than under the `rule/` namespace
+/// so a future MPF rename does not reshuffle the rule tree.
 pub fn loadMpf(allocator: std.mem.Allocator, ws_dir: []const u8, known_hash: ?[]const u8) !MetaPromptResult {
     const mpf_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
     defer allocator.free(mpf_path);
@@ -137,7 +137,7 @@ pub const ManifestEntry = struct {
 /// this struct; deinit drops the arena and invalidates all keys/values.
 pub const Manifest = struct {
     arena_state: *std.heap.ArenaAllocator,
-    prompts: std.StringHashMapUnmanaged(ManifestEntry) = .empty,
+    rules: std.StringHashMapUnmanaged(ManifestEntry) = .empty,
     context: std.StringHashMapUnmanaged(ManifestEntry) = .empty,
 
     pub fn deinit(self: *Manifest, allocator: std.mem.Allocator) void {
@@ -149,7 +149,7 @@ pub const Manifest = struct {
 /// Read `{ws_dir}/manifest.json` into an in-memory map. Returns an empty
 /// manifest (no error) if the file does not exist — that is the expected
 /// state before the first sync. Invalid JSON or a non-object top-level
-/// value returns `InvalidManifest`. Malformed prompts/context entries
+/// value returns `InvalidManifest`. Malformed rules/context entries
 /// inside an otherwise valid top-level object are silently skipped so a
 /// single bad row doesn't block discovery of the rest.
 pub fn loadManifest(allocator: std.mem.Allocator, ws_dir: []const u8) !Manifest {
@@ -176,8 +176,8 @@ pub fn loadManifest(allocator: std.mem.Allocator, ws_dir: []const u8) !Manifest 
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, content, .{}) catch return error.InvalidManifest;
     if (parsed != .object) return error.InvalidManifest;
 
-    if (parsed.object.get("prompts")) |prompts_val| {
-        try parseManifestSection(arena, &manifest.prompts, prompts_val);
+    if (parsed.object.get("rules")) |rules_val| {
+        try parseManifestSection(arena, &manifest.rules, rules_val);
     }
     if (parsed.object.get("context")) |context_val| {
         try parseManifestSection(arena, &manifest.context, context_val);
@@ -216,7 +216,7 @@ fn parseManifestSection(
     }
 }
 
-fn freePromptItem(allocator: std.mem.Allocator, item: PromptItem) void {
+fn freeRuleItem(allocator: std.mem.Allocator, item: RuleItem) void {
     allocator.free(item.id);
     allocator.free(item.path);
     allocator.free(item.name);
@@ -225,12 +225,12 @@ fn freePromptItem(allocator: std.mem.Allocator, item: PromptItem) void {
     if (item.description) |desc| allocator.free(desc);
 }
 
-pub fn deinitPromptItems(allocator: std.mem.Allocator, items: *std.ArrayList(PromptItem)) void {
-    for (items.items) |item| freePromptItem(allocator, item);
+pub fn deinitRuleItems(allocator: std.mem.Allocator, items: *std.ArrayList(RuleItem)) void {
+    for (items.items) |item| freeRuleItem(allocator, item);
     items.deinit(allocator);
 }
 
-fn kindFromPath(path: []const u8) ?PromptKind {
+fn kindFromPath(path: []const u8) ?RuleKind {
     if (std.mem.eql(u8, path, "META_PROMPT.md")) return null;
     if (std.mem.eql(u8, path, "PIN.md")) return null;
     if (std.mem.startsWith(u8, path, "workflow/")) return .workflow;
@@ -264,7 +264,7 @@ fn matchesQuery(haystack: []const u8, query: []const u8) bool {
     return false;
 }
 
-/// Discover prompts and context available for memory.search. Iterates the
+/// Discover rules and context available for memory.search. Iterates the
 /// local manifest, classifies each entry by path prefix or category, and
 /// applies optional kind/group filters. Reserved paths (META_PROMPT.md) are
 /// excluded. Context entries have kind = .context and group derived from
@@ -272,17 +272,17 @@ fn matchesQuery(haystack: []const u8, query: []const u8) bool {
 pub fn discoverSearchable(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
-    kind_filter: ?PromptKind,
+    kind_filter: ?RuleKind,
     group_filter: ?[]const u8,
     query_filter: ?[]const u8,
-) !std.ArrayList(PromptItem) {
-    var items: std.ArrayList(PromptItem) = .empty;
-    errdefer deinitPromptItems(allocator, &items);
+) !std.ArrayList(RuleItem) {
+    var items: std.ArrayList(RuleItem) = .empty;
+    errdefer deinitRuleItems(allocator, &items);
 
     var manifest = try loadManifest(allocator, ws_dir);
     defer manifest.deinit(allocator);
 
-    var it = manifest.prompts.iterator();
+    var it = manifest.rules.iterator();
     while (it.next()) |entry| {
         const m_entry = entry.value_ptr.*;
 
@@ -377,21 +377,21 @@ pub fn discoverSearchable(
         }
     }
 
-    std.mem.sort(PromptItem, items.items, {}, lessThanPromptItem);
+    std.mem.sort(RuleItem, items.items, {}, lessThanRuleItem);
     return items;
 }
 
-fn lessThanPromptItem(_: void, a: PromptItem, b: PromptItem) bool {
+fn lessThanRuleItem(_: void, a: RuleItem, b: RuleItem) bool {
     const prio_order = std.math.order(@intFromEnum(a.priority), @intFromEnum(b.priority));
     if (prio_order != .eq) return prio_order == .lt;
     return std.mem.order(u8, a.id, b.id) == .lt;
 }
 
-/// Load prompt content by hub-issued prompt_id. Resolves each id through
+/// Load rule content by hub-issued rule_id. Resolves each id through
 /// the local manifest, then consults drafts/index.json: an active draft
 /// with operation != "delete" wins over the cache copy. Unknown ids return
-/// `error.UnknownPromptId`. Drafts marked for deletion behave as NotFound.
-pub fn loadPrompts(
+/// `error.UnknownRuleId`. Drafts marked for deletion behave as NotFound.
+pub fn loadRules(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
     ids: []const []const u8,
@@ -421,20 +421,20 @@ pub fn loadPrompts(
             return err;
         };
 
-        const m_entry = manifest.prompts.get(id) orelse return error.UnknownPromptId;
-        const kind = kindFromPath(m_entry.path) orelse return error.UnknownPromptId;
+        const m_entry = manifest.rules.get(id) orelse return error.UnknownRuleId;
+        const kind = kindFromPath(m_entry.path) orelse return error.UnknownRuleId;
 
         const known_hash = knownHashFor(id, known);
         const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, m_entry.hash);
 
-        const draft_entry = draft_index.findByCurrentPath(.prompt, m_entry.path);
+        const draft_entry = draft_index.findByCurrentPath(.rule, m_entry.path);
         if (draft_entry) |entry| {
-            if (entry.operation == .delete) return error.UnknownPromptId;
+            if (entry.operation == .delete) return error.UnknownRuleId;
         }
 
         const content = if (changed) blk: {
             if (draft_entry) |entry| {
-                break :blk try drafts.readDraftFile(allocator, ws_dir, .prompt, entry.draft_path);
+                break :blk try drafts.readDraftFile(allocator, ws_dir, .rule, entry.draft_path);
             }
             break :blk try readCacheFileAlloc(allocator, ws_dir, m_entry.path);
         } else null;
@@ -469,11 +469,11 @@ pub fn loadPrompts(
 
 fn readCacheFileAlloc(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
     if (!path_util.isSafeRelative(rel_path)) return error.UnsafeCachePath;
-    return readPromptCacheFile(allocator, ws_dir, rel_path);
+    return readRuleCacheFile(allocator, ws_dir, rel_path);
 }
 
-pub fn readPromptCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
-    const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "prompt", rel_path });
+pub fn readRuleCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
+    const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "rule", rel_path });
     defer allocator.free(abs_path);
 
     const file = try std.fs.openFileAbsolute(abs_path, .{});
@@ -539,7 +539,7 @@ fn computeTextHash(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
     return try allocator.dupe(u8, &hex);
 }
 
-/// Parse constraints from prompt content according to s2 format standard.
+/// Parse constraints from rule content according to s2 format standard.
 /// Rules: # = title (skip), ## = constraint region, list items within region
 /// are individual constraints, otherwise the whole region is one constraint.
 pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !ValidateResult {
@@ -686,14 +686,14 @@ fn writeTestManifest(dir: std.fs.Dir, json: []const u8) !void {
     try writeFile(dir, "manifest.json", json);
 }
 
-test "loadManifest: parses prompts and context entries" {
+test "loadManifest: parses rules and context entries" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try writeTestManifest(tmp.dir,
         \\{
         \\  "revision": 7,
-        \\  "prompts": {
+        \\  "rules": {
         \\    "p-1": {"path": "coding/STYLE.md", "hash": "sha256:abc"},
         \\    "p-2": {"path": "workflow/cmd/COMMIT.md", "hash": "sha256:def"}
         \\  },
@@ -709,10 +709,10 @@ test "loadManifest: parses prompts and context entries" {
     var manifest = try loadManifest(testing.allocator, root);
     defer manifest.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 2), manifest.prompts.count());
+    try testing.expectEqual(@as(usize, 2), manifest.rules.count());
     try testing.expectEqual(@as(usize, 1), manifest.context.count());
 
-    const p1 = manifest.prompts.get("p-1").?;
+    const p1 = manifest.rules.get("p-1").?;
     try testing.expectEqualStrings("coding/STYLE.md", p1.path);
     try testing.expectEqualStrings("sha256:abc", p1.hash);
 
@@ -730,24 +730,24 @@ test "loadManifest: missing file returns empty manifest" {
     var manifest = try loadManifest(testing.allocator, root);
     defer manifest.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 0), manifest.prompts.count());
+    try testing.expectEqual(@as(usize, 0), manifest.rules.count());
     try testing.expectEqual(@as(usize, 0), manifest.context.count());
 }
 
-test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
+test "discoverSearchable: returns hub rule_ids classified by path prefix" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/pedagogy");
-    try tmp.dir.makePath("cache/prompt/coding");
-    try tmp.dir.makePath("cache/prompt/workflow");
-    try writeFile(tmp.dir, "cache/prompt/pedagogy/TEACHING.md", "teaching");
-    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "style");
-    try writeFile(tmp.dir, "cache/prompt/workflow/COMMIT.md", "commit");
+    try tmp.dir.makePath("cache/rule/pedagogy");
+    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.makePath("cache/rule/workflow");
+    try writeFile(tmp.dir, "cache/rule/pedagogy/TEACHING.md", "teaching");
+    try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style");
+    try writeFile(tmp.dir, "cache/rule/workflow/COMMIT.md", "commit");
 
     try writeTestManifest(tmp.dir,
         \\{
-        \\  "prompts": {
+        \\  "rules": {
         \\    "p-teach": {"path": "pedagogy/TEACHING.md", "hash": "sha256:1"},
         \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:2"},
         \\    "p-commit": {"path": "workflow/COMMIT.md", "hash": "sha256:3"}
@@ -759,7 +759,7 @@ test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     var items = try discoverSearchable(testing.allocator, root, null, null, null);
-    defer deinitPromptItems(testing.allocator, &items);
+    defer deinitRuleItems(testing.allocator, &items);
 
     try testing.expectEqual(@as(usize, 3), items.items.len);
 
@@ -769,19 +769,19 @@ test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
     for (items.items) |item| {
         if (std.mem.eql(u8, item.id, "p-teach")) {
             found_teach = true;
-            try testing.expectEqual(PromptKind.rule, item.kind);
+            try testing.expectEqual(RuleKind.rule, item.kind);
             try testing.expectEqualStrings("pedagogy/TEACHING.md", item.path);
             try testing.expectEqualStrings("pedagogy", item.group.?);
         }
         if (std.mem.eql(u8, item.id, "p-style")) {
             found_style = true;
-            try testing.expectEqual(PromptKind.rule, item.kind);
+            try testing.expectEqual(RuleKind.rule, item.kind);
             try testing.expectEqualStrings("coding/STYLE.md", item.path);
             try testing.expectEqualStrings("coding", item.group.?);
         }
         if (std.mem.eql(u8, item.id, "p-commit")) {
             found_commit = true;
-            try testing.expectEqual(PromptKind.workflow, item.kind);
+            try testing.expectEqual(RuleKind.workflow, item.kind);
             try testing.expect(item.group == null);
         }
     }
@@ -790,7 +790,7 @@ test "discoverSearchable: returns hub prompt_ids classified by path prefix" {
     try testing.expect(found_commit);
 
     var coding_filtered = try discoverSearchable(testing.allocator, root, null, "coding", null);
-    defer deinitPromptItems(testing.allocator, &coding_filtered);
+    defer deinitRuleItems(testing.allocator, &coding_filtered);
     try testing.expectEqual(@as(usize, 1), coding_filtered.items.len);
     try testing.expectEqualStrings("p-style", coding_filtered.items[0].id);
 }
@@ -801,7 +801,7 @@ test "discoverSearchable: kind filter narrows results" {
 
     try writeTestManifest(tmp.dir,
         \\{
-        \\  "prompts": {
+        \\  "rules": {
         \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:1"},
         \\    "p-commit": {"path": "workflow/cmd/COMMIT.md", "hash": "sha256:2"}
         \\  }
@@ -812,7 +812,7 @@ test "discoverSearchable: kind filter narrows results" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     var rules = try discoverSearchable(testing.allocator, root, .rule, null, null);
-    defer deinitPromptItems(testing.allocator, &rules);
+    defer deinitRuleItems(testing.allocator, &rules);
 
     try testing.expectEqual(@as(usize, 1), rules.items.len);
     try testing.expectEqualStrings("p-style", rules.items[0].id);
@@ -824,7 +824,7 @@ test "discoverSearchable: group filter matches first path component" {
 
     try writeTestManifest(tmp.dir,
         \\{
-        \\  "prompts": {
+        \\  "rules": {
         \\    "p-1": {"path": "coding/STYLE.md", "hash": "sha256:1"},
         \\    "p-2": {"path": "zig/NAMING.md", "hash": "sha256:2"}
         \\  }
@@ -835,7 +835,7 @@ test "discoverSearchable: group filter matches first path component" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     var zig_rules = try discoverSearchable(testing.allocator, root, .rule, "zig", null);
-    defer deinitPromptItems(testing.allocator, &zig_rules);
+    defer deinitRuleItems(testing.allocator, &zig_rules);
 
     try testing.expectEqual(@as(usize, 1), zig_rules.items.len);
     try testing.expectEqualStrings("p-2", zig_rules.items[0].id);
@@ -847,7 +847,7 @@ test "discoverSearchable: META_PROMPT.md is excluded" {
 
     try writeTestManifest(tmp.dir,
         \\{
-        \\  "prompts": {
+        \\  "rules": {
         \\    "p-mpf": {"path": "META_PROMPT.md", "hash": "sha256:abc"},
         \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:1"}
         \\  }
@@ -858,22 +858,22 @@ test "discoverSearchable: META_PROMPT.md is excluded" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     var items = try discoverSearchable(testing.allocator, root, null, null, null);
-    defer deinitPromptItems(testing.allocator, &items);
+    defer deinitRuleItems(testing.allocator, &items);
 
     try testing.expectEqual(@as(usize, 1), items.items.len);
     try testing.expectEqualStrings("p-style", items.items[0].id);
 }
 
-test "loadPrompts: looks up by hub prompt_id and reads cache file" {
+test "loadRules: looks up by hub rule_id and reads cache file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/coding");
-    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "style content");
+    try tmp.dir.makePath("cache/rule/coding");
+    try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style content");
 
     try writeTestManifest(tmp.dir,
         \\{
-        \\  "prompts": {
+        \\  "rules": {
         \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:zzz"}
         \\  }
         \\}
@@ -882,7 +882,7 @@ test "loadPrompts: looks up by hub prompt_id and reads cache file" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    var result = try loadPrompts(testing.allocator, root, &.{"p-style"}, &.{});
+    var result = try loadRules(testing.allocator, root, &.{"p-style"}, &.{});
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), result.items.items.len);
@@ -891,16 +891,16 @@ test "loadPrompts: looks up by hub prompt_id and reads cache file" {
     try testing.expectEqualStrings("style content", result.items.items[0].content.?);
 }
 
-test "loadPrompts: known hash matches returns delta with no content" {
+test "loadRules: known hash matches returns delta with no content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/coding");
-    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "style content");
+    try tmp.dir.makePath("cache/rule/coding");
+    try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style content");
 
     try writeTestManifest(tmp.dir,
         \\{
-        \\  "prompts": {
+        \\  "rules": {
         \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:zzz"}
         \\  }
         \\}
@@ -910,42 +910,42 @@ test "loadPrompts: known hash matches returns delta with no content" {
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
     const known = [_]KnownHash{.{ .id = "p-style", .hash = "sha256:zzz" }};
-    var result = try loadPrompts(testing.allocator, root, &.{"p-style"}, &known);
+    var result = try loadRules(testing.allocator, root, &.{"p-style"}, &known);
     defer result.deinit(testing.allocator);
 
     try testing.expect(!result.items.items[0].changed);
     try testing.expect(result.items.items[0].content == null);
 }
 
-test "loadPrompts: unknown id returns UnknownPromptId" {
+test "loadRules: unknown id returns UnknownRuleId" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try writeTestManifest(tmp.dir,
-        \\{"prompts": {}}
+        \\{"rules": {}}
     );
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    try testing.expectError(error.UnknownPromptId, loadPrompts(testing.allocator, root, &.{"p-missing"}, &.{}));
+    try testing.expectError(error.UnknownRuleId, loadRules(testing.allocator, root, &.{"p-missing"}, &.{}));
 }
 
-test "loadPrompts: draft content overrides cache when indexed" {
+test "loadRules: draft content overrides cache when indexed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/coding");
-    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "cache content");
+    try tmp.dir.makePath("cache/rule/coding");
+    try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "cache content");
 
-    try tmp.dir.makePath("drafts/prompt/coding");
-    try writeFile(tmp.dir, "drafts/prompt/coding/STYLE.md", "draft override");
+    try tmp.dir.makePath("drafts/rule/coding");
+    try writeFile(tmp.dir, "drafts/rule/coding/STYLE.md", "draft override");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
         \\    {
-        \\      "category": "prompt",
-        \\      "prompt_id": "p-style",
+        \\      "category": "rule",
+        \\      "rule_id": "p-style",
         \\      "current_path": "coding/STYLE.md",
         \\      "draft_path": "coding/STYLE.md",
         \\      "operation": "modify",
@@ -958,7 +958,7 @@ test "loadPrompts: draft content overrides cache when indexed" {
 
     try writeTestManifest(tmp.dir,
         \\{
-        \\  "prompts": {
+        \\  "rules": {
         \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:zzz"}
         \\  }
         \\}
@@ -967,7 +967,7 @@ test "loadPrompts: draft content overrides cache when indexed" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    var result = try loadPrompts(testing.allocator, root, &.{"p-style"}, &.{});
+    var result = try loadRules(testing.allocator, root, &.{"p-style"}, &.{});
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), result.items.items.len);
@@ -977,20 +977,20 @@ test "loadPrompts: draft content overrides cache when indexed" {
     try testing.expectEqualStrings("draft override", item.content.?);
 }
 
-test "loadPrompts: draft marked delete behaves as UnknownPromptId" {
+test "loadRules: draft marked delete behaves as UnknownRuleId" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/prompt/coding");
-    try writeFile(tmp.dir, "cache/prompt/coding/STYLE.md", "cache content");
+    try tmp.dir.makePath("cache/rule/coding");
+    try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "cache content");
 
     try tmp.dir.makePath("drafts");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
         \\    {
-        \\      "category": "prompt",
-        \\      "prompt_id": "p-style",
+        \\      "category": "rule",
+        \\      "rule_id": "p-style",
         \\      "current_path": "coding/STYLE.md",
         \\      "draft_path": "coding/STYLE.md",
         \\      "operation": "delete",
@@ -1003,7 +1003,7 @@ test "loadPrompts: draft marked delete behaves as UnknownPromptId" {
 
     try writeTestManifest(tmp.dir,
         \\{
-        \\  "prompts": {
+        \\  "rules": {
         \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:zzz"}
         \\  }
         \\}
@@ -1012,7 +1012,7 @@ test "loadPrompts: draft marked delete behaves as UnknownPromptId" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    try testing.expectError(error.UnknownPromptId, loadPrompts(testing.allocator, root, &.{"p-style"}, &.{}));
+    try testing.expectError(error.UnknownRuleId, loadRules(testing.allocator, root, &.{"p-style"}, &.{}));
 }
 
 test "loadMpf: returns content and hash from cache subdirectory" {

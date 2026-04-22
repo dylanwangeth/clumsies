@@ -23,8 +23,8 @@ pub const DirectoryData = struct {
     members: []const DirectoryMember,
 };
 
-pub const LibraryPrompt = struct {
-    prompt_id: []const u8,
+pub const LibraryRule = struct {
+    rule_id: []const u8,
     path: []const u8,
     content_hash: []const u8,
     updated_at: []const u8,
@@ -38,10 +38,10 @@ pub const LibraryPrompt = struct {
 pub const BundleData = struct {
     name: []const u8,
     description: []const u8,
-    prompt_count: usize,
+    rule_count: usize,
 };
 
-pub const PromptPr = struct {
+pub const RulePr = struct {
     pr_id: []const u8,
     status: []const u8,
     description: []const u8,
@@ -50,8 +50,8 @@ pub const PromptPr = struct {
     operation_count: i32 = 0,
 };
 
-pub const PromptStats = struct {
-    prompt_id: []const u8,
+pub const RuleStats = struct {
+    rule_id: []const u8,
     refer_count: i64,
     active_constraint_count: i64,
     workspace_count: i64,
@@ -61,8 +61,8 @@ pub const PromptStats = struct {
     trend: []const i64 = &.{},
 };
 
-pub const UserPromptStats = struct {
-    prompt_id: []const u8,
+pub const UserRuleStats = struct {
+    rule_id: []const u8,
     refer_count: i64,
 };
 
@@ -73,20 +73,20 @@ pub const UserStats = struct {
     active_days: i64,
     last_referred_at: ?i64 = null,
     trend: []const i64 = &.{},
-    top_prompts: []const UserPromptStats = &.{},
+    top_rules: []const UserRuleStats = &.{},
 };
 
 pub const OrgStats = struct {
     total_refer_count: i64,
     workspace_count: i64,
-    prompt_count: i64,
+    rule_count: i64,
     constraint_count: i64 = 0,
     active_constraint_count: i64 = 0,
     idle_constraint_count: i64 = 0,
     signal_ratio: f64 = 0,
     last_event_at: ?i64 = null,
     trend: []const TrendPoint,
-    prompts: []const PromptStats = &.{},
+    rules: []const RuleStats = &.{},
     users: []const UserStats = &.{},
 };
 
@@ -98,7 +98,7 @@ pub const TrendPoint = struct {
 pub const WsDetail = struct {
     ws_id: []const u8,
     context_files: []const ContextFileData,
-    ws_prompts: []const WsPromptData,
+    ws_rules: []const WsRuleData,
 };
 
 pub const ContextFileData = struct {
@@ -110,8 +110,8 @@ pub const ContextFileData = struct {
     updated_at: []const u8 = "",
 };
 
-pub const WsPromptData = struct {
-    prompt_id: []const u8,
+pub const WsRuleData = struct {
+    rule_id: []const u8,
     content_hash: []const u8,
     path: []const u8 = "",
 };

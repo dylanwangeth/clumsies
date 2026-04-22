@@ -1,4 +1,4 @@
-//! Seed fixture data: users, workspaces, prompts, bundles, and constraints for development.
+//! Seed fixture data: users, workspaces, rules, bundles, and constraints for development.
 //! These fixtures populate the database with realistic data so the TUI and CLI can be developed
 //! against a working Hub instance.
 const std = @import("std");
@@ -19,7 +19,7 @@ pub const UserFixture = struct {
     status: []const u8 = "active",
 };
 
-pub const PromptFixture = struct {
+pub const RuleFixture = struct {
     id: []const u8,
     path: []const u8,
     content: []const u8,
@@ -36,9 +36,9 @@ pub const WorkspaceMemberFixture = struct {
     role: []const u8,
 };
 
-pub const WorkspacePromptFixture = struct {
+pub const WorkspaceRuleFixture = struct {
     ws_id: []const u8,
-    prompt_id: []const u8,
+    rule_id: []const u8,
 };
 
 pub const ContextFixture = struct {
@@ -49,8 +49,8 @@ pub const ContextFixture = struct {
     content: []const u8,
 };
 
-pub const PumpRefer = struct {
-    prompt_id: []const u8,
+pub const RuleRefer = struct {
+    rule_id: []const u8,
     constraint_id: []const u8,
     reason: []const u8,
 };
@@ -59,7 +59,7 @@ pub const PumpScenario = struct {
     user_id: []const u8,
     ws_id: []const u8,
     input: []const u8,
-    refers: []const PumpRefer,
+    refers: []const RuleRefer,
 };
 
 pub const PumpProfile = struct {
@@ -88,8 +88,8 @@ pub const META_PROMPT_CONTENT =
     \\5. **Refine.** When the user asks you to create, update, or delete rules or
     \\   context, use `context.propose_create()`, `context.propose_update()`,
     \\   `context.propose_rename()`, `context.propose_delete()` for workspace context,
-    \\   and `prompt.propose_create()`, `prompt.propose_update()`,
-    \\   `prompt.propose_rename()`, `prompt.propose_delete()` for library rules.
+    \\   and `rule.propose_create()`, `rule.propose_update()`,
+    \\   `rule.propose_rename()`, `rule.propose_delete()` for library rules.
     \\6. **Submit.** Call `memory.submit()` with a short summary of your work before
     \\   finishing every response. The stop hook will block if you forget.
     \\
@@ -113,7 +113,7 @@ pub const META_PROMPT_CONTENT =
     \\
     \\## Priority
     \\
-    \\Loaded rules > this meta-prompt > your defaults.
+    \\Loaded rules > this meta-rule > your defaults.
     \\
     \\When a rule conflicts with your training, follow the rule.
 ;
@@ -149,7 +149,7 @@ pub const TRACE_DISCIPLINE_CONTENT =
     \\
     \\Keep attestation behavior strict and observable:
     \\
-    \\1. Treat the hub-issued `prompt_id` as the only prompt identity in attestation events.
+    \\1. Treat the hub-issued `rule_id` as the only rule identity in attestation events.
     \\2. Write local `attestation.jsonl` lines in the same JSON shape accepted by `POST /api/attestations`.
     \\3. Emit `user_prompt` before `refer` so Recent Inputs and Insights stay meaningful.
     \\4. Keep the seed pump focused on observability traffic. Do not mutate workspace structure during activity generation.
@@ -160,7 +160,7 @@ pub const HUB_SINGLE_SOURCE_CONTENT =
     \\
     \\- The hub server owns business logic for auth, library, workspace, context, collaboration, and attestation stats.
     \\- CLI, MCP, and TUI are clients. They should talk to the hub over REST instead of duplicating policy.
-    \\- Library prompts are organization-wide. Workspace context stays local to a workspace.
+    \\- Library rules are organization-wide. Workspace context stays local to a workspace.
     \\- Attestation data is a signal for refinement. It should not trigger automatic edits on its own.
 ;
 
@@ -175,7 +175,7 @@ pub const ZIG_TOOLCHAIN_CONTENT =
 pub const BUILD_ENV_CONTEXT =
     \\# Build Environment Snapshot
     \\
-    \\This seed context is derived from `.prompts/context/00_BUILD_ENV.md`.
+    \\This seed context is derived from `.rules/context/00_BUILD_ENV.md`.
     \\
     \\- The repository is built against Zig 0.15.x.
     \\- Developers should verify the active Zig toolchain before building.
@@ -186,30 +186,30 @@ pub const BUILD_ENV_CONTEXT =
 pub const ARCHITECTURE_CONTEXT =
     \\# Architecture Snapshot
     \\
-    \\This seed context is derived from `.prompts/context/01_ARCHITECTURE.md`.
+    \\This seed context is derived from `.rules/context/01_ARCHITECTURE.md`.
     \\
     \\- The hub server is the only layer that owns business logic.
     \\- CLI, MCP, and TUI are clients that integrate over HTTP APIs.
-    \\- Library prompts are shared at the organization level, while context is workspace-scoped.
-    \\- Attestation data exists to support observability and prompt refinement decisions.
+    \\- Library rules are shared at the organization level, while context is workspace-scoped.
+    \\- Attestation data exists to support observability and rule refinement decisions.
 ;
 
 pub const TRACE_ALIGNMENT_CONTEXT =
     \\# MCP Attestation Alignment Snapshot
     \\
-    \\This seed context is derived from `.prompts/plan/MCP_TRACE_ALIGNMENT.md`.
+    \\This seed context is derived from `.rules/plan/MCP_TRACE_ALIGNMENT.md`.
     \\
     \\- Local `attestation.jsonl` should match the server `POST /api/attestations` payload shape.
     \\- `ws_id` must be the hub workspace id, not a local hash.
     \\- `user_prompt` events are required if the TUI should render a Recent Inputs feed.
-    \\- `prompt_id` must always be the hub-issued identifier.
+    \\- `rule_id` must always be the hub-issued identifier.
 ;
 
 pub const RECENT_INPUTS_CONTEXT =
     \\# Recent Inputs Snapshot
     \\
     \\- The TUI Recent Inputs panel reads local attestation files from `~/.clumsies/workspaces/{ws_id}/attestation.jsonl`.
-    \\- `user_prompt` drives the feed; `refer` enriches the prompt-level stats.
+    \\- `user_prompt` drives the feed; `refer` enriches the rule-level stats.
     \\- If the pump only mutates server tables and skips local attestation writes, Recent Inputs will look empty.
 ;
 
@@ -229,7 +229,7 @@ pub const USERS = [_]UserFixture{
     .{ .id = "usr-seed-amimibear", .username = "amimibear", .role = "member" },
 };
 
-pub const PROMPTS = [_]PromptFixture{
+pub const PROMPTS = [_]RuleFixture{
     .{ .id = "p-seed-meta", .path = "META_PROMPT.md", .content = META_PROMPT_CONTENT },
     .{ .id = "p-seed-coding", .path = "workflow/00_CODING.md", .content = CODING_WORKFLOW_CONTENT },
     .{ .id = "p-seed-trace", .path = "rule/trace/TRACE_DISCIPLINE.md", .content = TRACE_DISCIPLINE_CONTENT },
@@ -257,22 +257,22 @@ pub const WORKSPACE_MEMBERS = [_]WorkspaceMemberFixture{
     .{ .ws_id = "ws-seed-plugin", .user_id = "usr-seed-amimibear", .role = "member" },
 };
 
-pub const WORKSPACE_PROMPTS = [_]WorkspacePromptFixture{
-    .{ .ws_id = "ws-seed-sandbox", .prompt_id = "p-seed-meta" },
-    .{ .ws_id = "ws-seed-sandbox", .prompt_id = "p-seed-coding" },
-    .{ .ws_id = "ws-seed-sandbox", .prompt_id = "p-seed-trace" },
-    .{ .ws_id = "ws-seed-sandbox", .prompt_id = "p-seed-build" },
-    .{ .ws_id = "ws-seed-hub", .prompt_id = "p-seed-meta" },
-    .{ .ws_id = "ws-seed-hub", .prompt_id = "p-seed-coding" },
-    .{ .ws_id = "ws-seed-hub", .prompt_id = "p-seed-trace" },
-    .{ .ws_id = "ws-seed-hub", .prompt_id = "p-seed-hub" },
-    .{ .ws_id = "ws-seed-tui", .prompt_id = "p-seed-meta" },
-    .{ .ws_id = "ws-seed-tui", .prompt_id = "p-seed-coding" },
-    .{ .ws_id = "ws-seed-tui", .prompt_id = "p-seed-trace" },
-    .{ .ws_id = "ws-seed-tui", .prompt_id = "p-seed-hub" },
-    .{ .ws_id = "ws-seed-plugin", .prompt_id = "p-seed-meta" },
-    .{ .ws_id = "ws-seed-plugin", .prompt_id = "p-seed-coding" },
-    .{ .ws_id = "ws-seed-plugin", .prompt_id = "p-seed-trace" },
+pub const WORKSPACE_PROMPTS = [_]WorkspaceRuleFixture{
+    .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-meta" },
+    .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-coding" },
+    .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-trace" },
+    .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-build" },
+    .{ .ws_id = "ws-seed-hub", .rule_id = "p-seed-meta" },
+    .{ .ws_id = "ws-seed-hub", .rule_id = "p-seed-coding" },
+    .{ .ws_id = "ws-seed-hub", .rule_id = "p-seed-trace" },
+    .{ .ws_id = "ws-seed-hub", .rule_id = "p-seed-hub" },
+    .{ .ws_id = "ws-seed-tui", .rule_id = "p-seed-meta" },
+    .{ .ws_id = "ws-seed-tui", .rule_id = "p-seed-coding" },
+    .{ .ws_id = "ws-seed-tui", .rule_id = "p-seed-trace" },
+    .{ .ws_id = "ws-seed-tui", .rule_id = "p-seed-hub" },
+    .{ .ws_id = "ws-seed-plugin", .rule_id = "p-seed-meta" },
+    .{ .ws_id = "ws-seed-plugin", .rule_id = "p-seed-coding" },
+    .{ .ws_id = "ws-seed-plugin", .rule_id = "p-seed-trace" },
 };
 
 pub const CONTEXTS = [_]ContextFixture{
@@ -286,29 +286,29 @@ pub const CONTEXTS = [_]ContextFixture{
     .{ .id = "ctx-seed-plugin-adapter", .ws_id = "ws-seed-plugin", .path = "notes/PLUGIN_SETUP.md", .author = "Joji", .content = PLUGIN_SETUP_CONTEXT },
 };
 
-const SANDBOX_REFERS = [_]PumpRefer{
-    .{ .prompt_id = "p-seed-coding", .constraint_id = "coding.load-rules-first", .reason = "loaded coding workflow before making changes" },
-    .{ .prompt_id = "p-seed-trace", .constraint_id = "trace.session-input-before-refer", .reason = "kept recent inputs visible in local trace" },
+const SANDBOX_REFERS = [_]RuleRefer{
+    .{ .rule_id = "p-seed-coding", .constraint_id = "coding.load-rules-first", .reason = "loaded coding workflow before making changes" },
+    .{ .rule_id = "p-seed-trace", .constraint_id = "trace.session-input-before-refer", .reason = "kept recent inputs visible in local trace" },
 };
 
-const HUB_REFERS = [_]PumpRefer{
-    .{ .prompt_id = "p-seed-meta", .constraint_id = "meta.search-load-refer", .reason = "used the setup-search-load-refer loop explicitly" },
-    .{ .prompt_id = "p-seed-hub", .constraint_id = "architecture.hub-owns-business-logic", .reason = "kept bootstrap policy inside the hub layer" },
+const HUB_REFERS = [_]RuleRefer{
+    .{ .rule_id = "p-seed-meta", .constraint_id = "meta.search-load-refer", .reason = "used the setup-search-load-refer loop explicitly" },
+    .{ .rule_id = "p-seed-hub", .constraint_id = "architecture.hub-owns-business-logic", .reason = "kept bootstrap policy inside the hub layer" },
 };
 
-const TUI_REFERS = [_]PumpRefer{
-    .{ .prompt_id = "p-seed-trace", .constraint_id = "trace.local-and-server-shape-match", .reason = "matched local trace shape to the server payload" },
-    .{ .prompt_id = "p-seed-coding", .constraint_id = "coding.run-build-and-test", .reason = "verified behavior after changing the pump path" },
+const TUI_REFERS = [_]RuleRefer{
+    .{ .rule_id = "p-seed-trace", .constraint_id = "trace.local-and-server-shape-match", .reason = "matched local trace shape to the server payload" },
+    .{ .rule_id = "p-seed-coding", .constraint_id = "coding.run-build-and-test", .reason = "verified behavior after changing the pump path" },
 };
 
-const PLUGIN_REFERS = [_]PumpRefer{
-    .{ .prompt_id = "p-seed-meta", .constraint_id = "meta.protocol-responsibility", .reason = "kept the adapter focused on protocol execution" },
-    .{ .prompt_id = "p-seed-trace", .constraint_id = "trace.prompt-id-must-be-hub-issued", .reason = "avoided file-derived ids in refer events" },
+const PLUGIN_REFERS = [_]RuleRefer{
+    .{ .rule_id = "p-seed-meta", .constraint_id = "meta.protocol-responsibility", .reason = "kept the adapter focused on protocol execution" },
+    .{ .rule_id = "p-seed-trace", .constraint_id = "trace.rule-id-must-be-hub-issued", .reason = "avoided file-derived ids in refer events" },
 };
 
-const RESET_REFERS = [_]PumpRefer{
-    .{ .prompt_id = "p-seed-hub", .constraint_id = "architecture.rebuild-only-seed-owned-state", .reason = "reset logic should only target seed-owned fixtures" },
-    .{ .prompt_id = "p-seed-trace", .constraint_id = "trace.keep-pump-structurally-pure", .reason = "pump stayed focused on activity data instead of schema churn" },
+const RESET_REFERS = [_]RuleRefer{
+    .{ .rule_id = "p-seed-hub", .constraint_id = "architecture.rebuild-only-seed-owned-state", .reason = "reset logic should only target seed-owned fixtures" },
+    .{ .rule_id = "p-seed-trace", .constraint_id = "trace.keep-pump-structurally-pure", .reason = "pump stayed focused on activity data instead of schema churn" },
 };
 
 const PROFILE_RAMP_UP = [_]u8{ 1, 1, 2, 2, 3, 3, 4, 4, 5, 6, 7, 8 };
@@ -358,9 +358,9 @@ pub const PUMP_SCENARIOS = [_]PumpScenario{
     },
 };
 
-pub fn promptById(prompt_id: []const u8) ?*const PromptFixture {
-    for (&PROMPTS) |*prompt| {
-        if (std.mem.eql(u8, prompt.id, prompt_id)) return prompt;
+pub fn ruleById(rule_id: []const u8) ?*const RuleFixture {
+    for (&PROMPTS) |*rule| {
+        if (std.mem.eql(u8, rule.id, rule_id)) return rule;
     }
     return null;
 }
@@ -383,9 +383,9 @@ pub fn isSeedWorkspaceId(ws_id: []const u8) bool {
     return std.mem.startsWith(u8, ws_id, SEED_WORKSPACE_PREFIX);
 }
 
-test "promptById returns known prompt fixtures" {
-    try std.testing.expect(promptById("p-seed-meta") != null);
-    try std.testing.expect(promptById("missing") == null);
+test "ruleById returns known rule fixtures" {
+    try std.testing.expect(ruleById("p-seed-meta") != null);
+    try std.testing.expect(ruleById("missing") == null);
 }
 
 test "seed lookup helpers resolve user and workspace fixtures" {

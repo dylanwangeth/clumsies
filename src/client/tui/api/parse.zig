@@ -8,7 +8,7 @@ const data = @import("../view_types.zig");
 const model = @import("model.zig");
 
 pub fn parseComments(alloc: std.mem.Allocator, body: []const u8) ?[]const data.CommentEntry {
-    const parsed = std.json.parseFromSlice(collab_api.PromptPrCommentsResponse, alloc, body, .{
+    const parsed = std.json.parseFromSlice(collab_api.RulePrCommentsResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return null;
@@ -48,17 +48,17 @@ pub fn parseContextFiles(alloc: std.mem.Allocator, body: []const u8) ?[]const mo
     return list.toOwnedSlice(alloc) catch return null;
 }
 
-pub fn parseManifestPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const model.WsPromptData {
+pub fn parseManifestRules(alloc: std.mem.Allocator, body: []const u8) ?[]const model.WsRuleData {
     const parsed = std.json.parseFromSlice(workspace_api.WorkspaceManifestResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return null;
     defer parsed.deinit();
 
-    var list: std.ArrayList(model.WsPromptData) = .empty;
-    for (parsed.value.prompts.items) |entry| {
+    var list: std.ArrayList(model.WsRuleData) = .empty;
+    for (parsed.value.rules.items) |entry| {
         list.append(alloc, .{
-            .prompt_id = alloc.dupe(u8, entry.key) catch continue,
+            .rule_id = alloc.dupe(u8, entry.key) catch continue,
             .content_hash = alloc.dupe(u8, entry.value.hash) catch continue,
             .path = alloc.dupe(u8, entry.value.path) catch continue,
         }) catch continue;
@@ -112,17 +112,17 @@ pub fn parseDirectory(alloc: std.mem.Allocator, body: []const u8) ?model.Directo
     return .{ .members = members.items };
 }
 
-pub fn parseLibraryPrompts(alloc: std.mem.Allocator, body: []const u8) ?[]const model.LibraryPrompt {
-    const parsed = std.json.parseFromSlice(library_api.PromptListResponse, alloc, body, .{
+pub fn parseLibraryRules(alloc: std.mem.Allocator, body: []const u8) ?[]const model.LibraryRule {
+    const parsed = std.json.parseFromSlice(library_api.RuleListResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return null;
     defer parsed.deinit();
 
-    var list: std.ArrayList(model.LibraryPrompt) = .empty;
-    for (parsed.value.prompts) |p| {
+    var list: std.ArrayList(model.LibraryRule) = .empty;
+    for (parsed.value.rules) |p| {
         list.append(alloc, .{
-            .prompt_id = alloc.dupe(u8, p.prompt_id) catch continue,
+            .rule_id = alloc.dupe(u8, p.rule_id) catch continue,
             .path = alloc.dupe(u8, p.path) catch continue,
             .content_hash = alloc.dupe(u8, p.content_hash) catch continue,
             .updated_at = alloc.dupe(u8, p.updated_at) catch continue,
@@ -147,14 +147,14 @@ pub fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?model.OrgStats
         }) catch continue;
     }
 
-    var prompt_stats: std.ArrayList(model.PromptStats) = .empty;
-    for (v.prompts) |p| {
+    var rule_stats: std.ArrayList(model.RuleStats) = .empty;
+    for (v.rules) |p| {
         var trend_values: std.ArrayList(i64) = .empty;
         for (p.trend) |bucket| {
             trend_values.append(alloc, bucket) catch continue;
         }
-        prompt_stats.append(alloc, .{
-            .prompt_id = alloc.dupe(u8, p.prompt_id) catch continue,
+        rule_stats.append(alloc, .{
+            .rule_id = alloc.dupe(u8, p.rule_id) catch continue,
             .refer_count = p.refer_count,
             .active_constraint_count = p.active_constraint_count,
             .workspace_count = p.workspace_count,
@@ -172,10 +172,10 @@ pub fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?model.OrgStats
             trend_values.append(alloc, bucket) catch continue;
         }
 
-        var top_prompts: std.ArrayList(model.UserPromptStats) = .empty;
-        for (u.top_prompts) |tp| {
-            top_prompts.append(alloc, .{
-                .prompt_id = alloc.dupe(u8, tp.prompt_id) catch continue,
+        var top_rules: std.ArrayList(model.UserRuleStats) = .empty;
+        for (u.top_rules) |tp| {
+            top_rules.append(alloc, .{
+                .rule_id = alloc.dupe(u8, tp.rule_id) catch continue,
                 .refer_count = tp.refer_count,
             }) catch continue;
         }
@@ -187,21 +187,21 @@ pub fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?model.OrgStats
             .active_days = u.active_days,
             .last_referred_at = u.last_referred_at,
             .trend = trend_values.items,
-            .top_prompts = top_prompts.items,
+            .top_rules = top_rules.items,
         }) catch continue;
     }
 
     return .{
         .total_refer_count = v.total_refer_count,
         .workspace_count = v.workspace_count,
-        .prompt_count = v.prompt_count,
+        .rule_count = v.rule_count,
         .constraint_count = 0,
         .active_constraint_count = 0,
         .idle_constraint_count = 0,
         .signal_ratio = 0,
         .last_event_at = null,
         .trend = trend_list.items,
-        .prompts = prompt_stats.items,
+        .rules = rule_stats.items,
         .users = user_stats.items,
     };
 }
@@ -215,27 +215,27 @@ pub fn parseBundles(alloc: std.mem.Allocator, body: []const u8) ?[]const model.B
 
     var list: std.ArrayList(model.BundleData) = .empty;
     for (parsed.value.bundles) |b| {
-        const prompt_count: usize = if (b.prompt_count > 0)
-            @intCast(b.prompt_count)
+        const rule_count: usize = if (b.rule_count > 0)
+            @intCast(b.rule_count)
         else
-            b.prompt_ids.len;
+            b.rule_ids.len;
         list.append(alloc, .{
             .name = alloc.dupe(u8, b.name) catch continue,
             .description = alloc.dupe(u8, b.description) catch continue,
-            .prompt_count = prompt_count,
+            .rule_count = rule_count,
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch return null;
 }
 
-pub fn parsePromptPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model.PromptPr {
-    const parsed = std.json.parseFromSlice(collab_api.PromptPrListResponse, alloc, body, .{
+pub fn parseRulePrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model.RulePr {
+    const parsed = std.json.parseFromSlice(collab_api.RulePrListResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return null;
     defer parsed.deinit();
 
-    var list: std.ArrayList(model.PromptPr) = .empty;
+    var list: std.ArrayList(model.RulePr) = .empty;
     for (parsed.value.prs) |pr| {
         list.append(alloc, .{
             .pr_id = alloc.dupe(u8, pr.pr_id) catch continue,
@@ -272,13 +272,13 @@ test "parseContextFiles accepts content_hash from hub response" {
     try testing.expectEqualStrings("sha256:abc", files[0].hash);
 }
 
-test "prompt content response parsing ignores extra fields" {
+test "rule content response parsing ignores extra fields" {
     const testing = std.testing;
     const body =
-        \\{"prompt_id":"p-1","path":"rule/architecture/HUB_SINGLE_SOURCE.md","content_hash":"sha256:def","body":"hello"}
+        \\{"rule_id":"p-1","path":"rule/architecture/HUB_SINGLE_SOURCE.md","content_hash":"sha256:def","body":"hello"}
     ;
 
-    const parsed = try std.json.parseFromSlice(library_api.PromptContentResponse, testing.allocator, body, .{
+    const parsed = try std.json.parseFromSlice(library_api.RuleContentResponse, testing.allocator, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     });
@@ -287,26 +287,26 @@ test "prompt content response parsing ignores extra fields" {
     try testing.expectEqualStrings("hello", parsed.value.body);
 }
 
-test "parseManifestPrompts reads shared manifest schema" {
+test "parseManifestRules reads shared manifest schema" {
     const testing = std.testing;
     const body =
-        \\{"ws_id":"ws-1","name":"demo","revision":7,"prompts":{"p-1":{"path":"rule/coding/00_COMPATIBILITY.md","hash":"sha256:def"}},"context":{}}
+        \\{"ws_id":"ws-1","name":"demo","revision":7,"rules":{"p-1":{"path":"rule/coding/00_COMPATIBILITY.md","hash":"sha256:def"}},"context":{}}
     ;
 
-    const prompts = parseManifestPrompts(testing.allocator, body) orelse return error.TestUnexpectedResult;
+    const rules = parseManifestRules(testing.allocator, body) orelse return error.TestUnexpectedResult;
     defer {
-        for (prompts) |prompt| {
-            testing.allocator.free(prompt.prompt_id);
-            testing.allocator.free(prompt.content_hash);
-            testing.allocator.free(prompt.path);
+        for (rules) |rule| {
+            testing.allocator.free(rule.rule_id);
+            testing.allocator.free(rule.content_hash);
+            testing.allocator.free(rule.path);
         }
-        testing.allocator.free(prompts);
+        testing.allocator.free(rules);
     }
 
-    try testing.expectEqual(@as(usize, 1), prompts.len);
-    try testing.expectEqualStrings("p-1", prompts[0].prompt_id);
-    try testing.expectEqualStrings("sha256:def", prompts[0].content_hash);
-    try testing.expectEqualStrings("rule/coding/00_COMPATIBILITY.md", prompts[0].path);
+    try testing.expectEqual(@as(usize, 1), rules.len);
+    try testing.expectEqualStrings("p-1", rules[0].rule_id);
+    try testing.expectEqualStrings("sha256:def", rules[0].content_hash);
+    try testing.expectEqualStrings("rule/coding/00_COMPATIBILITY.md", rules[0].path);
 }
 
 test "parseComments reads wrapped comments response" {
@@ -331,10 +331,10 @@ test "parseComments reads wrapped comments response" {
     try testing.expectEqualStrings("looks good", comments[0].body);
 }
 
-test "parseBundles uses prompt_count when server provides it" {
+test "parseBundles uses rule_count when server provides it" {
     const testing = std.testing;
     const body =
-        \\{"bundles":[{"name":"core","description":"Core prompts","updated_at":"2026-04-16T00:00:00Z","prompt_count":3}]}
+        \\{"bundles":[{"name":"core","description":"Core rules","updated_at":"2026-04-16T00:00:00Z","rule_count":3}]}
     ;
 
     const bundles = parseBundles(testing.allocator, body) orelse return error.TestUnexpectedResult;
@@ -347,5 +347,5 @@ test "parseBundles uses prompt_count when server provides it" {
     }
 
     try testing.expectEqual(@as(usize, 1), bundles.len);
-    try testing.expectEqual(@as(usize, 3), bundles[0].prompt_count);
+    try testing.expectEqual(@as(usize, 3), bundles[0].rule_count);
 }

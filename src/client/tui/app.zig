@@ -8,7 +8,7 @@ const api = @import("api.zig");
 const analysis_panel = @import("app/analysis.zig");
 const dashboard_panel = @import("app/dashboard.zig");
 const library_panel = @import("app/library.zig");
-const prompt_detail_panel = @import("app/prompt_detail.zig");
+const rule_detail_panel = @import("app/rule_detail.zig");
 const settings_panel = @import("app/settings.zig");
 const workspace_panel = @import("app/workspace.zig");
 const drafts_mod = @import("../drafts.zig");
@@ -25,17 +25,17 @@ const Column = @import("table_row.zig").Column;
 
 const WsTab = enum(u8) {
     context,
-    prompts,
+    rules,
 
     fn label(self: WsTab) []const u8 {
         return switch (self) {
             .context => "Context",
-            .prompts => "Prompts",
+            .rules => "Rules",
         };
     }
 };
 
-const ws_tabs = [_]WsTab{ .context, .prompts };
+const ws_tabs = [_]WsTab{ .context, .rules };
 
 const WsFocus = enum { bar, list, content };
 
@@ -129,14 +129,14 @@ pub const DraftTarget = struct {
     ws_id: []const u8,
     category: drafts_mod.DraftCategory,
     path: []const u8,
-    prompt_id: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
     context_id: ?[]const u8 = null,
 };
 
 pub const Dashboard = struct {
     api_state: *api.state.ApiState,
     selected_module: TopModule = .dashboard,
-    selected_prompt: usize = 0,
+    selected_rule: usize = 0,
     show_help: bool = false,
     show_settings: bool = false,
     show_confirm: bool = false,
@@ -160,7 +160,7 @@ pub const Dashboard = struct {
 
     content_scroll_bars: vxfw.ScrollBars,
 
-    // PR list within Prompt Detail
+    // PR list within Rule Detail
     pr_filter: PrFilter = .open,
     pr_scroll_bars: vxfw.ScrollBars,
     pr_widgets: [MAX_PR_ROWS * 2]vxfw.Widget = undefined,
@@ -206,17 +206,17 @@ pub const Dashboard = struct {
     ws_grid_cols: u16 = 3,
     ws_show_diff: bool = false,
     ws_context_tree: PathTreeState = .{},
-    ws_prompts_tree: PathTreeState = .{},
+    ws_rules_tree: PathTreeState = .{},
     // Workspace uses manual grid + cached visible rows, no ScrollBars
 
     // Dashboard / Analysis shared state
     analysis_scope_idx: usize = 0,
     breathing_phase: u8 = 0, // 0-20 for breathing animation cycle
-    analysis_focus: enum { chart, prompts, members, inputs } = .chart,
-    analysis_prompt_cursor: usize = 0,
+    analysis_focus: enum { chart, rules, members, inputs } = .chart,
+    analysis_rule_cursor: usize = 0,
     analysis_member_cursor: usize = 0,
     analysis_input_cursor: usize = 0,
-    analysis_expanded_prompt: ?usize = null,
+    analysis_expanded_rule: ?usize = null,
     analysis_show_member_detail: bool = false,
     analysis_show_input_detail: bool = false,
     dashboard_input_capacity: usize = 1,
@@ -232,17 +232,17 @@ pub const Dashboard = struct {
     // Drafts cache. Refreshed on startup and after every edit op so
     // list rows and the footer counter stay in sync with disk. Prompt
     // and context drafts live in separate maps because their path
-    // namespaces are distinct (library prompts are org-wide, context
+    // namespaces are distinct (library rules are org-wide, context
     // files are workspace-local).
     drafts_arena: std.heap.ArenaAllocator,
-    drafts_by_prompt_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
+    drafts_by_rule_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
     drafts_by_context_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
     /// Paths of local `operation=create` drafts per category. These do
-    /// not exist on the hub yet, so the server-side prompts /
+    /// not exist on the hub yet, so the server-side rules /
     /// context_files lists never carry them — the list renderers
     /// append these as virtual rows so the user can see (and edit)
     /// newly-created drafts before they are submitted.
-    drafts_create_prompt_paths: []const []const u8 = &.{},
+    drafts_create_rule_paths: []const []const u8 = &.{},
     drafts_create_context_paths: []const []const u8 = &.{},
     drafts_total: usize = 0,
     drafts_ready: usize = 0,
@@ -282,7 +282,7 @@ pub const Dashboard = struct {
     show_new_draft_form: bool = false,
     new_draft_path_buf: [128]u8 = .{0} ** 128,
     new_draft_path_len: usize = 0,
-    new_draft_category: drafts_mod.DraftCategory = .prompt,
+    new_draft_category: drafts_mod.DraftCategory = .rule,
 
     pub fn init(
         api_state: *api.state.ApiState,
@@ -310,7 +310,7 @@ pub const Dashboard = struct {
         const alloc = self.api_state.allocator();
         self.library_tree.deinit(alloc);
         self.ws_context_tree.deinit(alloc);
-        self.ws_prompts_tree.deinit(alloc);
+        self.ws_rules_tree.deinit(alloc);
     }
 
     pub fn widget(self: *Dashboard) vxfw.Widget {
@@ -338,7 +338,7 @@ pub const Dashboard = struct {
     pub fn currentWsTree(self: *Dashboard) *PathTreeState {
         return switch (self.ws_tab) {
             .context => &self.ws_context_tree,
-            .prompts => &self.ws_prompts_tree,
+            .rules => &self.ws_rules_tree,
         };
     }
 
@@ -610,7 +610,7 @@ pub const Dashboard = struct {
                     .dashboard => try dashboard_panel.handleModuleEvent(self, ctx, key, self.getAnalysisCounts().input_count),
                     .analysis => {
                         const counts = self.getAnalysisCounts();
-                        try analysis_panel.handleModuleEvent(self, ctx, key, counts.prompt_count, counts.member_count);
+                        try analysis_panel.handleModuleEvent(self, ctx, key, counts.rule_count, counts.member_count);
                     },
                 }
                 return;
@@ -634,8 +634,8 @@ pub const Dashboard = struct {
                     self.refreshDraftsCache();
                 }
                 _ = self.consumeCreateWsResult();
-                self.consumePromptContentResult();
-                self.consumePromptPrsResult();
+                self.consumeRuleContentResult();
+                self.consumeRulePrsResult();
                 self.consumeWsContextContentResult();
                 self.consumeWsContextFilesResult();
                 self.consumeWsManifestResult();
@@ -644,7 +644,7 @@ pub const Dashboard = struct {
                 self.consumeSignOutResult();
                 self.consumeSubmitCommentResult();
                 self.consumePrActionResult();
-                self.consumeCreatePromptPrResult();
+                self.consumeCreateRulePrResult();
                 self.consumeCreateContextPrResult();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
@@ -862,7 +862,7 @@ pub const Dashboard = struct {
                 .content => "j/k scroll  d toggle diff  e edit  D discard  m ready  p submit  Esc list  ? help",
             },
             .analysis => switch (self.analysis_focus) {
-                .prompts => "j/k move  Enter expand  Tab focus  ? help  q quit",
+                .rules => "j/k move  Enter expand  Tab focus  ? help  q quit",
                 .members => "j/k move  Enter detail  Tab focus  ? help  q quit",
                 else => "Tab focus  ? help  q quit",
             },
@@ -921,24 +921,24 @@ pub const Dashboard = struct {
 
         const size = ctx.max.size();
         const list_w: u16 = size.width / 3;
-        const prompts = self.getPrompts();
-        const create_paths = self.drafts_create_prompt_paths;
+        const rules = self.getRules();
+        const create_paths = self.drafts_create_rule_paths;
 
         const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
         const detail_w: u16 = size.width - list_w - 1;
         const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
         const list_surface = try self.drawListPanel(list_ctx);
 
-        // selected_prompt >= prompts.len means a virtual (create-op
-        // draft) row. Clamping into `prompts` would render the last
-        // server prompt's header over a draft's body, which is what
+        // selected_rule >= rules.len means a virtual (create-op
+        // draft) row. Clamping into `rules` would render the last
+        // server rule's header over a draft's body, which is what
         // led to a mismatched title + stale rev/pr/c badge. Instead
-        // build a minimal PromptEntry stub for the virtual row so
+        // build a minimal RuleEntry stub for the virtual row so
         // the header stays in sync with the content.
-        var virtual_entry: data.PromptEntry = undefined;
-        const selected_entry: ?*const data.PromptEntry = blk: {
-            if (self.selected_prompt < prompts.len) break :blk &prompts[self.selected_prompt];
-            const k = self.selected_prompt - prompts.len;
+        var virtual_entry: data.RuleEntry = undefined;
+        const selected_entry: ?*const data.RuleEntry = blk: {
+            if (self.selected_rule < rules.len) break :blk &rules[self.selected_rule];
+            const k = self.selected_rule - rules.len;
             if (k >= create_paths.len) break :blk null;
             virtual_entry = .{
                 .path = create_paths[k],
@@ -961,9 +961,9 @@ pub const Dashboard = struct {
         };
 
         const detail_surface = if (selected_entry) |entry|
-            try prompt_detail_panel.drawEmbedded(self, detail_ctx, entry)
+            try rule_detail_panel.drawEmbedded(self, detail_ctx, entry)
         else
-            try prompt_detail_panel.drawEmbeddedEmpty(self, detail_ctx);
+            try rule_detail_panel.drawEmbeddedEmpty(self, detail_ctx);
         return library_panel.drawRoot(self, ctx, list_surface, detail_surface);
     }
 
@@ -975,13 +975,13 @@ pub const Dashboard = struct {
             bundles_list[self.library_bundle_filter - 1].name
         else
             "All";
-        const prompt_count: usize = blk: {
+        const rule_count: usize = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
-            if (self.api_state.prompts) |p| break :blk p.len;
+            if (self.api_state.rules) |p| break :blk p.len;
             break :blk 0;
         };
-        return library_panel.drawListPanel(self, ctx, bundle_label, prompt_count);
+        return library_panel.drawListPanel(self, ctx, bundle_label, rule_count);
     }
 
     // Workspace: top workspace bar + bottom master-detail (list | content).
@@ -1010,8 +1010,8 @@ pub const Dashboard = struct {
             api.state.wsDetail(self.api_state, ws_id)
         else
             null;
-        const lib_prompts: []const data.PromptEntry = if (self.ws_tab == .prompts) self.getPrompts() else &.{};
-        return workspace_panel.drawList(self, ctx, self.currentWsTree(), live_ws, lib_prompts);
+        const lib_rules: []const data.RuleEntry = if (self.ws_tab == .rules) self.getRules() else &.{};
+        return workspace_panel.drawList(self, ctx, self.currentWsTree(), live_ws, lib_rules);
     }
 
     /// ws_id of the currently-selected workspace, or null when the
@@ -1029,7 +1029,7 @@ pub const Dashboard = struct {
 
     pub fn resetWorkspaceTrees(self: *Dashboard) void {
         self.ws_context_tree.reset();
-        self.ws_prompts_tree.reset();
+        self.ws_rules_tree.reset();
         self.ws_list_sel = 0;
     }
 
@@ -1049,7 +1049,7 @@ pub const Dashboard = struct {
         return leaf;
     }
 
-    const ResolvedWsPrompt = struct {
+    const ResolvedWsRule = struct {
         idx: usize,
         path: []const u8,
     };
@@ -1058,84 +1058,84 @@ pub const Dashboard = struct {
         return self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_id, .path = path });
     }
 
-    pub fn cachedPromptBody(self: *Dashboard, path: []const u8) ?[]const u8 {
-        const resp = self.api_state.prompt_content_cache.lookup(.{ .value = path }) orelse return null;
+    pub fn cachedRuleBody(self: *Dashboard, path: []const u8) ?[]const u8 {
+        const resp = self.api_state.rule_content_cache.lookup(.{ .value = path }) orelse return null;
         return resp.body;
     }
 
     pub fn invalidateRemoteDetailRequests(self: *Dashboard) void {
-        self.api_state.prompt_content_cache.invalidate();
-        self.api_state.prompt_prs_cache.invalidate();
+        self.api_state.rule_content_cache.invalidate();
+        self.api_state.rule_prs_cache.invalidate();
         self.api_state.ws_context_content_cache.invalidate();
     }
 
-    pub fn requestSelectedPromptDetail(self: *Dashboard) void {
-        const prompts = self.getPrompts();
-        if (self.selected_prompt >= prompts.len) return;
+    pub fn requestSelectedRuleDetail(self: *Dashboard) void {
+        const rules = self.getRules();
+        if (self.selected_rule >= rules.len) return;
 
-        const sel_path = prompts[self.selected_prompt].path;
+        const sel_path = rules[self.selected_rule].path;
         const key = api.cache.StringKey{ .value = sel_path };
 
-        if (self.api_state.prompt_content_cache.shouldDispatch(key)) {
+        if (self.api_state.rule_content_cache.shouldDispatch(key)) {
             api.specs.dispatchFromState(
                 api.specs.PathParams,
-                @import("clumsies_lib").protocol.library_api.PromptContentResponse,
-                api.specs.library_prompt_content,
-                &self.api_state.prompt_content_pending,
+                @import("clumsies_lib").protocol.library_api.RuleContentResponse,
+                api.specs.library_rule_content,
+                &self.api_state.rule_content_pending,
                 self.api_state,
                 .{ .path = sel_path },
             );
         }
 
-        if (self.api_state.prompt_prs_cache.shouldDispatch(key)) {
-            const prompt_id = self.lookupPromptId(sel_path) orelse return;
+        if (self.api_state.rule_prs_cache.shouldDispatch(key)) {
+            const rule_id = self.lookupRuleId(sel_path) orelse return;
             api.specs.dispatchFromState(
-                api.specs.PromptPrsParams,
-                api.specs.PromptPrsPayload,
-                api.specs.library_prompt_prs,
-                &self.api_state.prompt_prs_pending,
+                api.specs.RulePrsParams,
+                api.specs.RulePrsPayload,
+                api.specs.library_rule_prs,
+                &self.api_state.rule_prs_pending,
                 self.api_state,
-                .{ .prompt_id = prompt_id },
+                .{ .rule_id = rule_id },
             );
         }
     }
 
-    /// Look up the prompt_id that corresponds to `path` in the cached
-    /// library prompt list. Returns null if the library has not loaded
+    /// Look up the rule_id that corresponds to `path` in the cached
+    /// library rule list. Returns null if the library has not loaded
     /// yet or the path is unknown.
-    fn lookupPromptId(self: *Dashboard, path: []const u8) ?[]const u8 {
+    fn lookupRuleId(self: *Dashboard, path: []const u8) ?[]const u8 {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        const lib = self.api_state.prompts orelse return null;
+        const lib = self.api_state.rules orelse return null;
         for (lib) |lp| {
-            if (std.mem.eql(u8, lp.path, path)) return lp.prompt_id;
+            if (std.mem.eql(u8, lp.path, path)) return lp.rule_id;
         }
         return null;
     }
 
-    /// Inverse of `lookupPromptId`: given a prompt_id, return the path
-    /// that the prompt_prs cache is keyed by. Used by the prompt-prs
+    /// Inverse of `lookupRuleId`: given a rule_id, return the path
+    /// that the rule_prs cache is keyed by. Used by the rule-prs
     /// consumer so it can route a completed response against its
     /// request id rather than against the UI's current selection.
-    fn lookupPromptPath(self: *Dashboard, prompt_id: []const u8) ?[]const u8 {
+    fn lookupRulePath(self: *Dashboard, rule_id: []const u8) ?[]const u8 {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        const lib = self.api_state.prompts orelse return null;
+        const lib = self.api_state.rules orelse return null;
         for (lib) |lp| {
-            if (std.mem.eql(u8, lp.prompt_id, prompt_id)) return lp.path;
+            if (std.mem.eql(u8, lp.rule_id, rule_id)) return lp.path;
         }
         return null;
     }
 
-    /// Path of the currently selected library prompt, or null when no
-    /// prompt is in focus. Used by failure-caching in the on-demand
+    /// Path of the currently selected library rule, or null when no
+    /// rule is in focus. Used by failure-caching in the on-demand
     /// consumers, which do not have a request-scoped key to attribute
     /// the failure to and fall back to the current UI selection.
-    fn selectedPromptPath(self: *Dashboard) ?[]const u8 {
-        const prompts = self.getPrompts();
-        if (prompts.len == 0) return null;
-        const idx = @min(self.selected_prompt, prompts.len - 1);
-        return prompts[idx].path;
+    fn selectedRulePath(self: *Dashboard) ?[]const u8 {
+        const rules = self.getRules();
+        if (rules.len == 0) return null;
+        const idx = @min(self.selected_rule, rules.len - 1);
+        return rules[idx].path;
     }
 
     fn requestWorkspaceSelectionContent(self: *Dashboard, ws_d: *const api.model.WsDetail) void {
@@ -1157,34 +1157,34 @@ pub const Dashboard = struct {
                     .{ .ws_id = ws_d.ws_id, .path = file.path },
                 );
             },
-            .prompts => {
+            .rules => {
                 if (dir_sel != null) return;
-                const prompt_sel = self.resolveWsPromptSelection(ws_d) orelse return;
-                const key = api.cache.StringKey{ .value = prompt_sel.path };
-                if (!self.api_state.prompt_content_cache.shouldDispatch(key)) return;
+                const rule_sel = self.resolveWsRuleSelection(ws_d) orelse return;
+                const key = api.cache.StringKey{ .value = rule_sel.path };
+                if (!self.api_state.rule_content_cache.shouldDispatch(key)) return;
 
                 api.specs.dispatchFromState(
                     api.specs.PathParams,
-                    @import("clumsies_lib").protocol.library_api.PromptContentResponse,
-                    api.specs.library_prompt_content,
-                    &self.api_state.prompt_content_pending,
+                    @import("clumsies_lib").protocol.library_api.RuleContentResponse,
+                    api.specs.library_rule_content,
+                    &self.api_state.rule_content_pending,
                     self.api_state,
-                    .{ .path = prompt_sel.path },
+                    .{ .path = rule_sel.path },
                 );
             },
         }
     }
 
-    fn resolveWsPromptSelection(self: *Dashboard, ws_d: *const api.model.WsDetail) ?ResolvedWsPrompt {
+    fn resolveWsRuleSelection(self: *Dashboard, ws_d: *const api.model.WsDetail) ?ResolvedWsRule {
         const idx = self.currentWsTree().leafIndexAt(self.ws_list_sel) orelse return null;
-        if (idx >= ws_d.ws_prompts.len) return null;
-        const lib_prompts = self.getPrompts();
-        const wp = ws_d.ws_prompts[idx];
+        if (idx >= ws_d.ws_rules.len) return null;
+        const lib_rules = self.getRules();
+        const wp = ws_d.ws_rules[idx];
         const path = if (wp.path.len > 0)
             wp.path
-        else for (lib_prompts) |lp| {
+        else for (lib_rules) |lp| {
             if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-        } else wp.prompt_id;
+        } else wp.rule_id;
         return .{ .idx = idx, .path = path };
     }
 
@@ -1203,8 +1203,8 @@ pub const Dashboard = struct {
             self.resolveWsContextSelection(&ws_d)
         else
             null;
-        const prompt_sel = if (live_ws) |ws_d|
-            self.resolveWsPromptSelection(&ws_d)
+        const rule_sel = if (live_ws) |ws_d|
+            self.resolveWsRuleSelection(&ws_d)
         else
             null;
         // context_sel_path is the unified identity for the context
@@ -1225,8 +1225,8 @@ pub const Dashboard = struct {
             .dir_sel = dir_sel,
             .context_sel = context_sel,
             .context_sel_path = context_sel_path,
-            .prompt_sel_idx = if (prompt_sel) |sel| sel.idx else null,
-            .prompt_sel_path = if (prompt_sel) |sel| sel.path else null,
+            .rule_sel_idx = if (rule_sel) |sel| sel.idx else null,
+            .rule_sel_path = if (rule_sel) |sel| sel.path else null,
         });
     }
 
@@ -1234,7 +1234,7 @@ pub const Dashboard = struct {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.org_stats) |stats| {
-            return api.view_model.analysisFromStats(arena, stats, self.api_state.prompts, null);
+            return api.view_model.analysisFromStats(arena, stats, self.api_state.rules, null);
         }
         return null;
     }
@@ -1293,7 +1293,7 @@ pub const Dashboard = struct {
         return dashboard_panel.drawRoot(self, ctx, chart_surface, inputs_surface);
     }
 
-    // Analysis: aggregate prompt/member views and drill-downs.
+    // Analysis: aggregate rule/member views and drill-downs.
     fn drawAnalysis(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         var live_analysis = self.loadAnalysisData(ctx.arena);
         const analysis_available = live_analysis != null;
@@ -1306,7 +1306,7 @@ pub const Dashboard = struct {
             .today_delta_pct = 0,
             .last_event_minutes_ago = 0,
             .refer_trend = .{0} ** 30,
-            .prompts = &.{},
+            .rules = &.{},
             .members = &.{},
             .models = &.{},
             .alerts = &.{},
@@ -1389,18 +1389,18 @@ pub const Dashboard = struct {
         return count;
     }
 
-    pub fn getPrsForPrompt(self: *Dashboard, prompt_path: []const u8) []const data.PullRequestEntry {
-        const prs = self.api_state.prompt_prs_cache.lookup(.{ .value = prompt_path }) orelse return &.{};
+    pub fn getPrsForRule(self: *Dashboard, rule_path: []const u8) []const data.PullRequestEntry {
+        const prs = self.api_state.rule_prs_cache.lookup(.{ .value = rule_path }) orelse return &.{};
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        return api.view_model.toPrEntries(self.viewAllocator(), prs, prompt_path, self.api_state);
+        return api.view_model.toPrEntries(self.viewAllocator(), prs, rule_path, self.api_state);
     }
 
-    pub fn getPrompts(self: *Dashboard) []const data.PromptEntry {
+    pub fn getRules(self: *Dashboard) []const data.RuleEntry {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        if (self.api_state.prompts) |lp| {
-            return api.view_model.toPromptEntries(self.viewAllocator(), lp);
+        if (self.api_state.rules) |lp| {
+            return api.view_model.toRuleEntries(self.viewAllocator(), lp);
         }
         return &.{};
     }
@@ -1604,42 +1604,42 @@ pub const Dashboard = struct {
         return true;
     }
 
-    /// Pump the library prompt content pending slot: on .ok, stash the
+    /// Pump the library rule content pending slot: on .ok, stash the
     /// response in the cache keyed by path so subsequent draws can
     /// retrieve it synchronously. On any error outcome, record the
     /// failure against the selected path so widget sync does not
     /// re-dispatch on every tick; the next `invalidateOnDemandCaches`
-    /// or a navigation to a different prompt clears the marker.
-    fn consumePromptContentResult(self: *Dashboard) void {
-        const result = self.api_state.prompt_content_pending.consume() orelse return;
+    /// or a navigation to a different rule clears the marker.
+    fn consumeRuleContentResult(self: *Dashboard) void {
+        const result = self.api_state.rule_content_pending.consume() orelse return;
         switch (result) {
             .ok => |resp| {
-                self.api_state.prompt_content_cache.store(.{ .value = resp.path }, resp);
+                self.api_state.rule_content_cache.store(.{ .value = resp.path }, resp);
             },
             else => {
-                if (self.selectedPromptPath()) |path| {
-                    self.api_state.prompt_content_cache.markFailed(.{ .value = path });
+                if (self.selectedRulePath()) |path| {
+                    self.api_state.rule_content_cache.markFailed(.{ .value = path });
                 }
             },
         }
     }
 
-    /// Pump the library prompt PR list pending slot. Routes the cache
-    /// write against `payload.prompt_id` — the id the request was
-    /// issued for — rather than the current UI selection, so a prompt
+    /// Pump the library rule PR list pending slot. Routes the cache
+    /// write against `payload.rule_id` — the id the request was
+    /// issued for — rather than the current UI selection, so a rule
     /// switch mid-flight cannot store the list under the wrong path.
-    /// On error, mark the currently selected prompt as failed so the
+    /// On error, mark the currently selected rule as failed so the
     /// widget loop does not re-dispatch on every tick.
-    fn consumePromptPrsResult(self: *Dashboard) void {
-        const result = self.api_state.prompt_prs_pending.consume() orelse return;
+    fn consumeRulePrsResult(self: *Dashboard) void {
+        const result = self.api_state.rule_prs_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
-                const path = self.lookupPromptPath(payload.prompt_id) orelse return;
-                self.api_state.prompt_prs_cache.store(.{ .value = path }, payload.prs);
+                const path = self.lookupRulePath(payload.rule_id) orelse return;
+                self.api_state.rule_prs_cache.store(.{ .value = path }, payload.prs);
             },
             else => {
-                if (self.selectedPromptPath()) |path| {
-                    self.api_state.prompt_prs_cache.markFailed(.{ .value = path });
+                if (self.selectedRulePath()) |path| {
+                    self.api_state.rule_prs_cache.markFailed(.{ .value = path });
                 }
             },
         }
@@ -1666,7 +1666,7 @@ pub const Dashboard = struct {
         const result = self.api_state.ws_manifest_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
-                self.api_state.ws_manifest_cache.store(.{ .value = payload.ws_id }, payload.prompts);
+                self.api_state.ws_manifest_cache.store(.{ .value = payload.ws_id }, payload.rules);
             },
             else => {
                 if (self.activeWsId()) |ws_id| {
@@ -1710,13 +1710,13 @@ pub const Dashboard = struct {
         }
     }
 
-    /// pr_id of the currently-selected PR in the prompt-detail drill-
+    /// pr_id of the currently-selected PR in the rule-detail drill-
     /// down, or null when nothing is selected.
     fn activePrId(self: *Dashboard) ?[]const u8 {
-        const prompts = self.getPrompts();
-        const prompt_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
-        if (prompts.len == 0) return null;
-        const prs = self.getPrsForPrompt(prompts[prompt_idx].path);
+        const rules = self.getRules();
+        const rule_idx = @min(self.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+        if (rules.len == 0) return null;
+        const prs = self.getPrsForRule(rules[rule_idx].path);
         if (prs.len == 0) return null;
         const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
         return prs[pr_idx].id;
@@ -1724,26 +1724,26 @@ pub const Dashboard = struct {
 
     /// Recompute the 8 derived pr_detail_* fields from the just-fetched
     /// response. Picking the active operation requires the currently
-    /// cached library PR list so the op matching the selected prompt
+    /// cached library PR list so the op matching the selected rule
     /// is surfaced first.
     fn refreshPrDetailDerivedFields(
         self: *Dashboard,
         pr_id: []const u8,
-        resp: @import("clumsies_lib").protocol.collab_api.PromptPrDetailResponse,
+        resp: @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
     ) void {
         const alloc = self.api_state.allocator();
 
-        const prompts = self.getPrompts();
-        const prompt_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
-        const target_prompt_id: ?[]const u8 = if (prompts.len > 0)
-            self.lookupPromptId(prompts[prompt_idx].path)
+        const rules = self.getRules();
+        const rule_idx = @min(self.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+        const target_rule_id: ?[]const u8 = if (rules.len > 0)
+            self.lookupRuleId(rules[rule_idx].path)
         else
             null;
 
         var pick_idx: ?usize = null;
-        if (target_prompt_id) |tid| {
+        if (target_rule_id) |tid| {
             for (resp.operations, 0..) |op, i| {
-                if (op.prompt_id) |pid| {
+                if (op.rule_id) |pid| {
                     if (std.mem.eql(u8, pid, tid)) {
                         pick_idx = i;
                         break;
@@ -1858,10 +1858,10 @@ pub const Dashboard = struct {
     }
 
     fn submitComment(self: *Dashboard) void {
-        const all_p = self.getPrompts();
-        const si = @min(self.selected_prompt, if (all_p.len > 0) all_p.len - 1 else 0);
+        const all_p = self.getRules();
+        const si = @min(self.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
         if (all_p.len == 0) return;
-        const prs_for = self.getPrsForPrompt(all_p[si].path);
+        const prs_for = self.getPrsForRule(all_p[si].path);
         const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
         if (prs_for.len == 0) return;
 
@@ -1878,10 +1878,10 @@ pub const Dashboard = struct {
     }
 
     pub fn doPrAction(self: *Dashboard, action: []const u8) void {
-        const all_p = self.getPrompts();
-        const si = @min(self.selected_prompt, if (all_p.len > 0) all_p.len - 1 else 0);
+        const all_p = self.getRules();
+        const si = @min(self.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
         if (all_p.len == 0) return;
-        const prs_for = self.getPrsForPrompt(all_p[si].path);
+        const prs_for = self.getPrsForRule(all_p[si].path);
         const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
         if (prs_for.len == 0) return;
 
@@ -1918,7 +1918,7 @@ pub const Dashboard = struct {
                 const al: data.AccessLevel = if (std.mem.eql(u8, ws.role, "admin")) .admin else .member;
                 list.append(alloc, .{
                     .name = ws.name,
-                    .prompts = 0,
+                    .rules = 0,
                     .contexts = 0,
                     .local_rev = 0,
                     .remote_rev = 0,
@@ -1940,14 +1940,14 @@ pub const Dashboard = struct {
         return 0;
     }
 
-    fn wsPromptsCount(self: *Dashboard) usize {
+    fn wsRulesCount(self: *Dashboard) usize {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        if (self.api_state.ws_detail) |ws_d| return ws_d.ws_prompts.len;
+        if (self.api_state.ws_detail) |ws_d| return ws_d.ws_rules.len;
         return 0;
     }
 
-    const AnalysisCounts = struct { prompt_count: usize, member_count: usize, input_count: usize };
+    const AnalysisCounts = struct { rule_count: usize, member_count: usize, input_count: usize };
 
     const AnalysisScopeInfo = struct {
         label: []const u8,
@@ -2117,13 +2117,13 @@ pub const Dashboard = struct {
             break :blk latestInputs(inputs, self.dashboard_input_capacity).len;
         } else 0;
 
-        const prompt_count: usize = if (self.api_state.org_stats) |stats|
-            stats.prompts.len
+        const rule_count: usize = if (self.api_state.org_stats) |stats|
+            stats.rules.len
         else
             0;
 
         return .{
-            .prompt_count = prompt_count,
+            .rule_count = rule_count,
             .member_count = if (self.api_state.org_stats) |stats| stats.users.len else 0,
             .input_count = input_count,
         };
@@ -2134,8 +2134,8 @@ pub const Dashboard = struct {
     }
 
     // Modal overlay showing the full text of the currently-selected user
-    // prompt from the Recent Inputs panel. Wraps at the box width and
-    // truncates if the prompt is longer than the box can display.
+    // rule from the Recent Inputs panel. Wraps at the box width and
+    // truncates if the rule is longer than the box can display.
     fn drawInputDetailOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const content_and_ts: struct { content: []const u8, ts: i64 } = blk: {
             const scoped = self.scopedAttestationData() orelse break :blk .{ .content = "", .ts = 0 };
@@ -2208,11 +2208,11 @@ pub const Dashboard = struct {
         const size = ctx.max.size();
 
         // Title: show reply context or "New Comment"
-        const all_prompts = self.getPrompts();
-        const sel_idx = @min(self.selected_prompt, if (all_prompts.len > 0) all_prompts.len - 1 else 0);
-        const title = if (all_prompts.len > 0) blk: {
-            const p = &all_prompts[sel_idx];
-            const prs = self.getPrsForPrompt(p.path);
+        const all_rules = self.getRules();
+        const sel_idx = @min(self.selected_rule, if (all_rules.len > 0) all_rules.len - 1 else 0);
+        const title = if (all_rules.len > 0) blk: {
+            const p = &all_rules[sel_idx];
+            const prs = self.getPrsForRule(p.path);
             break :blk if (prs.len > 0 and self.selected_pr_idx < prs.len)
                 try std.fmt.allocPrint(ctx.arena, "Comment on {s}", .{prs[self.selected_pr_idx].id})
             else
@@ -2255,9 +2255,9 @@ pub const Dashboard = struct {
         if (self.show_help) return "Keyboard reference overlay.";
         return switch (self.selected_module) {
             .dashboard => "Live signal and recent input feed.",
-            .library => "Bundle facet, prompt list, and passive preview.",
+            .library => "Bundle facet, rule list, and passive preview.",
             .workspace => "Workspace list and sync status detail.",
-            .analysis => "Prompt and member aggregates.",
+            .analysis => "Rule and member aggregates.",
         };
     }
 
@@ -2266,7 +2266,7 @@ pub const Dashboard = struct {
     /// edit op (`e`, `D`, `m`). No-op when no workspace is active —
     /// draft features just stay silent rather than surface an error.
     pub fn refreshDraftsCache(self: *Dashboard) void {
-        self.drafts_by_prompt_path = .{};
+        self.drafts_by_rule_path = .{};
         self.drafts_by_context_path = .{};
         // drafts_create_*_paths are handed to the file tree, which
         // stores them in its `expanded` StringHashMap and `dir_paths`
@@ -2279,7 +2279,7 @@ pub const Dashboard = struct {
         // arena. Individual `free` calls are no-ops there, so the
         // old slices leak within the arena until session end — that
         // is acceptable for the few bytes per refresh this costs.
-        self.drafts_create_prompt_paths = &.{};
+        self.drafts_create_rule_paths = &.{};
         self.drafts_create_context_paths = &.{};
         self.drafts_total = 0;
         self.drafts_ready = 0;
@@ -2293,7 +2293,7 @@ pub const Dashboard = struct {
         var index = drafts_mod.loadIndex(arena, ws_dir) catch return;
         defer index.deinit(arena);
 
-        var create_prompts: std.ArrayListUnmanaged([]const u8) = .empty;
+        var create_rules: std.ArrayListUnmanaged([]const u8) = .empty;
         var create_contexts: std.ArrayListUnmanaged([]const u8) = .empty;
 
         for (index.entries.items) |entry| {
@@ -2310,7 +2310,7 @@ pub const Dashboard = struct {
             const key_src = entry.current_path orelse entry.draft_path;
             const key = arena.dupe(u8, key_src) catch continue;
             const target_map = switch (entry.category) {
-                .prompt => &self.drafts_by_prompt_path,
+                .rule => &self.drafts_by_rule_path,
                 .context => &self.drafts_by_context_path,
             };
             target_map.put(arena, key, entry.status) catch {};
@@ -2321,14 +2321,14 @@ pub const Dashboard = struct {
                 // single refresh so drafts_arena is unsafe.
                 const path_copy = api_alloc.dupe(u8, entry.draft_path) catch continue;
                 const dest = switch (entry.category) {
-                    .prompt => &create_prompts,
+                    .rule => &create_rules,
                     .context => &create_contexts,
                 };
                 dest.append(api_alloc, path_copy) catch {};
             }
         }
 
-        self.drafts_create_prompt_paths = create_prompts.toOwnedSlice(api_alloc) catch &.{};
+        self.drafts_create_rule_paths = create_rules.toOwnedSlice(api_alloc) catch &.{};
         self.drafts_create_context_paths = create_contexts.toOwnedSlice(api_alloc) catch &.{};
     }
 
@@ -2338,7 +2338,7 @@ pub const Dashboard = struct {
         path: []const u8,
     ) ?drafts_mod.DraftStatus {
         return switch (category) {
-            .prompt => self.drafts_by_prompt_path.get(path),
+            .rule => self.drafts_by_rule_path.get(path),
             .context => self.drafts_by_context_path.get(path),
         };
     }
@@ -2356,7 +2356,7 @@ pub const Dashboard = struct {
     ) ?[]const u8 {
         const ws_id = self.activeWsId() orelse return null;
         const has_draft = switch (category) {
-            .prompt => self.drafts_by_prompt_path.contains(path),
+            .rule => self.drafts_by_rule_path.contains(path),
             .context => self.drafts_by_context_path.contains(path),
         };
         if (!has_draft) return null;
@@ -2373,26 +2373,26 @@ pub const Dashboard = struct {
         const ws_id = self.activeWsId() orelse return null;
         switch (self.selected_module) {
             .library => {
-                const prompts = self.getPrompts();
-                if (self.selected_prompt < prompts.len) {
-                    const prompt = &prompts[self.selected_prompt];
+                const rules = self.getRules();
+                if (self.selected_rule < rules.len) {
+                    const rule = &rules[self.selected_rule];
                     return .{
                         .ws_id = ws_id,
-                        .category = .prompt,
-                        .path = prompt.path,
-                        .prompt_id = self.lookupPromptId(prompt.path),
+                        .category = .rule,
+                        .path = rule.path,
+                        .rule_id = self.lookupRuleId(rule.path),
                     };
                 }
                 // Virtual row: a local create-op draft that has no
-                // server-side prompt yet. The index is offset by
-                // `prompts.len` so we can recover the create-draft
-                // path from drafts_create_prompt_paths.
-                const k = self.selected_prompt - prompts.len;
-                if (k >= self.drafts_create_prompt_paths.len) return null;
+                // server-side rule yet. The index is offset by
+                // `rules.len` so we can recover the create-draft
+                // path from drafts_create_rule_paths.
+                const k = self.selected_rule - rules.len;
+                if (k >= self.drafts_create_rule_paths.len) return null;
                 return .{
                     .ws_id = ws_id,
-                    .category = .prompt,
-                    .path = self.drafts_create_prompt_paths[k],
+                    .category = .rule,
+                    .path = self.drafts_create_rule_paths[k],
                 };
             },
             .workspace => {
@@ -2420,20 +2420,20 @@ pub const Dashboard = struct {
                             .path = self.drafts_create_context_paths[k],
                         };
                     },
-                    .prompts => {
-                        if (leaf >= live.ws_prompts.len) return null;
-                        const wp = live.ws_prompts[leaf];
+                    .rules => {
+                        if (leaf >= live.ws_rules.len) return null;
+                        const wp = live.ws_rules[leaf];
                         const path = if (wp.path.len > 0) wp.path else blk: {
-                            for (self.getPrompts()) |lp| {
+                            for (self.getRules()) |lp| {
                                 if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break :blk lp.path;
                             }
                             return null;
                         };
                         return .{
                             .ws_id = ws_id,
-                            .category = .prompt,
+                            .category = .rule,
                             .path = path,
-                            .prompt_id = self.lookupPromptId(path),
+                            .rule_id = self.lookupRuleId(path),
                         };
                     },
                 }
@@ -2477,7 +2477,7 @@ pub const Dashboard = struct {
                 .operation = .modify,
                 .draft_path = target.path,
                 .current_path = target.path,
-                .prompt_id = target.prompt_id,
+                .rule_id = target.rule_id,
                 .context_id = target.context_id,
                 .base_hash = seed_hash[0..],
             }, seed) catch |err| switch (err) {
@@ -2520,11 +2520,11 @@ pub const Dashboard = struct {
     }
 
     /// Pull the authoritative bytes for a file so a new modify-draft
-    /// can seed its copy. Prompts pull from the library cache; context
+    /// can seed its copy. Rules pull from the library cache; context
     /// files from the workspace context content cache.
     fn seedContentForTarget(self: *Dashboard, target: DraftTarget) ?[]const u8 {
         return switch (target.category) {
-            .prompt => self.cachedPromptBody(target.path),
+            .rule => self.cachedRuleBody(target.path),
             .context => self.cachedWorkspaceContextBody(target.ws_id, target.path),
         };
     }
@@ -2582,7 +2582,7 @@ pub const Dashboard = struct {
             .ws_id = target.ws_id,
             .category = target.category,
             .path = path_copy,
-            .prompt_id = target.prompt_id,
+            .rule_id = target.rule_id,
             .context_id = target.context_id,
         };
         self.pending_discard_path_owned = path_copy;
@@ -2647,7 +2647,7 @@ pub const Dashboard = struct {
             .ws_id = target.ws_id,
             .category = target.category,
             .path = path_copy,
-            .prompt_id = target.prompt_id,
+            .rule_id = target.rule_id,
             .context_id = target.context_id,
         };
         self.pr_composer_path_owned = path_copy;
@@ -2704,7 +2704,7 @@ pub const Dashboard = struct {
             return;
         };
         switch (target.category) {
-            .prompt => self.submitPromptPr(target),
+            .rule => self.submitRulePr(target),
             .context => self.submitContextPr(target),
         }
     }
@@ -2755,7 +2755,7 @@ pub const Dashboard = struct {
         base_hash: ?[]const u8,
     };
 
-    fn submitPromptPr(self: *Dashboard, target: DraftTarget) void {
+    fn submitRulePr(self: *Dashboard, target: DraftTarget) void {
         const alloc = self.api_state.allocator();
         const read = self.readDraftForSubmit(alloc, target) orelse return;
         defer alloc.free(read.ws_dir);
@@ -2768,7 +2768,7 @@ pub const Dashboard = struct {
             self.status_line = "Draft entry missing; try again.";
             return;
         };
-        // Spec s1-5 §2.2: modify/rename/delete must carry prompt_id +
+        // Spec s1-5 §2.2: modify/rename/delete must carry rule_id +
         // base_hash; create must carry path + content. The hub
         // rejects any operation that is missing a required field.
         const operation_type: []const u8 = switch (entry.operation) {
@@ -2786,20 +2786,20 @@ pub const Dashboard = struct {
             (alloc.dupe(u8, read.content) catch return);
         defer if (content_copy) |c| alloc.free(c);
 
-        // Modify/rename/delete need prompt_id; resolve from the draft
+        // Modify/rename/delete need rule_id; resolve from the draft
         // target first (authoritative) then fall back to a library
         // lookup by path. Create drafts have neither — that's the
-        // expected missing prompt_id, not an error.
-        const prompt_id_copy_opt: ?[]const u8 = if (entry.operation == .create)
+        // expected missing rule_id, not an error.
+        const rule_id_copy_opt: ?[]const u8 = if (entry.operation == .create)
             null
         else blk: {
-            const pid = target.prompt_id orelse self.lookupPromptId(target.path) orelse {
-                self.status_line = "Unknown prompt id for this draft.";
+            const pid = target.rule_id orelse self.lookupRuleId(target.path) orelse {
+                self.status_line = "Unknown rule id for this draft.";
                 return;
             };
             break :blk (alloc.dupe(u8, pid) catch return);
         };
-        defer if (prompt_id_copy_opt) |pid| alloc.free(pid);
+        defer if (rule_id_copy_opt) |pid| alloc.free(pid);
 
         const path_copy_opt: ?[]const u8 = if (entry.operation == .create)
             (alloc.dupe(u8, target.path) catch return)
@@ -2821,15 +2821,15 @@ pub const Dashboard = struct {
         }
 
         api.specs.dispatchFromState(
-            api.specs.CreatePromptPrParams,
-            api.specs.CreatePromptPrResponse,
-            api.specs.create_prompt_pr,
-            &self.api_state.create_prompt_pr_pending,
+            api.specs.CreateRulePrParams,
+            api.specs.CreateRulePrResponse,
+            api.specs.create_rule_pr,
+            &self.api_state.create_rule_pr_pending,
             self.api_state,
             .{
                 .description = desc_copy,
                 .operation_type = operation_type,
-                .prompt_id = prompt_id_copy_opt,
+                .rule_id = rule_id_copy_opt,
                 .path = path_copy_opt,
                 .content = content_copy,
                 .base_hash = base_hash_copy_opt,
@@ -2953,15 +2953,15 @@ pub const Dashboard = struct {
         const box_h: u16 = 9;
         const target = self.pr_composer_target orelse DraftTarget{
             .ws_id = "",
-            .category = .prompt,
+            .category = .rule,
             .path = "",
         };
         const title = switch (target.category) {
-            .prompt => "New Prompt PR",
+            .rule => "New Rule PR",
             .context => "New Context PR",
         };
         const path_label = switch (target.category) {
-            .prompt => "prompt:",
+            .rule => "rule:",
             .context => "file:",
         };
         const modal = Modal{
@@ -3105,11 +3105,11 @@ pub const Dashboard = struct {
         const box_w = @min(size.width -| 4, 54);
         const box_h: u16 = 7;
         const title = switch (self.new_draft_category) {
-            .prompt => "New Prompt Draft",
+            .rule => "New Rule Draft",
             .context => "New Context Draft",
         };
         const hint = switch (self.new_draft_category) {
-            .prompt => "e.g. rule/00_MY_RULE.md",
+            .rule => "e.g. rule/00_MY_RULE.md",
             .context => "e.g. spec/NEW_SPEC.md",
         };
         const modal = Modal{
@@ -3136,8 +3136,8 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn consumeCreatePromptPrResult(self: *Dashboard) void {
-        const result = self.api_state.create_prompt_pr_pending.consume() orelse return;
+    fn consumeCreateRulePrResult(self: *Dashboard) void {
+        const result = self.api_state.create_rule_pr_pending.consume() orelse return;
         self.pr_composer_submitting = false;
         switch (result) {
             .ok => |resp| {
@@ -3162,7 +3162,7 @@ pub const Dashboard = struct {
         }
     }
 
-    /// Shared post-submit path for both prompt and context PRs. Marks
+    /// Shared post-submit path for both rule and context PRs. Marks
     /// the draft as submitted against disk, refreshes the in-memory
     /// cache, closes the composer, and posts a user-facing confirmation.
     fn markComposerSubmitted(self: *Dashboard, pr_id: []const u8, status: []const u8) void {
@@ -3172,7 +3172,7 @@ pub const Dashboard = struct {
         defer alloc.free(ws_dir);
         drafts_mod.setDraftStatus(alloc, ws_dir, target.category, target.path, .submitted) catch {};
         self.refreshDraftsCache();
-        // A new PR exists on the hub, but prompt_prs_cache still
+        // A new PR exists on the hub, but rule_prs_cache still
         // holds the pre-submit snapshot — the Pull Requests tab
         // would render stale rows until a manual `r` refresh. Drop
         // the cached details so the next render re-fetches.
@@ -3191,7 +3191,7 @@ pub const Dashboard = struct {
         self.selected_module = tab;
         self.analysis_show_input_detail = false;
         self.analysis_show_member_detail = false;
-        self.analysis_expanded_prompt = null;
+        self.analysis_expanded_rule = null;
         switch (tab) {
             .dashboard => {
                 if (self.analysis_focus != .chart and self.analysis_focus != .inputs) {
@@ -3199,8 +3199,8 @@ pub const Dashboard = struct {
                 }
             },
             .analysis => {
-                if (self.analysis_focus != .prompts and self.analysis_focus != .members) {
-                    self.analysis_focus = .prompts;
+                if (self.analysis_focus != .rules and self.analysis_focus != .members) {
+                    self.analysis_focus = .rules;
                 }
             },
             else => {},

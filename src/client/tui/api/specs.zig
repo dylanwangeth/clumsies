@@ -31,37 +31,37 @@ pub const create_workspace = dispatcher.RequestSpec(
 };
 
 pub const PathParams = struct { path: []const u8 };
-pub const PromptPrsParams = struct { prompt_id: []const u8 };
+pub const RulePrsParams = struct { rule_id: []const u8 };
 pub const WsContextContentParams = struct { ws_id: []const u8, path: []const u8 };
 pub const WsIdParams = struct { ws_id: []const u8 };
 pub const PrIdParams = struct { pr_id: []const u8 };
 
-pub const PromptPrsPayload = state.PromptPrsPayload;
+pub const RulePrsPayload = state.RulePrsPayload;
 pub const WsContextFilesPayload = state.WsContextFilesPayload;
 pub const WsManifestPayload = state.WsManifestPayload;
 pub const WsContextContentPayload = state.WsContextContentPayload;
 pub const PrCommentsPayload = state.PrCommentsPayload;
-pub const CreatePromptPrResponse = state.CreatePromptPrResponse;
+pub const CreateRulePrResponse = state.CreateRulePrResponse;
 pub const CreateContextPrResponse = state.CreateContextPrResponse;
 
-/// Parameters for creating a prompt PR with a single operation.
+/// Parameters for creating a rule PR with a single operation.
 /// Mirrors CreateContextPrParams so the composer submit path is
 /// symmetric across the two categories. Multi-op PRs remain a
 /// follow-up; the composer UI submits one draft at a time. Which
 /// fields must be non-null depends on `operation_type` (per
-/// s1-5 §2.2): modify/rename/delete carry `prompt_id`, create
+/// s1-5 §2.2): modify/rename/delete carry `rule_id`, create
 /// carries `path`, only modify/rename carry `base_hash`. The body
 /// builder enforces this and omits fields the hub does not want.
-pub const CreatePromptPrParams = struct {
+pub const CreateRulePrParams = struct {
     description: []const u8,
     operation_type: []const u8,
-    prompt_id: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
     path: ?[]const u8 = null,
     content: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
 };
 
-/// Parameters for creating a context PR. Mirrors the prompt PR shape
+/// Parameters for creating a context PR. Mirrors the rule PR shape
 /// but against a workspace-scoped endpoint. `context_id` identifies
 /// an existing file (modify/rename/delete); create-ops leave it null
 /// and populate `path` instead.
@@ -75,22 +75,22 @@ pub const CreateContextPrParams = struct {
     base_hash: ?[]const u8 = null,
 };
 
-pub const library_prompt_content = dispatcher.RequestSpec(
+pub const library_rule_content = dispatcher.RequestSpec(
     PathParams,
-    library_api.PromptContentResponse,
+    library_api.RuleContentResponse,
 ){
     .method = .GET,
-    .path_builder = promptContentPath,
-    .parse_ok = dispatcher.jsonParser(PathParams, library_api.PromptContentResponse),
+    .path_builder = ruleContentPath,
+    .parse_ok = dispatcher.jsonParser(PathParams, library_api.RuleContentResponse),
 };
 
-pub const library_prompt_prs = dispatcher.RequestSpec(
-    PromptPrsParams,
-    PromptPrsPayload,
+pub const library_rule_prs = dispatcher.RequestSpec(
+    RulePrsParams,
+    RulePrsPayload,
 ){
     .method = .GET,
-    .path_builder = promptPrsPath,
-    .parse_ok = parsePromptPrsPayload,
+    .path_builder = rulePrsPath,
+    .parse_ok = parseRulePrsPayload,
 };
 
 pub const workspace_context_content = dispatcher.RequestSpec(
@@ -122,11 +122,11 @@ pub const workspace_manifest = dispatcher.RequestSpec(
 
 pub const pr_detail = dispatcher.RequestSpec(
     PrIdParams,
-    collab_api.PromptPrDetailResponse,
+    collab_api.RulePrDetailResponse,
 ){
     .method = .GET,
     .path_builder = prDetailPath,
-    .parse_ok = dispatcher.jsonParser(PrIdParams, collab_api.PromptPrDetailResponse),
+    .parse_ok = dispatcher.jsonParser(PrIdParams, collab_api.RulePrDetailResponse),
 };
 
 pub const pr_comments = dispatcher.RequestSpec(
@@ -171,11 +171,11 @@ pub const pr_action = dispatcher.RequestSpec(PrActionParams, void){
     .parse_ok = dispatcher.parseVoid(PrActionParams),
 };
 
-pub const create_prompt_pr = dispatcher.RequestSpec(CreatePromptPrParams, CreatePromptPrResponse){
+pub const create_rule_pr = dispatcher.RequestSpec(CreateRulePrParams, CreateRulePrResponse){
     .method = .POST,
-    .path_builder = dispatcher.staticPath(CreatePromptPrParams, "/api/org/prompt-prs"),
-    .body_builder = createPromptPrBody,
-    .parse_ok = dispatcher.jsonParser(CreatePromptPrParams, CreatePromptPrResponse),
+    .path_builder = dispatcher.staticPath(CreateRulePrParams, "/api/org/rule-prs"),
+    .body_builder = createRulePrBody,
+    .parse_ok = dispatcher.jsonParser(CreateRulePrParams, CreateRulePrResponse),
 };
 
 pub const create_context_pr = dispatcher.RequestSpec(CreateContextPrParams, CreateContextPrResponse){
@@ -185,7 +185,7 @@ pub const create_context_pr = dispatcher.RequestSpec(CreateContextPrParams, Crea
     .parse_ok = dispatcher.jsonParser(CreateContextPrParams, CreateContextPrResponse),
 };
 
-fn createPromptPrBody(alloc: std.mem.Allocator, p: CreatePromptPrParams) anyerror![]const u8 {
+fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]const u8 {
     // Every op-type field is optional on the wire — the hub tolerates
     // `"field": null` as equivalent to "field absent" (see
     // hub/collab.zig `Operation`), so emitting all fields keeps the
@@ -195,7 +195,7 @@ fn createPromptPrBody(alloc: std.mem.Allocator, p: CreatePromptPrParams) anyerro
     // just serializes the decision.
     const Op = struct {
         type: []const u8,
-        prompt_id: ?[]const u8 = null,
+        rule_id: ?[]const u8 = null,
         base_hash: ?[]const u8 = null,
         content: ?[]const u8 = null,
         path: ?[]const u8 = null,
@@ -207,7 +207,7 @@ fn createPromptPrBody(alloc: std.mem.Allocator, p: CreatePromptPrParams) anyerro
     };
     const ops = [_]Op{.{
         .type = p.operation_type,
-        .prompt_id = p.prompt_id,
+        .rule_id = p.rule_id,
         .base_hash = p.base_hash,
         .content = p.content,
         .path = p.path,
@@ -248,7 +248,7 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
 }
 
 fn submitCommentPath(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror![]const u8 {
-    return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{p.pr_id});
+    return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}/comments", .{p.pr_id});
 }
 
 fn submitCommentBody(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror![]const u8 {
@@ -257,7 +257,7 @@ fn submitCommentBody(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror!
 }
 
 fn prActionPath(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8 {
-    return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}", .{p.pr_id});
+    return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}", .{p.pr_id});
 }
 
 fn prActionBody(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8 {
@@ -265,16 +265,16 @@ fn prActionBody(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8
     return std.json.Stringify.valueAlloc(alloc, Payload{ .action = p.action }, .{});
 }
 
-fn promptContentPath(alloc: std.mem.Allocator, p: PathParams) anyerror![]const u8 {
+fn ruleContentPath(alloc: std.mem.Allocator, p: PathParams) anyerror![]const u8 {
     const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
         std.fmt.alt(std.Uri.Component{ .raw = p.path }, .formatQuery),
     });
     defer alloc.free(encoded);
-    return std.fmt.allocPrint(alloc, "/api/org/library/prompt/content?path={s}", .{encoded});
+    return std.fmt.allocPrint(alloc, "/api/org/library/rule/content?path={s}", .{encoded});
 }
 
-fn promptPrsPath(alloc: std.mem.Allocator, p: PromptPrsParams) anyerror![]const u8 {
-    return std.fmt.allocPrint(alloc, "/api/org/prompt-prs?prompt_id={s}", .{p.prompt_id});
+fn rulePrsPath(alloc: std.mem.Allocator, p: RulePrsParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/org/rule-prs?rule_id={s}", .{p.rule_id});
 }
 
 fn wsContextContentPath(alloc: std.mem.Allocator, p: WsContextContentParams) anyerror![]const u8 {
@@ -294,25 +294,25 @@ fn wsManifestPath(alloc: std.mem.Allocator, p: WsIdParams) anyerror![]const u8 {
 }
 
 fn prDetailPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
-    return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}", .{p.pr_id});
+    return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}", .{p.pr_id});
 }
 
 fn prCommentsPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
-    return std.fmt.allocPrint(alloc, "/api/org/prompt-prs/{s}/comments", .{p.pr_id});
+    return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}/comments", .{p.pr_id});
 }
 
-/// Wrap the existing `parse.parsePromptPrs` into the payload shape that
-/// carries the requested `prompt_id` alongside the parsed list. The
+/// Wrap the existing `parse.parseRulePrs` into the payload shape that
+/// carries the requested `rule_id` alongside the parsed list. The
 /// server response is a bare array, so the key is duped out of the
 /// request into the long-lived allocator before returning.
-fn parsePromptPrsPayload(
+fn parseRulePrsPayload(
     alloc: std.mem.Allocator,
-    req: PromptPrsParams,
+    req: RulePrsParams,
     body: []const u8,
-) anyerror!PromptPrsPayload {
-    const prs = parse.parsePromptPrs(alloc, body) orelse return error.ParseFailed;
+) anyerror!RulePrsPayload {
+    const prs = parse.parseRulePrs(alloc, body) orelse return error.ParseFailed;
     return .{
-        .prompt_id = try alloc.dupe(u8, req.prompt_id),
+        .rule_id = try alloc.dupe(u8, req.rule_id),
         .prs = prs,
     };
 }
@@ -334,10 +334,10 @@ fn parseWsManifestPayload(
     req: WsIdParams,
     body: []const u8,
 ) anyerror!WsManifestPayload {
-    const prompts = parse.parseManifestPrompts(alloc, body) orelse return error.ParseFailed;
+    const rules = parse.parseManifestRules(alloc, body) orelse return error.ParseFailed;
     return .{
         .ws_id = try alloc.dupe(u8, req.ws_id),
-        .prompts = prompts,
+        .rules = rules,
     };
 }
 

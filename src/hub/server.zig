@@ -68,8 +68,8 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.patch("/api/workspaces/:ws_id", workspace_handler.handleUpdate, .{});
     router.delete("/api/workspaces/:ws_id", workspace_handler.handleDelete, .{});
     router.get("/api/workspaces/:ws_id/manifest", workspace_handler.handleGetManifest, .{});
-    router.post("/api/workspaces/:ws_id/prompts", workspace_handler.handleAddPrompt, .{});
-    router.delete("/api/workspaces/:ws_id/prompts/:prompt_id", workspace_handler.handleRemovePrompt, .{});
+    router.post("/api/workspaces/:ws_id/rules", workspace_handler.handleAddRule, .{});
+    router.delete("/api/workspaces/:ws_id/rules/:rule_id", workspace_handler.handleRemoveRule, .{});
     // Context
     router.get("/api/workspaces/:ws_id/context/files", context_handler.handleListFiles, .{});
     router.get("/api/workspaces/:ws_id/context/file/content", context_handler.handleGetFileContent, .{});
@@ -88,10 +88,10 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
 
     // Library
     router.get("/api/org/library/manifest", library_handler.handleGetManifest, .{});
-    router.get("/api/org/library/prompts", library_handler.handleListPrompts, .{});
-    router.get("/api/org/library/prompt", library_handler.handleGetPrompt, .{});
-    router.get("/api/org/library/prompt/content", library_handler.handleGetPromptContent, .{});
-    router.post("/api/org/library/prompts/content", library_handler.handleBatchPromptContent, .{});
+    router.get("/api/org/library/rules", library_handler.handleListRules, .{});
+    router.get("/api/org/library/rule", library_handler.handleGetRule, .{});
+    router.get("/api/org/library/rule/content", library_handler.handleGetRuleContent, .{});
+    router.post("/api/org/library/rules/content", library_handler.handleBatchRuleContent, .{});
     router.get("/api/org/bundles", library_handler.handleListBundles, .{});
     router.get("/api/org/bundles/:name", library_handler.handleGetBundle, .{});
     router.post("/api/org/bundles", library_handler.handleCreateBundle, .{});
@@ -102,15 +102,15 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.post("/api/attestations", attestation_handler.handleUpload, .{});
     router.get("/api/stats", attestation_handler.handleOrgStats, .{});
     router.get("/api/stats/workspace/:ws_id", attestation_handler.handleWorkspaceStats, .{});
-    router.get("/api/stats/prompt/:prompt_id", attestation_handler.handlePromptStats, .{});
+    router.get("/api/stats/rule/:rule_id", attestation_handler.handleRuleStats, .{});
 
-    // Prompt PRs
-    router.post("/api/org/prompt-prs", collab_handler.handleCreatePr, .{});
-    router.get("/api/org/prompt-prs", collab_handler.handleListPrs, .{});
-    router.get("/api/org/prompt-prs/:id", collab_handler.handleGetPr, .{});
-    router.put("/api/org/prompt-prs/:id", collab_handler.handleUpdatePr, .{});
-    router.post("/api/org/prompt-prs/:id/comments", collab_handler.handleAddComment, .{});
-    router.get("/api/org/prompt-prs/:id/comments", collab_handler.handleListComments, .{});
+    // Rule PRs
+    router.post("/api/org/rule-prs", collab_handler.handleCreatePr, .{});
+    router.get("/api/org/rule-prs", collab_handler.handleListPrs, .{});
+    router.get("/api/org/rule-prs/:id", collab_handler.handleGetPr, .{});
+    router.put("/api/org/rule-prs/:id", collab_handler.handleUpdatePr, .{});
+    router.post("/api/org/rule-prs/:id/comments", collab_handler.handleAddComment, .{});
+    router.get("/api/org/rule-prs/:id/comments", collab_handler.handleListComments, .{});
 
     return .{ .http = server };
 }

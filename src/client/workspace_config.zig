@@ -1,6 +1,6 @@
 //! Workspace binding resolution. Reads ~/.clumsies/config.toml to find which workspace owns a
 //! given filesystem path. The MCP server uses this at startup to determine which workspace's
-//! prompts and context to serve.
+//! rules and context to serve.
 const std = @import("std");
 const toml = @import("toml");
 const auth = @import("auth.zig");

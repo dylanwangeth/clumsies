@@ -1,7 +1,7 @@
 //! Collaboration API response shapes. Pull requests carry workspace local edits back to the
-//! Library for review. Each PR contains PromptPrChanges (add/modify/delete) and a
-//! PromptPrUsageSummary showing how much the changed prompt has been referred.
-pub const PromptPrListItem = struct {
+//! Library for review. Each PR contains RulePrChanges (add/modify/delete) and a
+//! RulePrUsageSummary showing how much the changed rule has been referred.
+pub const RulePrListItem = struct {
     pr_id: []const u8,
     status: []const u8,
     description: []const u8,
@@ -10,14 +10,14 @@ pub const PromptPrListItem = struct {
     operation_count: i64 = 0,
 };
 
-pub const PromptPrListResponse = struct {
-    prs: []const PromptPrListItem = &.{},
+pub const RulePrListResponse = struct {
+    prs: []const RulePrListItem = &.{},
 };
 
-pub const PromptPrChange = struct {
+pub const RulePrChange = struct {
     op_index: i32 = 0,
     type: []const u8 = "",
-    prompt_id: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
     content: ?[]const u8 = null,
     path: ?[]const u8 = null,
@@ -25,22 +25,22 @@ pub const PromptPrChange = struct {
     current_path: ?[]const u8 = null,
 };
 
-pub const PromptPrUsageSummary = struct {
+pub const RulePrUsageSummary = struct {
     refer_count: i64 = 0,
     sessions_used: i64 = 0,
     last_referred: ?[]const u8 = null,
 };
 
-pub const PromptPrDetailResponse = struct {
+pub const RulePrDetailResponse = struct {
     pr_id: []const u8,
     status: []const u8,
     description: []const u8,
     created_at: []const u8,
-    operations: []const PromptPrChange = &.{},
-    attestation_summary: PromptPrUsageSummary = .{},
+    operations: []const RulePrChange = &.{},
+    attestation_summary: RulePrUsageSummary = .{},
 };
 
-pub const PromptPrComment = struct {
+pub const RulePrComment = struct {
     comment_id: []const u8 = "",
     author_id: []const u8 = "",
     author: []const u8 = "",
@@ -48,6 +48,6 @@ pub const PromptPrComment = struct {
     created_at: []const u8 = "",
 };
 
-pub const PromptPrCommentsResponse = struct {
-    comments: []const PromptPrComment = &.{},
+pub const RulePrCommentsResponse = struct {
+    comments: []const RulePrComment = &.{},
 };

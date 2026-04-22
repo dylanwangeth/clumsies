@@ -106,9 +106,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     else if (std.mem.eql(u8, event_type, "search"))
         .search
     else if (std.mem.eql(u8, event_type, "load"))
-        .search // CLI hook doesn't carry prompt_id; fallback to void variant
+        .search // CLI hook doesn't carry rule_id; fallback to void variant
     else if (std.mem.eql(u8, event_type, "refer"))
-        .search // CLI hook doesn't carry prompt_id/constraint_id; fallback to void variant
+        .search // CLI hook doesn't carry rule_id/constraint_id; fallback to void variant
     else if (std.mem.eql(u8, event_type, "agent_report"))
         .search // CLI hook doesn't carry summary; fallback to void variant
     else

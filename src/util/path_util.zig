@@ -1,5 +1,5 @@
 //! Path safety: rejects relative paths that escape their base directory via ".." or absolute
-//! paths. Used to validate prompt paths and context file paths from untrusted input.
+//! paths. Used to validate rule paths and context file paths from untrusted input.
 const std = @import("std");
 const testing = std.testing;
 

@@ -1,6 +1,6 @@
 //! Workspace API request and response shapes. ContextFile describes a file in the workspace's
 //! context tree (project knowledge). WorkspaceManifestResponse carries the manifest that drives
-//! the sync protocol — each entry maps a prompt path to its content hash.
+//! the sync protocol — each entry maps a rule path to its content hash.
 //! CreateWorkspaceRequest / CreateWorkspaceResponse are the wire contract for POST
 //! /api/workspaces, shared between hub, cli and tui.
 const manifest = @import("manifest.zig");
@@ -40,7 +40,7 @@ pub const WorkspaceManifestResponse = struct {
     ws_id: []const u8,
     name: []const u8,
     revision: i32,
-    prompts: manifest.ManifestMap,
+    rules: manifest.ManifestMap,
     context: manifest.ManifestMap,
 };
 

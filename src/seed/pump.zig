@@ -204,8 +204,8 @@ fn emitScenario(
     });
 
     for (scenario.refers, 0..) |refer, idx| {
-        const prompt = data.promptById(refer.prompt_id) orelse continue;
-        const prompt_hash = util_hash.contentHash(prompt.content);
+        const rule = data.ruleById(refer.rule_id) orelse continue;
+        const rule_hash = util_hash.contentHash(rule.content);
         insertAttestationEvent(conn, scenario.user_id, .{
             .ws_id = scenario.ws_id,
             .session_id = session_id,
@@ -213,8 +213,8 @@ fn emitScenario(
             .ts = timestamp_base + 2 + @as(i64, @intCast(idx)),
             .payload = .{
                 .refer = .{
-                    .prompt_id = prompt.id,
-                    .prompt_hash = prompt_hash[0..],
+                    .rule_id = rule.id,
+                    .rule_hash = rule_hash[0..],
                     .constraint_id = refer.constraint_id,
                     .reason = refer.reason,
                 },
@@ -225,14 +225,14 @@ fn emitScenario(
 
 fn insertAttestationEvent(conn: *pg.Conn, user_id: ?[]const u8, event: local_attestation.AttestationEvent) void {
     const type_tag = local_attestation.payloadTypeTag(event.payload);
-    const prompt_id: ?[]const u8 = switch (event.payload) {
-        .load => |p| p.prompt_id,
-        .refer => |p| p.prompt_id,
+    const rule_id: ?[]const u8 = switch (event.payload) {
+        .load => |p| p.rule_id,
+        .refer => |p| p.rule_id,
         else => null,
     };
-    const prompt_hash: ?[]const u8 = switch (event.payload) {
-        .load => |p| p.prompt_hash,
-        .refer => |p| p.prompt_hash,
+    const rule_hash: ?[]const u8 = switch (event.payload) {
+        .load => |p| p.rule_hash,
+        .refer => |p| p.rule_hash,
         else => null,
     };
     const constraint_id: ?[]const u8 = switch (event.payload) {
@@ -254,7 +254,7 @@ fn insertAttestationEvent(conn: *pg.Conn, user_id: ?[]const u8, event: local_att
 
     _ = conn.exec(
         \\INSERT INTO attestation_events (user_id, ws_id, session_id, event_id, type, timestamp,
-        \\  prompt_id, prompt_hash, constraint_id, reason, content, content_hash)
+        \\  rule_id, rule_hash, constraint_id, reason, content, content_hash)
         \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
     , .{
@@ -264,8 +264,8 @@ fn insertAttestationEvent(conn: *pg.Conn, user_id: ?[]const u8, event: local_att
         event.event_id,
         type_tag,
         event.ts,
-        prompt_id,
-        prompt_hash,
+        rule_id,
+        rule_hash,
         constraint_id,
         reason,
         content,

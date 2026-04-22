@@ -1,4 +1,4 @@
-//! Workflow skill import. Scans the workspace's cached workflow prompts and generates SKILL.md
+//! Workflow skill import. Scans the workspace's cached workflow rules and generates SKILL.md
 //! files that agent hooks can invoke as slash commands (e.g., /commit, /review-pr).
 const model = @import("model.zig");
 const std = @import("std");

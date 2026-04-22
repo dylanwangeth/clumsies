@@ -29,9 +29,9 @@ pub const WsPathKey = struct {
 /// long-lived allocator and returns it alongside the parsed body, so
 /// the consumer can route the cache write against the request rather
 /// than against whatever the UI happens to select at consume time.
-pub const PromptPrsPayload = struct {
-    prompt_id: []const u8,
-    prs: []const model.PromptPr,
+pub const RulePrsPayload = struct {
+    rule_id: []const u8,
+    prs: []const model.RulePr,
 };
 
 pub const WsContextFilesPayload = struct {
@@ -41,7 +41,7 @@ pub const WsContextFilesPayload = struct {
 
 pub const WsManifestPayload = struct {
     ws_id: []const u8,
-    prompts: []const model.WsPromptData,
+    rules: []const model.WsRuleData,
 };
 
 pub const WsContextContentPayload = struct {
@@ -55,7 +55,7 @@ pub const PrCommentsPayload = struct {
     comments: []const data.CommentEntry,
 };
 
-pub const CreatePromptPrResponse = struct {
+pub const CreateRulePrResponse = struct {
     pr_id: []const u8,
     status: []const u8,
 };
@@ -81,22 +81,22 @@ pub const ApiState = struct {
     status: ConnectionStatus = .disconnected,
     current_user: ?model.UserData = null,
     directory: ?model.DirectoryData = null,
-    prompts: ?[]const model.LibraryPrompt = null,
+    rules: ?[]const model.LibraryRule = null,
     bundles: ?[]const model.BundleData = null,
     org_stats: ?model.OrgStats = null,
     local_stats: ?attestation_reader.LocalStats = null,
     drafts: ?[]const DraftEntry = null,
     active_sessions: ?[]const ActiveSession = null,
 
-    // Library prompt content, keyed by prompt path.
-    prompt_content_pending: request.PendingRequest(dispatcher.Result(library_api.PromptContentResponse)) = .{},
-    prompt_content_cache: cache.CacheSlot(cache.StringKey, library_api.PromptContentResponse) = .{},
+    // Library rule content, keyed by rule path.
+    rule_content_pending: request.PendingRequest(dispatcher.Result(library_api.RuleContentResponse)) = .{},
+    rule_content_cache: cache.CacheSlot(cache.StringKey, library_api.RuleContentResponse) = .{},
 
-    // Library prompt PR list. Pending result carries the prompt_id the
+    // Library rule PR list. Pending result carries the rule_id the
     // request was issued for so the consumer stores under the correct
-    // cache key even if the UI's prompt selection changed mid-flight.
-    prompt_prs_pending: request.PendingRequest(dispatcher.Result(PromptPrsPayload)) = .{},
-    prompt_prs_cache: cache.CacheSlot(cache.StringKey, []const model.PromptPr) = .{},
+    // cache key even if the UI's rule selection changed mid-flight.
+    rule_prs_pending: request.PendingRequest(dispatcher.Result(RulePrsPayload)) = .{},
+    rule_prs_cache: cache.CacheSlot(cache.StringKey, []const model.RulePr) = .{},
 
     // Workspace context file content, keyed by (ws_id, path). Payload
     // includes both halves of the key so the consumer routes the body
@@ -110,15 +110,15 @@ pub const ApiState = struct {
     ws_context_files_pending: request.PendingRequest(dispatcher.Result(WsContextFilesPayload)) = .{},
     ws_context_files_cache: cache.CacheSlot(cache.StringKey, []const model.ContextFileData) = .{},
     ws_manifest_pending: request.PendingRequest(dispatcher.Result(WsManifestPayload)) = .{},
-    ws_manifest_cache: cache.CacheSlot(cache.StringKey, []const model.WsPromptData) = .{},
+    ws_manifest_cache: cache.CacheSlot(cache.StringKey, []const model.WsRuleData) = .{},
 
     // Pr detail (compound): detail response + comments keyed by pr_id.
     // The detail response carries operations + attestation_summary; the consumer
     // computes the diff and picks the active operation against the cached
-    // prompt prs list. pr_detail response already echoes pr_id; comments
+    // rule prs list. pr_detail response already echoes pr_id; comments
     // wrap the bare list with a PrCommentsPayload.
-    pr_detail_pending: request.PendingRequest(dispatcher.Result(collab_api.PromptPrDetailResponse)) = .{},
-    pr_detail_cache: cache.CacheSlot(cache.StringKey, collab_api.PromptPrDetailResponse) = .{},
+    pr_detail_pending: request.PendingRequest(dispatcher.Result(collab_api.RulePrDetailResponse)) = .{},
+    pr_detail_cache: cache.CacheSlot(cache.StringKey, collab_api.RulePrDetailResponse) = .{},
     pr_comments_pending: request.PendingRequest(dispatcher.Result(PrCommentsPayload)) = .{},
     pr_comments_cache: cache.CacheSlot(cache.StringKey, []const data.CommentEntry) = .{},
 
@@ -127,12 +127,12 @@ pub const ApiState = struct {
     sign_out_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     submit_comment_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     pr_action_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
-    create_prompt_pr_pending: request.PendingRequest(dispatcher.Result(CreatePromptPrResponse)) = .{},
+    create_rule_pr_pending: request.PendingRequest(dispatcher.Result(CreateRulePrResponse)) = .{},
     create_context_pr_pending: request.PendingRequest(dispatcher.Result(CreateContextPrResponse)) = .{},
     // Derived pr_detail view state, recomputed by consumers whenever
     // pr_detail_cache or pr_comments_cache changes. Kept here because
     // computing the diff on every draw would be wasteful; the consumer
-    // caches it once per (pr_id, active prompt_id) transition.
+    // caches it once per (pr_id, active rule_id) transition.
     pr_detail_id: ?[]const u8 = null,
     pr_detail_diff: ?[]const []const u8 = null,
     pr_detail_attestation_refers: u16 = 0,
@@ -144,7 +144,7 @@ pub const ApiState = struct {
     pr_detail_op_total: u16 = 0,
     hub_url: ?[]const u8 = null,
     access_token: ?[]const u8 = null,
-    /// True while the compound bootstrap fetch (/me + directory + prompts
+    /// True while the compound bootstrap fetch (/me + directory + rules
     /// + bundles + stats) is running. Prevents overlapping bootstrap
     /// triggers; does not gate any other endpoint, which now run
     /// independently via their own PendingRequest slots.
@@ -200,8 +200,8 @@ pub fn refreshLocalState(api_state: *ApiState) void {
 }
 
 pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
-    api_state.prompt_prs_cache.invalidate();
-    api_state.prompt_content_cache.invalidate();
+    api_state.rule_prs_cache.invalidate();
+    api_state.rule_content_cache.invalidate();
     api_state.ws_context_content_cache.invalidate();
     api_state.ws_context_files_cache.invalidate();
     api_state.ws_manifest_cache.invalidate();
@@ -212,8 +212,8 @@ pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
     // invalidation cannot repopulate the cache (with either a fresh
     // value or a remembered failure) for data the caller explicitly
     // declared stale.
-    api_state.prompt_prs_pending.cancel();
-    api_state.prompt_content_pending.cancel();
+    api_state.rule_prs_pending.cancel();
+    api_state.rule_content_pending.cancel();
     api_state.ws_context_content_pending.cancel();
     api_state.ws_context_files_pending.cancel();
     api_state.ws_manifest_pending.cancel();
@@ -239,18 +239,18 @@ pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
 /// relative to `ws_id`.
 pub fn wsDetail(api_state: *ApiState, ws_id: []const u8) ?model.WsDetail {
     const files = api_state.ws_context_files_cache.lookup(.{ .value = ws_id }) orelse return null;
-    const prompts = api_state.ws_manifest_cache.lookup(.{ .value = ws_id }) orelse return null;
+    const rules = api_state.ws_manifest_cache.lookup(.{ .value = ws_id }) orelse return null;
     return .{
         .ws_id = ws_id,
         .context_files = files,
-        .ws_prompts = prompts,
+        .ws_rules = rules,
     };
 }
 
 /// Combined pr detail view: raw detail response + comments. Returns
 /// null when either half is still pending.
 pub const PrDetailView = struct {
-    detail: collab_api.PromptPrDetailResponse,
+    detail: collab_api.RulePrDetailResponse,
     comments: []const data.CommentEntry,
 };
 

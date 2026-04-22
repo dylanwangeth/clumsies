@@ -7,7 +7,7 @@ const api = @import("../api.zig");
 const data = @import("../view_types.zig");
 const TableRow = @import("../table_row.zig").TableRow;
 const Column = @import("../table_row.zig").Column;
-const prompt_detail_panel = @import("prompt_detail.zig");
+const rule_detail_panel = @import("rule_detail.zig");
 
 const MAX_TREE_ROWS = 128;
 
@@ -24,7 +24,7 @@ pub fn drawListPanel(
     self: anytype,
     ctx: vxfw.DrawContext,
     bundle_label: []const u8,
-    prompt_count: usize,
+    rule_count: usize,
 ) std.mem.Allocator.Error!vxfw.Surface {
     const size = ctx.max.size();
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
@@ -46,14 +46,14 @@ pub fn drawListPanel(
     const hint = switch (self.detail_tab) {
         .content => try std.fmt.allocPrint(
             ctx.arena,
-            "{d} prompts  bundle: {s}  / search  b filter",
-            .{ prompt_count, bundle_label },
+            "{d} rules  bundle: {s}  / search  b filter",
+            .{ rule_count, bundle_label },
         ),
         .pull_requests => blk: {
-            const prompts = self.getPrompts();
-            const sel_idx = @min(self.selected_prompt, if (prompts.len > 0) prompts.len - 1 else 0);
-            if (prompts.len == 0) break :blk @as([]const u8, "no prompts");
-            const prs = self.getPrsForPrompt(prompts[sel_idx].path);
+            const rules = self.getRules();
+            const sel_idx = @min(self.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+            if (rules.len == 0) break :blk @as([]const u8, "no rules");
+            const prs = self.getPrsForRule(rules[sel_idx].path);
             break :blk try std.fmt.allocPrint(
                 ctx.arena,
                 "{d} PRs  filter:{s}  f cycle",
@@ -90,7 +90,7 @@ pub fn drawListPanel(
                 // Write on the outer panel surface: the ScrollBars
                 // composite returns a buffer-less surface whose
                 // writeCell would trip the vxfw assert.
-                w.drawEmptyState(&surface, ctx, body_origin_col, body_origin_row, status, "prompts");
+                w.drawEmptyState(&surface, ctx, body_origin_col, body_origin_row, status, "rules");
             } else {
                 self.library_scroll_bars.scroll_view.draw_cursor = false;
                 defer self.library_scroll_bars.scroll_view.draw_cursor = true;
@@ -102,9 +102,9 @@ pub fn drawListPanel(
             }
         },
         .pull_requests => {
-            prompt_detail_panel.syncPrWidgets(self);
+            rule_detail_panel.syncPrWidgets(self);
             if (self.pr_row_count == 0) {
-                w.writeText(&surface, ctx, body_origin_col, body_origin_row, "No pull requests for this prompt.", theme.fg(theme.MUTED));
+                w.writeText(&surface, ctx, body_origin_col, body_origin_row, "No pull requests for this rule.", theme.fg(theme.MUTED));
             } else {
                 self.pr_scroll_bars.scroll_view.draw_cursor = false;
                 defer self.pr_scroll_bars.scroll_view.draw_cursor = true;
@@ -186,7 +186,7 @@ pub fn handleModuleEvent(
         return;
     }
     if (key.matches('n', .{}) and self.detail_tab == .content and !self.detail_focus_content) {
-        self.openNewDraftForm(.prompt);
+        self.openNewDraftForm(.rule);
         ctx.consumeAndRedraw();
         return;
     }
@@ -197,7 +197,7 @@ pub fn handleModuleEvent(
     }
 
     if (self.detail_focus_content) {
-        try prompt_detail_panel.handleEmbeddedPaneEvent(self, ctx, event, key);
+        try rule_detail_panel.handleEmbeddedPaneEvent(self, ctx, event, key);
         return;
     }
     switch (self.detail_tab) {
@@ -260,9 +260,9 @@ fn handleFileListEvent(
     if (pos >= self.library_tree.rowCount()) pos = self.library_tree.rowCount() - 1;
     self.library_scroll_bars.scroll_view.cursor = @intCast(pos);
 
-    if (self.library_tree.leafIndexAt(pos)) |prompt_idx| {
-        if (self.selected_prompt != prompt_idx) {
-            self.selected_prompt = prompt_idx;
+    if (self.library_tree.leafIndexAt(pos)) |rule_idx| {
+        if (self.selected_rule != rule_idx) {
+            self.selected_rule = rule_idx;
             self.selected_pr_idx = 0;
             self.pr_scroll_bars.scroll_view.cursor = 0;
             self.pr_filter = .open;
@@ -284,12 +284,12 @@ fn handlePrListEvent(
         };
         self.pr_scroll_bars.scroll_view.cursor = 0;
         self.selected_pr_idx = 0;
-        prompt_detail_panel.fetchSelectedPrDetail(self);
+        rule_detail_panel.fetchSelectedPrDetail(self);
         ctx.consumeAndRedraw();
         return;
     }
 
-    prompt_detail_panel.syncPrWidgets(self);
+    rule_detail_panel.syncPrWidgets(self);
     if (self.pr_row_count == 0) {
         ctx.consumeEvent();
         return;
@@ -313,16 +313,16 @@ fn handlePrListEvent(
         if (self.pr_indices[pos]) |pr_idx| {
             if (self.selected_pr_idx != pr_idx) {
                 self.selected_pr_idx = pr_idx;
-                prompt_detail_panel.fetchSelectedPrDetail(self);
+                rule_detail_panel.fetchSelectedPrDetail(self);
             }
         }
     }
 }
 
 pub fn syncLibraryWidgets(self: anytype) void {
-    const prompts = self.getPrompts();
+    const rules = self.getRules();
     const bundles = self.getBundles();
-    const create_paths = self.drafts_create_prompt_paths;
+    const create_paths = self.drafts_create_rule_paths;
     const filter_name: ?[]const u8 = if (self.library_bundle_filter == 0)
         null
     else if (self.library_bundle_filter - 1 < bundles.len)
@@ -333,7 +333,7 @@ pub fn syncLibraryWidgets(self: anytype) void {
     var filtered_paths: [MAX_TREE_ROWS][]const u8 = undefined;
     var filtered_orig: [MAX_TREE_ROWS]usize = undefined;
     var filtered_len: usize = 0;
-    for (prompts, 0..) |p, pidx| {
+    for (rules, 0..) |p, pidx| {
         if (filter_name) |fname| {
             if (std.mem.indexOf(u8, p.bundle_names, fname) == null) continue;
         }
@@ -344,14 +344,14 @@ pub fn syncLibraryWidgets(self: anytype) void {
     }
 
     // Append local create-op drafts as virtual rows. Tree-leaf index
-    // is `prompts.len + k` so selectedDraftTarget can tell virtual
+    // is `rules.len + k` so selectedDraftTarget can tell virtual
     // rows from server-backed rows by the index range. Bundle filter
     // does not constrain create drafts — the user created them
     // locally, they should always be visible.
     for (create_paths, 0..) |path, k| {
         if (filtered_len >= MAX_TREE_ROWS) break;
         filtered_paths[filtered_len] = path;
-        filtered_orig[filtered_len] = prompts.len + k;
+        filtered_orig[filtered_len] = rules.len + k;
         filtered_len += 1;
     }
 
@@ -375,13 +375,13 @@ pub fn syncLibraryWidgets(self: anytype) void {
             self.library_widgets[i] = self.library_text_rows[i].widget();
         } else {
             const orig_pidx = self.library_tree.leafIndexAt(i) orelse continue;
-            const is_virtual = orig_pidx >= prompts.len;
+            const is_virtual = orig_pidx >= rules.len;
             const row_path: []const u8 = if (is_virtual) blk: {
-                const k = orig_pidx - prompts.len;
+                const k = orig_pidx - rules.len;
                 if (k >= create_paths.len) continue;
                 break :blk create_paths[k];
-            } else prompts[orig_pidx].path;
-            const pr_label: []const u8 = if (is_virtual) "" else switch (prompts[orig_pidx].open_pr_count) {
+            } else rules[orig_pidx].path;
+            const pr_label: []const u8 = if (is_virtual) "" else switch (rules[orig_pidx].open_pr_count) {
                 0 => "",
                 1 => "\xe2\x80\xa21",
                 2 => "\xe2\x80\xa22",
@@ -389,7 +389,7 @@ pub fn syncLibraryWidgets(self: anytype) void {
                 else => "\xe2\x80\xa2+",
             };
             const row_sel = i == selected_row;
-            const draft_status_opt = self.draftStatusFor(.prompt, row_path);
+            const draft_status_opt = self.draftStatusFor(.rule, row_path);
             const labeled_text = if (draft_status_opt != null)
                 (std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{row_text}) catch row_text)
             else
@@ -416,7 +416,7 @@ pub fn syncLibraryWidgets(self: anytype) void {
     self.library_scroll_bars.scroll_view.cursor = @intCast(cur);
     if (cur < row_count) {
         if (self.library_tree.leafIndexAt(cur)) |pi| {
-            self.selected_prompt = pi;
+            self.selected_rule = pi;
         }
     }
 }

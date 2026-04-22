@@ -174,13 +174,13 @@ test "CacheSlot with StringKey compares slice contents" {
 }
 
 test "CacheSlot composite struct key uses std.meta.eql when no eql method" {
-    const Key = struct { ws_id: u32, prompt_id: u32 };
+    const Key = struct { ws_id: u32, rule_id: u32 };
     var cache: CacheSlot(Key, u32) = .{};
 
-    cache.store(.{ .ws_id = 1, .prompt_id = 10 }, 1010);
-    try std.testing.expectEqual(@as(u32, 1010), cache.lookup(.{ .ws_id = 1, .prompt_id = 10 }).?);
-    try std.testing.expect(cache.lookup(.{ .ws_id = 1, .prompt_id = 11 }) == null);
-    try std.testing.expect(cache.lookup(.{ .ws_id = 2, .prompt_id = 10 }) == null);
+    cache.store(.{ .ws_id = 1, .rule_id = 10 }, 1010);
+    try std.testing.expectEqual(@as(u32, 1010), cache.lookup(.{ .ws_id = 1, .rule_id = 10 }).?);
+    try std.testing.expect(cache.lookup(.{ .ws_id = 1, .rule_id = 11 }) == null);
+    try std.testing.expect(cache.lookup(.{ .ws_id = 2, .rule_id = 10 }) == null);
 }
 
 test "CacheSlot isPopulated tracks lifecycle" {

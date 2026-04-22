@@ -36,10 +36,10 @@ pub const AttestationEvent = struct {
         context_propose_update: ProposeUpdatePayload,
         context_propose_rename: ProposeRenamePayload,
         context_propose_delete: ProposeDeletePayload,
-        prompt_propose_create: ProposeCreatePayload,
-        prompt_propose_update: ProposeUpdatePayload,
-        prompt_propose_rename: ProposeRenamePayload,
-        prompt_propose_delete: ProposeDeletePayload,
+        rule_propose_create: ProposeCreatePayload,
+        rule_propose_update: ProposeUpdatePayload,
+        rule_propose_rename: ProposeRenamePayload,
+        rule_propose_delete: ProposeDeletePayload,
     };
 
     pub const UserPromptPayload = struct {
@@ -48,13 +48,13 @@ pub const AttestationEvent = struct {
     };
 
     pub const LoadPayload = struct {
-        prompt_id: []const u8,
-        prompt_hash: []const u8,
+        rule_id: []const u8,
+        rule_hash: []const u8,
     };
 
     pub const ReferPayload = struct {
-        prompt_id: []const u8,
-        prompt_hash: ?[]const u8 = null,
+        rule_id: []const u8,
+        rule_hash: ?[]const u8 = null,
         constraint_id: []const u8,
         reason: ?[]const u8 = null,
     };
@@ -99,10 +99,10 @@ pub fn payloadTypeTag(payload: AttestationEvent.Payload) []const u8 {
         .context_propose_update => "context_propose_update",
         .context_propose_rename => "context_propose_rename",
         .context_propose_delete => "context_propose_delete",
-        .prompt_propose_create => "prompt_propose_create",
-        .prompt_propose_update => "prompt_propose_update",
-        .prompt_propose_rename => "prompt_propose_rename",
-        .prompt_propose_delete => "prompt_propose_delete",
+        .rule_propose_create => "rule_propose_create",
+        .rule_propose_update => "rule_propose_update",
+        .rule_propose_rename => "rule_propose_rename",
+        .rule_propose_delete => "rule_propose_delete",
     };
 }
 
@@ -212,12 +212,12 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
             try writeOptionalString(allocator, &buf, "content_hash", p.content_hash);
         },
         .load => |p| {
-            try writeOptionalString(allocator, &buf, "prompt_id", p.prompt_id);
-            try writeOptionalString(allocator, &buf, "prompt_hash", p.prompt_hash);
+            try writeOptionalString(allocator, &buf, "rule_id", p.rule_id);
+            try writeOptionalString(allocator, &buf, "rule_hash", p.rule_hash);
         },
         .refer => |p| {
-            try writeOptionalString(allocator, &buf, "prompt_id", p.prompt_id);
-            try writeOptionalString(allocator, &buf, "prompt_hash", p.prompt_hash);
+            try writeOptionalString(allocator, &buf, "rule_id", p.rule_id);
+            try writeOptionalString(allocator, &buf, "rule_hash", p.rule_hash);
             try writeOptionalString(allocator, &buf, "constraint_id", p.constraint_id);
             try writeOptionalString(allocator, &buf, "reason", p.reason);
         },
@@ -242,18 +242,18 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
         .context_propose_delete => |p| {
             try writeOptionalString(allocator, &buf, "context_id", p.id);
         },
-        .prompt_propose_create => |p| {
+        .rule_propose_create => |p| {
             try writeOptionalString(allocator, &buf, "path", p.path);
         },
-        .prompt_propose_update => |p| {
-            try writeOptionalString(allocator, &buf, "prompt_id", p.id);
+        .rule_propose_update => |p| {
+            try writeOptionalString(allocator, &buf, "rule_id", p.id);
         },
-        .prompt_propose_rename => |p| {
-            try writeOptionalString(allocator, &buf, "prompt_id", p.id);
+        .rule_propose_rename => |p| {
+            try writeOptionalString(allocator, &buf, "rule_id", p.id);
             try writeOptionalString(allocator, &buf, "new_path", p.new_path);
         },
-        .prompt_propose_delete => |p| {
-            try writeOptionalString(allocator, &buf, "prompt_id", p.id);
+        .rule_propose_delete => |p| {
+            try writeOptionalString(allocator, &buf, "rule_id", p.id);
         },
     }
 
@@ -282,7 +282,7 @@ test "serializeAttestationEvent: refer event with all fields" {
         .ts = 1743753000000,
         .payload = .{
             .refer = .{
-                .prompt_id = "p-550e8400",
+                .rule_id = "p-550e8400",
                 .constraint_id = "c-2",
                 .reason = "applying style",
             },
@@ -295,7 +295,7 @@ test "serializeAttestationEvent: refer event with all fields" {
     try testing.expect(std.mem.indexOf(u8, line, "\"event_id\":3") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"type\":\"refer\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"timestamp\":1743753000000") != null);
-    try testing.expect(std.mem.indexOf(u8, line, "\"prompt_id\":\"p-550e8400\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"rule_id\":\"p-550e8400\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"constraint_id\":\"c-2\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"reason\":\"applying style\"") != null);
     try testing.expect(std.mem.endsWith(u8, line, "}\n"));
@@ -311,7 +311,7 @@ test "serializeAttestationEvent: setup omits payload fields" {
     };
     const line = try serializeAttestationEvent(testing.allocator, event);
     defer testing.allocator.free(line);
-    try testing.expect(std.mem.indexOf(u8, line, "\"prompt_id\"") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"rule_id\"") == null);
     try testing.expect(std.mem.indexOf(u8, line, "\"constraint_id\"") == null);
     try testing.expect(std.mem.indexOf(u8, line, "\"type\":\"setup\"") != null);
 }

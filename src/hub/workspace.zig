@@ -1,5 +1,5 @@
 //! Hub workspace endpoints. A workspace is a project's working environment: a subset of Library
-//! prompts plus its own context. These endpoints handle workspace CRUD and serve the manifest
+//! rules plus its own context. These endpoints handle workspace CRUD and serve the manifest
 //! that drives the client sync protocol.
 const std = @import("std");
 const httpz = @import("httpz");
@@ -206,7 +206,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         }
     }
 
-    const prompts = try collectManifestMap(req.arena, conn, "SELECT wp.prompt_id, p.path, p.content_hash, p.description FROM workspace_prompts wp JOIN prompts p ON p.prompt_id = wp.prompt_id WHERE wp.ws_id = $1", .{ws_id});
+    const rules = try collectManifestMap(req.arena, conn, "SELECT wp.rule_id, p.path, p.content_hash, p.description FROM workspace_rules wp JOIN rules p ON p.rule_id = wp.rule_id WHERE wp.ws_id = $1", .{ws_id});
 
     const context = try collectManifestMap(req.arena, conn, "SELECT context_id, path, content_hash, description FROM context_files WHERE ws_id = $1", .{ws_id});
 
@@ -218,16 +218,16 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         .ws_id = ws_id_val,
         .name = ws_name,
         .revision = revision,
-        .prompts = prompts,
+        .rules = rules,
         .context = context,
     }, .{});
 }
 
-const AddPromptRequest = struct {
-    prompt_id: []const u8,
+const AddRuleRequest = struct {
+    rule_id: []const u8,
 };
 
-pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleAddRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
@@ -237,7 +237,7 @@ pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
     };
 
-    const body = req.json(AddPromptRequest) catch {
+    const body = req.json(AddRuleRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
@@ -254,26 +254,26 @@ pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
 
     if (!try checkIfMatch(conn, req, res, ws_id)) return;
 
-    var prompt_row = conn.row(
-        "SELECT prompt_id FROM prompts WHERE prompt_id = $1",
-        .{body.prompt_id},
+    var rule_row = conn.row(
+        "SELECT rule_id FROM rules WHERE rule_id = $1",
+        .{body.rule_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        return apiError(res, 404, "NOT_FOUND", "prompt not found");
+        return apiError(res, 404, "NOT_FOUND", "rule not found");
     };
-    prompt_row.deinit() catch {};
+    rule_row.deinit() catch {};
 
     _ = conn.exec(
-        "INSERT INTO workspace_prompts (ws_id, prompt_id) VALUES ($1, $2)",
-        .{ ws_id, body.prompt_id },
+        "INSERT INTO workspace_rules (ws_id, rule_id) VALUES ($1, $2)",
+        .{ ws_id, body.rule_id },
     ) catch {
         if (conn.err) |pg_err| {
             if (std.mem.indexOf(u8, pg_err.message, "duplicate") != null) {
-                return apiError(res, 409, "CONFLICT", "prompt already in workspace");
+                return apiError(res, 409, "CONFLICT", "rule already in workspace");
             }
         }
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to add prompt");
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to add rule");
     };
 
     var rev_row = conn.row(
@@ -290,7 +290,7 @@ pub fn handleAddPrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     try res.json(.{ .revision = new_rev }, .{});
 }
 
-pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleRemoveRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
@@ -299,8 +299,8 @@ pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
     };
-    const prompt_id = req.param("prompt_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "prompt_id is required");
+    const rule_id = req.param("rule_id") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "rule_id is required");
     };
 
     const conn = ctx.pool.acquire() catch {
@@ -315,14 +315,14 @@ pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     if (!try checkIfMatch(conn, req, res, ws_id)) return;
 
     const deleted = conn.exec(
-        "DELETE FROM workspace_prompts WHERE ws_id = $1 AND prompt_id = $2",
-        .{ ws_id, prompt_id },
+        "DELETE FROM workspace_rules WHERE ws_id = $1 AND rule_id = $2",
+        .{ ws_id, rule_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
 
     if (deleted == null or deleted.? == 0) {
-        return apiError(res, 404, "NOT_FOUND", "prompt not in workspace");
+        return apiError(res, 404, "NOT_FOUND", "rule not in workspace");
     }
 
     var rev_row = conn.row(
@@ -341,7 +341,7 @@ pub fn handleRemovePrompt(ctx: *Server.Context, req: *httpz.Request, res: *httpz
 
 fn initFromBundle(conn: anytype, ws_id: []const u8, bundle_id: []const u8) void {
     var result = conn.query(
-        "SELECT prompt_id FROM bundle_prompts WHERE bundle_id = $1",
+        "SELECT rule_id FROM bundle_rules WHERE bundle_id = $1",
         .{bundle_id},
     ) catch return;
     defer result.deinit();
@@ -349,7 +349,7 @@ fn initFromBundle(conn: anytype, ws_id: []const u8, bundle_id: []const u8) void 
     while (result.next() catch null) |brow| {
         const pid = brow.get([]const u8, 0) catch continue;
         _ = conn.exec(
-            "INSERT INTO workspace_prompts (ws_id, prompt_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            "INSERT INTO workspace_rules (ws_id, rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
             .{ ws_id, pid },
         ) catch {};
     }
@@ -418,14 +418,14 @@ pub fn handleDelete(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         return apiError(res, 404, "NOT_FOUND", "workspace not found");
     }
 
-    // Cascade delete: comments, pr_files, prs, files, branches, members, prompt refs, then workspace
+    // Cascade delete: comments, pr_files, prs, files, branches, members, rule refs, then workspace
     _ = conn.exec("DELETE FROM context_pr_comments WHERE pr_id IN (SELECT pr_id FROM context_prs WHERE ws_id = $1)", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_pr_files WHERE pr_id IN (SELECT pr_id FROM context_prs WHERE ws_id = $1)", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_prs WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_files WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_branches WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM workspace_members WHERE ws_id = $1", .{ws_id}) catch {};
-    _ = conn.exec("DELETE FROM workspace_prompts WHERE ws_id = $1", .{ws_id}) catch {};
+    _ = conn.exec("DELETE FROM workspace_rules WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM workspaces WHERE ws_id = $1", .{ws_id}) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");
     };

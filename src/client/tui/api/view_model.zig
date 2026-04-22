@@ -4,12 +4,12 @@ const attestation_reader = @import("../attestation_reader.zig");
 const model = @import("model.zig");
 const state = @import("state.zig");
 
-pub fn toPromptEntries(
+pub fn toRuleEntries(
     alloc: std.mem.Allocator,
-    prompts: []const model.LibraryPrompt,
-) []const data.PromptEntry {
-    var list: std.ArrayList(data.PromptEntry) = .empty;
-    for (prompts) |p| {
+    rules: []const model.LibraryRule,
+) []const data.RuleEntry {
+    var list: std.ArrayList(data.RuleEntry) = .empty;
+    for (rules) |p| {
         const refer_str = formatCount(alloc, p.refer_count) catch "";
         list.append(alloc, .{
             .path = p.path,
@@ -40,7 +40,7 @@ pub fn toBundleEntries(
     for (bundles) |b| {
         list.append(alloc, .{
             .name = b.name,
-            .count = @intCast(@min(b.prompt_count, std.math.maxInt(u16))),
+            .count = @intCast(@min(b.rule_count, std.math.maxInt(u16))),
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch &.{};
@@ -48,8 +48,8 @@ pub fn toBundleEntries(
 
 pub fn toPrEntries(
     alloc: std.mem.Allocator,
-    prs: []const model.PromptPr,
-    prompt_path: []const u8,
+    prs: []const model.RulePr,
+    rule_path: []const u8,
     api_state: *state.ApiState,
 ) []const data.PullRequestEntry {
     var list: std.ArrayList(data.PullRequestEntry) = .empty;
@@ -79,7 +79,7 @@ pub fn toPrEntries(
 
         list.append(alloc, .{
             .id = pr.pr_id,
-            .prompt_name = prompt_path,
+            .rule_name = rule_path,
             .status = pr.status,
             .author = pr.author,
             .created = pr.created_at,
@@ -102,7 +102,7 @@ pub fn toPrEntries(
 pub fn analysisFromStats(
     alloc: std.mem.Allocator,
     stats: model.OrgStats,
-    library: ?[]const model.LibraryPrompt,
+    library: ?[]const model.LibraryRule,
     local: ?attestation_reader.LocalStats,
 ) data.AnalysisData {
     var trend: [30]u16 = .{0} ** 30;
@@ -123,15 +123,15 @@ pub fn analysisFromStats(
         refers_per_hour = @intCast(@min(@divTrunc(@max(last_day, 0), 24), std.math.maxInt(u16)));
     }
 
-    var prompts_list: std.ArrayList(data.AnalysisPrompt) = .empty;
-    for (stats.prompts) |ps| {
+    var rules_list: std.ArrayList(data.AnalysisRule) = .empty;
+    for (stats.rules) |ps| {
         const name = if (library) |lib| blk: {
             for (lib) |lp| {
-                if (std.mem.eql(u8, lp.prompt_id, ps.prompt_id))
+                if (std.mem.eql(u8, lp.rule_id, ps.rule_id))
                     break :blk lp.path;
             }
-            break :blk ps.prompt_id;
-        } else ps.prompt_id;
+            break :blk ps.rule_id;
+        } else ps.rule_id;
 
         const c_total: u8 = @intCast(@min(ps.active_constraint_count, 255));
         const c_idle: u8 = 0;
@@ -144,7 +144,7 @@ pub fn analysisFromStats(
             std.math.maxInt(u16),
         ));
 
-        prompts_list.append(alloc, .{
+        rules_list.append(alloc, .{
             .name = name,
             .constraint_count = c_total,
             .active_constraint_count = c_total,
@@ -161,12 +161,12 @@ pub fn analysisFromStats(
     }
 
     if (local) |l| {
-        const remapped_prompts: []const data.AnalysisPrompt = if (library) |lib| blk: {
-            var remapped: std.ArrayList(data.AnalysisPrompt) = .empty;
-            for (l.prompts) |p| {
+        const remapped_rules: []const data.AnalysisRule = if (library) |lib| blk: {
+            var remapped: std.ArrayList(data.AnalysisRule) = .empty;
+            for (l.rules) |p| {
                 var copy = p;
                 for (lib) |lp| {
-                    if (std.mem.eql(u8, lp.prompt_id, p.name)) {
+                    if (std.mem.eql(u8, lp.rule_id, p.name)) {
                         copy.name = lp.path;
                         break;
                     }
@@ -174,7 +174,7 @@ pub fn analysisFromStats(
                 remapped.append(alloc, copy) catch continue;
             }
             break :blk remapped.items;
-        } else l.prompts;
+        } else l.rules;
 
         var inputs_list: std.ArrayList(data.InputItem) = .empty;
         for (l.inputs) |iv| {
@@ -193,7 +193,7 @@ pub fn analysisFromStats(
             .today_delta_pct = 0,
             .last_event_minutes_ago = 0,
             .refer_trend = l.refer_trend,
-            .prompts = remapped_prompts,
+            .rules = remapped_rules,
             .members = toMemberStatss(alloc, stats.users, library),
             .models = &.{},
             .alerts = &.{},
@@ -210,7 +210,7 @@ pub fn analysisFromStats(
         .today_delta_pct = 0,
         .last_event_minutes_ago = 0,
         .refer_trend = trend,
-        .prompts = prompts_list.items,
+        .rules = rules_list.items,
         .members = toMemberStatss(alloc, stats.users, library),
         .models = &.{},
         .alerts = &.{},
@@ -243,13 +243,13 @@ fn trend30FromBuckets(source: []const i64) [30]u16 {
     return trend30;
 }
 
-test "toPromptEntries maps library prompts to view entries" {
+test "toRuleEntries maps library rules to view entries" {
     const alloc = std.testing.allocator;
-    const prompts = [_]model.LibraryPrompt{
-        .{ .prompt_id = "p1", .path = "rule/STYLE.md", .content_hash = "abc", .updated_at = "2025-01-01" },
-        .{ .prompt_id = "p2", .path = "workflow/COMMIT.md", .content_hash = "def", .updated_at = "2025-01-02", .refer_count = 1500 },
+    const rules = [_]model.LibraryRule{
+        .{ .rule_id = "p1", .path = "rule/STYLE.md", .content_hash = "abc", .updated_at = "2025-01-01" },
+        .{ .rule_id = "p2", .path = "workflow/COMMIT.md", .content_hash = "def", .updated_at = "2025-01-02", .refer_count = 1500 },
     };
-    const entries = toPromptEntries(alloc, &prompts);
+    const entries = toRuleEntries(alloc, &rules);
     defer {
         for (entries) |entry| alloc.free(entry.refer_count);
         alloc.free(entries);
@@ -266,7 +266,7 @@ test "toPromptEntries maps library prompts to view entries" {
 test "toBundleEntries maps bundle data to view entries" {
     const alloc = std.testing.allocator;
     const bundles = [_]model.BundleData{
-        .{ .name = "default", .description = "", .prompt_count = 5 },
+        .{ .name = "default", .description = "", .rule_count = 5 },
     };
     const entries = toBundleEntries(alloc, &bundles);
     defer alloc.free(entries);
@@ -307,26 +307,26 @@ test "trend30FromBuckets truncates long source to last 30" {
     try std.testing.expectEqual(@as(u16, 34), result[29]);
 }
 
-fn promptNameForId(library: ?[]const model.LibraryPrompt, prompt_id: []const u8) []const u8 {
+fn ruleNameForId(library: ?[]const model.LibraryRule, rule_id: []const u8) []const u8 {
     if (library) |lib| {
         for (lib) |lp| {
-            if (std.mem.eql(u8, lp.prompt_id, prompt_id)) return lp.path;
+            if (std.mem.eql(u8, lp.rule_id, rule_id)) return lp.path;
         }
     }
-    return prompt_id;
+    return rule_id;
 }
 
 fn toMemberStatss(
     alloc: std.mem.Allocator,
     members: []const model.UserStats,
-    library: ?[]const model.LibraryPrompt,
+    library: ?[]const model.LibraryRule,
 ) []const data.MemberStats {
     var list: std.ArrayList(data.MemberStats) = .empty;
     for (members) |m| {
-        var top_prompts: std.ArrayList(data.MemberPromptStat) = .empty;
-        for (m.top_prompts) |tp| {
-            top_prompts.append(alloc, .{
-                .name = promptNameForId(library, tp.prompt_id),
+        var top_rules: std.ArrayList(data.MemberRuleStat) = .empty;
+        for (m.top_rules) |tp| {
+            top_rules.append(alloc, .{
+                .name = ruleNameForId(library, tp.rule_id),
                 .refer_count = @intCast(@min(tp.refer_count, std.math.maxInt(u32))),
             }) catch continue;
         }
@@ -335,7 +335,7 @@ fn toMemberStatss(
             .refer_count = @intCast(@min(m.refer_count, std.math.maxInt(u32))),
             .active_days = @intCast(@min(m.active_days, 255)),
             .trend = trend30FromBuckets(m.trend),
-            .top_prompts = top_prompts.items,
+            .top_rules = top_rules.items,
             .models = &.{},
         }) catch continue;
     }

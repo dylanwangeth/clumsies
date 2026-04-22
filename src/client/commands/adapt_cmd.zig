@@ -107,9 +107,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
                 );
                 return;
             }
-            const prompt = try std.fmt.allocPrint(allocator, "A {s} adapter install is already active here. Apply an update?", .{pkg.display_name});
-            defer allocator.free(prompt);
-            is_update = try adapter.ui.promptYesNo(stdout, allocator, prompt, true);
+            const rule = try std.fmt.allocPrint(allocator, "A {s} adapter install is already active here. Apply an update?", .{pkg.display_name});
+            defer allocator.free(rule);
+            is_update = try adapter.ui.promptYesNo(stdout, allocator, rule, true);
             if (!is_update) {
                 try stdout.print("{s}{s}Cancelled.{s} No files were written.\n", .{ P, Color.dim, Color.reset });
                 return;
@@ -216,8 +216,8 @@ fn chooseScope(
         count += 1;
     }
 
-    const prompt = "Where should Clumsies be installed?";
-    const index = try adapter.ui.promptChoice(stdout, allocator, prompt, choices[0..count], 0);
+    const rule = "Where should Clumsies be installed?";
+    const index = try adapter.ui.promptChoice(stdout, allocator, rule, choices[0..count], 0);
 
     return if (workspace_target_root_opt != null and index == 0) .workspace else .user;
 }

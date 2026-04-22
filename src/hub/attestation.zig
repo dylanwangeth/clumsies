@@ -1,5 +1,5 @@
 //! Hub attestation endpoints. Ingests attestation events uploaded by clients (POST /api/attestations), stores them
-//! in PostgreSQL, and serves aggregated statistics: refer counts, signal ratios, per-prompt and
+//! in PostgreSQL, and serves aggregated statistics: refer counts, signal ratios, per-rule and
 //! per-user trends for the TUI dashboard.
 const std = @import("std");
 const httpz = @import("httpz");
@@ -8,13 +8,13 @@ const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("api_error.zig").send;
 const log = std.log.scoped(.attestation_stats);
-const OrgPromptStats = stats_api.OrgPromptStat;
+const OrgRuleStats = stats_api.OrgRuleStat;
 const OrgStatsResponse = stats_api.OrgStatsResponse;
 const OrgUserStats = stats_api.OrgUserStat;
 const TrendEntry = stats_api.TrendPoint;
 const TrendSeries = stats_api.TrendSeries;
-const UserTopPromptStat = stats_api.OrgUserTopPromptStat;
-const WorkspacePromptStat = stats_api.WorkspacePromptStat;
+const UserTopRuleStat = stats_api.OrgUserTopRuleStat;
+const WorkspaceRuleStat = stats_api.WorkspaceRuleStat;
 const WorkspaceStatsResponse = stats_api.WorkspaceStatsResponse;
 
 const AttestationEventInput = struct {
@@ -23,8 +23,8 @@ const AttestationEventInput = struct {
     ws_id: []const u8,
     type: []const u8,
     timestamp: i64,
-    prompt_id: ?[]const u8 = null,
-    prompt_hash: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
+    rule_hash: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
     reason: ?[]const u8 = null,
     content: ?[]const u8 = null,
@@ -107,50 +107,50 @@ fn setTrendBucket(series: []i64, age_days: i64, count: i64) void {
     series[idx] = count;
 }
 
-fn queryPromptTrendSeries(
+fn queryRuleTrendSeries(
     conn: anytype,
     arena: std.mem.Allocator,
     org_id: []const u8,
     max_days: u32,
 ) std.StringHashMap([]i64) {
-    var series_by_prompt = std.StringHashMap([]i64).init(arena);
+    var series_by_rule = std.StringHashMap([]i64).init(arena);
     const cutoff_ms = recentCutoffMs(max_days);
 
     var result = conn.query(
-        \\SELECT te.prompt_id,
+        \\SELECT te.rule_id,
         \\  floor(extract(epoch from (date_trunc('day', now()) - date_trunc('day', to_timestamp(te.timestamp / 1000)))) / 86400)::bigint as age_days,
         \\  count(*) as refer_count
         \\FROM attestation_events te
         \\JOIN workspaces w ON w.ws_id = te.ws_id
         \\WHERE w.org_id = $1::uuid
         \\  AND te.type = 'refer'
-        \\  AND te.prompt_id IS NOT NULL
+        \\  AND te.rule_id IS NOT NULL
         \\  AND te.timestamp >= $2
-        \\GROUP BY te.prompt_id, age_days
-        \\ORDER BY te.prompt_id, age_days
+        \\GROUP BY te.rule_id, age_days
+        \\ORDER BY te.rule_id, age_days
     , .{ org_id, cutoff_ms }) catch |err| {
-        log.err("prompt trend query failed: {}", .{err});
-        return series_by_prompt;
+        log.err("rule trend query failed: {}", .{err});
+        return series_by_rule;
     };
     defer result.deinit();
 
     while (result.next() catch null) |row| {
-        const prompt_id = row.get([]const u8, 0) catch continue;
+        const rule_id = row.get([]const u8, 0) catch continue;
         const age_days = row.get(i64, 1) catch continue;
         const refer_count = row.get(i64, 2) catch continue;
 
-        if (series_by_prompt.getPtr(prompt_id)) |series_ptr| {
+        if (series_by_rule.getPtr(rule_id)) |series_ptr| {
             setTrendBucket(series_ptr.*, age_days, refer_count);
             continue;
         }
 
         const series = zeroTrendSeries(arena, max_days);
-        const key = arena.dupe(u8, prompt_id) catch continue;
-        series_by_prompt.put(key, series) catch continue;
+        const key = arena.dupe(u8, rule_id) catch continue;
+        series_by_rule.put(key, series) catch continue;
         setTrendBucket(series, age_days, refer_count);
     }
 
-    return series_by_prompt;
+    return series_by_rule;
 }
 
 fn queryUserTrendSeries(
@@ -199,39 +199,39 @@ fn queryUserTrendSeries(
     return series_by_user;
 }
 
-fn queryUserTopPrompts(
+fn queryUserTopRules(
     conn: anytype,
     arena: std.mem.Allocator,
     org_id: []const u8,
-) std.StringHashMap([]const UserTopPromptStat) {
-    var lists = std.StringHashMap(std.ArrayList(UserTopPromptStat)).init(arena);
+) std.StringHashMap([]const UserTopRuleStat) {
+    var lists = std.StringHashMap(std.ArrayList(UserTopRuleStat)).init(arena);
 
     var result = conn.query(
-        \\SELECT te.user_id, te.prompt_id, count(*) as refer_count
+        \\SELECT te.user_id, te.rule_id, count(*) as refer_count
         \\FROM attestation_events te
         \\JOIN workspaces w ON w.ws_id = te.ws_id
         \\WHERE w.org_id = $1::uuid
         \\  AND te.type = 'refer'
         \\  AND te.user_id IS NOT NULL
-        \\  AND te.prompt_id IS NOT NULL
-        \\GROUP BY te.user_id, te.prompt_id
-        \\ORDER BY te.user_id, refer_count DESC, te.prompt_id
+        \\  AND te.rule_id IS NOT NULL
+        \\GROUP BY te.user_id, te.rule_id
+        \\ORDER BY te.user_id, refer_count DESC, te.rule_id
     , .{org_id}) catch |err| {
-        log.err("user top prompts query failed: {}", .{err});
-        const empty = std.StringHashMap([]const UserTopPromptStat).init(arena);
+        log.err("user top rules query failed: {}", .{err});
+        const empty = std.StringHashMap([]const UserTopRuleStat).init(arena);
         return empty;
     };
     defer result.deinit();
 
     while (result.next() catch null) |row| {
         const user_id = row.get([]const u8, 0) catch continue;
-        const prompt_id = row.get([]const u8, 1) catch continue;
+        const rule_id = row.get([]const u8, 1) catch continue;
         const refer_count = row.get(i64, 2) catch continue;
 
         if (lists.getPtr(user_id)) |list_ptr| {
             if (list_ptr.items.len >= 3) continue;
             list_ptr.append(arena, .{
-                .prompt_id = arena.dupe(u8, prompt_id) catch continue,
+                .rule_id = arena.dupe(u8, rule_id) catch continue,
                 .refer_count = refer_count,
             }) catch continue;
             continue;
@@ -241,12 +241,12 @@ fn queryUserTopPrompts(
         lists.put(key, .empty) catch continue;
         const list_ptr = lists.getPtr(user_id) orelse continue;
         list_ptr.append(arena, .{
-            .prompt_id = arena.dupe(u8, prompt_id) catch continue,
+            .rule_id = arena.dupe(u8, rule_id) catch continue,
             .refer_count = refer_count,
         }) catch continue;
     }
 
-    var frozen = std.StringHashMap([]const UserTopPromptStat).init(arena);
+    var frozen = std.StringHashMap([]const UserTopRuleStat).init(arena);
     var it = lists.iterator();
     while (it.next()) |entry| {
         frozen.put(entry.key_ptr.*, entry.value_ptr.items) catch continue;
@@ -290,9 +290,9 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
             continue;
         }
 
-        // Validate prompt_id exists if provided
-        if (event.prompt_id) |pid| {
-            var check = conn.row("SELECT 1 FROM prompts WHERE prompt_id = $1", .{pid}) catch {
+        // Validate rule_id exists if provided
+        if (event.rule_id) |pid| {
+            var check = conn.row("SELECT 1 FROM rules WHERE rule_id = $1", .{pid}) catch {
                 deduplicated += 1;
                 continue;
             };
@@ -305,13 +305,13 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         }
         const rows_affected = conn.exec(
             \\INSERT INTO attestation_events (user_id, ws_id, session_id, event_id, type, timestamp,
-            \\  prompt_id, prompt_hash, constraint_id, reason, content, content_hash)
+            \\  rule_id, rule_hash, constraint_id, reason, content, content_hash)
             \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
         , .{
             user.user_id,             event.ws_id,       event.session_id,
             @as(i64, event.event_id), event.type,        @as(i64, event.timestamp),
-            event.prompt_id,          event.prompt_hash, event.constraint_id,
+            event.rule_id,          event.rule_hash, event.constraint_id,
             event.reason,             event.content,     event.content_hash,
         }) catch {
             deduplicated += 1;
@@ -362,15 +362,15 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         \\SELECT
         \\  (SELECT count(*) FROM attestation_events te JOIN workspaces w ON w.ws_id = te.ws_id WHERE w.org_id = $1::uuid AND te.type = 'refer') as refer_count,
         \\  (SELECT count(*) FROM workspaces WHERE org_id = $1::uuid) as ws_count,
-        \\  (SELECT count(*) FROM prompts WHERE org_id = $1::uuid) as prompt_count
+        \\  (SELECT count(*) FROM rules WHERE org_id = $1::uuid) as rule_count
     , .{user.org_id}) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
         try res.json(OrgStatsResponse{
             .total_refer_count = 0,
             .workspace_count = 0,
-            .prompt_count = 0,
-            .prompts = &.{},
+            .rule_count = 0,
+            .rules = &.{},
             .users = &.{},
             .trend = TrendSeries{ .period = period, .data = &.{} },
         }, .{});
@@ -378,67 +378,67 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     };
     const total_refer_count = try row.get(i64, 0);
     const workspace_count = try row.get(i64, 1);
-    const prompt_count = try row.get(i64, 2);
+    const rule_count = try row.get(i64, 2);
     row.deinit() catch {};
 
-    const prompt_trends = queryPromptTrendSeries(conn, req.arena, user.org_id, max_days);
+    const rule_trends = queryRuleTrendSeries(conn, req.arena, user.org_id, max_days);
     const user_trends = queryUserTrendSeries(conn, req.arena, user.org_id, max_days);
-    const user_top_prompts = queryUserTopPrompts(conn, req.arena, user.org_id);
+    const user_top_rules = queryUserTopRules(conn, req.arena, user.org_id);
 
-    // Per-prompt aggregated stats via LEFT JOINs
-    var prompt_list: std.ArrayList(OrgPromptStats) = .empty;
-    var prompt_result = conn.query(
-        \\SELECT p.prompt_id,
+    // Per-rule aggregated stats via LEFT JOINs
+    var rule_list: std.ArrayList(OrgRuleStats) = .empty;
+    var rule_result = conn.query(
+        \\SELECT p.rule_id,
         \\  COALESCE(te_stats.refer_count, 0),
         \\  COALESCE(te_stats.active_constraints, 0),
         \\  COALESCE(ws_stats.workspace_count, 0),
         \\  COALESCE(bp_stats.bundle_count, 0),
         \\  COALESCE(pr_stats.open_pr_count, 0),
         \\  te_stats.last_referred_at
-        \\FROM prompts p
+        \\FROM rules p
         \\LEFT JOIN (
-        \\  SELECT te.prompt_id, count(*) as refer_count,
+        \\  SELECT te.rule_id, count(*) as refer_count,
         \\    count(DISTINCT te.constraint_id) as active_constraints,
         \\    max(te.timestamp) as last_referred_at
         \\  FROM attestation_events te JOIN workspaces w ON w.ws_id = te.ws_id
-        \\  WHERE w.org_id = $1::uuid AND te.type = 'refer' AND te.prompt_id IS NOT NULL
-        \\  GROUP BY te.prompt_id
-        \\) te_stats ON te_stats.prompt_id = p.prompt_id
+        \\  WHERE w.org_id = $1::uuid AND te.type = 'refer' AND te.rule_id IS NOT NULL
+        \\  GROUP BY te.rule_id
+        \\) te_stats ON te_stats.rule_id = p.rule_id
         \\LEFT JOIN (
-        \\  SELECT wp.prompt_id, count(DISTINCT wp.ws_id) as workspace_count
-        \\  FROM workspace_prompts wp JOIN workspaces w ON w.ws_id = wp.ws_id
+        \\  SELECT wp.rule_id, count(DISTINCT wp.ws_id) as workspace_count
+        \\  FROM workspace_rules wp JOIN workspaces w ON w.ws_id = wp.ws_id
         \\  WHERE w.org_id = $1::uuid
-        \\  GROUP BY wp.prompt_id
-        \\) ws_stats ON ws_stats.prompt_id = p.prompt_id
+        \\  GROUP BY wp.rule_id
+        \\) ws_stats ON ws_stats.rule_id = p.rule_id
         \\LEFT JOIN (
-        \\  SELECT bp.prompt_id, count(*) as bundle_count
-        \\  FROM bundle_prompts bp JOIN bundles b ON b.bundle_id = bp.bundle_id
+        \\  SELECT bp.rule_id, count(*) as bundle_count
+        \\  FROM bundle_rules bp JOIN bundles b ON b.bundle_id = bp.bundle_id
         \\  WHERE b.org_id = $1::uuid
-        \\  GROUP BY bp.prompt_id
-        \\) bp_stats ON bp_stats.prompt_id = p.prompt_id
+        \\  GROUP BY bp.rule_id
+        \\) bp_stats ON bp_stats.rule_id = p.rule_id
         \\LEFT JOIN (
-        \\  SELECT op.prompt_id, count(DISTINCT op.pr_id) as open_pr_count
-        \\  FROM prompt_pr_operations op
-        \\  JOIN prompt_prs pr ON pr.pr_id = op.pr_id
-        \\  WHERE pr.org_id = $1::uuid AND pr.status = 'open' AND op.prompt_id IS NOT NULL
-        \\  GROUP BY op.prompt_id
-        \\) pr_stats ON pr_stats.prompt_id = p.prompt_id
+        \\  SELECT op.rule_id, count(DISTINCT op.pr_id) as open_pr_count
+        \\  FROM rule_pr_operations op
+        \\  JOIN rule_prs pr ON pr.pr_id = op.pr_id
+        \\  WHERE pr.org_id = $1::uuid AND pr.status = 'open' AND op.rule_id IS NOT NULL
+        \\  GROUP BY op.rule_id
+        \\) pr_stats ON pr_stats.rule_id = p.rule_id
         \\WHERE p.org_id = $1::uuid
         \\ORDER BY COALESCE(te_stats.refer_count, 0) DESC
     , .{user.org_id}) catch |err| blk: {
-        log.err("org stats prompt query failed: {}", .{err});
+        log.err("org stats rule query failed: {}", .{err});
         break :blk null;
     };
-    if (prompt_result) |*pr| {
+    if (rule_result) |*pr| {
         defer pr.*.deinit();
         while (true) {
             const prow = pr.*.next() catch |err| {
-                log.err("org stats prompt query next failed: {}", .{err});
+                log.err("org stats rule query next failed: {}", .{err});
                 break;
             } orelse break;
-            prompt_list.append(req.arena, .{
-                .prompt_id = req.arena.dupe(u8, prow.get([]const u8, 0) catch |err| {
-                    log.err("org stats prompt_id get failed: {}", .{err});
+            rule_list.append(req.arena, .{
+                .rule_id = req.arena.dupe(u8, prow.get([]const u8, 0) catch |err| {
+                    log.err("org stats rule_id get failed: {}", .{err});
                     continue;
                 }) catch continue,
                 .refer_count = prow.get(i64, 1) catch |err| {
@@ -465,7 +465,7 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
                     log.err("org stats last_referred_at get failed: {}", .{err});
                     break :blk null;
                 },
-                .trend = if (prompt_trends.get(prow.get([]const u8, 0) catch "")) |trend| trend else zeroTrendSeries(req.arena, max_days),
+                .trend = if (rule_trends.get(prow.get([]const u8, 0) catch "")) |trend| trend else zeroTrendSeries(req.arena, max_days),
             }) catch continue;
         }
     }
@@ -526,7 +526,7 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
                     break :blk null;
                 },
                 .trend = if (user_trends.get(user_id)) |trend| trend else zeroTrendSeries(req.arena, max_days),
-                .top_prompts = if (user_top_prompts.get(user_id)) |tops| tops else &.{},
+                .top_rules = if (user_top_rules.get(user_id)) |tops| tops else &.{},
             }) catch continue;
         }
     }
@@ -542,8 +542,8 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     try res.json(OrgStatsResponse{
         .total_refer_count = total_refer_count,
         .workspace_count = workspace_count,
-        .prompt_count = prompt_count,
-        .prompts = prompt_list.items,
+        .rule_count = rule_count,
+        .rules = rule_list.items,
         .users = user_list.items,
         .trend = TrendSeries{ .period = period, .data = trend_data },
     }, .{});
@@ -591,7 +591,7 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
             .ws_id = ws_id,
             .total_refer_count = 0,
             .constraint_coverage = 0,
-            .prompts = &.{},
+            .rules = &.{},
             .trend = TrendSeries{ .period = period, .data = &.{} },
         }, .{});
         return;
@@ -599,12 +599,12 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
     const total_refer_count = try row.get(i64, 0);
     row.deinit() catch {};
 
-    // Query constraint coverage: fraction of workspace prompts that have been referred
+    // Query constraint coverage: fraction of workspace rules that have been referred
     var coverage: f64 = 0.0;
     var cov_row = conn.row(
-        \\SELECT count(DISTINCT te.prompt_id)::float / GREATEST(count(DISTINCT wp.prompt_id), 1)
-        \\FROM workspace_prompts wp
-        \\LEFT JOIN attestation_events te ON te.prompt_id = wp.prompt_id AND te.ws_id = wp.ws_id AND te.type = 'refer'
+        \\SELECT count(DISTINCT te.rule_id)::float / GREATEST(count(DISTINCT wp.rule_id), 1)
+        \\FROM workspace_rules wp
+        \\LEFT JOIN attestation_events te ON te.rule_id = wp.rule_id AND te.ws_id = wp.ws_id AND te.type = 'refer'
         \\WHERE wp.ws_id = $1
     , .{ws_id}) catch null;
     if (cov_row != null) {
@@ -612,26 +612,26 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
         cov_row.?.deinit() catch {};
     }
 
-    // Per-prompt refer counts
-    var prompt_list: std.ArrayList(WorkspacePromptStat) = .empty;
+    // Per-rule refer counts
+    var rule_list: std.ArrayList(WorkspaceRuleStat) = .empty;
 
-    var prompt_result = conn.query(
-        "SELECT prompt_id, count(*) FROM attestation_events WHERE ws_id = $1 AND type = 'refer' AND prompt_id IS NOT NULL GROUP BY prompt_id ORDER BY count(*) DESC",
+    var rule_result = conn.query(
+        "SELECT rule_id, count(*) FROM attestation_events WHERE ws_id = $1 AND type = 'refer' AND rule_id IS NOT NULL GROUP BY rule_id ORDER BY count(*) DESC",
         .{ws_id},
     ) catch |err| blk: {
-        log.err("workspace stats prompt query failed: {}", .{err});
+        log.err("workspace stats rule query failed: {}", .{err});
         break :blk null;
     };
-    if (prompt_result) |*pr| {
+    if (rule_result) |*pr| {
         defer pr.*.deinit();
         while (true) {
             const prow = pr.*.next() catch |err| {
-                log.err("workspace stats prompt query next failed: {}", .{err});
+                log.err("workspace stats rule query next failed: {}", .{err});
                 break;
             } orelse break;
-            prompt_list.append(req.arena, .{
-                .prompt_id = req.arena.dupe(u8, prow.get([]const u8, 0) catch |err| {
-                    log.err("workspace stats prompt_id get failed: {}", .{err});
+            rule_list.append(req.arena, .{
+                .rule_id = req.arena.dupe(u8, prow.get([]const u8, 0) catch |err| {
+                    log.err("workspace stats rule_id get failed: {}", .{err});
                     continue;
                 }) catch continue,
                 .refer_count = prow.get(i64, 1) catch |err| {
@@ -647,19 +647,19 @@ pub fn handleWorkspaceStats(ctx: *Server.Context, req: *httpz.Request, res: *htt
         .ws_id = ws_id,
         .total_refer_count = total_refer_count,
         .constraint_coverage = coverage,
-        .prompts = prompt_list.items,
+        .rules = rule_list.items,
         .trend = TrendSeries{ .period = period, .data = trend_data },
     }, .{});
 }
 
-pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+pub fn handleRuleStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
     if (!auth.requireScope(user, "stats:read", res)) return;
 
-    const prompt_id = req.param("prompt_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "prompt_id is required");
+    const rule_id = req.param("rule_id") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "rule_id is required");
     };
 
     const qs = req.query() catch {
@@ -685,12 +685,12 @@ pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer conn.release();
 
     var row = conn.row(
-        "SELECT count(*) FROM attestation_events WHERE prompt_id = $1 AND type = 'refer'",
-        .{prompt_id},
+        "SELECT count(*) FROM attestation_events WHERE rule_id = $1 AND type = 'refer'",
+        .{rule_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        try res.json(.{ .prompt_id = prompt_id, .total_refer_count = @as(i64, 0), .constraints = @as([]const ConstraintStat, &.{}), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
+        try res.json(.{ .rule_id = rule_id, .total_refer_count = @as(i64, 0), .constraints = @as([]const ConstraintStat, &.{}), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
         return;
     };
     const total_refer_count = try row.get(i64, 0);
@@ -698,10 +698,10 @@ pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 
     // Query per-constraint breakdown
     var constraint_result = conn.query(
-        "SELECT constraint_id, count(*) as cnt FROM attestation_events WHERE prompt_id = $1 AND type = 'refer' AND constraint_id IS NOT NULL GROUP BY constraint_id ORDER BY cnt DESC",
-        .{prompt_id},
+        "SELECT constraint_id, count(*) as cnt FROM attestation_events WHERE rule_id = $1 AND type = 'refer' AND constraint_id IS NOT NULL GROUP BY constraint_id ORDER BY cnt DESC",
+        .{rule_id},
     ) catch {
-        try res.json(.{ .prompt_id = prompt_id, .total_refer_count = total_refer_count, .constraints = @as([]const ConstraintStat, &.{}), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
+        try res.json(.{ .rule_id = rule_id, .total_refer_count = total_refer_count, .constraints = @as([]const ConstraintStat, &.{}), .trend = .{ .period = period, .data = @as([]const TrendEntry, &.{}) } }, .{});
         return;
     };
     defer constraint_result.deinit();
@@ -714,10 +714,10 @@ pub fn handlePromptStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         }) catch continue;
     }
 
-    const trend_data = queryTrend(conn, req.arena, sql_trunc, "prompt_id = $1", .{prompt_id}, max_days);
+    const trend_data = queryTrend(conn, req.arena, sql_trunc, "rule_id = $1", .{rule_id}, max_days);
 
     try res.json(.{
-        .prompt_id = prompt_id,
+        .rule_id = rule_id,
         .total_refer_count = total_refer_count,
         .constraints = constraints.items,
         .trend = .{ .period = period, .data = trend_data },

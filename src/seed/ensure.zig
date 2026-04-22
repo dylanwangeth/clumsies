@@ -44,12 +44,12 @@ fn fixturesHealthy(conn: *pg.Conn) !bool {
         if (!try userHealthy(conn, user)) return false;
     }
 
-    for (data.PROMPTS) |prompt| {
+    for (data.PROMPTS) |rule| {
         if (!try stringColumnMatches(
             conn,
-            "SELECT path FROM prompts WHERE prompt_id = $1",
-            .{prompt.id},
-            prompt.path,
+            "SELECT path FROM rules WHERE rule_id = $1",
+            .{rule.id},
+            rule.path,
         )) return false;
     }
 
@@ -73,8 +73,8 @@ fn fixturesHealthy(conn: *pg.Conn) !bool {
     for (data.WORKSPACE_PROMPTS) |binding| {
         if (!try exists(
             conn,
-            "SELECT 1 FROM workspace_prompts WHERE ws_id = $1 AND prompt_id = $2",
-            .{ binding.ws_id, binding.prompt_id },
+            "SELECT 1 FROM workspace_rules WHERE ws_id = $1 AND rule_id = $2",
+            .{ binding.ws_id, binding.rule_id },
         )) return false;
     }
 

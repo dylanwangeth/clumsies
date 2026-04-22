@@ -1,7 +1,7 @@
 // View model types for TUI display, transformed from Hub API responses.
 const std = @import("std");
 
-pub const PromptEntry = struct {
+pub const RuleEntry = struct {
     path: []const u8,
     kind: []const u8,
     refer_count: []const u8,
@@ -39,7 +39,7 @@ pub const ActiveSessionView = struct {
 
 pub const PullRequestEntry = struct {
     id: []const u8,
-    prompt_name: []const u8,
+    rule_name: []const u8,
     status: []const u8,
     author: []const u8,
     created: []const u8,
@@ -63,7 +63,7 @@ pub const AccessLevel = enum {
 
 pub const WorkspaceEntry = struct {
     name: []const u8,
-    prompts: u8,
+    rules: u8,
     contexts: u8,
     local_rev: u16,
     remote_rev: u16,
@@ -80,12 +80,12 @@ pub const ConstraintStat = struct {
     idle_days: ?u16,
 };
 
-pub const MemberPromptStat = struct {
+pub const MemberRuleStat = struct {
     name: []const u8,
     refer_count: u32,
 };
 
-pub const AnalysisPrompt = struct {
+pub const AnalysisRule = struct {
     name: []const u8,
     constraint_count: u8,
     active_constraint_count: u8,
@@ -105,7 +105,7 @@ pub const MemberStats = struct {
     refer_count: u32,
     active_days: u8,
     trend: [30]u16,
-    top_prompts: []const MemberPromptStat,
+    top_rules: []const MemberRuleStat,
     models: []const ModelStats,
 };
 
@@ -122,7 +122,7 @@ pub const AlertLevel = enum {
 };
 
 pub const AnalysisAlert = struct {
-    prompt_name: []const u8,
+    rule_name: []const u8,
     level: AlertLevel,
     message: []const u8,
 };
@@ -136,7 +136,7 @@ pub const AnalysisData = struct {
     today_delta_pct: i8 = 0,
     last_event_minutes_ago: u16 = 0,
     refer_trend: [30]u16 = .{0} ** 30,
-    prompts: []const AnalysisPrompt = &.{},
+    rules: []const AnalysisRule = &.{},
     members: []const MemberStats = &.{},
     models: []const ModelStats = &.{},
     alerts: []const AnalysisAlert = &.{},
@@ -157,7 +157,7 @@ pub const ContextFile = struct {
     branch_diff: []const []const u8,
 };
 
-pub const WsPromptEntry = struct {
+pub const WsRuleEntry = struct {
     name: []const u8,
     kind: []const u8,
     hash: []const u8,
@@ -199,7 +199,7 @@ pub const TokenInfo = struct {
 
 // Token scope definitions
 pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
-    .{ .name = "library:read", .description = "Read prompts and bundles" },
+    .{ .name = "library:read", .description = "Read rules and bundles" },
     .{ .name = "library:write", .description = "Create pull requests" },
     .{ .name = "bundle:write", .description = "Bundle CRUD" },
     .{ .name = "workspace:read", .description = "Read workspace manifest/files" },
@@ -215,7 +215,7 @@ pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
 
 // Derives kind short label from path prefix. Rule is the default kind;
 // workflow/ is the only explicit prefix. Reserved top-level paths (META_PROMPT.md,
-// PIN.md) produce an empty label since they are not searchable prompts.
+// PIN.md) produce an empty label since they are not searchable rules.
 pub fn kindFromPath(path: []const u8) []const u8 {
     if (std.mem.eql(u8, path, "META_PROMPT.md")) return "";
     if (std.mem.eql(u8, path, "PIN.md")) return "";
