@@ -38,8 +38,37 @@ pub fn migrate(pool: *Pool) !void {
     };
 }
 
-/// Extract a short description from markdown content: the first paragraph
-/// after the initial heading, skipping `---` separators and blank lines.
+pub const ContentFormatError = error{MissingHeading, MissingDescription, MissingSection};
+
+/// Validate that markdown content follows the required structure:
+/// H1 title, description paragraph(s) between H1 and first H2, at least one H2 section.
+pub fn validateContentFormat(content: []const u8) ContentFormatError!void {
+    var lines = std.mem.splitSequence(u8, content, "\n");
+    var found_heading = false;
+    var found_description = false;
+    var found_section = false;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (std.mem.eql(u8, trimmed, "---")) continue;
+        if (trimmed.len >= 2 and trimmed[0] == '#' and trimmed[1] == '#') {
+            found_section = true;
+            break;
+        }
+        if (!found_heading) {
+            if (trimmed[0] != '#') return error.MissingHeading;
+            found_heading = true;
+        } else {
+            found_description = true;
+        }
+    }
+    if (!found_heading) return error.MissingHeading;
+    if (!found_description) return error.MissingDescription;
+    if (!found_section) return error.MissingSection;
+}
+
+/// Extract the description from markdown content: all text between the H1
+/// heading and the first H2 section, trimmed of leading/trailing whitespace.
 pub fn extractDescription(content: []const u8) []const u8 {
     var lines = std.mem.splitSequence(u8, content, "\n");
     var past_heading = false;
@@ -56,11 +85,12 @@ pub fn extractDescription(content: []const u8) []const u8 {
             continue;
         }
 
+        if (trimmed.len >= 2 and trimmed[0] == '#' and trimmed[1] == '#') break;
+        if (std.mem.eql(u8, trimmed, "---")) continue;
         if (trimmed.len == 0) {
-            if (start > 0 and end > start) break;
+            if (start > 0 and end > start) continue;
             continue;
         }
-        if (std.mem.eql(u8, trimmed, "---")) continue;
 
         if (start == 0) {
             start = @intFromPtr(line.ptr) - @intFromPtr(content.ptr);
