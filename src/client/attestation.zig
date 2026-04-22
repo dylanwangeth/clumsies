@@ -199,7 +199,7 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
     defer allocator.free(esc_type);
 
     try buf.writer(allocator).print(
-        "{{\"ws_id\":\"{s}\",\"session_id\":\"{s}\",\"event_id\":{d},\"ts\":{d},\"type\":\"{s}\"",
+        "{{\"ws_id\":\"{s}\",\"session_id\":\"{s}\",\"event_id\":{d},\"timestamp\":{d},\"type\":\"{s}\"",
         .{ esc_ws, esc_session, event.event_id, event.ts, esc_type },
     );
 
