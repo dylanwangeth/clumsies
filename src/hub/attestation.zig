@@ -309,10 +309,10 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
             \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
         , .{
-            user.user_id,             event.ws_id,       event.session_id,
-            @as(i64, event.event_id), event.type,        @as(i64, event.timestamp),
-            event.rule_id,          event.rule_hash, event.constraint_id,
-            event.reason,             event.content,     event.content_hash,
+            user.user_id,             event.ws_id,     event.session_id,
+            @as(i64, event.event_id), event.type,      @as(i64, event.timestamp),
+            event.rule_id,            event.rule_hash, event.constraint_id,
+            event.reason,             event.content,   event.content_hash,
         }) catch {
             deduplicated += 1;
             continue;
