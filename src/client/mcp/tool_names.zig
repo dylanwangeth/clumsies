@@ -1,4 +1,4 @@
-//! MCP tool name constants (memory.setup/search/load/refer/submit,
+//! MCP tool name constants (memory.setup/search/load/refer/submit/reject,
 //! context.propose_*/prompt.propose_*). Shared by tools.zig (dispatch),
 //! tool_result.zig (refer reminder text), and server.zig (instruction string)
 //! to keep tool identity consistent across the protocol.
@@ -7,6 +7,7 @@ pub const search = "memory.search";
 pub const load = "memory.load";
 pub const refer = "memory.refer";
 pub const submit = "memory.submit";
+pub const reject = "memory.reject";
 
 pub const context_propose_create = "context.propose_create";
 pub const context_propose_update = "context.propose_update";

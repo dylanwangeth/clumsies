@@ -80,6 +80,24 @@ pub fn renderRuntimeAssets(
         .file_mode = 0o755,
         .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_stop_refer_check_sh),
     });
+    try assets.append(allocator, .{
+        .resource_id = "codex.skills.search",
+        .resource_kind = "plain_file",
+        .relative_path = try scopedRelativePath(allocator, "skills/search/SKILL.md"),
+        .ownership = "exclusive",
+        .label = "Codex search skill",
+        .file_mode = 0o644,
+        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_skill_search),
+    });
+    try assets.append(allocator, .{
+        .resource_id = "codex.skills.ntmd",
+        .resource_kind = "plain_file",
+        .relative_path = try scopedRelativePath(allocator, "skills/ntmd/SKILL.md"),
+        .ownership = "exclusive",
+        .label = "Codex ntmd skill",
+        .file_mode = 0o644,
+        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_skill_ntmd),
+    });
 
     if (scope == .workspace) {
         const workspace_root = workspaceRootFromAdapterRoot(target_root);

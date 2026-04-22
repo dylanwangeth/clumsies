@@ -32,6 +32,10 @@ const submit_schema =
     "{\"name\":\"" ++ tool_names.submit ++ "\",\"title\":\"Submit\",\"description\":\"Submit your turn summary. Call this before finishing to close the current turn.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"],\"additionalProperties\":false}}";
 
+const reject_schema =
+    "{\"name\":\"" ++ tool_names.reject ++ "\",\"title\":\"Reject\",\"description\":\"Mark the current turn as unsatisfactory. Call when the user indicates the output did not follow loaded rules.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
+
 const propose_base_props = "\"path\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
 const propose_id_ctx = "\"context_id\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
 const propose_id_prompt = "\"prompt_id\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
@@ -85,6 +89,7 @@ pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
             load_schema ++ "," ++
             refer_schema ++ "," ++
             submit_schema ++ "," ++
+            reject_schema ++ "," ++
             context_propose_create_schema ++ "," ++
             context_propose_update_schema ++ "," ++
             context_propose_rename_schema ++ "," ++
@@ -141,6 +146,9 @@ pub fn handleCall(
     }
     if (std.mem.eql(u8, name, tool_names.submit)) {
         return try handleSubmit(allocator, session, args_obj);
+    }
+    if (std.mem.eql(u8, name, tool_names.reject)) {
+        return try handleReject(allocator, session, args_obj);
     }
 
     // Context propose operations
@@ -434,6 +442,26 @@ fn handleSubmit(
     session.recordEvent(allocator, .{
         .agent_report = .{
             .summary = summary,
+        },
+    });
+
+    const ok_json = "{\"ok\":true}";
+    return try tool_result.buildSuccessResult(allocator, ok_json);
+}
+
+fn handleReject(
+    allocator: std.mem.Allocator,
+    session: *session_mod.Session,
+    args: std.json.ObjectMap,
+) ![]u8 {
+    const reason: ?[]const u8 = if (args.get("reason")) |value| switch (value) {
+        .string => |s| s,
+        else => return try tool_result.buildErrorResult(allocator, "reason must be a string"),
+    } else null;
+
+    session.recordEvent(allocator, .{
+        .reject = .{
+            .reason = reason,
         },
     });
 
