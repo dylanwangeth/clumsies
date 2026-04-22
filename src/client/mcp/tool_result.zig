@@ -115,7 +115,13 @@ fn appendPromptMetadata(
     } else {
         try buf.appendSlice(allocator, "null");
     }
-    try buf.writer(allocator).print(",\"hash\":\"{s}\"}}", .{item.hash});
+    try buf.writer(allocator).print(",\"hash\":\"{s}\"", .{item.hash});
+    if (item.description) |desc| {
+        const esc_desc = try encoding.jsonEscapeAlloc(allocator, desc);
+        defer allocator.free(esc_desc);
+        try buf.writer(allocator).print(",\"description\":\"{s}\"", .{esc_desc});
+    }
+    try buf.appendSlice(allocator, "}");
 }
 
 fn appendLoadedPrompt(

@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 pub const ManifestEntry = struct {
     path: []const u8,
     hash: []const u8,
+    description: []const u8 = "",
 };
 
 pub const ManifestItem = struct {
