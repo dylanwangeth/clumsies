@@ -33,7 +33,7 @@ pub fn runWithRoot(
     };
     defer flushOnExit(allocator, &state);
 
-    var stdin_buffer: [4096]u8 = undefined;
+    var stdin_buffer: [1 << 20]u8 = undefined;
     var stdin_reader = std.fs.File.Reader.init(std.fs.File.stdin(), &stdin_buffer);
     const reader = &stdin_reader.interface;
 
