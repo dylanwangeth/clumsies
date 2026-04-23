@@ -33,13 +33,21 @@ pub fn runWithRoot(
     };
     defer flushOnExit(allocator, &state);
 
-    var stdin_buffer: [1 << 20]u8 = undefined;
-    var stdin_reader = std.fs.File.Reader.init(std.fs.File.stdin(), &stdin_buffer);
+    const stdin_buffer = try allocator.alloc(u8, protocol.MAX_MESSAGE_SIZE);
+    defer allocator.free(stdin_buffer);
+    var stdin_reader = std.fs.File.Reader.init(std.fs.File.stdin(), stdin_buffer);
     const reader = &stdin_reader.interface;
 
     while (true) {
         const raw_line = reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
             error.EndOfStream => break,
+            error.StreamTooLong => {
+                const resp = try protocol.buildErrorAlloc(allocator, null, .parse_error, "message exceeds MAX_MESSAGE_SIZE");
+                try stdout.writeAll(resp);
+                try stdout.flush();
+                allocator.free(resp);
+                continue;
+            },
             else => return err,
         };
         const line = std.mem.trim(u8, raw_line, " \t\r");
