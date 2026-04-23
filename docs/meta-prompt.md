@@ -18,7 +18,7 @@ That path matters because the file is part of the workspace cache, not a random 
 
 The current file establishes four ideas.
 
-First, rules and workflows are not supposed to be discovered by crawling local files. The agent is supposed to use `memory.search` and `memory.load`.
+First, rules and workflows are not supposed to be discovered by crawling local files. The agent is supposed to use `memory.discover` and `memory.load`.
 
 Second, applying a constraint is not silent. The agent is supposed to call `memory.refer` when a loaded constraint actually shaped the turn.
 
@@ -41,7 +41,7 @@ but take priority when they conflict.
 
 Follow this loop every turn:
 
-1. **Discover.** Call `memory.search()` to list all available rules,
+1. **Discover.** Call `memory.discover()` to list all available rules,
    workflows, and context. Read their descriptions to decide what is relevant.
 2. **Load.** Call `memory.load()` with the ids you need. Loaded content includes
    parsed rule ids.
@@ -66,7 +66,7 @@ Follow this loop every turn:
 
 Categories are organizational only (e.g. `coding/`, `zig/`, `writing/`).
 
-Filter with `memory.search({kind: "rule"})` or `memory.search({group: "zig"})`.
+Filter with `memory.discover({kind: "rule"})` or `memory.discover({group: "zig"})`.
 
 ## Priority
 

@@ -78,7 +78,7 @@ pub const META_PROMPT_CONTENT =
     \\
     \\Follow this loop every turn:
     \\
-    \\1. **Discover.** Call `memory.search()` to list all available rules,
+    \\1. **Discover.** Call `memory.discover()` to list all available rules,
     \\   workflows, and context. Read their descriptions to decide what is relevant.
     \\2. **Load.** Call `memory.load()` with the ids you need. Loaded content includes
     \\   parsed rule ids.
@@ -103,7 +103,7 @@ pub const META_PROMPT_CONTENT =
     \\
     \\Categories are organizational only (e.g. `coding/`, `zig/`, `writing/`).
     \\
-    \\Filter with `memory.search({kind: "rule"})` or `memory.search({group: "zig"})`.
+    \\Filter with `memory.discover({kind: "rule"})` or `memory.discover({group: "zig"})`.
     \\
     \\## Accountability
     \\
@@ -125,7 +125,7 @@ pub const CODING_WORKFLOW_CONTENT =
     \\
     \\## Steps
     \\
-    \\1. **Load relevant rules.** Before writing any code, search and load all applicable coding rules via `memory.search` + `memory.load`. This includes language-specific rules, general coding rules, and any domain-specific rules relevant to the task.
+    \\1. **Load relevant rules.** Before writing any code, search and load all applicable coding rules via `memory.discover` + `memory.load`. This includes language-specific rules, general coding rules, and any domain-specific rules relevant to the task.
     \\2. **Assess complexity.** For non-trivial tasks, design the approach before writing code.
     \\3. Ensure you are on `main` and up to date.
     \\4. Create a feature branch.

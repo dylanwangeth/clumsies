@@ -72,6 +72,24 @@ pub const DraftsIndex = struct {
         }
         return null;
     }
+
+    /// Find a draft entry by its local_temp_id.
+    pub fn findByLocalTempId(self: *const DraftsIndex, temp_id: []const u8) ?*const DraftEntry {
+        for (self.entries.items) |*entry| {
+            const tid = entry.local_temp_id orelse continue;
+            if (std.mem.eql(u8, tid, temp_id)) return entry;
+        }
+        return null;
+    }
+
+    /// Find a create-draft entry by its draft_path.
+    pub fn findCreateByDraftPath(self: *const DraftsIndex, draft_path: []const u8) ?*const DraftEntry {
+        for (self.entries.items) |*entry| {
+            if (entry.operation != .create) continue;
+            if (std.mem.eql(u8, entry.draft_path, draft_path)) return entry;
+        }
+        return null;
+    }
 };
 
 /// Load `{ws_dir}/drafts/index.json` into memory. Returns an empty index if

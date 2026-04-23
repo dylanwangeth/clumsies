@@ -1,9 +1,9 @@
 ---
-name: search
+name: discover
 description: Discover available rules in the Library
 argument-hint: "[-k rule|workflow|context] [-g group]"
 user-invocable: true
 ---
-Call the `memory.search` MCP tool to discover available rules.
+Call the `memory.discover` MCP tool to discover available rules.
 
 $ARGUMENTS

@@ -25,7 +25,7 @@ You own the rules. The agent loads them on demand. Every interaction is traced a
 
 - **Persistent context at scale.** Agents load rules on demand instead of stuffing everything into one context window. Large projects with dozens of rule files do not silently lose instructions under context pressure.
 - **Organization-owned library.** Update a rule once, sync everywhere. No more copying `.cursorrules` between repos or hoping everyone has the latest version.
-- **Built-in observability.** Every agent interaction is recorded as an attestation event — which constraints were loaded, which were applied, and the agent's self-assessment. The event lifecycle (`user_prompt` → `search`/`load`/`refer` → `agent_report`) gives you data-driven insight into which rules work and which get ignored. Agent adapters enforce turn closure: the stop hook ensures the agent submits a summary before finishing.
+- **Built-in observability.** Every agent interaction is recorded as an attestation event — which constraints were loaded, which were applied, and the agent's self-assessment. The event lifecycle (`user_prompt` → `discover`/`load`/`refer` → `agent_report`) gives you data-driven insight into which rules work and which get ignored. Agent adapters enforce turn closure: the stop hook ensures the agent submits a summary before finishing.
 - **Agent-agnostic adapters.** An adapter layer sits between your rules and the agent runtime. Claude Code, Codex, Cursor — same rules, same attestations, no vendor lock-in.
 - **Self-hosted, zero vendor lock-in.** Runs entirely in your infrastructure with PostgreSQL and Zig.
 

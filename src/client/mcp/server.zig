@@ -157,7 +157,7 @@ fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u
 
     const instructions =
         "Call " ++ tool_names.setup ++ " to bootstrap the protocol and get usage instructions, " ++
-        tool_names.search ++ " to discover rules/workflows, " ++ tool_names.load ++ " to get content, " ++
+        tool_names.discover ++ " to discover rules/workflows, " ++ tool_names.load ++ " to get content, " ++
         "and " ++ tool_names.refer ++ " to declare constraint usage.";
     const esc_instructions = try encoding.jsonEscapeAlloc(allocator, instructions);
     defer allocator.free(esc_instructions);
@@ -206,7 +206,7 @@ test "processLine: initialize then tools list" {
     )).?;
     defer testing.allocator.free(tools_response);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.setup\"") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.search\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.discover\"") != null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.load\"") != null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.refer\"") != null);
 }

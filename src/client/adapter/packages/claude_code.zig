@@ -85,9 +85,9 @@ pub fn renderRuntimeAssets(
         .resource_kind = "plain_file",
         .relative_path = try scopedRelativePath(allocator, scope, "skills/search/SKILL.md"),
         .ownership = "exclusive",
-        .label = "Claude Code search skill",
+        .label = "Claude Code discover skill",
         .file_mode = 0o644,
-        .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_skill_search),
+        .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_skill_discover),
     });
     try assets.append(allocator, .{
         .resource_id = "claude-code.skills.ntmd",

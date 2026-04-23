@@ -121,6 +121,9 @@ fn appendRuleMetadata(
         defer allocator.free(esc_desc);
         try buf.writer(allocator).print(",\"description\":\"{s}\"", .{esc_desc});
     }
+    if (item.has_draft) {
+        try buf.appendSlice(allocator, ",\"hasDraft\":true");
+    }
     try buf.appendSlice(allocator, "}");
 }
 
