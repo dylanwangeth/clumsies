@@ -1,5 +1,5 @@
 //! MCP tool definitions and dispatch. Exposes tools to the agent:
-//! memory.setup/search/load/refer/submit and context.*/rule.* propose
+//! memory.setup/discover/load/refer/submit and context.*/rule.* propose
 //! operations. Each call generates an attestation event.
 const std = @import("std");
 const testing = std.testing;
@@ -16,8 +16,8 @@ const setup_schema =
     "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bootstrap the protocol. Returns workspace_id and meta-rule content with usage instructions (delta based on knownHash).\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"knownHash\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
-const search_schema =
-    "{\"name\":\"" ++ tool_names.search ++ "\",\"title\":\"Search\",\"description\":\"Discover available rules, workflows, and context files. Returns fresh metadata from the workspace.\"," ++
+const discover_schema =
+    "{\"name\":\"" ++ tool_names.discover ++ "\",\"title\":\"Discover\",\"description\":\"Discover available rules, workflows, and context files. Returns fresh metadata from the workspace.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const load_schema =
@@ -85,7 +85,7 @@ pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
         u8,
         "{\"tools\":[" ++
             setup_schema ++ "," ++
-            search_schema ++ "," ++
+            discover_schema ++ "," ++
             load_schema ++ "," ++
             refer_schema ++ "," ++
             submit_schema ++ "," ++
@@ -129,8 +129,8 @@ pub fn handleCall(
     if (std.mem.eql(u8, name, tool_names.setup)) {
         return try handleSetup(allocator, workspace_root, session, args_obj);
     }
-    if (std.mem.eql(u8, name, tool_names.search)) {
-        return try handleSearch(allocator, workspace_root, session, args_obj);
+    if (std.mem.eql(u8, name, tool_names.discover)) {
+        return try handleDiscover(allocator, workspace_root, session, args_obj);
     }
     if (std.mem.eql(u8, name, tool_names.load)) {
         return handleLoad(allocator, workspace_root, session, args_obj) catch |err| switch (err) {
@@ -234,7 +234,7 @@ fn handleSetup(
     }
 }
 
-fn handleSearch(
+fn handleDiscover(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     session: *session_mod.Session,
@@ -256,7 +256,7 @@ fn handleSearch(
     var items = try workspace_rule.discoverSearchable(allocator, workspace_root, kind, group, query);
     defer workspace_rule.deinitRuleItems(allocator, &items);
 
-    session.recordEvent(allocator, .search);
+    session.recordEvent(allocator, .discover);
 
     const structured = try tool_result.serializeRuleList(allocator, items.items);
     defer allocator.free(structured);
@@ -693,7 +693,7 @@ test "buildListResult: exposes all memory and propose tools" {
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.setup ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.search ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.discover ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.load ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.refer ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.submit ++ "\"") != null);
@@ -718,9 +718,9 @@ test "buildListResult: exposes all memory and propose tools" {
 // aggregator was wired into client/main.zig, so they never ran — and
 // silently drifted out of sync with handleCall's actual response
 // format. Skipping them keeps CI honest while the mismatch is
-// resolved; they should be re-enabled once the MCP search / load /
+// resolved; they should be re-enabled once the MCP discover / load /
 // setup contract is re-audited.
-test "handleCall: memory.search returns rule metadata" {
+test "handleCall: memory.discover returns rule metadata" {
     return error.SkipZigTest;
 }
 

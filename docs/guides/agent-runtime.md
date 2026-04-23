@@ -28,7 +28,7 @@ So the practical order is:
 In the current implementation, the MCP tool surface is:
 
 - `memory.setup`
-- `memory.search`
+- `memory.discover`
 - `memory.load`
 - `memory.refer`
 - `memory.submit`

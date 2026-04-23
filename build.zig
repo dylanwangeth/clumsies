@@ -280,9 +280,9 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/hooks/stop-refer-check.sh.tpl",
     ));
-    options.addOption([]const u8, "adapter_claude_code_runtime_skill_search", readSourceAsset(
+    options.addOption([]const u8, "adapter_claude_code_runtime_skill_discover", readSourceAsset(
         b,
-        "assets/adapters/claude-code/runtime/skills/search/SKILL.md",
+        "assets/adapters/claude-code/runtime/skills/discover/SKILL.md",
     ));
     options.addOption([]const u8, "adapter_claude_code_runtime_skill_ntmd", readSourceAsset(
         b,
@@ -292,9 +292,9 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/skills/setup/SKILL.md",
     ));
-    options.addOption([]const u8, "adapter_codex_runtime_skill_search", readSourceAsset(
+    options.addOption([]const u8, "adapter_codex_runtime_skill_discover", readSourceAsset(
         b,
-        "assets/adapters/codex/runtime/skills/search/SKILL.md",
+        "assets/adapters/codex/runtime/skills/discover/SKILL.md",
     ));
     options.addOption([]const u8, "adapter_codex_runtime_skill_ntmd", readSourceAsset(
         b,

@@ -85,9 +85,9 @@ pub fn renderRuntimeAssets(
         .resource_kind = "plain_file",
         .relative_path = try scopedRelativePath(allocator, "skills/search/SKILL.md"),
         .ownership = "exclusive",
-        .label = "Codex search skill",
+        .label = "Codex discover skill",
         .file_mode = 0o644,
-        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_skill_search),
+        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_skill_discover),
     });
     try assets.append(allocator, .{
         .resource_id = "codex.skills.ntmd",

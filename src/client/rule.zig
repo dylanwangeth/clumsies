@@ -36,6 +36,7 @@ pub const RuleItem = struct {
     hash: []const u8,
     priority: SetupPriority,
     description: ?[]const u8 = null,
+    has_draft: bool = false,
 };
 
 pub const KnownHash = struct {
@@ -282,11 +283,15 @@ fn matchesQuery(haystack: []const u8, query: []const u8) bool {
     return false;
 }
 
-/// Discover rules and context available for memory.search. Iterates the
+/// Discover rules and context available for memory.discover. Iterates the
 /// local manifest, classifies each entry by path prefix or category, and
 /// applies optional kind/group filters. Reserved paths (META_PROMPT.md) are
 /// excluded. Context entries have kind = .context and group derived from
 /// their path's first component.
+///
+/// Drafts are merged into the result: delete-drafts hide their manifest
+/// entries, modify/rename drafts set has_draft = true, and create-drafts
+/// (which have no manifest entry) are appended using local_temp_id as id.
 pub fn discoverSearchable(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
@@ -300,6 +305,9 @@ pub fn discoverSearchable(
     var manifest = try loadManifest(allocator, ws_dir);
     defer manifest.deinit(allocator);
 
+    var draft_index = try drafts.loadIndex(allocator, ws_dir);
+    defer draft_index.deinit(allocator);
+
     var it = manifest.rules.iterator();
     while (it.next()) |entry| {
         const m_entry = entry.value_ptr.*;
@@ -309,6 +317,12 @@ pub fn discoverSearchable(
         const kind = kindFromPath(m_entry.path) orelse continue;
         if (kind_filter) |kf| {
             if (kf != kind) continue;
+        }
+
+        // Check for a delete draft — hide this entry
+        const draft_entry = draft_index.findByCurrentPath(.rule, m_entry.path);
+        if (draft_entry) |de| {
+            if (de.operation == .delete) continue;
         }
 
         const group_slice = groupFromPath(m_entry.path);
@@ -352,6 +366,7 @@ pub fn discoverSearchable(
             .hash = hash_owned,
             .priority = priorityForKind(kind),
             .description = desc_owned,
+            .has_draft = draft_entry != null,
         });
     }
 
@@ -359,6 +374,12 @@ pub fn discoverSearchable(
         var ctx_it = manifest.context.iterator();
         while (ctx_it.next()) |entry| {
             const m_entry = entry.value_ptr.*;
+
+            // Check for a delete draft — hide this entry
+            const draft_entry = draft_index.findByCurrentPath(.context, m_entry.path);
+            if (draft_entry) |de| {
+                if (de.operation == .delete) continue;
+            }
 
             const group_slice = groupFromPath(m_entry.path);
             if (group_filter) |gf| {
@@ -396,8 +417,66 @@ pub fn discoverSearchable(
                 .hash = hash_owned,
                 .priority = .normal,
                 .description = ctx_desc_owned,
+                .has_draft = draft_entry != null,
             });
         }
+    }
+
+    // Append create-only drafts (no corresponding manifest entry)
+    for (draft_index.entries.items) |de| {
+        if (de.operation != .create) continue;
+
+        const kind: RuleKind = switch (de.category) {
+            .context => .context,
+            .rule => kindFromPath(de.draft_path) orelse continue,
+            .meta_prompt => continue,
+        };
+        if (kind_filter) |kf| {
+            if (kf != kind) continue;
+        }
+
+        // Use local_temp_id if available, otherwise fall back to draft_path as a stable identifier.
+        const effective_id = de.local_temp_id orelse de.draft_path;
+
+        const group_slice = groupFromPath(de.draft_path);
+        if (group_filter) |gf| {
+            const g = group_slice orelse continue;
+            if (!matchesGroup(g, gf)) continue;
+        }
+
+        if (query_filter) |q| {
+            const trimmed = std.mem.trim(u8, q, " \t");
+            if (trimmed.len > 0) {
+                const in_path = matchesQuery(de.draft_path, trimmed);
+                const in_desc = if (de.description) |desc| matchesQuery(desc, trimmed) else false;
+                if (!in_path and !in_desc) continue;
+            }
+        }
+
+        const display_name = displayNameFromFilename(std.fs.path.basename(de.draft_path));
+
+        const id_owned = try allocator.dupe(u8, effective_id);
+        errdefer allocator.free(id_owned);
+        const path_owned = try allocator.dupe(u8, de.draft_path);
+        errdefer allocator.free(path_owned);
+        const name_owned = try allocator.dupe(u8, display_name);
+        errdefer allocator.free(name_owned);
+        const group_owned = if (group_slice) |g| try allocator.dupe(u8, g) else null;
+        errdefer if (group_owned) |g| allocator.free(g);
+        const desc_owned = if (de.description) |desc| try allocator.dupe(u8, desc) else null;
+        errdefer if (desc_owned) |d| allocator.free(d);
+
+        try items.append(allocator, .{
+            .id = id_owned,
+            .kind = kind,
+            .path = path_owned,
+            .name = name_owned,
+            .group = group_owned,
+            .hash = "",
+            .priority = priorityForKind(kind),
+            .description = desc_owned,
+            .has_draft = true,
+        });
     }
 
     std.mem.sort(RuleItem, items.items, {}, lessThanRuleItem);
@@ -525,7 +604,46 @@ pub fn loadRules(
                 .draft_base_hash = draft_base,
             });
         } else {
-            return error.UnknownRuleId;
+            // Fallback: try loading a create-draft by local_temp_id or draft_path
+            const draft_entry = draft_index.findByLocalTempId(id) orelse
+                draft_index.findCreateByDraftPath(id) orelse
+                return error.UnknownRuleId;
+            if (draft_entry.operation != .create) return error.UnknownRuleId;
+
+            switch (draft_entry.category) {
+                .meta_prompt => return error.UnknownRuleId,
+                else => {},
+            }
+
+            const content = try drafts.readDraftFile(
+                allocator,
+                ws_dir,
+                draft_entry.category,
+                draft_entry.draft_path,
+            );
+            errdefer allocator.free(content);
+
+            const kind: RuleKind = if (draft_entry.category == .context)
+                .context
+            else
+                kindFromPath(draft_entry.draft_path) orelse return error.UnknownRuleId;
+            const display_name = displayNameFromFilename(
+                std.fs.path.basename(draft_entry.draft_path),
+            );
+            const group_slice = groupFromPath(draft_entry.draft_path);
+
+            try result.items.append(allocator, .{
+                .id = try allocator.dupe(u8, id),
+                .kind = kind,
+                .path = try allocator.dupe(u8, draft_entry.draft_path),
+                .name = try allocator.dupe(u8, display_name),
+                .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
+                .hash = try allocator.dupe(u8, ""),
+                .changed = true,
+                .content = content,
+                .has_draft = true,
+                .draft_base_hash = null,
+            });
         }
     }
 

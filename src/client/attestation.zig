@@ -1,4 +1,4 @@
-//! Attestation event recording. Each MCP setup/search/load/refer/submit interaction
+//! Attestation event recording. Each MCP setup/discover/load/refer/submit interaction
 //! is serialized as an AttestationEvent and appended to
 //! ~/.clumsies/workspaces/{ws_id}/attestation.jsonl. The Hub later ingests these
 //! events via POST /api/attestations to compute constraint-level usage statistics.
@@ -27,7 +27,7 @@ pub const AttestationEvent = struct {
     pub const Payload = union(enum) {
         setup,
         user_prompt: UserPromptPayload,
-        search,
+        discover,
         load: LoadPayload,
         refer: ReferPayload,
         agent_report: AgentReportPayload,
@@ -90,7 +90,7 @@ pub fn payloadTypeTag(payload: AttestationEvent.Payload) []const u8 {
     return switch (payload) {
         .setup => "setup",
         .user_prompt => "user_prompt",
-        .search => "search",
+        .discover => "discover",
         .load => "load",
         .refer => "refer",
         .agent_report => "agent_report",
@@ -204,7 +204,7 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
     );
 
     switch (event.payload) {
-        .setup, .search => {},
+        .setup, .discover => {},
         .user_prompt => |p| {
             if (p.content) |c| {
                 try writeOptionalString(allocator, &buf, "content", c);

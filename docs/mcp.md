@@ -12,7 +12,7 @@ The current implementation exposes these MCP tools:
 
 | Tool family | Tools |
 | --- | --- |
-| session and attestation | `memory.setup`, `memory.search`, `memory.load`, `memory.refer`, `memory.submit`, `memory.reject` |
+| session and attestation | `memory.setup`, `memory.discover`, `memory.load`, `memory.refer`, `memory.submit`, `memory.reject` |
 | workspace context proposals | `context.propose_create`, `context.propose_update`, `context.propose_rename`, `context.propose_delete` |
 | Library rule proposals | `rule.propose_create`, `rule.propose_update`, `rule.propose_rename`, `rule.propose_delete` |
 
@@ -23,7 +23,7 @@ This is the real protocol surface in the running code. The server test suite exp
 The stable mental model now matches the current `META_PROMPT` very closely:
 
 1. bootstrap the session with `memory.setup`
-2. discover relevant material with `memory.search`
+2. discover relevant material with `memory.discover`
 3. load only the content the task actually needs with `memory.load`
 4. apply the loaded rules in the work
 5. declare applied constraints with `memory.refer`
@@ -97,9 +97,9 @@ In the current runtime, that meta-prompt frame comes from the workspace-scoped [
 
 The current bootstrap content is intentionally simpler than earlier revisions. It now frames the protocol as `discover -> load -> apply -> refer -> refine -> submit`, and its priority model is `loaded rules > this meta-prompt > your defaults`.
 
-## `memory.search`
+## `memory.discover`
 
-`memory.search` discovers available rules, workflows, and context files without loading their full content.
+`memory.discover` discovers available rules, workflows, and context files without loading their full content.
 
 ### Input
 
@@ -387,6 +387,6 @@ For `memory.submit`, validation is slightly stricter than the schema summary alo
 
 The protocol is tightly coupled to attestation, but not in a noisy way.
 
-Each meaningful runtime action records structured local evidence. `memory.search`, `memory.load`, `memory.refer`, `memory.submit`, `memory.reject`, and all proposal tools generate attestation events that later feed Hub-side aggregation.
+Each meaningful runtime action records structured local evidence. `memory.discover`, `memory.load`, `memory.refer`, `memory.submit`, `memory.reject`, and all proposal tools generate attestation events that later feed Hub-side aggregation.
 
 This is one reason clumsies is different from plain prompt storage. The protocol is not there only to serve content. It is there to make rule use and content-change proposals legible.
