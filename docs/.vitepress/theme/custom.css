@@ -735,6 +735,8 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  width: 100%;
+  margin: 0;
   justify-content: center;
 }
 
@@ -747,15 +749,6 @@
 
 .dark .home-summary-strip {
   border-top-color: rgba(255, 255, 255, 0.08);
-}
-
-.home-object-rail {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  width: 100%;
-  margin: 0;
-  justify-content: center;
 }
 
 .home-object-rail span {
