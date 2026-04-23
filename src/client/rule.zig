@@ -472,7 +472,7 @@ pub fn discoverSearchable(
             .path = path_owned,
             .name = name_owned,
             .group = group_owned,
-            .hash = "",
+            .hash = try allocator.dupe(u8, ""),
             .priority = priorityForKind(kind),
             .description = desc_owned,
             .has_draft = true,

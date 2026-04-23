@@ -81,9 +81,9 @@ pub fn renderRuntimeAssets(
         .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_stop_refer_check_sh),
     });
     try assets.append(allocator, .{
-        .resource_id = "codex.skills.search",
+        .resource_id = "codex.skills.discover",
         .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, "skills/search/SKILL.md"),
+        .relative_path = try scopedRelativePath(allocator, "skills/discover/SKILL.md"),
         .ownership = "exclusive",
         .label = "Codex discover skill",
         .file_mode = 0o644,

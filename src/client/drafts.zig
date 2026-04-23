@@ -666,6 +666,51 @@ test "findByCurrentPath: returns null for unknown path" {
     try testing.expect(index.findByCurrentPath(.rule, "anything") == null);
 }
 
+test "findByLocalTempId: returns entry matching temp_id" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "research/NEW.md",
+        .local_temp_id = "tmp-abc123",
+    }, "# NEW\n");
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+
+    const entry = index.findByLocalTempId("tmp-abc123").?;
+    try testing.expectEqualStrings("research/NEW.md", entry.draft_path);
+    try testing.expect(index.findByLocalTempId("nonexistent") == null);
+}
+
+test "findCreateByDraftPath: only matches create operation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .modify,
+        .draft_path = "coding/STYLE.md",
+        .current_path = "coding/STYLE.md",
+        .base_hash = "sha256:abc",
+        .rule_id = "p-style",
+    }, "# modified\n");
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+
+    try testing.expect(index.findCreateByDraftPath("coding/STYLE.md") == null);
+    try testing.expect(index.findCreateByDraftPath("nonexistent") == null);
+}
+
 test "readDraftFile: reads from drafts/{category}/{draft_path}" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
