@@ -140,7 +140,7 @@ pub fn drawInputs(
     w.writeText(&surface, ctx, 2, 0, title_txt, theme.boldOn(theme.PANEL, theme.TEXT));
 
     if (visible_inputs.len == 0) {
-        w.writeText(&surface, ctx, 2, 2, "No recent user rules captured.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 2, "No recent user inputs captured.", theme.fg(theme.MUTED));
         return surface;
     }
 

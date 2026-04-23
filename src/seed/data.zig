@@ -229,7 +229,7 @@ pub const USERS = [_]UserFixture{
     .{ .id = "usr-seed-amimibear", .username = "amimibear", .role = "member" },
 };
 
-pub const PROMPTS = [_]RuleFixture{
+pub const RULES = [_]RuleFixture{
     .{ .id = "p-seed-meta", .path = "META_PROMPT.md", .content = META_PROMPT_CONTENT },
     .{ .id = "p-seed-coding", .path = "workflow/00_CODING.md", .content = CODING_WORKFLOW_CONTENT },
     .{ .id = "p-seed-trace", .path = "rule/trace/TRACE_DISCIPLINE.md", .content = TRACE_DISCIPLINE_CONTENT },
@@ -257,7 +257,7 @@ pub const WORKSPACE_MEMBERS = [_]WorkspaceMemberFixture{
     .{ .ws_id = "ws-seed-plugin", .user_id = "usr-seed-amimibear", .role = "member" },
 };
 
-pub const WORKSPACE_PROMPTS = [_]WorkspaceRuleFixture{
+pub const WORKSPACE_RULES = [_]WorkspaceRuleFixture{
     .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-meta" },
     .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-coding" },
     .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-trace" },
@@ -359,7 +359,7 @@ pub const PUMP_SCENARIOS = [_]PumpScenario{
 };
 
 pub fn ruleById(rule_id: []const u8) ?*const RuleFixture {
-    for (&PROMPTS) |*rule| {
+    for (&RULES) |*rule| {
         if (std.mem.eql(u8, rule.id, rule_id)) return rule;
     }
     return null;

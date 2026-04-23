@@ -258,7 +258,7 @@ fn handleSearch(
 
     session.recordEvent(allocator, .search);
 
-    const structured = try tool_result.serializePromptList(allocator, items.items);
+    const structured = try tool_result.serializeRuleList(allocator, items.items);
     defer allocator.free(structured);
     return try tool_result.buildSuccessResult(allocator, structured);
 }
