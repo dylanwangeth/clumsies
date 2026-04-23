@@ -43,24 +43,14 @@ Watch a short recording:
 
 https://github.com/user-attachments/assets/3ae8473c-dac1-45b5-8a72-6ad21906f235
 
-## What is in the repo
+## Documentation
 
-**Hub server.** The single source of truth. Manages rule libraries, workspace manifests, context, collaboration workflows, and attestation aggregation — all behind a REST API that every client talks to.
+For the full documentation site content, start here:
 
-**CLI.** Your local command surface. Login, workspace binding, cache sync, adapter install/remove, attestation flush, and TUI entry point.
-
-**MCP runtime.** How agents talk to clumsies. Exposes `memory.setup`, `memory.search`, `memory.load`, `memory.refer`, `memory.submit`, and `memory.reject` — each call automatically produces an attestation event. Agents can also propose changes via `context.propose_create/update/rename/delete` (workspace context) and `rule.propose_create/update/rename/delete` (library rules).
-
-**Adapter layer.** Bridges your rules to agent runtimes without vendor lock-in. Currently supports Claude Code and Codex. Cursor, Windsurf, Copilot, Cline, Kimi Code, Qwen Code, and OpenCode coming soon.
-
-**TUI.** See what is happening. Library browsing, workspace state, drafts, pull requests, and attestation-driven analysis — all in the terminal.
-
-## Current state
-
-- `clumsies` launches the TUI by default (usable, but still early)
-- `clumsies-hub` runs the Hub server
-- `clumsies mcp serve` runs the MCP runtime for coding agents
-- `clumsies adapt` installs host-specific integration config for supported agents
+- [Overview](docs/overview.md)
+- [Architecture](docs/architecture.md)
+- [Guides](docs/guides/index.md)
+- [Reference](docs/reference/index.md)
 
 ## Quick start
 
@@ -119,17 +109,6 @@ clumsies
 > For iterative development, `just dev` spins up the Hub, seeds representative
 > data, and launches the TUI in one command — no need to run the steps above
 > manually. Requires [just](https://github.com/casey/just).
-
-More commands:
-
-```bash
-clumsies --help
-clumsies mcp serve
-clumsies adapt --agent claude-code --scope user --yes
-clumsies remove-adapter --agent codex --scope workspace --yes
-zig build test
-zig build test-hub
-```
 
 ## License
 

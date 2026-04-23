@@ -46,11 +46,25 @@ jobs:
       - name: Cross-compile (${{ matrix.target }})
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
 
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install docs dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build docs
+        run: bun run build
+
   # Aggregator so branch protection rules that require a single "build"
   # status check continue to resolve after the split. Also gives a
   # convenient one-line pass/fail signal on the PR page.
   build:
     runs-on: ubuntu-latest
-    needs: [lint, cross-compile]
+    needs: [lint, cross-compile, docs]
     steps:
       - run: echo "All CI jobs passed."
