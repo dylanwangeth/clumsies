@@ -1,20 +1,26 @@
-# Reference Index
+# Reference
 
-## Current pages
+Reference is for lookup, not for first-pass reading.
 
-| Page | Purpose |
+Use this part of the docs when you already understand the system shape and need an exact term, path, or protocol detail without rereading the narrative pages.
+
+## When to use reference
+
+| If you need to answer | Read |
 | --- | --- |
-| [Home](/) | site entry point |
-| [Overview](/overview) | project framing and reading order |
-| [Concepts](/concepts) | stable definitions for core objects |
-| [Architecture](/architecture) | current implementation and target system shape |
-| [Repo map](/repos) | repository responsibilities |
-| [How to read these docs](/guides/getting-started) | recommended reading paths |
-| [Screenshot list](/reference/screenshots) | screenshot names and placement |
+| what a project term means right now | [Glossary](/glossary) |
+| which local files clumsies writes under `~/.clumsies` | [Runtime surfaces](/runtime) and [Workspace](/workspace) |
+| how runtime evidence is buffered and uploaded | [Attestation](/attestation) |
+| which MCP tools are part of the current implementation | [MCP](/mcp) |
+| which commands and flags exist today | [CLI reference](/guides/cli-commands) |
+| which directories in the repository own which responsibilities | [Codebase map](/repos) |
 
-## What will likely be added next
+## What belongs here
 
-- dedicated pages for Hub, Workspace, and Trace
-- command and protocol references
-- a clearer current-state page for what is already implemented
-- public narrative extracted from deeper internal specs and ADR material
+Reference pages should do one of two jobs.
+
+First, they can stabilize terminology. That is the role of [Glossary](/glossary). It exists so the rest of the docs do not need to keep redefining `rule`, `workspace`, `manifest`, `attestation`, or `adapter`.
+
+Second, they can answer exact lookup questions that are easy to forget but expensive to rediscover in code. Runtime paths, MCP tool names, and command flags belong in that class of material.
+
+Reference should not try to mirror the whole docs site. If a page only repeats the main navigation or recommended reading order, it is noise rather than reference.

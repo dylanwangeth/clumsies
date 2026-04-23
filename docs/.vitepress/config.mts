@@ -7,7 +7,8 @@ export default withMermaid(
   defineConfig({
     lang: "en-US",
     title: "clumsies",
-    description: "Prompt infrastructure for teams: library, workspace, and trace.",
+    description: "Persistent, observable, and collaborative context infrastructure that coexists with agents' self-managed memory.",
+    base: process.env.GITHUB_ACTIONS ? "/clumsies/" : "/",
     appearance: "dark",
     cleanUrls: true,
     lastUpdated: true,
@@ -53,33 +54,52 @@ export default withMermaid(
       },
       nav: [
         { text: "Overview", link: "/overview" },
-        { text: "Concepts", link: "/concepts" },
-        { text: "Architecture", link: "/architecture" },
-        { text: "Repos", link: "/repos" },
-        { text: "Guide", link: "/guides/getting-started" }
+        { text: "Guides", link: "/guides/" },
+        { text: "Reference", link: "/reference/" }
       ],
       sidebar: [
+        { text: "Overview", link: "/overview" },
         {
-          text: "Start",
+          text: "Guides",
           items: [
-            { text: "Home", link: "/" },
-            { text: "Overview", link: "/overview" },
-            { text: "How to read these docs", link: "/guides/getting-started" }
+            { text: "Overview", link: "/guides/" },
+            { text: "Deployment", link: "/guides/deploy-for-an-org" },
+            { text: "Member workflow", link: "/guides/how-to-use-clumsies" },
+            { text: "Agent runtime", link: "/guides/agent-runtime" },
+            { text: "CLI reference", link: "/guides/cli-commands" }
           ]
         },
         {
-          text: "Core",
+          text: "System",
           items: [
-            { text: "Concepts", link: "/concepts" },
             { text: "Architecture", link: "/architecture" },
-            { text: "Repo map", link: "/repos" }
+            {
+              text: "Core model",
+              items: [
+                { text: "Hub", link: "/hub" },
+                { text: "Library", link: "/library" },
+                { text: "Workspace", link: "/workspace" },
+                { text: "Attestation", link: "/attestation" }
+              ]
+            },
+            {
+              text: "Runtime model",
+              items: [
+                { text: "Runtime surfaces", link: "/runtime" },
+                { text: "MCP", link: "/mcp" },
+                { text: "Adapter", link: "/adapter" },
+                { text: "TUI", link: "/tui" },
+                { text: "META_PROMPT", link: "/meta-prompt" }
+              ]
+            },
+            { text: "Codebase map", link: "/repos" }
           ]
         },
         {
           text: "Reference",
           items: [
             { text: "Index", link: "/reference/" },
-            { text: "Screenshot list", link: "/reference/screenshots" }
+            { text: "Glossary", link: "/glossary" }
           ]
         }
       ],
