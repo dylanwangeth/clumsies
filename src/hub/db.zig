@@ -206,28 +206,6 @@ pub fn bootstrap(pool: *Pool) !void {
 }
 
 const migration_sql =
-    \\-- Rename existing tables from old schema (idempotent for new installs).
-    \\DO $$ BEGIN ALTER TABLE prompts RENAME TO rules; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE workspace_prompts RENAME TO workspace_rules; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE bundle_prompts RENAME TO bundle_rules; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE prompt_prs RENAME TO rule_prs; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE prompt_pr_operations RENAME TO rule_pr_operations; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE prompt_pr_comments RENAME TO rule_pr_comments; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE prompt_history RENAME TO rule_history; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-    \\
-    \\-- Rename existing columns from old schema.
-    \\DO $$ BEGIN ALTER TABLE rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE workspace_rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE bundle_rules RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE rule_pr_operations RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE attestation_events RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE attestation_events RENAME COLUMN prompt_hash TO rule_hash; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER TABLE rule_history RENAME COLUMN prompt_id TO rule_id; EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
-    \\
-    \\-- Rename existing indexes.
-    \\DO $$ BEGIN ALTER INDEX IF EXISTS prompt_pr_operations_prompt_id_idx RENAME TO rule_pr_operations_rule_id_idx; EXCEPTION WHEN OTHERS THEN NULL; END $$;
-    \\DO $$ BEGIN ALTER INDEX IF EXISTS attestation_events_prompt_ts_idx RENAME TO attestation_events_rule_ts_idx; EXCEPTION WHEN OTHERS THEN NULL; END $$;
-    \\
     \\CREATE TABLE IF NOT EXISTS orgs (
     \\    org_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     \\    name TEXT NOT NULL UNIQUE,
