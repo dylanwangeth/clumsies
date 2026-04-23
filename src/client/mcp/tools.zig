@@ -501,6 +501,7 @@ fn handleProposeCreate(
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_create = .{ .path = path } },
         .rule => .{ .rule_propose_create = .{ .path = path } },
+        .meta_prompt => return error.InvalidParams,
     };
     session.recordEvent(allocator, payload);
 
@@ -517,6 +518,7 @@ fn handleProposeUpdate(
     const id = switch (category) {
         .context => requiredString(args, "context_id") orelse return error.InvalidParams,
         .rule => requiredString(args, "rule_id") orelse return error.InvalidParams,
+        .meta_prompt => return error.InvalidParams,
     };
     if (id.len == 0) return error.InvalidParams;
     const body = requiredString(args, "body") orelse return error.InvalidParams;
@@ -529,11 +531,13 @@ fn handleProposeUpdate(
     const m_entry = switch (category) {
         .context => manifest.context.get(id) orelse return error.FileNotFound,
         .rule => manifest.rules.get(id) orelse return error.FileNotFound,
+        .meta_prompt => return error.InvalidParams,
     };
 
     const cache_content = switch (category) {
         .context => try workspace_rule.readContextCacheFile(allocator, workspace_root, m_entry.path),
         .rule => try readRuleCacheFile(allocator, workspace_root, m_entry.path),
+        .meta_prompt => return error.InvalidParams,
     };
     defer allocator.free(cache_content);
 
@@ -553,6 +557,7 @@ fn handleProposeUpdate(
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_update = .{ .id = id } },
         .rule => .{ .rule_propose_update = .{ .id = id } },
+        .meta_prompt => return error.InvalidParams,
     };
     session.recordEvent(allocator, payload);
 
@@ -569,6 +574,7 @@ fn handleProposeRename(
     const id = switch (category) {
         .context => requiredString(args, "context_id") orelse return error.InvalidParams,
         .rule => requiredString(args, "rule_id") orelse return error.InvalidParams,
+        .meta_prompt => return error.InvalidParams,
     };
     if (id.len == 0) return error.InvalidParams;
     const new_path = requiredString(args, "new_path") orelse return error.InvalidParams;
@@ -581,11 +587,13 @@ fn handleProposeRename(
     const m_entry = switch (category) {
         .context => manifest.context.get(id) orelse return error.FileNotFound,
         .rule => manifest.rules.get(id) orelse return error.FileNotFound,
+        .meta_prompt => return error.InvalidParams,
     };
 
     const cache_content = switch (category) {
         .context => try workspace_rule.readContextCacheFile(allocator, workspace_root, m_entry.path),
         .rule => try readRuleCacheFile(allocator, workspace_root, m_entry.path),
+        .meta_prompt => return error.InvalidParams,
     };
     defer allocator.free(cache_content);
 
@@ -605,6 +613,7 @@ fn handleProposeRename(
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_rename = .{ .id = id, .new_path = new_path } },
         .rule => .{ .rule_propose_rename = .{ .id = id, .new_path = new_path } },
+        .meta_prompt => return error.InvalidParams,
     };
     session.recordEvent(allocator, payload);
 
@@ -621,6 +630,7 @@ fn handleProposeDelete(
     const id = switch (category) {
         .context => requiredString(args, "context_id") orelse return error.InvalidParams,
         .rule => requiredString(args, "rule_id") orelse return error.InvalidParams,
+        .meta_prompt => return error.InvalidParams,
     };
     if (id.len == 0) return error.InvalidParams;
     const description = optionalString(args, "description");
@@ -631,6 +641,7 @@ fn handleProposeDelete(
     const m_entry = switch (category) {
         .context => manifest.context.get(id) orelse return error.FileNotFound,
         .rule => manifest.rules.get(id) orelse return error.FileNotFound,
+        .meta_prompt => return error.InvalidParams,
     };
 
     try drafts_mod.createDraft(allocator, workspace_root, .{
@@ -646,6 +657,7 @@ fn handleProposeDelete(
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_delete = .{ .id = id } },
         .rule => .{ .rule_propose_delete = .{ .id = id } },
+        .meta_prompt => return error.InvalidParams,
     };
     session.recordEvent(allocator, payload);
 

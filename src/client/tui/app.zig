@@ -237,6 +237,7 @@ pub const Dashboard = struct {
     drafts_arena: std.heap.ArenaAllocator,
     drafts_by_rule_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
     drafts_by_context_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
+    drafts_by_meta_prompt_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
     /// Paths of local `operation=create` drafts per category. These do
     /// not exist on the hub yet, so the server-side rules /
     /// context_files lists never carry them — the list renderers
@@ -2268,6 +2269,7 @@ pub const Dashboard = struct {
     pub fn refreshDraftsCache(self: *Dashboard) void {
         self.drafts_by_rule_path = .{};
         self.drafts_by_context_path = .{};
+        self.drafts_by_meta_prompt_path = .{};
         // drafts_create_*_paths are handed to the file tree, which
         // stores them in its `expanded` StringHashMap and `dir_paths`
         // array without duping. Both the hashmap key and the dir
@@ -2312,6 +2314,7 @@ pub const Dashboard = struct {
             const target_map = switch (entry.category) {
                 .rule => &self.drafts_by_rule_path,
                 .context => &self.drafts_by_context_path,
+                .meta_prompt => &self.drafts_by_meta_prompt_path,
             };
             target_map.put(arena, key, entry.status) catch {};
 
@@ -2323,6 +2326,7 @@ pub const Dashboard = struct {
                 const dest = switch (entry.category) {
                     .rule => &create_rules,
                     .context => &create_contexts,
+                    .meta_prompt => continue,
                 };
                 dest.append(api_alloc, path_copy) catch {};
             }
@@ -2340,6 +2344,7 @@ pub const Dashboard = struct {
         return switch (category) {
             .rule => self.drafts_by_rule_path.get(path),
             .context => self.drafts_by_context_path.get(path),
+            .meta_prompt => self.drafts_by_meta_prompt_path.get(path),
         };
     }
 
@@ -2358,6 +2363,7 @@ pub const Dashboard = struct {
         const has_draft = switch (category) {
             .rule => self.drafts_by_rule_path.contains(path),
             .context => self.drafts_by_context_path.contains(path),
+            .meta_prompt => self.drafts_by_meta_prompt_path.contains(path),
         };
         if (!has_draft) return null;
         const arena = self.viewAllocator();
@@ -2526,6 +2532,7 @@ pub const Dashboard = struct {
         return switch (target.category) {
             .rule => self.cachedRuleBody(target.path),
             .context => self.cachedWorkspaceContextBody(target.ws_id, target.path),
+            .meta_prompt => null,
         };
     }
 
@@ -2706,6 +2713,7 @@ pub const Dashboard = struct {
         switch (target.category) {
             .rule => self.submitRulePr(target),
             .context => self.submitContextPr(target),
+            .meta_prompt => {},
         }
     }
 
@@ -2959,10 +2967,12 @@ pub const Dashboard = struct {
         const title = switch (target.category) {
             .rule => "New Rule PR",
             .context => "New Context PR",
+            .meta_prompt => "New Meta-Prompt PR",
         };
         const path_label = switch (target.category) {
             .rule => "rule:",
             .context => "file:",
+            .meta_prompt => "file:",
         };
         const modal = Modal{
             .title = title,
@@ -3107,10 +3117,12 @@ pub const Dashboard = struct {
         const title = switch (self.new_draft_category) {
             .rule => "New Rule Draft",
             .context => "New Context Draft",
+            .meta_prompt => "New Meta-Prompt Draft",
         };
         const hint = switch (self.new_draft_category) {
             .rule => "e.g. rule/00_MY_RULE.md",
             .context => "e.g. spec/NEW_SPEC.md",
+            .meta_prompt => "META_PROMPT.md",
         };
         const modal = Modal{
             .title = title,

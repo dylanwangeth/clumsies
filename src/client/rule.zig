@@ -102,16 +102,30 @@ pub const MetaPromptResult = struct {
 /// MPF lives at `{ws_dir}/cache/META_PROMPT.md` — reserved paths
 /// sit at the cache root rather than under the `rule/` namespace
 /// so a future MPF rename does not reshuffle the rule tree.
+/// If a draft exists for META_PROMPT, the draft content is returned
+/// instead of the cached version — mirroring the draft resolution
+/// that `loadRules` applies to rules and contexts.
 pub fn loadMpf(allocator: std.mem.Allocator, ws_dir: []const u8, known_hash: ?[]const u8) !MetaPromptResult {
-    const mpf_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
-    defer allocator.free(mpf_path);
+    var draft_index = try drafts.loadIndex(allocator, ws_dir);
+    defer draft_index.deinit(allocator);
 
-    const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return .{ .content = null, .hash = null };
-    defer file.close();
+    const draft_entry = draft_index.findByCurrentPath(.meta_prompt, "META_PROMPT.md");
 
-    var read_buf: [4096]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
-    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch return .{ .content = null, .hash = null };
+    if (draft_entry) |entry| {
+        if (entry.operation == .delete) return .{ .content = null, .hash = null };
+    }
+
+    const content: []const u8 = if (draft_entry) |entry|
+        try drafts.readDraftFile(allocator, ws_dir, .meta_prompt, entry.draft_path)
+    else blk: {
+        const mpf_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
+        defer allocator.free(mpf_path);
+        const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return .{ .content = null, .hash = null };
+        defer file.close();
+        var read_buf: [4096]u8 = undefined;
+        var fr = std.fs.File.Reader.init(file, &read_buf);
+        break :blk fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch return .{ .content = null, .hash = null };
+    };
     errdefer allocator.free(content);
 
     const hash = try util_hash.sha256HexAlloc(allocator, content);
@@ -1180,6 +1194,113 @@ test "loadMpf: returns null when file missing" {
 
     try testing.expect(result.content == null);
     try testing.expect(result.hash == null);
+}
+
+test "loadMpf: draft content overrides cache" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache");
+    try writeFile(tmp.dir, "cache/META_PROMPT.md", "cached mpf");
+
+    try tmp.dir.makePath("drafts/meta_prompt");
+    try writeFile(tmp.dir, "drafts/meta_prompt/META_PROMPT.md", "draft mpf");
+    try tmp.dir.makePath("drafts");
+    try writeFile(tmp.dir, "drafts/index.json",
+        \\{
+        \\  "drafts": [
+        \\    {
+        \\      "category": "meta_prompt",
+        \\      "current_path": "META_PROMPT.md",
+        \\      "draft_path": "META_PROMPT.md",
+        \\      "operation": "modify",
+        \\      "status": "editing"
+        \\    }
+        \\  ]
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var result = try loadMpf(testing.allocator, root, null);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.content != null);
+    try testing.expectEqualStrings("draft mpf", result.content.?);
+    try testing.expect(result.hash != null);
+}
+
+test "loadMpf: delete draft makes mpf appear absent" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache");
+    try writeFile(tmp.dir, "cache/META_PROMPT.md", "cached mpf");
+
+    try tmp.dir.makePath("drafts");
+    try writeFile(tmp.dir, "drafts/index.json",
+        \\{
+        \\  "drafts": [
+        \\    {
+        \\      "category": "meta_prompt",
+        \\      "current_path": "META_PROMPT.md",
+        \\      "draft_path": "META_PROMPT.md",
+        \\      "operation": "delete",
+        \\      "status": "editing"
+        \\    }
+        \\  ]
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var result = try loadMpf(testing.allocator, root, null);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.content == null);
+    try testing.expect(result.hash == null);
+}
+
+test "loadMpf: delta works with draft content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache");
+    try writeFile(tmp.dir, "cache/META_PROMPT.md", "cached mpf");
+
+    try tmp.dir.makePath("drafts/meta_prompt");
+    try writeFile(tmp.dir, "drafts/meta_prompt/META_PROMPT.md", "draft mpf");
+    try tmp.dir.makePath("drafts");
+    try writeFile(tmp.dir, "drafts/index.json",
+        \\{
+        \\  "drafts": [
+        \\    {
+        \\      "category": "meta_prompt",
+        \\      "current_path": "META_PROMPT.md",
+        \\      "draft_path": "META_PROMPT.md",
+        \\      "operation": "modify",
+        \\      "status": "editing"
+        \\    }
+        \\  ]
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var first = try loadMpf(testing.allocator, root, null);
+    const hash = try testing.allocator.dupe(u8, first.hash.?);
+    defer testing.allocator.free(hash);
+    first.deinit(testing.allocator);
+
+    var second = try loadMpf(testing.allocator, root, hash);
+    defer second.deinit(testing.allocator);
+
+    try testing.expect(second.content == null);
+    try testing.expect(second.hash != null);
+    try testing.expectEqualStrings(hash, second.hash.?);
 }
 
 test "parseConstraints: list items become individual constraints" {

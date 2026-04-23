@@ -9,11 +9,13 @@ const util_hash = @import("clumsies_lib").util.hash;
 pub const DraftCategory = enum {
     rule,
     context,
+    meta_prompt,
 
     fn toString(self: DraftCategory) []const u8 {
         return switch (self) {
             .rule => "rule",
             .context => "context",
+            .meta_prompt => "meta_prompt",
         };
     }
 };
@@ -119,6 +121,8 @@ fn parseEntry(obj: std.json.ObjectMap) ?DraftEntry {
         .rule
     else if (std.mem.eql(u8, category_str, "context"))
         .context
+    else if (std.mem.eql(u8, category_str, "meta_prompt"))
+        .meta_prompt
     else
         return null;
 
@@ -337,11 +341,16 @@ pub fn reconcileDrafts(
         const base_hash = entry.base_hash orelse continue;
         const cur = entry.current_path orelse continue;
 
-        const rel_dir: []const u8 = switch (entry.category) {
-            .rule => "rule",
-            .context => "context",
+        const cache_path = if (entry.category == .meta_prompt)
+            try std.fs.path.join(allocator, &.{ cache_dir, cur })
+        else blk: {
+            const rel_dir: []const u8 = switch (entry.category) {
+                .rule => "rule",
+                .context => "context",
+                else => unreachable,
+            };
+            break :blk try std.fs.path.join(allocator, &.{ cache_dir, rel_dir, cur });
         };
-        const cache_path = try std.fs.path.join(allocator, &.{ cache_dir, rel_dir, cur });
         defer allocator.free(cache_path);
 
         const file = std.fs.openFileAbsolute(cache_path, .{}) catch continue;
