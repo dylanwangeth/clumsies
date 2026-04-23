@@ -288,6 +288,10 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/skills/ntmd/SKILL.md",
     ));
+    options.addOption([]const u8, "adapter_claude_code_runtime_skill_setup", readSourceAsset(
+        b,
+        "assets/adapters/claude-code/runtime/skills/setup/SKILL.md",
+    ));
     options.addOption([]const u8, "adapter_codex_runtime_skill_search", readSourceAsset(
         b,
         "assets/adapters/codex/runtime/skills/search/SKILL.md",
@@ -295,6 +299,10 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
     options.addOption([]const u8, "adapter_codex_runtime_skill_ntmd", readSourceAsset(
         b,
         "assets/adapters/codex/runtime/skills/ntmd/SKILL.md",
+    ));
+    options.addOption([]const u8, "adapter_codex_runtime_skill_setup", readSourceAsset(
+        b,
+        "assets/adapters/codex/runtime/skills/setup/SKILL.md",
     ));
 }
 

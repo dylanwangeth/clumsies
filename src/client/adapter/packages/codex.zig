@@ -98,6 +98,15 @@ pub fn renderRuntimeAssets(
         .file_mode = 0o644,
         .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_skill_ntmd),
     });
+    try assets.append(allocator, .{
+        .resource_id = "codex.skills.setup",
+        .resource_kind = "plain_file",
+        .relative_path = try scopedRelativePath(allocator, "skills/setup/SKILL.md"),
+        .ownership = "exclusive",
+        .label = "Codex setup skill",
+        .file_mode = 0o644,
+        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_skill_setup),
+    });
 
     if (scope == .workspace) {
         const workspace_root = workspaceRootFromAdapterRoot(target_root);
