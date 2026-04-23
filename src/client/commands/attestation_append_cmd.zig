@@ -9,7 +9,7 @@ const styles = @import("../styles.zig");
 const Color = styles.Color;
 const P = styles.P;
 
-const ALLOWED_TYPES = [_][]const u8{ "setup", "user_prompt", "search", "load", "refer", "agent_report" };
+const ALLOWED_TYPES = [_][]const u8{ "setup", "user_prompt", "discover", "load", "refer", "agent_report" };
 
 const FLAG_TYPE: usize = 0;
 const FLAG_CONTENT: usize = 1;
@@ -66,7 +66,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         }
     }
     if (!allowed) {
-        try stderr.writeAll("Error: --type must be one of setup/user_prompt/search/load/refer/agent_report\n");
+        try stderr.writeAll("Error: --type must be one of setup/user_prompt/discover/load/refer/agent_report\n");
         return;
     }
 
