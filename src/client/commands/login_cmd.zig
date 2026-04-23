@@ -70,7 +70,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
     defer allocator.free(hub_url);
 
-    // Get username: from flag or rule interactively
+    // Get username: from flag or prompt interactively
     const username_from_prompt: ?[]const u8 = if (result.value(1) != null) null else blk: {
         try stderr.print("{s}Username: ", .{P});
         try stderr.flush();

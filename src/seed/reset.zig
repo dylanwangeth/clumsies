@@ -81,7 +81,7 @@ fn seedUsers(conn: *pg.Conn) !void {
 }
 
 fn seedRules(conn: *pg.Conn) !void {
-    for (data.PROMPTS) |rule| {
+    for (data.RULES) |rule| {
         const content_hash = util_hash.contentHash(rule.content);
         _ = try conn.exec(
             \\INSERT INTO rules (rule_id, org_id, path, content, content_hash)
@@ -109,7 +109,7 @@ fn seedWorkspaceMembers(conn: *pg.Conn) !void {
 }
 
 fn seedWorkspaceRules(conn: *pg.Conn) !void {
-    for (data.WORKSPACE_PROMPTS) |binding| {
+    for (data.WORKSPACE_RULES) |binding| {
         _ = try conn.exec(
             \\INSERT INTO workspace_rules (ws_id, rule_id)
             \\VALUES ($1, $2)

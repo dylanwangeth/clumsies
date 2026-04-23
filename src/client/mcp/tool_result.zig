@@ -28,7 +28,7 @@ pub fn buildErrorResult(allocator: std.mem.Allocator, message: []const u8) ![]u8
     );
 }
 
-pub fn serializePromptList(
+pub fn serializeRuleList(
     allocator: std.mem.Allocator,
     items: []const workspace_rule.RuleItem,
 ) ![]u8 {
@@ -38,7 +38,7 @@ pub fn serializePromptList(
     try buf.appendSlice(allocator, "{\"items\":[");
     for (items, 0..) |item, idx| {
         if (idx > 0) try buf.append(allocator, ',');
-        try appendPromptMetadata(allocator, &buf, item);
+        try appendRuleMetadata(allocator, &buf, item);
     }
     try buf.appendSlice(allocator, "]}");
 
@@ -92,7 +92,7 @@ pub fn serializeLoadResultWithConstraints(
     return try buf.toOwnedSlice(allocator);
 }
 
-fn appendPromptMetadata(
+fn appendRuleMetadata(
     allocator: std.mem.Allocator,
     buf: *std.ArrayList(u8),
     item: workspace_rule.RuleItem,
@@ -218,12 +218,12 @@ test "buildErrorResult escapes special characters in message" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\\nnewline") != null);
 }
 
-test "serializePromptList produces valid items array" {
+test "serializeRuleList produces valid items array" {
     const allocator = std.testing.allocator;
     const items = [_]workspace_rule.RuleItem{
         .{ .id = "p-1", .path = "rule/STYLE.md", .kind = .rule, .group = null, .hash = "abc123", .name = "STYLE", .priority = .normal },
     };
-    const result = try serializePromptList(allocator, &items);
+    const result = try serializeRuleList(allocator, &items);
     defer allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"items\":[") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"id\":\"p-1\"") != null);

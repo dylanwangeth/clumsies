@@ -44,7 +44,7 @@ fn fixturesHealthy(conn: *pg.Conn) !bool {
         if (!try userHealthy(conn, user)) return false;
     }
 
-    for (data.PROMPTS) |rule| {
+    for (data.RULES) |rule| {
         if (!try stringColumnMatches(
             conn,
             "SELECT path FROM rules WHERE rule_id = $1",
@@ -70,7 +70,7 @@ fn fixturesHealthy(conn: *pg.Conn) !bool {
         )) return false;
     }
 
-    for (data.WORKSPACE_PROMPTS) |binding| {
+    for (data.WORKSPACE_RULES) |binding| {
         if (!try exists(
             conn,
             "SELECT 1 FROM workspace_rules WHERE ws_id = $1 AND rule_id = $2",
