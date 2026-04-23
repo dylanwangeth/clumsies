@@ -114,32 +114,32 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     // cache so we only ship the IDs/paths that genuinely need
     // refetching. On a warm cache this trims the batch request down
     // to zero items and sync finishes on the manifest call alone.
-    var prompts_to_fetch: std.ArrayList([]const u8) = .empty;
-    defer prompts_to_fetch.deinit(allocator);
-    var prompts_path_for_id: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer prompts_path_for_id.deinit(allocator);
-    var prompt_skipped: usize = 0;
-    var regular_prompts_to_fetch: usize = 0;
+    var rule_to_fetch: std.ArrayList([]const u8) = .empty;
+    defer rule_to_fetch.deinit(allocator);
+    var rule_path_for_id: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer rule_path_for_id.deinit(allocator);
+    var rule_skipped: usize = 0;
+    var regular_rule_to_fetch: usize = 0;
     // Reserved paths (MPF) are reported on their own line so the
-    // "Prompts: N unchanged, M to fetch" summary refers only to
+    // "Rules: N unchanged, M to fetch" summary refers only to
     // regular rules + workflows. The reserved file still shares the
     // batch fetch below — it is just accounted for separately in
     // the human-readable output.
     var mpf_status: enum { absent, unchanged, to_fetch } = .absent;
     for (manifest.rules.items) |entry| {
         const rule_id = entry.key;
-        const prompt_path = entry.value.path;
+        const rule_path = entry.value.path;
         const remote_hash = stripHashPrefix(entry.value.hash);
-        const matches = try localFileMatchesHash(allocator, cache_dir, cacheSubDirForPromptPath(prompt_path), prompt_path, remote_hash);
-        const is_mpf = std.mem.eql(u8, prompt_path, "META_PROMPT.md");
+        const matches = try localFileMatchesHash(allocator, cache_dir, cacheSubDirForRulePath(rule_path), rule_path, remote_hash);
+        const is_mpf = std.mem.eql(u8, rule_path, "META_PROMPT.md");
         if (is_mpf) mpf_status = if (matches) .unchanged else .to_fetch;
         if (matches) {
-            if (!is_mpf) prompt_skipped += 1;
+            if (!is_mpf) rule_skipped += 1;
             continue;
         }
-        try prompts_to_fetch.append(allocator, rule_id);
-        try prompts_path_for_id.put(allocator, rule_id, prompt_path);
-        if (!is_mpf) regular_prompts_to_fetch += 1;
+        try rule_to_fetch.append(allocator, rule_id);
+        try rule_path_for_id.put(allocator, rule_id, rule_path);
+        if (!is_mpf) regular_rule_to_fetch += 1;
     }
 
     var contexts_to_fetch: std.ArrayList([]const u8) = .empty;
@@ -160,16 +160,16 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         .unchanged => try stdout.print("{s}\xe2\x86\x92 META_PROMPT.md: unchanged\n", .{P}),
         .to_fetch => try stdout.print("{s}\xe2\x86\x92 META_PROMPT.md: to fetch\n", .{P}),
     }
-    try stdout.print("{s}\xe2\x86\x92 Prompts: {d} unchanged, {d} to fetch\n", .{ P, prompt_skipped, regular_prompts_to_fetch });
+    try stdout.print("{s}\xe2\x86\x92 Rules: {d} unchanged, {d} to fetch\n", .{ P, rule_skipped, regular_rule_to_fetch });
     try stdout.flush();
 
-    var prompt_fetched: usize = 0;
+    var rule_fetched: usize = 0;
     {
         var start: usize = 0;
-        while (start < prompts_to_fetch.items.len) {
-            const end = @min(start + BATCH_CHUNK_SIZE, prompts_to_fetch.items.len);
-            prompt_fetched += fetchPromptsBatch(allocator, &hub, stderr, cache_dir, prompts_to_fetch.items[start..end], &prompts_path_for_id) catch |err| {
-                try stderr.print("{s}{s}{s}Error:{s} Prompt batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
+        while (start < rule_to_fetch.items.len) {
+            const end = @min(start + BATCH_CHUNK_SIZE, rule_to_fetch.items.len);
+            rule_fetched += fetchRuleBatch(allocator, &hub, stderr, cache_dir, rule_to_fetch.items[start..end], &rule_path_for_id) catch |err| {
+                try stderr.print("{s}{s}{s}Error:{s} Rule batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
                 return;
             };
             start = end;
@@ -192,12 +192,12 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         }
     }
 
-    // MPF is intentionally excluded from `prompt_skipped` so the
-    // "Prompts" line only reports regular rules + workflows. Re-add
+    // MPF is intentionally excluded from `rule_skipped` so the
+    // "Rules" line only reports regular rules + workflows. Re-add
     // it to the final rule_count when MPF was unchanged this sync
     // so the totals still reflect every manifest entry.
     const mpf_in_unchanged: usize = if (mpf_status == .unchanged) 1 else 0;
-    const rule_count = prompt_fetched + prompt_skipped + mpf_in_unchanged;
+    const rule_count = rule_fetched + rule_skipped + mpf_in_unchanged;
     const context_count = context_fetched + context_skipped;
 
     // Write manifest.json to cache
@@ -215,9 +215,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }
 
     const reconcile = drafts_mod.reconcileDrafts(allocator, ws_dir, cache_dir) catch drafts_mod.ReconcileSummary{};
-    const skipped_suffix = try std.fmt.allocPrint(allocator, " ({d} rules + {d} context unchanged)", .{ prompt_skipped, context_skipped });
+    const skipped_suffix = try std.fmt.allocPrint(allocator, " ({d} rules + {d} context unchanged)", .{ rule_skipped, context_skipped });
     defer allocator.free(skipped_suffix);
-    const skipped_note: []const u8 = if (prompt_skipped + context_skipped > 0) skipped_suffix else "";
+    const skipped_note: []const u8 = if (rule_skipped + context_skipped > 0) skipped_suffix else "";
     if (reconcile.conflicted > 0) {
         try stdout.print("{s}{s}{s}Synced:{s} {d} rules, {d} context files{s}, {d} drafts flagged conflicted\n", .{ P, Color.bold, Color.green, Color.reset, rule_count, context_count, skipped_note, reconcile.conflicted });
     } else {
@@ -230,7 +230,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 /// so the user can tell why a "46 of 46" manifest only produced
 /// "44 written"; the overall return value is the count of rules
 /// successfully written to cache.
-fn fetchPromptsBatch(
+fn fetchRuleBatch(
     allocator: std.mem.Allocator,
     hub: *HubClient,
     stderr: *std.Io.Writer,
@@ -272,7 +272,7 @@ fn fetchPromptsBatch(
                 try stderr.print("  ! rule {s}: missing path in response\n", .{item.rule_id});
                 continue;
             };
-        writeToCache(allocator, cache_dir, cacheSubDirForPromptPath(target_path), target_path, item.body) catch |err| {
+        writeToCache(allocator, cache_dir, cacheSubDirForRulePath(target_path), target_path, item.body) catch |err| {
             try stderr.print("  ! rule {s}: write failed ({s})\n", .{ target_path, @errorName(err) });
             continue;
         };
@@ -286,12 +286,12 @@ fn fetchPromptsBatch(
 /// root so loaders can read them without knowing the rule
 /// namespace layout. Everything else lives under `cache/rule/` so
 /// the rule namespace cannot collide with context.
-fn cacheSubDirForPromptPath(prompt_path: []const u8) []const u8 {
-    if (std.mem.eql(u8, prompt_path, "META_PROMPT.md")) return "";
+fn cacheSubDirForRulePath(rule_path: []const u8) []const u8 {
+    if (std.mem.eql(u8, rule_path, "META_PROMPT.md")) return "";
     return "rule";
 }
 
-/// Batch-fetch context file bodies. Mirrors `fetchPromptsBatch` but
+/// Batch-fetch context file bodies. Mirrors `fetchRuleBatch` but
 /// keyed by path inside a single workspace.
 fn fetchContextBatch(
     allocator: std.mem.Allocator,
@@ -471,13 +471,13 @@ test "stripHashPrefix handles empty input" {
     try testing.expectEqualStrings("", stripHashPrefix(""));
 }
 
-test "cacheSubDirForPromptPath routes META_PROMPT to cache root" {
-    try testing.expectEqualStrings("", cacheSubDirForPromptPath("META_PROMPT.md"));
+test "cacheSubDirForRulePath routes META_PROMPT to cache root" {
+    try testing.expectEqualStrings("", cacheSubDirForRulePath("META_PROMPT.md"));
 }
 
-test "cacheSubDirForPromptPath routes regular paths under rule/" {
-    try testing.expectEqualStrings("rule", cacheSubDirForPromptPath("coding/STYLE.md"));
-    try testing.expectEqualStrings("rule", cacheSubDirForPromptPath("workflow/CODING.md"));
+test "cacheSubDirForRulePath routes regular paths under rule/" {
+    try testing.expectEqualStrings("rule", cacheSubDirForRulePath("coding/STYLE.md"));
+    try testing.expectEqualStrings("rule", cacheSubDirForRulePath("workflow/CODING.md"));
 }
 
 test "localFileMatchesHash returns true on hash match" {

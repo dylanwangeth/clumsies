@@ -256,10 +256,14 @@ fn matchesGroup(item_group: []const u8, filter: []const u8) bool {
 }
 
 fn matchesQuery(haystack: []const u8, query: []const u8) bool {
-    if (query.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + query.len <= haystack.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + query.len], query)) return true;
+    var tokens = std.mem.splitAny(u8, query, " \t");
+    while (tokens.next()) |token| {
+        if (token.len == 0) continue;
+        if (token.len > haystack.len) continue;
+        var i: usize = 0;
+        while (i + token.len <= haystack.len) : (i += 1) {
+            if (std.ascii.eqlIgnoreCase(haystack[i .. i + token.len], token)) return true;
+        }
     }
     return false;
 }
@@ -421,47 +425,89 @@ pub fn loadRules(
             return err;
         };
 
-        const m_entry = manifest.rules.get(id) orelse return error.UnknownRuleId;
-        const kind = kindFromPath(m_entry.path) orelse return error.UnknownRuleId;
+        if (manifest.rules.get(id)) |m_entry| {
+            const kind = kindFromPath(m_entry.path) orelse return error.UnknownRuleId;
 
-        const known_hash = knownHashFor(id, known);
-        const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, m_entry.hash);
+            const known_hash = knownHashFor(id, known);
+            const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, m_entry.hash);
 
-        const draft_entry = draft_index.findByCurrentPath(.rule, m_entry.path);
-        if (draft_entry) |entry| {
-            if (entry.operation == .delete) return error.UnknownRuleId;
-        }
-
-        const content = if (changed) blk: {
+            const draft_entry = draft_index.findByCurrentPath(.rule, m_entry.path);
             if (draft_entry) |entry| {
-                break :blk try drafts.readDraftFile(allocator, ws_dir, .rule, entry.draft_path);
+                if (entry.operation == .delete) return error.UnknownRuleId;
             }
-            break :blk try readCacheFileAlloc(allocator, ws_dir, m_entry.path);
-        } else null;
-        errdefer if (content) |owned| allocator.free(owned);
 
-        const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
-        const group_slice = groupFromPath(m_entry.path);
+            const content = if (changed) blk: {
+                if (draft_entry) |entry| {
+                    break :blk try drafts.readDraftFile(allocator, ws_dir, .rule, entry.draft_path);
+                }
+                break :blk try readCacheFileAlloc(allocator, ws_dir, m_entry.path);
+            } else null;
+            errdefer if (content) |owned| allocator.free(owned);
 
-        const has_draft = draft_entry != null;
-        const draft_base = if (draft_entry) |entry|
-            if (entry.base_hash) |bh| try allocator.dupe(u8, bh) else null
-        else
-            null;
-        errdefer if (draft_base) |bh| allocator.free(bh);
+            const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
+            const group_slice = groupFromPath(m_entry.path);
 
-        try result.items.append(allocator, .{
-            .id = try allocator.dupe(u8, id),
-            .kind = kind,
-            .path = try allocator.dupe(u8, m_entry.path),
-            .name = try allocator.dupe(u8, display_name),
-            .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
-            .hash = try allocator.dupe(u8, m_entry.hash),
-            .changed = changed,
-            .content = content,
-            .has_draft = has_draft,
-            .draft_base_hash = draft_base,
-        });
+            const has_draft = draft_entry != null;
+            const draft_base = if (draft_entry) |entry|
+                if (entry.base_hash) |bh| try allocator.dupe(u8, bh) else null
+            else
+                null;
+            errdefer if (draft_base) |bh| allocator.free(bh);
+
+            try result.items.append(allocator, .{
+                .id = try allocator.dupe(u8, id),
+                .kind = kind,
+                .path = try allocator.dupe(u8, m_entry.path),
+                .name = try allocator.dupe(u8, display_name),
+                .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
+                .hash = try allocator.dupe(u8, m_entry.hash),
+                .changed = changed,
+                .content = content,
+                .has_draft = has_draft,
+                .draft_base_hash = draft_base,
+            });
+        } else if (manifest.context.get(id)) |m_entry| {
+            const known_hash = knownHashFor(id, known);
+            const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, m_entry.hash);
+
+            const draft_entry = draft_index.findByCurrentPath(.context, m_entry.path);
+            if (draft_entry) |entry| {
+                if (entry.operation == .delete) return error.UnknownRuleId;
+            }
+
+            const content = if (changed) blk: {
+                if (draft_entry) |entry| {
+                    break :blk try drafts.readDraftFile(allocator, ws_dir, .context, entry.draft_path);
+                }
+                break :blk try readContextCacheFile(allocator, ws_dir, m_entry.path);
+            } else null;
+            errdefer if (content) |owned| allocator.free(owned);
+
+            const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
+            const group_slice = groupFromPath(m_entry.path);
+
+            const has_draft = draft_entry != null;
+            const draft_base = if (draft_entry) |entry|
+                if (entry.base_hash) |bh| try allocator.dupe(u8, bh) else null
+            else
+                null;
+            errdefer if (draft_base) |bh| allocator.free(bh);
+
+            try result.items.append(allocator, .{
+                .id = try allocator.dupe(u8, id),
+                .kind = .context,
+                .path = try allocator.dupe(u8, m_entry.path),
+                .name = try allocator.dupe(u8, display_name),
+                .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
+                .hash = try allocator.dupe(u8, m_entry.hash),
+                .changed = changed,
+                .content = content,
+                .has_draft = has_draft,
+                .draft_base_hash = draft_base,
+            });
+        } else {
+            return error.UnknownRuleId;
+        }
     }
 
     return result;

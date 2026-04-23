@@ -5,7 +5,7 @@ const Color = styles.Color;
 const P = styles.P;
 
 pub fn run(stdout: *std.Io.Writer) !void {
-    try stdout.print("{s}{s}{s}clumsies{s} - Prompt + context management for AI agents\n\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}{s}{s}clumsies{s} - Rule + context management for AI agents\n\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}{s}{s}Usage:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}clumsies{s}            Launch TUI Dashboard\n", .{ P, Color.cyan, Color.reset });
     try stdout.print("{s}    {s}clumsies login{s}      Authenticate with Hub\n", .{ P, Color.cyan, Color.reset });
