@@ -304,9 +304,14 @@ pub fn discoverSearchable(
         }
 
         if (query_filter) |q| {
-            const in_path = matchesQuery(m_entry.path, q);
-            const in_desc = m_entry.description.len > 0 and matchesQuery(m_entry.description, q);
-            if (!in_path and !in_desc) continue;
+            const trimmed = std.mem.trim(u8, q, " \t");
+            if (trimmed.len == 0) {
+                // empty/whitespace-only query is treated as no filter
+            } else {
+                const in_path = matchesQuery(m_entry.path, trimmed);
+                const in_desc = m_entry.description.len > 0 and matchesQuery(m_entry.description, trimmed);
+                if (!in_path and !in_desc) continue;
+            }
         }
 
         const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
@@ -977,6 +982,68 @@ test "loadRules: unknown id returns UnknownRuleId" {
     try testing.expectError(error.UnknownRuleId, loadRules(testing.allocator, root, &.{"p-missing"}, &.{}));
 }
 
+test "loadRules: context id reads from cache/context" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/context/spec");
+    try writeFile(tmp.dir, "cache/context/spec/API.md", "api spec content");
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "rules": {},
+        \\  "context": {
+        \\    "c-api": {"path": "spec/API.md", "hash": "sha256:abc"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var result = try loadRules(testing.allocator, root, &.{"c-api"}, &.{});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.items.items.len);
+    try testing.expectEqualStrings("c-api", result.items.items[0].id);
+    try testing.expectEqual(RuleKind.context, result.items.items[0].kind);
+    try testing.expect(result.items.items[0].changed);
+    try testing.expectEqualStrings("api spec content", result.items.items[0].content.?);
+}
+
+test "loadRules: mixed rule and context ids" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/coding");
+    try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style");
+    try tmp.dir.makePath("cache/context/spec");
+    try writeFile(tmp.dir, "cache/context/spec/API.md", "api");
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "rules": {
+        \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:aaa"}
+        \\  },
+        \\  "context": {
+        \\    "c-api": {"path": "spec/API.md", "hash": "sha256:bbb"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var result = try loadRules(testing.allocator, root, &.{ "p-style", "c-api" }, &.{});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), result.items.items.len);
+    try testing.expectEqualStrings("p-style", result.items.items[0].id);
+    try testing.expectEqual(RuleKind.rule, result.items.items[0].kind);
+    try testing.expectEqualStrings("c-api", result.items.items[1].id);
+    try testing.expectEqual(RuleKind.context, result.items.items[1].kind);
+}
+
 test "loadRules: draft content overrides cache when indexed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1171,4 +1238,21 @@ test "parseConstraints: empty content" {
     try testing.expect(!result.valid);
     try testing.expectEqual(@as(usize, 0), result.constraints.items.len);
     try testing.expectEqual(@as(usize, 1), result.issues.items.len);
+}
+
+test "matchesQuery: single token matches substring" {
+    try testing.expect(matchesQuery("zig/ZIG_STYLE.md", "style"));
+    try testing.expect(matchesQuery("zig/ZIG_STYLE.md", "ZIG"));
+    try testing.expect(!matchesQuery("zig/ZIG_STYLE.md", "python"));
+}
+
+test "matchesQuery: multi-token query matches any token" {
+    try testing.expect(matchesQuery("zig/ZIG_STYLE.md", "zig style"));
+    try testing.expect(matchesQuery("coding/STYLE.md", "zig style"));
+    try testing.expect(!matchesQuery("coding/STYLE.md", "zig python"));
+}
+
+test "matchesQuery: empty or whitespace query matches nothing" {
+    try testing.expect(!matchesQuery("any/path.md", ""));
+    try testing.expect(!matchesQuery("any/path.md", "   "));
 }
