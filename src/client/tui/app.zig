@@ -2318,7 +2318,7 @@ pub const Dashboard = struct {
             };
             target_map.put(arena, key, entry.status) catch {};
 
-            if (entry.operation == .create) {
+            if (entry.operation == .create and entry.category != .meta_prompt) {
                 // Long-lived dup — see the note at the top of this
                 // function. The tree borrows these slices beyond a
                 // single refresh so drafts_arena is unsafe.
@@ -2326,7 +2326,7 @@ pub const Dashboard = struct {
                 const dest = switch (entry.category) {
                     .rule => &create_rules,
                     .context => &create_contexts,
-                    .meta_prompt => continue,
+                    .meta_prompt => unreachable,
                 };
                 dest.append(api_alloc, path_copy) catch {};
             }
