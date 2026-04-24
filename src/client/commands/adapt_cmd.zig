@@ -5,20 +5,18 @@ const adapter_cli = @import("adapter_cli.zig");
 const styles = @import("../styles.zig");
 const workspace_config = @import("../workspace_config.zig");
 
-const FLAG_INSTALL: usize = 0;
-const FLAG_REMOVE: usize = 1;
-const FLAG_LIST: usize = 2;
-const FLAG_AGENT: usize = 3;
-const FLAG_SCOPE: usize = 4;
-const FLAG_UPDATE: usize = 5;
-const FLAG_YES: usize = 6;
+const FLAG_REMOVE: usize = 0;
+const FLAG_LIST: usize = 1;
+const FLAG_AGENT: usize = 2;
+const FLAG_SCOPE: usize = 3;
+const FLAG_UPDATE: usize = 4;
+const FLAG_YES: usize = 5;
 
 const Color = styles.Color;
 const P = styles.P;
 
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const specs = [_]flag.FlagSpec{
-        .{ .short = 'i', .long = "install", .kind = .boolean },
         .{ .short = 'r', .long = "remove", .kind = .boolean },
         .{ .short = 'l', .long = "list", .kind = .boolean },
         .{ .short = 'a', .long = "agent", .kind = .value },
@@ -54,6 +52,14 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     if (want_remove and want_list) {
         try stderr.print("{s}{s}{s}Error:{s} --remove and --list are mutually exclusive.\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    }
+    if (want_list and parsed.boolean(FLAG_UPDATE)) {
+        try stderr.print("{s}{s}{s}Error:{s} --list and --update are mutually exclusive.\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    }
+    if (want_remove and parsed.boolean(FLAG_UPDATE)) {
+        try stderr.print("{s}{s}{s}Error:{s} --remove and --update are mutually exclusive.\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     }
 
@@ -332,9 +338,12 @@ fn listInstalls(
     stdout: *std.Io.Writer,
     allocator: std.mem.Allocator,
 ) !void {
-    const installs_dir_path = adapter.store.adaptersBasePath(allocator) catch {
-        try stdout.print("{s}{s}No adapter installs found.{s}\n", .{ P, Color.dim, Color.reset });
-        return;
+    const installs_dir_path = adapter.store.adaptersBasePath(allocator) catch |err| switch (err) {
+        error.HomeNotSet => {
+            try stdout.print("{s}{s}No adapter installs found.{s}\n", .{ P, Color.dim, Color.reset });
+            return;
+        },
+        else => return err,
     };
     defer allocator.free(installs_dir_path);
 
@@ -658,11 +667,9 @@ fn printInstallPlan(
 fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage:{s}\n", .{ P, Color.reset });
     try out.print("{s}  {s}clumsies adapt{s}                  Install or update an agent adapter (default)\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}clumsies adapt -i{s}                Same as above (explicit install)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}clumsies adapt -r{s}                Remove an installed adapter\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}clumsies adapt -l{s}                List installed adapters\n\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Flags:{s}\n", .{ P, Color.reset });
-    try out.writeAll("  -i, --install   Install or update (default when no action flag is given)\n");
     try out.writeAll("  -r, --remove    Remove an installed adapter\n");
     try out.writeAll("  -l, --list      List all installed adapters\n");
     try out.writeAll("  -a, --agent     Adapter agent name\n");

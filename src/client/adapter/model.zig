@@ -61,7 +61,7 @@ pub const Plan = struct {
         allocator.free(self.install_id);
         allocator.free(self.target_root);
         for (self.notes) |note| allocator.free(note);
-        allocator.free(self.notes);
+        if (self.notes.len > 0) allocator.free(self.notes);
         deinitPlanStepsSlice(allocator, self.steps);
         allocator.free(self.steps);
     }

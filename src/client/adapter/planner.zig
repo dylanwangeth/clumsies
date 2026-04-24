@@ -227,11 +227,17 @@ pub fn buildAdaptPlan(
     release_install_id = false;
 
     var notes: []const []const u8 = &.{};
+    var notes_owned = false;
     if (pkg.render_notes_fn) |notes_fn| {
         if (try notes_fn(allocator, scope, target_root)) |n| {
             notes = n;
+            notes_owned = true;
         }
     }
+    errdefer if (notes_owned) {
+        for (notes) |note| allocator.free(note);
+        allocator.free(notes);
+    };
 
     return .{ .plan = .{
         .agent_name = try allocator.dupe(u8, pkg.id),
