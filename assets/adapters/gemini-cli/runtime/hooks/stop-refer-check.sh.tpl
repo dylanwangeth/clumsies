@@ -8,7 +8,7 @@ input=$(cat)
 
 source "$(dirname "$0")/resolve-binary.sh"
 
-if ! $CLUMSIES _agent submit-check 2>/dev/null; then
+if ! "$CLUMSIES" _agent submit-check 2>/dev/null; then
     echo '{"decision":"deny","reason":"You must call memory.submit with a summary of your work before finishing."}'
 else
     echo '{"decision":"allow"}'

@@ -8,9 +8,12 @@ input=$(cat)
 
 source "$(dirname "$0")/resolve-binary.sh"
 
-prompt=$(printf '%s' "$input" | jq -r '.prompt // empty')
+prompt=''
+if command -v jq >/dev/null 2>&1; then
+    prompt=$(printf '%s' "$input" | jq -r '.prompt // empty' 2>/dev/null || printf '')
+fi
 if [ -n "$prompt" ]; then
-    $CLUMSIES _agent attestation-append --type user_prompt --content "$prompt" 2>/dev/null || true
+    "$CLUMSIES" _agent attestation-append --type user_prompt --content "$prompt" 2>/dev/null || true
 fi
 
 echo '{"decision":"allow"}'
