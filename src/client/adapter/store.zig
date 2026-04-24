@@ -129,7 +129,7 @@ pub fn loadManifestForTarget(
     return best_match;
 }
 
-fn loadManifestAtPath(allocator: std.mem.Allocator, path: []const u8) !LoadedManifest {
+pub fn loadManifestAtPath(allocator: std.mem.Allocator, path: []const u8) !LoadedManifest {
     const content = readFileAlloc(allocator, path) catch |err| switch (err) {
         error.FileNotFound => return err,
         else => return err,
