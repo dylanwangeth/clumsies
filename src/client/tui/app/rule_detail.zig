@@ -59,7 +59,7 @@ pub fn drawEmbedded(
     const border_color = theme.focusBorder(self.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
-    try fillRuleDetailSurface(&surface, ctx, rule, embedded_layout, body);
+    try fillRuleDetailSurface(self, &surface, ctx, rule, embedded_layout, body);
     return surface;
 }
 
@@ -76,6 +76,15 @@ pub fn handleEmbeddedPaneEvent(
     }
     switch (self.detail_tab) {
         .content => {
+            if (key.matches('y', .{})) {
+                if (self.copySelectedContentId()) {
+                    ctx.consumeAndRedraw();
+                } else {
+                    self.status_line = "No id to copy.";
+                    ctx.consumeAndRedraw();
+                }
+                return;
+            }
             if (key.matches('e', .{})) {
                 self.editSelectedDraft();
                 ctx.consumeAndRedraw();
@@ -96,7 +105,7 @@ pub fn handleEmbeddedPaneEvent(
                 ctx.consumeAndRedraw();
                 return;
             }
-            try self.content_scroll_bars.scroll_view.handleEvent(ctx, event);
+            try self.content_view.handleEvent(ctx, event);
         },
         .pull_requests => try handlePrDiffEvent(self, ctx, event, key),
     }
@@ -211,6 +220,7 @@ fn shortHash(raw: []const u8) []const u8 {
 }
 
 fn fillRuleDetailSurface(
+    self: anytype,
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
     rule: *const data.RuleEntry,
@@ -219,8 +229,9 @@ fn fillRuleDetailSurface(
 ) std.mem.Allocator.Error!void {
     switch (body) {
         .content => |content_surface| {
-            w.writeText(surface, ctx, 2, 0, rule.path, theme.boldOn(theme.PANEL, theme.TEXT));
-            try writeRuleMetaOnPanelChrome(surface, ctx, @intCast(2 + ctx.stringWidth(rule.path) + 2), rule);
+            const title = self.lookupRuleId(rule.path) orelse "(new)";
+            w.writeText(surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
+            try writeRuleMetaOnPanelChrome(surface, ctx, @intCast(2 + ctx.stringWidth(title) + 2), rule);
             const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
             children[0] = .{
                 .origin = .{
@@ -393,16 +404,7 @@ pub fn syncContentWidgetBytes(
     cache_content: []const u8,
     draft_content: ?[]const u8,
 ) void {
-    const proposed = draft_content orelse cache_content;
-    const arena = self.viewAllocator();
-    const rows = diff_viewer.computeInlineGutter(arena, cache_content, proposed) catch null;
-    if (rows) |r| {
-        renderGutterRows(self, arena, r) catch {
-            renderFlatContent(self, arena, proposed);
-        };
-    } else {
-        renderFlatContent(self, arena, proposed);
-    }
+    self.content_view.syncBytes(self.viewAllocator(), cache_content, draft_content);
 }
 
 /// Workspace-side entrypoint: render the working copy for a
@@ -446,57 +448,7 @@ pub fn buildContentSurface(
     width_pad: u16,
     child_height: u16,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const inner_w = ctx.max.width.? -| width_pad;
-    const child_ctx = ctx.withConstraints(
-        .{ .width = inner_w, .height = child_height },
-        .{ .width = inner_w, .height = child_height },
-    );
-    return self.content_scroll_bars.widget().draw(child_ctx);
-}
-
-fn renderGutterRows(
-    self: anytype,
-    arena: std.mem.Allocator,
-    rows: []const diff_viewer.DiffRow,
-) !void {
-    const widgets = try arena.alloc(vxfw.Widget, rows.len);
-    const texts = try arena.alloc(vxfw.Text, rows.len);
-    for (rows, 0..) |row, idx| {
-        const marker: u8 = switch (row.marker) {
-            .unchanged => ' ',
-            .added => '+',
-            .removed => '-',
-        };
-        const lineno = row.new_line orelse row.old_line orelse 0;
-        const prefixed = std.fmt.allocPrint(arena, "{d:>4} {c} {s}", .{ lineno, marker, row.text }) catch row.text;
-        texts[idx] = .{
-            .text = prefixed,
-            .style = gutterRowStyle(row.marker),
-        };
-        widgets[idx] = texts[idx].widget();
-    }
-    self.content_scroll_bars.scroll_view.children = .{ .slice = widgets };
-    self.content_scroll_bars.estimated_content_height = @intCast(@max(rows.len, 24));
-}
-
-fn renderFlatContent(self: anytype, arena: std.mem.Allocator, content: []const u8) void {
-    const widgets = arena.alloc(vxfw.Widget, 1) catch return;
-    const texts = arena.alloc(vxfw.Text, 1) catch return;
-    texts[0] = .{
-        .text = content,
-        .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
-    };
-    widgets[0] = texts[0].widget();
-    self.content_scroll_bars.scroll_view.children = .{ .slice = widgets };
-    self.content_scroll_bars.estimated_content_height = @intCast(@max(w.countLines(content), 24));
-}
-
-fn gutterRowStyle(marker: diff_viewer.Marker) vaxis.Style {
-    return switch (marker) {
-        .unchanged => theme.textOn(theme.PANEL, theme.TEXT_SOFT),
-        .added => .{ .fg = theme.OK, .bg = theme.rgb(0x1d2617) },
-        .removed => .{ .fg = theme.DANGER, .bg = theme.rgb(0x2a1b18) },
-    };
+    return self.content_view.buildSurface(self.viewAllocator(), ctx, width_pad, child_height);
 }
 
 pub fn syncPrWidgets(self: anytype) void {

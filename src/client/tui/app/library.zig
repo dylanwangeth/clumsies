@@ -17,7 +17,8 @@ pub fn drawRoot(
     list_surface: vxfw.Surface,
     detail_surface: vxfw.Surface,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    return w.splitHorizontal(ctx, self.widget(), theme.PANEL, list_surface, detail_surface, ctx.max.size().width / 3);
+    const size = ctx.max.size();
+    return w.splitHorizontal(ctx, self.widget(), theme.PANEL, list_surface, detail_surface, size.width / 3);
 }
 
 pub fn drawListPanel(
@@ -171,7 +172,7 @@ pub fn handleModuleEvent(
             break :blk 0;
         };
         self.library_bundle_filter = (self.library_bundle_filter + 1) % (bundle_count + 1);
-        self.library_scroll_bars.scroll_view.cursor = 0;
+        resetScrollView(&self.library_scroll_bars.scroll_view);
         ctx.consumeAndRedraw();
         return;
     }
@@ -188,6 +189,15 @@ pub fn handleModuleEvent(
     if (key.matches('n', .{}) and self.detail_tab == .content and !self.detail_focus_content) {
         self.openNewDraftForm(.rule);
         ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('y', .{}) and self.detail_tab == .content) {
+        if (self.copySelectedContentId()) {
+            ctx.consumeAndRedraw();
+        } else {
+            self.status_line = "No id to copy.";
+            ctx.consumeAndRedraw();
+        }
         return;
     }
     if (key.matches(vaxis.Key.tab, .{})) {
@@ -245,6 +255,7 @@ fn handleFileListEvent(
         }
         if (self.library_tree.parentRow(pos)) |parent| {
             self.library_scroll_bars.scroll_view.cursor = @intCast(parent);
+            self.library_scroll_bars.scroll_view.ensureScroll();
             ctx.consumeAndRedraw();
             return;
         }
@@ -414,9 +425,31 @@ pub fn syncLibraryWidgets(self: anytype) void {
     var cur = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
     if (cur >= row_count) cur = if (row_count > 0) row_count - 1 else 0;
     self.library_scroll_bars.scroll_view.cursor = @intCast(cur);
+    clampScrollTop(&self.library_scroll_bars.scroll_view, row_count);
     if (cur < row_count) {
         if (self.library_tree.leafIndexAt(cur)) |pi| {
             self.selected_rule = pi;
         }
+    }
+}
+
+fn resetScrollView(scroll_view: *vxfw.ScrollView) void {
+    scroll_view.cursor = 0;
+    scroll_view.scroll.top = 0;
+    scroll_view.scroll.vertical_offset = 0;
+    scroll_view.scroll.left = 0;
+}
+
+fn clampScrollTop(scroll_view: *vxfw.ScrollView, row_count: usize) void {
+    const visible_rows: usize = @max(@as(usize, scroll_view.last_height), 1);
+    const max_top: usize = if (row_count > visible_rows) row_count - visible_rows else 0;
+    if (max_top == 0) {
+        scroll_view.scroll.top = 0;
+        scroll_view.scroll.vertical_offset = 0;
+        return;
+    }
+    if (scroll_view.scroll.top > max_top) {
+        scroll_view.scroll.top = @intCast(max_top);
+        scroll_view.scroll.vertical_offset = 0;
     }
 }

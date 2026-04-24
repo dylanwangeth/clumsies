@@ -14,6 +14,7 @@ const workspace_panel = @import("app/workspace.zig");
 const drafts_mod = @import("../drafts.zig");
 const workspace_config = @import("../workspace_config.zig");
 const editor_host = @import("editor_host.zig");
+const surface_size = @import("surface_size.zig");
 const util_hash = @import("clumsies_lib").util.hash;
 
 const tree = @import("tree.zig");
@@ -158,7 +159,7 @@ pub const Dashboard = struct {
     library_table_rows: [MAX_TREE_ROWS]TableRow = undefined,
     library_table_cols: [MAX_TREE_ROWS][2]Column = undefined,
 
-    content_scroll_bars: vxfw.ScrollBars,
+    content_view: w.ContentView,
 
     // PR list within Rule Detail
     pr_filter: PrFilter = .open,
@@ -205,9 +206,12 @@ pub const Dashboard = struct {
     ws_list_sel: usize = 0,
     ws_grid_cols: u16 = 3,
     ws_show_diff: bool = false,
+    ws_list_scroll_bars: vxfw.ScrollBars,
     ws_context_tree: PathTreeState = .{},
     ws_rules_tree: PathTreeState = .{},
-    // Workspace uses manual grid + cached visible rows, no ScrollBars
+    ws_list_widgets: [MAX_TREE_ROWS]vxfw.Widget = undefined,
+    ws_list_rows: [MAX_TREE_ROWS]vxfw.Text = undefined,
+    last_safe_layout_size: vxfw.Size = .{},
 
     // Dashboard / Analysis shared state
     analysis_scope_idx: usize = 0,
@@ -293,9 +297,10 @@ pub const Dashboard = struct {
         return .{
             .api_state = api_state,
             .library_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .content_scroll_bars = w.initPlainScrollBars(theme.PANEL, 3),
+            .content_view = w.ContentView.init(),
             .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
+            .ws_list_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .view_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
             .app = app,
             .env_map = env_map,
@@ -656,7 +661,7 @@ pub const Dashboard = struct {
 
     fn draw(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         _ = self.view_arena.reset(.retain_capacity);
-        const size = ctx.max.size();
+        const size = self.sanitizeLayoutSize(ctx.max.size());
         if (size.width < 96 or size.height < 24) {
             return self.drawTooSmall(ctx, size);
         }
@@ -759,6 +764,19 @@ pub const Dashboard = struct {
         return root;
     }
 
+    fn sanitizeLayoutSize(self: *Dashboard, raw_size: vxfw.Size) vxfw.Size {
+        const size = surface_size.sanitize(raw_size);
+        if (raw_size.width == 0 or raw_size.height == 0) {
+            if (self.last_safe_layout_size.width > 0 and self.last_safe_layout_size.height > 0) {
+                return self.last_safe_layout_size;
+            }
+            return .{ .width = 96, .height = 24 };
+        }
+
+        self.last_safe_layout_size = size;
+        return size;
+    }
+
     fn drawHeader(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL_ALT);
@@ -846,21 +864,21 @@ pub const Dashboard = struct {
             .library => if (self.detail_focus_content and self.detail_tab == .pull_requests)
                 "j/k scroll  a accept  x reject  c comment  Esc list  ? help"
             else if (self.detail_focus_content)
-                "e edit  D discard  m ready  j/k scroll  Esc list"
+                "y copy id  e edit  D discard  m ready  j/k scroll  Esc list"
             else if (self.detail_tab == .pull_requests)
                 "j/k move  f filter  [/] tab  Tab detail  r refresh  ? help  q quit"
             else
-                "j/k move  n new  [/] tab  Enter detail  r refresh  b bundle  ? help  q quit",
+                "j/k move  y copy id  n new  [/] tab  Enter detail  r refresh  b bundle  ? help  q quit",
             .workspace => switch (self.ws_focus) {
                 .bar => if (self.ws_tab == .context)
                     "j/k select ws  [/] tab  n new file  c create ws  Tab list  r refresh  ? help  q quit"
                 else
                     "j/k select ws  [/] tab  c create ws  Tab list  r refresh  ? help  q quit",
                 .list => if (self.ws_tab == .context)
-                    "[/] tab  j/k move  h/l tree  Enter open  n new file  c create ws  Esc bar  ? help"
+                    "[/] tab  j/k move  h/l tree  y copy id  Enter open  n new file  c create ws  Esc bar  ? help"
                 else
-                    "[/] tab  j/k move  h/l tree  Enter open  c create ws  Esc bar  ? help",
-                .content => "j/k scroll  d toggle diff  e edit  D discard  m ready  p submit  Esc list  ? help",
+                    "[/] tab  j/k move  h/l tree  y copy id  Enter open  c create ws  Esc bar  ? help",
+                .content => "y copy id  j/k scroll  d toggle diff  e edit  D discard  m ready  p submit  Esc list  ? help",
             },
             .analysis => switch (self.analysis_focus) {
                 .rules => "j/k move  Enter expand  Tab focus  ? help  q quit",
@@ -1104,12 +1122,20 @@ pub const Dashboard = struct {
     /// Look up the rule_id that corresponds to `path` in the cached
     /// library rule list. Returns null if the library has not loaded
     /// yet or the path is unknown.
-    fn lookupRuleId(self: *Dashboard, path: []const u8) ?[]const u8 {
+    pub fn lookupRuleId(self: *Dashboard, path: []const u8) ?[]const u8 {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const lib = self.api_state.rules orelse return null;
         for (lib) |lp| {
             if (std.mem.eql(u8, lp.path, path)) return lp.rule_id;
+        }
+        return null;
+    }
+
+    pub fn lookupRuleViewByPath(self: *Dashboard, path: []const u8) ?*const data.RuleEntry {
+        const rules = self.getRules();
+        for (rules) |*rule| {
+            if (std.mem.eql(u8, rule.path, path)) return rule;
         }
         return null;
     }
@@ -1225,8 +1251,16 @@ pub const Dashboard = struct {
             .live_ws = live_ws,
             .dir_sel = dir_sel,
             .context_sel = context_sel,
+            .context_sel_id = if (live_ws) |ws_d|
+                if (context_sel) |idx| ws_d.context_files[idx].context_id else null
+            else
+                null,
             .context_sel_path = context_sel_path,
             .rule_sel_idx = if (rule_sel) |sel| sel.idx else null,
+            .rule_sel_id = if (live_ws) |ws_d|
+                if (rule_sel) |sel| ws_d.ws_rules[sel.idx].rule_id else null
+            else
+                null,
             .rule_sel_path = if (rule_sel) |sel| sel.path else null,
         });
     }
@@ -2446,6 +2480,35 @@ pub const Dashboard = struct {
             },
             else => return null,
         }
+    }
+
+    pub fn selectedContentId(self: *Dashboard) ?[]const u8 {
+        switch (self.selected_module) {
+            .library => {
+                const rules = self.getRules();
+                if (self.selected_rule >= rules.len) return null;
+                return self.lookupRuleId(rules[self.selected_rule].path);
+            },
+            .workspace => {
+                const ws_id = self.activeWsId() orelse return null;
+                const live = api.state.wsDetail(self.api_state, ws_id) orelse return null;
+                const ws_tree = self.currentWsTree();
+                if (ws_tree.dirPathAt(self.ws_list_sel) != null) return null;
+                const leaf = ws_tree.leafIndexAt(self.ws_list_sel) orelse return null;
+                return switch (self.ws_tab) {
+                    .context => if (leaf < live.context_files.len) live.context_files[leaf].context_id else null,
+                    .rules => if (leaf < live.ws_rules.len) live.ws_rules[leaf].rule_id else null,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    pub fn copySelectedContentId(self: *Dashboard) bool {
+        const id = self.selectedContentId() orelse return false;
+        workspace_panel.copyTextToClipboard(self.api_state.backing_allocator, id);
+        self.status_line = "Copied id to clipboard.";
+        return true;
     }
 
     /// Entry point for the `e` key. Finds or creates a modify-draft for

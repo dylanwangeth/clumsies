@@ -12,6 +12,7 @@ const cursor = @import("widgets/cursor.zig");
 const empty_state = @import("widgets/empty_state.zig");
 const modal_mod = @import("widgets/modal.zig");
 const text_input = @import("widgets/text_input.zig");
+const content_view = @import("widgets/content_view.zig");
 
 pub const fillSurface = draw.fillSurface;
 pub const paintBand = draw.paintBand;
@@ -55,6 +56,7 @@ pub const Modal = modal_mod.Modal;
 
 pub const TextInputResult = text_input.TextInputResult;
 pub const TextInput = text_input.TextInput;
+pub const ContentView = content_view.ContentView;
 
 pub fn countLines(text: []const u8) usize {
     if (text.len == 0) return 0;
@@ -132,4 +134,5 @@ test {
     _ = @import("widgets/modal.zig");
     _ = @import("widgets/text_input.zig");
     _ = @import("widgets/diff_viewer.zig");
+    _ = @import("widgets/content_view.zig");
 }

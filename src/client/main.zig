@@ -12,6 +12,18 @@ pub const std_options: std.Options = .{
     .log_level = .warn,
 };
 
+fn recoverPanic(msg: []const u8, ra: ?usize) noreturn {
+    const vaxis = @import("vaxis");
+    vaxis.recover();
+    var stderr_buf: [256]u8 = undefined;
+    var stderr_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buf);
+    stderr_writer.interface.writeAll("\x1b[0m\x1b[?25h\r\n") catch {};
+    stderr_writer.interface.flush() catch {};
+    std.debug.defaultPanic(msg, ra);
+}
+
+pub const panic = std.debug.FullPanic(recoverPanic);
+
 // Public re-exports for cross-artifact consumers (e.g., seed).
 pub const attestation = @import("attestation.zig");
 const tui = @import("tui/main.zig");
