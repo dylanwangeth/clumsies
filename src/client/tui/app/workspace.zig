@@ -52,12 +52,14 @@ pub const DetailArgs = struct {
     /// Server-side index into `live_ws.context_files`. Null when
     /// the selection is a virtual (create-op) draft.
     context_sel: ?usize,
+    context_sel_id: ?[]const u8,
     /// Path of the selected context file — set for both server-side
     /// files and virtual create-op drafts. drawDetail treats this as
     /// the primary identity and only uses `context_sel` to pull
     /// hub-side metadata (hash / author / updated_at).
     context_sel_path: ?[]const u8,
     rule_sel_idx: ?usize,
+    rule_sel_id: ?[]const u8,
     rule_sel_path: ?[]const u8,
 };
 
@@ -146,7 +148,6 @@ pub fn drawList(
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, list_border, theme.PANEL);
     const row_col: u16 = 2;
-    const cursor_col: u16 = 1;
 
     var tab_col: u16 = 2;
     const ws_tabs = [_]@TypeOf(self.ws_tab){ .context, .rules };
@@ -155,7 +156,10 @@ pub fn drawList(
         tab_col +|= 1;
     }
 
-    const inner_h = ctx.max.height.? -| 2;
+    const body_origin_row: u16 = 1;
+    const body_origin_col: u16 = 2;
+    const body_h: u16 = ctx.max.height.? -| body_origin_row -| 1;
+    const body_w: u16 = ctx.max.width.? -| body_origin_col -| 1;
     if (ws_tree.rowCount() == 0) {
         const empty_msg = switch (self.ws_tab) {
             .context => "No context files.",
@@ -164,64 +168,18 @@ pub fn drawList(
         w.writeText(&surface, ctx, row_col, 1, empty_msg, theme.fg(theme.MUTED));
         return surface;
     }
-
-    var kv_row: u16 = 1;
-    var r: usize = 0;
-    while (r < ws_tree.rowCount() and kv_row < inner_h + 1) : (r += 1) {
-        const sel = r == self.ws_list_sel;
-        if (sel) {
-            w.writeCursorMarker(&surface, cursor_col, kv_row);
-        }
-
-        const rendered = ws_tree.rowText(r);
-        if (ws_tree.dirPathAt(r) != null) {
-            const style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.boldOn(theme.PANEL, theme.TEXT_SOFT);
-            w.writeText(&surface, ctx, row_col, kv_row, rendered, style);
-        } else {
-            const draft_status = blk: {
-                const ws_d = live_ws orelse break :blk null;
-                const leaf = ws_tree.leafIndexAt(r) orelse break :blk null;
-                const MarkerInfo = struct {
-                    category: drafts_mod.DraftCategory,
-                    path: []const u8,
-                };
-                const marker_info: ?MarkerInfo = switch (self.ws_tab) {
-                    .context => inner: {
-                        if (leaf < ws_d.context_files.len) {
-                            break :inner MarkerInfo{
-                                .category = .context,
-                                .path = ws_d.context_files[leaf].path,
-                            };
-                        }
-                        // Virtual row: create-op draft. Path lives
-                        // in drafts_create_context_paths, offset past
-                        // the server-side context file count.
-                        const k = leaf - ws_d.context_files.len;
-                        if (k >= self.drafts_create_context_paths.len) break :inner null;
-                        break :inner MarkerInfo{
-                            .category = .context,
-                            .path = self.drafts_create_context_paths[k],
-                        };
-                    },
-                    .rules => inner: {
-                        if (leaf >= ws_d.ws_rules.len) break :inner null;
-                        const wp = ws_d.ws_rules[leaf];
-                        const rule_path = if (wp.path.len > 0)
-                            wp.path
-                        else for (lib_rules) |lp| {
-                            if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-                        } else wp.rule_id;
-                        break :inner MarkerInfo{ .category = .rule, .path = rule_path };
-                    },
-                };
-                const m = marker_info orelse break :blk null;
-                break :blk self.draftStatusFor(m.category, m.path);
-            };
-            const row_style = w.draftRowStyle(sel, draft_status);
-            w.writeDraftMarker(&surface, ctx, row_col, kv_row, rendered, draft_status != null, row_style);
-        }
-        kv_row += 1;
-    }
+    syncListWidgets(self, ws_tree, live_ws, lib_rules);
+    self.ws_list_scroll_bars.scroll_view.draw_cursor = false;
+    defer self.ws_list_scroll_bars.scroll_view.draw_cursor = true;
+    const body_ctx = ctx.withConstraints(
+        .{ .width = body_w, .height = body_h },
+        .{ .width = body_w, .height = body_h },
+    );
+    const body = try self.ws_list_scroll_bars.widget().draw(body_ctx);
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+    children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
+    surface.children = children;
+    writeCursorBar(&surface, &self.ws_list_scroll_bars.scroll_view, body_origin_row, body_h);
 
     return surface;
 }
@@ -244,8 +202,8 @@ pub fn drawDetail(
     const ws_d = args.live_ws.?;
 
     const title: []const u8 = switch (self.ws_tab) {
-        .context => if (args.dir_sel) |dir| dir else if (args.context_sel_path) |p| p else "no files",
-        .rules => if (args.dir_sel) |dir| dir else if (args.rule_sel_path) |path| path else "no rules",
+        .context => if (args.dir_sel != null) "Directory" else if (args.context_sel_id) |id| id else if (args.context_sel_path != null) "(new)" else "No context selected",
+        .rules => if (args.dir_sel != null) "Directory" else if (args.rule_sel_id) |id| id else if (args.rule_sel_path != null) "(new)" else "No rule selected",
     };
     w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
     // Reserve min_col past the title (plus one space) so the
@@ -304,13 +262,11 @@ fn writeWsMetaOnHeader(
             if (args.context_sel) |idx| {
                 if (idx >= ws_d.context_files.len) return;
                 const f = &ws_d.context_files[idx];
-                const hash7 = hashBadge(f.hash);
                 const updated_short = try w.formatShortTimestamp(ctx.arena, f.updated_at);
-                const meta = try std.fmt.allocPrint(
-                    ctx.arena,
-                    "{s}  {s}  {s}",
-                    .{ hash7, f.author, updated_short },
-                );
+                const meta = if (updated_short.len > 0)
+                    try std.fmt.allocPrint(ctx.arena, "updated {s}", .{updated_short})
+                else
+                    "";
                 _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
             } else if (args.context_sel_path != null) {
                 // Virtual row: local create-op draft, no hub metadata.
@@ -318,24 +274,13 @@ fn writeWsMetaOnHeader(
             }
         },
         .rules => {
-            if (args.rule_sel_idx) |idx| {
-                if (idx >= ws_d.ws_rules.len) return;
-                const p = &ws_d.ws_rules[idx];
-                const hash7 = hashBadge(p.content_hash);
-                _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, hash7, theme.fg(theme.MUTED));
+            if (args.rule_sel_path) |path| {
+                if (self.lookupRuleViewByPath(path)) |rule| {
+                    try writeRuleMetaOnHeader(surface, ctx, min_col, rule);
+                }
             }
         },
     }
-}
-
-fn hashBadge(raw: []const u8) []const u8 {
-    // Hashes usually arrive as "sha256:hex"; keep 7 hex chars after
-    // the colon so they land roughly in git's abbreviated-SHA range
-    // without padding the header badge.
-    const colon = std.mem.indexOfScalar(u8, raw, ':');
-    const start = if (colon) |c| c + 1 else 0;
-    const slice = raw[start..];
-    return slice[0..@min(7, slice.len)];
 }
 
 fn drawDirSelected(
@@ -411,8 +356,8 @@ fn attachContentSurface(
     if (content_h == 0) return;
     const width_pad: u16 = 4;
     const inner_ctx = ctx.withConstraints(
-        .{ .width = ctx.max.width.? -| width_pad, .height = content_h },
-        .{ .width = ctx.max.width.? -| width_pad, .height = content_h },
+        .{ .width = ctx.max.width.?, .height = content_h },
+        .{ .width = ctx.max.width.?, .height = content_h },
     );
     const body = try rule_detail.buildContentSurface(self, inner_ctx, width_pad, content_h);
     const prev = surface.children;
@@ -420,6 +365,133 @@ fn attachContentSurface(
     for (prev, 0..) |c, i| children[i] = c;
     children[prev.len] = .{ .origin = .{ .row = start_row, .col = 2 }, .surface = body };
     surface.children = children;
+}
+
+fn syncListWidgets(
+    self: anytype,
+    ws_tree: anytype,
+    live_ws: ?api.model.WsDetail,
+    lib_rules: []const data.RuleEntry,
+) void {
+    const row_count = @min(ws_tree.rowCount(), MAX_TREE_ROWS);
+    for (0..row_count) |r| {
+        const sel = r == self.ws_list_sel;
+        const rendered = ws_tree.rowText(r);
+        if (ws_tree.dirPathAt(r) != null) {
+            self.ws_list_rows[r] = .{
+                .text = rendered,
+                .style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.boldOn(theme.PANEL, theme.TEXT_SOFT),
+                .softwrap = false,
+            };
+        } else {
+            const draft_status = draftStatusForRow(self, ws_tree, r, live_ws, lib_rules);
+            const row_style = w.draftRowStyle(sel, draft_status);
+            const text = if (draft_status != null)
+                std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{rendered}) catch rendered
+            else
+                rendered;
+            self.ws_list_rows[r] = .{
+                .text = text,
+                .style = row_style,
+                .softwrap = false,
+            };
+        }
+        self.ws_list_widgets[r] = self.ws_list_rows[r].widget();
+    }
+    self.ws_list_scroll_bars.scroll_view.children = .{ .slice = self.ws_list_widgets[0..row_count] };
+    self.ws_list_scroll_bars.estimated_content_height = @intCast(row_count);
+    var cur = @as(usize, @intCast(self.ws_list_scroll_bars.scroll_view.cursor));
+    if (row_count == 0) {
+        cur = 0;
+    } else if (cur >= row_count) {
+        cur = row_count - 1;
+    }
+    self.ws_list_scroll_bars.scroll_view.cursor = @intCast(cur);
+    clampScrollTop(&self.ws_list_scroll_bars.scroll_view, row_count);
+    self.ws_list_sel = cur;
+}
+
+fn draftStatusForRow(
+    self: anytype,
+    ws_tree: anytype,
+    row: usize,
+    live_ws: ?api.model.WsDetail,
+    lib_rules: []const data.RuleEntry,
+) ?drafts_mod.DraftStatus {
+    const ws_d = live_ws orelse return null;
+    const leaf = ws_tree.leafIndexAt(row) orelse return null;
+    const MarkerInfo = struct {
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    };
+    const marker_info: ?MarkerInfo = switch (self.ws_tab) {
+        .context => inner: {
+            if (leaf < ws_d.context_files.len) {
+                break :inner MarkerInfo{
+                    .category = .context,
+                    .path = ws_d.context_files[leaf].path,
+                };
+            }
+            const k = leaf - ws_d.context_files.len;
+            if (k >= self.drafts_create_context_paths.len) break :inner null;
+            break :inner MarkerInfo{
+                .category = .context,
+                .path = self.drafts_create_context_paths[k],
+            };
+        },
+        .rules => inner: {
+            if (leaf >= ws_d.ws_rules.len) break :inner null;
+            const wp = ws_d.ws_rules[leaf];
+            const rule_path = if (wp.path.len > 0)
+                wp.path
+            else for (lib_rules) |lp| {
+                if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
+            } else wp.rule_id;
+            break :inner MarkerInfo{ .category = .rule, .path = rule_path };
+        },
+    };
+    const m = marker_info orelse return null;
+    return self.draftStatusFor(m.category, m.path);
+}
+
+fn writeCursorBar(
+    surface: *vxfw.Surface,
+    scroll_view: *const vxfw.ScrollView,
+    body_origin_row: u16,
+    body_h: u16,
+) void {
+    const cursor_pos = scroll_view.cursor;
+    const scroll_top = scroll_view.scroll.top;
+    if (cursor_pos < scroll_top) return;
+    const visible_row = cursor_pos - scroll_top;
+    if (visible_row >= body_h) return;
+    const row = body_origin_row + @as(u16, @intCast(visible_row));
+    surface.writeCell(1, row, .{
+        .char = .{ .grapheme = "▌", .width = 1 },
+        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+    });
+}
+
+fn writeRuleMetaOnHeader(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    min_col: u16,
+    rule: *const data.RuleEntry,
+) !void {
+    const updated = try w.formatShortTimestamp(ctx.arena, rule.updated);
+    const meta = if (updated.len > 0)
+        try std.fmt.allocPrint(
+            ctx.arena,
+            "rev{d} pr{d} c{d} {s}",
+            .{ rule.revision, rule.open_pr_count, rule.constraint_count, updated },
+        )
+    else
+        try std.fmt.allocPrint(
+            ctx.arena,
+            "rev{d} pr{d} c{d}",
+            .{ rule.revision, rule.open_pr_count, rule.constraint_count },
+        );
+    _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
 }
 
 pub fn handleModuleEvent(
@@ -446,6 +518,7 @@ pub fn handleModuleEvent(
     if (key.matches(']', .{})) {
         self.shiftWsTab(1);
         self.ws_list_sel = 0;
+        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
         self.ws_show_diff = false;
         ctx.consumeAndRedraw();
         return;
@@ -453,6 +526,7 @@ pub fn handleModuleEvent(
     if (key.matches('[', .{})) {
         self.shiftWsTab(-1);
         self.ws_list_sel = 0;
+        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
         self.ws_show_diff = false;
         ctx.consumeAndRedraw();
         return;
@@ -466,6 +540,15 @@ pub fn handleModuleEvent(
     if (key.matches('n', .{}) and self.ws_tab == .context) {
         self.openNewDraftForm(.context);
         ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('y', .{})) {
+        if (self.copySelectedContentId()) {
+            ctx.consumeAndRedraw();
+        } else {
+            self.status_line = "No id to copy.";
+            ctx.consumeAndRedraw();
+        }
         return;
     }
 
@@ -530,6 +613,7 @@ fn handleBarFocusEvent(
     if (key.matches(vaxis.Key.enter, .{})) {
         self.ws_focus = .list;
         self.ws_list_sel = 0;
+        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
         self.ws_show_diff = false;
         self.resetWorkspaceTrees();
 
@@ -580,22 +664,6 @@ fn handleListFocusEvent(
         }
         return;
     }
-    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-        if (self.ws_list_sel + 1 < ws_tree.rowCount()) {
-            self.ws_list_sel += 1;
-            self.ws_show_diff = false;
-            ctx.consumeAndRedraw();
-        }
-        return;
-    }
-    if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-        if (self.ws_list_sel > 0) {
-            self.ws_list_sel -= 1;
-            self.ws_show_diff = false;
-            ctx.consumeAndRedraw();
-        }
-        return;
-    }
     if (key.matches(vaxis.Key.enter, .{})) {
         if (ws_tree.dirPathAt(self.ws_list_sel)) |dir| {
             ws_tree.toggleDir(self.api_state.allocator(), dir);
@@ -611,7 +679,19 @@ fn handleListFocusEvent(
     if (key.matches(vaxis.Key.escape, .{})) {
         self.ws_focus = .bar;
         ctx.consumeAndRedraw();
+        return;
     }
+    if (ws_tree.rowCount() == 0) {
+        ctx.consumeEvent();
+        return;
+    }
+    try self.ws_list_scroll_bars.scroll_view.handleEvent(ctx, .{ .key_press = key });
+    var pos = @as(usize, @intCast(self.ws_list_scroll_bars.scroll_view.cursor));
+    if (pos >= ws_tree.rowCount()) pos = ws_tree.rowCount() - 1;
+    self.ws_list_scroll_bars.scroll_view.cursor = @intCast(pos);
+    self.ws_list_scroll_bars.scroll_view.ensureScroll();
+    self.ws_list_sel = pos;
+    self.ws_show_diff = false;
 }
 
 fn handleContentFocusEvent(
@@ -649,12 +729,12 @@ fn handleContentFocusEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    // Forward scroll keys to the shared content_scroll_bars so j/k,
+    // Forward scroll keys to the shared content_view so j/k,
     // arrow keys, PgUp/PgDn, g/G drive the content panel identically
     // to the Library rule-detail pane. vxfw's ScrollView consumes
     // the ones it knows and ignores the rest, so this is safe as a
     // catch-all.
-    try self.content_scroll_bars.scroll_view.handleEvent(ctx, .{ .key_press = key });
+    try self.content_view.handleEvent(ctx, .{ .key_press = key });
 }
 
 /// Trigger the workspace-detail compound fetch. Issues two dispatches
@@ -693,6 +773,7 @@ pub fn syncWsRows(self: anytype) void {
     if (live_ws == null) {
         self.currentWsTree().sync(self.api_state.allocator(), &.{}, &.{});
         self.ws_list_sel = 0;
+        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
         return;
     }
     const ws_d = live_ws.?;
@@ -743,8 +824,32 @@ pub fn syncWsRows(self: anytype) void {
     ws_tree.sync(self.api_state.allocator(), paths_buf[0..item_count], orig_idx[0..item_count]);
     if (ws_tree.rowCount() == 0) {
         self.ws_list_sel = 0;
+        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
     } else if (self.ws_list_sel >= ws_tree.rowCount()) {
         self.ws_list_sel = ws_tree.rowCount() - 1;
+        self.ws_list_scroll_bars.scroll_view.cursor = @intCast(self.ws_list_sel);
+        self.ws_list_scroll_bars.scroll_view.ensureScroll();
+    }
+}
+
+fn resetScrollView(scroll_view: *vxfw.ScrollView) void {
+    scroll_view.cursor = 0;
+    scroll_view.scroll.top = 0;
+    scroll_view.scroll.vertical_offset = 0;
+    scroll_view.scroll.left = 0;
+}
+
+fn clampScrollTop(scroll_view: *vxfw.ScrollView, row_count: usize) void {
+    const visible_rows: usize = @max(@as(usize, scroll_view.last_height), 1);
+    const max_top: usize = if (row_count > visible_rows) row_count - visible_rows else 0;
+    if (max_top == 0) {
+        scroll_view.scroll.top = 0;
+        scroll_view.scroll.vertical_offset = 0;
+        return;
+    }
+    if (scroll_view.scroll.top > max_top) {
+        scroll_view.scroll.top = @intCast(max_top);
+        scroll_view.scroll.vertical_offset = 0;
     }
 }
 
@@ -837,7 +942,7 @@ pub fn copyCreateInitCommand(self: anytype) void {
     const id = self.create_ws_created_id_buf[0..self.create_ws_created_id_len];
     const cmd = std.fmt.allocPrint(alloc, "clumsies init --ws-id {s}", .{id}) catch return;
     defer alloc.free(cmd);
-    spawnClipboardCopy(alloc, cmd);
+    copyTextToClipboard(alloc, cmd);
 }
 
 fn writeErrorMessage(self: anytype, message: []const u8) void {
@@ -850,7 +955,7 @@ fn writeFixedBuf(buf: []u8, len: *usize, src: []const u8) void {
     len.* = n;
 }
 
-fn spawnClipboardCopy(alloc: std.mem.Allocator, text: []const u8) void {
+pub fn copyTextToClipboard(alloc: std.mem.Allocator, text: []const u8) void {
     const argv: []const []const u8 = switch (@import("builtin").os.tag) {
         .macos => &[_][]const u8{"pbcopy"},
         .linux => &[_][]const u8{ "xclip", "-selection", "clipboard" },

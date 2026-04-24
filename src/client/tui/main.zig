@@ -6,13 +6,6 @@ const Dashboard = @import("app.zig").Dashboard;
 const auth_mod = @import("../auth.zig");
 const api = @import("api.zig");
 
-fn recoverPanic(msg: []const u8, ra: ?usize) noreturn {
-    vaxis.recover();
-    std.debug.defaultPanic(msg, ra);
-}
-
-pub const panic = std.debug.FullPanic(recoverPanic);
-
 pub fn run() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
