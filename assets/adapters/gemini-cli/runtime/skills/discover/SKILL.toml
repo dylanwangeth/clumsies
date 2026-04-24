@@ -1,0 +1,6 @@
+description = "Discover available rules in the Library"
+prompt = """
+Call the `memory.discover` MCP tool to discover available rules.
+
+{{args}}
+"""

@@ -304,6 +304,40 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/codex/runtime/skills/setup/SKILL.md",
     ));
+
+    // Gemini CLI adapter assets
+    options.addOption([]const u8, "adapter_gemini_cli_runtime_settings_json", readSourceAsset(
+        b,
+        "assets/adapters/gemini-cli/runtime/settings.json.tpl",
+    ));
+    options.addOption([]const u8, "adapter_gemini_cli_runtime_resolve_binary_sh", readSourceAsset(
+        b,
+        "assets/adapters/gemini-cli/runtime/hooks/resolve-binary.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_gemini_cli_runtime_session_start_sh", readSourceAsset(
+        b,
+        "assets/adapters/gemini-cli/runtime/hooks/session-start.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_gemini_cli_runtime_user_prompt_submit_sh", readSourceAsset(
+        b,
+        "assets/adapters/gemini-cli/runtime/hooks/user-prompt-submit.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_gemini_cli_runtime_stop_refer_check_sh", readSourceAsset(
+        b,
+        "assets/adapters/gemini-cli/runtime/hooks/stop-refer-check.sh.tpl",
+    ));
+    options.addOption([]const u8, "adapter_gemini_cli_runtime_skill_discover", readSourceAsset(
+        b,
+        "assets/adapters/gemini-cli/runtime/skills/discover/SKILL.toml",
+    ));
+    options.addOption([]const u8, "adapter_gemini_cli_runtime_skill_ntmd", readSourceAsset(
+        b,
+        "assets/adapters/gemini-cli/runtime/skills/ntmd/SKILL.toml",
+    ));
+    options.addOption([]const u8, "adapter_gemini_cli_runtime_skill_setup", readSourceAsset(
+        b,
+        "assets/adapters/gemini-cli/runtime/skills/setup/SKILL.toml",
+    ));
 }
 
 fn readSourceAsset(b: *std.Build, relative_path: []const u8) []const u8 {
