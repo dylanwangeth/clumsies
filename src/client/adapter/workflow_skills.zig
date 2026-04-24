@@ -7,6 +7,7 @@ const workspace_config = @import("../workspace_config.zig");
 pub const Host = enum {
     codex,
     claude_code,
+    gemini_cli,
 };
 
 pub fn renderImportedWorkflowSkills(
@@ -60,8 +61,8 @@ pub fn renderImportedWorkflowSkills(
         defer allocator.free(relative_id);
 
         const skill_content = try renderSkillContent(allocator, host, slug, filename, relative_id);
-        const relative_path = try std.fs.path.join(allocator, &.{ skill_root_display, slug, "SKILL.md" });
-        const absolute_path = try std.fs.path.join(allocator, &.{ skill_root_absolute, slug, "SKILL.md" });
+        const relative_path = try skillFilePath(allocator, host, skill_root_display, slug);
+        const absolute_path = try skillFilePath(allocator, host, skill_root_absolute, slug);
         const resource_id = try std.fmt.allocPrint(allocator, "{s}.workflow.{s}", .{ resource_prefix, slug });
         const label = try std.fmt.allocPrint(allocator, "Workflow skill {s}", .{slug});
 
@@ -89,6 +90,18 @@ pub fn deinitRenderedAssets(allocator: std.mem.Allocator, assets: []const model.
         allocator.free(asset.content);
     }
     allocator.free(assets);
+}
+
+fn skillFilePath(
+    allocator: std.mem.Allocator,
+    host: Host,
+    root: []const u8,
+    slug: []const u8,
+) ![]u8 {
+    return switch (host) {
+        .codex, .claude_code => std.fs.path.join(allocator, &.{ root, slug, "SKILL.md" }),
+        .gemini_cli => std.fmt.allocPrint(allocator, "{s}/{s}.toml", .{ root, slug }),
+    };
 }
 
 fn uniqueSlug(
@@ -176,6 +189,17 @@ fn renderSkillContent(
             \\$ARGUMENTS
         ,
             .{ slug, filename, workflow_id },
+        ),
+        .gemini_cli => std.fmt.allocPrint(
+            allocator,
+            \\description = "Run {s} workflow"
+            \\prompt = """
+            \\Call the `memory.load` MCP tool with ids: ["{s}"]
+            \\
+            \\{{{{args}}}}
+            \\"""
+        ,
+            .{ filename, workflow_id },
         ),
     };
 }
