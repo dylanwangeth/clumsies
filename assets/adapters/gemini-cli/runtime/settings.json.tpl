@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": __CLUMSIES_SESSION_START_COMMAND_JSON__,
-            "timeout": 15
+            "timeout": 15000
           }
         ]
       }
@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": __CLUMSIES_USER_PROMPT_SUBMIT_COMMAND_JSON__,
-            "timeout": 5
+            "timeout": 5000
           }
         ]
       }
@@ -31,7 +31,7 @@
           {
             "type": "command",
             "command": __CLUMSIES_STOP_CHECK_COMMAND_JSON__,
-            "timeout": 5
+            "timeout": 5000
           }
         ]
       }

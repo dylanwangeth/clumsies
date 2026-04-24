@@ -226,6 +226,13 @@ pub fn buildAdaptPlan(
     steps = .empty;
     release_install_id = false;
 
+    var notes: []const []const u8 = &.{};
+    if (pkg.render_notes_fn) |notes_fn| {
+        if (try notes_fn(allocator, scope, target_root)) |n| {
+            notes = n;
+        }
+    }
+
     return .{ .plan = .{
         .agent_name = try allocator.dupe(u8, pkg.id),
         .mode = if (is_update) "update" else "adapt",
@@ -234,6 +241,7 @@ pub fn buildAdaptPlan(
         .target_root = try allocator.dupe(u8, target_root),
         .revision = revision,
         .steps = owned_steps,
+        .notes = notes,
     } };
 }
 

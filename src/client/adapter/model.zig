@@ -54,11 +54,14 @@ pub const Plan = struct {
     target_root: []const u8,
     revision: u32,
     steps: []const PlanStep,
+    notes: []const []const u8 = &.{},
 
     pub fn deinit(self: *Plan, allocator: std.mem.Allocator) void {
         allocator.free(self.agent_name);
         allocator.free(self.install_id);
         allocator.free(self.target_root);
+        for (self.notes) |note| allocator.free(note);
+        allocator.free(self.notes);
         deinitPlanStepsSlice(allocator, self.steps);
         allocator.free(self.steps);
     }

@@ -18,6 +18,7 @@ pub const package: types.AdapterPackage = .{
     .render_runtime_assets_fn = renderRuntimeAssets,
     .deinit_rendered_assets_fn = deinitRenderedAssets,
     .render_managed_resource_fn = renderManagedResource,
+    .render_notes_fn = renderNotes,
 };
 
 pub fn renderRuntimeAssets(
@@ -102,20 +103,22 @@ pub fn renderRuntimeAssets(
     });
 
     if (scope == .workspace) {
-        const commands_root_absolute = try std.fs.path.join(allocator, &.{ target_root, ".gemini", "commands" });
-        defer allocator.free(commands_root_absolute);
+        const agents_skills_root = try std.fs.path.join(allocator, &.{ target_root, ".agents", "skills" });
+        defer allocator.free(agents_skills_root);
 
         const imported = try workflow_skills.renderImportedWorkflowSkills(
             allocator,
             target_root,
-            commands_root_absolute,
-            ".gemini/commands",
+            agents_skills_root,
+            ".agents/skills",
             "gemini-cli.skills",
             .gemini_cli,
         );
         defer workflow_skills.deinitRenderedAssets(allocator, imported);
 
         for (imported) |asset| {
+            if (skillAlreadyInstalled(asset.absolute_path)) continue;
+
             try assets.append(allocator, .{
                 .resource_id = try allocator.dupe(u8, asset.resource_id),
                 .resource_kind = asset.resource_kind,
@@ -226,6 +229,50 @@ fn commandJsonLiteral(
         std.json.Value{ .string = command },
         .{},
     );
+}
+
+fn renderNotes(
+    allocator: std.mem.Allocator,
+    scope: model.Scope,
+    target_root: []const u8,
+) !?[]const []const u8 {
+    if (scope != .workspace) return null;
+
+    const agents_skills_root = try std.fs.path.join(allocator, &.{ target_root, ".agents", "skills" });
+    defer allocator.free(agents_skills_root);
+
+    var skipped: usize = 0;
+    var total: usize = 0;
+
+    const imported = try workflow_skills.renderImportedWorkflowSkills(
+        allocator,
+        target_root,
+        agents_skills_root,
+        ".agents/skills",
+        "gemini-cli.skills",
+        .gemini_cli,
+    );
+    defer workflow_skills.deinitRenderedAssets(allocator, imported);
+
+    for (imported) |asset| {
+        total += 1;
+        if (skillAlreadyInstalled(asset.absolute_path)) {
+            skipped += 1;
+        }
+    }
+
+    if (skipped == 0) return null;
+
+    const note = try std.fmt.allocPrint(allocator, "{d}/{d} workflow skills skipped (already installed in .agents/skills/ by another adapter)", .{ skipped, total });
+    var notes = try allocator.alloc([]const u8, 1);
+    notes[0] = note;
+    return notes;
+}
+
+fn skillAlreadyInstalled(absolute_path: ?[]const u8) bool {
+    const path = absolute_path orelse return false;
+    std.fs.accessAbsolute(path, .{}) catch return false;
+    return true;
 }
 
 fn replaceOwned(

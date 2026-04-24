@@ -13,6 +13,7 @@ pub const AdapterPackage = struct {
     render_runtime_assets_fn: *const fn (allocator: std.mem.Allocator, scope: model.Scope, target_root: []const u8) anyerror![]model.RenderedAsset,
     deinit_rendered_assets_fn: *const fn (allocator: std.mem.Allocator, assets: []const model.RenderedAsset) void,
     render_managed_resource_fn: ?*const fn (allocator: std.mem.Allocator, resource_id: []const u8, scope: model.Scope, target_root: []const u8) anyerror!?[]u8 = null,
+    render_notes_fn: ?*const fn (allocator: std.mem.Allocator, scope: model.Scope, target_root: []const u8) anyerror!?[]const []const u8 = null,
 
     pub fn resolveTargetRoot(self: AdapterPackage, allocator: std.mem.Allocator, scope: model.Scope, workspace_root_opt: ?[]const u8) !?[]const u8 {
         return self.resolve_target_root_fn(allocator, scope, workspace_root_opt);

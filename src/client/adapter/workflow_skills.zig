@@ -100,11 +100,7 @@ fn skillFilePath(
 ) ![]u8 {
     return switch (host) {
         .codex, .claude_code => std.fs.path.join(allocator, &.{ root, slug, "SKILL.md" }),
-        .gemini_cli => blk: {
-            const filename = try std.fmt.allocPrint(allocator, "{s}.toml", .{slug});
-            defer allocator.free(filename);
-            break :blk try std.fs.path.join(allocator, &.{ root, filename });
-        },
+        .gemini_cli => std.fs.path.join(allocator, &.{ root, slug, "SKILL.md" }),
     };
 }
 
@@ -196,14 +192,16 @@ fn renderSkillContent(
         ),
         .gemini_cli => std.fmt.allocPrint(
             allocator,
-            \\description = "Run {s} workflow"
-            \\prompt = """
-            \\Call the `memory.load` MCP tool with ids: ["{s}"]
+            \\---
+            \\name: {s}
+            \\description: Run {s} workflow
+            \\---
             \\
-            \\{{{{args}}}}
-            \\"""
+            \\Call the `memory.load` MCP tool with ids: ["{s}"].
+            \\Then follow the loaded workflow carefully.
+            \\If the user already provided task details, use them as the workflow input.
         ,
-            .{ filename, workflow_id },
+            .{ slug, filename, workflow_id },
         ),
     };
 }
