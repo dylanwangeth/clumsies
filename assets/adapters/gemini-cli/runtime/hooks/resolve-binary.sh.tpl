@@ -26,4 +26,6 @@ if command -v clumsies >/dev/null 2>&1; then
 fi
 
 echo "clumsies: could not resolve clumsies binary" >&2
-exit 1
+if (return 0 2>/dev/null); then
+    return 1
+fi

@@ -8,11 +8,15 @@ input=$(cat)
 
 source "$(dirname "$0")/resolve-binary.sh"
 
-meta_prompt=$($CLUMSIES _agent setup 2>/dev/null) || meta_prompt=""
+meta_prompt=$("$CLUMSIES" _agent setup 2>/dev/null) || meta_prompt=""
 
 if [ -n "$meta_prompt" ]; then
-    escaped=$(printf '%s' "$meta_prompt" | jq -Rs .)
-    echo "{\"decision\":\"allow\",\"hookSpecificOutput\":{\"additionalContext\":$escaped}}"
+    if command -v jq >/dev/null 2>&1; then
+        escaped=$(printf '%s' "$meta_prompt" | jq -Rs .)
+        echo "{\"decision\":\"allow\",\"hookSpecificOutput\":{\"additionalContext\":$escaped}}"
+    else
+        echo '{"decision":"allow"}'
+    fi
 else
     echo '{"decision":"allow"}'
 fi

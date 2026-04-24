@@ -100,7 +100,11 @@ fn skillFilePath(
 ) ![]u8 {
     return switch (host) {
         .codex, .claude_code => std.fs.path.join(allocator, &.{ root, slug, "SKILL.md" }),
-        .gemini_cli => std.fmt.allocPrint(allocator, "{s}/{s}.toml", .{ root, slug }),
+        .gemini_cli => blk: {
+            const filename = try std.fmt.allocPrint(allocator, "{s}.toml", .{slug});
+            defer allocator.free(filename);
+            break :blk try std.fs.path.join(allocator, &.{ root, filename });
+        },
     };
 }
 

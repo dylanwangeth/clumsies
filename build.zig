@@ -13,6 +13,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "enable_keychain", enable_keychain);
     addCodexAdapterAssetOptions(b, options);
     addClaudeCodeAdapterAssetOptions(b, options);
+    addGeminiCliAdapterAssetOptions(b, options);
     const build_options_module = options.createModule();
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
 
@@ -304,8 +305,9 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/codex/runtime/skills/setup/SKILL.md",
     ));
+}
 
-    // Gemini CLI adapter assets
+fn addGeminiCliAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) void {
     options.addOption([]const u8, "adapter_gemini_cli_runtime_settings_json", readSourceAsset(
         b,
         "assets/adapters/gemini-cli/runtime/settings.json.tpl",
