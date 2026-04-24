@@ -264,6 +264,7 @@ fn renderNotes(
     if (skipped == 0) return null;
 
     const note = try std.fmt.allocPrint(allocator, "{d}/{d} workflow skills skipped (already installed in .agents/skills/ by another adapter)", .{ skipped, total });
+    errdefer allocator.free(note);
     var notes = try allocator.alloc([]const u8, 1);
     notes[0] = note;
     return notes;
