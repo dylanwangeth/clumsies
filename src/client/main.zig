@@ -21,7 +21,6 @@ const cmd_init = @import("commands/init_cmd.zig");
 const cmd_sync = @import("commands/sync_cmd.zig");
 const cmd_mcp = @import("commands/mcp_cmd.zig");
 const cmd_adapt = @import("commands/adapt_cmd.zig");
-const cmd_remove_adapter = @import("commands/remove_adapter_cmd.zig");
 const cmd_setup = @import("commands/setup_cmd.zig");
 const cmd_workspace_info = @import("commands/workspace_info_cmd.zig");
 const cmd_flush_attestation = @import("commands/flush_attestation_cmd.zig");
@@ -39,7 +38,6 @@ const Command = enum {
     init_cmd,
     sync,
     adapt,
-    remove_adapter,
     mcp,
     flush,
     help,
@@ -52,7 +50,6 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "init", .init_cmd },
     .{ "sync", .sync },
     .{ "adapt", .adapt },
-    .{ "remove-adapter", .remove_adapter },
     .{ "mcp", .mcp },
     .{ "flush", .flush },
     .{ "help", .help },
@@ -139,7 +136,6 @@ pub fn main() !void {
         .init_cmd => try cmd_init.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .sync => try cmd_sync.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .adapt => try cmd_adapt.run(stdout_writer, stderr_writer, allocator, cmd_args),
-        .remove_adapter => try cmd_remove_adapter.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
         .flush => {
             try cmd_flush_attestation.run(stdout_writer, stderr_writer, allocator, cmd_args);
@@ -174,7 +170,6 @@ test "command_map: all commands resolve" {
         .{ .str = "init", .cmd = .init_cmd },
         .{ .str = "sync", .cmd = .sync },
         .{ .str = "adapt", .cmd = .adapt },
-        .{ .str = "remove-adapter", .cmd = .remove_adapter },
         .{ .str = "flush", .cmd = .flush },
         .{ .str = "mcp", .cmd = .mcp },
         .{ .str = "help", .cmd = .help },
