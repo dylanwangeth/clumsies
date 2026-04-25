@@ -3,6 +3,7 @@
 //! events from one agent run together for aggregation.
 const std = @import("std");
 const attestation = @import("../attestation.zig");
+const host_session = @import("../host_session.zig");
 const workspace_config = @import("../workspace_config.zig");
 
 pub const Session = struct {
@@ -43,14 +44,7 @@ pub fn init(allocator: std.mem.Allocator, workspace_root: []const u8) !Session {
     const binding = try workspace_config.resolveWorkspace(allocator, workspace_root);
     defer allocator.free(binding.name);
 
-    var rand_bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
-    var session_id: [32]u8 = undefined;
-    const hex = "0123456789abcdef";
-    for (rand_bytes, 0..) |byte, i| {
-        session_id[i * 2] = hex[byte >> 4];
-        session_id[i * 2 + 1] = hex[byte & 0x0f];
-    }
+    const session_id = host_session.resolveSessionId(allocator) orelse randomSessionId();
 
     var session: Session = .{
         .ws_id = binding.ws_id,
@@ -60,4 +54,17 @@ pub fn init(allocator: std.mem.Allocator, workspace_root: []const u8) !Session {
 
     session.recordEvent(allocator, .setup);
     return session;
+}
+
+fn randomSessionId() [32]u8 {
+    var rand_bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&rand_bytes);
+
+    var session_id: [32]u8 = undefined;
+    const hex = "0123456789abcdef";
+    for (rand_bytes, 0..) |byte, i| {
+        session_id[i * 2] = hex[byte >> 4];
+        session_id[i * 2 + 1] = hex[byte & 0x0f];
+    }
+    return session_id;
 }

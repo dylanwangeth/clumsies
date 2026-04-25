@@ -118,6 +118,9 @@ const top_tabs = [_]TopModule{ .dashboard, .workspace, .library, .analysis };
 
 const MAX_TREE_ROWS = 128;
 const MAX_PR_ROWS = 64;
+const MAX_DASHBOARD_ROUND_ROWS = 2048;
+const MAX_DASHBOARD_CHAIN_ROWS = 1024;
+const DASHBOARD_ROUND_ROW_COUNT = 3;
 const detail_tabs = [_]DetailTab{ .content, .pull_requests };
 const PathTreeState = tree.State(MAX_TREE_ROWS, 96);
 
@@ -216,7 +219,7 @@ pub const Dashboard = struct {
     // Dashboard / Analysis shared state
     analysis_scope_idx: usize = 0,
     breathing_phase: u8 = 0, // 0-20 for breathing animation cycle
-    analysis_focus: enum { chart, rules, members, inputs } = .chart,
+    analysis_focus: enum { chart, rules, members, inputs } = .inputs,
     analysis_rule_cursor: usize = 0,
     analysis_member_cursor: usize = 0,
     analysis_input_cursor: usize = 0,
@@ -224,6 +227,12 @@ pub const Dashboard = struct {
     analysis_show_member_detail: bool = false,
     analysis_show_input_detail: bool = false,
     dashboard_input_capacity: usize = 1,
+    dashboard_round_scroll_bars: vxfw.ScrollBars,
+    dashboard_round_widgets: [MAX_DASHBOARD_ROUND_ROWS]vxfw.Widget = undefined,
+    dashboard_round_rows: [MAX_DASHBOARD_ROUND_ROWS]vxfw.Text = undefined,
+    dashboard_chain_scroll_bars: vxfw.ScrollBars,
+    dashboard_chain_widgets: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Widget = undefined,
+    dashboard_chain_rows: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Text = undefined,
     view_arena: std.heap.ArenaAllocator,
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
@@ -301,6 +310,8 @@ pub const Dashboard = struct {
             .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
             .ws_list_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .dashboard_round_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .dashboard_chain_scroll_bars = w.initPlainScrollBars(theme.PANEL, 3),
             .view_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
             .app = app,
             .env_map = env_map,
@@ -857,7 +868,7 @@ pub const Dashboard = struct {
             "Enter send  Esc cancel"
         else switch (self.selected_module) {
             .dashboard => switch (self.analysis_focus) {
-                .chart => "Tab focus  w scope  Shift-F flush  ? help  q quit",
+                .chart => "Tab rounds  w scope  Shift-F flush  ? help  q quit",
                 .inputs => "j/k move  Enter detail  Tab focus  w scope  Shift-F flush  ? help  q quit",
                 else => "Tab focus  w scope  Shift-F flush  ? help  q quit",
             },
@@ -1274,58 +1285,50 @@ pub const Dashboard = struct {
         return null;
     }
 
-    // Dashboard: live scope-aware signal and recent input feed.
+    // Dashboard: live interaction rounds and attestation closure state.
     fn drawDashboard(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         const scope = self.currentAnalysisScope();
-        const server_signal_ratio = self.serverSignalRatio();
-
         const scoped_attestation = self.scopedAttestationData();
-        const signal_value_text: []const u8 = blk: {
-            if (scoped_attestation) |st| {
-                if (st.constraint_count > 0) {
-                    break :blk std.fmt.allocPrint(ctx.arena, "{d}%", .{st.signal_ratio}) catch "n/a";
-                }
-            }
-            if (scope.ws_id == null) {
-                if (server_signal_ratio) |sig| {
-                    break :blk std.fmt.allocPrint(ctx.arena, "{d}%", .{sig}) catch "n/a";
-                }
-            }
-            break :blk "n/a";
-        };
-        const chart_series: ChartSeries = if (scoped_attestation) |st|
-            self.buildLocalChartSeries(ctx.arena, st.refers)
+        const rounds: []const attestation_reader.RoundEvent = if (scoped_attestation) |st| st.rounds else &.{};
+
+        const arena_h: u16 = 4;
+        const body_h: u16 = size.height -| arena_h;
+        const preferred_rounds_w: u16 = @intCast(@divTrunc(@as(u32, size.width) * 38, 100));
+        const rounds_w: u16 = @min(size.width, @max(@as(u16, 64), @min(@as(u16, 96), preferred_rounds_w)));
+        const exchange_w: u16 = size.width -| rounds_w;
+        const usable_round_rows: u16 = body_h -| 2;
+        self.dashboard_input_capacity = @max(@as(usize, 1), @as(usize, @intCast(usable_round_rows / 2)));
+        if (self.analysis_input_cursor >= rounds.len and rounds.len > 0) {
+            self.analysis_input_cursor = rounds.len - 1;
+        }
+        const max_round_cursor = std.math.maxInt(u32) / DASHBOARD_ROUND_ROW_COUNT;
+        self.dashboard_round_scroll_bars.scroll_view.cursor = @intCast(@min(self.analysis_input_cursor, max_round_cursor) * DASHBOARD_ROUND_ROW_COUNT);
+        self.dashboard_round_scroll_bars.scroll_view.ensureScroll();
+        const selected_round = if (rounds.len > 0)
+            rounds[@min(self.analysis_input_cursor, rounds.len - 1)]
         else
-            .{ .values = &.{}, .left_label = "60s ago", .right_label = "now" };
-
-        const inputs: []const attestation_reader.InputEvent = if (scoped_attestation) |st| st.inputs else &.{};
-
-        const chart_h: u16 = if (size.height > 40) 10 else 8;
-        const inputs_h: u16 = size.height -| chart_h;
-        const usable_input_rows: u16 = inputs_h -| 2;
-        self.dashboard_input_capacity = @max(@as(usize, 1), @as(usize, @intCast((usable_input_rows + 1) / 3)));
-        const visible_inputs = latestInputs(inputs, self.dashboard_input_capacity);
+            null;
         const active_count = self.activeSessionCount(scope.ws_id);
-        const chart_surface = try dashboard_panel.drawChart(
+        const summary = dashboardSummary(rounds, active_count);
+        const arena_surface = try dashboard_panel.drawArena(
             self,
             ctx,
             size.width,
-            chart_h,
-            signal_value_text,
-            chart_series,
+            arena_h,
             scope.label,
-            active_count,
+            summary,
         );
-        const inputs_surface = try dashboard_panel.drawInputs(
+        const rounds_surface = try dashboard_panel.drawRounds(
             self,
             ctx,
-            size.width,
-            inputs_h,
-            visible_inputs,
+            rounds_w,
+            body_h,
+            rounds,
             scope.label,
         );
-        return dashboard_panel.drawRoot(self, ctx, chart_surface, inputs_surface);
+        const exchange_surface = try dashboard_panel.drawExchange(self, ctx, exchange_w, body_h, selected_round);
+        return dashboard_panel.drawRoot(self, ctx, arena_surface, rounds_surface, exchange_surface);
     }
 
     // Analysis: aggregate rule/member views and drill-downs.
@@ -1348,10 +1351,6 @@ pub const Dashboard = struct {
         };
         const ins: *const data.AnalysisData = if (live_analysis) |*li| li else &empty_analysis;
         return analysis_panel.drawRoot(self, ctx, ins, analysis_available);
-    }
-
-    fn latestInputs(inputs: anytype, limit: usize) @TypeOf(inputs) {
-        return inputs[0..@min(inputs.len, limit)];
     }
 
     // Settings: vertical sidebar + content pane (web-style layout)
@@ -1990,62 +1989,8 @@ pub const Dashboard = struct {
     };
 
     const ScopedAttestationData = struct {
-        label: []const u8,
-        signal_ratio: u8,
-        constraint_count: u32,
-        refers: []const attestation_reader.ReferEvent,
-        inputs: []const attestation_reader.InputEvent,
+        rounds: []const attestation_reader.RoundEvent,
     };
-
-    const ChartSeries = struct {
-        values: []const f32,
-        left_label: []const u8,
-        right_label: []const u8,
-    };
-
-    fn smoothLocalChartBuckets(arena: std.mem.Allocator, source: []const u16) []const f32 {
-        if (source.len == 0) return &.{};
-
-        const values = arena.alloc(f32, source.len) catch return &.{};
-        const kernel = [_]f32{ 1, 2, 3, 2, 1 };
-
-        // Smooth the second-level refer buckets just for display. This keeps
-        // the underlying counts exact while turning isolated spikes into a
-        // more legible local activity wave.
-        for (source, 0..) |_, center| {
-            var weighted_sum: f32 = 0;
-            var weight_total: f32 = 0;
-
-            for (kernel, 0..) |weight, kernel_idx| {
-                const offset: isize = @as(isize, @intCast(kernel_idx)) - 2;
-                const sample_idx_signed: isize = @as(isize, @intCast(center)) + offset;
-                if (sample_idx_signed < 0 or sample_idx_signed >= @as(isize, @intCast(source.len))) continue;
-
-                const sample_idx: usize = @intCast(sample_idx_signed);
-                weighted_sum += @as(f32, @floatFromInt(source[sample_idx])) * weight;
-                weight_total += weight;
-            }
-
-            values[center] = if (weight_total > 0)
-                weighted_sum / weight_total
-            else
-                @as(f32, @floatFromInt(source[center]));
-        }
-
-        return values;
-    }
-
-    test "smoothLocalChartBuckets softens an isolated spike" {
-        const source = [_]u16{ 0, 0, 0, 6, 0, 0, 0 };
-        const values = smoothLocalChartBuckets(std.testing.allocator, &source);
-        defer std.testing.allocator.free(values);
-
-        try std.testing.expectApproxEqAbs(@as(f32, 2.0 / 3.0), values[1], 0.001);
-        try std.testing.expectApproxEqAbs(@as(f32, 4.0 / 3.0), values[2], 0.001);
-        try std.testing.expectApproxEqAbs(@as(f32, 2.0), values[3], 0.001);
-        try std.testing.expectApproxEqAbs(@as(f32, 4.0 / 3.0), values[4], 0.001);
-        try std.testing.expectApproxEqAbs(@as(f32, 2.0 / 3.0), values[5], 0.001);
-    }
 
     fn currentAnalysisScopeLocked(self: *const Dashboard) AnalysisScopeInfo {
         const workspaces = if (self.api_state.current_user) |u| u.workspaces else &.{};
@@ -2073,13 +2018,6 @@ pub const Dashboard = struct {
         return self.currentAnalysisScopeLocked();
     }
 
-    fn serverSignalRatio(self: *const Dashboard) ?u8 {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
-        const stats = self.api_state.org_stats orelse return null;
-        return @intCast(@min(@as(u64, @intFromFloat(stats.signal_ratio * 100)), 100));
-    }
-
     fn scopedAttestationData(self: *const Dashboard) ?ScopedAttestationData {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
@@ -2089,54 +2027,30 @@ pub const Dashboard = struct {
         if (scope.ws_id) |ws_id| {
             if (local.workspace(ws_id)) |ws| {
                 return .{
-                    .label = scope.label,
-                    .signal_ratio = ws.signal_ratio,
-                    .constraint_count = ws.constraint_count,
-                    .refers = ws.refers,
-                    .inputs = ws.inputs,
+                    .rounds = ws.rounds,
                 };
             }
             return .{
-                .label = scope.label,
-                .signal_ratio = 0,
-                .constraint_count = 0,
-                .refers = &.{},
-                .inputs = &.{},
+                .rounds = &.{},
             };
         }
         return .{
-            .label = scope.label,
-            .signal_ratio = local.signal_ratio,
-            .constraint_count = local.constraint_count,
-            .refers = local.refers,
-            .inputs = local.inputs,
+            .rounds = local.rounds,
         };
     }
 
-    fn buildLocalChartSeries(self: *const Dashboard, arena: std.mem.Allocator, refers: []const attestation_reader.ReferEvent) ChartSeries {
-        _ = self;
-        const bucket_ms: i64 = std.time.ms_per_s;
-        const bucket_count: usize = 60;
-        const span_ms: i64 = bucket_ms * bucket_count;
-
-        var raw_values: [bucket_count]u16 = .{0} ** bucket_count;
-
-        const now_ms = std.time.milliTimestamp();
-        const current_bucket_start_ms = now_ms - @mod(now_ms, bucket_ms);
-        const end_ms = current_bucket_start_ms + bucket_ms;
-        const start_ms = end_ms - span_ms;
-        for (refers) |rv| {
-            if (rv.timestamp < start_ms or rv.timestamp >= end_ms) continue;
-            const idx: usize = @intCast(@divFloor(rv.timestamp - start_ms, bucket_ms));
-            if (idx >= bucket_count) continue;
-            raw_values[idx] +|= 1;
-        }
-
-        return .{
-            .values = smoothLocalChartBuckets(arena, raw_values[0..]),
-            .left_label = "60s ago",
-            .right_label = "now",
+    fn dashboardSummary(rounds: []const attestation_reader.RoundEvent, active_session_count: usize) dashboard_panel.DashboardSummary {
+        var summary: dashboard_panel.DashboardSummary = .{
+            .round_count = rounds.len,
+            .active_session_count = active_session_count,
         };
+        for (rounds) |round| {
+            if (round.submit_count > 0) summary.submitted_count += 1;
+            if (round.refer_count > 0) summary.referred_count += 1;
+            if (round.reject_count > 0) summary.rejected_count += 1;
+            if (round.submit_count == 0 and round.reject_count == 0) summary.open_count += 1;
+        }
+        return summary;
     }
 
     fn getAnalysisCounts(self: *Dashboard) AnalysisCounts {
@@ -2145,11 +2059,11 @@ pub const Dashboard = struct {
 
         const scope = self.currentAnalysisScopeLocked();
         const input_count: usize = if (self.api_state.local_stats) |local| blk: {
-            const inputs = if (scope.ws_id) |ws_id|
-                (if (local.workspace(ws_id)) |ws| ws.inputs else &.{})
+            const rounds = if (scope.ws_id) |ws_id|
+                (if (local.workspace(ws_id)) |ws| ws.rounds else &.{})
             else
-                local.inputs;
-            break :blk latestInputs(inputs, self.dashboard_input_capacity).len;
+                local.rounds;
+            break :blk rounds.len;
         } else 0;
 
         const rule_count: usize = if (self.api_state.org_stats) |stats|
@@ -2168,16 +2082,13 @@ pub const Dashboard = struct {
         settings_panel.shiftSettingsTab(self, delta);
     }
 
-    // Modal overlay showing the full text of the currently-selected user
-    // rule from the Recent Inputs panel. Wraps at the box width and
-    // truncates if the rule is longer than the box can display.
+    // Modal overlay showing the full user input for the selected round.
     fn drawInputDetailOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const content_and_ts: struct { content: []const u8, ts: i64 } = blk: {
             const scoped = self.scopedAttestationData() orelse break :blk .{ .content = "", .ts = 0 };
-            const visible = latestInputs(scoped.inputs, self.dashboard_input_capacity);
-            if (visible.len == 0) break :blk .{ .content = "", .ts = 0 };
-            const idx = @min(self.analysis_input_cursor, visible.len - 1);
-            break :blk .{ .content = visible[idx].content, .ts = visible[idx].timestamp };
+            if (scoped.rounds.len == 0) break :blk .{ .content = "", .ts = 0 };
+            const idx = @min(self.analysis_input_cursor, scoped.rounds.len - 1);
+            break :blk .{ .content = scoped.rounds[idx].content, .ts = scoped.rounds[idx].timestamp };
         };
         return dashboard_panel.drawInputDetailOverlay(self, ctx, content_and_ts.content, content_and_ts.ts);
     }
@@ -2289,7 +2200,7 @@ pub const Dashboard = struct {
     fn contextHint(self: *const Dashboard) []const u8 {
         if (self.show_help) return "Keyboard reference overlay.";
         return switch (self.selected_module) {
-            .dashboard => "Live signal and recent input feed.",
+            .dashboard => "Live interaction rounds and attestation closure.",
             .library => "Bundle facet, rule list, and passive preview.",
             .workspace => "Workspace list and sync status detail.",
             .analysis => "Rule and member aggregates.",
@@ -3270,7 +3181,7 @@ pub const Dashboard = struct {
         switch (tab) {
             .dashboard => {
                 if (self.analysis_focus != .chart and self.analysis_focus != .inputs) {
-                    self.analysis_focus = .chart;
+                    self.analysis_focus = .inputs;
                 }
             },
             .analysis => {

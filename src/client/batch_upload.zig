@@ -1,6 +1,6 @@
-//! Batch upload mechanism for attestation events. Reads attestation.jsonl in bounded batches, tracks a
-//! cursor file to avoid re-uploading, and posts each batch via an injected uploader function.
-//! The cursor persists across process restarts.
+//! Batch upload mechanism for attestation events. Reads per-session attestation logs in
+//! bounded batches, tracks cursor files to avoid re-uploading, and posts each batch via
+//! an injected uploader function. Cursors persist across process restarts.
 const std = @import("std");
 const testing = std.testing;
 const attestation = @import("attestation.zig");
@@ -29,7 +29,7 @@ pub const MAX_BYTES_PER_BATCH: usize = 512 * 1024;
 /// wedged by a malformed or pathologically large attestation line.
 pub const MAX_SINGLE_EVENT_BYTES: usize = 900 * 1024;
 
-/// A single batch collected from attestation.jsonl, ready to POST as
+/// A single batch collected from an attestation log, ready to POST as
 /// {"events":[line1, line2, ...]} to /api/attestations.
 pub const Batch = struct {
     lines: std.ArrayList([]const u8),
@@ -56,7 +56,7 @@ pub const Uploader = struct {
 
 /// Flush pending attestation events for a workspace to the hub server.
 ///
-/// Cursor semantics: byte offset into attestation.jsonl. A successful batch POST
+/// Cursor semantics: byte offset into each attestation log. A successful batch POST
 /// advances the cursor atomically via temp file + rename. Network failures
 /// leave the cursor untouched so the next run replays the same bytes.
 /// Duplicate events are deduplicated server-side via ON CONFLICT.
@@ -67,14 +67,58 @@ pub fn flushOnce(
 ) FlushError!FlushResult {
     var result: FlushResult = .{};
 
-    const start_offset = readCursor(allocator, ws_id) catch |err| switch (err) {
+    const log_dir = attestation.attestationLogDirPath(allocator, ws_id) catch return error.OutOfMemory;
+    defer allocator.free(log_dir);
+    if (std.fs.openDirAbsolute(log_dir, .{ .iterate = true })) |dir_handle| {
+        var dir = dir_handle;
+        defer dir.close();
+        var it = dir.iterate();
+        while (it.next() catch return error.ReadTraceFailed) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
+
+            const path = std.fs.path.join(allocator, &.{ log_dir, entry.name }) catch return error.OutOfMemory;
+            defer allocator.free(path);
+
+            const session_id = entry.name[0 .. entry.name.len - ".jsonl".len];
+            const cursor_path = attestation.sessionCursorFilePath(allocator, ws_id, session_id) catch return error.OutOfMemory;
+            defer allocator.free(cursor_path);
+
+            const partial = try flushLogFile(allocator, path, cursor_path, uploader);
+            result.events_read += partial.events_read;
+            result.events_sent += partial.events_sent;
+            result.batches_sent += partial.batches_sent;
+        }
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return error.ReadTraceFailed,
+    }
+
+    const legacy_path = attestation.attestationFilePath(allocator, ws_id) catch return error.OutOfMemory;
+    defer allocator.free(legacy_path);
+    const legacy_cursor_path = attestation.cursorFilePath(allocator, ws_id) catch return error.OutOfMemory;
+    defer allocator.free(legacy_cursor_path);
+    const legacy = try flushLogFile(allocator, legacy_path, legacy_cursor_path, uploader);
+    result.events_read += legacy.events_read;
+    result.events_sent += legacy.events_sent;
+    result.batches_sent += legacy.batches_sent;
+
+    return result;
+}
+
+fn flushLogFile(
+    allocator: std.mem.Allocator,
+    attestation_path: []const u8,
+    cursor_path: []const u8,
+    uploader: Uploader,
+) FlushError!FlushResult {
+    var result: FlushResult = .{};
+
+    const start_offset = readCursorPath(allocator, cursor_path) catch |err| switch (err) {
         error.FileNotFound => 0,
         error.ParseCursorFailed => return error.ParseCursorFailed,
         else => return error.ReadCursorFailed,
     };
-
-    const attestation_path = attestation.attestationFilePath(allocator, ws_id) catch return error.OutOfMemory;
-    defer allocator.free(attestation_path);
 
     var file = std.fs.openFileAbsolute(attestation_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return result,
@@ -115,7 +159,7 @@ pub fn flushOnce(
         }
 
         cursor_offset = batch.end_offset;
-        writeCursor(allocator, ws_id, cursor_offset) catch return error.WriteCursorFailed;
+        writeCursorPath(allocator, cursor_path, cursor_offset) catch return error.WriteCursorFailed;
 
         if (cursor_offset >= stat.size) break;
     }
@@ -199,10 +243,7 @@ fn buildBatchBody(allocator: std.mem.Allocator, lines: []const []const u8) ![]u8
     return try buf.toOwnedSlice(allocator);
 }
 
-fn readCursor(allocator: std.mem.Allocator, ws_id: []const u8) !u64 {
-    const cursor_path = try attestation.cursorFilePath(allocator, ws_id);
-    defer allocator.free(cursor_path);
-
+fn readCursorPath(_: std.mem.Allocator, cursor_path: []const u8) !u64 {
     var file = try std.fs.openFileAbsolute(cursor_path, .{});
     defer file.close();
 
@@ -215,10 +256,7 @@ fn readCursor(allocator: std.mem.Allocator, ws_id: []const u8) !u64 {
     return std.fmt.parseInt(u64, text, 10) catch error.ParseCursorFailed;
 }
 
-fn writeCursor(allocator: std.mem.Allocator, ws_id: []const u8, offset: u64) !void {
-    const cursor_path = try attestation.cursorFilePath(allocator, ws_id);
-    defer allocator.free(cursor_path);
-
+fn writeCursorPath(allocator: std.mem.Allocator, cursor_path: []const u8, offset: u64) !void {
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{cursor_path});
     defer allocator.free(tmp_path);
 

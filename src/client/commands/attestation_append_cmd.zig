@@ -1,6 +1,6 @@
 const std = @import("std");
 const flag = @import("../flags.zig");
-const session_marker = @import("../session_marker.zig");
+const host_session = @import("../host_session.zig");
 const util_hash = @import("clumsies_lib").util.hash;
 const attestation = @import("../attestation.zig");
 const ws_config = @import("../workspace_config.zig");
@@ -17,11 +17,11 @@ const FLAG_CONTENT: usize = 1;
 /// `clumsies attestation append --type <type> [--content <text>]`
 ///
 /// Append a single attestation event to the current workspace's
-/// attestation.jsonl. The session_id comes from current_session.json, written
-/// by the active MCP serve process. The event_id uses microseconds-since-epoch
-/// so it never collides with the in-process counter MCP uses for its own events.
+/// attestation log. The session_id is derived from the host CLI session when
+/// available. The event_id uses microseconds-since-epoch so it never collides
+/// with the in-process counter MCP uses for its own events.
 ///
-/// Best-effort: silent failure on missing binding, missing session marker,
+/// Best-effort: silent failure on missing binding, missing host session,
 /// or attestation write errors. Designed to be called from adapter hook scripts
 /// where blocking the user is unacceptable.
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -77,13 +77,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(binding.ws_id);
     defer allocator.free(binding.name);
 
-    const ws_dir = ws_config.getWsDir(allocator, binding.ws_id) catch return;
-    defer allocator.free(ws_dir);
-
-    const marker_opt = session_marker.read(allocator, ws_dir) catch null;
-    if (marker_opt == null) return;
-    const marker = marker_opt.?;
-    defer allocator.free(marker.session_id);
+    var host_session_id = host_session.resolveSessionId(allocator) orelse return;
+    const session_id = host_session_id[0..];
 
     const content_opt = result.value(FLAG_CONTENT);
     var content_hash_owned: ?[]const u8 = null;
@@ -110,13 +105,13 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     else if (std.mem.eql(u8, event_type, "refer"))
         .discover // CLI hook doesn't carry rule_id/constraint_id; fallback to void variant
     else if (std.mem.eql(u8, event_type, "agent_report"))
-        .discover // CLI hook doesn't carry summary; fallback to void variant
+        .{ .agent_report = .{ .summary = content_opt orelse "" } }
     else
         .setup;
 
     attestation.appendAttestationEvent(allocator, .{
         .ws_id = binding.ws_id,
-        .session_id = marker.session_id,
+        .session_id = session_id,
         .event_id = event_id,
         .ts = std.time.milliTimestamp(),
         .payload = payload,
@@ -128,7 +123,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
 fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}{s}clumsies attestation append{s}\n\n", .{ P, Color.bold, Color.reset });
-    try out.print("Append a single attestation event to the current workspace's attestation.jsonl.\n", .{});
+    try out.print("Append a single attestation event to the current workspace's attestation log.\n", .{});
     try out.print("Intended for adapter hooks (UserPromptSubmit, etc).\n\n", .{});
     try out.print("{s}Usage:{s}\n", .{ Color.bold, Color.reset });
     try out.print("  clumsies attestation append --type user_prompt --content \"hello\"\n", .{});

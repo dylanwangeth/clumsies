@@ -225,6 +225,7 @@ test {
     _ = @import("batch_upload.zig");
     _ = @import("drafts.zig");
     _ = @import("flags.zig");
+    _ = @import("host_session.zig");
     _ = @import("rule.zig");
     _ = @import("session_marker.zig");
     _ = @import("attestation.zig");
