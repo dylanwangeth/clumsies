@@ -6,7 +6,7 @@ const w = @import("../widgets.zig");
 const attestation_reader = @import("../attestation_reader.zig");
 const workspace_rule = @import("../../rule.zig");
 const Modal = w.Modal;
-const ROUND_ROW_COUNT = 3;
+const ROUND_ROW_COUNT = 5;
 
 pub fn drawRoot(
     self: anytype,
@@ -352,15 +352,22 @@ fn syncRoundWidgets(
         const row_bg = if (is_sel) theme.PANEL_ALT else theme.PANEL;
         const status = roundStatus(round);
         const time_txt = try formatHm(ctx.arena, round.timestamp);
-        const head = try std.fmt.allocPrint(ctx.arena, "{s} {s}  ses {s}  refer {d}", .{
-            time_txt,
-            status.icon,
-            compactSessionId(round.session_id),
-            round.refer_count,
-        });
+
+        const head = if (round.refer_count > 0)
+            try std.fmt.allocPrint(ctx.arena, " {s}  ses {s}  {d} Rules Referred", .{
+                time_txt,
+                compactSessionId(round.session_id),
+                round.refer_count,
+            })
+        else
+            try std.fmt.allocPrint(ctx.arena, " {s}  ses {s}", .{
+                time_txt,
+                compactSessionId(round.session_id),
+            });
+
         self.dashboard_round_rows[out] = .{
             .text = try padLine(ctx, firstLineTrimmed(head, width), width),
-            .style = if (is_sel) theme.boldOn(row_bg, status.color) else .{ .fg = status.color, .bg = row_bg },
+            .style = if (is_sel) theme.boldOn(row_bg, theme.ACCENT_SOFT) else .{ .fg = theme.MUTED, .bg = row_bg },
             .softwrap = false,
         };
         self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
@@ -368,7 +375,7 @@ fn syncRoundWidgets(
 
         var remaining = round.content;
         var line_idx: usize = 0;
-        while (line_idx < ROUND_ROW_COUNT - 1) : (line_idx += 1) {
+        while (line_idx < 2) : (line_idx += 1) {
             const text = nextPromptPreviewLine(&remaining, width -| 3);
             const snippet = try std.fmt.allocPrint(ctx.arena, "  {s}", .{text});
             self.dashboard_round_rows[out] = .{
@@ -379,6 +386,39 @@ fn syncRoundWidgets(
             self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
             out += 1;
         }
+
+        const status_text = try std.fmt.allocPrint(ctx.arena, "{s} {s} ", .{ status.icon, status.label });
+        const status_w = ctx.stringWidth(status_text);
+        const padding_w = width -| @as(u16, @intCast(status_w));
+        const total_len = padding_w + status_text.len;
+        const padded_status = try ctx.arena.alloc(u8, total_len);
+        @memset(padded_status[0..padding_w], ' ');
+        @memcpy(padded_status[padding_w..total_len], status_text);
+        self.dashboard_round_rows[out] = .{
+            .text = padded_status,
+            .style = if (is_sel) theme.boldOn(row_bg, status.color) else .{ .fg = status.color, .bg = row_bg },
+            .softwrap = false,
+        };
+        self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
+        out += 1;
+
+        const sep = try ctx.arena.alloc(u8, width);
+        @memset(sep, ' ');
+        if (idx + 1 < rounds.len) {
+            self.dashboard_round_rows[out] = .{
+                .text = try padLine(ctx, " \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80", width),
+                .style = .{ .fg = theme.BORDER, .bg = theme.PANEL },
+                .softwrap = false,
+            };
+        } else {
+            self.dashboard_round_rows[out] = .{
+                .text = sep,
+                .style = .{ .fg = theme.PANEL, .bg = theme.PANEL },
+                .softwrap = false,
+            };
+        }
+        self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
+        out += 1;
     }
     self.dashboard_round_scroll_bars.scroll_view.children = .{ .slice = self.dashboard_round_widgets[0..out] };
     self.dashboard_round_scroll_bars.estimated_content_height = @intCast(out);
@@ -450,8 +490,8 @@ fn appendLoadGroup(
 
     const time_txt = try formatHm(ctx.arena, first.timestamp);
     const count = end - start;
-    const head = try std.fmt.allocPrint(ctx.arena, "{s}  PREP   loaded {d} rules", .{ time_txt, count });
-    appendChainLine(self, out, firstLineTrimmed(head, width), theme.fg(theme.ACCENT_SOFT));
+    const head = try std.fmt.allocPrint(ctx.arena, "{s} \xe2\x97\x8b LOAD   loaded {d} rules", .{ time_txt, count });
+    appendChainLine(self, out, firstLineTrimmed(head, width), theme.fg(theme.MUTED));
 
     const preview_count = @min(count, @as(usize, 4));
     var idx: usize = 0;
@@ -463,10 +503,12 @@ fn appendLoadGroup(
         }
     }
     if (count > preview_count and out.* < self.dashboard_chain_rows.len) {
-        const more = try std.fmt.allocPrint(ctx.arena, "+{d} more", .{count - preview_count});
-        try appendIndentedText(self, ctx, out, width, more, theme.fg(theme.DIM));
+        const more = try std.fmt.allocPrint(ctx.arena, "      \xe2\x94\x82 +{d} more", .{count - preview_count});
+        appendChainLine(self, out, firstLineTrimmed(more, width), theme.fg(theme.DIM));
     }
-    if (end < tools.len and out.* < self.dashboard_chain_rows.len) appendChainLine(self, out, "", theme.fg(theme.DIM));
+    if (end < tools.len and out.* < self.dashboard_chain_rows.len) {
+        appendChainLine(self, out, "      \xe2\x94\x82", theme.fg(theme.DIM));
+    }
     return end;
 }
 
@@ -482,10 +524,14 @@ fn appendChainTool(
     if (out.* >= self.dashboard_chain_rows.len) return;
     const time_txt = try formatHm(ctx.arena, tool.timestamp);
     const verb = toolVerb(tool.kind);
+
+    const node_icon = if (std.mem.eql(u8, tool.kind, "agent_report")) "\xe2\x9c\x93" else if (std.mem.eql(u8, tool.kind, "reject")) "\xc3\x97" else if (std.mem.eql(u8, tool.kind, "refer")) "\xe2\x97\x8f" else "\xe2\x97\x8b";
+
     const head = if (tool.constraint_id) |constraint_id|
-        try std.fmt.allocPrint(ctx.arena, "{s}  {s:<6} {s}", .{ time_txt, verb, constraint_id })
+        try std.fmt.allocPrint(ctx.arena, "{s} {s} {s:<6} {s}", .{ time_txt, node_icon, verb, constraint_id })
     else
-        try std.fmt.allocPrint(ctx.arena, "{s}  {s}", .{ time_txt, verb });
+        try std.fmt.allocPrint(ctx.arena, "{s} {s} {s}", .{ time_txt, node_icon, verb });
+
     appendChainLine(self, out, firstLineTrimmed(head, width), toolStyle(tool.kind));
 
     if (tool.rule_id) |rule_id| {
@@ -493,15 +539,19 @@ fn appendChainTool(
         try appendRulePreview(self, ctx, out, width, rule, .expanded);
     }
 
-    const expanded = toolExpandedText(tool) orelse return;
-    if (expanded.len == 0) return;
-    const field = if (std.mem.eql(u8, tool.kind, "reject") or std.mem.eql(u8, tool.kind, "refer"))
-        "reason"
-    else
-        "summary";
-    try appendEvidenceText(self, ctx, out, width, field, expanded, theme.fg(toolDetailColor(tool.kind)));
+    const expanded = toolExpandedText(tool);
+    if (expanded) |text| {
+        if (text.len > 0) {
+            const field = if (std.mem.eql(u8, tool.kind, "reject") or std.mem.eql(u8, tool.kind, "refer"))
+                "reason"
+            else
+                "summary";
+            try appendEvidenceText(self, ctx, out, width, field, text, theme.fg(toolDetailColor(tool.kind)));
+        }
+    }
+
     if (!is_last and out.* < self.dashboard_chain_rows.len) {
-        appendChainLine(self, out, "", theme.fg(theme.DIM));
+        appendChainLine(self, out, "      \xe2\x94\x82", theme.fg(theme.DIM));
     }
 }
 
@@ -565,11 +615,11 @@ fn appendRulePreview(
     rule: RulePreview,
     density: RulePreviewDensity,
 ) std.mem.Allocator.Error!void {
-    const title = try std.fmt.allocPrint(ctx.arena, "  {s}", .{rule.name});
+    const title = try std.fmt.allocPrint(ctx.arena, "      \xe2\x94\x82 {s}", .{rule.name});
     appendChainLine(self, out, firstLineTrimmed(title, width), theme.fg(theme.TEXT));
 
     if (rule.path.len > 0) {
-        const path = try std.fmt.allocPrint(ctx.arena, "    {s}", .{rule.path});
+        const path = try std.fmt.allocPrint(ctx.arena, "      \xe2\x94\x82   {s}", .{rule.path});
         appendChainLine(self, out, firstLineTrimmed(path, width), theme.fg(theme.DIM));
     }
     if (density == .expanded and rule.excerpt.len > 0) {
@@ -585,7 +635,9 @@ fn appendIndentedText(
     text: []const u8,
     style: vaxis.Style,
 ) std.mem.Allocator.Error!void {
-    const body_w = width -| 4;
+    const prefix = "      \xe2\x94\x82   ";
+    const prefix_w = ctx.stringWidth(prefix);
+    const body_w = width -| @as(u16, @intCast(prefix_w));
     if (body_w == 0) return;
     var remaining = text;
     while (remaining.len > 0 and out.* < self.dashboard_chain_rows.len) {
@@ -594,7 +646,7 @@ fn appendIndentedText(
             chunk = chunk[0 .. chunk.len - 1];
         }
         if (chunk.len == 0) break;
-        const line = try std.fmt.allocPrint(ctx.arena, "    {s}", .{chunk});
+        const line = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ prefix, chunk });
         appendChainLine(self, out, firstLineTrimmed(line, width), style);
         remaining = remaining[chunk.len..];
     }
@@ -609,7 +661,7 @@ fn appendEvidenceText(
     text: []const u8,
     style: vaxis.Style,
 ) std.mem.Allocator.Error!void {
-    const head = try std.fmt.allocPrint(ctx.arena, "  {s}", .{label});
+    const head = try std.fmt.allocPrint(ctx.arena, "      \xe2\x94\x82 {s}", .{label});
     appendChainLine(self, out, firstLineTrimmed(head, width), theme.fg(theme.DIM));
     try appendIndentedText(self, ctx, out, width, text, style);
 }
@@ -655,14 +707,15 @@ fn toolDetailColor(kind: []const u8) vaxis.Color {
 
 const RoundStatus = struct {
     icon: []const u8,
+    label: []const u8,
     color: vaxis.Color,
 };
 
 fn roundStatus(round: attestation_reader.RoundEvent) RoundStatus {
-    if (round.reject_count > 0) return .{ .icon = "\xc3\x97", .color = theme.DANGER };
-    if (round.submit_count > 0 and round.refer_count == 0) return .{ .icon = "\xe2\x97\x87", .color = theme.MUTED };
-    if (round.submit_count > 0) return .{ .icon = "\xe2\x97\x86", .color = theme.OK };
-    return .{ .icon = "\xe2\x97\x89", .color = theme.ACCENT_SOFT };
+    if (round.reject_count > 0) return .{ .icon = "\xc3\x97", .label = "Rejected", .color = theme.DANGER };
+    if (round.submit_count > 0 and round.refer_count == 0) return .{ .icon = "\xe2\x9c\x93", .label = "Completed (No Rules)", .color = theme.MUTED };
+    if (round.submit_count > 0) return .{ .icon = "\xe2\x9c\x93", .label = "Completed", .color = theme.OK };
+    return .{ .icon = "\xe2\x9a\x99", .label = "Active", .color = theme.ACCENT_SOFT };
 }
 
 fn compactSessionId(session_id: []const u8) []const u8 {
