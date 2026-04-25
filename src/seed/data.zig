@@ -150,7 +150,7 @@ pub const TRACE_DISCIPLINE_CONTENT =
     \\Keep attestation behavior strict and observable:
     \\
     \\1. Treat the hub-issued `rule_id` as the only rule identity in attestation events.
-    \\2. Write local `attestation.jsonl` lines in the same JSON shape accepted by `POST /api/attestations`.
+    \\2. Write local attestation log lines in the same JSON shape accepted by `POST /api/attestations`.
     \\3. Emit `user_prompt` before `refer` so Recent Inputs and Insights stay meaningful.
     \\4. Keep the seed pump focused on observability traffic. Do not mutate workspace structure during activity generation.
 ;
@@ -199,7 +199,7 @@ pub const TRACE_ALIGNMENT_CONTEXT =
     \\
     \\This seed context is derived from `.rules/plan/MCP_TRACE_ALIGNMENT.md`.
     \\
-    \\- Local `attestation.jsonl` should match the server `POST /api/attestations` payload shape.
+    \\- Local attestation logs should match the server `POST /api/attestations` payload shape.
     \\- `ws_id` must be the hub workspace id, not a local hash.
     \\- `user_prompt` events are required if the TUI should render a Recent Inputs feed.
     \\- `rule_id` must always be the hub-issued identifier.
@@ -208,7 +208,7 @@ pub const TRACE_ALIGNMENT_CONTEXT =
 pub const RECENT_INPUTS_CONTEXT =
     \\# Recent Inputs Snapshot
     \\
-    \\- The TUI Recent Inputs panel reads local attestation files from `~/.clumsies/workspaces/{ws_id}/attestation.jsonl`.
+    \\- The TUI Recent Inputs panel reads local attestation logs from `~/.clumsies/workspaces/{ws_id}/logs/attestation/*.jsonl`.
     \\- `user_prompt` drives the feed; `refer` enriches the rule-level stats.
     \\- If the pump only mutates server tables and skips local attestation writes, Recent Inputs will look empty.
 ;
@@ -341,7 +341,7 @@ pub const PUMP_SCENARIOS = [_]PumpScenario{
     .{
         .user_id = "usr-seed-admin",
         .ws_id = "ws-seed-tui",
-        .input = "Confirm that insights are sourced from local attestation.jsonl instead of only server stats.",
+        .input = "Confirm that insights are sourced from local attestation logs instead of only server stats.",
         .refers = &TUI_REFERS,
     },
     .{

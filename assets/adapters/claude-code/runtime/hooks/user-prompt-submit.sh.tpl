@@ -12,7 +12,13 @@ if ! command -v jq &>/dev/null; then
   exit 0
 fi
 
-PROMPT_TEXT=$(jq -r '.prompt // empty' 2>/dev/null || echo "")
+INPUT=$(cat)
+SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+if [ -n "$SESSION_ID" ]; then
+  export CLUMSIES_HOST_SESSION_ID="$SESSION_ID"
+fi
+
+PROMPT_TEXT=$(printf '%s' "$INPUT" | jq -r '.prompt // empty' 2>/dev/null || echo "")
 if [ -z "$PROMPT_TEXT" ]; then
   exit 0
 fi

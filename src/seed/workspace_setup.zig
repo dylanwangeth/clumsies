@@ -1,5 +1,4 @@
-//! Creates workspace directory structure under ~/.clumsies/workspaces/{ws_id}/ with initial
-//! attestation.jsonl and cursor files for seed workspaces.
+//! Creates workspace directory structure under ~/.clumsies/workspaces/{ws_id}/ for seed workspaces.
 const std = @import("std");
 const local_attestation = @import("clumsies_client").attestation;
 
@@ -11,13 +10,13 @@ pub fn ensureWorkspaceFiles(ws_id: []const u8) !void {
     defer alloc.free(ws_dir);
     try ensureWorkspaceDirTree(ws_dir);
 
-    const attestation_path = try local_attestation.attestationFilePath(alloc, ws_id);
-    defer alloc.free(attestation_path);
-    try ensureFileExists(attestation_path);
+    const logs_dir = try std.fs.path.join(alloc, &.{ ws_dir, "logs" });
+    defer alloc.free(logs_dir);
+    try ensureDir(logs_dir);
 
-    const cursor_path = try local_attestation.cursorFilePath(alloc, ws_id);
-    defer alloc.free(cursor_path);
-    try ensureCursorFile(cursor_path);
+    const attestation_dir = try local_attestation.attestationLogDirPath(alloc, ws_id);
+    defer alloc.free(attestation_dir);
+    try ensureDir(attestation_dir);
 }
 
 pub fn deleteWorkspaceFiles(ws_id: []const u8) void {
@@ -34,10 +33,11 @@ pub fn deleteWorkspaceFiles(ws_id: []const u8) void {
 }
 
 fn workspaceDirPath(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
-    const attestation_path = try local_attestation.attestationFilePath(allocator, ws_id);
-    defer allocator.free(attestation_path);
+    const attestation_dir = try local_attestation.attestationLogDirPath(allocator, ws_id);
+    defer allocator.free(attestation_dir);
 
-    const ws_dir = std.fs.path.dirname(attestation_path) orelse return error.InvalidAttestationPath;
+    const logs_dir = std.fs.path.dirname(attestation_dir) orelse return error.InvalidAttestationPath;
+    const ws_dir = std.fs.path.dirname(logs_dir) orelse return error.InvalidAttestationPath;
     return try allocator.dupe(u8, ws_dir);
 }
 
@@ -59,32 +59,11 @@ fn ensureWorkspaceDirTree(ws_dir: []const u8) !void {
     };
 }
 
-fn ensureFileExists(path: []const u8) !void {
-    const existing = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            const file = try std.fs.createFileAbsolute(path, .{});
-            defer file.close();
-            return;
-        },
+fn ensureDir(path: []const u8) !void {
+    std.fs.makeDirAbsolute(path) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
         else => return err,
     };
-    existing.close();
-}
-
-fn ensureCursorFile(path: []const u8) !void {
-    const existing = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            const file = try std.fs.createFileAbsolute(path, .{});
-            defer file.close();
-            var buf: [32]u8 = undefined;
-            var writer = std.fs.File.Writer.init(file, &buf);
-            defer writer.interface.flush() catch {};
-            try writer.interface.writeAll("0\n");
-            return;
-        },
-        else => return err,
-    };
-    existing.close();
 }
 
 fn isSafeWorkspaceId(ws_id: []const u8) bool {

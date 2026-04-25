@@ -1,7 +1,7 @@
 //! Attestation event recording. Each MCP setup/discover/load/refer/submit interaction
 //! is serialized as an AttestationEvent and appended to
-//! ~/.clumsies/workspaces/{ws_id}/attestation.jsonl. The Hub later ingests these
-//! events via POST /api/attestations to compute constraint-level usage statistics.
+//! ~/.clumsies/workspaces/{ws_id}/logs/attestation/{session_id}.jsonl. The Hub later
+//! ingests these events via POST /api/attestations to compute constraint-level usage statistics.
 //!
 //! The data model uses a tagged union (Payload) so each event type carries only
 //! its own fields. New event types add a union variant without touching existing ones.
@@ -113,11 +113,35 @@ pub fn attestationFilePath(allocator: std.mem.Allocator, ws_id: []const u8) ![]c
     return try std.fs.path.join(allocator, &.{ base, "workspaces", ws_id, "attestation.jsonl" });
 }
 
+/// Get the per-session attestation log path: ~/.clumsies/workspaces/{ws_id}/logs/attestation/{session_id}.jsonl
+pub fn sessionAttestationFilePath(allocator: std.mem.Allocator, ws_id: []const u8, session_id: []const u8) ![]const u8 {
+    const dir = try attestationLogDirPath(allocator, ws_id);
+    defer allocator.free(dir);
+    const file_name = try std.fmt.allocPrint(allocator, "{s}.jsonl", .{session_id});
+    defer allocator.free(file_name);
+    return try std.fs.path.join(allocator, &.{ dir, file_name });
+}
+
 /// Get the attestation cursor file path: ~/.clumsies/workspaces/{ws_id}/attestation.cursor
 pub fn cursorFilePath(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
     const base = try getBasePath(allocator);
     defer allocator.free(base);
     return try std.fs.path.join(allocator, &.{ base, "workspaces", ws_id, "attestation.cursor" });
+}
+
+/// Get the per-session upload cursor path for an attestation log.
+pub fn sessionCursorFilePath(allocator: std.mem.Allocator, ws_id: []const u8, session_id: []const u8) ![]const u8 {
+    const dir = try attestationLogDirPath(allocator, ws_id);
+    defer allocator.free(dir);
+    const file_name = try std.fmt.allocPrint(allocator, "{s}.cursor", .{session_id});
+    defer allocator.free(file_name);
+    return try std.fs.path.join(allocator, &.{ dir, file_name });
+}
+
+pub fn attestationLogDirPath(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
+    const base = try getBasePath(allocator);
+    defer allocator.free(base);
+    return try std.fs.path.join(allocator, &.{ base, "workspaces", ws_id, "logs", "attestation" });
 }
 
 fn ensureWorkspaceDir(allocator: std.mem.Allocator, ws_id: []const u8) !void {
@@ -142,6 +166,20 @@ fn ensureWorkspaceDir(allocator: std.mem.Allocator, ws_id: []const u8) !void {
         error.PathAlreadyExists => {},
         else => return err,
     };
+
+    const logs_dir = try std.fs.path.join(allocator, &.{ ws_dir, "logs" });
+    defer allocator.free(logs_dir);
+    std.fs.makeDirAbsolute(logs_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    const attestation_dir = try std.fs.path.join(allocator, &.{ logs_dir, "attestation" });
+    defer allocator.free(attestation_dir);
+    std.fs.makeDirAbsolute(attestation_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
 }
 
 fn ensureCursorFile(allocator: std.mem.Allocator, ws_id: []const u8) !void {
@@ -163,13 +201,12 @@ fn ensureCursorFile(allocator: std.mem.Allocator, ws_id: []const u8) !void {
     existing.close();
 }
 
-/// Append an attestation event to ~/.clumsies/workspaces/{ws_id}/attestation.jsonl.
+/// Append an attestation event to the workspace's per-session attestation log.
 /// The JSON format matches the server `POST /api/attestations` AttestationEventInput shape.
 pub fn appendAttestationEvent(allocator: std.mem.Allocator, event: AttestationEvent) !void {
     try ensureWorkspaceDir(allocator, event.ws_id);
-    try ensureCursorFile(allocator, event.ws_id);
 
-    const attestation_path = try attestationFilePath(allocator, event.ws_id);
+    const attestation_path = try sessionAttestationFilePath(allocator, event.ws_id, event.session_id);
     defer allocator.free(attestation_path);
 
     var file = try std.fs.createFileAbsolute(attestation_path, .{ .truncate = false });
@@ -272,6 +309,12 @@ test "attestationFilePath is under ~/.clumsies/workspaces/{ws_id}/" {
     const p = try attestationFilePath(testing.allocator, "ws-test123");
     defer testing.allocator.free(p);
     try testing.expect(std.mem.indexOf(u8, p, "/.clumsies/workspaces/ws-test123/attestation.jsonl") != null);
+}
+
+test "sessionAttestationFilePath is under workspace logs attestation directory" {
+    const p = try sessionAttestationFilePath(testing.allocator, "ws-test123", "sess-abc");
+    defer testing.allocator.free(p);
+    try testing.expect(std.mem.indexOf(u8, p, "/.clumsies/workspaces/ws-test123/logs/attestation/sess-abc.jsonl") != null);
 }
 
 test "serializeAttestationEvent: refer event with all fields" {

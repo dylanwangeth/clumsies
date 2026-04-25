@@ -1,4 +1,4 @@
-// Read local attestation.jsonl files and compute analysis stats.
+// Read local attestation logs and compute analysis stats.
 const std = @import("std");
 const workspace_rule = @import("../rule.zig");
 const data = @import("view_types.zig");
@@ -12,6 +12,7 @@ pub const LocalStats = struct {
     refers: []const ReferEvent = &.{},
     rules: []const data.AnalysisRule = &.{},
     inputs: []const InputEvent = &.{},
+    rounds: []const RoundEvent = &.{},
     workspaces: []const WorkspaceLocalStats = &.{},
 
     pub fn workspace(self: *const LocalStats, ws_id: []const u8) ?*const WorkspaceLocalStats {
@@ -32,6 +33,7 @@ pub const WorkspaceLocalStats = struct {
     refers: []const ReferEvent = &.{},
     rules: []const data.AnalysisRule = &.{},
     inputs: []const InputEvent = &.{},
+    rounds: []const RoundEvent = &.{},
 };
 
 pub const ReferEvent = struct {
@@ -46,6 +48,36 @@ pub const InputEvent = struct {
     content: []const u8,
 };
 
+pub const RoundRefer = struct {
+    rule_id: []const u8,
+    constraint_id: []const u8,
+    reason: ?[]const u8 = null,
+};
+
+pub const RoundTool = struct {
+    kind: []const u8,
+    timestamp: i64,
+    rule_id: ?[]const u8 = null,
+    constraint_id: ?[]const u8 = null,
+    summary: ?[]const u8 = null,
+    reason: ?[]const u8 = null,
+};
+
+pub const RoundEvent = struct {
+    ws_id: []const u8 = "",
+    session_id: []const u8 = "",
+    timestamp: i64,
+    content: []const u8,
+    load_count: u16 = 0,
+    refer_count: u16 = 0,
+    submit_count: u16 = 0,
+    reject_count: u16 = 0,
+    summary: ?[]const u8 = null,
+    reject_reason: ?[]const u8 = null,
+    refers: []const RoundRefer = &.{},
+    tools: []const RoundTool = &.{},
+};
+
 const AttestationEvent = struct {
     ws_id: []const u8 = "",
     session_id: []const u8 = "",
@@ -56,6 +88,7 @@ const AttestationEvent = struct {
     constraint_id: ?[]const u8 = null,
     reason: ?[]const u8 = null,
     content: ?[]const u8 = null,
+    summary: ?[]const u8 = null,
 };
 
 const RuleConstraintTotals = std.StringHashMap(u16);
@@ -81,10 +114,8 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
         defer if (!keep_ws_id) allocator.free(ws_id);
         const ws_dir = std.fs.path.join(allocator, &.{ ws_root, entry.name }) catch continue;
         defer allocator.free(ws_dir);
-        const attestation_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "attestation.jsonl" }) catch continue;
-        defer allocator.free(attestation_path);
         var ws_events: std.ArrayList(AttestationEvent) = .empty;
-        readEventsFromFile(allocator, attestation_path, ws_id, &ws_events);
+        readWorkspaceEvents(allocator, ws_dir, ws_id, &ws_events);
         if (ws_events.items.len == 0) continue;
         keep_ws_id = true;
 
@@ -104,6 +135,7 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
             .refers = ws_stats.refers,
             .rules = ws_stats.rules,
             .inputs = ws_stats.inputs,
+            .rounds = ws_stats.rounds,
         }) catch continue;
 
         for (ws_events.items) |ev| {
@@ -115,6 +147,28 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     var all_stats = computeStats(allocator, all_events.items, &all_rule_totals);
     all_stats.workspaces = workspace_stats.items;
     return all_stats;
+}
+
+fn readWorkspaceEvents(allocator: std.mem.Allocator, ws_dir: []const u8, ws_id: []const u8, events: *std.ArrayList(AttestationEvent)) void {
+    const log_dir = std.fs.path.join(allocator, &.{ ws_dir, "logs", "attestation" }) catch return;
+    defer allocator.free(log_dir);
+
+    var dir = std.fs.openDirAbsolute(log_dir, .{ .iterate = true }) catch null;
+    if (dir) |*opened_dir| {
+        defer opened_dir.close();
+        var it = opened_dir.iterate();
+        while (it.next() catch null) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
+            const path = std.fs.path.join(allocator, &.{ log_dir, entry.name }) catch continue;
+            defer allocator.free(path);
+            readEventsFromFile(allocator, path, ws_id, events);
+        }
+    }
+
+    const legacy_path = std.fs.path.join(allocator, &.{ ws_dir, "attestation.jsonl" }) catch return;
+    defer allocator.free(legacy_path);
+    readEventsFromFile(allocator, legacy_path, ws_id, events);
 }
 
 fn getBaseDir(allocator: std.mem.Allocator) ?[]const u8 {
@@ -139,7 +193,9 @@ fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, ws_id: []c
     const buf = allocator.alloc(u8, read_len) catch return;
     defer allocator.free(buf);
 
-    const total = file.readAll(buf) catch return;
+    var read_buf: [4096]u8 = undefined;
+    var reader = std.fs.File.Reader.init(file, &read_buf);
+    const total = reader.interface.readSliceShort(buf) catch return;
     if (total == 0) return;
 
     var contents = buf[0..total];
@@ -179,6 +235,7 @@ fn cloneAttestationEvent(allocator: std.mem.Allocator, ws_id: []const u8, src: A
         .constraint_id = null,
         .reason = null,
         .content = null,
+        .summary = null,
     };
     errdefer allocator.free(out.session_id);
     errdefer allocator.free(out.type);
@@ -198,6 +255,9 @@ fn cloneAttestationEvent(allocator: std.mem.Allocator, ws_id: []const u8, src: A
     out.content = try dupeOptional(allocator, src.content);
     errdefer if (out.content) |s| allocator.free(s);
 
+    out.summary = try dupeOptional(allocator, src.summary);
+    errdefer if (out.summary) |s| allocator.free(s);
+
     return out;
 }
 
@@ -213,6 +273,7 @@ fn freeAttestationEventOwned(allocator: std.mem.Allocator, ev: AttestationEvent)
     if (ev.constraint_id) |s| allocator.free(s);
     if (ev.reason) |s| allocator.free(s);
     if (ev.content) |s| allocator.free(s);
+    if (ev.summary) |s| allocator.free(s);
 }
 
 fn loadRuleConstraintTotals(allocator: std.mem.Allocator, ws_dir: []const u8) !RuleConstraintTotals {
@@ -424,8 +485,147 @@ fn computeStats(
         }
     }.cmp);
     stats.inputs = inputs_list.items;
+    stats.rounds = buildRounds(allocator, events);
 
     return stats;
+}
+
+fn buildRounds(allocator: std.mem.Allocator, events: []const AttestationEvent) []const RoundEvent {
+    const RoundBuilder = struct {
+        event: RoundEvent,
+        refers: std.ArrayList(RoundRefer) = .empty,
+        tools: std.ArrayList(RoundTool) = .empty,
+    };
+
+    const ordered = allocator.dupe(AttestationEvent, events) catch return &.{};
+    defer allocator.free(ordered);
+    sortAttestationEvents(ordered);
+
+    var builders: std.ArrayList(RoundBuilder) = .empty;
+    var active_rounds: std.StringHashMap(usize) = .init(allocator);
+    defer deinitActiveRoundMap(allocator, &active_rounds);
+
+    for (ordered) |ev| {
+        if (std.mem.eql(u8, ev.type, "user_prompt")) {
+            const content = ev.content orelse continue;
+            const index = builders.items.len;
+            builders.append(allocator, .{
+                .event = .{
+                    .ws_id = ev.ws_id,
+                    .session_id = ev.session_id,
+                    .timestamp = ev.timestamp,
+                    .content = content,
+                },
+            }) catch continue;
+            putActiveRound(allocator, &active_rounds, ev.ws_id, ev.session_id, index) catch continue;
+            continue;
+        }
+
+        const key = roundSessionKey(allocator, ev.ws_id, ev.session_id) catch continue;
+        defer allocator.free(key);
+        const round_index = active_rounds.get(key) orelse continue;
+        if (round_index >= builders.items.len) continue;
+        const builder = &builders.items[round_index];
+
+        if (std.mem.eql(u8, ev.type, "load")) {
+            builder.event.load_count +|= 1;
+            appendRoundTool(allocator, builder, ev);
+        } else if (std.mem.eql(u8, ev.type, "refer")) {
+            builder.event.refer_count +|= 1;
+            appendRoundTool(allocator, builder, ev);
+            if (ev.rule_id) |rule_id| {
+                if (ev.constraint_id) |constraint_id| {
+                    builder.refers.append(allocator, .{
+                        .rule_id = rule_id,
+                        .constraint_id = constraint_id,
+                        .reason = ev.reason,
+                    }) catch continue;
+                }
+            }
+        } else if (std.mem.eql(u8, ev.type, "agent_report")) {
+            builder.event.submit_count +|= 1;
+            builder.event.summary = ev.summary;
+            appendRoundTool(allocator, builder, ev);
+        } else if (std.mem.eql(u8, ev.type, "reject")) {
+            builder.event.reject_count +|= 1;
+            builder.event.reject_reason = ev.reason;
+            appendRoundTool(allocator, builder, ev);
+        } else if (isProtocolToolEvent(ev.type)) {
+            appendRoundTool(allocator, builder, ev);
+        }
+    }
+
+    const rounds = allocator.alloc(RoundEvent, builders.items.len) catch return &.{};
+    for (builders.items, 0..) |*builder, index| {
+        builder.event.refers = builder.refers.items;
+        builder.event.tools = builder.tools.items;
+        rounds[index] = builder.event;
+    }
+    std.mem.sort(RoundEvent, rounds, {}, struct {
+        fn cmp(_: void, a: RoundEvent, b: RoundEvent) bool {
+            return a.timestamp > b.timestamp;
+        }
+    }.cmp);
+    return rounds;
+}
+
+fn sortAttestationEvents(events: []AttestationEvent) void {
+    std.mem.sort(AttestationEvent, events, {}, struct {
+        fn cmp(_: void, a: AttestationEvent, b: AttestationEvent) bool {
+            return a.timestamp < b.timestamp;
+        }
+    }.cmp);
+}
+
+fn roundSessionKey(allocator: std.mem.Allocator, ws_id: []const u8, session_id: []const u8) ![]const u8 {
+    return try std.fmt.allocPrint(allocator, "{s}\x1f{s}", .{ ws_id, session_id });
+}
+
+fn putActiveRound(
+    allocator: std.mem.Allocator,
+    active_rounds: *std.StringHashMap(usize),
+    ws_id: []const u8,
+    session_id: []const u8,
+    index: usize,
+) !void {
+    const key = try roundSessionKey(allocator, ws_id, session_id);
+    errdefer allocator.free(key);
+    if (active_rounds.getPtr(key)) |value_ptr| {
+        value_ptr.* = index;
+        allocator.free(key);
+        return;
+    }
+    try active_rounds.put(key, index);
+}
+
+fn deinitActiveRoundMap(allocator: std.mem.Allocator, active_rounds: *std.StringHashMap(usize)) void {
+    var key_it = active_rounds.keyIterator();
+    while (key_it.next()) |key| allocator.free(key.*);
+    active_rounds.deinit();
+}
+
+fn appendRoundTool(allocator: std.mem.Allocator, builder: anytype, ev: AttestationEvent) void {
+    builder.tools.append(allocator, .{
+        .kind = ev.type,
+        .timestamp = ev.timestamp,
+        .rule_id = ev.rule_id,
+        .constraint_id = ev.constraint_id,
+        .summary = ev.summary,
+        .reason = ev.reason,
+    }) catch return;
+}
+
+fn isProtocolToolEvent(kind: []const u8) bool {
+    return std.mem.eql(u8, kind, "setup") or
+        std.mem.eql(u8, kind, "search") or
+        std.mem.eql(u8, kind, "context_propose_create") or
+        std.mem.eql(u8, kind, "context_propose_update") or
+        std.mem.eql(u8, kind, "context_propose_rename") or
+        std.mem.eql(u8, kind, "context_propose_delete") or
+        std.mem.eql(u8, kind, "rule_propose_create") or
+        std.mem.eql(u8, kind, "rule_propose_update") or
+        std.mem.eql(u8, kind, "rule_propose_rename") or
+        std.mem.eql(u8, kind, "rule_propose_delete");
 }
 
 test "computeStats uses rule totals to derive non-100 signal ratios" {
@@ -491,4 +691,84 @@ test "computeStats falls back to active constraint counts when rule totals are u
     try std.testing.expectEqual(@as(u32, 1), stats.constraint_count);
     try std.testing.expectEqual(@as(u32, 1), stats.active_constraint_count);
     try std.testing.expectEqual(@as(u8, 100), stats.signal_ratio);
+}
+
+test "buildRounds groups evidence after each user prompt" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const events = [_]AttestationEvent{
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "user_prompt", .timestamp = 1000, .content = "first" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "load", .timestamp = 1001, .rule_id = "p-1", .rule_hash = "h-1" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "refer", .timestamp = 1002, .rule_id = "p-1", .constraint_id = "c-1", .reason = "used it" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "agent_report", .timestamp = 1003, .summary = "done" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "user_prompt", .timestamp = 2000, .content = "second" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "reject", .timestamp = 2001, .reason = "bad" },
+    };
+
+    const rounds = buildRounds(alloc, &events);
+
+    try std.testing.expectEqual(@as(usize, 2), rounds.len);
+    try std.testing.expectEqualStrings("second", rounds[0].content);
+    try std.testing.expectEqual(@as(u16, 1), rounds[0].reject_count);
+    try std.testing.expectEqualStrings("bad", rounds[0].reject_reason.?);
+    try std.testing.expectEqualStrings("first", rounds[1].content);
+    try std.testing.expectEqual(@as(u16, 1), rounds[1].load_count);
+    try std.testing.expectEqual(@as(u16, 1), rounds[1].refer_count);
+    try std.testing.expectEqual(@as(u16, 1), rounds[1].submit_count);
+    try std.testing.expectEqualStrings("done", rounds[1].summary.?);
+    try std.testing.expectEqualStrings("p-1", rounds[1].refers[0].rule_id);
+    try std.testing.expectEqualStrings("c-1", rounds[1].refers[0].constraint_id);
+    try std.testing.expectEqual(@as(usize, 3), rounds[1].tools.len);
+    try std.testing.expectEqualStrings("load", rounds[1].tools[0].kind);
+    try std.testing.expectEqualStrings("refer", rounds[1].tools[1].kind);
+    try std.testing.expectEqualStrings("agent_report", rounds[1].tools[2].kind);
+}
+
+test "buildRounds attaches tools when merged logs are read out of order" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const events = [_]AttestationEvent{
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "load", .timestamp = 1001, .rule_id = "p-1", .rule_hash = "h-1" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "refer", .timestamp = 1002, .rule_id = "p-1", .constraint_id = "c-1" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "agent_report", .timestamp = 1003, .summary = "done" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "user_prompt", .timestamp = 1000, .content = "ask" },
+    };
+
+    const rounds = buildRounds(alloc, &events);
+
+    try std.testing.expectEqual(@as(usize, 1), rounds.len);
+    try std.testing.expectEqualStrings("ask", rounds[0].content);
+    try std.testing.expectEqual(@as(u16, 1), rounds[0].load_count);
+    try std.testing.expectEqual(@as(u16, 1), rounds[0].refer_count);
+    try std.testing.expectEqual(@as(u16, 1), rounds[0].submit_count);
+    try std.testing.expectEqual(@as(usize, 3), rounds[0].tools.len);
+    try std.testing.expectEqualStrings("load", rounds[0].tools[0].kind);
+    try std.testing.expectEqualStrings("refer", rounds[0].tools[1].kind);
+    try std.testing.expectEqualStrings("agent_report", rounds[0].tools[2].kind);
+}
+
+test "buildRounds does not attach protocol tools from a different session" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const events = [_]AttestationEvent{
+        .{ .ws_id = "ws-1", .session_id = "user-session", .type = "user_prompt", .timestamp = 1000, .content = "ask" },
+        .{ .ws_id = "ws-1", .session_id = "agent-session", .type = "load", .timestamp = 1001, .rule_id = "p-1", .rule_hash = "h-1" },
+        .{ .ws_id = "ws-1", .session_id = "agent-session", .type = "refer", .timestamp = 1002, .rule_id = "p-1", .constraint_id = "c-1" },
+        .{ .ws_id = "ws-1", .session_id = "agent-session", .type = "agent_report", .timestamp = 1003, .summary = "done" },
+    };
+
+    const rounds = buildRounds(alloc, &events);
+
+    try std.testing.expectEqual(@as(usize, 1), rounds.len);
+    try std.testing.expectEqualStrings("ask", rounds[0].content);
+    try std.testing.expectEqual(@as(u16, 0), rounds[0].load_count);
+    try std.testing.expectEqual(@as(u16, 0), rounds[0].refer_count);
+    try std.testing.expectEqual(@as(u16, 0), rounds[0].submit_count);
+    try std.testing.expectEqual(@as(usize, 0), rounds[0].tools.len);
 }

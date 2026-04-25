@@ -9,6 +9,13 @@ source "$SCRIPT_DIR/resolve-binary.sh"
 
 INPUT=$(cat)
 
+if command -v jq &>/dev/null; then
+  SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+  if [ -n "$SESSION_ID" ]; then
+    export CLUMSIES_HOST_SESSION_ID="$SESSION_ID"
+  fi
+fi
+
 if echo "$INPUT" | grep -q '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; then
   exit 0
 fi

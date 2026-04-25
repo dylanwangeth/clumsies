@@ -1,6 +1,6 @@
 const std = @import("std");
 const attestation = @import("../attestation.zig");
-const session_marker = @import("../session_marker.zig");
+const host_session = @import("../host_session.zig");
 const workspace_config = @import("../workspace_config.zig");
 
 /// `clumsies _agent submit-check`
@@ -12,7 +12,7 @@ const workspace_config = @import("../workspace_config.zig");
 /// Exit 0 = agent_report found (agent already submitted)
 /// Exit 1 = no agent_report since last user_prompt
 ///
-/// Best-effort: silent failure on missing binding, missing session marker,
+/// Best-effort: silent failure on missing binding, missing host session,
 /// or file read errors. Designed to be called from adapter hook scripts
 /// where blocking the user is unacceptable.
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator) !void {
@@ -26,15 +26,10 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(binding.ws_id);
     defer allocator.free(binding.name);
 
-    const ws_dir = workspace_config.getWsDir(allocator, binding.ws_id) catch return;
-    defer allocator.free(ws_dir);
+    var host_session_id = host_session.resolveSessionId(allocator) orelse return;
+    const session_id = host_session_id[0..];
 
-    const marker_opt = session_marker.read(allocator, ws_dir) catch null;
-    if (marker_opt == null) return;
-    const marker = marker_opt.?;
-    defer allocator.free(marker.session_id);
-
-    const attestation_path = attestation.attestationFilePath(allocator, binding.ws_id) catch return;
+    const attestation_path = attestation.sessionAttestationFilePath(allocator, binding.ws_id, session_id) catch return;
     defer allocator.free(attestation_path);
 
     const file = std.fs.openFileAbsolute(attestation_path, .{}) catch return;
@@ -55,8 +50,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     while (lines.next()) |line| {
         if (line.len == 0) continue;
 
-        // Quick check for session_id and type without full JSON parse
-        if (std.mem.indexOf(u8, line, marker.session_id) == null) continue;
+        if (std.mem.indexOf(u8, line, session_id) == null) continue;
 
         if (std.mem.indexOf(u8, line, "\"type\":\"user_prompt\"") != null) {
             found_user_prompt = true;
