@@ -48,8 +48,11 @@ pub fn prepareTomlFragment(
     var current_parsed = parseTomlTable(allocator, existing_content) catch return .{ .conflict = conflict_invalid_toml };
     defer current_parsed.deinit();
 
-    const arena = current_parsed.arena.allocator();
-    var current_root = current_parsed.value;
+    var merge_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer merge_arena_state.deinit();
+    const arena = merge_arena_state.allocator();
+
+    var current_root = try cloneTable(arena, current_parsed.value);
     var did_change = false;
 
     mergeTableFragment(arena, &current_root, &managed_parsed.value, &did_change) catch return .{ .conflict = conflict_merge };
@@ -175,7 +178,7 @@ fn putOwnedValue(
     try table.put(try arena.dupe(u8, key), value);
 }
 
-fn cloneValue(arena: std.mem.Allocator, value: toml.Value) !toml.Value {
+fn cloneValue(arena: std.mem.Allocator, value: toml.Value) error{OutOfMemory}!toml.Value {
     return switch (value) {
         .string => |inner| .{ .string = try arena.dupe(u8, inner) },
         .integer => |inner| .{ .integer = inner },
@@ -194,14 +197,19 @@ fn cloneValue(arena: std.mem.Allocator, value: toml.Value) !toml.Value {
         },
         .table => |inner| blk: {
             const cloned = try arena.create(toml.Table);
-            cloned.* = toml.Table.init(arena);
-            var it = inner.iterator();
-            while (it.next()) |entry| {
-                try putOwnedValue(arena, cloned, entry.key_ptr.*, try cloneValue(arena, entry.value_ptr.*));
-            }
+            cloned.* = try cloneTable(arena, inner.*);
             break :blk .{ .table = cloned };
         },
     };
+}
+
+fn cloneTable(arena: std.mem.Allocator, table: toml.Table) error{OutOfMemory}!toml.Table {
+    var cloned = toml.Table.init(arena);
+    var it = table.iterator();
+    while (it.next()) |entry| {
+        try putOwnedValue(arena, &cloned, entry.key_ptr.*, try cloneValue(arena, entry.value_ptr.*));
+    }
+    return cloned;
 }
 
 fn valueEql(left: toml.Value, right: toml.Value) bool {

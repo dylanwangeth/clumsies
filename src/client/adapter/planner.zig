@@ -164,8 +164,25 @@ pub fn buildAdaptPlan(
         }
 
         if (existing) |content| {
+            const managed_update = isManagedPlainFileUpdate(allocator, loaded_opt, asset, absolute_path, content);
+            if (isSharedWorkflowSkillAsset(asset) and managed_update == null) {
+                try steps.append(allocator, .{
+                    .step_id = try allocator.dupe(u8, asset.resource_id),
+                    .resource_id = try allocator.dupe(u8, asset.resource_id),
+                    .resource_kind = asset.resource_kind,
+                    .relative_path = try allocator.dupe(u8, asset.relative_path),
+                    .absolute_path = if (asset.absolute_path) |_| try allocator.dupe(u8, absolute_path) else null,
+                    .ownership = asset.ownership,
+                    .action = "skip",
+                    .label = try allocator.dupe(u8, asset.label),
+                    .content = try allocator.dupe(u8, content),
+                    .managed_content = null,
+                    .file_mode = asset.file_mode,
+                });
+                continue;
+            }
             if (!std.mem.eql(u8, content, asset.content)) {
-                if (isManagedPlainFileUpdate(allocator, loaded_opt, asset, absolute_path, content)) |managed_update| {
+                if (managed_update) |should_update| {
                     try steps.append(allocator, .{
                         .step_id = try allocator.dupe(u8, asset.resource_id),
                         .resource_id = try allocator.dupe(u8, asset.resource_id),
@@ -173,7 +190,7 @@ pub fn buildAdaptPlan(
                         .relative_path = try allocator.dupe(u8, asset.relative_path),
                         .absolute_path = if (asset.absolute_path) |_| try allocator.dupe(u8, absolute_path) else null,
                         .ownership = asset.ownership,
-                        .action = if (managed_update) "update" else "keep",
+                        .action = if (should_update) "update" else "keep",
                         .label = try allocator.dupe(u8, asset.label),
                         .content = try allocator.dupe(u8, asset.content),
                         .managed_content = null,
@@ -296,6 +313,10 @@ fn isManagedPlainFileUpdate(
     }
 
     return null;
+}
+
+fn isSharedWorkflowSkillAsset(asset: model.RenderedAsset) bool {
+    return std.mem.indexOf(u8, asset.resource_id, ".skills.workflow.") != null;
 }
 
 fn resourcePathMatches(

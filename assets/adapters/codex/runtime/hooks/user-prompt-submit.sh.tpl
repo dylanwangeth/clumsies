@@ -13,9 +13,10 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
+SESSION_ID=""
 PROMPT_TEXT=""
 if command -v python3 >/dev/null 2>&1; then
-  PROMPT_TEXT="$(printf '%s' "$INPUT" | python3 -c '
+  PARSED="$(printf '%s' "$INPUT" | python3 -c '
 import json
 import sys
 
@@ -24,14 +25,25 @@ try:
 except Exception:
     raise SystemExit(0)
 
+session_id = data.get("session_id", "")
 prompt = data.get("prompt", "")
+if isinstance(session_id, str):
+    sys.stdout.write(session_id)
+sys.stdout.write("\n")
 if isinstance(prompt, str):
     sys.stdout.write(prompt)
 ' 2>/dev/null || true)"
+  SESSION_ID="${PARSED%%$'\n'*}"
+  PROMPT_TEXT="${PARSED#*$'\n'}"
 elif command -v jq >/dev/null 2>&1; then
+  SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
   PROMPT_TEXT="$(printf '%s' "$INPUT" | jq -r '.prompt // empty' 2>/dev/null || true)"
 else
   exit 0
+fi
+
+if [ -n "$SESSION_ID" ]; then
+  export CLUMSIES_HOST_SESSION_ID="$SESSION_ID"
 fi
 
 if [ -z "$PROMPT_TEXT" ]; then

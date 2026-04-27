@@ -68,6 +68,7 @@ pub const RoundEvent = struct {
     session_id: []const u8 = "",
     timestamp: i64,
     content: []const u8,
+    missing_user_prompt: bool = false,
     load_count: u16 = 0,
     refer_count: u16 = 0,
     submit_count: u16 = 0,
@@ -165,10 +166,6 @@ fn readWorkspaceEvents(allocator: std.mem.Allocator, ws_dir: []const u8, ws_id: 
             readEventsFromFile(allocator, path, ws_id, events);
         }
     }
-
-    const legacy_path = std.fs.path.join(allocator, &.{ ws_dir, "attestation.jsonl" }) catch return;
-    defer allocator.free(legacy_path);
-    readEventsFromFile(allocator, legacy_path, ws_id, events);
 }
 
 fn getBaseDir(allocator: std.mem.Allocator) ?[]const u8 {
@@ -178,7 +175,12 @@ fn getBaseDir(allocator: std.mem.Allocator) ?[]const u8 {
     return std.fs.path.join(allocator, &.{ home, ".clumsies" }) catch null;
 }
 
-fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, ws_id: []const u8, events: *std.ArrayList(AttestationEvent)) void {
+fn readEventsFromFile(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    ws_id: []const u8,
+    events: *std.ArrayList(AttestationEvent),
+) void {
     const file = std.fs.openFileAbsolute(path, .{}) catch return;
     defer file.close();
 
@@ -224,7 +226,11 @@ fn readEventsFromFile(allocator: std.mem.Allocator, path: []const u8, ws_id: []c
     }
 }
 
-fn cloneAttestationEvent(allocator: std.mem.Allocator, ws_id: []const u8, src: AttestationEvent) !AttestationEvent {
+fn cloneAttestationEvent(
+    allocator: std.mem.Allocator,
+    ws_id: []const u8,
+    src: AttestationEvent,
+) !AttestationEvent {
     var out = AttestationEvent{
         .ws_id = ws_id,
         .session_id = try allocator.dupe(u8, src.session_id),
@@ -501,9 +507,20 @@ fn buildRounds(allocator: std.mem.Allocator, events: []const AttestationEvent) [
     defer allocator.free(ordered);
     sortAttestationEvents(ordered);
 
+    var prompt_sessions: std.StringHashMap(void) = .init(allocator);
+    defer deinitStringSet(allocator, &prompt_sessions);
+
+    for (ordered) |ev| {
+        if (std.mem.eql(u8, ev.type, "user_prompt")) {
+            putStringSetKey(allocator, &prompt_sessions, ev.ws_id, ev.session_id) catch continue;
+        }
+    }
+
     var builders: std.ArrayList(RoundBuilder) = .empty;
     var active_rounds: std.StringHashMap(usize) = .init(allocator);
     defer deinitActiveRoundMap(allocator, &active_rounds);
+    var missing_prompt_rounds: std.StringHashMap(usize) = .init(allocator);
+    defer deinitActiveRoundMap(allocator, &missing_prompt_rounds);
 
     for (ordered) |ev| {
         if (std.mem.eql(u8, ev.type, "user_prompt")) {
@@ -523,7 +540,16 @@ fn buildRounds(allocator: std.mem.Allocator, events: []const AttestationEvent) [
 
         const key = roundSessionKey(allocator, ev.ws_id, ev.session_id) catch continue;
         defer allocator.free(key);
-        const round_index = active_rounds.get(key) orelse continue;
+        const round_index = active_rounds.get(key) orelse blk: {
+            if (prompt_sessions.contains(key)) continue;
+            const missing_index = missing_prompt_rounds.get(key) orelse createMissingPromptRound(
+                allocator,
+                &builders,
+                &missing_prompt_rounds,
+                ev,
+            ) catch continue;
+            break :blk missing_index;
+        };
         if (round_index >= builders.items.len) continue;
         const builder = &builders.items[round_index];
 
@@ -569,6 +595,26 @@ fn buildRounds(allocator: std.mem.Allocator, events: []const AttestationEvent) [
     return rounds;
 }
 
+fn createMissingPromptRound(
+    allocator: std.mem.Allocator,
+    builders: anytype,
+    missing_prompt_rounds: *std.StringHashMap(usize),
+    ev: AttestationEvent,
+) !usize {
+    const index = builders.items.len;
+    try builders.append(allocator, .{
+        .event = .{
+            .ws_id = ev.ws_id,
+            .session_id = ev.session_id,
+            .timestamp = ev.timestamp,
+            .content = "No user_prompt recorded in this session log.",
+            .missing_user_prompt = true,
+        },
+    });
+    try putActiveRound(allocator, missing_prompt_rounds, ev.ws_id, ev.session_id, index);
+    return index;
+}
+
 fn sortAttestationEvents(events: []AttestationEvent) void {
     std.mem.sort(AttestationEvent, events, {}, struct {
         fn cmp(_: void, a: AttestationEvent, b: AttestationEvent) bool {
@@ -602,6 +648,27 @@ fn deinitActiveRoundMap(allocator: std.mem.Allocator, active_rounds: *std.String
     var key_it = active_rounds.keyIterator();
     while (key_it.next()) |key| allocator.free(key.*);
     active_rounds.deinit();
+}
+
+fn putStringSetKey(
+    allocator: std.mem.Allocator,
+    set: *std.StringHashMap(void),
+    ws_id: []const u8,
+    session_id: []const u8,
+) !void {
+    const key = try roundSessionKey(allocator, ws_id, session_id);
+    errdefer allocator.free(key);
+    if (set.contains(key)) {
+        allocator.free(key);
+        return;
+    }
+    try set.put(key, {});
+}
+
+fn deinitStringSet(allocator: std.mem.Allocator, set: *std.StringHashMap(void)) void {
+    var key_it = set.keyIterator();
+    while (key_it.next()) |key| allocator.free(key.*);
+    set.deinit();
 }
 
 fn appendRoundTool(allocator: std.mem.Allocator, builder: anytype, ev: AttestationEvent) void {
@@ -751,6 +818,28 @@ test "buildRounds attaches tools when merged logs are read out of order" {
     try std.testing.expectEqualStrings("agent_report", rounds[0].tools[2].kind);
 }
 
+test "buildRounds exposes session activity without user prompt" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const events = [_]AttestationEvent{
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "load", .timestamp = 1001, .rule_id = "p-1", .rule_hash = "h-1" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "refer", .timestamp = 1002, .rule_id = "p-1", .constraint_id = "c-1" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "agent_report", .timestamp = 1003, .summary = "done" },
+    };
+
+    const rounds = buildRounds(alloc, &events);
+
+    try std.testing.expectEqual(@as(usize, 1), rounds.len);
+    try std.testing.expect(rounds[0].missing_user_prompt);
+    try std.testing.expectEqualStrings("No user_prompt recorded in this session log.", rounds[0].content);
+    try std.testing.expectEqual(@as(u16, 1), rounds[0].load_count);
+    try std.testing.expectEqual(@as(u16, 1), rounds[0].refer_count);
+    try std.testing.expectEqual(@as(u16, 1), rounds[0].submit_count);
+    try std.testing.expectEqual(@as(usize, 3), rounds[0].tools.len);
+}
+
 test "buildRounds does not attach protocol tools from a different session" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -765,10 +854,14 @@ test "buildRounds does not attach protocol tools from a different session" {
 
     const rounds = buildRounds(alloc, &events);
 
-    try std.testing.expectEqual(@as(usize, 1), rounds.len);
-    try std.testing.expectEqualStrings("ask", rounds[0].content);
-    try std.testing.expectEqual(@as(u16, 0), rounds[0].load_count);
-    try std.testing.expectEqual(@as(u16, 0), rounds[0].refer_count);
-    try std.testing.expectEqual(@as(u16, 0), rounds[0].submit_count);
-    try std.testing.expectEqual(@as(usize, 0), rounds[0].tools.len);
+    try std.testing.expectEqual(@as(usize, 2), rounds.len);
+    try std.testing.expect(rounds[0].missing_user_prompt);
+    try std.testing.expectEqualStrings("agent-session", rounds[0].session_id);
+    try std.testing.expectEqual(@as(usize, 3), rounds[0].tools.len);
+    try std.testing.expectEqualStrings("user-session", rounds[1].session_id);
+    try std.testing.expectEqualStrings("ask", rounds[1].content);
+    try std.testing.expectEqual(@as(u16, 0), rounds[1].load_count);
+    try std.testing.expectEqual(@as(u16, 0), rounds[1].refer_count);
+    try std.testing.expectEqual(@as(u16, 0), rounds[1].submit_count);
+    try std.testing.expectEqual(@as(usize, 0), rounds[1].tools.len);
 }

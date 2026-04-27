@@ -38,7 +38,8 @@ pub fn applyAdaptPlan(
         try stdout.print("[{d}/{d}] {s} {s}\n", .{ idx + 1, plan.steps.len, step.action, absolute_path });
         try stdout.flush();
 
-        if (!std.mem.eql(u8, step.action, "keep")) {
+        const should_write = !std.mem.eql(u8, step.action, "keep") and !std.mem.eql(u8, step.action, "skip");
+        if (should_write) {
             writeManagedFileAbsolute(absolute_path, step.content, step.file_mode) catch |err| {
                 try store.appendWalEvent(allocator, .{
                     .event_type = "step_failed",
@@ -79,7 +80,7 @@ pub fn applyAdaptPlan(
                 try allocator.dupe(u8, managed_content)
             else
                 null,
-            .active = true,
+            .active = !std.mem.eql(u8, step.action, "skip"),
         });
 
         try store.appendWalEvent(allocator, .{
@@ -96,6 +97,8 @@ pub fn applyAdaptPlan(
                 "Managed file written"
             else if (std.mem.eql(u8, step.action, "update"))
                 "Managed file updated"
+            else if (std.mem.eql(u8, step.action, "skip"))
+                "Existing unmanaged shared file skipped"
             else
                 "Existing managed file kept",
         });
