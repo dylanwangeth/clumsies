@@ -1,6 +1,7 @@
 //! Workflow skill import. Scans the workspace's cached workflow rules and generates SKILL.md
 //! files that agent hooks can invoke as slash commands (e.g., /commit, /review-pr).
 const model = @import("model.zig");
+const rule = @import("../rule.zig");
 const std = @import("std");
 const workspace_config = @import("../workspace_config.zig");
 
@@ -22,20 +23,11 @@ pub fn renderImportedWorkflowSkills(
     defer allocator.free(binding.ws_id);
     defer allocator.free(binding.name);
 
-    const cache_dir = workspace_config.getCachePath(allocator, binding.ws_id) catch return allocator.alloc(model.RenderedAsset, 0);
-    defer allocator.free(cache_dir);
+    const ws_dir = try workspace_config.getWsDir(allocator, binding.ws_id);
+    defer allocator.free(ws_dir);
 
-    const workflow_root = try std.fs.path.join(allocator, &.{ cache_dir, "rule", "workflow" });
-    defer allocator.free(workflow_root);
-
-    var workflow_dir = std.fs.openDirAbsolute(workflow_root, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound => return allocator.alloc(model.RenderedAsset, 0),
-        else => return err,
-    };
-    defer workflow_dir.close();
-
-    var walker = try workflow_dir.walk(allocator);
-    defer walker.deinit();
+    var manifest = try rule.loadManifest(allocator, ws_dir);
+    defer manifest.deinit(allocator);
 
     var assets: std.ArrayList(model.RenderedAsset) = .empty;
     errdefer deinitRenderedAssets(allocator, assets.items);
@@ -47,20 +39,20 @@ pub fn renderImportedWorkflowSkills(
         slug_counts.deinit();
     }
 
-    while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.path, ".md")) continue;
+    var it = manifest.rules.iterator();
+    while (it.next()) |entry| {
+        const rule_id = entry.key_ptr.*;
+        const workflow_path = entry.value_ptr.path;
+        if (!std.mem.startsWith(u8, workflow_path, "workflow/")) continue;
+        if (!std.mem.endsWith(u8, workflow_path, ".md")) continue;
 
-        const filename = std.fs.path.basename(entry.path);
+        const filename = std.fs.path.basename(workflow_path);
         const base_slug = try workflowSlugFromFilename(allocator, filename);
         defer allocator.free(base_slug);
         const slug = try uniqueSlug(allocator, &slug_counts, base_slug);
         defer allocator.free(slug);
 
-        const relative_id = try std.fmt.allocPrint(allocator, "workflow:{s}", .{entry.path});
-        defer allocator.free(relative_id);
-
-        const skill_content = try renderSkillContent(allocator, host, slug, filename, relative_id);
+        const skill_content = try renderSkillContent(allocator, host, slug, filename, rule_id);
         const relative_path = try skillFilePath(allocator, host, skill_root_display, slug);
         const absolute_path = try skillFilePath(allocator, host, skill_root_absolute, slug);
         const resource_id = try std.fmt.allocPrint(allocator, "{s}.workflow.{s}", .{ resource_prefix, slug });
@@ -90,6 +82,12 @@ pub fn deinitRenderedAssets(allocator: std.mem.Allocator, assets: []const model.
         allocator.free(asset.content);
     }
     allocator.free(assets);
+}
+
+pub fn skillAlreadyInstalled(absolute_path: ?[]const u8) bool {
+    const path = absolute_path orelse return false;
+    std.fs.accessAbsolute(path, .{}) catch return false;
+    return true;
 }
 
 fn skillFilePath(
@@ -216,4 +214,25 @@ test "workflowSlugFromFilename falls back when stem is empty after trimming" {
     const slug = try workflowSlugFromFilename(std.testing.allocator, "00__.md");
     defer std.testing.allocator.free(slug);
     try std.testing.expectEqualStrings("workflow", slug);
+}
+
+test "skillAlreadyInstalled detects existing absolute skill paths" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "SKILL.md", .data = "test skill" });
+    const absolute_path = try tmp.dir.realpathAlloc(std.testing.allocator, "SKILL.md");
+    defer std.testing.allocator.free(absolute_path);
+
+    try std.testing.expect(skillAlreadyInstalled(absolute_path));
+    try std.testing.expect(!skillAlreadyInstalled(null));
+    try std.testing.expect(!skillAlreadyInstalled("/tmp/clumsies-skill-does-not-exist"));
+}
+
+test "renderSkillContent uses stable rule ids for memory.load" {
+    const content = try renderSkillContent(std.testing.allocator, .codex, "gen-commit-msg", "GEN_COMMIT_MSG.md", "p-commit");
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"p-commit\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "workflow/GEN_COMMIT_MSG.md") == null);
 }

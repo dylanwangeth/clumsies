@@ -561,12 +561,14 @@ fn resolveManagedAbsolutePath(
 ) ![]u8 {
     const normalized_root = try std.fs.path.resolve(allocator, &.{target_root});
     defer allocator.free(normalized_root);
+    const normalized_managed_root = try managedPathRoot(allocator, normalized_root);
+    defer allocator.free(normalized_managed_root);
 
     if (resource.absolute_path) |absolute_path| {
         if (!std.fs.path.isAbsolute(absolute_path)) return error.InvalidManagedPath;
         const resolved = try std.fs.path.resolve(allocator, &.{absolute_path});
         errdefer allocator.free(resolved);
-        if (!pathIsWithinRoot(normalized_root, resolved)) return error.ManagedPathEscapesTargetRoot;
+        if (!pathIsWithinRoot(normalized_managed_root, resolved)) return error.ManagedPathEscapesTargetRoot;
         return resolved;
     }
 
@@ -575,6 +577,18 @@ fn resolveManagedAbsolutePath(
     errdefer allocator.free(resolved);
     if (!pathIsWithinRoot(normalized_root, resolved)) return error.ManagedPathEscapesTargetRoot;
     return resolved;
+}
+
+fn managedPathRoot(
+    allocator: std.mem.Allocator,
+    normalized_root: []const u8,
+) ![]u8 {
+    if (std.mem.eql(u8, std.fs.path.basename(normalized_root), ".codex")) {
+        if (std.fs.path.dirname(normalized_root)) |parent| {
+            return allocator.dupe(u8, parent);
+        }
+    }
+    return allocator.dupe(u8, normalized_root);
 }
 
 fn managedHooksContent(
@@ -654,4 +668,18 @@ test "resolveManagedAbsolutePath rejects absolute path outside target root" {
         error.ManagedPathEscapesTargetRoot,
         resolveManagedAbsolutePath(std.testing.allocator, "/tmp/clumsies-root", resource),
     );
+}
+
+test "resolveManagedAbsolutePath allows codex sibling managed paths" {
+    const resource = model.ManagedResource{
+        .resource_id = "codex.skills.discover",
+        .relative_path = ".agents/skills/discover/SKILL.md",
+        .absolute_path = "/tmp/workspace/.agents/skills/discover/SKILL.md",
+        .ownership = "exclusive",
+        .fingerprint = "",
+        .active = true,
+    };
+    const resolved = try resolveManagedAbsolutePath(std.testing.allocator, "/tmp/workspace/.codex", resource);
+    defer std.testing.allocator.free(resolved);
+    try std.testing.expectEqualStrings("/tmp/workspace/.agents/skills/discover/SKILL.md", resolved);
 }

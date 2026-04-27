@@ -9,6 +9,29 @@ source "$SCRIPT_DIR/resolve-binary.sh"
 
 INPUT="$(cat)"
 
+SESSION_ID=""
+if command -v python3 >/dev/null 2>&1; then
+  SESSION_ID="$(printf '%s' "$INPUT" | python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+
+session_id = data.get("session_id", "")
+if isinstance(session_id, str):
+    sys.stdout.write(session_id)
+' 2>/dev/null || true)"
+elif command -v jq >/dev/null 2>&1; then
+  SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
+fi
+
+if [ -n "$SESSION_ID" ]; then
+  export CLUMSIES_HOST_SESSION_ID="$SESSION_ID"
+fi
+
 if printf '%s' "$INPUT" | grep -q '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; then
   exit 0
 fi

@@ -14,7 +14,7 @@ const ALLOWED_TYPES = [_][]const u8{ "setup", "user_prompt", "discover", "load",
 const FLAG_TYPE: usize = 0;
 const FLAG_CONTENT: usize = 1;
 
-/// `clumsies attestation append --type <type> [--content <text>]`
+/// `clumsies _agent attestation-append --type <type> [--content <text>]`
 ///
 /// Append a single attestation event to the current workspace's
 /// attestation log. The session_id is derived from the host CLI session when
@@ -122,9 +122,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 }
 
 fn printHelp(out: *std.Io.Writer) !void {
-    try out.print("{s}{s}clumsies attestation append{s}\n\n", .{ P, Color.bold, Color.reset });
+    try out.print("{s}{s}clumsies _agent attestation-append{s}\n\n", .{ P, Color.bold, Color.reset });
     try out.print("Append a single attestation event to the current workspace's attestation log.\n", .{});
     try out.print("Intended for adapter hooks (UserPromptSubmit, etc).\n\n", .{});
     try out.print("{s}Usage:{s}\n", .{ Color.bold, Color.reset });
-    try out.print("  clumsies attestation append --type user_prompt --content \"hello\"\n", .{});
+    try out.print("  clumsies _agent attestation-append --type user_prompt --content \"hello\"\n", .{});
 }

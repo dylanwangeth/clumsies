@@ -120,7 +120,7 @@ const MAX_TREE_ROWS = 128;
 const MAX_PR_ROWS = 64;
 const MAX_DASHBOARD_ROUND_ROWS = 2048;
 const MAX_DASHBOARD_CHAIN_ROWS = 1024;
-const DASHBOARD_ROUND_ROW_COUNT = 3;
+const DASHBOARD_ROUND_ROW_COUNT = 5;
 const detail_tabs = [_]DetailTab{ .content, .pull_requests };
 const PathTreeState = tree.State(MAX_TREE_ROWS, 96);
 
@@ -233,6 +233,8 @@ pub const Dashboard = struct {
     dashboard_chain_scroll_bars: vxfw.ScrollBars,
     dashboard_chain_widgets: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Widget = undefined,
     dashboard_chain_rows: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Text = undefined,
+    dashboard_chain_cursor: usize = 0,
+    dashboard_chain_expanded: ?usize = null,
     view_arena: std.heap.ArenaAllocator,
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
@@ -868,7 +870,7 @@ pub const Dashboard = struct {
             "Enter send  Esc cancel"
         else switch (self.selected_module) {
             .dashboard => switch (self.analysis_focus) {
-                .chart => "Tab rounds  w scope  Shift-F flush  ? help  q quit",
+                .chart => "j/k event  Enter [+]  Tab rounds  w scope  Shift-F flush  ? help  q quit",
                 .inputs => "j/k move  Enter detail  Tab focus  w scope  Shift-F flush  ? help  q quit",
                 else => "Tab focus  w scope  Shift-F flush  ? help  q quit",
             },
@@ -1296,7 +1298,7 @@ pub const Dashboard = struct {
         const body_h: u16 = size.height -| arena_h;
         const preferred_rounds_w: u16 = @intCast(@divTrunc(@as(u32, size.width) * 38, 100));
         const rounds_w: u16 = @min(size.width, @max(@as(u16, 64), @min(@as(u16, 96), preferred_rounds_w)));
-        const exchange_w: u16 = size.width -| rounds_w;
+        const trace_w: u16 = size.width -| rounds_w;
         const usable_round_rows: u16 = body_h -| 2;
         self.dashboard_input_capacity = @max(@as(usize, 1), @as(usize, @intCast(usable_round_rows / 2)));
         if (self.analysis_input_cursor >= rounds.len and rounds.len > 0) {
@@ -1327,8 +1329,8 @@ pub const Dashboard = struct {
             rounds,
             scope.label,
         );
-        const exchange_surface = try dashboard_panel.drawExchange(self, ctx, exchange_w, body_h, selected_round);
-        return dashboard_panel.drawRoot(self, ctx, arena_surface, rounds_surface, exchange_surface);
+        const trace_surface = try dashboard_panel.drawProtocolTrace(self, ctx, trace_w, body_h, selected_round);
+        return dashboard_panel.drawRoot(self, ctx, arena_surface, rounds_surface, trace_surface);
     }
 
     // Analysis: aggregate rule/member views and drill-downs.

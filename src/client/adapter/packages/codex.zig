@@ -9,13 +9,14 @@ pub const package: types.AdapterPackage = .{
     .display_name = "Codex",
     .choice_description = "OpenAI Codex CLI adapter",
     .workspace_scope_description = "Only this workspace (.codex + .agents/skills)",
-    .user_scope_description = "All Codex sessions on this machine (~/.codex)",
+    .user_scope_description = "All Codex sessions on this machine (~/.codex + ~/.agents/skills)",
     .remove_workspace_scope_description = "Current workspace install (.codex)",
-    .remove_user_scope_description = "Machine-wide install (~/.codex)",
+    .remove_user_scope_description = "Machine-wide install (~/.codex + ~/.agents/skills)",
     .resolve_target_root_fn = resolveTargetRoot,
     .render_runtime_assets_fn = renderRuntimeAssets,
     .deinit_rendered_assets_fn = deinitRenderedAssets,
     .render_managed_resource_fn = renderManagedResource,
+    .render_notes_fn = renderNotes,
 };
 
 pub fn renderRuntimeAssets(
@@ -80,43 +81,48 @@ pub fn renderRuntimeAssets(
         .file_mode = 0o755,
         .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_stop_refer_check_sh),
     });
-    try assets.append(allocator, .{
-        .resource_id = "codex.skills.discover",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, "skills/discover/SKILL.md"),
-        .ownership = "exclusive",
-        .label = "Codex discover skill",
-        .file_mode = 0o644,
-        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_skill_discover),
-    });
-    try assets.append(allocator, .{
-        .resource_id = "codex.skills.ntmd",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, "skills/ntmd/SKILL.md"),
-        .ownership = "exclusive",
-        .label = "Codex ntmd skill",
-        .file_mode = 0o644,
-        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_skill_ntmd),
-    });
-    try assets.append(allocator, .{
-        .resource_id = "codex.skills.setup",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, "skills/setup/SKILL.md"),
-        .ownership = "exclusive",
-        .label = "Codex setup skill",
-        .file_mode = 0o644,
-        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_skill_setup),
-    });
+    if (scope == .user) {
+        const skills_root_absolute = try codexSkillsRootAbsolute(allocator, target_root);
+        defer allocator.free(skills_root_absolute);
+
+        try appendCodexSkill(
+            allocator,
+            &assets,
+            "codex.skills.discover",
+            "discover",
+            "Codex discover skill",
+            skills_root_absolute,
+            build_options.adapter_codex_runtime_skill_discover,
+        );
+        try appendCodexSkill(
+            allocator,
+            &assets,
+            "codex.skills.ntmd",
+            "ntmd",
+            "Codex ntmd skill",
+            skills_root_absolute,
+            build_options.adapter_codex_runtime_skill_ntmd,
+        );
+        try appendCodexSkill(
+            allocator,
+            &assets,
+            "codex.skills.setup",
+            "setup",
+            "Codex setup skill",
+            skills_root_absolute,
+            build_options.adapter_codex_runtime_skill_setup,
+        );
+    }
 
     if (scope == .workspace) {
         const workspace_root = workspaceRootFromAdapterRoot(target_root);
-        const skills_root_absolute = try std.fs.path.join(allocator, &.{ workspace_root, ".agents", "skills" });
-        defer allocator.free(skills_root_absolute);
+        const workflow_skills_root_absolute = try std.fs.path.join(allocator, &.{ workspace_root, ".agents", "skills" });
+        defer allocator.free(workflow_skills_root_absolute);
 
         const imported = try workflow_skills.renderImportedWorkflowSkills(
             allocator,
             workspace_root,
-            skills_root_absolute,
+            workflow_skills_root_absolute,
             ".agents/skills",
             "codex.skills",
             .codex,
@@ -224,6 +230,27 @@ fn scopedRelativePath(
     return allocator.dupe(u8, tail);
 }
 
+fn appendCodexSkill(
+    allocator: std.mem.Allocator,
+    assets: *std.ArrayList(model.RenderedAsset),
+    resource_id: []const u8,
+    slug: []const u8,
+    label: []const u8,
+    skills_root_absolute: []const u8,
+    content: []const u8,
+) !void {
+    try assets.append(allocator, .{
+        .resource_id = resource_id,
+        .resource_kind = "plain_file",
+        .relative_path = try std.fs.path.join(allocator, &.{ ".agents", "skills", slug, "SKILL.md" }),
+        .absolute_path = try std.fs.path.join(allocator, &.{ skills_root_absolute, slug, "SKILL.md" }),
+        .ownership = "exclusive",
+        .label = label,
+        .file_mode = 0o644,
+        .content = try allocator.dupe(u8, content),
+    });
+}
+
 fn userCodexRoot(allocator: std.mem.Allocator) ![]const u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |fallback_err| switch (fallback_err) {
@@ -256,32 +283,44 @@ fn commandJsonLiteral(
 
 fn renderSessionStartHook(
     allocator: std.mem.Allocator,
-    scope: model.Scope,
-    target_root: []const u8,
+    _: model.Scope,
+    _: []const u8,
 ) ![]u8 {
-    var rendered = try allocator.dupe(u8, build_options.adapter_codex_runtime_session_start_sh);
-    errdefer allocator.free(rendered);
-
-    const workflow_skills_dir = switch (scope) {
-        .workspace => blk: {
-            const workspace_root = workspaceRootFromAdapterRoot(target_root);
-            break :blk try std.fs.path.join(allocator, &.{ workspace_root, ".agents", "skills" });
-        },
-        .user => try allocator.dupe(u8, ""),
-    };
-    defer allocator.free(workflow_skills_dir);
-
-    rendered = try replaceOwned(
-        allocator,
-        rendered,
-        "__CLUMSIES_WORKFLOW_SKILLS_DIR__",
-        workflow_skills_dir,
-    );
-    return rendered;
+    return allocator.dupe(u8, build_options.adapter_codex_runtime_session_start_sh);
 }
 
 fn workspaceRootFromAdapterRoot(target_root: []const u8) []const u8 {
     return std.fs.path.dirname(target_root) orelse target_root;
+}
+
+fn codexSkillsRootAbsolute(
+    allocator: std.mem.Allocator,
+    target_root: []const u8,
+) ![]u8 {
+    const owner_root = workspaceRootFromAdapterRoot(target_root);
+    return std.fs.path.join(allocator, &.{ owner_root, ".agents", "skills" });
+}
+
+fn renderNotes(
+    allocator: std.mem.Allocator,
+    scope: model.Scope,
+    target_root: []const u8,
+) !?[]const []const u8 {
+    var notes: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (notes.items) |note| allocator.free(note);
+        notes.deinit(allocator);
+    }
+
+    try notes.append(allocator, try allocator.dupe(u8, "Restart Codex to reload hooks and discover newly installed skills."));
+
+    try notes.append(allocator, switch (scope) {
+        .workspace => try allocator.dupe(u8, "Codex workflow skills are installed under this workspace's .agents/skills directory."),
+        .user => try allocator.dupe(u8, "Codex user skills are installed under ~/.agents/skills."),
+    });
+
+    _ = target_root;
+    return try notes.toOwnedSlice(allocator);
 }
 
 fn replaceOwned(
@@ -303,11 +342,63 @@ test "renderRuntimeAssets uses absolute workspace-local codex hook paths" {
     try std.testing.expect(std.mem.indexOf(u8, assets[1].content, "/tmp/workspace/.codex/hooks/session-start.sh") != null);
 }
 
-test "renderSessionStartHook disables workflow import for user scope" {
+test "codex hooks pass Codex session id through clumsies host session env" {
     const allocator = std.testing.allocator;
-    const rendered = try renderSessionStartHook(allocator, .user, "/Users/test/.codex");
+    const assets = try renderRuntimeAssets(allocator, .workspace, "/tmp/workspace/.codex");
+    defer deinitRenderedAssets(allocator, assets);
+
+    var found_user_prompt = false;
+    var found_stop_check = false;
+    for (assets) |asset| {
+        if (std.mem.eql(u8, asset.resource_id, "codex.hooks.user_prompt_submit")) {
+            found_user_prompt = true;
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "session_id") != null);
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "CLUMSIES_HOST_SESSION_ID") != null);
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "turn_id") == null);
+        } else if (std.mem.eql(u8, asset.resource_id, "codex.hooks.stop_check")) {
+            found_stop_check = true;
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "session_id") != null);
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "CLUMSIES_HOST_SESSION_ID") != null);
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "turn_id") == null);
+        }
+    }
+    try std.testing.expect(found_user_prompt);
+    try std.testing.expect(found_stop_check);
+}
+
+test "renderSessionStartHook does not import workflow skills" {
+    const allocator = std.testing.allocator;
+    const rendered = try renderSessionStartHook(allocator, .workspace, "/Users/test/project/.codex");
     defer allocator.free(rendered);
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "__CLUMSIES_WORKFLOW_SKILLS_DIR__") == null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "WORKFLOW_SKILLS_DIR=\"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "WORKFLOW_SKILLS_DIR") == null);
+}
+
+test "renderRuntimeAssets installs codex user skills under home agents skills" {
+    const allocator = std.testing.allocator;
+    const assets = try renderRuntimeAssets(allocator, .user, "/Users/test/.codex");
+    defer deinitRenderedAssets(allocator, assets);
+
+    var found = false;
+    for (assets) |asset| {
+        if (!std.mem.eql(u8, asset.resource_id, "codex.skills.discover")) continue;
+        found = true;
+        try std.testing.expectEqualStrings(".agents/skills/discover/SKILL.md", asset.relative_path);
+        try std.testing.expect(asset.absolute_path != null);
+        try std.testing.expectEqualStrings("/Users/test/.agents/skills/discover/SKILL.md", asset.absolute_path.?);
+    }
+    try std.testing.expect(found);
+}
+
+test "renderRuntimeAssets does not install codex core skills in workspace scope" {
+    const allocator = std.testing.allocator;
+    const assets = try renderRuntimeAssets(allocator, .workspace, "/Users/test/project/.codex");
+    defer deinitRenderedAssets(allocator, assets);
+
+    for (assets) |asset| {
+        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "codex.skills.discover"));
+        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "codex.skills.ntmd"));
+        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "codex.skills.setup"));
+    }
 }
