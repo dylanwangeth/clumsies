@@ -25,9 +25,9 @@ pub const AttestationEvent = struct {
     payload: Payload,
 
     pub const Payload = union(enum) {
-        setup,
+        setup: SetupPayload,
         user_prompt: UserPromptPayload,
-        discover,
+        discover: DiscoverPayload,
         load: LoadPayload,
         refer: ReferPayload,
         agent_report: AgentReportPayload,
@@ -42,9 +42,23 @@ pub const AttestationEvent = struct {
         rule_propose_delete: ProposeDeletePayload,
     };
 
+    pub const SetupPayload = struct {
+        mpf_hash: ?[]const u8 = null,
+        mpf_content: ?[]const u8 = null,
+        mpf_changed: ?bool = null,
+    };
+
     pub const UserPromptPayload = struct {
         content_hash: []const u8,
         content: ?[]const u8 = null,
+    };
+
+    pub const DiscoverPayload = struct {
+        kind: ?[]const u8 = null,
+        group: ?[]const u8 = null,
+        query: ?[]const u8 = null,
+        result_count: ?u32 = null,
+        result_names: ?[]const u8 = null,
     };
 
     pub const LoadPayload = struct {
@@ -56,6 +70,7 @@ pub const AttestationEvent = struct {
         rule_id: []const u8,
         rule_hash: ?[]const u8 = null,
         constraint_id: []const u8,
+        constraint_name: ?[]const u8 = null,
         reason: ?[]const u8 = null,
     };
 
@@ -248,7 +263,18 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
     );
 
     switch (event.payload) {
-        .setup, .discover => {},
+        .setup => |p| {
+            try writeOptionalString(allocator, &buf, "mpf_hash", p.mpf_hash);
+            try writeOptionalString(allocator, &buf, "mpf_content", p.mpf_content);
+            try writeOptionalBool(allocator, &buf, "mpf_changed", p.mpf_changed);
+        },
+        .discover => |p| {
+            try writeOptionalString(allocator, &buf, "kind", p.kind);
+            try writeOptionalString(allocator, &buf, "group", p.group);
+            try writeOptionalString(allocator, &buf, "query", p.query);
+            try writeOptionalU32(allocator, &buf, "result_count", p.result_count);
+            try writeOptionalString(allocator, &buf, "result_names", p.result_names);
+        },
         .user_prompt => |p| {
             if (p.content) |c| {
                 try writeOptionalString(allocator, &buf, "content", c);
@@ -263,6 +289,7 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
             try writeOptionalString(allocator, &buf, "rule_id", p.rule_id);
             try writeOptionalString(allocator, &buf, "rule_hash", p.rule_hash);
             try writeOptionalString(allocator, &buf, "constraint_id", p.constraint_id);
+            try writeOptionalString(allocator, &buf, "constraint_name", p.constraint_name);
             try writeOptionalString(allocator, &buf, "reason", p.reason);
         },
         .agent_report => |p| {
@@ -312,6 +339,16 @@ fn writeOptionalString(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), ke
     try buf.writer(allocator).print(",\"{s}\":\"{s}\"", .{ key, esc });
 }
 
+fn writeOptionalBool(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: ?bool) !void {
+    const v = value orelse return;
+    try buf.writer(allocator).print(",\"{s}\":{s}", .{ key, if (v) "true" else "false" });
+}
+
+fn writeOptionalU32(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: ?u32) !void {
+    const v = value orelse return;
+    try buf.writer(allocator).print(",\"{s}\":{d}", .{ key, v });
+}
+
 test "attestationFilePath is under ~/.clumsies/workspaces/{ws_id}/" {
     const p = try attestationFilePath(testing.allocator, "ws-test123");
     defer testing.allocator.free(p);
@@ -334,6 +371,7 @@ test "serializeAttestationEvent: refer event with all fields" {
             .refer = .{
                 .rule_id = "p-550e8400",
                 .constraint_id = "c-2",
+                .constraint_name = "Use final-form comments",
                 .reason = "applying style",
             },
         },
@@ -347,6 +385,7 @@ test "serializeAttestationEvent: refer event with all fields" {
     try testing.expect(std.mem.indexOf(u8, line, "\"timestamp\":1743753000000") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"rule_id\":\"p-550e8400\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"constraint_id\":\"c-2\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"constraint_name\":\"Use final-form comments\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"reason\":\"applying style\"") != null);
     try testing.expect(std.mem.endsWith(u8, line, "}\n"));
 }
@@ -357,13 +396,56 @@ test "serializeAttestationEvent: setup omits payload fields" {
         .session_id = "sess-1",
         .event_id = 0,
         .ts = 100,
-        .payload = .setup,
+        .payload = .{ .setup = .{} },
     };
     const line = try serializeAttestationEvent(testing.allocator, event);
     defer testing.allocator.free(line);
     try testing.expect(std.mem.indexOf(u8, line, "\"rule_id\"") == null);
     try testing.expect(std.mem.indexOf(u8, line, "\"constraint_id\"") == null);
     try testing.expect(std.mem.indexOf(u8, line, "\"type\":\"setup\"") != null);
+}
+
+test "serializeAttestationEvent: setup includes bootstrap metadata" {
+    const event: AttestationEvent = .{
+        .ws_id = "ws-1",
+        .session_id = "sess-1",
+        .event_id = 0,
+        .ts = 100,
+        .payload = .{ .setup = .{
+            .mpf_hash = "sha256:abc",
+            .mpf_content = "META_PROMPT",
+            .mpf_changed = true,
+        } },
+    };
+    const line = try serializeAttestationEvent(testing.allocator, event);
+    defer testing.allocator.free(line);
+    try testing.expect(std.mem.indexOf(u8, line, "\"mpf_hash\":\"sha256:abc\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"mpf_content\":\"META_PROMPT\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"mpf_changed\":true") != null);
+}
+
+test "serializeAttestationEvent: discover includes query metadata" {
+    const event: AttestationEvent = .{
+        .ws_id = "ws-1",
+        .session_id = "sess-1",
+        .event_id = 1,
+        .ts = 101,
+        .payload = .{ .discover = .{
+            .kind = "rule",
+            .group = "zig",
+            .query = "style",
+            .result_count = 7,
+            .result_names = "ZIG_STYLE, ZIG_TOOLCHAIN",
+        } },
+    };
+    const line = try serializeAttestationEvent(testing.allocator, event);
+    defer testing.allocator.free(line);
+    try testing.expect(std.mem.indexOf(u8, line, "\"type\":\"discover\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"kind\":\"rule\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"group\":\"zig\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"query\":\"style\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"result_count\":7") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"result_names\":\"ZIG_STYLE, ZIG_TOOLCHAIN\"") != null);
 }
 
 test "serializeAttestationEvent: user_prompt with content and hash" {

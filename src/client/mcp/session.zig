@@ -7,10 +7,12 @@ const workspace_config = @import("../workspace_config.zig");
 
 pub const Session = struct {
     ws_id: []const u8,
+    workspace_root: []const u8,
     session_id: ?[]const u8 = null,
 
     pub fn deinit(self: *Session, allocator: std.mem.Allocator) void {
         allocator.free(self.ws_id);
+        allocator.free(self.workspace_root);
         if (self.session_id) |session_id| allocator.free(session_id);
     }
 
@@ -22,7 +24,6 @@ pub const Session = struct {
         }
 
         self.session_id = try allocator.dupe(u8, session_id);
-        self.recordEvent(allocator, .setup);
     }
 
     pub fn recordEvent(
@@ -59,5 +60,6 @@ pub fn init(allocator: std.mem.Allocator, workspace_root: []const u8) !Session {
 
     return .{
         .ws_id = binding.ws_id,
+        .workspace_root = try allocator.dupe(u8, workspace_root),
     };
 }

@@ -220,6 +220,11 @@ fn handleSetup(
 
     var mpf = try workspace_rule.loadMpf(allocator, workspace_root, known_hash);
     defer mpf.deinit(allocator);
+    session.recordEvent(allocator, .{ .setup = .{
+        .mpf_hash = mpf.hash,
+        .mpf_content = mpf.content,
+        .mpf_changed = if (mpf.hash == null) null else mpf.content != null,
+    } });
 
     const esc_ws = try encoding.jsonEscapeAlloc(allocator, session.ws_id);
     defer allocator.free(esc_ws);
@@ -281,12 +286,29 @@ fn handleDiscover(
 
     var items = try workspace_rule.discoverSearchable(allocator, workspace_root, kind, group, query);
     defer workspace_rule.deinitRuleItems(allocator, &items);
+    const result_names = try discoverResultNames(allocator, items.items);
+    defer allocator.free(result_names);
 
-    session.recordEvent(allocator, .discover);
+    session.recordEvent(allocator, .{ .discover = .{
+        .kind = if (kind) |k| workspace_rule.kindToString(k) else null,
+        .group = group,
+        .query = query,
+        .result_count = @intCast(@min(items.items.len, std.math.maxInt(u32))),
+        .result_names = result_names,
+    } });
 
     const structured = try tool_result.serializeRuleList(allocator, items.items);
     defer allocator.free(structured);
     return try tool_result.buildSuccessResult(allocator, structured);
+}
+
+fn discoverResultNames(allocator: std.mem.Allocator, items: []const workspace_rule.RuleItem) ![]u8 {
+    var names: std.ArrayList(u8) = .empty;
+    for (items, 0..) |item, idx| {
+        if (idx > 0) try names.appendSlice(allocator, ", ");
+        try names.appendSlice(allocator, item.name);
+    }
+    return try names.toOwnedSlice(allocator);
 }
 
 fn handleLoad(
@@ -362,10 +384,20 @@ fn handleRefer(
             else => null,
         } else null;
 
+        const final_constraint_id = constraint_id orelse continue;
+        const constraint_name = resolveConstraintName(
+            allocator,
+            session.workspace_root,
+            rule_id,
+            final_constraint_id,
+        ) catch null;
+        defer if (constraint_name) |name| allocator.free(name);
+
         session.recordEvent(allocator, .{ .refer = .{
             .rule_id = rule_id,
             .rule_hash = rule_hash,
-            .constraint_id = constraint_id orelse continue,
+            .constraint_id = final_constraint_id,
+            .constraint_name = constraint_name,
             .reason = reason,
         } });
         count += 1;
@@ -375,6 +407,29 @@ fn handleRefer(
     const structured = std.fmt.bufPrint(&buf, "{{\"ok\":true,\"count\":{d}}}", .{count}) catch
         return error.InternalError;
     return try tool_result.buildSuccessResult(allocator, structured);
+}
+
+fn resolveConstraintName(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    rule_id: []const u8,
+    constraint_id: []const u8,
+) !?[]u8 {
+    const ids = [_][]const u8{rule_id};
+    var loaded = try workspace_rule.loadRules(allocator, workspace_root, ids[0..], &.{});
+    defer loaded.deinit(allocator);
+
+    if (loaded.items.items.len == 0) return null;
+    const content = loaded.items.items[0].content orelse return null;
+    var parsed = try workspace_rule.parseConstraints(allocator, content);
+    defer parsed.deinit(allocator);
+
+    for (parsed.constraints.items) |constraint| {
+        if (std.mem.eql(u8, constraint.id, constraint_id)) {
+            return try allocator.dupe(u8, constraint.name);
+        }
+    }
+    return null;
 }
 
 fn parseRuleKind(value: std.json.Value) !?workspace_rule.RuleKind {

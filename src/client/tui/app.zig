@@ -233,8 +233,9 @@ pub const Dashboard = struct {
     dashboard_chain_scroll_bars: vxfw.ScrollBars,
     dashboard_chain_widgets: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Widget = undefined,
     dashboard_chain_rows: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Text = undefined,
+    dashboard_chain_rich_rows: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.RichText = undefined,
     dashboard_chain_cursor: usize = 0,
-    dashboard_chain_expanded: ?usize = null,
+    dashboard_chain_expanded_items: [MAX_DASHBOARD_CHAIN_ROWS]bool = .{false} ** MAX_DASHBOARD_CHAIN_ROWS,
     view_arena: std.heap.ArenaAllocator,
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from

@@ -184,7 +184,7 @@ fn emitScenario(
         .session_id = session_id,
         .event_id = 0,
         .ts = timestamp_base,
-        .payload = .setup,
+        .payload = .{ .setup = .{} },
     });
 
     const input_hash = util_hash.sha256HexAlloc(std.heap.page_allocator, scenario.input) catch null;
