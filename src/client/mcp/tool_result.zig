@@ -75,11 +75,15 @@ pub fn serializeLoadResultWithConstraints(
                 if (cidx > 0) try buf.append(allocator, ',');
                 const esc_cid = try encoding.jsonEscapeAlloc(allocator, c.id);
                 defer allocator.free(esc_cid);
+                const esc_name = try encoding.jsonEscapeAlloc(allocator, c.name);
+                defer allocator.free(esc_name);
+                const esc_text = try encoding.jsonEscapeAlloc(allocator, c.text);
+                defer allocator.free(esc_text);
                 const esc_th = try encoding.jsonEscapeAlloc(allocator, c.text_hash);
                 defer allocator.free(esc_th);
                 try buf.writer(allocator).print(
-                    "{{\"id\":\"{s}\",\"textHash\":\"{s}\"}}",
-                    .{ esc_cid, esc_th },
+                    "{{\"id\":\"{s}\",\"name\":\"{s}\",\"text\":\"{s}\",\"textHash\":\"{s}\"}}",
+                    .{ esc_cid, esc_name, esc_text, esc_th },
                 );
             }
             try buf.appendSlice(allocator, "]}");
@@ -169,7 +173,11 @@ fn appendLoadedRuleWithConstraints(
             var constraint_list_buf: std.ArrayList(u8) = .empty;
             defer constraint_list_buf.deinit(allocator);
             for (constraints) |c| {
-                try constraint_list_buf.writer(allocator).print("  - {s}\n", .{c.id});
+                if (std.mem.eql(u8, c.name, c.text)) {
+                    try constraint_list_buf.writer(allocator).print("  - {s}: {s}\n", .{ c.id, c.name });
+                } else {
+                    try constraint_list_buf.writer(allocator).print("  - {s}: {s} - {s}\n", .{ c.id, c.name, c.text });
+                }
             }
             const constraint_list = if (constraint_list_buf.items.len > 0)
                 constraint_list_buf.items

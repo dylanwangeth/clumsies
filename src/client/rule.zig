@@ -690,6 +690,8 @@ fn knownHashFor(id: []const u8, known: []const KnownHash) ?[]const u8 {
 
 pub const ParsedConstraint = struct {
     id: []const u8,
+    name: []const u8,
+    text: []const u8,
     text_hash: []const u8,
 };
 
@@ -701,6 +703,8 @@ pub const ValidateResult = struct {
     pub fn deinit(self: *ValidateResult, allocator: std.mem.Allocator) void {
         for (self.constraints.items) |c| {
             allocator.free(c.id);
+            allocator.free(c.name);
+            allocator.free(c.text);
             allocator.free(c.text_hash);
         }
         self.constraints.deinit(allocator);
@@ -730,6 +734,8 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
     errdefer {
         for (constraints.items) |c| {
             allocator.free(c.id);
+            allocator.free(c.name);
+            allocator.free(c.text);
             allocator.free(c.text_hash);
         }
         constraints.deinit(allocator);
@@ -768,13 +774,7 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
                 std.ascii.eqlIgnoreCase(heading_text, "example");
 
             if (in_region and !region_has_list) {
-                constraint_counter += 1;
-                const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
-                const th = try computeTextHash(allocator, region_heading);
-                try constraints.append(allocator, .{
-                    .id = id,
-                    .text_hash = th,
-                });
+                try appendParsedConstraint(allocator, &constraints, &constraint_counter, region_heading, region_heading);
             }
 
             if (is_steps or is_examples) {
@@ -795,13 +795,7 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
                 continue;
 
             region_has_list = true;
-            constraint_counter += 1;
-            const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
-            const th = try computeTextHash(allocator, trimmed);
-            try constraints.append(allocator, .{
-                .id = id,
-                .text_hash = th,
-            });
+            try appendParsedConstraint(allocator, &constraints, &constraint_counter, trimmed, region_heading);
             continue;
         }
 
@@ -815,23 +809,11 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
     }
 
     if (in_region and !region_has_list) {
-        constraint_counter += 1;
-        const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
-        const th = try computeTextHash(allocator, region_heading);
-        try constraints.append(allocator, .{
-            .id = id,
-            .text_hash = th,
-        });
+        try appendParsedConstraint(allocator, &constraints, &constraint_counter, region_heading, region_heading);
     }
 
     if (constraint_counter == 0 and content.len > 0) {
-        constraint_counter += 1;
-        const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter});
-        const th = try computeTextHash(allocator, content);
-        try constraints.append(allocator, .{
-            .id = id,
-            .text_hash = th,
-        });
+        try appendParsedConstraint(allocator, &constraints, &constraint_counter, content, content);
     }
 
     if (constraint_counter == 0) {
@@ -843,6 +825,57 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
         .constraints = constraints,
         .issues = issues,
     };
+}
+
+fn appendParsedConstraint(
+    allocator: std.mem.Allocator,
+    constraints: *std.ArrayList(ParsedConstraint),
+    constraint_counter: *usize,
+    source: []const u8,
+    name_source: []const u8,
+) !void {
+    constraint_counter.* += 1;
+    const id = try std.fmt.allocPrint(allocator, "c-{d}", .{constraint_counter.*});
+    errdefer allocator.free(id);
+
+    const name = try allocator.dupe(u8, constraintDisplayText(name_source));
+    errdefer allocator.free(name);
+
+    const text = try allocator.dupe(u8, constraintDisplayText(source));
+    errdefer allocator.free(text);
+
+    const th = try computeTextHash(allocator, source);
+    errdefer allocator.free(th);
+
+    try constraints.append(allocator, .{
+        .id = id,
+        .name = name,
+        .text = text,
+        .text_hash = th,
+    });
+}
+
+fn constraintDisplayText(source: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, source, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "## ")) {
+        return std.mem.trim(u8, trimmed[3..], " \t");
+    }
+    if (std.mem.startsWith(u8, trimmed, "- ")) {
+        return std.mem.trim(u8, trimmed[2..], " \t");
+    }
+    if (orderedListMarkerEnd(trimmed)) |end| {
+        return std.mem.trim(u8, trimmed[end..], " \t");
+    }
+    return trimmed;
+}
+
+fn orderedListMarkerEnd(line: []const u8) ?usize {
+    var idx: usize = 0;
+    while (idx < line.len and std.ascii.isDigit(line[idx])) : (idx += 1) {}
+    if (idx == 0 or idx >= line.len or line[idx] != '.') return null;
+    idx += 1;
+    if (idx < line.len and line[idx] == ' ') idx += 1;
+    return idx;
 }
 
 fn isOrderedListItem(line: []const u8) bool {
@@ -1441,7 +1474,10 @@ test "parseConstraints: list items become individual constraints" {
     try testing.expect(result.valid);
     try testing.expectEqual(@as(usize, 4), result.constraints.items.len);
     try testing.expectEqualStrings("c-1", result.constraints.items[0].id);
+    try testing.expectEqualStrings("Naming", result.constraints.items[0].name);
+    try testing.expectEqualStrings("Use snake_case for functions", result.constraints.items[0].text);
     try testing.expectEqualStrings("c-4", result.constraints.items[3].id);
+    try testing.expectEqualStrings("Forbidden", result.constraints.items[3].name);
 }
 
 test "parseConstraints: region without list is single constraint" {
@@ -1458,6 +1494,8 @@ test "parseConstraints: region without list is single constraint" {
 
     try testing.expect(result.valid);
     try testing.expectEqual(@as(usize, 1), result.constraints.items.len);
+    try testing.expectEqualStrings("Core principle", result.constraints.items[0].name);
+    try testing.expectEqualStrings("Core principle", result.constraints.items[0].text);
 }
 
 test "parseConstraints: no headings no lists is one constraint" {
@@ -1468,6 +1506,8 @@ test "parseConstraints: no headings no lists is one constraint" {
     try testing.expect(result.valid);
     try testing.expectEqual(@as(usize, 1), result.constraints.items.len);
     try testing.expectEqualStrings("c-1", result.constraints.items[0].id);
+    try testing.expectEqualStrings("Always use English in code comments.", result.constraints.items[0].name);
+    try testing.expectEqualStrings("Always use English in code comments.", result.constraints.items[0].text);
 }
 
 test "parseConstraints: empty content" {

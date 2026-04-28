@@ -51,14 +51,25 @@ pub const InputEvent = struct {
 pub const RoundRefer = struct {
     rule_id: []const u8,
     constraint_id: []const u8,
+    constraint_name: ?[]const u8 = null,
     reason: ?[]const u8 = null,
 };
 
 pub const RoundTool = struct {
     kind: []const u8,
     timestamp: i64,
+    session_id: []const u8 = "",
     rule_id: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
+    constraint_name: ?[]const u8 = null,
+    mpf_hash: ?[]const u8 = null,
+    mpf_content: ?[]const u8 = null,
+    mpf_changed: ?bool = null,
+    discover_kind: ?[]const u8 = null,
+    discover_group: ?[]const u8 = null,
+    discover_query: ?[]const u8 = null,
+    discover_result_count: ?u32 = null,
+    discover_result_names: ?[]const u8 = null,
     summary: ?[]const u8 = null,
     reason: ?[]const u8 = null,
 };
@@ -87,6 +98,15 @@ const AttestationEvent = struct {
     rule_id: ?[]const u8 = null,
     rule_hash: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
+    constraint_name: ?[]const u8 = null,
+    mpf_hash: ?[]const u8 = null,
+    mpf_content: ?[]const u8 = null,
+    mpf_changed: ?bool = null,
+    kind: ?[]const u8 = null,
+    group: ?[]const u8 = null,
+    query: ?[]const u8 = null,
+    result_count: ?u32 = null,
+    result_names: ?[]const u8 = null,
     reason: ?[]const u8 = null,
     content: ?[]const u8 = null,
     summary: ?[]const u8 = null,
@@ -239,6 +259,15 @@ fn cloneAttestationEvent(
         .rule_id = null,
         .rule_hash = null,
         .constraint_id = null,
+        .constraint_name = null,
+        .mpf_hash = null,
+        .mpf_content = null,
+        .mpf_changed = src.mpf_changed,
+        .kind = null,
+        .group = null,
+        .query = null,
+        .result_count = src.result_count,
+        .result_names = null,
         .reason = null,
         .content = null,
         .summary = null,
@@ -254,6 +283,27 @@ fn cloneAttestationEvent(
 
     out.constraint_id = try dupeOptional(allocator, src.constraint_id);
     errdefer if (out.constraint_id) |s| allocator.free(s);
+
+    out.constraint_name = try dupeOptional(allocator, src.constraint_name);
+    errdefer if (out.constraint_name) |s| allocator.free(s);
+
+    out.mpf_hash = try dupeOptional(allocator, src.mpf_hash);
+    errdefer if (out.mpf_hash) |s| allocator.free(s);
+
+    out.mpf_content = try dupeOptional(allocator, src.mpf_content);
+    errdefer if (out.mpf_content) |s| allocator.free(s);
+
+    out.kind = try dupeOptional(allocator, src.kind);
+    errdefer if (out.kind) |s| allocator.free(s);
+
+    out.group = try dupeOptional(allocator, src.group);
+    errdefer if (out.group) |s| allocator.free(s);
+
+    out.query = try dupeOptional(allocator, src.query);
+    errdefer if (out.query) |s| allocator.free(s);
+
+    out.result_names = try dupeOptional(allocator, src.result_names);
+    errdefer if (out.result_names) |s| allocator.free(s);
 
     out.reason = try dupeOptional(allocator, src.reason);
     errdefer if (out.reason) |s| allocator.free(s);
@@ -277,6 +327,13 @@ fn freeAttestationEventOwned(allocator: std.mem.Allocator, ev: AttestationEvent)
     if (ev.rule_id) |s| allocator.free(s);
     if (ev.rule_hash) |s| allocator.free(s);
     if (ev.constraint_id) |s| allocator.free(s);
+    if (ev.constraint_name) |s| allocator.free(s);
+    if (ev.mpf_hash) |s| allocator.free(s);
+    if (ev.mpf_content) |s| allocator.free(s);
+    if (ev.kind) |s| allocator.free(s);
+    if (ev.group) |s| allocator.free(s);
+    if (ev.query) |s| allocator.free(s);
+    if (ev.result_names) |s| allocator.free(s);
     if (ev.reason) |s| allocator.free(s);
     if (ev.content) |s| allocator.free(s);
     if (ev.summary) |s| allocator.free(s);
@@ -363,6 +420,7 @@ fn computeStats(
     const RuleAcc = struct {
         refer_count: u32 = 0,
         constraints: std.StringHashMap(u32),
+        constraint_names: std.StringHashMap([]const u8),
     };
     var rule_map: std.StringHashMap(RuleAcc) = .init(allocator);
 
@@ -400,7 +458,11 @@ fn computeStats(
         const pid = ev.rule_id orelse continue;
         const entry = rule_map.getOrPut(pid) catch continue;
         if (!entry.found_existing) {
-            entry.value_ptr.* = .{ .refer_count = 0, .constraints = .init(allocator) };
+            entry.value_ptr.* = .{
+                .refer_count = 0,
+                .constraints = .init(allocator),
+                .constraint_names = .init(allocator),
+            };
         }
         entry.value_ptr.refer_count += 1;
 
@@ -408,6 +470,9 @@ fn computeStats(
             const c_entry = entry.value_ptr.constraints.getOrPut(cid) catch continue;
             if (!c_entry.found_existing) c_entry.value_ptr.* = 0;
             c_entry.value_ptr.* += 1;
+            if (ev.constraint_name) |name| {
+                entry.value_ptr.constraint_names.put(cid, name) catch {};
+            }
         }
     }
 
@@ -440,7 +505,7 @@ fn computeStats(
         while (c_it.next()) |cv| {
             constraints_list.append(allocator, .{
                 .id = cv.key_ptr.*,
-                .label = cv.key_ptr.*,
+                .label = kv.value_ptr.constraint_names.get(cv.key_ptr.*) orelse cv.key_ptr.*,
                 .refer_count = cv.value_ptr.*,
                 .idle_days = null,
             }) catch continue;
@@ -564,6 +629,7 @@ fn buildRounds(allocator: std.mem.Allocator, events: []const AttestationEvent) [
                     builder.refers.append(allocator, .{
                         .rule_id = rule_id,
                         .constraint_id = constraint_id,
+                        .constraint_name = ev.constraint_name,
                         .reason = ev.reason,
                     }) catch continue;
                 }
@@ -675,8 +741,18 @@ fn appendRoundTool(allocator: std.mem.Allocator, builder: anytype, ev: Attestati
     builder.tools.append(allocator, .{
         .kind = ev.type,
         .timestamp = ev.timestamp,
+        .session_id = ev.session_id,
         .rule_id = ev.rule_id,
         .constraint_id = ev.constraint_id,
+        .constraint_name = ev.constraint_name,
+        .mpf_hash = ev.mpf_hash,
+        .mpf_content = ev.mpf_content,
+        .mpf_changed = ev.mpf_changed,
+        .discover_kind = ev.kind,
+        .discover_group = ev.group,
+        .discover_query = ev.query,
+        .discover_result_count = ev.result_count,
+        .discover_result_names = ev.result_names,
         .summary = ev.summary,
         .reason = ev.reason,
     }) catch return;
@@ -684,6 +760,7 @@ fn appendRoundTool(allocator: std.mem.Allocator, builder: anytype, ev: Attestati
 
 fn isProtocolToolEvent(kind: []const u8) bool {
     return std.mem.eql(u8, kind, "setup") or
+        std.mem.eql(u8, kind, "discover") or
         std.mem.eql(u8, kind, "search") or
         std.mem.eql(u8, kind, "context_propose_create") or
         std.mem.eql(u8, kind, "context_propose_update") or
@@ -767,9 +844,10 @@ test "buildRounds groups evidence after each user prompt" {
 
     const events = [_]AttestationEvent{
         .{ .ws_id = "ws-1", .session_id = "s-1", .type = "user_prompt", .timestamp = 1000, .content = "first" },
-        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "load", .timestamp = 1001, .rule_id = "p-1", .rule_hash = "h-1" },
-        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "refer", .timestamp = 1002, .rule_id = "p-1", .constraint_id = "c-1", .reason = "used it" },
-        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "agent_report", .timestamp = 1003, .summary = "done" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "discover", .timestamp = 1001 },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "load", .timestamp = 1002, .rule_id = "p-1", .rule_hash = "h-1" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "refer", .timestamp = 1003, .rule_id = "p-1", .constraint_id = "c-1", .reason = "used it" },
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "agent_report", .timestamp = 1004, .summary = "done" },
         .{ .ws_id = "ws-1", .session_id = "s-1", .type = "user_prompt", .timestamp = 2000, .content = "second" },
         .{ .ws_id = "ws-1", .session_id = "s-1", .type = "reject", .timestamp = 2001, .reason = "bad" },
     };
@@ -787,10 +865,11 @@ test "buildRounds groups evidence after each user prompt" {
     try std.testing.expectEqualStrings("done", rounds[1].summary.?);
     try std.testing.expectEqualStrings("p-1", rounds[1].refers[0].rule_id);
     try std.testing.expectEqualStrings("c-1", rounds[1].refers[0].constraint_id);
-    try std.testing.expectEqual(@as(usize, 3), rounds[1].tools.len);
-    try std.testing.expectEqualStrings("load", rounds[1].tools[0].kind);
-    try std.testing.expectEqualStrings("refer", rounds[1].tools[1].kind);
-    try std.testing.expectEqualStrings("agent_report", rounds[1].tools[2].kind);
+    try std.testing.expectEqual(@as(usize, 4), rounds[1].tools.len);
+    try std.testing.expectEqualStrings("discover", rounds[1].tools[0].kind);
+    try std.testing.expectEqualStrings("load", rounds[1].tools[1].kind);
+    try std.testing.expectEqualStrings("refer", rounds[1].tools[2].kind);
+    try std.testing.expectEqualStrings("agent_report", rounds[1].tools[3].kind);
 }
 
 test "buildRounds attaches tools when merged logs are read out of order" {

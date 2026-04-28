@@ -95,17 +95,17 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             .content = content_opt,
         } }
     else if (std.mem.eql(u8, event_type, "setup"))
-        .setup
+        .{ .setup = .{} }
     else if (std.mem.eql(u8, event_type, "discover"))
-        .discover
+        .{ .discover = .{} }
     else if (std.mem.eql(u8, event_type, "load"))
-        .discover // CLI hook doesn't carry rule_id; fallback to void variant
+        .{ .discover = .{} } // CLI hook doesn't carry rule_id; fallback to void variant
     else if (std.mem.eql(u8, event_type, "refer"))
-        .discover // CLI hook doesn't carry rule_id/constraint_id; fallback to void variant
+        .{ .discover = .{} } // CLI hook doesn't carry rule_id/constraint_id; fallback to void variant
     else if (std.mem.eql(u8, event_type, "agent_report"))
         .{ .agent_report = .{ .summary = content_opt orelse "" } }
     else
-        .setup;
+        .{ .setup = .{} };
 
     attestation.appendAttestationEvent(allocator, .{
         .ws_id = binding.ws_id,
