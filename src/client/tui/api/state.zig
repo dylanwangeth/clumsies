@@ -4,7 +4,6 @@ const library_api = @import("clumsies_lib").protocol.library_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const data = @import("../view_types.zig");
 const drafts_reader = @import("../drafts_reader.zig");
-const session_reader = @import("../session_reader.zig");
 const attestation_reader = @import("../attestation_reader.zig");
 const model = @import("model.zig");
 const cache = @import("cache.zig");
@@ -66,7 +65,6 @@ pub const CreateContextPrResponse = struct {
 };
 
 pub const DraftEntry = drafts_reader.DraftEntry;
-pub const ActiveSession = session_reader.ActiveSession;
 
 pub const ConnectionStatus = enum {
     disconnected,
@@ -86,7 +84,6 @@ pub const ApiState = struct {
     org_stats: ?model.OrgStats = null,
     local_stats: ?attestation_reader.LocalStats = null,
     drafts: ?[]const DraftEntry = null,
-    active_sessions: ?[]const ActiveSession = null,
 
     // Library rule content, keyed by rule path.
     rule_content_pending: request.PendingRequest(dispatcher.Result(library_api.RuleContentResponse)) = .{},
@@ -196,7 +193,6 @@ pub fn refreshLocalState(api_state: *ApiState) void {
 
     api_state.local_stats = attestation_reader.readLocalStats(alloc);
     api_state.drafts = drafts_reader.readAllDrafts(alloc);
-    api_state.active_sessions = session_reader.readAllSessions(alloc);
 }
 
 pub fn invalidateOnDemandCaches(api_state: *ApiState) void {

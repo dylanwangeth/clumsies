@@ -131,21 +131,9 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     w.writeText(&surface, ctx, 19, row, token_info, theme.fg(token_color));
     row += 1;
 
-    const sessions_slice = sessionViews(self, ctx.arena);
     w.writeText(&surface, ctx, 4, row, "MCP", theme.fg(theme.MUTED));
-    const mcp_summary = try std.fmt.allocPrint(ctx.arena, "{d} live session(s)", .{sessions_slice.len});
-    const mcp_color = if (sessions_slice.len > 0) theme.OK else theme.MUTED;
-    w.writeText(&surface, ctx, 19, row, mcp_summary, theme.fg(mcp_color));
+    w.writeText(&surface, ctx, 19, row, "bound by memory.setup", theme.fg(theme.TEXT_SOFT));
     row += 1;
-    for (sessions_slice, 0..) |sess, i| {
-        if (row >= size.height -| 4) break;
-        const is_last = i + 1 == sessions_slice.len;
-        const connector = if (is_last) "\xe2\x94\x94" else "\xe2\x94\x9c";
-        w.writeText(&surface, ctx, 6, row, connector, theme.fg(theme.BORDER));
-        const line = try std.fmt.allocPrint(ctx.arena, "{s}  {s}  {s}", .{ sess.ws_id, sess.session_id, sess.age });
-        w.writeText(&surface, ctx, 8, row, line, theme.fg(theme.TEXT_SOFT));
-        row += 1;
-    }
     row += 1;
 
     row = w.writeSectionHeader(&surface, ctx, 2, row, "Security");
@@ -341,33 +329,4 @@ fn drawSettingsToken(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Err
         w.writeText(&surface, ctx, 2, row, "Effective permissions = min(org role, token scopes)", theme.fg(theme.MUTED));
     }
     return surface;
-}
-
-fn sessionViews(self: anytype, arena: std.mem.Allocator) []const data.ActiveSessionView {
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
-
-    const sessions = self.api_state.active_sessions orelse return &.{};
-    const now_s = std.time.timestamp();
-    var list: std.ArrayList(data.ActiveSessionView) = .empty;
-    for (sessions) |sess| {
-        const age_seconds = @max(now_s - sess.started_at, 0);
-        const age = formatAge(arena, age_seconds) catch "?";
-        list.append(arena, .{
-            .ws_id = sess.ws_id,
-            .session_id = sess.session_id,
-            .age = age,
-        }) catch continue;
-    }
-    return list.items;
-}
-
-fn formatAge(arena: std.mem.Allocator, seconds: i64) ![]const u8 {
-    if (seconds < 60) return std.fmt.allocPrint(arena, "{d}s", .{seconds});
-    const minutes = @divFloor(seconds, 60);
-    if (minutes < 60) return std.fmt.allocPrint(arena, "{d}m", .{minutes});
-    const hours = @divFloor(minutes, 60);
-    if (hours < 24) return std.fmt.allocPrint(arena, "{d}h", .{hours});
-    const days = @divFloor(hours, 24);
-    return std.fmt.allocPrint(arena, "{d}d", .{days});
 }

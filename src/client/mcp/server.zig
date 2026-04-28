@@ -67,6 +67,7 @@ pub fn runWithRoot(
 }
 
 fn flushOnExit(allocator: std.mem.Allocator, state: *State) void {
+    if (state.session.session_id == null) return;
     const outcome = attestation_upload.flushWorkspace(allocator, state.session.ws_id);
     switch (outcome) {
         .flushed => |result| {
@@ -156,7 +157,7 @@ fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u
     defer allocator.free(esc_version);
 
     const instructions =
-        "Call " ++ tool_names.setup ++ " to bootstrap the protocol and get usage instructions, " ++
+        "Call " ++ tool_names.setup ++ " with session_id first to bind this connection and get usage instructions, " ++
         tool_names.discover ++ " to discover rules/workflows, " ++ tool_names.load ++ " to get content, " ++
         "and " ++ tool_names.refer ++ " to declare constraint usage.";
     const esc_instructions = try encoding.jsonEscapeAlloc(allocator, instructions);
@@ -172,7 +173,6 @@ fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u
 test "processLine: initialize then tools list" {
     var session: session_mod.Session = .{
         .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .session_id = [_]u8{'a'} ** 32,
     };
     defer session.deinit(testing.allocator);
 

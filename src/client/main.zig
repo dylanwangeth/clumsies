@@ -227,7 +227,6 @@ test {
     _ = @import("flags.zig");
     _ = @import("host_session.zig");
     _ = @import("rule.zig");
-    _ = @import("session_marker.zig");
     _ = @import("attestation.zig");
     _ = @import("workspace_config.zig");
 

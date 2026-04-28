@@ -13,8 +13,8 @@ const tool_result = @import("tool_result.zig");
 const attestation = @import("../attestation.zig");
 
 const setup_schema =
-    "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bootstrap the protocol. Returns workspace_id and meta-rule content with usage instructions (delta based on knownHash).\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"knownHash\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
+    "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bind this MCP connection to the host agent session, then bootstrap the protocol. Pass the host session/thread id as session_id.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},\"knownHash\":{\"type\":\"string\"}},\"required\":[\"session_id\"],\"additionalProperties\":false}}";
 
 const discover_schema =
     "{\"name\":\"" ++ tool_names.discover ++ "\",\"title\":\"Discover\",\"description\":\"Discover available rules, workflows, and context files. Returns fresh metadata from the workspace.\"," ++
@@ -129,6 +129,12 @@ pub fn handleCall(
     if (std.mem.eql(u8, name, tool_names.setup)) {
         return try handleSetup(allocator, workspace_root, session, args_obj);
     }
+    if (session.session_id == null) {
+        return try tool_result.buildErrorResult(
+            allocator,
+            "memory.setup with session_id is required before other clumsies tools",
+        );
+    }
     if (std.mem.eql(u8, name, tool_names.discover)) {
         return try handleDiscover(allocator, workspace_root, session, args_obj);
     }
@@ -188,6 +194,25 @@ fn handleSetup(
     session: *session_mod.Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
+    const session_id_arg = if (args_obj.get("session_id")) |value| switch (value) {
+        .string => |s| s,
+        else => return try tool_result.buildErrorResult(allocator, "session_id must be a string"),
+    } else return try tool_result.buildErrorResult(allocator, "session_id is required");
+    if (session_id_arg.len == 0) {
+        return try tool_result.buildErrorResult(allocator, "session_id must not be empty");
+    }
+    session.bind(allocator, session_id_arg) catch |err| switch (err) {
+        error.InvalidSessionId => return try tool_result.buildErrorResult(
+            allocator,
+            "session_id may only contain letters, numbers, '-' and '_' and must be at most 128 bytes",
+        ),
+        error.SessionAlreadyBound => return try tool_result.buildErrorResult(
+            allocator,
+            "session is already bound to a different session_id",
+        ),
+        else => return err,
+    };
+
     const known_hash: ?[]const u8 = if (args_obj.get("knownHash")) |value| switch (value) {
         .string => |s| s,
         else => null,
@@ -198,7 +223,8 @@ fn handleSetup(
 
     const esc_ws = try encoding.jsonEscapeAlloc(allocator, session.ws_id);
     defer allocator.free(esc_ws);
-    const esc_session = try encoding.jsonEscapeAlloc(allocator, session.session_id[0..]);
+    const bound_session_id = session.session_id.?;
+    const esc_session = try encoding.jsonEscapeAlloc(allocator, bound_session_id);
     defer allocator.free(esc_session);
 
     if (mpf.content) |content| {

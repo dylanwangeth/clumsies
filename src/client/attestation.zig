@@ -85,6 +85,13 @@ pub const AttestationEvent = struct {
     };
 };
 
+/// Generate an opaque idempotency key for local attestation uploads.
+/// Ordering must use `timestamp`; `event_id` only backs Hub de-duplication.
+pub fn nextEventId() i64 {
+    // The wire format and Hub schema use BIGINT; Unix nanoseconds fit until 2262.
+    return @intCast(std.time.nanoTimestamp());
+}
+
 /// Map Payload tag to the JSON "type" string.
 pub fn payloadTypeTag(payload: AttestationEvent.Payload) []const u8 {
     return switch (payload) {

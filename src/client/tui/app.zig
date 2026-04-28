@@ -1311,8 +1311,7 @@ pub const Dashboard = struct {
             rounds[@min(self.analysis_input_cursor, rounds.len - 1)]
         else
             null;
-        const active_count = self.activeSessionCount(scope.ws_id);
-        const summary = dashboardSummary(rounds, active_count);
+        const summary = dashboardSummary(ctx.arena, rounds);
         const arena_surface = try dashboard_panel.drawArena(
             self,
             ctx,
@@ -1397,20 +1396,6 @@ pub const Dashboard = struct {
             },
             else => self.status_line = "Flush terminated abnormally",
         }
-    }
-
-    fn activeSessionCount(self: *Dashboard, scope_ws_id: ?[]const u8) usize {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
-        const sessions = self.api_state.active_sessions orelse return 0;
-        if (scope_ws_id) |ws_id| {
-            var count: usize = 0;
-            for (sessions) |sess| {
-                if (std.mem.eql(u8, sess.ws_id, ws_id)) count += 1;
-            }
-            return count;
-        }
-        return sessions.len;
     }
 
     // Count active drafts (status != "merged") across all categories.
@@ -2041,17 +2026,19 @@ pub const Dashboard = struct {
         };
     }
 
-    fn dashboardSummary(rounds: []const attestation_reader.RoundEvent, active_session_count: usize) dashboard_panel.DashboardSummary {
+    fn dashboardSummary(arena: std.mem.Allocator, rounds: []const attestation_reader.RoundEvent) dashboard_panel.DashboardSummary {
         var summary: dashboard_panel.DashboardSummary = .{
             .round_count = rounds.len,
-            .active_session_count = active_session_count,
         };
+        var sessions: std.StringHashMapUnmanaged(void) = .empty;
         for (rounds) |round| {
             if (round.submit_count > 0) summary.submitted_count += 1;
             if (round.refer_count > 0) summary.referred_count += 1;
             if (round.reject_count > 0) summary.rejected_count += 1;
             if (round.submit_count == 0 and round.reject_count == 0) summary.open_count += 1;
+            sessions.put(arena, round.session_id, {}) catch {};
         }
+        summary.session_count = sessions.count();
         return summary;
     }
 

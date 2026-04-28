@@ -17,11 +17,11 @@ const FLAG_CONTENT: usize = 1;
 /// `clumsies _agent attestation-append --type <type> [--content <text>]`
 ///
 /// Append a single attestation event to the current workspace's
-/// attestation log. The session_id is derived from the host CLI session when
-/// available. The event_id uses microseconds-since-epoch so it never collides
-/// with the in-process counter MCP uses for its own events.
+/// attestation log. The session_id is the host CLI session id supplied by the
+/// adapter hook. The event_id is an opaque idempotency key; event ordering
+/// uses timestamp.
 ///
-/// Best-effort: silent failure on missing binding, missing host session,
+/// Best-effort: silent failure on missing binding, missing hook session,
 /// or attestation write errors. Designed to be called from adapter hook scripts
 /// where blocking the user is unacceptable.
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -77,8 +77,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(binding.ws_id);
     defer allocator.free(binding.name);
 
-    var host_session_id = host_session.resolveSessionId(allocator) orelse return;
-    const session_id = host_session_id[0..];
+    const session_id = host_session.resolveHookSessionId(allocator) orelse return;
+    defer allocator.free(session_id);
 
     const content_opt = result.value(FLAG_CONTENT);
     var content_hash_owned: ?[]const u8 = null;
@@ -86,8 +86,6 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     if (content_opt) |c| {
         content_hash_owned = try util_hash.sha256HexAlloc(allocator, c);
     }
-
-    const event_id = std.time.microTimestamp();
 
     // Build the payload based on event_type. The CLI hook command primarily
     // writes user_prompt events; other event types use void/empty variants.
@@ -112,7 +110,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     attestation.appendAttestationEvent(allocator, .{
         .ws_id = binding.ws_id,
         .session_id = session_id,
-        .event_id = event_id,
+        .event_id = attestation.nextEventId(),
         .ts = std.time.milliTimestamp(),
         .payload = payload,
     }) catch |err| {
