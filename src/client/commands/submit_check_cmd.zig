@@ -12,7 +12,7 @@ const workspace_config = @import("../workspace_config.zig");
 /// Exit 0 = agent_report found (agent already submitted)
 /// Exit 1 = no agent_report since last user_prompt
 ///
-/// Best-effort: silent failure on missing binding, missing host session,
+/// Best-effort: silent failure on missing binding, missing hook session,
 /// or file read errors. Designed to be called from adapter hook scripts
 /// where blocking the user is unacceptable.
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator) !void {
@@ -26,8 +26,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(binding.ws_id);
     defer allocator.free(binding.name);
 
-    var host_session_id = host_session.resolveSessionId(allocator) orelse return;
-    const session_id = host_session_id[0..];
+    const session_id = host_session.resolveHookSessionId(allocator) orelse return;
+    defer allocator.free(session_id);
 
     const attestation_path = attestation.sessionAttestationFilePath(allocator, binding.ws_id, session_id) catch return;
     defer allocator.free(attestation_path);

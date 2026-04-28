@@ -38,7 +38,7 @@ pub const DashboardSummary = struct {
     referred_count: usize = 0,
     rejected_count: usize = 0,
     open_count: usize = 0,
-    active_session_count: usize = 0,
+    session_count: usize = 0,
 };
 
 pub fn drawArena(
@@ -81,8 +81,8 @@ pub fn drawArena(
     col = try drawMetric(ctx, &surface, col + 2, 2, "REFERRED", summary.referred_count, theme.ACCENT_SOFT);
     col = try drawMetric(ctx, &surface, col + 2, 2, "REJECTED", summary.rejected_count, theme.DANGER);
     _ = try drawMetric(ctx, &surface, col + 2, 2, "OPEN", summary.open_count, theme.MUTED);
-    const live_txt = try std.fmt.allocPrint(ctx.arena, "{d} live", .{summary.active_session_count});
-    w.writeRightText(&surface, ctx, 2, live_txt, .{ .fg = if (summary.active_session_count > 0) theme.OK else theme.MUTED, .bg = theme.PANEL });
+    const session_txt = try std.fmt.allocPrint(ctx.arena, "{d} session(s)", .{summary.session_count});
+    w.writeRightText(&surface, ctx, 2, session_txt, .{ .fg = if (summary.session_count > 0) theme.OK else theme.MUTED, .bg = theme.PANEL });
 
     return surface;
 }

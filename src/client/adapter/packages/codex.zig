@@ -342,6 +342,14 @@ test "renderRuntimeAssets uses absolute workspace-local codex hook paths" {
     try std.testing.expect(std.mem.indexOf(u8, assets[1].content, "/tmp/workspace/.codex/hooks/session-start.sh") != null);
 }
 
+test "codex config does not require Codex thread id in MCP server env" {
+    const allocator = std.testing.allocator;
+    const rendered = (try renderManagedResource(allocator, "codex.config", .workspace, "/tmp/workspace/.codex")).?;
+    defer allocator.free(rendered);
+
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "env_vars") == null);
+}
+
 test "codex hooks pass Codex session id through clumsies host session env" {
     const allocator = std.testing.allocator;
     const assets = try renderRuntimeAssets(allocator, .workspace, "/tmp/workspace/.codex");
@@ -373,6 +381,10 @@ test "renderSessionStartHook does not import workflow skills" {
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "__CLUMSIES_WORKFLOW_SKILLS_DIR__") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "WORKFLOW_SKILLS_DIR") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "_agent setup") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "hookSpecificOutput") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "memory.setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "session_id") != null);
 }
 
 test "renderRuntimeAssets installs codex user skills under home agents skills" {

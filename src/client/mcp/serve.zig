@@ -1,9 +1,8 @@
-//! MCP server entry point. Sets up the session marker (so the TUI sees the active session),
-//! resolves the current workspace from cwd, and delegates to the message loop in server.zig.
+//! MCP server entry point. Resolves the workspace and delegates to the message
+//! loop in server.zig.
 const std = @import("std");
 const session_mod = @import("session.zig");
 const server = @import("server.zig");
-const session_marker = @import("../session_marker.zig");
 const workspace_config = @import("../workspace_config.zig");
 
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, version: []const u8) !void {
@@ -22,11 +21,6 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     const ws_dir = try workspace_config.getWsDir(allocator, session.ws_id);
     defer allocator.free(ws_dir);
-
-    session_marker.write(allocator, ws_dir, session.session_id[0..]) catch |err| {
-        std.log.warn("failed to write current_session.json: {}", .{err});
-    };
-    defer session_marker.clear(allocator, ws_dir);
 
     try server.runWithRoot(stdout, stderr, allocator, version, ws_dir, &session);
 }
