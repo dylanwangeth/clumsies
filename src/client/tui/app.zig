@@ -2039,8 +2039,8 @@ pub const Dashboard = struct {
             if (round.refer_count > 0) summary.referred_count += 1;
             if (round.reject_count > 0) summary.rejected_count += 1;
             if (round.submit_count == 0 and round.reject_count == 0) summary.open_count += 1;
-            if (round.refer_count > 0) summary.attested_count += 1;
-            if (dashboard_panel.isReviewQueueRound(round)) summary.review_count += 1;
+            summary.refer_count += round.refer_count;
+            if (dashboard_panel.isExceptionRound(round)) summary.exception_count += 1;
             sessions.put(arena, round.session_id, {}) catch {};
         }
         summary.session_count = sessions.count();

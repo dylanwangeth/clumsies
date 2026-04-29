@@ -52,8 +52,8 @@ pub const DashboardSummary = struct {
     rejected_count: usize = 0,
     open_count: usize = 0,
     session_count: usize = 0,
-    attested_count: usize = 0,
-    review_count: usize = 0,
+    refer_count: usize = 0,
+    exception_count: usize = 0,
 };
 
 pub fn drawArena(
@@ -82,11 +82,11 @@ pub fn drawArena(
     if (show_cards) {
         children[1] = .{
             .origin = .{ .row = 0, .col = fingerprint_w + gap },
-            .surface = try drawAttestedPanel(self, ctx, card_w, height, summary),
+            .surface = try drawRptPanel(self, ctx, card_w, height, summary),
         };
         children[2] = .{
             .origin = .{ .row = 0, .col = fingerprint_w + card_w + gap * 2 },
-            .surface = try drawReviewPanel(self, ctx, card_w, height, summary),
+            .surface = try drawExceptionPanel(self, ctx, card_w, height, summary),
         };
     }
     surface.children = children;
@@ -138,7 +138,7 @@ fn drawFingerprintPanel(
     return surface;
 }
 
-fn drawAttestedPanel(
+fn drawRptPanel(
     self: anytype,
     ctx: vxfw.DrawContext,
     width: u16,
@@ -148,17 +148,19 @@ fn drawAttestedPanel(
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, theme.BORDER, theme.PANEL);
-    w.writeText(&surface, ctx, 2, 0, "Attested Turns", theme.boldOn(theme.PANEL, theme.ACCENT_SOFT));
+    w.writeText(&surface, ctx, 2, 0, "RPT", theme.boldOn(theme.PANEL, theme.ACCENT_SOFT));
 
-    const pct = if (summary.round_count == 0) 0 else @divTrunc(summary.attested_count * 100, summary.round_count);
-    const pct_txt = try std.fmt.allocPrint(ctx.arena, "{d}%", .{pct});
-    const count_txt = try std.fmt.allocPrint(ctx.arena, "{d}/{d} turns", .{ summary.attested_count, summary.round_count });
-    w.writeText(&surface, ctx, 2, 2, pct_txt, theme.boldOn(theme.PANEL, theme.ACCENT_SOFT));
-    w.writeText(&surface, ctx, 2, 4, firstLineTrimmed(count_txt, width -| 4), theme.fg(theme.MUTED));
+    const rpt_tenths = if (summary.round_count == 0)
+        0
+    else
+        @divTrunc(summary.refer_count * 10, summary.round_count);
+    const value_txt = try std.fmt.allocPrint(ctx.arena, "{d}.{d}", .{ rpt_tenths / 10, rpt_tenths % 10 });
+    drawMetricValue(&surface, ctx, 2, 2, width -| 4, value_txt, theme.ACCENT_SOFT);
+    w.writeRightText(&surface, ctx, height -| 1, "refs / turn", theme.fg(theme.MUTED));
     return surface;
 }
 
-fn drawReviewPanel(
+fn drawExceptionPanel(
     self: anytype,
     ctx: vxfw.DrawContext,
     width: u16,
@@ -168,17 +170,30 @@ fn drawReviewPanel(
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, theme.BORDER, theme.PANEL);
-    const color = if (summary.review_count > 0) theme.WARN else theme.MUTED;
-    w.writeText(&surface, ctx, 2, 0, "Review Queue", theme.boldOn(theme.PANEL, color));
+    const color = if (summary.exception_count > 0) theme.WARN else theme.MUTED;
+    w.writeText(&surface, ctx, 2, 0, "Exception", theme.boldOn(theme.PANEL, color));
 
-    const value_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{summary.review_count});
-    const hint = if (summary.review_count > 0) "marked in rounds" else "no pending review";
-    w.writeText(&surface, ctx, 2, 2, value_txt, theme.boldOn(theme.PANEL, color));
-    w.writeText(&surface, ctx, 2, 4, firstLineTrimmed(hint, width -| 4), theme.fg(theme.MUTED));
+    const pct = if (summary.round_count == 0) 0 else @divTrunc(summary.exception_count * 100, summary.round_count);
+    const value_txt = try std.fmt.allocPrint(ctx.arena, "{d}%", .{pct});
+    drawMetricValue(&surface, ctx, 2, 2, width -| 4, value_txt, color);
+    w.writeRightText(&surface, ctx, height -| 1, "exception turns", theme.fg(theme.MUTED));
     return surface;
 }
 
-pub fn isReviewQueueRound(round: attestation_reader.RoundEvent) bool {
+fn drawMetricValue(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    col: u16,
+    row: u16,
+    width: u16,
+    value: []const u8,
+    color: vaxis.Color,
+) void {
+    const text = firstLineTrimmed(value, width);
+    w.writeText(surface, ctx, col, row, text, theme.boldOn(theme.PANEL, color));
+}
+
+pub fn isExceptionRound(round: attestation_reader.RoundEvent) bool {
     if (round.missing_user_prompt) return true;
     if (round.reject_count > 0) return true;
     return round.load_count > 0 and round.refer_count == 0;
@@ -616,9 +631,9 @@ fn syncRoundWidgets(
         const is_sel = idx == self.analysis_input_cursor;
         const row_bg = if (is_sel) theme.PANEL_ALT else theme.PANEL;
         const time_txt = try formatHm(ctx.arena, round.timestamp);
-        const review = isReviewQueueRound(round);
-        const left = if (review)
-            try std.fmt.allocPrint(ctx.arena, "{s}  REVIEW", .{round.session_id})
+        const exception = isExceptionRound(round);
+        const left = if (exception)
+            try std.fmt.allocPrint(ctx.arena, "{s}  EXC", .{round.session_id})
         else
             round.session_id;
         const head = try flexBetween(ctx, left, time_txt, width -| 3);
@@ -627,9 +642,9 @@ fn syncRoundWidgets(
         self.dashboard_round_rows[out] = .{
             .text = try padLine(ctx, firstLineTrimmed(head_line, width), width),
             .style = if (is_sel)
-                theme.boldOn(row_bg, if (review) theme.WARN else theme.ACCENT_SOFT)
+                theme.boldOn(row_bg, if (exception) theme.WARN else theme.ACCENT_SOFT)
             else
-                .{ .fg = if (review) theme.WARN else theme.MUTED, .bg = row_bg },
+                .{ .fg = if (exception) theme.WARN else theme.MUTED, .bg = row_bg },
             .softwrap = false,
         };
         self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
