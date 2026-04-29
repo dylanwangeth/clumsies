@@ -11,6 +11,20 @@ const json_mcp_registry = @import("primitives/json_mcp_registry.zig");
 pub const RemoveSummary = struct {
     removed_count: usize,
     blocked_count: usize,
+    blocked_resources: []const BlockedResource,
+
+    pub fn deinit(self: *RemoveSummary, allocator: std.mem.Allocator) void {
+        for (self.blocked_resources) |blocked| {
+            allocator.free(blocked.path);
+            allocator.free(blocked.reason);
+        }
+        allocator.free(self.blocked_resources);
+    }
+};
+
+pub const BlockedResource = struct {
+    path: []const u8,
+    reason: []const u8,
 };
 
 pub fn removeInstall(
@@ -34,16 +48,33 @@ pub fn removeInstall(
 
     var removed_count: usize = 0;
     var blocked_count: usize = 0;
+    var blocked_resources: std.ArrayList(BlockedResource) = .empty;
+    errdefer {
+        for (blocked_resources.items) |blocked| {
+            allocator.free(blocked.path);
+            allocator.free(blocked.reason);
+        }
+        blocked_resources.deinit(allocator);
+    }
 
-    for (manifest.managed_resources, 0..) |resource, idx| {
+    const active_total = countActiveResources(manifest.managed_resources);
+    var active_idx: usize = 0;
+    for (manifest.managed_resources) |resource| {
         if (!resource.active) {
             try next_resources.append(allocator, resource);
             continue;
         }
+        active_idx += 1;
 
         const absolute_path = resolveManagedAbsolutePath(allocator, manifest.target_root, resource) catch |err| switch (err) {
             error.InvalidManagedPath, error.ManagedPathEscapesTargetRoot => {
                 blocked_count += 1;
+                const message = switch (err) {
+                    error.InvalidManagedPath => "Managed path is invalid and was not removed",
+                    error.ManagedPathEscapesTargetRoot => "Managed path escaped target root and was not removed",
+                    else => unreachable,
+                };
+                try recordBlockedResource(allocator, &blocked_resources, resource.relative_path, message);
                 try next_resources.append(allocator, resource);
                 try store.appendWalEvent(allocator, .{
                     .event_type = "step_blocked",
@@ -55,18 +86,14 @@ pub fn removeInstall(
                     .resource_id = resource.resource_id,
                     .target = resource.relative_path,
                     .status = "blocked",
-                    .message = switch (err) {
-                        error.InvalidManagedPath => "Managed path is invalid and was not removed",
-                        error.ManagedPathEscapesTargetRoot => "Managed path escaped target root and was not removed",
-                        else => unreachable,
-                    },
+                    .message = message,
                 });
                 continue;
             },
             else => return err,
         };
         defer allocator.free(absolute_path);
-        try stdout.print("[{d}/{d}] remove {s}\n", .{ idx + 1, manifest.managed_resources.len, absolute_path });
+        try stdout.print("[{d}/{d}] remove {s}\n", .{ active_idx, active_total, absolute_path });
         try stdout.flush();
 
         const content = try readFileIfExists(allocator, absolute_path);
@@ -109,6 +136,7 @@ pub fn removeInstall(
             switch (remove_result) {
                 .conflict => |message| {
                     blocked_count += 1;
+                    try recordBlockedResource(allocator, &blocked_resources, absolute_path, message);
                     try next_resources.append(allocator, resource);
                     try store.appendWalEvent(allocator, .{
                         .event_type = "step_blocked",
@@ -224,6 +252,7 @@ pub fn removeInstall(
             switch (remove_result) {
                 .conflict => |message| {
                     blocked_count += 1;
+                    try recordBlockedResource(allocator, &blocked_resources, absolute_path, message);
                     try next_resources.append(allocator, resource);
                     try store.appendWalEvent(allocator, .{
                         .event_type = "step_blocked",
@@ -331,6 +360,7 @@ pub fn removeInstall(
             switch (remove_result) {
                 .conflict => |message| {
                     blocked_count += 1;
+                    try recordBlockedResource(allocator, &blocked_resources, absolute_path, message);
                     try next_resources.append(allocator, resource);
                     try store.appendWalEvent(allocator, .{
                         .event_type = "step_blocked",
@@ -433,6 +463,12 @@ pub fn removeInstall(
 
         if (!std.mem.eql(u8, current_fingerprint, resource.fingerprint)) {
             blocked_count += 1;
+            try recordBlockedResource(
+                allocator,
+                &blocked_resources,
+                absolute_path,
+                "Managed file drifted and was not removed",
+            );
             try next_resources.append(allocator, resource);
             try store.appendWalEvent(allocator, .{
                 .event_type = "step_blocked",
@@ -506,7 +542,33 @@ pub fn removeInstall(
     return .{
         .removed_count = removed_count,
         .blocked_count = blocked_count,
+        .blocked_resources = try blocked_resources.toOwnedSlice(allocator),
     };
+}
+
+fn countActiveResources(resources: []const model.ManagedResource) usize {
+    var count: usize = 0;
+    for (resources) |resource| {
+        if (resource.active) count += 1;
+    }
+    return count;
+}
+
+fn recordBlockedResource(
+    allocator: std.mem.Allocator,
+    blocked_resources: *std.ArrayList(BlockedResource),
+    path: []const u8,
+    reason: []const u8,
+) !void {
+    const owned_path = try allocator.dupe(u8, path);
+    errdefer allocator.free(owned_path);
+    const owned_reason = try allocator.dupe(u8, reason);
+    errdefer allocator.free(owned_reason);
+
+    try blocked_resources.append(allocator, .{
+        .path = owned_path,
+        .reason = owned_reason,
+    });
 }
 
 fn readFileIfExists(allocator: std.mem.Allocator, absolute_path: []const u8) !?[]u8 {

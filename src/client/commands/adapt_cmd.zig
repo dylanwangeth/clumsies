@@ -320,16 +320,45 @@ fn runRemove(
         }
     }
 
-    const summary = try adapter.remove.removeInstall(stdout, allocator, &loaded_opt.?);
-    try stdout.print(
-        "{s}{s}{s}{s} adapter removed.{s} Removed {d} file(s)",
-        .{ P, Color.bold, Color.green, pkg.display_name, Color.reset, summary.removed_count },
-    );
+    var summary = try adapter.remove.removeInstall(stdout, allocator, &loaded_opt.?);
+    defer summary.deinit(allocator);
     if (summary.blocked_count > 0) {
-        try stdout.print(", left {d} in place because they changed after installation.\n", .{summary.blocked_count});
+        try stdout.print(
+            "{s}{s}{s}{s} adapter remove incomplete.{s} Removed {d} file(s), kept {d} changed file(s).\n\n",
+            .{ P, Color.bold, Color.orange, pkg.display_name, Color.reset, summary.removed_count, summary.blocked_count },
+        );
+        try printRemoveBlockedResources(stdout, &summary);
     } else {
-        try stdout.writeAll(".\n");
+        try stdout.print(
+            "{s}{s}{s}{s} adapter removed.{s} Removed {d} file(s).\n",
+            .{ P, Color.bold, Color.green, pkg.display_name, Color.reset, summary.removed_count },
+        );
     }
+}
+
+fn printRemoveBlockedResources(stdout: *std.Io.Writer, summary: *const adapter.remove.RemoveSummary) !void {
+    try stdout.print(
+        "{s}{s}{s}Action needed{s}\n",
+        .{ P, Color.bold, Color.orange, Color.reset },
+    );
+    try adapter_cli.printDetailLine(
+        stdout,
+        "{d} managed file(s) no longer match the install manifest",
+        .{summary.blocked_count},
+    );
+    try adapter_cli.printDetailLine(
+        stdout,
+        "Review these files before reinstalling the adapter",
+        .{},
+    );
+    for (summary.blocked_resources) |blocked| {
+        try adapter_cli.printFileAction(stdout, "keep", blocked.path);
+        try stdout.print("{s}         {s}{s}{s}\n", .{ P, Color.dim, blocked.reason, Color.reset });
+    }
+    try stdout.print(
+        "{s}  {s}Next{s}   Keep the local edits, or remove the files manually before reinstalling.\n",
+        .{ P, Color.bold, Color.reset },
+    );
 }
 
 // ── List ─────────────────────────────────────────────────────────────────────
