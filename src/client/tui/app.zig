@@ -1295,7 +1295,7 @@ pub const Dashboard = struct {
         const scoped_attestation = self.scopedAttestationData();
         const rounds: []const attestation_reader.RoundEvent = if (scoped_attestation) |st| st.rounds else &.{};
 
-        const arena_h: u16 = 4;
+        const arena_h: u16 = dashboard_panel.ARENA_HEIGHT;
         const body_h: u16 = size.height -| arena_h;
         const preferred_rounds_w: u16 = @intCast(@divTrunc(@as(u32, size.width) * 38, 100));
         const rounds_w: u16 = @min(size.width, @max(@as(u16, 64), @min(@as(u16, 96), preferred_rounds_w)));
@@ -1320,6 +1320,8 @@ pub const Dashboard = struct {
             arena_h,
             scope.label,
             summary,
+            rounds,
+            self.analysis_input_cursor,
         );
         const rounds_surface = try dashboard_panel.drawRounds(
             self,
@@ -2037,6 +2039,8 @@ pub const Dashboard = struct {
             if (round.refer_count > 0) summary.referred_count += 1;
             if (round.reject_count > 0) summary.rejected_count += 1;
             if (round.submit_count == 0 and round.reject_count == 0) summary.open_count += 1;
+            if (round.refer_count > 0) summary.attested_count += 1;
+            if (dashboard_panel.isReviewQueueRound(round)) summary.review_count += 1;
             sessions.put(arena, round.session_id, {}) catch {};
         }
         summary.session_count = sessions.count();
