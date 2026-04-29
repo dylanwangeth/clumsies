@@ -41,8 +41,9 @@ if session_id:
     parts.append(
         "Clumsies setup required for this Codex session. "
         f"Use session_id {session_id}. "
-        "Your first clumsies MCP call must be memory.setup with that session_id, "
-        "then continue with memory.discover/load/refer/submit."
+        "For this host session, call memory.setup with that session_id once "
+        "before any other clumsies MCP tool. After setup succeeds, reuse the "
+        "bound session and continue with memory.discover/load/refer/submit."
     )
 print(json.dumps({
     "hookSpecificOutput": {
