@@ -263,10 +263,11 @@ pub const Dashboard = struct {
     drafts_create_context_paths: []const []const u8 = &.{},
     drafts_total: usize = 0,
     drafts_ready: usize = 0,
+    drafts_cache_ws_id: ?[]const u8 = null,
     /// Tracks whether refreshDraftsCache has ever run against a
     /// resolved workspace. The cache is seeded once current_user
-    /// appears on the tick loop so `*` markers and the footer
-    /// counter populate without a user-triggered draft op.
+    /// appears on the tick loop, then refreshed when the selected
+    /// workspace changes.
     drafts_cache_seeded: bool = false,
     pending_discard_target: ?DraftTarget = null,
     /// Dup'd path owned by this struct for the pending discard so
@@ -556,12 +557,11 @@ pub const Dashboard = struct {
                                 const ws_count = self.accountWorkspaceCount();
                                 if (ws_count == 0) return;
                                 const sel = @min(self.settings_content_sel, ws_count - 1);
-                                self.ws_sel = sel;
+                                self.selectWorkspaceIndex(sel);
                                 self.show_settings = false;
                                 self.settings_focus = .sidebar;
                                 self.selected_module = .workspace;
                                 self.ws_focus = .list;
-                                self.ws_list_sel = 0;
                                 ctx.consumeAndRedraw();
                                 return;
                             }
@@ -1020,6 +1020,7 @@ pub const Dashboard = struct {
     // Workspace: top workspace bar + bottom master-detail (list | content).
     // Tab cycles focus: workspace bar -> list -> content -> bar.
     fn drawWorkspaceStatus(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        self.ensureDraftsCacheForActiveWorkspace();
         const wss = self.getWorkspaces();
         const size = ctx.max.size();
         const inner_w = size.width -| 2;
@@ -1058,6 +1059,35 @@ pub const Dashboard = struct {
         if (user.workspaces.len == 0) return null;
         const idx = @min(self.ws_sel, user.workspaces.len - 1);
         return user.workspaces[idx].ws_id;
+    }
+
+    pub fn selectWorkspaceIndex(self: *Dashboard, idx: usize) void {
+        var selected_ws_id: ?[]const u8 = null;
+        self.api_state.mutex.lock();
+        if (self.api_state.current_user) |user| {
+            if (user.workspaces.len > 0) {
+                const next = @min(idx, user.workspaces.len - 1);
+                self.ws_sel = next;
+                selected_ws_id = user.workspaces[next].ws_id;
+            } else {
+                self.ws_sel = 0;
+            }
+        } else {
+            self.ws_sel = 0;
+        }
+        self.api_state.mutex.unlock();
+
+        self.ws_list_sel = 0;
+        self.ws_show_diff = false;
+        self.resetWorkspaceTrees();
+        self.ws_list_scroll_bars.scroll_view.cursor = 0;
+        self.ws_list_scroll_bars.scroll_view.scroll.top = 0;
+        self.ws_list_scroll_bars.scroll_view.scroll.vertical_offset = 0;
+        self.ws_list_scroll_bars.scroll_view.scroll.left = 0;
+        self.ensureDraftsCacheForActiveWorkspace();
+        if (selected_ws_id) |ws_id| {
+            workspace_panel.requestWorkspaceDetail(self, ws_id);
+        }
     }
 
     pub fn resetWorkspaceTrees(self: *Dashboard) void {
@@ -1231,7 +1261,8 @@ pub const Dashboard = struct {
 
     // Workspace content pane: shows selected item's content
     fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const live_ws = if (self.activeWsId()) |ws_id|
+        const active_ws_id = self.activeWsId();
+        const live_ws = if (active_ws_id) |ws_id|
             api.state.wsDetail(self.api_state, ws_id)
         else
             null;
@@ -1252,15 +1283,19 @@ pub const Dashboard = struct {
         // selection: server-side files contribute their path via
         // context_sel, virtual rows contribute theirs via the local
         // drafts_create_context_paths side-table.
-        const context_sel_path: ?[]const u8 = if (live_ws) |ws_d| blk: {
+        const context_sel_path: ?[]const u8 = blk: {
             if (dir_sel != null) break :blk null;
-            if (context_sel) |idx| break :blk ws_d.context_files[idx].path;
             const leaf = self.currentWsTree().leafIndexAt(self.ws_list_sel) orelse break :blk null;
-            if (leaf < ws_d.context_files.len) break :blk ws_d.context_files[leaf].path;
-            const k = leaf - ws_d.context_files.len;
+            const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
+            if (live_ws) |ws_d| {
+                if (context_sel) |idx| break :blk ws_d.context_files[idx].path;
+                if (leaf < ws_d.context_files.len) break :blk ws_d.context_files[leaf].path;
+            }
+            if (leaf < context_count) break :blk null;
+            const k = leaf - context_count;
             if (k >= self.drafts_create_context_paths.len) break :blk null;
             break :blk self.drafts_create_context_paths[k];
-        } else null;
+        };
         return workspace_panel.drawDetail(self, ctx, .{
             .live_ws = live_ws,
             .dir_sel = dir_sel,
@@ -2201,10 +2236,19 @@ pub const Dashboard = struct {
         };
     }
 
-    /// Reload `drafts/index.json` into the per-category lookup maps
-    /// and recompute totals. Called once at init and again after every
-    /// edit op (`e`, `D`, `m`). No-op when no workspace is active —
-    /// draft features just stay silent rather than surface an error.
+    fn ensureDraftsCacheForActiveWorkspace(self: *Dashboard) void {
+        const ws_id = self.activeWsId() orelse return;
+        if (self.drafts_cache_ws_id) |cached| {
+            if (std.mem.eql(u8, cached, ws_id)) return;
+        }
+        self.refreshDraftsCache();
+    }
+
+    /// Reload the active workspace's `drafts/index.json` into the
+    /// per-category lookup maps and recompute totals. Called when the
+    /// selected workspace changes and after draft edit ops (`e`, `D`,
+    /// `m`). No-op when no workspace is active — draft features just
+    /// stay silent rather than surface an error.
     pub fn refreshDraftsCache(self: *Dashboard) void {
         self.drafts_by_rule_path = .{};
         self.drafts_by_context_path = .{};
@@ -2224,11 +2268,13 @@ pub const Dashboard = struct {
         self.drafts_create_context_paths = &.{};
         self.drafts_total = 0;
         self.drafts_ready = 0;
+        self.drafts_cache_ws_id = null;
         const ws_id = self.activeWsId() orelse return;
         self.drafts_cache_seeded = true;
         _ = self.drafts_arena.reset(.retain_capacity);
         const arena = self.drafts_arena.allocator();
         const api_alloc = self.api_state.allocator();
+        self.drafts_cache_ws_id = api_alloc.dupe(u8, ws_id) catch ws_id;
 
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return;
         var index = drafts_mod.loadIndex(arena, ws_dir) catch return;
@@ -2312,8 +2358,9 @@ pub const Dashboard = struct {
 
     /// Derive the draft target from the currently focused module and
     /// its selection. Returns null when the active module doesn't have
-    /// an editable selection (e.g. no workspace bound, a directory row
-    /// is highlighted, or the workspace detail hasn't loaded).
+    /// an editable selection (e.g. no workspace bound or a directory
+    /// row is highlighted). Workspace context create-draft rows remain
+    /// editable even before hub detail has loaded.
     pub fn selectedDraftTarget(self: *Dashboard) ?DraftTarget {
         const ws_id = self.activeWsId() orelse return null;
         switch (self.selected_module) {
@@ -2341,23 +2388,25 @@ pub const Dashboard = struct {
                 };
             },
             .workspace => {
-                const live = api.state.wsDetail(self.api_state, ws_id) orelse return null;
+                const live = api.state.wsDetail(self.api_state, ws_id);
                 const ws_tree = self.currentWsTree();
                 if (ws_tree.dirPathAt(self.ws_list_sel) != null) return null;
                 const leaf = ws_tree.leafIndexAt(self.ws_list_sel) orelse return null;
                 switch (self.ws_tab) {
                     .context => {
-                        if (leaf < live.context_files.len) {
-                            const f = live.context_files[leaf];
+                        const context_count = if (live) |ws_d| ws_d.context_files.len else 0;
+                        if (live) |ws_d| if (leaf < ws_d.context_files.len) {
+                            const f = ws_d.context_files[leaf];
                             return .{
                                 .ws_id = ws_id,
                                 .category = .context,
                                 .path = f.path,
                                 .context_id = f.context_id,
                             };
-                        }
+                        };
+                        if (leaf < context_count) return null;
                         // Virtual row: create-op context draft.
-                        const k = leaf - live.context_files.len;
+                        const k = leaf - context_count;
                         if (k >= self.drafts_create_context_paths.len) return null;
                         return .{
                             .ws_id = ws_id,
@@ -2366,8 +2415,9 @@ pub const Dashboard = struct {
                         };
                     },
                     .rules => {
-                        if (leaf >= live.ws_rules.len) return null;
-                        const wp = live.ws_rules[leaf];
+                        const live_ws = live orelse return null;
+                        if (leaf >= live_ws.ws_rules.len) return null;
+                        const wp = live_ws.ws_rules[leaf];
                         const path = if (wp.path.len > 0) wp.path else blk: {
                             for (self.getRules()) |lp| {
                                 if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break :blk lp.path;
