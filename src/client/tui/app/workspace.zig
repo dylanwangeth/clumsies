@@ -194,12 +194,12 @@ pub fn drawDetail(
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, content_border, theme.PANEL);
 
-    if (args.live_ws == null) {
+    const has_local_selection = args.dir_sel != null or args.context_sel_path != null or args.rule_sel_path != null;
+    if (args.live_ws == null and !has_local_selection) {
         w.writeText(&surface, ctx, 2, 0, "Content", theme.boldOn(theme.PANEL, theme.TEXT));
         w.writeText(&surface, ctx, 2, 2, "No workspace data loaded.", theme.fg(theme.MUTED));
         return surface;
     }
-    const ws_d = args.live_ws.?;
 
     const title: []const u8 = switch (self.ws_tab) {
         .context => if (args.dir_sel != null) "Directory" else if (args.context_sel_id) |id| id else if (args.context_sel_path != null) "(new)" else "No context selected",
@@ -212,9 +212,11 @@ pub fn drawDetail(
     const meta_min_col: u16 = 2 + title_w + 2;
     if (self.ws_show_diff) {
         w.writeText(&surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
-    } else if (args.dir_sel == null) {
+    } else if (args.dir_sel == null) if (args.live_ws) |ws_d| {
         try writeWsMetaOnHeader(&surface, ctx, meta_min_col, self, ws_d, args);
-    }
+    } else if (args.context_sel_path != null or args.rule_sel_path != null) {
+        _ = w.writeHeaderRightIfFits(&surface, ctx, 0, meta_min_col, "(new)", theme.fg(theme.ACCENT));
+    };
 
     const kv_row: u16 = 2;
     const max_row = ctx.max.height.? -| 1;
@@ -224,7 +226,7 @@ pub fn drawDetail(
             if (args.dir_sel != null) {
                 try drawDirSelected(&surface, ctx, kv_row, max_row);
             } else if (args.context_sel_path) |sel_path| {
-                try drawContextFileDetail(self, &surface, ctx, kv_row, max_row, ws_d, sel_path);
+                try drawContextFileDetail(self, &surface, ctx, kv_row, max_row, args.live_ws, sel_path);
             } else {
                 w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
             }
@@ -301,15 +303,16 @@ fn drawContextFileDetail(
     ctx: vxfw.DrawContext,
     start_row: u16,
     max_row: u16,
-    ws_d: api.model.WsDetail,
+    ws_d: ?api.model.WsDetail,
     path: []const u8,
 ) !void {
     if (self.ws_show_diff) {
         w.writeText(surface, ctx, 2, start_row, "No diff available", theme.fg(theme.MUTED));
         return;
     }
+    const ws_id = if (ws_d) |live| live.ws_id else self.activeWsId() orelse return;
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
-        .context = .{ .ws_id = ws_d.ws_id, .path = path },
+        .context = .{ .ws_id = ws_id, .path = path },
     });
 }
 
@@ -418,7 +421,6 @@ fn draftStatusForRow(
     live_ws: ?api.model.WsDetail,
     lib_rules: []const data.RuleEntry,
 ) ?drafts_mod.DraftStatus {
-    const ws_d = live_ws orelse return null;
     const leaf = ws_tree.leafIndexAt(row) orelse return null;
     const MarkerInfo = struct {
         category: drafts_mod.DraftCategory,
@@ -426,13 +428,15 @@ fn draftStatusForRow(
     };
     const marker_info: ?MarkerInfo = switch (self.ws_tab) {
         .context => inner: {
-            if (leaf < ws_d.context_files.len) {
+            const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
+            if (live_ws) |ws_d| if (leaf < ws_d.context_files.len) {
                 break :inner MarkerInfo{
                     .category = .context,
                     .path = ws_d.context_files[leaf].path,
                 };
-            }
-            const k = leaf - ws_d.context_files.len;
+            };
+            if (leaf < context_count) break :inner null;
+            const k = leaf - context_count;
             if (k >= self.drafts_create_context_paths.len) break :inner null;
             break :inner MarkerInfo{
                 .category = .context,
@@ -440,6 +444,7 @@ fn draftStatusForRow(
             };
         },
         .rules => inner: {
+            const ws_d = live_ws orelse break :inner null;
             if (leaf >= ws_d.ws_rules.len) break :inner null;
             const wp = ws_d.ws_rules[leaf];
             const rule_path = if (wp.path.len > 0)
@@ -584,48 +589,35 @@ fn handleBarFocusEvent(
 
     if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
         if (self.ws_sel + 1 < ws_count) {
-            self.ws_sel += 1;
+            self.selectWorkspaceIndex(self.ws_sel + 1);
             ctx.consumeAndRedraw();
         }
         return;
     }
     if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
         if (self.ws_sel > 0) {
-            self.ws_sel -= 1;
+            self.selectWorkspaceIndex(self.ws_sel - 1);
             ctx.consumeAndRedraw();
         }
         return;
     }
     if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
         if (self.ws_sel + cols < ws_count) {
-            self.ws_sel += cols;
+            self.selectWorkspaceIndex(self.ws_sel + cols);
             ctx.consumeAndRedraw();
         }
         return;
     }
     if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
         if (self.ws_sel >= cols) {
-            self.ws_sel -= cols;
+            self.selectWorkspaceIndex(self.ws_sel - cols);
             ctx.consumeAndRedraw();
         }
         return;
     }
     if (key.matches(vaxis.Key.enter, .{})) {
         self.ws_focus = .list;
-        self.ws_list_sel = 0;
-        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
-        self.ws_show_diff = false;
-        self.resetWorkspaceTrees();
-
-        self.api_state.mutex.lock();
-        const ws_list = if (self.api_state.current_user) |user| user.workspaces else &.{};
-        if (self.ws_sel < ws_list.len) {
-            const ws_id = ws_list[self.ws_sel].ws_id;
-            self.api_state.mutex.unlock();
-            requestWorkspaceDetail(self, ws_id);
-        } else {
-            self.api_state.mutex.unlock();
-        }
+        self.selectWorkspaceIndex(self.ws_sel);
         ctx.consumeAndRedraw();
     }
 }
@@ -770,48 +762,45 @@ pub fn syncWsRows(self: anytype) void {
     else
         null;
 
-    if (live_ws == null) {
-        self.currentWsTree().sync(self.api_state.allocator(), &.{}, &.{});
-        self.ws_list_sel = 0;
-        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
-        return;
-    }
-    const ws_d = live_ws.?;
-
     var paths_buf: [MAX_TREE_ROWS][]const u8 = undefined;
     var orig_idx: [MAX_TREE_ROWS]usize = undefined;
     var item_count: usize = 0;
 
     switch (self.ws_tab) {
         .context => {
-            item_count = @min(ws_d.context_files.len, MAX_TREE_ROWS);
-            for (0..item_count) |i| {
-                paths_buf[i] = ws_d.context_files[i].path;
-                orig_idx[i] = i;
+            const context_count = if (live_ws) |ws_d| @min(ws_d.context_files.len, MAX_TREE_ROWS) else 0;
+            item_count = context_count;
+            if (live_ws) |ws_d| {
+                for (0..item_count) |i| {
+                    paths_buf[i] = ws_d.context_files[i].path;
+                    orig_idx[i] = i;
+                }
             }
             // Append local create-op context drafts as virtual rows.
-            // Leaf index is offset by ws_d.context_files.len so
+            // Leaf index is offset by the live context count so
             // selectedDraftTarget can distinguish server rows from
             // create-only drafts.
             const create_paths = self.drafts_create_context_paths;
             var k: usize = 0;
             while (k < create_paths.len and item_count < MAX_TREE_ROWS) : (k += 1) {
                 paths_buf[item_count] = create_paths[k];
-                orig_idx[item_count] = ws_d.context_files.len + k;
+                orig_idx[item_count] = context_count + k;
                 item_count += 1;
             }
         },
         .rules => {
-            const lib_rules = self.getRules();
-            item_count = @min(ws_d.ws_rules.len, MAX_TREE_ROWS);
-            for (0..item_count) |i| {
-                const wp = ws_d.ws_rules[i];
-                paths_buf[i] = if (wp.path.len > 0)
-                    wp.path
-                else for (lib_rules) |lp| {
-                    if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-                } else wp.rule_id;
-                orig_idx[i] = i;
+            if (live_ws) |ws_d| {
+                const lib_rules = self.getRules();
+                item_count = @min(ws_d.ws_rules.len, MAX_TREE_ROWS);
+                for (0..item_count) |i| {
+                    const wp = ws_d.ws_rules[i];
+                    paths_buf[i] = if (wp.path.len > 0)
+                        wp.path
+                    else for (lib_rules) |lp| {
+                        if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
+                    } else wp.rule_id;
+                    orig_idx[i] = i;
+                }
             }
             // Workspace does not own rule creation, so no virtual
             // rows are appended here. Library is the place to create
