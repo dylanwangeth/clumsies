@@ -132,7 +132,7 @@ pub fn handleCall(
     if (session.session_id == null) {
         return try tool_result.buildErrorResult(
             allocator,
-            "memory.setup with session_id is required before other clumsies tools",
+            "memory.setup with the exact host session_id is required before other clumsies tools; do not invent a session_id",
         );
     }
     if (std.mem.eql(u8, name, tool_names.discover)) {
