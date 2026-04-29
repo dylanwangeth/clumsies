@@ -9,7 +9,7 @@ const Modal = w.Modal;
 pub const ARENA_HEIGHT: u16 = 7;
 const ROUND_ROW_COUNT = 5;
 const ROUND_CURSOR_HEIGHT = ROUND_ROW_COUNT - 1;
-const BAR_HEIGHT: u16 = 4;
+const BAR_HEIGHT: u16 = 5;
 const BAR_WIDTH: u16 = 2;
 const BAR_GAP: u16 = 1;
 const TRACE_GUIDE_PREFIX = "         \xe2\x94\x82  ";
@@ -134,7 +134,6 @@ fn drawFingerprintPanel(
     }
 
     drawProtocolBars(&surface, 3, 1, width -| 6, rounds, selected_index);
-    w.writeText(&surface, ctx, 3, 5, firstLineTrimmed("USER SETUP DISC LOAD REFER REJECT AGENT", width -| 6), theme.fg(theme.DIM));
     return surface;
 }
 
@@ -233,8 +232,7 @@ fn drawProtocolBars(
     while (idx < end) : (idx += 1) {
         const col = start_col + @as(u16, @intCast((idx - start) * stride));
         if (col + BAR_WIDTH > surface.size.width -| 1) break;
-        const is_selected = idx == selected;
-        drawProtocolBar(surface, col, start_row, protocolCounts(rounds[idx]), is_selected);
+        drawProtocolBar(surface, col, start_row, protocolCounts(rounds[idx]));
     }
 }
 
@@ -243,7 +241,6 @@ fn drawProtocolBar(
     col: u16,
     row: u16,
     counts: ProtocolCounts,
-    is_selected: bool,
 ) void {
     const segments = [_]ProtocolSegment{
         .{ .count = counts.user, .color = TRACE_USER },
@@ -267,15 +264,6 @@ fn drawProtocolBar(
             .char = .{ .grapheme = "\xe2\x96\x88", .width = 1 },
             .style = .{ .fg = color, .bg = theme.PANEL },
         });
-    }
-    if (is_selected) {
-        var offset: u16 = 0;
-        while (offset < BAR_WIDTH) : (offset += 1) {
-            surface.writeCell(col + offset, row + BAR_HEIGHT, .{
-                .char = .{ .grapheme = "\xe2\x96\x94", .width = 1 },
-                .style = .{ .fg = theme.ACCENT, .bg = theme.PANEL },
-            });
-        }
     }
 }
 
