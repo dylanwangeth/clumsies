@@ -155,7 +155,7 @@ fn drawRptPanel(
     else
         @divTrunc(summary.refer_count * 10, summary.round_count);
     const value_txt = try std.fmt.allocPrint(ctx.arena, "{d}.{d}", .{ rpt_tenths / 10, rpt_tenths % 10 });
-    drawMetricValue(&surface, ctx, 2, 2, width -| 4, value_txt, theme.ACCENT_SOFT);
+    drawMetricValue(&surface, ctx, value_txt, theme.ACCENT_SOFT);
     w.writeRightText(&surface, ctx, height -| 1, "refs / turn", theme.fg(theme.MUTED));
     return surface;
 }
@@ -175,7 +175,7 @@ fn drawExceptionPanel(
 
     const pct = if (summary.round_count == 0) 0 else @divTrunc(summary.exception_count * 100, summary.round_count);
     const value_txt = try std.fmt.allocPrint(ctx.arena, "{d}%", .{pct});
-    drawMetricValue(&surface, ctx, 2, 2, width -| 4, value_txt, color);
+    drawMetricValue(&surface, ctx, value_txt, color);
     w.writeRightText(&surface, ctx, height -| 1, "exception turns", theme.fg(theme.MUTED));
     return surface;
 }
@@ -183,13 +183,15 @@ fn drawExceptionPanel(
 fn drawMetricValue(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
-    col: u16,
-    row: u16,
-    width: u16,
     value: []const u8,
     color: vaxis.Color,
 ) void {
-    const text = firstLineTrimmed(value, width);
+    const inner_width = surface.size.width -| 2;
+    const inner_height = surface.size.height -| 2;
+    const text = firstLineTrimmed(value, inner_width);
+    const text_width: u16 = @intCast(ctx.stringWidth(text));
+    const col: u16 = 1 + (inner_width -| text_width) / 2;
+    const row: u16 = 1 + inner_height / 2;
     w.writeText(surface, ctx, col, row, text, theme.boldOn(theme.PANEL, color));
 }
 
