@@ -40,9 +40,16 @@ parts = []
 if session_id:
     parts.append(
         "Clumsies setup required for this Codex session. "
-        f"Use session_id {session_id}. "
-        "For this host session, call memory.setup with that session_id once "
-        "before any other clumsies MCP tool. After setup succeeds, reuse the "
+        f"Use exactly this session_id value: {session_id}. "
+        "During host agent startup, before calling any other clumsies MCP "
+        "tool, call "
+        f'memory.setup({{"session_id":"{session_id}"}}). '
+        "Call memory.setup only once for this host session. Do not call it "
+        "again later unless the user explicitly invokes the setup skill. "
+        "Pass that exact value as the memory.setup session_id argument. "
+        "Do not invent, shorten, replace, or default the session_id. "
+        "If this value is unavailable, do not call memory.setup; report that "
+        "the required session_id is missing. After setup succeeds, reuse the "
         "bound session and continue with memory.discover/load/refer/submit."
     )
 print(json.dumps({
