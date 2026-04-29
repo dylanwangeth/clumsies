@@ -636,8 +636,8 @@ fn handleProposeUpdate(
     }, body);
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
-        .context => .{ .context_propose_update = .{ .id = id } },
-        .rule => .{ .rule_propose_update = .{ .id = id } },
+        .context => .{ .context_propose_update = .{ .id = id, .path = m_entry.path } },
+        .rule => .{ .rule_propose_update = .{ .id = id, .path = m_entry.path } },
         .meta_prompt => return error.InvalidParams,
     };
     session.recordEvent(allocator, payload);
@@ -692,8 +692,8 @@ fn handleProposeRename(
     }, "");
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
-        .context => .{ .context_propose_rename = .{ .id = id, .new_path = new_path } },
-        .rule => .{ .rule_propose_rename = .{ .id = id, .new_path = new_path } },
+        .context => .{ .context_propose_rename = .{ .id = id, .path = m_entry.path, .new_path = new_path } },
+        .rule => .{ .rule_propose_rename = .{ .id = id, .path = m_entry.path, .new_path = new_path } },
         .meta_prompt => return error.InvalidParams,
     };
     session.recordEvent(allocator, payload);
@@ -736,8 +736,8 @@ fn handleProposeDelete(
     }, "");
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
-        .context => .{ .context_propose_delete = .{ .id = id } },
-        .rule => .{ .rule_propose_delete = .{ .id = id } },
+        .context => .{ .context_propose_delete = .{ .id = id, .path = m_entry.path } },
+        .rule => .{ .rule_propose_delete = .{ .id = id, .path = m_entry.path } },
         .meta_prompt => return error.InvalidParams,
     };
     session.recordEvent(allocator, payload);

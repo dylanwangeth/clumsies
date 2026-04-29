@@ -20,6 +20,7 @@ const TRACE_REFER = theme.rgb(0xd9905f);
 const TRACE_AGENT = theme.OK;
 const TRACE_REJECT = theme.DANGER;
 const TRACE_DISCOVER = theme.rgb(0x8fb8a5);
+const TRACE_DRAFT = theme.rgb(0xb4a36a);
 const TRACE_OTHER = theme.TEXT_SOFT;
 
 pub fn drawRoot(
@@ -205,6 +206,7 @@ const ProtocolCounts = struct {
     load: u16 = 0,
     refer: u16 = 0,
     reject: u16 = 0,
+    draft: u16 = 0,
     agent: u16 = 0,
     other: u16 = 0,
 };
@@ -249,6 +251,7 @@ fn drawProtocolBar(
         .{ .count = counts.load, .color = TRACE_LOAD },
         .{ .count = counts.refer, .color = TRACE_REFER },
         .{ .count = counts.reject, .color = TRACE_REJECT },
+        .{ .count = counts.draft, .color = TRACE_DRAFT },
         .{ .count = counts.agent, .color = TRACE_AGENT },
         .{ .count = counts.other, .color = TRACE_OTHER },
     };
@@ -274,8 +277,8 @@ fn fillProtocolSlots(slots: []vaxis.Color, segments: []const ProtocolSegment) vo
         return;
     }
 
-    var allocated: [8]usize = .{0} ** 8;
-    var remainders: [8]usize = .{0} ** 8;
+    var allocated: [9]usize = .{0} ** 9;
+    var remainders: [9]usize = .{0} ** 9;
     var assigned: usize = 0;
     for (segments, 0..) |segment, idx| {
         const weighted = @as(usize, segment.count) * slots.len;
@@ -307,7 +310,7 @@ fn fillProtocolSlots(slots: []vaxis.Color, segments: []const ProtocolSegment) vo
     while (out < slots.len) : (out += 1) slots[out] = theme.DIM;
 }
 
-fn largestRemainderIndex(segments: []const ProtocolSegment, remainders: [8]usize) usize {
+fn largestRemainderIndex(segments: []const ProtocolSegment, remainders: [9]usize) usize {
     var best: usize = 0;
     var best_value: usize = 0;
     for (segments, 0..) |segment, idx| {
@@ -339,6 +342,8 @@ fn protocolCounts(round: attestation_reader.RoundEvent) ProtocolCounts {
             counts.refer += 1;
         } else if (std.mem.eql(u8, tool.kind, "reject")) {
             counts.reject += 1;
+        } else if (isProposeTool(tool.kind)) {
+            counts.draft += 1;
         } else if (std.mem.eql(u8, tool.kind, "agent_report")) {
             counts.agent += 1;
         } else {
@@ -913,6 +918,13 @@ fn toolHeaderSubject(
         if (tool.constraint_id) |constraint_id| return constraint_id;
         return "constraint";
     }
+    if (isProposeTool(tool.kind)) {
+        if (tool.new_path) |path| return path;
+        if (tool.path) |path| return path;
+        if (tool.rule_id) |rule_id| return rule_id;
+        if (tool.context_id) |context_id| return context_id;
+        return "draft";
+    }
     if (tool.rule_id) |rule_id| {
         const rule = try resolveRulePreview(ctx, ws_id, rule_id);
         return rule.name;
@@ -1027,6 +1039,25 @@ fn appendToolMetadata(
         }
         if (tool.discover_result_names) |names| {
             try appendDiscoverMatches(self, ctx, out, width, names, is_selected);
+        }
+        return;
+    }
+
+    if (isProposeTool(tool.kind)) {
+        try appendDetailField(self, ctx, out, width, "category", proposeCategory(tool.kind), is_selected);
+        try appendDetailField(self, ctx, out, width, "operation", proposeOperation(tool.kind), is_selected);
+        if (tool.path) |path| {
+            const label = if (tool.new_path == null) "draft" else "current";
+            try appendDetailField(self, ctx, out, width, label, path, is_selected);
+        }
+        if (tool.new_path) |new_path| {
+            try appendDetailField(self, ctx, out, width, "draft", new_path, is_selected);
+        }
+        if (tool.rule_id) |rule_id| {
+            try appendDetailField(self, ctx, out, width, "rule id", rule_id, is_selected);
+        }
+        if (tool.context_id) |context_id| {
+            try appendDetailField(self, ctx, out, width, "context id", context_id, is_selected);
         }
     }
 }
@@ -1238,6 +1269,7 @@ fn briefLabel(kind: []const u8) []const u8 {
     if (std.mem.eql(u8, kind, "refer")) return "action";
     if (std.mem.eql(u8, kind, "agent_report")) return "summary";
     if (std.mem.eql(u8, kind, "reject")) return "reason";
+    if (isProposeTool(kind)) return "draft";
     return "detail";
 }
 
@@ -1262,10 +1294,17 @@ fn toolBriefText(tool: attestation_reader.RoundTool) ?[]const u8 {
         if (tool.reason) |reason| return reason;
         if (tool.constraint_name) |name| return name;
     }
+    if (isProposeTool(tool.kind)) {
+        if (tool.new_path) |path| return path;
+        if (tool.path) |path| return path;
+        if (tool.rule_id) |rule_id| return rule_id;
+        if (tool.context_id) |context_id| return context_id;
+    }
     return null;
 }
 
 fn toolVerb(kind: []const u8) []const u8 {
+    if (isProposeTool(kind)) return "DRAFT";
     if (std.mem.eql(u8, kind, "agent_report")) return "AGENT";
     if (std.mem.eql(u8, kind, "refer")) return "REFER";
     if (std.mem.eql(u8, kind, "reject")) return "REJECT";
@@ -1321,6 +1360,7 @@ fn traceVerbColor(kind: []const u8) vaxis.Color {
     if (std.mem.eql(u8, kind, "agent_report")) return TRACE_AGENT;
     if (std.mem.eql(u8, kind, "reject")) return TRACE_REJECT;
     if (std.mem.eql(u8, kind, "discover") or std.mem.eql(u8, kind, "search")) return TRACE_DISCOVER;
+    if (isProposeTool(kind)) return TRACE_DRAFT;
     return theme.TEXT_SOFT;
 }
 
@@ -1329,6 +1369,25 @@ fn toolExpandedText(tool: attestation_reader.RoundTool) ?[]const u8 {
     if (std.mem.eql(u8, tool.kind, "reject")) return tool.reason;
     if (std.mem.eql(u8, tool.kind, "refer")) return tool.reason;
     return null;
+}
+
+fn isProposeTool(kind: []const u8) bool {
+    return std.mem.startsWith(u8, kind, "context_propose_") or
+        std.mem.startsWith(u8, kind, "rule_propose_");
+}
+
+fn proposeCategory(kind: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, kind, "context_propose_")) return "context";
+    if (std.mem.startsWith(u8, kind, "rule_propose_")) return "rule";
+    return "draft";
+}
+
+fn proposeOperation(kind: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, kind, "_create")) return "create";
+    if (std.mem.endsWith(u8, kind, "_update")) return "update";
+    if (std.mem.endsWith(u8, kind, "_rename")) return "rename";
+    if (std.mem.endsWith(u8, kind, "_delete")) return "delete";
+    return "propose";
 }
 
 fn formatHm(arena: std.mem.Allocator, ts_ms: i64) std.mem.Allocator.Error![]const u8 {
@@ -1341,6 +1400,29 @@ fn formatHm(arena: std.mem.Allocator, ts_ms: i64) std.mem.Allocator.Error![]cons
         @as(u32, @intCast(hh)),
         @as(u32, @intCast(mm)),
     });
+}
+
+test "protocolCounts groups rule and context proposals as draft tools" {
+    const round = attestation_reader.RoundEvent{
+        .timestamp = 1000,
+        .content = "ask",
+        .tools = &.{
+            .{ .kind = "context_propose_create", .timestamp = 1001 },
+            .{ .kind = "context_propose_update", .timestamp = 1002 },
+            .{ .kind = "context_propose_rename", .timestamp = 1003 },
+            .{ .kind = "context_propose_delete", .timestamp = 1004 },
+            .{ .kind = "rule_propose_create", .timestamp = 1005 },
+            .{ .kind = "rule_propose_update", .timestamp = 1006 },
+            .{ .kind = "rule_propose_rename", .timestamp = 1007 },
+            .{ .kind = "rule_propose_delete", .timestamp = 1008 },
+        },
+    };
+
+    const counts = protocolCounts(round);
+
+    try std.testing.expectEqual(@as(u16, 1), counts.user);
+    try std.testing.expectEqual(@as(u16, 8), counts.draft);
+    try std.testing.expectEqual(@as(u16, 0), counts.other);
 }
 
 fn firstLineTrimmed(text: []const u8, max_cells: u16) []const u8 {

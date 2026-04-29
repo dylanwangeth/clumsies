@@ -88,15 +88,18 @@ pub const AttestationEvent = struct {
 
     pub const ProposeUpdatePayload = struct {
         id: []const u8,
+        path: []const u8,
     };
 
     pub const ProposeRenamePayload = struct {
         id: []const u8,
+        path: []const u8,
         new_path: []const u8,
     };
 
     pub const ProposeDeletePayload = struct {
         id: []const u8,
+        path: []const u8,
     };
 };
 
@@ -305,26 +308,32 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
         },
         .context_propose_update => |p| {
             try writeOptionalString(allocator, &buf, "context_id", p.id);
+            try writeOptionalString(allocator, &buf, "path", p.path);
         },
         .context_propose_rename => |p| {
             try writeOptionalString(allocator, &buf, "context_id", p.id);
+            try writeOptionalString(allocator, &buf, "path", p.path);
             try writeOptionalString(allocator, &buf, "new_path", p.new_path);
         },
         .context_propose_delete => |p| {
             try writeOptionalString(allocator, &buf, "context_id", p.id);
+            try writeOptionalString(allocator, &buf, "path", p.path);
         },
         .rule_propose_create => |p| {
             try writeOptionalString(allocator, &buf, "path", p.path);
         },
         .rule_propose_update => |p| {
             try writeOptionalString(allocator, &buf, "rule_id", p.id);
+            try writeOptionalString(allocator, &buf, "path", p.path);
         },
         .rule_propose_rename => |p| {
             try writeOptionalString(allocator, &buf, "rule_id", p.id);
+            try writeOptionalString(allocator, &buf, "path", p.path);
             try writeOptionalString(allocator, &buf, "new_path", p.new_path);
         },
         .rule_propose_delete => |p| {
             try writeOptionalString(allocator, &buf, "rule_id", p.id);
+            try writeOptionalString(allocator, &buf, "path", p.path);
         },
     }
 
@@ -484,4 +493,24 @@ test "serializeAttestationEvent: agent_report with summary" {
     defer testing.allocator.free(line);
     try testing.expect(std.mem.indexOf(u8, line, "\"type\":\"agent_report\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"summary\":\"Applied error-handling constraints\"") != null);
+}
+
+test "serializeAttestationEvent: propose draft includes path metadata" {
+    const event: AttestationEvent = .{
+        .ws_id = "ws-1",
+        .session_id = "sess-1",
+        .event_id = 6,
+        .ts = 301,
+        .payload = .{ .rule_propose_rename = .{
+            .id = "p-1",
+            .path = "coding/OLD.md",
+            .new_path = "coding/NEW.md",
+        } },
+    };
+    const line = try serializeAttestationEvent(testing.allocator, event);
+    defer testing.allocator.free(line);
+    try testing.expect(std.mem.indexOf(u8, line, "\"type\":\"rule_propose_rename\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"rule_id\":\"p-1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"path\":\"coding/OLD.md\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"new_path\":\"coding/NEW.md\"") != null);
 }
