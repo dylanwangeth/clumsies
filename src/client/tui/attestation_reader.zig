@@ -72,6 +72,9 @@ pub const RoundTool = struct {
     discover_result_names: ?[]const u8 = null,
     summary: ?[]const u8 = null,
     reason: ?[]const u8 = null,
+    context_id: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+    new_path: ?[]const u8 = null,
 };
 
 pub const RoundEvent = struct {
@@ -110,6 +113,9 @@ const AttestationEvent = struct {
     reason: ?[]const u8 = null,
     content: ?[]const u8 = null,
     summary: ?[]const u8 = null,
+    context_id: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+    new_path: ?[]const u8 = null,
 };
 
 const RuleConstraintTotals = std.StringHashMap(u16);
@@ -271,6 +277,9 @@ fn cloneAttestationEvent(
         .reason = null,
         .content = null,
         .summary = null,
+        .context_id = null,
+        .path = null,
+        .new_path = null,
     };
     errdefer allocator.free(out.session_id);
     errdefer allocator.free(out.type);
@@ -314,6 +323,15 @@ fn cloneAttestationEvent(
     out.summary = try dupeOptional(allocator, src.summary);
     errdefer if (out.summary) |s| allocator.free(s);
 
+    out.context_id = try dupeOptional(allocator, src.context_id);
+    errdefer if (out.context_id) |s| allocator.free(s);
+
+    out.path = try dupeOptional(allocator, src.path);
+    errdefer if (out.path) |s| allocator.free(s);
+
+    out.new_path = try dupeOptional(allocator, src.new_path);
+    errdefer if (out.new_path) |s| allocator.free(s);
+
     return out;
 }
 
@@ -337,6 +355,9 @@ fn freeAttestationEventOwned(allocator: std.mem.Allocator, ev: AttestationEvent)
     if (ev.reason) |s| allocator.free(s);
     if (ev.content) |s| allocator.free(s);
     if (ev.summary) |s| allocator.free(s);
+    if (ev.context_id) |s| allocator.free(s);
+    if (ev.path) |s| allocator.free(s);
+    if (ev.new_path) |s| allocator.free(s);
 }
 
 fn loadRuleConstraintTotals(allocator: std.mem.Allocator, ws_dir: []const u8) !RuleConstraintTotals {
@@ -755,6 +776,9 @@ fn appendRoundTool(allocator: std.mem.Allocator, builder: anytype, ev: Attestati
         .discover_result_names = ev.result_names,
         .summary = ev.summary,
         .reason = ev.reason,
+        .context_id = ev.context_id,
+        .path = ev.path,
+        .new_path = ev.new_path,
     }) catch return;
 }
 
@@ -943,4 +967,43 @@ test "buildRounds does not attach protocol tools from a different session" {
     try std.testing.expectEqual(@as(u16, 0), rounds[1].refer_count);
     try std.testing.expectEqual(@as(u16, 0), rounds[1].submit_count);
     try std.testing.expectEqual(@as(usize, 0), rounds[1].tools.len);
+}
+
+test "buildRounds exposes propose draft metadata" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const events = [_]AttestationEvent{
+        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "user_prompt", .timestamp = 1000, .content = "ask" },
+        .{
+            .ws_id = "ws-1",
+            .session_id = "s-1",
+            .type = "context_propose_rename",
+            .timestamp = 1001,
+            .context_id = "ctx-1",
+            .path = "old.md",
+            .new_path = "new.md",
+        },
+        .{
+            .ws_id = "ws-1",
+            .session_id = "s-1",
+            .type = "rule_propose_update",
+            .timestamp = 1002,
+            .rule_id = "p-1",
+            .path = "coding/RULE.md",
+        },
+    };
+
+    const rounds = buildRounds(alloc, &events);
+
+    try std.testing.expectEqual(@as(usize, 1), rounds.len);
+    try std.testing.expectEqual(@as(usize, 2), rounds[0].tools.len);
+    try std.testing.expectEqualStrings("context_propose_rename", rounds[0].tools[0].kind);
+    try std.testing.expectEqualStrings("ctx-1", rounds[0].tools[0].context_id.?);
+    try std.testing.expectEqualStrings("old.md", rounds[0].tools[0].path.?);
+    try std.testing.expectEqualStrings("new.md", rounds[0].tools[0].new_path.?);
+    try std.testing.expectEqualStrings("rule_propose_update", rounds[0].tools[1].kind);
+    try std.testing.expectEqualStrings("p-1", rounds[0].tools[1].rule_id.?);
+    try std.testing.expectEqualStrings("coding/RULE.md", rounds[0].tools[1].path.?);
 }
