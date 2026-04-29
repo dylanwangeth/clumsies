@@ -6,8 +6,12 @@ const w = @import("../widgets.zig");
 const attestation_reader = @import("../attestation_reader.zig");
 const workspace_rule = @import("../../rule.zig");
 const Modal = w.Modal;
+pub const ARENA_HEIGHT: u16 = 7;
 const ROUND_ROW_COUNT = 5;
 const ROUND_CURSOR_HEIGHT = ROUND_ROW_COUNT - 1;
+const BAR_HEIGHT: u16 = 4;
+const BAR_WIDTH: u16 = 2;
+const BAR_GAP: u16 = 1;
 const TRACE_GUIDE_PREFIX = "         \xe2\x94\x82  ";
 const TRACE_USER = theme.rgb(0xc7a0b9);
 const TRACE_SETUP = theme.rgb(0x8fa9bf);
@@ -16,6 +20,7 @@ const TRACE_REFER = theme.rgb(0xd9905f);
 const TRACE_AGENT = theme.OK;
 const TRACE_REJECT = theme.DANGER;
 const TRACE_DISCOVER = theme.rgb(0x8fb8a5);
+const TRACE_OTHER = theme.TEXT_SOFT;
 
 pub fn drawRoot(
     self: anytype,
@@ -28,7 +33,7 @@ pub fn drawRoot(
     var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
     w.fillSurface(&root, theme.CANVAS);
 
-    const arena_h: u16 = 4;
+    const arena_h: u16 = ARENA_HEIGHT;
     const preferred_rounds_w: u16 = @intCast(@divTrunc(@as(u32, size.width) * 38, 100));
     const rounds_w: u16 = @min(size.width, @max(@as(u16, 64), @min(@as(u16, 96), preferred_rounds_w)));
 
@@ -47,6 +52,8 @@ pub const DashboardSummary = struct {
     rejected_count: usize = 0,
     open_count: usize = 0,
     session_count: usize = 0,
+    attested_count: usize = 0,
+    review_count: usize = 0,
 };
 
 pub fn drawArena(
@@ -56,6 +63,44 @@ pub fn drawArena(
     height: u16,
     scope_label: []const u8,
     summary: DashboardSummary,
+    rounds: []const attestation_reader.RoundEvent,
+    selected_index: usize,
+) std.mem.Allocator.Error!vxfw.Surface {
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+    w.fillSurface(&surface, theme.CANVAS);
+
+    const card_w: u16 = 24;
+    const gap: u16 = 1;
+    const show_cards = width >= 96;
+    const fingerprint_w = if (show_cards) width -| (card_w * 2) -| (gap * 2) else width;
+
+    var children = try ctx.arena.alloc(vxfw.SubSurface, if (show_cards) 3 else 1);
+    children[0] = .{
+        .origin = .{ .row = 0, .col = 0 },
+        .surface = try drawFingerprintPanel(self, ctx, fingerprint_w, height, scope_label, rounds, selected_index),
+    };
+    if (show_cards) {
+        children[1] = .{
+            .origin = .{ .row = 0, .col = fingerprint_w + gap },
+            .surface = try drawAttestedPanel(self, ctx, card_w, height, summary),
+        };
+        children[2] = .{
+            .origin = .{ .row = 0, .col = fingerprint_w + card_w + gap * 2 },
+            .surface = try drawReviewPanel(self, ctx, card_w, height, summary),
+        };
+    }
+    surface.children = children;
+    return surface;
+}
+
+fn drawFingerprintPanel(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+    width: u16,
+    height: u16,
+    scope_label: []const u8,
+    rounds: []const attestation_reader.RoundEvent,
+    selected_index: usize,
 ) std.mem.Allocator.Error!vxfw.Surface {
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
@@ -69,30 +114,235 @@ pub fn drawArena(
             @as(f32, @floatFromInt(20 - phase)) / 10.0;
         break :blk 0.3 + half * 0.7;
     };
-    const dark_green = theme.rgb(0x2d4a1f);
-    const dot_color = theme.lerpColor(dark_green, theme.OK, breath_t);
+    const dot_color = theme.lerpColor(theme.rgb(0x2d4a1f), theme.OK, breath_t);
     w.writeText(&surface, ctx, 2, 0, "\u{25cf}", .{ .fg = dot_color, .bg = theme.PANEL });
 
     const right_hint = "w scope  Tab focus  Shift-F flush";
     const right_hint_w: u16 = @intCast(ctx.stringWidth(right_hint));
     const right_limit: u16 = width -| right_hint_w -| 2;
-    const header_col: u16 = 3;
-    const title_txt = try std.fmt.allocPrint(ctx.arena, " Session Arena  \xc2\xb7 {s}", .{scope_label});
-    if (header_col < right_limit) {
-        w.writeText(&surface, ctx, header_col, 0, firstLineTrimmed(title_txt, right_limit -| header_col), theme.boldOn(theme.PANEL, theme.TEXT));
+    const title_txt = try std.fmt.allocPrint(ctx.arena, " Protocol Fingerprint  \xc2\xb7 {s}", .{scope_label});
+    if (right_limit > 3) {
+        w.writeText(&surface, ctx, 3, 0, firstLineTrimmed(title_txt, right_limit -| 3), theme.boldOn(theme.PANEL, theme.TEXT));
     }
-    w.writeRightText(&surface, ctx, 0, right_hint, theme.fg(theme.MUTED));
+    if (width > right_hint_w + 4) {
+        w.writeRightText(&surface, ctx, 0, right_hint, theme.fg(theme.MUTED));
+    }
 
-    var col: u16 = 3;
-    col = try drawMetric(ctx, &surface, col, 2, "ROUNDS", summary.round_count, theme.TEXT);
-    col = try drawMetric(ctx, &surface, col + 2, 2, "CLOSED", summary.submitted_count, theme.OK);
-    col = try drawMetric(ctx, &surface, col + 2, 2, "REFERRED", summary.referred_count, theme.ACCENT_SOFT);
-    col = try drawMetric(ctx, &surface, col + 2, 2, "REJECTED", summary.rejected_count, theme.DANGER);
-    _ = try drawMetric(ctx, &surface, col + 2, 2, "OPEN", summary.open_count, theme.MUTED);
-    const session_txt = try std.fmt.allocPrint(ctx.arena, "{d} session(s)", .{summary.session_count});
-    w.writeRightText(&surface, ctx, 2, session_txt, .{ .fg = if (summary.session_count > 0) theme.OK else theme.MUTED, .bg = theme.PANEL });
+    if (rounds.len == 0) {
+        w.writeText(&surface, ctx, 3, 3, "No protocol events captured yet.", theme.fg(theme.MUTED));
+        return surface;
+    }
 
+    drawProtocolBars(&surface, 3, 1, width -| 6, rounds, selected_index);
+    w.writeText(&surface, ctx, 3, 5, firstLineTrimmed("USER SETUP DISC LOAD REFER REJECT AGENT", width -| 6), theme.fg(theme.DIM));
     return surface;
+}
+
+fn drawAttestedPanel(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+    width: u16,
+    height: u16,
+    summary: DashboardSummary,
+) std.mem.Allocator.Error!vxfw.Surface {
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, theme.BORDER, theme.PANEL);
+    w.writeText(&surface, ctx, 2, 0, "Attested Turns", theme.boldOn(theme.PANEL, theme.ACCENT_SOFT));
+
+    const pct = if (summary.round_count == 0) 0 else @divTrunc(summary.attested_count * 100, summary.round_count);
+    const pct_txt = try std.fmt.allocPrint(ctx.arena, "{d}%", .{pct});
+    const count_txt = try std.fmt.allocPrint(ctx.arena, "{d}/{d} turns", .{ summary.attested_count, summary.round_count });
+    w.writeText(&surface, ctx, 2, 2, pct_txt, theme.boldOn(theme.PANEL, theme.ACCENT_SOFT));
+    w.writeText(&surface, ctx, 2, 4, firstLineTrimmed(count_txt, width -| 4), theme.fg(theme.MUTED));
+    return surface;
+}
+
+fn drawReviewPanel(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+    width: u16,
+    height: u16,
+    summary: DashboardSummary,
+) std.mem.Allocator.Error!vxfw.Surface {
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, theme.BORDER, theme.PANEL);
+    const color = if (summary.review_count > 0) theme.WARN else theme.MUTED;
+    w.writeText(&surface, ctx, 2, 0, "Review Queue", theme.boldOn(theme.PANEL, color));
+
+    const value_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{summary.review_count});
+    const hint = if (summary.review_count > 0) "marked in rounds" else "no pending review";
+    w.writeText(&surface, ctx, 2, 2, value_txt, theme.boldOn(theme.PANEL, color));
+    w.writeText(&surface, ctx, 2, 4, firstLineTrimmed(hint, width -| 4), theme.fg(theme.MUTED));
+    return surface;
+}
+
+pub fn isReviewQueueRound(round: attestation_reader.RoundEvent) bool {
+    if (round.missing_user_prompt) return true;
+    if (round.reject_count > 0) return true;
+    return round.load_count > 0 and round.refer_count == 0;
+}
+
+const ProtocolCounts = struct {
+    user: u16 = 0,
+    setup: u16 = 0,
+    discover: u16 = 0,
+    load: u16 = 0,
+    refer: u16 = 0,
+    reject: u16 = 0,
+    agent: u16 = 0,
+    other: u16 = 0,
+};
+
+const ProtocolSegment = struct {
+    count: u16,
+    color: vaxis.Color,
+};
+
+fn drawProtocolBars(
+    surface: *vxfw.Surface,
+    start_col: u16,
+    start_row: u16,
+    width: u16,
+    rounds: []const attestation_reader.RoundEvent,
+    selected_index: usize,
+) void {
+    const stride = BAR_WIDTH + BAR_GAP;
+    const capacity = @as(usize, @intCast(@max(@as(u16, 1), (width + BAR_GAP) / stride)));
+    const selected = @min(selected_index, rounds.len - 1);
+    const start = if (selected >= capacity) selected - capacity + 1 else 0;
+    const end = @min(rounds.len, start + capacity);
+
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        const col = start_col + @as(u16, @intCast((idx - start) * stride));
+        if (col + BAR_WIDTH > surface.size.width -| 1) break;
+        const is_selected = idx == selected;
+        drawProtocolBar(surface, col, start_row, protocolCounts(rounds[idx]), is_selected);
+    }
+}
+
+fn drawProtocolBar(
+    surface: *vxfw.Surface,
+    col: u16,
+    row: u16,
+    counts: ProtocolCounts,
+    is_selected: bool,
+) void {
+    const segments = [_]ProtocolSegment{
+        .{ .count = counts.user, .color = TRACE_USER },
+        .{ .count = counts.setup, .color = TRACE_SETUP },
+        .{ .count = counts.discover, .color = TRACE_DISCOVER },
+        .{ .count = counts.load, .color = TRACE_LOAD },
+        .{ .count = counts.refer, .color = TRACE_REFER },
+        .{ .count = counts.reject, .color = TRACE_REJECT },
+        .{ .count = counts.agent, .color = TRACE_AGENT },
+        .{ .count = counts.other, .color = TRACE_OTHER },
+    };
+    const slot_count: usize = BAR_HEIGHT * BAR_WIDTH;
+    var slots: [slot_count]vaxis.Color = undefined;
+    fillProtocolSlots(slots[0..], segments[0..]);
+
+    for (slots, 0..) |color, slot| {
+        const slot_row: u16 = @intCast(slot / BAR_WIDTH);
+        const slot_col: u16 = @intCast(slot % BAR_WIDTH);
+        const cell_row = row + (BAR_HEIGHT - 1 - slot_row);
+        surface.writeCell(col + slot_col, cell_row, .{
+            .char = .{ .grapheme = "\xe2\x96\x88", .width = 1 },
+            .style = .{ .fg = color, .bg = theme.PANEL },
+        });
+    }
+    if (is_selected) {
+        var offset: u16 = 0;
+        while (offset < BAR_WIDTH) : (offset += 1) {
+            surface.writeCell(col + offset, row + BAR_HEIGHT, .{
+                .char = .{ .grapheme = "\xe2\x96\x94", .width = 1 },
+                .style = .{ .fg = theme.ACCENT, .bg = theme.PANEL },
+            });
+        }
+    }
+}
+
+fn fillProtocolSlots(slots: []vaxis.Color, segments: []const ProtocolSegment) void {
+    const total = protocolSegmentTotal(segments);
+    if (total == 0) {
+        @memset(slots, theme.DIM);
+        return;
+    }
+
+    var allocated: [8]usize = .{0} ** 8;
+    var remainders: [8]usize = .{0} ** 8;
+    var assigned: usize = 0;
+    for (segments, 0..) |segment, idx| {
+        const weighted = @as(usize, segment.count) * slots.len;
+        allocated[idx] = weighted / total;
+        remainders[idx] = weighted % total;
+        assigned += allocated[idx];
+    }
+    for (segments, 0..) |segment, idx| {
+        if (segment.count > 0 and allocated[idx] == 0 and assigned < slots.len) {
+            allocated[idx] = 1;
+            assigned += 1;
+        }
+    }
+    while (assigned < slots.len) {
+        const idx = largestRemainderIndex(segments, remainders);
+        allocated[idx] += 1;
+        remainders[idx] = 0;
+        assigned += 1;
+    }
+
+    var out: usize = 0;
+    for (segments, 0..) |segment, idx| {
+        var n: usize = 0;
+        while (n < allocated[idx] and out < slots.len) : (n += 1) {
+            slots[out] = segment.color;
+            out += 1;
+        }
+    }
+    while (out < slots.len) : (out += 1) slots[out] = theme.DIM;
+}
+
+fn largestRemainderIndex(segments: []const ProtocolSegment, remainders: [8]usize) usize {
+    var best: usize = 0;
+    var best_value: usize = 0;
+    for (segments, 0..) |segment, idx| {
+        if (segment.count == 0) continue;
+        if (remainders[idx] >= best_value) {
+            best = idx;
+            best_value = remainders[idx];
+        }
+    }
+    return best;
+}
+
+fn protocolSegmentTotal(segments: []const ProtocolSegment) usize {
+    var total: usize = 0;
+    for (segments) |segment| total += segment.count;
+    return total;
+}
+
+fn protocolCounts(round: attestation_reader.RoundEvent) ProtocolCounts {
+    var counts: ProtocolCounts = .{ .user = if (round.missing_user_prompt) 0 else 1 };
+    for (round.tools) |tool| {
+        if (std.mem.eql(u8, tool.kind, "setup")) {
+            counts.setup += 1;
+        } else if (std.mem.eql(u8, tool.kind, "discover") or std.mem.eql(u8, tool.kind, "search")) {
+            counts.discover += 1;
+        } else if (std.mem.eql(u8, tool.kind, "load")) {
+            counts.load += 1;
+        } else if (std.mem.eql(u8, tool.kind, "refer")) {
+            counts.refer += 1;
+        } else if (std.mem.eql(u8, tool.kind, "reject")) {
+            counts.reject += 1;
+        } else if (std.mem.eql(u8, tool.kind, "agent_report")) {
+            counts.agent += 1;
+        } else {
+            counts.other += 1;
+        }
+    }
+    return counts;
 }
 
 pub fn drawRounds(
@@ -352,20 +602,6 @@ fn clampScrollTop(scroll_view: *vxfw.ScrollView, row_count: usize) void {
     }
 }
 
-fn drawMetric(
-    ctx: vxfw.DrawContext,
-    surface: *vxfw.Surface,
-    col: u16,
-    row: u16,
-    label: []const u8,
-    value: usize,
-    color: vaxis.Color,
-) std.mem.Allocator.Error!u16 {
-    const text = try std.fmt.allocPrint(ctx.arena, "{s} {d}", .{ label, value });
-    w.writeText(surface, ctx, col, row, text, .{ .fg = color, .bg = theme.PANEL });
-    return col + @as(u16, @intCast(ctx.stringWidth(text)));
-}
-
 fn syncRoundWidgets(
     self: anytype,
     ctx: vxfw.DrawContext,
@@ -380,12 +616,20 @@ fn syncRoundWidgets(
         const is_sel = idx == self.analysis_input_cursor;
         const row_bg = if (is_sel) theme.PANEL_ALT else theme.PANEL;
         const time_txt = try formatHm(ctx.arena, round.timestamp);
-        const head = try flexBetween(ctx, round.session_id, time_txt, width -| 3);
+        const review = isReviewQueueRound(round);
+        const left = if (review)
+            try std.fmt.allocPrint(ctx.arena, "{s}  REVIEW", .{round.session_id})
+        else
+            round.session_id;
+        const head = try flexBetween(ctx, left, time_txt, width -| 3);
         const head_line = try std.fmt.allocPrint(ctx.arena, " {s}", .{head});
 
         self.dashboard_round_rows[out] = .{
             .text = try padLine(ctx, firstLineTrimmed(head_line, width), width),
-            .style = if (is_sel) theme.boldOn(row_bg, theme.ACCENT_SOFT) else .{ .fg = theme.MUTED, .bg = row_bg },
+            .style = if (is_sel)
+                theme.boldOn(row_bg, if (review) theme.WARN else theme.ACCENT_SOFT)
+            else
+                .{ .fg = if (review) theme.WARN else theme.MUTED, .bg = row_bg },
             .softwrap = false,
         };
         self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
@@ -762,9 +1006,6 @@ fn appendToolMetadata(
         if (tool.mpf_hash) |hash| {
             try appendDetailField(self, ctx, out, width, "MPF hash", hash, is_selected);
         }
-        if (tool.mpf_changed) |changed| {
-            try appendDetailField(self, ctx, out, width, "bootstrap", if (changed) "meta-prompt loaded" else "meta-prompt unchanged", is_selected);
-        }
         if (tool.mpf_content) |content| {
             try appendDetailField(self, ctx, out, width, "MPF text", content, is_selected);
         }
@@ -1005,7 +1246,6 @@ fn toolBriefText(tool: attestation_reader.RoundTool) ?[]const u8 {
             const line = firstMeaningfulLine(content);
             if (line.len > 0) return line;
         }
-        if (tool.mpf_changed) |changed| return if (changed) "meta-prompt loaded" else "meta-prompt unchanged";
         return "session bound";
     }
     if (std.mem.eql(u8, tool.kind, "discover")) {
