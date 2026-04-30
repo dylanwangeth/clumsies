@@ -378,12 +378,15 @@ const migration_sql =
     \\    reason TEXT,
     \\    content TEXT,
     \\    content_hash TEXT,
+    \\    model TEXT,
     \\    PRIMARY KEY (ws_id, session_id, event_id)
     \\);
     \\ALTER TABLE attestation_events
     \\    ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(user_id);
     \\ALTER TABLE attestation_events
     \\    DROP COLUMN IF EXISTS override_base_hash;
+    \\ALTER TABLE attestation_events
+    \\    ADD COLUMN IF NOT EXISTS model TEXT;
     \\CREATE INDEX IF NOT EXISTS attestation_events_user_id_idx
     \\    ON attestation_events(user_id);
     \\CREATE INDEX IF NOT EXISTS attestation_events_ws_ts_idx

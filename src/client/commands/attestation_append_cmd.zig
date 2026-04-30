@@ -13,6 +13,7 @@ const ALLOWED_TYPES = [_][]const u8{ "setup", "user_prompt", "discover", "agent_
 
 const FLAG_TYPE: usize = 0;
 const FLAG_CONTENT: usize = 1;
+const FLAG_MODEL: usize = 2;
 
 /// `clumsies _agent attestation-append --type <type> [--content <text>]`
 ///
@@ -30,6 +31,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const SPECS = [_]flag.FlagSpec{
         .{ .short = 't', .long = "type", .kind = .value },
         .{ .short = 'c', .long = "content", .kind = .value },
+        .{ .short = null, .long = "model", .kind = .value },
     };
 
     var err_ctx: flag.ErrorContext = .{};
@@ -74,6 +76,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(session_id);
 
     const content_opt = result.value(FLAG_CONTENT);
+    const model_opt = result.value(FLAG_MODEL);
     var content_hash_owned: ?[]const u8 = null;
     defer if (content_hash_owned) |h| allocator.free(h);
     if (content_opt) |c| {
@@ -86,6 +89,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         .{ .user_prompt = .{
             .content_hash = content_hash_owned orelse "",
             .content = content_opt,
+            .model = model_opt,
         } }
     else if (std.mem.eql(u8, event_type, "setup"))
         .{ .setup = .{} }
@@ -120,7 +124,7 @@ fn printHelp(out: *std.Io.Writer) !void {
     try out.print("Append a single attestation event to the current workspace's attestation log.\n", .{});
     try out.print("Intended for adapter hooks (UserPromptSubmit, etc).\n\n", .{});
     try out.print("{s}Usage:{s}\n", .{ Color.bold, Color.reset });
-    try out.print("  clumsies _agent attestation-append --type user_prompt --content \"hello\"\n", .{});
+    try out.print("  clumsies _agent attestation-append --type user_prompt --content \"hello\" --model gpt-5.5\n", .{});
 }
 
 test "attestation append rejects structured MCP-only event types" {

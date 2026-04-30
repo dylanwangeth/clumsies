@@ -46,6 +46,7 @@ pub const InputEvent = struct {
     session_id: []const u8 = "",
     timestamp: i64,
     content: []const u8,
+    model: ?[]const u8 = null,
 };
 
 pub const RoundRefer = struct {
@@ -84,6 +85,7 @@ pub const RoundEvent = struct {
     session_id: []const u8 = "",
     timestamp: i64,
     content: []const u8,
+    model: ?[]const u8 = null,
     missing_user_prompt: bool = false,
     load_count: u16 = 0,
     refer_count: u16 = 0,
@@ -116,6 +118,7 @@ const AttestationEvent = struct {
     reason: ?[]const u8 = null,
     content: ?[]const u8 = null,
     summary: ?[]const u8 = null,
+    model: ?[]const u8 = null,
     context_id: ?[]const u8 = null,
     path: ?[]const u8 = null,
     new_path: ?[]const u8 = null,
@@ -281,6 +284,7 @@ fn cloneAttestationEvent(
         .reason = null,
         .content = null,
         .summary = null,
+        .model = null,
         .context_id = null,
         .path = null,
         .new_path = null,
@@ -330,6 +334,9 @@ fn cloneAttestationEvent(
     out.summary = try dupeOptional(allocator, src.summary);
     errdefer if (out.summary) |s| allocator.free(s);
 
+    out.model = try dupeOptional(allocator, src.model);
+    errdefer if (out.model) |s| allocator.free(s);
+
     out.context_id = try dupeOptional(allocator, src.context_id);
     errdefer if (out.context_id) |s| allocator.free(s);
 
@@ -363,6 +370,7 @@ fn freeAttestationEventOwned(allocator: std.mem.Allocator, ev: AttestationEvent)
     if (ev.reason) |s| allocator.free(s);
     if (ev.content) |s| allocator.free(s);
     if (ev.summary) |s| allocator.free(s);
+    if (ev.model) |s| allocator.free(s);
     if (ev.context_id) |s| allocator.free(s);
     if (ev.path) |s| allocator.free(s);
     if (ev.new_path) |s| allocator.free(s);
@@ -467,6 +475,7 @@ fn computeStats(
                     .session_id = ev.session_id,
                     .timestamp = ev.timestamp,
                     .content = c,
+                    .model = ev.model,
                 }) catch {};
             }
             continue;
@@ -626,6 +635,7 @@ fn buildRounds(allocator: std.mem.Allocator, events: []const AttestationEvent) [
                     .session_id = ev.session_id,
                     .timestamp = ev.timestamp,
                     .content = content,
+                    .model = ev.model,
                 },
             }) catch continue;
             putActiveRound(allocator, &active_rounds, ev.ws_id, ev.session_id, index) catch continue;
@@ -917,6 +927,28 @@ test "buildRounds groups evidence after each user prompt" {
     try std.testing.expectEqualStrings("refer", rounds[1].tools[2].kind);
     try std.testing.expectEqualStrings("Load the relevant rules before editing.", rounds[1].tools[2].constraint_text.?);
     try std.testing.expectEqualStrings("agent_report", rounds[1].tools[3].kind);
+}
+
+test "buildRounds carries user prompt model into round" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const events = [_]AttestationEvent{
+        .{
+            .ws_id = "ws-1",
+            .session_id = "s-1",
+            .type = "user_prompt",
+            .timestamp = 1000,
+            .content = "ask",
+            .model = "gpt-5.5",
+        },
+    };
+
+    const rounds = buildRounds(alloc, &events);
+    try std.testing.expectEqual(@as(usize, 1), rounds.len);
+    try std.testing.expect(rounds[0].model != null);
+    try std.testing.expectEqualStrings("gpt-5.5", rounds[0].model.?);
 }
 
 test "buildRounds attaches tools when merged logs are read out of order" {

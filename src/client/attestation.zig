@@ -51,6 +51,7 @@ pub const AttestationEvent = struct {
     pub const UserPromptPayload = struct {
         content_hash: []const u8,
         content: ?[]const u8 = null,
+        model: ?[]const u8 = null,
     };
 
     pub const DiscoverPayload = struct {
@@ -284,6 +285,7 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
                 try writeOptionalString(allocator, &buf, "content", c);
             }
             try writeOptionalString(allocator, &buf, "content_hash", p.content_hash);
+            try writeOptionalString(allocator, &buf, "model", p.model);
         },
         .load => |p| {
             try writeOptionalString(allocator, &buf, "rule_id", p.rule_id);
@@ -471,6 +473,7 @@ test "serializeAttestationEvent: user_prompt with content and hash" {
             .user_prompt = .{
                 .content_hash = "abc123",
                 .content = "hello world",
+                .model = "gpt-5.5",
             },
         },
     };
@@ -479,6 +482,7 @@ test "serializeAttestationEvent: user_prompt with content and hash" {
     try testing.expect(std.mem.indexOf(u8, line, "\"type\":\"user_prompt\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"content\":\"hello world\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"content_hash\":\"abc123\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"model\":\"gpt-5.5\"") != null);
 }
 
 test "serializeAttestationEvent: agent_report with summary" {

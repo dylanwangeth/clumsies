@@ -361,6 +361,8 @@ test "codex hooks pass Codex session id through clumsies host session env" {
         if (std.mem.eql(u8, asset.resource_id, "codex.hooks.user_prompt_submit")) {
             found_user_prompt = true;
             try std.testing.expect(std.mem.indexOf(u8, asset.content, "session_id") != null);
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "model") != null);
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "--model") != null);
             try std.testing.expect(std.mem.indexOf(u8, asset.content, "CLUMSIES_HOST_SESSION_ID") != null);
             try std.testing.expect(std.mem.indexOf(u8, asset.content, "turn_id") == null);
         } else if (std.mem.eql(u8, asset.resource_id, "codex.hooks.stop_check")) {
