@@ -623,14 +623,12 @@ fn resolveManagedAbsolutePath(
 ) ![]u8 {
     const normalized_root = try std.fs.path.resolve(allocator, &.{target_root});
     defer allocator.free(normalized_root);
-    const normalized_managed_root = try managedPathRoot(allocator, normalized_root);
-    defer allocator.free(normalized_managed_root);
 
     if (resource.absolute_path) |absolute_path| {
         if (!std.fs.path.isAbsolute(absolute_path)) return error.InvalidManagedPath;
         const resolved = try std.fs.path.resolve(allocator, &.{absolute_path});
         errdefer allocator.free(resolved);
-        if (!pathIsWithinRoot(normalized_managed_root, resolved)) return error.ManagedPathEscapesTargetRoot;
+        if (!absoluteManagedPathAllowed(allocator, normalized_root, resolved)) return error.ManagedPathEscapesTargetRoot;
         return resolved;
     }
 
@@ -641,16 +639,21 @@ fn resolveManagedAbsolutePath(
     return resolved;
 }
 
-fn managedPathRoot(
+fn absoluteManagedPathAllowed(
     allocator: std.mem.Allocator,
     normalized_root: []const u8,
-) ![]u8 {
+    normalized_path: []const u8,
+) bool {
+    if (pathIsWithinRoot(normalized_root, normalized_path)) return true;
+
     if (std.mem.eql(u8, std.fs.path.basename(normalized_root), ".codex")) {
         if (std.fs.path.dirname(normalized_root)) |parent| {
-            return allocator.dupe(u8, parent);
+            const skills_root = std.fs.path.join(allocator, &.{ parent, ".agents", "skills" }) catch return false;
+            defer allocator.free(skills_root);
+            return pathIsWithinRoot(skills_root, normalized_path);
         }
     }
-    return allocator.dupe(u8, normalized_root);
+    return false;
 }
 
 fn managedHooksContent(
@@ -744,4 +747,19 @@ test "resolveManagedAbsolutePath allows codex sibling managed paths" {
     const resolved = try resolveManagedAbsolutePath(std.testing.allocator, "/tmp/workspace/.codex", resource);
     defer std.testing.allocator.free(resolved);
     try std.testing.expectEqualStrings("/tmp/workspace/.agents/skills/discover/SKILL.md", resolved);
+}
+
+test "resolveManagedAbsolutePath rejects unrelated codex sibling paths" {
+    const resource = model.ManagedResource{
+        .resource_id = "codex.bad",
+        .relative_path = ".ssh/config",
+        .absolute_path = "/tmp/workspace/.ssh/config",
+        .ownership = "exclusive",
+        .fingerprint = "",
+        .active = true,
+    };
+    try std.testing.expectError(
+        error.ManagedPathEscapesTargetRoot,
+        resolveManagedAbsolutePath(std.testing.allocator, "/tmp/workspace/.codex", resource),
+    );
 }

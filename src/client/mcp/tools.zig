@@ -12,6 +12,9 @@ const tool_names = @import("tool_names.zig");
 const tool_result = @import("tool_result.zig");
 const attestation = @import("../attestation.zig");
 
+const DISCOVER_RESULT_NAMES_MAX_COUNT = 20;
+const DISCOVER_RESULT_NAMES_MAX_BYTES = 1024;
+
 const setup_schema =
     "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bind this MCP connection to the host agent session, then bootstrap the protocol. Pass the host session/thread id as session_id.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},\"knownHash\":{\"type\":\"string\"}},\"required\":[\"session_id\"],\"additionalProperties\":false}}";
@@ -304,11 +307,50 @@ fn handleDiscover(
 
 fn discoverResultNames(allocator: std.mem.Allocator, items: []const workspace_rule.RuleItem) ![]u8 {
     var names: std.ArrayList(u8) = .empty;
-    for (items, 0..) |item, idx| {
-        if (idx > 0) try names.appendSlice(allocator, ", ");
+    errdefer names.deinit(allocator);
+
+    var shown: usize = 0;
+    for (items) |item| {
+        if (shown >= DISCOVER_RESULT_NAMES_MAX_COUNT) break;
+
+        const separator_len: usize = if (names.items.len > 0) 2 else 0;
+        if (names.items.len + separator_len + item.name.len > DISCOVER_RESULT_NAMES_MAX_BYTES) break;
+
+        if (names.items.len > 0) try names.appendSlice(allocator, ", ");
         try names.appendSlice(allocator, item.name);
+        shown += 1;
     }
+
+    if (shown < items.len) {
+        const remaining = items.len - shown;
+        const suffix = try std.fmt.allocPrint(allocator, ", ... (+{d} more)", .{remaining});
+        defer allocator.free(suffix);
+        if (names.items.len == 0) {
+            const fallback = try std.fmt.allocPrint(allocator, "... (+{d} more)", .{remaining});
+            defer allocator.free(fallback);
+            try appendTruncatedDiscoverSuffix(allocator, &names, fallback);
+        } else {
+            try appendTruncatedDiscoverSuffix(allocator, &names, suffix);
+        }
+    }
+
     return try names.toOwnedSlice(allocator);
+}
+
+fn appendTruncatedDiscoverSuffix(
+    allocator: std.mem.Allocator,
+    names: *std.ArrayList(u8),
+    suffix: []const u8,
+) !void {
+    if (names.items.len + suffix.len <= DISCOVER_RESULT_NAMES_MAX_BYTES) {
+        try names.appendSlice(allocator, suffix);
+        return;
+    }
+
+    while (names.items.len > 0 and names.items.len + suffix.len > DISCOVER_RESULT_NAMES_MAX_BYTES) {
+        _ = names.pop();
+    }
+    try names.appendSlice(allocator, suffix);
 }
 
 fn handleLoad(
@@ -1020,6 +1062,51 @@ test "buildListResult: exposes all memory and propose tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.list\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
+}
+
+test "discoverResultNames caps recorded names" {
+    var items: [25]workspace_rule.RuleItem = undefined;
+    for (&items, 0..) |*item, idx| {
+        item.* = .{
+            .id = "p-test",
+            .kind = .rule,
+            .path = "rule/TEST.md",
+            .name = try std.fmt.allocPrint(testing.allocator, "Rule {d}", .{idx}),
+            .group = null,
+            .hash = "sha256:test",
+            .priority = .normal,
+        };
+    }
+    defer for (items) |item| testing.allocator.free(item.name);
+
+    const names = try discoverResultNames(testing.allocator, items[0..]);
+    defer testing.allocator.free(names);
+
+    try testing.expect(std.mem.indexOf(u8, names, "Rule 0") != null);
+    try testing.expect(std.mem.indexOf(u8, names, "... (+5 more)") != null);
+    try testing.expect(std.mem.indexOf(u8, names, "Rule 24") == null);
+}
+
+test "discoverResultNames caps recorded bytes" {
+    const long_name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    var items: [40]workspace_rule.RuleItem = undefined;
+    for (&items) |*item| {
+        item.* = .{
+            .id = "p-test",
+            .kind = .rule,
+            .path = "rule/TEST.md",
+            .name = long_name,
+            .group = null,
+            .hash = "sha256:test",
+            .priority = .normal,
+        };
+    }
+
+    const names = try discoverResultNames(testing.allocator, items[0..]);
+    defer testing.allocator.free(names);
+
+    try testing.expect(names.len <= DISCOVER_RESULT_NAMES_MAX_BYTES);
+    try testing.expect(std.mem.indexOf(u8, names, "... (+") != null);
 }
 
 test "resolveReferConstraint accepts rule and workflow constraints" {
