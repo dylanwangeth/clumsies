@@ -21,11 +21,11 @@ const discover_schema =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const load_schema =
-    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule, workflow, or context content by ids. Returns delta based on knownHashes. Rule/workflow results include constraints: parsed rule/workflow items that may be referenced by memory.refer. Context results do not have referable constraints.\"," ++
+    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule, workflow, or context content by ids. Returns delta based on knownHashes. Rule/workflow results include constraints: referable markdown sections parsed from H2 headings and H2 list items. Context results do not have referable constraints.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\"],\"additionalProperties\":false}}";
 
 const refer_schema =
-    "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare applied rule/workflow constraints. A constraint is one entry in the constraints array returned by memory.load for a rule/workflow. ruleId must identify that rule/workflow, not context. constraintId must be the id from one of those returned entries.\"," ++
+    "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare applied rule/workflow constraints. A constraint is one semantic markdown section returned in memory.load constraints: either a whole H2 section or one list item inside an H2 section. The constraintId wire field must be copied exactly from a returned constraint id: H2 title for a whole-section constraint, or H2/ordinal for a list-item constraint. ruleId must identify that rule/workflow, not context.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"ruleId\":{\"type\":\"string\"},\"ruleHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"ruleId\",\"constraintId\"]}}},\"required\":[\"refs\"],\"additionalProperties\":false}}";
 
 const submit_schema =
@@ -148,7 +148,7 @@ pub fn handleCall(
         };
     }
     if (std.mem.eql(u8, name, tool_names.refer)) {
-        return try handleRefer(allocator, session, args_obj);
+        return try handleRefer(allocator, workspace_root, session, args_obj);
     }
     if (std.mem.eql(u8, name, tool_names.submit)) {
         return try handleSubmit(allocator, session, args_obj);
@@ -338,6 +338,7 @@ fn handleLoad(
     const structured = try tool_result.serializeLoadResultWithConstraints(
         allocator,
         &result,
+        workspace_root,
         session.ws_id,
     );
     defer allocator.free(structured);
@@ -346,6 +347,7 @@ fn handleLoad(
 
 fn handleRefer(
     allocator: std.mem.Allocator,
+    workspace_root: []const u8,
     session: *session_mod.Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
@@ -387,12 +389,12 @@ fn handleRefer(
         const final_constraint_id = constraint_id orelse continue;
         const constraint = resolveReferConstraint(
             allocator,
-            session.workspace_root,
+            workspace_root,
             rule_id,
             final_constraint_id,
         ) catch |err| return try referValidationError(
             allocator,
-            session.workspace_root,
+            workspace_root,
             rule_id,
             final_constraint_id,
             err,
@@ -465,41 +467,74 @@ fn referValidationError(
     err: anyerror,
 ) ![]u8 {
     return switch (err) {
-        error.UnknownRuleId => try tool_result.buildErrorResult(
+        error.UnknownRuleId => try buildReferErrorResult(
             allocator,
-            "memory.refer ruleId must identify an existing rule or workflow",
+            "unknown_rule_or_workflow",
+            "memory.refer ruleId must identify an existing rule or workflow; retry after memory.discover and memory.load with the exact id",
+            true,
+            "rediscover_and_reload",
+            null,
         ),
-        error.InvalidReferTargetKind => try tool_result.buildErrorResult(
+        error.InvalidReferTargetKind => try buildReferErrorResult(
             allocator,
+            "invalid_target_kind",
             "memory.refer ruleId must identify a rule or workflow; context ids cannot be referenced",
+            false,
+            "use_rule_or_workflow_id",
+            null,
         ),
         error.UnknownConstraintId => blk: {
-            const message = buildUnknownConstraintMessage(
+            const details = buildUnknownConstraintDetails(
                 allocator,
                 workspace_root,
                 rule_id,
                 constraint_id,
-            ) catch try std.fmt.allocPrint(
+            ) catch null;
+            defer if (details) |d| d.deinit(allocator);
+
+            const fallback_message = try std.fmt.allocPrint(
                 allocator,
                 "memory.refer constraintId '{s}' is not valid for ruleId '{s}'; reload the rule/workflow and use one of the returned constraints",
                 .{ constraint_id, rule_id },
             );
-            defer allocator.free(message);
-            break :blk try tool_result.buildErrorResult(allocator, message);
+            defer allocator.free(fallback_message);
+
+            break :blk try buildReferErrorResult(
+                allocator,
+                "unknown_constraint",
+                if (details) |d| d.message else fallback_message,
+                true,
+                "retry_with_valid_constraint",
+                if (details) |d| d.constraints_json else null,
+            );
         },
-        else => try tool_result.buildErrorResult(
+        else => try buildReferErrorResult(
             allocator,
-            "memory.refer could not validate the referenced constraint",
+            "validation_error",
+            "memory.refer could not validate the referenced constraint; retry after reloading the rule/workflow",
+            true,
+            "reload_and_retry",
+            null,
         ),
     };
 }
 
-fn buildUnknownConstraintMessage(
+const UnknownConstraintDetails = struct {
+    message: []const u8,
+    constraints_json: []const u8,
+
+    fn deinit(self: UnknownConstraintDetails, allocator: std.mem.Allocator) void {
+        allocator.free(self.message);
+        allocator.free(self.constraints_json);
+    }
+};
+
+fn buildUnknownConstraintDetails(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     rule_id: []const u8,
     constraint_id: []const u8,
-) ![]u8 {
+) !UnknownConstraintDetails {
     const ids = [_][]const u8{rule_id};
     var loaded = try workspace_rule.loadRules(allocator, workspace_root, ids[0..], &.{});
     defer loaded.deinit(allocator);
@@ -514,22 +549,78 @@ fn buildUnknownConstraintMessage(
 
     var options: std.ArrayList(u8) = .empty;
     defer options.deinit(allocator);
+    var constraints_json: std.ArrayList(u8) = .empty;
+    errdefer constraints_json.deinit(allocator);
+
+    try constraints_json.append(allocator, '[');
 
     for (parsed.constraints.items, 0..) |constraint, idx| {
         if (idx > 0) try options.appendSlice(allocator, ", ");
         try options.writer(allocator).print("{s} ({s})", .{ constraint.id, constraint.name });
+
+        if (idx > 0) try constraints_json.append(allocator, ',');
+        const esc_id = try jsonEscapeAlloc(allocator, constraint.id);
+        defer allocator.free(esc_id);
+        const esc_name = try jsonEscapeAlloc(allocator, constraint.name);
+        defer allocator.free(esc_name);
+        const esc_text = try jsonEscapeAlloc(allocator, constraint.text);
+        defer allocator.free(esc_text);
+        try constraints_json.writer(allocator).print(
+            "{{\"id\":\"{s}\",\"name\":\"{s}\",\"text\":\"{s}\"}}",
+            .{ esc_id, esc_name, esc_text },
+        );
     }
+    try constraints_json.append(allocator, ']');
 
     const option_text = if (options.items.len > 0)
         options.items
     else
         @as([]const u8, "none");
 
-    return try std.fmt.allocPrint(
+    return .{
+        .message = try std.fmt.allocPrint(
+            allocator,
+            "memory.refer constraintId '{s}' is not valid for ruleId '{s}'; retry with one of: {s}",
+            .{ constraint_id, rule_id, option_text },
+        ),
+        .constraints_json = try constraints_json.toOwnedSlice(allocator),
+    };
+}
+
+fn buildReferErrorResult(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    message: []const u8,
+    retryable: bool,
+    retry_action: []const u8,
+    valid_constraints_json: ?[]const u8,
+) ![]u8 {
+    const esc_code = try jsonEscapeAlloc(allocator, code);
+    defer allocator.free(esc_code);
+    const esc_message = try jsonEscapeAlloc(allocator, message);
+    defer allocator.free(esc_message);
+    const esc_action = try jsonEscapeAlloc(allocator, retry_action);
+    defer allocator.free(esc_action);
+
+    const constraints = valid_constraints_json orelse "[]";
+    const structured = try std.fmt.allocPrint(
         allocator,
-        "memory.refer constraintId '{s}' is not valid for ruleId '{s}'; use one of: {s}",
-        .{ constraint_id, rule_id, option_text },
+        "{{\"error\":\"{s}\",\"code\":\"{s}\",\"retryable\":{s},\"retryAction\":\"{s}\",\"validConstraints\":{s}}}",
+        .{
+            esc_message,
+            esc_code,
+            if (retryable) "true" else "false",
+            esc_action,
+            constraints,
+        },
     );
+    defer allocator.free(structured);
+
+    return try tool_result.buildStructuredErrorResult(allocator, message, structured);
+}
+
+fn jsonEscapeAlloc(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    return @import("clumsies_lib").util.encoding.jsonEscapeAlloc(allocator, value);
 }
 
 fn parseRuleKind(value: std.json.Value) !?workspace_rule.RuleKind {
@@ -954,7 +1045,7 @@ test "resolveReferConstraint accepts rule and workflow constraints" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    const constraint = try resolveReferConstraint(testing.allocator, root, "p-coding", "c-1");
+    const constraint = try resolveReferConstraint(testing.allocator, root, "p-coding", "Rule loading");
     defer constraint.deinit(testing.allocator);
 
     try testing.expectEqualStrings("Rule loading", constraint.name);
@@ -1018,6 +1109,94 @@ test "resolveReferConstraint rejects context ids" {
         error.InvalidReferTargetKind,
         resolveReferConstraint(testing.allocator, root, "c-api", "c-1"),
     );
+}
+
+test "referValidationError returns retryable constraint candidates" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/workflow");
+    try writeTestFile(tmp.dir, "cache/rule/workflow/CODING.md",
+        \\# Coding
+        \\
+        \\## Rule loading
+        \\
+        \\Load relevant rules before editing.
+    );
+    try writeTestFile(tmp.dir, "manifest.json",
+        \\{
+        \\  "rules": {
+        \\    "p-coding": {"path": "workflow/CODING.md", "hash": "sha256:workflow"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const result = try referValidationError(
+        testing.allocator,
+        root,
+        "p-coding",
+        "Steps",
+        error.UnknownConstraintId,
+    );
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"isError\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"code\":\"unknown_constraint\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"retryable\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"retryAction\":\"retry_with_valid_constraint\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"validConstraints\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"id\":\"Rule loading\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"Rule loading\"") != null);
+}
+
+test "handleRefer resolves constraints from current workspace root" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/workflow");
+    try writeTestFile(tmp.dir, "cache/rule/workflow/CODING.md",
+        \\# Coding
+        \\
+        \\## Rule loading
+        \\
+        \\Load relevant rules before editing.
+    );
+    try writeTestFile(tmp.dir, "manifest.json",
+        \\{
+        \\  "rules": {
+        \\    "p-coding": {"path": "workflow/CODING.md", "hash": "sha256:workflow"}
+        \\  }
+        \\}
+    );
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &root_buf);
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, "/wrong/workspace/root"),
+    };
+    defer session.deinit(testing.allocator);
+
+    const args_json =
+        \\{
+        \\  "refs": [{
+        \\    "ruleId": "p-coding",
+        \\    "constraintId": "Rule loading"
+        \\  }]
+        \\}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    const result = try handleRefer(testing.allocator, root, &session, parsed.value.object);
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"count\":1") != null);
 }
 
 // The next three tests exercise full handleCall flows against

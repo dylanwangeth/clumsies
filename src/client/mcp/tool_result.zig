@@ -28,6 +28,21 @@ pub fn buildErrorResult(allocator: std.mem.Allocator, message: []const u8) ![]u8
     );
 }
 
+pub fn buildStructuredErrorResult(
+    allocator: std.mem.Allocator,
+    message: []const u8,
+    structured_json: []const u8,
+) ![]u8 {
+    const esc_message = try encoding.jsonEscapeAlloc(allocator, message);
+    defer allocator.free(esc_message);
+
+    return try std.fmt.allocPrint(
+        allocator,
+        "{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}],\"structuredContent\":{s},\"isError\":true}}",
+        .{ esc_message, structured_json },
+    );
+}
+
 pub fn serializeRuleList(
     allocator: std.mem.Allocator,
     items: []const workspace_rule.RuleItem,
@@ -48,6 +63,7 @@ pub fn serializeRuleList(
 pub fn serializeLoadResultWithConstraints(
     allocator: std.mem.Allocator,
     result: *workspace_rule.LoadResult,
+    workspace_root: []const u8,
     workspace_id: []const u8,
 ) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
@@ -60,8 +76,18 @@ pub fn serializeLoadResultWithConstraints(
     for (result.items.items, 0..) |item, idx| {
         if (idx > 0) try buf.append(allocator, ',');
 
-        if ((item.kind == .rule or item.kind == .workflow) and item.content != null) {
-            var parsed = try workspace_rule.parseConstraints(allocator, item.content.?);
+        if (item.kind == .rule or item.kind == .workflow) {
+            var fallback_load: ?workspace_rule.LoadResult = null;
+            defer if (fallback_load) |*loaded| loaded.deinit(allocator);
+
+            const content = item.content orelse blk: {
+                const ids = [_][]const u8{item.id};
+                fallback_load = try workspace_rule.loadRules(allocator, workspace_root, ids[0..], &.{});
+                if (fallback_load.?.items.items.len == 0) break :blk "";
+                break :blk fallback_load.?.items.items[0].content orelse "";
+            };
+
+            var parsed = try workspace_rule.parseConstraints(allocator, content);
             defer parsed.deinit(allocator);
 
             try appendLoadedRuleWithConstraints(allocator, &buf, item, parsed.constraints.items);
@@ -186,7 +212,7 @@ fn appendLoadedRuleWithConstraints(
 
             const reminder = try std.fmt.allocPrint(
                 allocator,
-                "{s}\n\n---\n[clumsies] Constraints are the parsed rule/workflow items listed below. When one of them shapes your work, include it in a single {s} call at the end of your response. Use this ruleId and ruleHash exactly, and pick constraintId only from this list.\nrefs entry fields: ruleId: {s}, ruleHash: {s}, constraintId: pick from below\n{s}---",
+                "{s}\n\n---\n[clumsies] Constraints are the referable markdown sections listed below: either a whole H2 section or one list item inside an H2 section. Their ids are stable markdown-derived ids: H2 title for whole-section constraints, or H2/ordinal for list-item constraints. When one shapes your work, include it in a single {s} call at the end of your response. Use this ruleId and ruleHash exactly, and copy constraintId exactly from this list.\nrefs entry fields: ruleId: {s}, ruleHash: {s}, constraintId: pick from below\n{s}---",
                 .{ content, tool_names.refer, item.id, item.hash, constraint_list },
             );
             defer allocator.free(reminder);
@@ -229,6 +255,50 @@ test "buildErrorResult escapes special characters in message" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\\nnewline") != null);
 }
 
+test "serializeLoadResultWithConstraints includes constraints when content is unchanged" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/workflow");
+    try writeTestFile(tmp.dir, "cache/rule/workflow/GEN_COMMIT_MSG.md",
+        \\# Generate Commit Message
+        \\
+        \\## Steps
+        \\
+        \\Inspect the diff and suggest a commit message.
+    );
+    try writeTestFile(tmp.dir, "manifest.json",
+        \\{
+        \\  "rules": {
+        \\    "p-commit": {"path": "workflow/GEN_COMMIT_MSG.md", "hash": "sha256:workflow"}
+        \\  }
+        \\}
+    );
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try tmp.dir.realpath(".", &path_buf);
+
+    const ids = [_][]const u8{"p-commit"};
+    const known = [_]workspace_rule.KnownHash{.{ .id = "p-commit", .hash = "sha256:workflow" }};
+    var loaded = try workspace_rule.loadRules(std.testing.allocator, root, ids[0..], known[0..]);
+    defer loaded.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(false, loaded.items.items[0].changed);
+    try std.testing.expect(loaded.items.items[0].content == null);
+
+    const json = try serializeLoadResultWithConstraints(
+        std.testing.allocator,
+        &loaded,
+        root,
+        "ws-test",
+    );
+    defer std.testing.allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"constraints\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"id\":\"Steps\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"Steps\"") != null);
+}
+
 test "serializeRuleList produces valid items array" {
     const allocator = std.testing.allocator;
     const items = [_]workspace_rule.RuleItem{
@@ -240,4 +310,13 @@ test "serializeRuleList produces valid items array" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"id\":\"p-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"path\":\"rule/STYLE.md\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"kind\":\"rule\"") != null);
+}
+
+fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
+    const file = try dir.createFile(sub_path, .{});
+    defer file.close();
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(content);
 }

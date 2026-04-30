@@ -171,7 +171,9 @@ The tool returns:
       "content": "# ...",
       "constraints": [
         {
-          "id": "c-1",
+          "id": "Steps",
+          "name": "Steps",
+          "text": "Inspect the diff and suggest a commit message.",
           "textHash": "..."
         }
       ]
@@ -193,7 +195,18 @@ Important item fields are:
 
 For rules and workflows, the returned content includes the refer reminder footer. Context items do not get that footer.
 
-In this protocol, a constraint is not something the agent invents from markdown structure. It is one entry in the `constraints` array returned by `memory.load` for a rule or workflow. The entry includes the `id` to use in `memory.refer`, plus display text such as `name`, `text`, and `textHash`.
+Delta loading only suppresses repeated content text. For rule and workflow
+items, `constraints` are still returned when `changed` is `false` and
+`content` is `null`, because agents need those stable entries to call
+`memory.refer` without guessing from markdown.
+
+In this protocol, a constraint is a referable semantic markdown section in a
+rule or workflow file. It is either a whole H2 section, or one list item inside
+an H2 section. A whole H2 section uses the H2 title as its stable returned
+`id`. A list item uses `H2 title/ordinal`, such as `Steps/1` and `Steps/2`.
+The `name` field is the H2 title used for display/grouping, and `text` is the
+H2 body or list item content. Agents must copy the returned `id` exactly into
+the `constraintId` wire field in `memory.refer`; they must not invent IDs.
 
 ## `memory.refer`
 
@@ -212,7 +225,7 @@ Each ref object can contain:
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `ruleId` | string | yes | stable rule or workflow ID |
-| `constraintId` | string | yes | `id` from one of that rule/workflow's returned `constraints` entries |
+| `constraintId` | string | yes | wire field containing an exact returned `constraints[].id` value |
 | `ruleHash` | string | no | current content hash when available |
 | `reason` | string | no | human-readable explanation of why the constraint mattered |
 
@@ -226,6 +239,33 @@ Each ref object can contain:
 ```
 
 `count` is the number of accepted reference objects processed in that call.
+
+### Retryable errors
+
+`memory.refer` validation errors are structured so agents can retry instead
+of treating the text message as opaque. Unknown rule/workflow IDs tell the
+agent to rediscover and reload. Unknown constraint IDs include the valid
+constraint candidates for that rule/workflow when available.
+
+Example invalid constraint response:
+
+```json
+{
+  "error": "memory.refer constraintId 'Step' is not valid for ruleId 'p-...'; retry with one of: Steps",
+  "code": "unknown_constraint",
+  "retryable": true,
+  "retryAction": "retry_with_valid_constraint",
+  "validConstraints": [
+    {
+      "id": "Steps",
+      "name": "Steps",
+      "text": "Inspect the diff and suggest a commit message."
+    }
+  ]
+}
+```
+
+Agents should use `validConstraints[].id` exactly.
 
 ## `memory.submit`
 
@@ -379,6 +419,8 @@ Several validation and runtime errors are already stable enough to document:
 | invalid argument types or missing required fields | `isError: true` with an error message |
 | unknown tool name | `Unknown tool` |
 | `memory.load` receives an unknown rule ID | `Unknown rule id` |
+| `memory.refer` receives an unknown rule/workflow ID | structured `code: "unknown_rule_or_workflow"`, `retryable: true`, `retryAction: "rediscover_and_reload"` |
+| `memory.refer` receives an invalid constraint ID | structured `code: "unknown_constraint"`, `retryable: true`, `retryAction: "retry_with_valid_constraint"`, optional `validConstraints` |
 | propose tool path is unsafe | `unsafe path` |
 | propose tool target file is missing from current cache/manifest | `file not found in cache` |
 | propose create collides with an existing draft | `draft already exists for this path` |
