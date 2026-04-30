@@ -825,6 +825,8 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
     var region_start: usize = 0;
     var region_has_list = false;
     var region_heading: []const u8 = "";
+    var region_body: std.ArrayList(u8) = .empty;
+    defer region_body.deinit(allocator);
 
     while (lines.next()) |line| {
         line_num += 1;
@@ -837,18 +839,24 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
         if (std.mem.startsWith(u8, trimmed, "## ")) {
             const heading_text = trimmed[3..];
 
-            const is_steps = std.ascii.eqlIgnoreCase(heading_text, "Steps") or
-                std.ascii.eqlIgnoreCase(heading_text, "steps");
             const is_examples = std.ascii.eqlIgnoreCase(heading_text, "Examples") or
                 std.ascii.eqlIgnoreCase(heading_text, "examples") or
                 std.ascii.eqlIgnoreCase(heading_text, "Example") or
                 std.ascii.eqlIgnoreCase(heading_text, "example");
 
             if (in_region and !region_has_list) {
-                try appendParsedConstraint(allocator, &constraints, &constraint_counter, region_heading, region_heading);
+                const source = std.mem.trim(u8, region_body.items, " \t\r\n");
+                try appendParsedConstraint(
+                    allocator,
+                    &constraints,
+                    &constraint_counter,
+                    if (source.len > 0) source else region_heading,
+                    region_heading,
+                );
             }
+            region_body.clearRetainingCapacity();
 
-            if (is_steps or is_examples) {
+            if (is_examples) {
                 in_region = false;
                 continue;
             }
@@ -877,10 +885,22 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
         {
             continue;
         }
+
+        if (in_region and !region_has_list) {
+            if (region_body.items.len > 0) try region_body.append(allocator, '\n');
+            try region_body.appendSlice(allocator, line);
+        }
     }
 
     if (in_region and !region_has_list) {
-        try appendParsedConstraint(allocator, &constraints, &constraint_counter, region_heading, region_heading);
+        const source = std.mem.trim(u8, region_body.items, " \t\r\n");
+        try appendParsedConstraint(
+            allocator,
+            &constraints,
+            &constraint_counter,
+            if (source.len > 0) source else region_heading,
+            region_heading,
+        );
     }
 
     if (constraint_counter == 0 and content.len > 0) {
@@ -1668,7 +1688,30 @@ test "parseConstraints: region without list is single constraint" {
     try testing.expect(result.valid);
     try testing.expectEqual(@as(usize, 1), result.constraints.items.len);
     try testing.expectEqualStrings("Core principle", result.constraints.items[0].name);
-    try testing.expectEqualStrings("Core principle", result.constraints.items[0].text);
+    try testing.expectEqualStrings(
+        "Write code that is easy to read.\nPrefer clarity over cleverness.",
+        result.constraints.items[0].text,
+    );
+}
+
+test "parseConstraints: steps heading is a constraint region" {
+    const content =
+        \\# Workflow
+        \\
+        \\## Steps
+        \\
+        \\1. Load relevant rules.
+        \\2. Run tests.
+    ;
+    var result = try parseConstraints(testing.allocator, content);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.valid);
+    try testing.expectEqual(@as(usize, 2), result.constraints.items.len);
+    try testing.expectEqualStrings("Steps", result.constraints.items[0].name);
+    try testing.expectEqualStrings("Load relevant rules.", result.constraints.items[0].text);
+    try testing.expectEqualStrings("Steps", result.constraints.items[1].name);
+    try testing.expectEqualStrings("Run tests.", result.constraints.items[1].text);
 }
 
 test "parseConstraints: no headings no lists is one constraint" {

@@ -51,8 +51,8 @@ Follow this loop every turn:
 5. **Refine.** When the user asks you to create, update, or delete rules or
    context, use `context.propose_create()`, `context.propose_update()`,
    `context.propose_rename()`, `context.propose_delete()` for workspace context,
-   and `prompt.propose_create()`, `prompt.propose_update()`,
-   `prompt.propose_rename()`, `prompt.propose_delete()` for library rules.
+   and `rule.propose_create()`, `rule.propose_update()`,
+   `rule.propose_rename()`, `rule.propose_delete()` for library rules.
 6. **Submit.** Call `memory.submit()` with a short summary of your work before
    finishing every response. The stop hook will block if you forget.
 
@@ -83,18 +83,6 @@ Most of the file still matches the current product model:
 - the agent-facing loop is now explicit: discover, load, apply, refer, refine, submit
 - the file now describes the protocol in terms of `rule`, `workflow`, and `context`
 - loaded rules still outrank model defaults
-
-## What in that file is lagging behind the current implementation
-
-The docs should not pretend every line above is still the live protocol surface.
-
-One part is still ahead of the currently implemented public tool names:
-
-| In the current file | Current implementation |
-| --- | --- |
-| `prompt.propose_*` for Library rule refinement | current public MCP tool surface still exposes `rule.propose_*` |
-
-So the right way to read `META_PROMPT.md` today is as the current session bootstrap contract, with one notable naming mismatch on library proposal tools.
 
 ## Where the protocol now lives in the docs
 

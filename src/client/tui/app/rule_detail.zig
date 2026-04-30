@@ -386,8 +386,12 @@ pub fn syncContentWidget(self: anytype) void {
         if (k >= self.drafts_create_rule_paths.len) break :blk null;
         break :blk self.drafts_create_rule_paths[k];
     };
-    const cache_content: []const u8 = if (selected_path) |path| self.cachedRuleBody(path) orelse "" else "";
-    const draft_content: ?[]const u8 = if (selected_path) |path| self.draftContentForView(.rule, path) else null;
+    const category = if (selected_path) |path| self.libraryCategoryForPath(path) else .rule;
+    const cache_content: []const u8 = if (selected_path) |path|
+        self.cachedLibraryRuleBody(category, path) orelse ""
+    else
+        "";
+    const draft_content: ?[]const u8 = if (selected_path) |path| self.draftContentForView(category, path) else null;
     syncContentWidgetBytes(self, cache_content, draft_content);
     self.requestSelectedRuleDetail();
 }
@@ -432,8 +436,9 @@ pub fn syncWsRuleContentWidget(
     self: anytype,
     path: []const u8,
 ) void {
-    const cache_content: []const u8 = self.cachedRuleBody(path) orelse "";
-    const draft_content: ?[]const u8 = self.draftContentForView(.rule, path);
+    const category = self.libraryCategoryForPath(path);
+    const cache_content: []const u8 = self.cachedLibraryRuleBody(category, path) orelse "";
+    const draft_content: ?[]const u8 = self.draftContentForView(category, path);
     syncContentWidgetBytes(self, cache_content, draft_content);
 }
 

@@ -71,6 +71,7 @@ pub const AttestationEvent = struct {
         rule_hash: ?[]const u8 = null,
         constraint_id: []const u8,
         constraint_name: ?[]const u8 = null,
+        constraint_text: ?[]const u8 = null,
         reason: ?[]const u8 = null,
     };
 
@@ -293,6 +294,7 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
             try writeOptionalString(allocator, &buf, "rule_hash", p.rule_hash);
             try writeOptionalString(allocator, &buf, "constraint_id", p.constraint_id);
             try writeOptionalString(allocator, &buf, "constraint_name", p.constraint_name);
+            try writeOptionalString(allocator, &buf, "constraint_text", p.constraint_text);
             try writeOptionalString(allocator, &buf, "reason", p.reason);
         },
         .agent_report => |p| {
@@ -381,6 +383,7 @@ test "serializeAttestationEvent: refer event with all fields" {
                 .rule_id = "p-550e8400",
                 .constraint_id = "c-2",
                 .constraint_name = "Use final-form comments",
+                .constraint_text = "Write final-form comments only.",
                 .reason = "applying style",
             },
         },
@@ -395,6 +398,7 @@ test "serializeAttestationEvent: refer event with all fields" {
     try testing.expect(std.mem.indexOf(u8, line, "\"rule_id\":\"p-550e8400\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"constraint_id\":\"c-2\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"constraint_name\":\"Use final-form comments\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"constraint_text\":\"Write final-form comments only.\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "\"reason\":\"applying style\"") != null);
     try testing.expect(std.mem.endsWith(u8, line, "}\n"));
 }

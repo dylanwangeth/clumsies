@@ -400,7 +400,7 @@ pub fn syncLibraryWidgets(self: anytype) void {
                 else => "\xe2\x80\xa2+",
             };
             const row_sel = i == selected_row;
-            const draft_status_opt = self.draftStatusFor(.rule, row_path);
+            const draft_status_opt = self.draftStatusFor(self.libraryCategoryForPath(row_path), row_path);
             const labeled_text = if (draft_status_opt != null)
                 (std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{row_text}) catch row_text)
             else

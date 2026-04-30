@@ -1,6 +1,6 @@
 //! MCP tool response formatting. Builds the content envelope agents consume: success results
-//! include human-readable text + machine-readable structuredContent; loaded rules include
-//! parsed constraint IDs for the agent to reference in memory.refer calls.
+//! include human-readable text + machine-readable structuredContent; loaded rules/workflows
+//! include parsed constraint IDs for the agent to reference in memory.refer calls.
 const std = @import("std");
 const encoding = @import("clumsies_lib").util.encoding;
 const workspace_rule = @import("../rule.zig");
@@ -186,7 +186,7 @@ fn appendLoadedRuleWithConstraints(
 
             const reminder = try std.fmt.allocPrint(
                 allocator,
-                "{s}\n\n---\n[clumsies] When you apply constraints from this rule, include them in a single {s} call at the end of your response.\nrefs entry fields: ruleId: {s}, ruleHash: {s}, constraintId: pick from below\n{s}---",
+                "{s}\n\n---\n[clumsies] Constraints are the parsed rule/workflow items listed below. When one of them shapes your work, include it in a single {s} call at the end of your response. Use this ruleId and ruleHash exactly, and pick constraintId only from this list.\nrefs entry fields: ruleId: {s}, ruleHash: {s}, constraintId: pick from below\n{s}---",
                 .{ content, tool_names.refer, item.id, item.hash, constraint_list },
             );
             defer allocator.free(reminder);

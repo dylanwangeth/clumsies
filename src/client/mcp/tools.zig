@@ -21,11 +21,11 @@ const discover_schema =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const load_schema =
-    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule content by ids. Returns delta based on knownHashes. Rule/Workflow content includes a refer reminder.\"," ++
+    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule, workflow, or context content by ids. Returns delta based on knownHashes. Rule/workflow results include constraints: parsed rule/workflow items that may be referenced by memory.refer. Context results do not have referable constraints.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\"],\"additionalProperties\":false}}";
 
 const refer_schema =
-    "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare constraint references from loaded rules. Pass an array of refs, each with ruleId and constraintId.\"," ++
+    "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare applied rule/workflow constraints. A constraint is one entry in the constraints array returned by memory.load for a rule/workflow. ruleId must identify that rule/workflow, not context. constraintId must be the id from one of those returned entries.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"ruleId\":{\"type\":\"string\"},\"ruleHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"ruleId\",\"constraintId\"]}}},\"required\":[\"refs\"],\"additionalProperties\":false}}";
 
 const submit_schema =
@@ -385,19 +385,26 @@ fn handleRefer(
         } else null;
 
         const final_constraint_id = constraint_id orelse continue;
-        const constraint_name = resolveConstraintName(
+        const constraint = resolveReferConstraint(
             allocator,
             session.workspace_root,
             rule_id,
             final_constraint_id,
-        ) catch null;
-        defer if (constraint_name) |name| allocator.free(name);
+        ) catch |err| return try referValidationError(
+            allocator,
+            session.workspace_root,
+            rule_id,
+            final_constraint_id,
+            err,
+        );
+        defer constraint.deinit(allocator);
 
         session.recordEvent(allocator, .{ .refer = .{
             .rule_id = rule_id,
             .rule_hash = rule_hash,
             .constraint_id = final_constraint_id,
-            .constraint_name = constraint_name,
+            .constraint_name = constraint.name,
+            .constraint_text = constraint.text,
             .reason = reason,
         } });
         count += 1;
@@ -409,27 +416,120 @@ fn handleRefer(
     return try tool_result.buildSuccessResult(allocator, structured);
 }
 
-fn resolveConstraintName(
+const ReferConstraint = struct {
+    name: []const u8,
+    text: []const u8,
+
+    fn deinit(self: ReferConstraint, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.text);
+    }
+};
+
+fn resolveReferConstraint(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     rule_id: []const u8,
     constraint_id: []const u8,
-) !?[]u8 {
+) !ReferConstraint {
     const ids = [_][]const u8{rule_id};
     var loaded = try workspace_rule.loadRules(allocator, workspace_root, ids[0..], &.{});
     defer loaded.deinit(allocator);
 
-    if (loaded.items.items.len == 0) return null;
-    const content = loaded.items.items[0].content orelse return null;
+    if (loaded.items.items.len == 0) return error.UnknownRuleId;
+    const item = loaded.items.items[0];
+    if (item.kind == .context) return error.InvalidReferTargetKind;
+
+    const content = item.content orelse return error.UnknownConstraintId;
     var parsed = try workspace_rule.parseConstraints(allocator, content);
     defer parsed.deinit(allocator);
 
     for (parsed.constraints.items) |constraint| {
         if (std.mem.eql(u8, constraint.id, constraint_id)) {
-            return try allocator.dupe(u8, constraint.name);
+            const name = try allocator.dupe(u8, constraint.name);
+            errdefer allocator.free(name);
+            return .{
+                .name = name,
+                .text = try allocator.dupe(u8, constraint.text),
+            };
         }
     }
-    return null;
+    return error.UnknownConstraintId;
+}
+
+fn referValidationError(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    rule_id: []const u8,
+    constraint_id: []const u8,
+    err: anyerror,
+) ![]u8 {
+    return switch (err) {
+        error.UnknownRuleId => try tool_result.buildErrorResult(
+            allocator,
+            "memory.refer ruleId must identify an existing rule or workflow",
+        ),
+        error.InvalidReferTargetKind => try tool_result.buildErrorResult(
+            allocator,
+            "memory.refer ruleId must identify a rule or workflow; context ids cannot be referenced",
+        ),
+        error.UnknownConstraintId => blk: {
+            const message = buildUnknownConstraintMessage(
+                allocator,
+                workspace_root,
+                rule_id,
+                constraint_id,
+            ) catch try std.fmt.allocPrint(
+                allocator,
+                "memory.refer constraintId '{s}' is not valid for ruleId '{s}'; reload the rule/workflow and use one of the returned constraints",
+                .{ constraint_id, rule_id },
+            );
+            defer allocator.free(message);
+            break :blk try tool_result.buildErrorResult(allocator, message);
+        },
+        else => try tool_result.buildErrorResult(
+            allocator,
+            "memory.refer could not validate the referenced constraint",
+        ),
+    };
+}
+
+fn buildUnknownConstraintMessage(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    rule_id: []const u8,
+    constraint_id: []const u8,
+) ![]u8 {
+    const ids = [_][]const u8{rule_id};
+    var loaded = try workspace_rule.loadRules(allocator, workspace_root, ids[0..], &.{});
+    defer loaded.deinit(allocator);
+    if (loaded.items.items.len == 0) return error.UnknownRuleId;
+
+    const item = loaded.items.items[0];
+    if (item.kind == .context) return error.InvalidReferTargetKind;
+    const content = item.content orelse return error.UnknownConstraintId;
+
+    var parsed = try workspace_rule.parseConstraints(allocator, content);
+    defer parsed.deinit(allocator);
+
+    var options: std.ArrayList(u8) = .empty;
+    defer options.deinit(allocator);
+
+    for (parsed.constraints.items, 0..) |constraint, idx| {
+        if (idx > 0) try options.appendSlice(allocator, ", ");
+        try options.writer(allocator).print("{s} ({s})", .{ constraint.id, constraint.name });
+    }
+
+    const option_text = if (options.items.len > 0)
+        options.items
+    else
+        @as([]const u8, "none");
+
+    return try std.fmt.allocPrint(
+        allocator,
+        "memory.refer constraintId '{s}' is not valid for ruleId '{s}'; use one of: {s}",
+        .{ constraint_id, rule_id, option_text },
+    );
 }
 
 fn parseRuleKind(value: std.json.Value) !?workspace_rule.RuleKind {
@@ -614,10 +714,17 @@ fn handleProposeUpdate(
         .rule => manifest.rules.get(id) orelse return error.FileNotFound,
         .meta_prompt => return error.InvalidParams,
     };
+    const draft_category = if (category == .rule and isMetaPromptPath(m_entry.path))
+        drafts_mod.DraftCategory.meta_prompt
+    else
+        category;
 
     const cache_content = switch (category) {
         .context => try workspace_rule.readContextCacheFile(allocator, workspace_root, m_entry.path),
-        .rule => try readRuleCacheFile(allocator, workspace_root, m_entry.path),
+        .rule => if (draft_category == .meta_prompt)
+            try readMetaPromptCacheFile(allocator, workspace_root)
+        else
+            try readRuleCacheFile(allocator, workspace_root, m_entry.path),
         .meta_prompt => return error.InvalidParams,
     };
     defer allocator.free(cache_content);
@@ -625,12 +732,12 @@ fn handleProposeUpdate(
     const base_hash = util_hash.contentHash(cache_content);
 
     try drafts_mod.createDraft(allocator, workspace_root, .{
-        .category = category,
+        .category = draft_category,
         .operation = .modify,
         .draft_path = m_entry.path,
         .current_path = m_entry.path,
         .base_hash = base_hash[0..],
-        .rule_id = if (category == .rule) id else null,
+        .rule_id = if (category == .rule and draft_category == .rule) id else null,
         .context_id = if (category == .context) id else null,
         .description = description,
     }, body);
@@ -761,12 +868,42 @@ fn readRuleCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path:
     return workspace_rule.readRuleCacheFile(allocator, ws_dir, rel_path);
 }
 
+fn readMetaPromptCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8) ![]const u8 {
+    const path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
+    defer allocator.free(path);
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.FileNotFound,
+        else => return err,
+    };
+    defer file.close();
+    var read_buf: [4096]u8 = undefined;
+    var fr = std.fs.File.Reader.init(file, &read_buf);
+    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024));
+}
+
+fn isMetaPromptPath(path: []const u8) bool {
+    return std.mem.eql(u8, path, "META_PROMPT.md");
+}
+
 fn buildOkDraftPath(allocator: std.mem.Allocator, draft_path: []const u8) ![]u8 {
     const esc = try encoding.jsonEscapeAlloc(allocator, draft_path);
     defer allocator.free(esc);
     const structured = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"draft_path\":\"{s}\"}}", .{esc});
     defer allocator.free(structured);
     return try tool_result.buildSuccessResult(allocator, structured);
+}
+
+fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
+    const file = try dir.createFile(sub_path, .{});
+    defer file.close();
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(content);
+}
+
+fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {
+    return tmp.dir.realpath(".", buf) catch "";
 }
 
 test "buildListResult: exposes all memory and propose tools" {
@@ -792,6 +929,95 @@ test "buildListResult: exposes all memory and propose tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.list\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
+}
+
+test "resolveReferConstraint accepts rule and workflow constraints" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/workflow");
+    try writeTestFile(tmp.dir, "cache/rule/workflow/CODING.md",
+        \\# Coding
+        \\
+        \\## Rule loading
+        \\
+        \\Follow the workflow.
+    );
+    try writeTestFile(tmp.dir, "manifest.json",
+        \\{
+        \\  "rules": {
+        \\    "p-coding": {"path": "workflow/CODING.md", "hash": "sha256:workflow"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const constraint = try resolveReferConstraint(testing.allocator, root, "p-coding", "c-1");
+    defer constraint.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("Rule loading", constraint.name);
+    try testing.expectEqualStrings("Follow the workflow.", constraint.text);
+}
+
+test "resolveReferConstraint rejects unknown constraint ids" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/workflow");
+    try writeTestFile(tmp.dir, "cache/rule/workflow/CODING.md",
+        \\# Coding
+        \\
+        \\## Rule loading
+        \\
+        \\Follow the workflow.
+    );
+    try writeTestFile(tmp.dir, "manifest.json",
+        \\{
+        \\  "rules": {
+        \\    "p-coding": {"path": "workflow/CODING.md", "hash": "sha256:workflow"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try testing.expectError(
+        error.UnknownConstraintId,
+        resolveReferConstraint(testing.allocator, root, "p-coding", "missing"),
+    );
+}
+
+test "resolveReferConstraint rejects context ids" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/context/spec");
+    try writeTestFile(tmp.dir, "cache/context/spec/API.md",
+        \\# API
+        \\
+        \\## Endpoints
+        \\
+        \\Reference material.
+    );
+    try writeTestFile(tmp.dir, "manifest.json",
+        \\{
+        \\  "rules": {},
+        \\  "context": {
+        \\    "c-api": {"path": "spec/API.md", "hash": "sha256:context"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try testing.expectError(
+        error.InvalidReferTargetKind,
+        resolveReferConstraint(testing.allocator, root, "c-api", "c-1"),
+    );
 }
 
 // The next three tests exercise full handleCall flows against

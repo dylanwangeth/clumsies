@@ -949,7 +949,10 @@ fn appendChainTool(
     const marker = if (is_selected) "\xe2\x96\x8c" else " ";
     const exp_icon = if (is_expanded) "[-]" else "[+]";
     const subject = try toolHeaderSubject(ctx, ws_id, tool);
-    const preview = toolBriefText(tool) orelse subject;
+    const preview = if (std.mem.eql(u8, tool.kind, "refer"))
+        toolConstraintText(ctx, ws_id, tool) orelse toolBriefText(tool) orelse subject
+    else
+        toolBriefText(tool) orelse subject;
 
     const head = if (subject.len > 0)
         try std.fmt.allocPrint(ctx.arena, "{s} {s} {s} {s:<6} {s}", .{ marker, time_txt, exp_icon, verb, subject })
@@ -965,6 +968,9 @@ fn appendChainTool(
         if (std.mem.eql(u8, tool.kind, "refer")) {
             if (toolConstraintName(ctx, ws_id, tool)) |name| {
                 try appendDetailField(self, ctx, out, width, "name", name, is_selected);
+            }
+            if (toolConstraintText(ctx, ws_id, tool)) |text| {
+                try appendEvidenceText(self, ctx, out, width, "content", text, is_selected);
             }
         }
 
@@ -1102,15 +1108,31 @@ fn toolConstraintName(
     if (tool.constraint_name) |name| return name;
     const rule_id = tool.rule_id orelse return null;
     const constraint_id = tool.constraint_id orelse return null;
-    return resolveConstraintName(ctx, ws_id, rule_id, constraint_id);
+    return if (resolveConstraintInfo(ctx, ws_id, rule_id, constraint_id)) |info| info.name else null;
 }
 
-fn resolveConstraintName(
+fn toolConstraintText(
+    ctx: vxfw.DrawContext,
+    ws_id: []const u8,
+    tool: attestation_reader.RoundTool,
+) ?[]const u8 {
+    if (tool.constraint_text) |text| return text;
+    const rule_id = tool.rule_id orelse return null;
+    const constraint_id = tool.constraint_id orelse return null;
+    return if (resolveConstraintInfo(ctx, ws_id, rule_id, constraint_id)) |info| info.text else null;
+}
+
+const ConstraintInfo = struct {
+    name: []const u8,
+    text: []const u8,
+};
+
+fn resolveConstraintInfo(
     ctx: vxfw.DrawContext,
     ws_id: []const u8,
     rule_id: []const u8,
     constraint_id: []const u8,
-) ?[]const u8 {
+) ?ConstraintInfo {
     if (ws_id.len == 0) return null;
     const ws_dir = workspaceDir(ctx.arena, ws_id) orelse return null;
     const ids = [_][]const u8{rule_id};
@@ -1119,7 +1141,10 @@ fn resolveConstraintName(
     const content = loaded.items.items[0].content orelse return null;
     const parsed = workspace_rule.parseConstraints(ctx.arena, content) catch return null;
     for (parsed.constraints.items) |constraint| {
-        if (std.mem.eql(u8, constraint.id, constraint_id)) return constraint.name;
+        if (std.mem.eql(u8, constraint.id, constraint_id)) return .{
+            .name = constraint.name,
+            .text = constraint.text,
+        };
     }
     return null;
 }
@@ -1266,7 +1291,7 @@ fn appendEvidenceText(
 fn briefLabel(kind: []const u8) []const u8 {
     if (std.mem.eql(u8, kind, "setup")) return "MPF";
     if (std.mem.eql(u8, kind, "discover")) return "query";
-    if (std.mem.eql(u8, kind, "refer")) return "action";
+    if (std.mem.eql(u8, kind, "refer")) return "content";
     if (std.mem.eql(u8, kind, "agent_report")) return "summary";
     if (std.mem.eql(u8, kind, "reject")) return "reason";
     if (isProposeTool(kind)) return "draft";
