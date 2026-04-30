@@ -730,15 +730,27 @@ fn appendUserPromptTool(
     const time_txt = try formatHm(ctx.arena, round.timestamp);
     const marker = if (is_selected) "\xe2\x96\x8c" else " ";
     const exp_icon = if (is_expanded) "[-]" else "[+]";
-    const head = try std.fmt.allocPrint(ctx.arena, "{s} {s} {s} USER", .{ marker, time_txt, exp_icon });
-    const head_text = firstLineTrimmed(head, width);
-    appendChainLine(
-        self,
-        out,
-        if (is_selected) try padLine(ctx, head_text, width) else head_text,
-        traceHeaderStyle("user_prompt", is_selected),
-        is_selected,
-    );
+    if (round.model) |model| {
+        const head = try std.fmt.allocPrint(ctx.arena, "{s} {s} {s} TASK", .{ marker, time_txt, exp_icon });
+        const model_text = try std.fmt.allocPrint(ctx.arena, "  {s}", .{model});
+        const head_text = firstLineTrimmed(head, width);
+        const model_budget = width -| @as(u16, @intCast(ctx.stringWidth(head_text)));
+        const model_trimmed = firstLineTrimmed(model_text, model_budget);
+        const spans = try ctx.arena.alloc(vaxis.Segment, 2);
+        spans[0] = .{ .text = head_text, .style = traceHeaderStyle("user_prompt", is_selected) };
+        spans[1] = .{ .text = model_trimmed, .style = traceDetailStyle() };
+        appendChainRichLine(self, ctx, out, spans, is_selected);
+    } else {
+        const head = try std.fmt.allocPrint(ctx.arena, "{s} {s} {s} TASK", .{ marker, time_txt, exp_icon });
+        const head_text = firstLineTrimmed(head, width);
+        appendChainLine(
+            self,
+            out,
+            if (is_selected) try padLine(ctx, head_text, width) else head_text,
+            traceHeaderStyle("user_prompt", is_selected),
+            is_selected,
+        );
+    }
 
     if (is_expanded) {
         try appendEvidenceText(self, ctx, out, width, "prompt", round.content, is_selected);

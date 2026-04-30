@@ -31,6 +31,7 @@ const AttestationEventInput = struct {
     reason: ?[]const u8 = null,
     content: ?[]const u8 = null,
     content_hash: ?[]const u8 = null,
+    model: ?[]const u8 = null,
 };
 
 const BatchRequest = struct {
@@ -307,14 +308,15 @@ pub fn handleUpload(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         }
         const rows_affected = conn.exec(
             \\INSERT INTO attestation_events (user_id, ws_id, session_id, event_id, type, timestamp,
-            \\  rule_id, rule_hash, constraint_id, reason, content, content_hash)
-            \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            \\  rule_id, rule_hash, constraint_id, reason, content, content_hash, model)
+            \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             \\ON CONFLICT (ws_id, session_id, event_id) DO NOTHING
         , .{
             user.user_id,             event.ws_id,     event.session_id,
             @as(i64, event.event_id), event.type,      @as(i64, event.timestamp),
             event.rule_id,            event.rule_hash, event.constraint_id,
             event.reason,             event.content,   event.content_hash,
+            event.model,
         }) catch {
             deduplicated += 1;
             continue;

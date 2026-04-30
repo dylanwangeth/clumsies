@@ -14,6 +14,7 @@ if [ -z "$INPUT" ]; then
 fi
 
 SESSION_ID=""
+MODEL=""
 PROMPT_TEXT=""
 if command -v python3 >/dev/null 2>&1; then
   PARSED="$(printf '%s' "$INPUT" | python3 -c '
@@ -26,17 +27,24 @@ except Exception:
     raise SystemExit(0)
 
 session_id = data.get("session_id", "")
+model = data.get("model", "")
 prompt = data.get("prompt", "")
 if isinstance(session_id, str):
     sys.stdout.write(session_id)
+sys.stdout.write("\n")
+if isinstance(model, str):
+    sys.stdout.write(model)
 sys.stdout.write("\n")
 if isinstance(prompt, str):
     sys.stdout.write(prompt)
 ' 2>/dev/null || true)"
   SESSION_ID="${PARSED%%$'\n'*}"
-  PROMPT_TEXT="${PARSED#*$'\n'}"
+  REST="${PARSED#*$'\n'}"
+  MODEL="${REST%%$'\n'*}"
+  PROMPT_TEXT="${REST#*$'\n'}"
 elif command -v jq >/dev/null 2>&1; then
   SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  MODEL="$(printf '%s' "$INPUT" | jq -r '.model // empty' 2>/dev/null || true)"
   PROMPT_TEXT="$(printf '%s' "$INPUT" | jq -r '.prompt // empty' 2>/dev/null || true)"
 else
   exit 0
@@ -52,4 +60,8 @@ fi
 
 cd "$PROJECT_ROOT"
 
-"$CLUMSIES" _agent attestation-append --type user_prompt --content "$PROMPT_TEXT" >/dev/null 2>&1 || true
+if [ -n "$MODEL" ]; then
+  "$CLUMSIES" _agent attestation-append --type user_prompt --content "$PROMPT_TEXT" --model "$MODEL" >/dev/null 2>&1 || true
+else
+  "$CLUMSIES" _agent attestation-append --type user_prompt --content "$PROMPT_TEXT" >/dev/null 2>&1 || true
+fi
