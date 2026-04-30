@@ -872,21 +872,9 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
         }
 
         if (in_region and (std.mem.startsWith(u8, trimmed, "- ") or isOrderedListItem(trimmed))) {
-            if (std.mem.startsWith(u8, trimmed, "- **理由**") or
-                std.mem.startsWith(u8, trimmed, "- **示例**"))
-                continue;
-
             region_has_list = true;
             region_item_index += 1;
             try appendParsedConstraint(allocator, &constraints, &constraint_counter, trimmed, region_heading, region_item_index);
-            continue;
-        }
-
-        if (std.mem.startsWith(u8, trimmed, "**理由**") or
-            std.mem.startsWith(u8, trimmed, "**示例**") or
-            std.mem.startsWith(u8, trimmed, "✅") or
-            std.mem.startsWith(u8, trimmed, "❌"))
-        {
             continue;
         }
 
@@ -1725,6 +1713,35 @@ test "parseConstraints: steps heading is a constraint region" {
     try testing.expectEqualStrings("Steps/2", result.constraints.items[1].id);
     try testing.expectEqualStrings("Steps", result.constraints.items[1].name);
     try testing.expectEqualStrings("Run tests.", result.constraints.items[1].text);
+}
+
+test "parseConstraints: support-looking lines are regular content" {
+    const content =
+        \\# Rule
+        \\
+        \\## Signals
+        \\
+        \\- **Reason** Keep the causal explanation in the rule.
+        \\- PASS Allow positive status markers when the author uses them.
+        \\- FAIL Allow negative status markers when the author uses them.
+        \\
+        \\## Body
+        \\
+        \\**Example** is normal prose unless it lives under an Examples heading.
+    ;
+    var result = try parseConstraints(testing.allocator, content);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.valid);
+    try testing.expectEqual(@as(usize, 4), result.constraints.items.len);
+    try testing.expectEqualStrings("Signals/1", result.constraints.items[0].id);
+    try testing.expectEqualStrings("**Reason** Keep the causal explanation in the rule.", result.constraints.items[0].text);
+    try testing.expectEqualStrings("Signals/2", result.constraints.items[1].id);
+    try testing.expectEqualStrings("PASS Allow positive status markers when the author uses them.", result.constraints.items[1].text);
+    try testing.expectEqualStrings("Signals/3", result.constraints.items[2].id);
+    try testing.expectEqualStrings("FAIL Allow negative status markers when the author uses them.", result.constraints.items[2].text);
+    try testing.expectEqualStrings("Body", result.constraints.items[3].id);
+    try testing.expectEqualStrings("**Example** is normal prose unless it lives under an Examples heading.", result.constraints.items[3].text);
 }
 
 test "parseConstraints: no headings no lists is one constraint" {
