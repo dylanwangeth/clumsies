@@ -226,11 +226,11 @@ pub const Dashboard = struct {
     analysis_input_cursor: usize = 0,
     analysis_expanded_rule: ?usize = null,
     analysis_show_member_detail: bool = false,
-    analysis_show_input_detail: bool = false,
     dashboard_input_capacity: usize = 1,
     dashboard_round_scroll_bars: vxfw.ScrollBars,
     dashboard_round_widgets: [MAX_DASHBOARD_ROUND_ROWS]vxfw.Widget = undefined,
     dashboard_round_rows: [MAX_DASHBOARD_ROUND_ROWS]vxfw.Text = undefined,
+    dashboard_round_rich_rows: [MAX_DASHBOARD_ROUND_ROWS]vxfw.RichText = undefined,
     dashboard_chain_scroll_bars: vxfw.ScrollBars,
     dashboard_chain_widgets: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Widget = undefined,
     dashboard_chain_rows: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Text = undefined,
@@ -707,27 +707,19 @@ pub const Dashboard = struct {
             .{ .width = size.width, .height = footer_h },
         );
 
-        const show_input_overlay = self.analysis_show_input_detail and self.selected_module == .dashboard;
         const show_workspace_drawer = self.show_workspace_drawer and self.selected_module == .workspace and
             !self.show_settings and !self.show_help and !self.show_confirm and !self.show_comment_editor and
             !self.show_create_workspace and !self.show_pr_composer and !self.show_new_draft_form;
         var child_count: usize = 3;
         if (self.show_help or self.show_confirm or self.show_comment_editor or
             self.show_create_workspace or self.show_pr_composer or
-            self.show_new_draft_form or show_input_overlay or show_workspace_drawer) child_count = 4;
+            self.show_new_draft_form or show_workspace_drawer) child_count = 4;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
         children[1] = .{ .origin = .{ .row = header_h, .col = 0 }, .surface = try self.drawBody(body_ctx) };
         children[2] = .{ .origin = .{ .row = header_h + body_h, .col = 0 }, .surface = try self.drawFooter(footer_ctx) };
 
-        if (show_input_overlay) {
-            const input_ctx = ctx.withConstraints(
-                .{ .width = size.width, .height = size.height },
-                .{ .width = size.width, .height = size.height },
-            );
-            children[3] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawInputDetailOverlay(input_ctx) };
-        }
         if (self.show_help) {
             const help_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
@@ -896,9 +888,9 @@ pub const Dashboard = struct {
             "j/k move  Enter switch  Esc close"
         else switch (self.selected_module) {
             .dashboard => switch (self.analysis_focus) {
-                .chart => "j/k event  Enter [+]  Tab rounds  w scope  Shift-F flush  ? help  q quit",
-                .inputs => "j/k move  Enter detail  Tab focus  w scope  Shift-F flush  ? help  q quit",
-                else => "Tab focus  w scope  Shift-F flush  ? help  q quit",
+                .chart => "j/k trail  Enter expand  Tab rounds  Shift-F flush  ? help  q quit",
+                .inputs => "j/k move  Tab trail  Shift-F flush  ? help  q quit",
+                else => "Tab focus  Shift-F flush  ? help  q quit",
             },
             .library => if (self.detail_focus_content and self.detail_tab == .pull_requests)
                 "j/k scroll  a accept  x reject  c comment  Esc list  ? help"
@@ -1348,7 +1340,6 @@ pub const Dashboard = struct {
     // Dashboard: live interaction rounds and attestation closure state.
     fn drawDashboard(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
-        const scope = self.currentAnalysisScope();
         const scoped_attestation = self.scopedAttestationData();
         const rounds: []const attestation_reader.RoundEvent = if (scoped_attestation) |st| st.rounds else &.{};
 
@@ -1375,7 +1366,6 @@ pub const Dashboard = struct {
             ctx,
             size.width,
             arena_h,
-            scope.label,
             summary,
             rounds,
             self.analysis_input_cursor,
@@ -1386,7 +1376,6 @@ pub const Dashboard = struct {
             rounds_w,
             body_h,
             rounds,
-            scope.label,
         );
         const trace_surface = try dashboard_panel.drawProtocolTrace(self, ctx, trace_w, body_h, selected_round);
         return dashboard_panel.drawRoot(self, ctx, arena_surface, rounds_surface, trace_surface);
@@ -2131,17 +2120,6 @@ pub const Dashboard = struct {
 
     fn shiftSettingsTab(self: *Dashboard, delta: i8) void {
         settings_panel.shiftSettingsTab(self, delta);
-    }
-
-    // Modal overlay showing the full user input for the selected round.
-    fn drawInputDetailOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const content_and_ts: struct { content: []const u8, ts: i64 } = blk: {
-            const scoped = self.scopedAttestationData() orelse break :blk .{ .content = "", .ts = 0 };
-            if (scoped.rounds.len == 0) break :blk .{ .content = "", .ts = 0 };
-            const idx = @min(self.analysis_input_cursor, scoped.rounds.len - 1);
-            break :blk .{ .content = scoped.rounds[idx].content, .ts = scoped.rounds[idx].timestamp };
-        };
-        return dashboard_panel.drawInputDetailOverlay(self, ctx, content_and_ts.content, content_and_ts.ts);
     }
 
     fn drawHelpOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -3241,7 +3219,6 @@ pub const Dashboard = struct {
 
     fn selectTab(self: *Dashboard, ctx: *vxfw.EventContext, tab: TopModule) void {
         self.selected_module = tab;
-        self.analysis_show_input_detail = false;
         self.analysis_show_member_detail = false;
         self.analysis_expanded_rule = null;
         switch (tab) {
