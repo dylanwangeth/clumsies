@@ -74,6 +74,17 @@ pub const LoadResult = struct {
     }
 };
 
+const ResolvedLoadContent = struct {
+    hash: []const u8,
+    changed: bool,
+    content: ?[]const u8,
+
+    fn deinit(self: *ResolvedLoadContent, allocator: std.mem.Allocator) void {
+        allocator.free(self.hash);
+        if (self.content) |content| allocator.free(content);
+    }
+};
+
 fn priorityForKind(kind: RuleKind) SetupPriority {
     return switch (kind) {
         .rule, .workflow, .context => .normal,
@@ -527,20 +538,21 @@ pub fn loadRules(
             const kind = kindFromPath(m_entry.path) orelse return error.UnknownRuleId;
 
             const known_hash = knownHashFor(id, known);
-            const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, m_entry.hash);
-
             const draft_entry = draft_index.findByCurrentPath(.rule, m_entry.path);
             if (draft_entry) |entry| {
                 if (entry.operation == .delete) return error.UnknownRuleId;
             }
 
-            const content = if (changed) blk: {
-                if (draft_entry) |entry| {
-                    break :blk try drafts.readDraftFile(allocator, ws_dir, .rule, entry.draft_path);
-                }
-                break :blk try readCacheFileAlloc(allocator, ws_dir, m_entry.path);
-            } else null;
-            errdefer if (content) |owned| allocator.free(owned);
+            var resolved = try resolveLoadContent(
+                allocator,
+                ws_dir,
+                .rule,
+                m_entry.path,
+                m_entry.hash,
+                known_hash,
+                draft_entry,
+            );
+            errdefer resolved.deinit(allocator);
 
             const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
             const group_slice = groupFromPath(m_entry.path);
@@ -558,28 +570,29 @@ pub fn loadRules(
                 .path = try allocator.dupe(u8, m_entry.path),
                 .name = try allocator.dupe(u8, display_name),
                 .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
-                .hash = try allocator.dupe(u8, m_entry.hash),
-                .changed = changed,
-                .content = content,
+                .hash = resolved.hash,
+                .changed = resolved.changed,
+                .content = resolved.content,
                 .has_draft = has_draft,
                 .draft_base_hash = draft_base,
             });
         } else if (manifest.context.get(id)) |m_entry| {
             const known_hash = knownHashFor(id, known);
-            const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, m_entry.hash);
-
             const draft_entry = draft_index.findByCurrentPath(.context, m_entry.path);
             if (draft_entry) |entry| {
                 if (entry.operation == .delete) return error.UnknownRuleId;
             }
 
-            const content = if (changed) blk: {
-                if (draft_entry) |entry| {
-                    break :blk try drafts.readDraftFile(allocator, ws_dir, .context, entry.draft_path);
-                }
-                break :blk try readContextCacheFile(allocator, ws_dir, m_entry.path);
-            } else null;
-            errdefer if (content) |owned| allocator.free(owned);
+            var resolved = try resolveLoadContent(
+                allocator,
+                ws_dir,
+                .context,
+                m_entry.path,
+                m_entry.hash,
+                known_hash,
+                draft_entry,
+            );
+            errdefer resolved.deinit(allocator);
 
             const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
             const group_slice = groupFromPath(m_entry.path);
@@ -597,9 +610,9 @@ pub fn loadRules(
                 .path = try allocator.dupe(u8, m_entry.path),
                 .name = try allocator.dupe(u8, display_name),
                 .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
-                .hash = try allocator.dupe(u8, m_entry.hash),
-                .changed = changed,
-                .content = content,
+                .hash = resolved.hash,
+                .changed = resolved.changed,
+                .content = resolved.content,
                 .has_draft = has_draft,
                 .draft_base_hash = draft_base,
             });
@@ -623,6 +636,9 @@ pub fn loadRules(
             );
             errdefer allocator.free(content);
 
+            const effective_hash = try util_hash.sha256HexAlloc(allocator, content);
+            errdefer allocator.free(effective_hash);
+
             const kind: RuleKind = if (draft_entry.category == .context)
                 .context
             else
@@ -638,7 +654,7 @@ pub fn loadRules(
                 .path = try allocator.dupe(u8, draft_entry.draft_path),
                 .name = try allocator.dupe(u8, display_name),
                 .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
-                .hash = try allocator.dupe(u8, ""),
+                .hash = effective_hash,
                 .changed = true,
                 .content = content,
                 .has_draft = true,
@@ -648,6 +664,61 @@ pub fn loadRules(
     }
 
     return result;
+}
+
+fn resolveLoadContent(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: drafts.DraftCategory,
+    cache_path: []const u8,
+    manifest_hash: []const u8,
+    known_hash: ?[]const u8,
+    draft_entry: ?*const drafts.DraftEntry,
+) !ResolvedLoadContent {
+    if (draft_entry) |entry| {
+        const draft_content = try drafts.readDraftFile(allocator, ws_dir, category, entry.draft_path);
+        const effective_hash = util_hash.sha256HexAlloc(allocator, draft_content) catch |err| {
+            allocator.free(draft_content);
+            return err;
+        };
+        errdefer allocator.free(effective_hash);
+
+        const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, effective_hash);
+        if (changed) {
+            return .{
+                .hash = effective_hash,
+                .changed = true,
+                .content = draft_content,
+            };
+        }
+
+        allocator.free(draft_content);
+        return .{
+            .hash = effective_hash,
+            .changed = false,
+            .content = null,
+        };
+    }
+
+    const effective_hash = try allocator.dupe(u8, manifest_hash);
+    errdefer allocator.free(effective_hash);
+
+    const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, effective_hash);
+    const content = if (changed)
+        switch (category) {
+            .rule => try readCacheFileAlloc(allocator, ws_dir, cache_path),
+            .context => try readContextCacheFile(allocator, ws_dir, cache_path),
+            .meta_prompt => unreachable,
+        }
+    else
+        null;
+    errdefer if (content) |owned| allocator.free(owned);
+
+    return .{
+        .hash = effective_hash,
+        .changed = changed,
+        .content = content,
+    };
 }
 
 fn readCacheFileAlloc(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
@@ -1253,6 +1324,108 @@ test "loadRules: draft content overrides cache when indexed" {
     try testing.expect(item.has_draft);
     try testing.expectEqualStrings("sha256:original", item.draft_base_hash.?);
     try testing.expectEqualStrings("draft override", item.content.?);
+}
+
+test "loadRules: rule draft change ignores matching manifest known hash" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/coding");
+    try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "cache content");
+
+    try tmp.dir.makePath("drafts/rule/coding");
+    try writeFile(tmp.dir, "drafts/rule/coding/STYLE.md", "draft override");
+    try writeFile(tmp.dir, "drafts/index.json",
+        \\{
+        \\  "drafts": [
+        \\    {
+        \\      "category": "rule",
+        \\      "rule_id": "p-style",
+        \\      "current_path": "coding/STYLE.md",
+        \\      "draft_path": "coding/STYLE.md",
+        \\      "operation": "modify",
+        \\      "base_hash": "sha256:manifest",
+        \\      "status": "editing"
+        \\    }
+        \\  ]
+        \\}
+    );
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "rules": {
+        \\    "p-style": {"path": "coding/STYLE.md", "hash": "sha256:manifest"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const known = [_]KnownHash{.{ .id = "p-style", .hash = "sha256:manifest" }};
+    var result = try loadRules(testing.allocator, root, &.{"p-style"}, &known);
+    defer result.deinit(testing.allocator);
+
+    const item = result.items.items[0];
+    try testing.expect(item.changed);
+    try testing.expectEqualStrings("draft override", item.content.?);
+    try testing.expect(!std.mem.eql(u8, "sha256:manifest", item.hash));
+
+    const known_draft = [_]KnownHash{.{ .id = "p-style", .hash = item.hash }};
+    var delta = try loadRules(testing.allocator, root, &.{"p-style"}, &known_draft);
+    defer delta.deinit(testing.allocator);
+
+    try testing.expect(!delta.items.items[0].changed);
+    try testing.expect(delta.items.items[0].content == null);
+    try testing.expectEqualStrings(item.hash, delta.items.items[0].hash);
+}
+
+test "loadRules: context draft change ignores matching manifest known hash" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/context/spec");
+    try writeFile(tmp.dir, "cache/context/spec/API.md", "cache api");
+
+    try tmp.dir.makePath("drafts/context/spec");
+    try writeFile(tmp.dir, "drafts/context/spec/API.md", "draft api");
+    try writeFile(tmp.dir, "drafts/index.json",
+        \\{
+        \\  "drafts": [
+        \\    {
+        \\      "category": "context",
+        \\      "context_id": "c-api",
+        \\      "current_path": "spec/API.md",
+        \\      "draft_path": "spec/API.md",
+        \\      "operation": "modify",
+        \\      "base_hash": "sha256:manifest",
+        \\      "status": "editing"
+        \\    }
+        \\  ]
+        \\}
+    );
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "rules": {},
+        \\  "context": {
+        \\    "c-api": {"path": "spec/API.md", "hash": "sha256:manifest"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const known = [_]KnownHash{.{ .id = "c-api", .hash = "sha256:manifest" }};
+    var result = try loadRules(testing.allocator, root, &.{"c-api"}, &known);
+    defer result.deinit(testing.allocator);
+
+    const item = result.items.items[0];
+    try testing.expectEqual(RuleKind.context, item.kind);
+    try testing.expect(item.changed);
+    try testing.expectEqualStrings("draft api", item.content.?);
+    try testing.expect(!std.mem.eql(u8, "sha256:manifest", item.hash));
 }
 
 test "loadRules: draft marked delete behaves as UnknownRuleId" {
