@@ -5,7 +5,6 @@ const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
 const attestation_reader = @import("../attestation_reader.zig");
 const workspace_rule = @import("../../rule.zig");
-const Modal = w.Modal;
 pub const ARENA_HEIGHT: u16 = 7;
 const ROUND_ROW_COUNT = 5;
 const ROUND_CURSOR_HEIGHT = ROUND_ROW_COUNT - 1;
@@ -62,7 +61,6 @@ pub fn drawArena(
     ctx: vxfw.DrawContext,
     width: u16,
     height: u16,
-    scope_label: []const u8,
     summary: DashboardSummary,
     rounds: []const attestation_reader.RoundEvent,
     selected_index: usize,
@@ -78,7 +76,7 @@ pub fn drawArena(
     var children = try ctx.arena.alloc(vxfw.SubSurface, if (show_cards) 3 else 1);
     children[0] = .{
         .origin = .{ .row = 0, .col = 0 },
-        .surface = try drawFingerprintPanel(self, ctx, fingerprint_w, height, scope_label, rounds, selected_index),
+        .surface = try drawFingerprintPanel(self, ctx, fingerprint_w, height, rounds, selected_index),
     };
     if (show_cards) {
         children[1] = .{
@@ -99,7 +97,6 @@ fn drawFingerprintPanel(
     ctx: vxfw.DrawContext,
     width: u16,
     height: u16,
-    scope_label: []const u8,
     rounds: []const attestation_reader.RoundEvent,
     selected_index: usize,
 ) std.mem.Allocator.Error!vxfw.Surface {
@@ -118,16 +115,7 @@ fn drawFingerprintPanel(
     const dot_color = theme.lerpColor(theme.rgb(0x2d4a1f), theme.OK, breath_t);
     w.writeText(&surface, ctx, 2, 0, "\u{25cf}", .{ .fg = dot_color, .bg = theme.PANEL });
 
-    const right_hint = "w scope  Tab focus  Shift-F flush";
-    const right_hint_w: u16 = @intCast(ctx.stringWidth(right_hint));
-    const right_limit: u16 = width -| right_hint_w -| 2;
-    const title_txt = try std.fmt.allocPrint(ctx.arena, " Protocol Fingerprint  \xc2\xb7 {s}", .{scope_label});
-    if (right_limit > 3) {
-        w.writeText(&surface, ctx, 3, 0, firstLineTrimmed(title_txt, right_limit -| 3), theme.boldOn(theme.PANEL, theme.TEXT));
-    }
-    if (width > right_hint_w + 4) {
-        w.writeRightText(&surface, ctx, 0, right_hint, theme.fg(theme.MUTED));
-    }
+    w.writeText(&surface, ctx, 3, 0, firstLineTrimmed(" Protocol Fingerprint", width -| 5), theme.boldOn(theme.PANEL, theme.TEXT));
 
     if (rounds.len == 0) {
         w.writeText(&surface, ctx, 3, 3, "No protocol events captured yet.", theme.fg(theme.MUTED));
@@ -361,19 +349,13 @@ pub fn drawRounds(
     width: u16,
     height: u16,
     rounds: []const attestation_reader.RoundEvent,
-    scope_label: []const u8,
 ) std.mem.Allocator.Error!vxfw.Surface {
     const border_color = theme.focusBorder(self.analysis_focus == .inputs);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
 
-    const title_txt = try std.fmt.allocPrint(
-        ctx.arena,
-        "Rounds  \xc2\xb7 {s}",
-        .{scope_label},
-    );
-    w.writeText(&surface, ctx, 2, 0, title_txt, theme.boldOn(theme.PANEL, theme.TEXT));
+    w.writeText(&surface, ctx, 2, 0, "Rounds", theme.boldOn(theme.PANEL, theme.TEXT));
 
     if (rounds.len == 0) {
         w.writeText(&surface, ctx, 2, 2, "No interaction rounds captured.", theme.fg(theme.MUTED));
@@ -424,11 +406,7 @@ pub fn drawProtocolTrace(
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
-    w.writeText(&surface, ctx, 2, 0, "Protocol Trace", theme.boldOn(theme.PANEL, theme.TEXT));
-    if (self.analysis_focus == .chart) {
-        w.writeRightText(&surface, ctx, 0, "Enter details", theme.fg(theme.MUTED));
-    }
-
+    w.writeText(&surface, ctx, 2, 0, "Attestation Trail", theme.boldOn(theme.PANEL, theme.TEXT));
     const round = selected_round orelse {
         w.writeText(&surface, ctx, 2, 2, "Select a round to inspect clumsies attestation.", theme.fg(theme.MUTED));
         return surface;
@@ -451,70 +429,12 @@ pub fn drawProtocolTrace(
     return surface;
 }
 
-pub fn drawInputDetailOverlay(
-    self: anytype,
-    ctx: vxfw.DrawContext,
-    content: []const u8,
-    timestamp_ms: i64,
-) std.mem.Allocator.Error!vxfw.Surface {
-    const size = ctx.max.size();
-    const box_w: u16 = @min(size.width -| 4, @as(u16, 100));
-    const box_h: u16 = @min(size.height -| 4, @as(u16, 24));
-
-    const time_txt = try formatHm(ctx.arena, timestamp_ms);
-    const title = try std.fmt.allocPrint(ctx.arena, "User Input @ {s}", .{time_txt});
-
-    const modal = Modal{
-        .title = title,
-        .box_width = box_w,
-        .box_height = box_h,
-        .footer = " Esc close ",
-    };
-    const result = try modal.draw(ctx, self.widget());
-    var surface = result.surface;
-    const col = result.content_col;
-    const start_row = result.content_row;
-
-    const inner_w: u16 = box_w -| 4;
-    const inner_h: u16 = box_h -| 3;
-    var out_row: u16 = 0;
-    var remaining = content;
-    while (remaining.len > 0 and out_row < inner_h) {
-        const line_end = std.mem.indexOfScalar(u8, remaining, '\n') orelse remaining.len;
-        var line = remaining[0..line_end];
-        while (line.len > 0 and out_row < inner_h) {
-            const take: usize = @min(line.len, @as(usize, @intCast(inner_w)));
-            w.writeText(&surface, ctx, col, start_row + out_row, line[0..take], theme.textOn(theme.PANEL_ALT, theme.TEXT));
-            line = line[take..];
-            out_row += 1;
-        }
-        if (line_end < remaining.len) {
-            remaining = remaining[line_end + 1 ..];
-        } else {
-            remaining = &.{};
-        }
-    }
-    return surface;
-}
-
 pub fn handleModuleEvent(
     self: anytype,
     ctx: *vxfw.EventContext,
     key: vaxis.Key,
     round_count: usize,
 ) anyerror!void {
-    if (key.matches('w', .{})) {
-        const scope = self.cycleAnalysisScope();
-        const alloc = self.api_state.allocator();
-        self.analysis_input_cursor = 0;
-        self.analysis_show_input_detail = false;
-        self.dashboard_chain_cursor = 0;
-        resetChainExpansion(self);
-        resetScrollView(&self.dashboard_chain_scroll_bars.scroll_view);
-        self.status_line = std.fmt.allocPrint(alloc, "Dashboard scope: {s}", .{scope.label}) catch "Dashboard scope updated.";
-        ctx.consumeAndRedraw();
-        return;
-    }
     if (key.matches('F', .{ .shift = true })) {
         self.flushAttestation();
         ctx.consumeAndRedraw();
@@ -525,7 +445,6 @@ pub fn handleModuleEvent(
             .chart => .inputs,
             else => .chart,
         };
-        self.analysis_show_input_detail = false;
         ctx.consumeAndRedraw();
         return;
     }
@@ -565,11 +484,6 @@ pub fn handleModuleEvent(
         }
     }
     if (key.matches(vaxis.Key.enter, .{})) {
-        if (self.analysis_focus == .inputs) {
-            self.analysis_show_input_detail = !self.analysis_show_input_detail;
-            ctx.consumeAndRedraw();
-            return;
-        }
         if (self.analysis_focus == .chart) {
             const idx = @min(self.dashboard_chain_cursor, self.dashboard_chain_expanded_items.len - 1);
             self.dashboard_chain_expanded_items[idx] = !self.dashboard_chain_expanded_items[idx];
@@ -578,11 +492,7 @@ pub fn handleModuleEvent(
         }
     }
     if (key.matches(vaxis.Key.escape, .{})) {
-        if (self.analysis_show_input_detail) {
-            self.analysis_show_input_detail = false;
-        } else {
-            self.analysis_focus = .chart;
-        }
+        self.analysis_focus = .chart;
         ctx.consumeAndRedraw();
     }
 }
@@ -627,23 +537,22 @@ fn syncRoundWidgets(
         const row_bg = if (is_sel) theme.PANEL_ALT else theme.PANEL;
         const time_txt = try formatHm(ctx.arena, round.timestamp);
         const exception = isExceptionRound(round);
-        const left = if (exception)
-            try std.fmt.allocPrint(ctx.arena, "{s}  EXC", .{round.session_id})
-        else
-            round.session_id;
-        const head = try flexBetween(ctx, left, time_txt, width -| 3);
-        const head_line = try std.fmt.allocPrint(ctx.arena, " {s}", .{head});
-
-        self.dashboard_round_rows[out] = .{
-            .text = try padLine(ctx, firstLineTrimmed(head_line, width), width),
-            .style = if (is_sel)
-                theme.boldOn(row_bg, if (exception) theme.WARN else theme.ACCENT_SOFT)
-            else
-                .{ .fg = if (exception) theme.WARN else theme.MUTED, .bg = row_bg },
-            .softwrap = false,
-        };
-        self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
-        out += 1;
+        if (exception) {
+            try appendExceptionRoundHeader(self, ctx, &out, width, round.session_id, time_txt, row_bg, is_sel);
+        } else {
+            const head = try flexBetween(ctx, round.session_id, time_txt, width -| 3);
+            const head_line = try std.fmt.allocPrint(ctx.arena, " {s}", .{head});
+            self.dashboard_round_rows[out] = .{
+                .text = try padLine(ctx, firstLineTrimmed(head_line, width), width),
+                .style = if (is_sel)
+                    theme.boldOn(row_bg, theme.ACCENT_SOFT)
+                else
+                    .{ .fg = theme.MUTED, .bg = row_bg },
+                .softwrap = false,
+            };
+            self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
+            out += 1;
+        }
 
         var remaining = if (round.missing_user_prompt)
             "Per-session log has MCP calls, but no user_prompt. Reinstall or rebuild the adapter hook."
@@ -683,6 +592,47 @@ fn syncRoundWidgets(
     self.dashboard_round_scroll_bars.scroll_view.children = .{ .slice = self.dashboard_round_widgets[0..out] };
     self.dashboard_round_scroll_bars.estimated_content_height = @intCast(out);
     clampScrollTop(&self.dashboard_round_scroll_bars.scroll_view, out);
+}
+
+fn appendExceptionRoundHeader(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+    out: *usize,
+    width: u16,
+    session_id: []const u8,
+    time_txt: []const u8,
+    row_bg: vaxis.Color,
+    is_selected: bool,
+) std.mem.Allocator.Error!void {
+    if (out.* >= self.dashboard_round_rich_rows.len) return;
+
+    const time_w: u16 = @intCast(ctx.stringWidth(time_txt));
+    const session_budget = width -| time_w -| 3;
+    const session_text = firstLineTrimmed(session_id, session_budget);
+    const session_w: u16 = @intCast(ctx.stringWidth(session_text));
+    const used_w = 1 + session_w + time_w;
+    const gap_w = width -| used_w;
+    const gap = try ctx.arena.alloc(u8, gap_w);
+    @memset(gap, ' ');
+
+    const spans = try ctx.arena.alloc(vaxis.Segment, 4);
+    const session_style = if (is_selected)
+        theme.boldOn(row_bg, theme.DANGER)
+    else
+        theme.textOn(row_bg, theme.DANGER);
+    spans[0] = .{ .text = " ", .style = theme.textOn(row_bg, theme.TEXT) };
+    spans[1] = .{ .text = session_text, .style = session_style };
+    spans[2] = .{ .text = gap, .style = theme.textOn(row_bg, theme.MUTED) };
+    spans[3] = .{ .text = time_txt, .style = theme.textOn(row_bg, theme.MUTED) };
+    self.dashboard_round_rich_rows[out.*] = .{
+        .text = spans,
+        .base_style = theme.textOn(row_bg, theme.MUTED),
+        .softwrap = false,
+        .overflow = .clip,
+        .width_basis = .longest_line,
+    };
+    self.dashboard_round_widgets[out.*] = self.dashboard_round_rich_rows[out.*].widget();
+    out.* += 1;
 }
 
 fn syncChainWidgets(
@@ -842,8 +792,10 @@ fn appendLoadGroup(
     const count = end - start;
     const marker = if (is_selected) "\xe2\x96\x8c" else " ";
     const exp_icon = if (is_expanded) "[-]" else "[+]";
+    const counts = loadGroupCounts(ctx, ws_id, tools[start..end]);
+    const label = loadGroupLabel(counts);
     const preview = try loadGroupPreview(ctx, ws_id, tools[start..end]);
-    const head = try std.fmt.allocPrint(ctx.arena, "{s} {s} {s} LOAD  {d} rules", .{ marker, time_txt, exp_icon, count });
+    const head = try std.fmt.allocPrint(ctx.arena, "{s} {s} {s} LOAD  {d} {s}", .{ marker, time_txt, exp_icon, count, label });
     const head_text = firstLineTrimmed(head, width);
     appendChainLine(self, out, if (is_selected) try padLine(ctx, head_text, width) else head_text, traceHeaderStyle("load", is_selected), is_selected);
 
@@ -851,17 +803,17 @@ fn appendLoadGroup(
         var idx: usize = 0;
         while (idx < count and out.* < self.dashboard_chain_rows.len) : (idx += 1) {
             const tool = tools[start + idx];
-            if (tool.rule_id) |rule_id| {
-                const rule = try resolveRulePreview(ctx, ws_id, rule_id);
-                try appendLoadRuleHeader(self, ctx, out, width, idx, count, rule.name, is_selected);
-                try appendRulePreview(self, ctx, out, width, rule, .expanded, is_selected, false);
+            if (loadToolId(tool)) |id| {
+                const item = try resolveRulePreview(ctx, ws_id, id);
+                try appendLoadItemHeader(self, ctx, out, width, idx, count, item, is_selected);
+                try appendRulePreview(self, ctx, out, width, item, .expanded, is_selected, false);
                 if (idx + 1 < count and out.* < self.dashboard_chain_rows.len) {
                     appendTraceGuideBlank(self, out, is_selected);
                 }
             }
         }
     } else {
-        try appendBriefText(self, ctx, out, width, "rules", preview, is_selected);
+        try appendBriefText(self, ctx, out, width, label, preview, is_selected);
     }
     if (end < tools.len and out.* < self.dashboard_chain_rows.len) {
         appendChainLine(self, out, "", theme.fg(theme.DIM), false);
@@ -869,17 +821,61 @@ fn appendLoadGroup(
     return end;
 }
 
-fn appendLoadRuleHeader(
+const LoadGroupCounts = struct {
+    rules: usize = 0,
+    workflows: usize = 0,
+    contexts: usize = 0,
+    unknown: usize = 0,
+};
+
+fn loadGroupCounts(
+    ctx: vxfw.DrawContext,
+    ws_id: []const u8,
+    tools: []const attestation_reader.RoundTool,
+) LoadGroupCounts {
+    var counts: LoadGroupCounts = .{};
+    for (tools) |tool| {
+        const id = loadToolId(tool) orelse {
+            counts.unknown += 1;
+            continue;
+        };
+        const item = resolveRulePreview(ctx, ws_id, id) catch {
+            counts.unknown += 1;
+            continue;
+        };
+        switch (item.kind) {
+            .rule => counts.rules += 1,
+            .workflow => counts.workflows += 1,
+            .context => counts.contexts += 1,
+        }
+    }
+    return counts;
+}
+
+fn loadGroupLabel(counts: LoadGroupCounts) []const u8 {
+    if (counts.contexts > 0 and counts.rules == 0 and counts.workflows == 0 and counts.unknown == 0) return "context";
+    if (counts.rules > 0 and counts.contexts == 0 and counts.workflows == 0 and counts.unknown == 0) return "rules";
+    if (counts.workflows > 0 and counts.contexts == 0 and counts.rules == 0 and counts.unknown == 0) return "workflows";
+    return "items";
+}
+
+fn loadToolId(tool: attestation_reader.RoundTool) ?[]const u8 {
+    if (tool.rule_id) |rule_id| return rule_id;
+    if (tool.context_id) |context_id| return context_id;
+    return null;
+}
+
+fn appendLoadItemHeader(
     self: anytype,
     ctx: vxfw.DrawContext,
     out: *usize,
     width: u16,
     index: usize,
     count: usize,
-    name: []const u8,
+    item: RulePreview,
     is_selected: bool,
 ) std.mem.Allocator.Error!void {
-    const text = try std.fmt.allocPrint(ctx.arena, "[{d}/{d}] {s}", .{ index + 1, count, name });
+    const text = try std.fmt.allocPrint(ctx.arena, "[{d}/{d}] {s}", .{ index + 1, count, item.name });
     try appendTraceChildColoredLine(self, ctx, out, width, "", text, theme.fg(TRACE_LOAD), is_selected);
 }
 
@@ -891,8 +887,8 @@ fn loadGroupPreview(
     var preview: std.ArrayList(u8) = .empty;
     var shown: usize = 0;
     for (tools) |tool| {
-        if (tool.rule_id == null) continue;
-        const rule = try resolveRulePreview(ctx, ws_id, tool.rule_id.?);
+        const id = loadToolId(tool) orelse continue;
+        const rule = try resolveRulePreview(ctx, ws_id, id);
         if (shown > 0) try preview.appendSlice(ctx.arena, ", ");
         try preview.appendSlice(ctx.arena, rule.name);
         shown += 1;
@@ -1065,6 +1061,7 @@ fn appendToolMetadata(
 }
 
 const RulePreview = struct {
+    kind: workspace_rule.RuleKind = .rule,
     name: []const u8,
     path: []const u8 = "",
     excerpt: []const u8 = "",
@@ -1085,6 +1082,7 @@ fn resolveRulePreview(ctx: vxfw.DrawContext, ws_id: []const u8, rule_id: []const
                     const item = result.items.items[0];
                     const excerpt = if (item.content) |content| firstMeaningfulLine(content) else "";
                     return .{
+                        .kind = item.kind,
                         .name = item.name,
                         .path = item.path,
                         .excerpt = excerpt,
