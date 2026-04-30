@@ -7,6 +7,7 @@ const draw = @import("widgets/draw.zig");
 const chart = @import("widgets/chart.zig");
 const badge = @import("widgets/badge.zig");
 const panel = @import("widgets/panel.zig");
+const drawer = @import("widgets/drawer.zig");
 const fixed_split = @import("widgets/fixed_split.zig");
 const cursor = @import("widgets/cursor.zig");
 const empty_state = @import("widgets/empty_state.zig");
@@ -36,6 +37,7 @@ pub const drawInnerTabBadge = badge.drawInnerTabBadge;
 pub const SurfaceWidget = panel.SurfaceWidget;
 pub const WidgetBox = panel.WidgetBox;
 pub const Panel = panel.Panel;
+pub const Drawer = drawer.Drawer;
 
 pub const splitHorizontal = fixed_split.splitHorizontal;
 pub const FixedSplit = fixed_split.FixedSplit;
@@ -128,6 +130,7 @@ test {
     _ = @import("widgets/chart.zig");
     _ = @import("widgets/badge.zig");
     _ = @import("widgets/panel.zig");
+    _ = @import("widgets/drawer.zig");
     _ = @import("widgets/fixed_split.zig");
     _ = @import("widgets/cursor.zig");
     _ = @import("widgets/empty_state.zig");

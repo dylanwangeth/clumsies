@@ -38,7 +38,7 @@ const WsTab = enum(u8) {
 
 const ws_tabs = [_]WsTab{ .context, .rules };
 
-const WsFocus = enum { bar, list, content };
+const WsFocus = enum { list, content };
 
 const SettingsTab = enum(u8) {
     account,
@@ -204,10 +204,11 @@ pub const Dashboard = struct {
 
     // Workspace Status
     ws_tab: WsTab = .context,
-    ws_focus: WsFocus = .bar,
+    ws_focus: WsFocus = .list,
     ws_sel: usize = 0,
+    show_workspace_drawer: bool = false,
+    workspace_drawer_cursor: usize = 0,
     ws_list_sel: usize = 0,
-    ws_grid_cols: u16 = 3,
     ws_show_diff: bool = false,
     ws_list_scroll_bars: vxfw.ScrollBars,
     ws_context_tree: PathTreeState = .{},
@@ -425,6 +426,11 @@ pub const Dashboard = struct {
                     return;
                 }
 
+                if (self.show_workspace_drawer) {
+                    workspace_panel.handleWorkspaceDrawerKey(self, ctx, key);
+                    return;
+                }
+
                 // Create Workspace overlay absorbs all keys
                 if (self.show_create_workspace) {
                     self.handleCreateWorkspaceKey(ctx, key);
@@ -562,6 +568,7 @@ pub const Dashboard = struct {
                                 self.settings_focus = .sidebar;
                                 self.selected_module = .workspace;
                                 self.ws_focus = .list;
+                                self.show_workspace_drawer = false;
                                 ctx.consumeAndRedraw();
                                 return;
                             }
@@ -701,10 +708,13 @@ pub const Dashboard = struct {
         );
 
         const show_input_overlay = self.analysis_show_input_detail and self.selected_module == .dashboard;
+        const show_workspace_drawer = self.show_workspace_drawer and self.selected_module == .workspace and
+            !self.show_settings and !self.show_help and !self.show_confirm and !self.show_comment_editor and
+            !self.show_create_workspace and !self.show_pr_composer and !self.show_new_draft_form;
         var child_count: usize = 3;
         if (self.show_help or self.show_confirm or self.show_comment_editor or
             self.show_create_workspace or self.show_pr_composer or
-            self.show_new_draft_form or show_input_overlay) child_count = 4;
+            self.show_new_draft_form or show_input_overlay or show_workspace_drawer) child_count = 4;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
@@ -771,6 +781,19 @@ pub const Dashboard = struct {
             children[3] = .{
                 .origin = .{ .row = 0, .col = 0 },
                 .surface = try self.drawNewDraftFormOverlay(full_ctx),
+            };
+        }
+        if (show_workspace_drawer) {
+            const drawer_w: u16 = @min(@as(u16, 44), size.width -| 6);
+            const drawer_top: u16 = 1;
+            const drawer_h: u16 = size.height - drawer_top;
+            const drawer_ctx = ctx.withConstraints(
+                .{ .width = drawer_w, .height = drawer_h },
+                .{ .width = drawer_w, .height = drawer_h },
+            );
+            children[3] = .{
+                .origin = .{ .row = drawer_top, .col = size.width - drawer_w },
+                .surface = try workspace_panel.drawWorkspaceDrawer(self, drawer_ctx),
             };
         }
 
@@ -869,6 +892,8 @@ pub const Dashboard = struct {
             "j/k move  Esc back"
         else if (self.show_comment_editor)
             "Enter send  Esc cancel"
+        else if (self.show_workspace_drawer)
+            "j/k move  Enter switch  Esc close"
         else switch (self.selected_module) {
             .dashboard => switch (self.analysis_focus) {
                 .chart => "j/k event  Enter [+]  Tab rounds  w scope  Shift-F flush  ? help  q quit",
@@ -884,14 +909,10 @@ pub const Dashboard = struct {
             else
                 "j/k move  y copy id  n new  [/] tab  Enter detail  r refresh  b bundle  ? help  q quit",
             .workspace => switch (self.ws_focus) {
-                .bar => if (self.ws_tab == .context)
-                    "j/k select ws  [/] tab  n new file  c create ws  Tab list  r refresh  ? help  q quit"
-                else
-                    "j/k select ws  [/] tab  c create ws  Tab list  r refresh  ? help  q quit",
                 .list => if (self.ws_tab == .context)
-                    "[/] tab  j/k move  h/l tree  y copy id  Enter open  n new file  c create ws  Esc bar  ? help"
+                    "w workspaces  [/] tab  j/k move  h/l tree  y copy id  Enter open  n new file  c create ws  ? help"
                 else
-                    "[/] tab  j/k move  h/l tree  y copy id  Enter open  c create ws  Esc bar  ? help",
+                    "w workspaces  [/] tab  j/k move  h/l tree  y copy id  Enter open  c create ws  ? help",
                 .content => "y copy id  j/k scroll  d toggle diff  e edit  D discard  m ready  p submit  Esc list  ? help",
             },
             .analysis => switch (self.analysis_focus) {
@@ -927,18 +948,17 @@ pub const Dashboard = struct {
         // Right-aligned contextual hint for workspace items
         if (!self.show_help and !self.show_confirm and !self.show_settings and
             !self.show_comment_editor and
+            !self.show_workspace_drawer and
             self.selected_module == .workspace)
         {
             const hint: []const u8 = if (self.ws_focus == .content)
                 (if (self.ws_show_diff) "d content" else "d diff")
-            else if (self.ws_focus == .bar) blk: {
+            else blk: {
                 const wss = self.getWorkspaces();
                 if (wss.len == 0) break :blk "No workspaces";
                 const ws_idx = @min(self.ws_sel, wss.len - 1);
                 const wsi = &wss[ws_idx];
-                break :blk if (wsi.local_rev != wsi.remote_rev) "New version available, press r to sync" else "Up to date";
-            } else blk: {
-                break :blk "Up to date";
+                break :blk if (wsi.local_rev != wsi.remote_rev) "w workspaces · update available" else "w workspaces";
             };
             w.writeRightText(&surface, ctx, 0, hint, theme.fg(theme.TEXT_SOFT));
         }
@@ -1017,25 +1037,18 @@ pub const Dashboard = struct {
         return library_panel.drawListPanel(self, ctx, bundle_label, rule_count);
     }
 
-    // Workspace: top workspace bar + bottom master-detail (list | content).
-    // Tab cycles focus: workspace bar -> list -> content -> bar.
+    // Workspace: master-detail content with a command drawer for switching
+    // workspaces. Tab cycles focus between list and content.
     fn drawWorkspaceStatus(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         self.ensureDraftsCacheForActiveWorkspace();
-        const wss = self.getWorkspaces();
         const size = ctx.max.size();
-        const inner_w = size.width -| 2;
-        const cols: u16 = if (inner_w >= 120) 4 else if (inner_w >= 80) 3 else 2;
-        const ws_count: u16 = @intCast(if (wss.len > 0) wss.len else 1);
-        const grid_rows: u16 = (ws_count + cols - 1) / cols;
-        const bar_h: u16 = 1 + grid_rows + 1;
-        const body_h = size.height - bar_h;
         const list_w: u16 = size.width / 3;
         const detail_w: u16 = size.width - list_w - 1;
-        const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = body_h }, .{ .width = list_w, .height = body_h });
-        const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = body_h }, .{ .width = detail_w, .height = body_h });
+        const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
+        const detail_ctx = ctx.withConstraints(.{ .width = detail_w, .height = size.height }, .{ .width = detail_w, .height = size.height });
         const list_surface = try self.drawWsList(list_ctx);
         const detail_surface = try self.drawWsDetail(detail_ctx);
-        return workspace_panel.drawStatus(self, ctx, wss, list_surface, detail_surface);
+        return workspace_panel.drawStatus(self, ctx, list_surface, detail_surface);
     }
 
     fn drawWsList(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -1059,6 +1072,15 @@ pub const Dashboard = struct {
         if (user.workspaces.len == 0) return null;
         const idx = @min(self.ws_sel, user.workspaces.len - 1);
         return user.workspaces[idx].ws_id;
+    }
+
+    pub fn activeWorkspaceName(self: *Dashboard) []const u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return "No workspace";
+        if (user.workspaces.len == 0) return "No workspace";
+        const idx = @min(self.ws_sel, user.workspaces.len - 1);
+        return user.workspaces[idx].name;
     }
 
     pub fn selectWorkspaceIndex(self: *Dashboard, idx: usize) void {
@@ -1967,7 +1989,7 @@ pub const Dashboard = struct {
         return self.getWorkspaces().len;
     }
 
-    fn getWorkspaces(self: *Dashboard) []const data.WorkspaceEntry {
+    pub fn getWorkspaces(self: *Dashboard) []const data.WorkspaceEntry {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.current_user) |u| {

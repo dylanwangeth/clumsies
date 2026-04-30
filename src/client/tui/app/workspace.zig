@@ -66,7 +66,6 @@ pub const DetailArgs = struct {
 pub fn drawStatus(
     self: anytype,
     ctx: vxfw.DrawContext,
-    wss: []const data.WorkspaceEntry,
     list_surface: vxfw.Surface,
     detail_surface: vxfw.Surface,
 ) std.mem.Allocator.Error!vxfw.Surface {
@@ -74,64 +73,10 @@ pub fn drawStatus(
     var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
     w.fillSurface(&root, theme.PANEL);
 
-    const inner_w = size.width -| 2;
-    const cols: u16 = if (inner_w >= 120) 4 else if (inner_w >= 80) 3 else 2;
-    self.ws_grid_cols = cols;
-    const card_w: u16 = inner_w / cols;
-    const ws_count: u16 = @intCast(if (wss.len > 0) wss.len else 1);
-    const grid_rows: u16 = (ws_count + cols - 1) / cols;
-    const bar_h: u16 = 1 + grid_rows + 1;
-
-    const bar_border = theme.focusBorder(self.ws_focus == .bar);
-    var bar = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = size.width, .height = bar_h });
-    w.fillSurface(&bar, theme.PANEL);
-    w.drawBorder(&bar, bar_border, theme.PANEL);
-    w.writeText(&bar, ctx, 2, 0, "Workspaces", theme.boldOn(theme.PANEL, theme.TEXT));
-
-    if (wss.len == 0) {
-        const status = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            break :blk self.api_state.status;
-        };
-        w.drawEmptyState(&bar, ctx, 2, 1, status, "workspaces");
-    }
-
-    const ws_idx = if (wss.len > 0) @min(self.ws_sel, wss.len - 1) else 0;
-    for (wss, 0..) |wsi, i| {
-        const is_sel = i == ws_idx;
-        const grid_col: u16 = @intCast(i % cols);
-        const grid_row: u16 = @intCast(i / cols);
-        const x = 1 + grid_col * card_w;
-        const y = 1 + grid_row;
-
-        if (is_sel) {
-            w.writeCursorMarker(&bar, x, y);
-        }
-
-        const name_x = x + 1;
-        const needs_sync = wsi.local_rev != wsi.remote_rev;
-        const label = if (needs_sync)
-            try std.fmt.allocPrint(ctx.arena, "{s} *", .{wsi.name})
-        else
-            wsi.name;
-
-        if (is_sel) {
-            w.writeText(&bar, ctx, name_x, y, label, theme.boldOn(theme.PANEL, theme.TEXT));
-        } else {
-            w.writeText(&bar, ctx, name_x, y, wsi.name, theme.fg(theme.TEXT_SOFT));
-            if (needs_sync) {
-                const nw: u16 = @intCast(ctx.stringWidth(wsi.name));
-                w.writeText(&bar, ctx, name_x + nw + 1, y, "*", theme.fg(theme.WARN));
-            }
-        }
-    }
-
     const list_w: u16 = size.width / 3;
-    const children = try ctx.arena.alloc(vxfw.SubSurface, 3);
-    children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = bar };
-    children[1] = .{ .origin = .{ .row = bar_h, .col = 0 }, .surface = list_surface };
-    children[2] = .{ .origin = .{ .row = bar_h, .col = list_w + 1 }, .surface = detail_surface };
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+    children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = list_surface };
+    children[1] = .{ .origin = .{ .row = 0, .col = list_w + 1 }, .surface = detail_surface };
     root.children = children;
     return root;
 }
@@ -155,6 +100,8 @@ pub fn drawList(
         tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, wsTabLabel(tab), tab == self.ws_tab);
         tab_col +|= 1;
     }
+    const ws_label = try std.fmt.allocPrint(ctx.arena, "w {s}", .{self.activeWorkspaceName()});
+    _ = w.writeHeaderRightIfFits(&surface, ctx, 0, tab_col + 1, ws_label, theme.fg(theme.TEXT_SOFT));
 
     const body_origin_row: u16 = 1;
     const body_origin_col: u16 = 2;
@@ -499,6 +446,98 @@ fn writeRuleMetaOnHeader(
     _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
 }
 
+pub fn drawWorkspaceDrawer(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    const body_w = size.width -| 5;
+    const body_h = size.height -| 4;
+    var body = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = body_w, .height = body_h });
+    w.fillSurface(&body, theme.PANEL_SOFT);
+
+    const workspaces: []const api.model.WsData = blk: {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse break :blk &.{};
+        const snapshot = try ctx.arena.alloc(api.model.WsData, user.workspaces.len);
+        @memcpy(snapshot, user.workspaces);
+        break :blk snapshot;
+    };
+    if (workspaces.len == 0) {
+        w.writeText(&body, ctx, 1, 1, "No workspaces.", theme.textOn(theme.PANEL_SOFT, theme.MUTED));
+    } else {
+        if (self.workspace_drawer_cursor >= workspaces.len) self.workspace_drawer_cursor = workspaces.len - 1;
+        const max_rows: usize = @intCast(body_h);
+        const visible_rows = if (max_rows > 2) max_rows - 2 else max_rows;
+        const start = if (self.workspace_drawer_cursor >= visible_rows)
+            self.workspace_drawer_cursor - visible_rows + 1
+        else
+            0;
+        var out_row: u16 = 0;
+        var i = start;
+        while (i < workspaces.len and out_row < body_h) : ({
+            i += 1;
+            out_row += 1;
+        }) {
+            const entry = workspaces[i];
+            const is_cursor = i == self.workspace_drawer_cursor;
+            const is_active = i == self.ws_sel;
+            if (is_cursor) {
+                w.writeText(&body, ctx, 0, out_row, "\xe2\x96\x8c", theme.textOn(theme.PANEL_SOFT, theme.ACCENT_SOFT));
+            }
+            const name_style = if (is_cursor)
+                theme.boldOn(theme.PANEL_SOFT, theme.TEXT)
+            else
+                theme.textOn(theme.PANEL_SOFT, theme.TEXT_SOFT);
+            w.writeText(&body, ctx, 2, out_row, entry.name, name_style);
+
+            if (is_active) {
+                w.writeRightText(&body, ctx, out_row, "active", theme.boldOn(theme.PANEL_SOFT, theme.ACCENT_SOFT));
+            }
+        }
+    }
+
+    const drawer = w.Drawer{
+        .title = "Workspaces",
+        .border_color = theme.ACCENT_SOFT,
+        .background = theme.PANEL_SOFT,
+        .body = body,
+    };
+    return drawer.draw(ctx, self.widget());
+}
+
+pub fn handleWorkspaceDrawerKey(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    const count = self.wsCount();
+    if (key.matches(vaxis.Key.escape, .{}) or key.matches('w', .{})) {
+        self.show_workspace_drawer = false;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+        if (self.workspace_drawer_cursor + 1 < count) self.workspace_drawer_cursor += 1;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+        if (self.workspace_drawer_cursor > 0) self.workspace_drawer_cursor -= 1;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches(vaxis.Key.enter, .{})) {
+        if (count > 0) {
+            self.selectWorkspaceIndex(self.workspace_drawer_cursor);
+        }
+        ctx.consumeAndRedraw();
+        return;
+    }
+    ctx.consumeEvent();
+}
+
 pub fn handleModuleEvent(
     self: anytype,
     ctx: *vxfw.EventContext,
@@ -506,10 +545,16 @@ pub fn handleModuleEvent(
 ) anyerror!void {
     if (key.matches(vaxis.Key.tab, .{})) {
         self.ws_focus = switch (self.ws_focus) {
-            .bar => .list,
             .list => .content,
-            .content => .bar,
+            .content => .list,
         };
+        ctx.consumeAndRedraw();
+        return;
+    }
+
+    if (key.matches('w', .{})) {
+        self.workspace_drawer_cursor = self.ws_sel;
+        self.show_workspace_drawer = true;
         ctx.consumeAndRedraw();
         return;
     }
@@ -538,10 +583,9 @@ pub fn handleModuleEvent(
     }
 
     // `n` creates a new context-file draft. Bound at module level
-    // (like Library's `n`) rather than inside list-focus so users
-    // can still reach it from the workspace bar without tabbing
-    // into the list first. Rules are org-owned — workspace does
-    // not create them, so `n` is gated on the Context tab.
+    // (like Library's `n`) so both workspace focus modes can reach it.
+    // Rules are org-owned — workspace does not create them, so `n` is
+    // gated on the Context tab.
     if (key.matches('n', .{}) and self.ws_tab == .context) {
         self.openNewDraftForm(.context);
         ctx.consumeAndRedraw();
@@ -558,7 +602,6 @@ pub fn handleModuleEvent(
     }
 
     switch (self.ws_focus) {
-        .bar => try handleBarFocusEvent(self, ctx, key),
         .list => try handleListFocusEvent(self, ctx, key),
         .content => try handleContentFocusEvent(self, ctx, key),
     }
@@ -577,49 +620,6 @@ fn wsTabLabel(tab: anytype) []const u8 {
         .context => "Context",
         .rules => "Rules",
     };
-}
-
-fn handleBarFocusEvent(
-    self: anytype,
-    ctx: *vxfw.EventContext,
-    key: vaxis.Key,
-) anyerror!void {
-    const ws_count = self.wsCount();
-    const cols = self.ws_grid_cols;
-
-    if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-        if (self.ws_sel + 1 < ws_count) {
-            self.selectWorkspaceIndex(self.ws_sel + 1);
-            ctx.consumeAndRedraw();
-        }
-        return;
-    }
-    if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-        if (self.ws_sel > 0) {
-            self.selectWorkspaceIndex(self.ws_sel - 1);
-            ctx.consumeAndRedraw();
-        }
-        return;
-    }
-    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-        if (self.ws_sel + cols < ws_count) {
-            self.selectWorkspaceIndex(self.ws_sel + cols);
-            ctx.consumeAndRedraw();
-        }
-        return;
-    }
-    if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-        if (self.ws_sel >= cols) {
-            self.selectWorkspaceIndex(self.ws_sel - cols);
-            ctx.consumeAndRedraw();
-        }
-        return;
-    }
-    if (key.matches(vaxis.Key.enter, .{})) {
-        self.ws_focus = .list;
-        self.selectWorkspaceIndex(self.ws_sel);
-        ctx.consumeAndRedraw();
-    }
 }
 
 fn handleListFocusEvent(
@@ -669,7 +669,8 @@ fn handleListFocusEvent(
         return;
     }
     if (key.matches(vaxis.Key.escape, .{})) {
-        self.ws_focus = .bar;
+        self.workspace_drawer_cursor = self.ws_sel;
+        self.show_workspace_drawer = true;
         ctx.consumeAndRedraw();
         return;
     }
