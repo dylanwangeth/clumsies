@@ -189,13 +189,17 @@ Important item fields are:
 | `hasDraft` | whether the loaded result resolves to draft-aware state |
 | `draftBaseHash` | optional base hash when draft-aware content is involved |
 | `content` | full text content, or `null` when unchanged under delta loading |
-| `constraints` | parsed constraint IDs for rules and workflows |
+| `constraints` | referable rule/workflow constraint entries parsed from the loaded content |
 
 For rules and workflows, the returned content includes the refer reminder footer. Context items do not get that footer.
 
+In this protocol, a constraint is not something the agent invents from markdown structure. It is one entry in the `constraints` array returned by `memory.load` for a rule or workflow. The entry includes the `id` to use in `memory.refer`, plus display text such as `name`, `text`, and `textHash`.
+
 ## `memory.refer`
 
-`memory.refer` is the strongest usage signal in the model. It is the point where the agent claims that a loaded constraint actually shaped the turn.
+`memory.refer` is the strongest usage signal in the model. It is the point where the agent claims that one of the `constraints` entries returned by `memory.load` for a rule or workflow actually shaped the turn.
+
+Context files are reference material, not refer targets. A context ID supplied as `ruleId` is rejected.
 
 ### Input
 
@@ -208,7 +212,7 @@ Each ref object can contain:
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `ruleId` | string | yes | stable rule or workflow ID |
-| `constraintId` | string | yes | parsed constraint ID |
+| `constraintId` | string | yes | `id` from one of that rule/workflow's returned `constraints` entries |
 | `ruleHash` | string | no | current content hash when available |
 | `reason` | string | no | human-readable explanation of why the constraint mattered |
 
@@ -277,8 +281,6 @@ The split is intentional:
 
 - `context.propose_*` operates on workspace-owned context
 - `rule.propose_*` operates on Library-owned rules
-
-One detail is worth calling out explicitly: the latest `META_PROMPT` text says `prompt.propose_*` for library-side refinement. The current public MCP implementation still exposes `rule.propose_*`. This page documents the implementation surface as it exists today.
 
 ### Create
 

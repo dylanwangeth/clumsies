@@ -52,6 +52,7 @@ pub const RoundRefer = struct {
     rule_id: []const u8,
     constraint_id: []const u8,
     constraint_name: ?[]const u8 = null,
+    constraint_text: ?[]const u8 = null,
     reason: ?[]const u8 = null,
 };
 
@@ -62,6 +63,7 @@ pub const RoundTool = struct {
     rule_id: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
     constraint_name: ?[]const u8 = null,
+    constraint_text: ?[]const u8 = null,
     mpf_hash: ?[]const u8 = null,
     mpf_content: ?[]const u8 = null,
     mpf_changed: ?bool = null,
@@ -102,6 +104,7 @@ const AttestationEvent = struct {
     rule_hash: ?[]const u8 = null,
     constraint_id: ?[]const u8 = null,
     constraint_name: ?[]const u8 = null,
+    constraint_text: ?[]const u8 = null,
     mpf_hash: ?[]const u8 = null,
     mpf_content: ?[]const u8 = null,
     mpf_changed: ?bool = null,
@@ -266,6 +269,7 @@ fn cloneAttestationEvent(
         .rule_hash = null,
         .constraint_id = null,
         .constraint_name = null,
+        .constraint_text = null,
         .mpf_hash = null,
         .mpf_content = null,
         .mpf_changed = src.mpf_changed,
@@ -295,6 +299,9 @@ fn cloneAttestationEvent(
 
     out.constraint_name = try dupeOptional(allocator, src.constraint_name);
     errdefer if (out.constraint_name) |s| allocator.free(s);
+
+    out.constraint_text = try dupeOptional(allocator, src.constraint_text);
+    errdefer if (out.constraint_text) |s| allocator.free(s);
 
     out.mpf_hash = try dupeOptional(allocator, src.mpf_hash);
     errdefer if (out.mpf_hash) |s| allocator.free(s);
@@ -346,6 +353,7 @@ fn freeAttestationEventOwned(allocator: std.mem.Allocator, ev: AttestationEvent)
     if (ev.rule_hash) |s| allocator.free(s);
     if (ev.constraint_id) |s| allocator.free(s);
     if (ev.constraint_name) |s| allocator.free(s);
+    if (ev.constraint_text) |s| allocator.free(s);
     if (ev.mpf_hash) |s| allocator.free(s);
     if (ev.mpf_content) |s| allocator.free(s);
     if (ev.kind) |s| allocator.free(s);
@@ -651,6 +659,7 @@ fn buildRounds(allocator: std.mem.Allocator, events: []const AttestationEvent) [
                         .rule_id = rule_id,
                         .constraint_id = constraint_id,
                         .constraint_name = ev.constraint_name,
+                        .constraint_text = ev.constraint_text,
                         .reason = ev.reason,
                     }) catch continue;
                 }
@@ -766,6 +775,7 @@ fn appendRoundTool(allocator: std.mem.Allocator, builder: anytype, ev: Attestati
         .rule_id = ev.rule_id,
         .constraint_id = ev.constraint_id,
         .constraint_name = ev.constraint_name,
+        .constraint_text = ev.constraint_text,
         .mpf_hash = ev.mpf_hash,
         .mpf_content = ev.mpf_content,
         .mpf_changed = ev.mpf_changed,
@@ -870,7 +880,17 @@ test "buildRounds groups evidence after each user prompt" {
         .{ .ws_id = "ws-1", .session_id = "s-1", .type = "user_prompt", .timestamp = 1000, .content = "first" },
         .{ .ws_id = "ws-1", .session_id = "s-1", .type = "discover", .timestamp = 1001 },
         .{ .ws_id = "ws-1", .session_id = "s-1", .type = "load", .timestamp = 1002, .rule_id = "p-1", .rule_hash = "h-1" },
-        .{ .ws_id = "ws-1", .session_id = "s-1", .type = "refer", .timestamp = 1003, .rule_id = "p-1", .constraint_id = "c-1", .reason = "used it" },
+        .{
+            .ws_id = "ws-1",
+            .session_id = "s-1",
+            .type = "refer",
+            .timestamp = 1003,
+            .rule_id = "p-1",
+            .constraint_id = "c-1",
+            .constraint_name = "Rule loading",
+            .constraint_text = "Load the relevant rules before editing.",
+            .reason = "used it",
+        },
         .{ .ws_id = "ws-1", .session_id = "s-1", .type = "agent_report", .timestamp = 1004, .summary = "done" },
         .{ .ws_id = "ws-1", .session_id = "s-1", .type = "user_prompt", .timestamp = 2000, .content = "second" },
         .{ .ws_id = "ws-1", .session_id = "s-1", .type = "reject", .timestamp = 2001, .reason = "bad" },
@@ -889,10 +909,13 @@ test "buildRounds groups evidence after each user prompt" {
     try std.testing.expectEqualStrings("done", rounds[1].summary.?);
     try std.testing.expectEqualStrings("p-1", rounds[1].refers[0].rule_id);
     try std.testing.expectEqualStrings("c-1", rounds[1].refers[0].constraint_id);
+    try std.testing.expectEqualStrings("Rule loading", rounds[1].refers[0].constraint_name.?);
+    try std.testing.expectEqualStrings("Load the relevant rules before editing.", rounds[1].refers[0].constraint_text.?);
     try std.testing.expectEqual(@as(usize, 4), rounds[1].tools.len);
     try std.testing.expectEqualStrings("discover", rounds[1].tools[0].kind);
     try std.testing.expectEqualStrings("load", rounds[1].tools[1].kind);
     try std.testing.expectEqualStrings("refer", rounds[1].tools[2].kind);
+    try std.testing.expectEqualStrings("Load the relevant rules before editing.", rounds[1].tools[2].constraint_text.?);
     try std.testing.expectEqualStrings("agent_report", rounds[1].tools[3].kind);
 }
 

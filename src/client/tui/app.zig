@@ -888,8 +888,8 @@ pub const Dashboard = struct {
             "j/k move  Enter switch  Esc close"
         else switch (self.selected_module) {
             .dashboard => switch (self.analysis_focus) {
-                .chart => "j/k trail  Enter expand  Tab rounds  Shift-F flush  ? help  q quit",
-                .inputs => "j/k move  Tab trail  Shift-F flush  ? help  q quit",
+                .chart => "j/k trail  Enter expand  Tab focus  Shift-F flush  ? help  q quit",
+                .inputs => "j/k move  Tab focus  Shift-F flush  ? help  q quit",
                 else => "Tab focus  Shift-F flush  ? help  q quit",
             },
             .library => if (self.detail_focus_content and self.detail_tab == .pull_requests)
@@ -1138,6 +1138,38 @@ pub const Dashboard = struct {
     pub fn cachedRuleBody(self: *Dashboard, path: []const u8) ?[]const u8 {
         const resp = self.api_state.rule_content_cache.lookup(.{ .value = path }) orelse return null;
         return resp.body;
+    }
+
+    pub fn cachedLibraryRuleBody(
+        self: *Dashboard,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    ) ?[]const u8 {
+        return switch (category) {
+            .rule => self.cachedRuleBody(path),
+            .context => null,
+            .meta_prompt => self.cachedMetaPromptBody(),
+        };
+    }
+
+    pub fn cachedMetaPromptBody(self: *Dashboard) ?[]const u8 {
+        const ws_id = self.activeWsId() orelse return null;
+        const arena = self.viewAllocator();
+        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
+        const path = std.fs.path.join(arena, &.{ ws_dir, "cache", "META_PROMPT.md" }) catch return null;
+        const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+        defer file.close();
+        var read_buf: [4096]u8 = undefined;
+        var fr = std.fs.File.Reader.init(file, &read_buf);
+        return fr.interface.allocRemaining(arena, std.io.Limit.limited(10 * 1024 * 1024)) catch null;
+    }
+
+    pub fn libraryCategoryForPath(
+        self: *const Dashboard,
+        path: []const u8,
+    ) drafts_mod.DraftCategory {
+        _ = self;
+        return if (std.mem.eql(u8, path, "META_PROMPT.md")) .meta_prompt else .rule;
     }
 
     pub fn invalidateRemoteDetailRequests(self: *Dashboard) void {
@@ -2370,7 +2402,7 @@ pub const Dashboard = struct {
                     const rule = &rules[self.selected_rule];
                     return .{
                         .ws_id = ws_id,
-                        .category = .rule,
+                        .category = self.libraryCategoryForPath(rule.path),
                         .path = rule.path,
                         .rule_id = self.lookupRuleId(rule.path),
                     };
@@ -2426,7 +2458,7 @@ pub const Dashboard = struct {
                         };
                         return .{
                             .ws_id = ws_id,
-                            .category = .rule,
+                            .category = self.libraryCategoryForPath(path),
                             .path = path,
                             .rule_id = self.lookupRuleId(path),
                         };
@@ -2550,7 +2582,7 @@ pub const Dashboard = struct {
         return switch (target.category) {
             .rule => self.cachedRuleBody(target.path),
             .context => self.cachedWorkspaceContextBody(target.ws_id, target.path),
-            .meta_prompt => null,
+            .meta_prompt => self.cachedMetaPromptBody(),
         };
     }
 
@@ -2731,7 +2763,7 @@ pub const Dashboard = struct {
         switch (target.category) {
             .rule => self.submitRulePr(target),
             .context => self.submitContextPr(target),
-            .meta_prompt => {},
+            .meta_prompt => self.submitRulePr(target),
         }
     }
 
