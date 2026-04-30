@@ -794,9 +794,10 @@ fn appendLoadGroup(
     const marker = if (is_selected) "\xe2\x96\x8c" else " ";
     const exp_icon = if (is_expanded) "[-]" else "[+]";
     const counts = loadGroupCounts(ctx, ws_id, tools[start..end]);
-    const label = loadGroupLabel(counts);
+    const label = try loadGroupSummary(ctx.arena, counts);
+    const detail_label = loadGroupDetailLabel(counts);
     const preview = try loadGroupPreview(ctx, ws_id, tools[start..end]);
-    const head = try std.fmt.allocPrint(ctx.arena, "{s} {s} {s} LOAD  {d} {s}", .{ marker, time_txt, exp_icon, count, label });
+    const head = try std.fmt.allocPrint(ctx.arena, "{s} {s} {s} LOAD  {s}", .{ marker, time_txt, exp_icon, label });
     const head_text = firstLineTrimmed(head, width);
     appendChainLine(self, out, if (is_selected) try padLine(ctx, head_text, width) else head_text, traceHeaderStyle("load", is_selected), is_selected);
 
@@ -814,7 +815,7 @@ fn appendLoadGroup(
             }
         }
     } else {
-        try appendBriefText(self, ctx, out, width, label, preview, is_selected);
+        try appendBriefText(self, ctx, out, width, detail_label, preview, is_selected);
     }
     if (end < tools.len and out.* < self.dashboard_chain_rows.len) {
         appendChainLine(self, out, "", theme.fg(theme.DIM), false);
@@ -853,11 +854,36 @@ fn loadGroupCounts(
     return counts;
 }
 
-fn loadGroupLabel(counts: LoadGroupCounts) []const u8 {
+fn loadGroupDetailLabel(counts: LoadGroupCounts) []const u8 {
     if (counts.contexts > 0 and counts.rules == 0 and counts.workflows == 0 and counts.unknown == 0) return "context";
     if (counts.rules > 0 and counts.contexts == 0 and counts.workflows == 0 and counts.unknown == 0) return "rules";
     if (counts.workflows > 0 and counts.contexts == 0 and counts.rules == 0 and counts.unknown == 0) return "workflows";
     return "items";
+}
+
+fn loadGroupSummary(allocator: std.mem.Allocator, counts: LoadGroupCounts) std.mem.Allocator.Error![]const u8 {
+    var parts: std.ArrayList(u8) = .empty;
+    errdefer parts.deinit(allocator);
+
+    try appendLoadCountPart(allocator, &parts, counts.contexts, "context", "contexts");
+    try appendLoadCountPart(allocator, &parts, counts.rules, "rule", "rules");
+    try appendLoadCountPart(allocator, &parts, counts.workflows, "workflow", "workflows");
+    try appendLoadCountPart(allocator, &parts, counts.unknown, "item", "items");
+
+    if (parts.items.len == 0) return try allocator.dupe(u8, "0 items");
+    return try parts.toOwnedSlice(allocator);
+}
+
+fn appendLoadCountPart(
+    allocator: std.mem.Allocator,
+    parts: *std.ArrayList(u8),
+    count: usize,
+    singular: []const u8,
+    plural: []const u8,
+) std.mem.Allocator.Error!void {
+    if (count == 0) return;
+    if (parts.items.len > 0) try parts.appendSlice(allocator, ", ");
+    try parts.writer(allocator).print("{d} {s}", .{ count, if (count == 1) singular else plural });
 }
 
 fn loadToolId(tool: attestation_reader.RoundTool) ?[]const u8 {
@@ -1696,6 +1722,26 @@ test "protocolCounts groups rule and context proposals as refine tools" {
     try std.testing.expectEqual(@as(u16, 1), counts.user);
     try std.testing.expectEqual(@as(u16, 8), counts.refine);
     try std.testing.expectEqual(@as(u16, 0), counts.other);
+}
+
+test "loadGroupSummary describes mixed resource types" {
+    const summary = try loadGroupSummary(std.testing.allocator, .{
+        .rules = 2,
+        .workflows = 1,
+        .contexts = 1,
+    });
+    defer std.testing.allocator.free(summary);
+
+    try std.testing.expectEqualStrings("1 context, 2 rules, 1 workflow", summary);
+}
+
+test "loadGroupSummary pluralizes homogeneous resource types" {
+    const summary = try loadGroupSummary(std.testing.allocator, .{
+        .rules = 3,
+    });
+    defer std.testing.allocator.free(summary);
+
+    try std.testing.expectEqualStrings("3 rules", summary);
 }
 
 fn firstLineTrimmed(text: []const u8, max_cells: u16) []const u8 {
