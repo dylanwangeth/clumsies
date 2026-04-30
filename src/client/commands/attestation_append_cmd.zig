@@ -9,7 +9,7 @@ const styles = @import("../styles.zig");
 const Color = styles.Color;
 const P = styles.P;
 
-const ALLOWED_TYPES = [_][]const u8{ "setup", "user_prompt", "discover", "load", "refer", "agent_report" };
+const ALLOWED_TYPES = [_][]const u8{ "setup", "user_prompt", "discover", "agent_report" };
 
 const FLAG_TYPE: usize = 0;
 const FLAG_CONTENT: usize = 1;
@@ -58,15 +58,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         return;
     };
 
-    var allowed = false;
-    for (ALLOWED_TYPES) |t| {
-        if (std.mem.eql(u8, t, event_type)) {
-            allowed = true;
-            break;
-        }
-    }
-    if (!allowed) {
-        try stderr.writeAll("Error: --type must be one of setup/user_prompt/discover/load/refer/agent_report\n");
+    if (!isAllowedType(event_type)) {
+        try stderr.writeAll("Error: --type must be one of setup/user_prompt/discover/agent_report\n");
         return;
     }
 
@@ -87,8 +80,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         content_hash_owned = try util_hash.sha256HexAlloc(allocator, c);
     }
 
-    // Build the payload based on event_type. The CLI hook command primarily
-    // writes user_prompt events; other event types use void/empty variants.
+    // Build the payload based on event_type. Hook-side load/refer events are
+    // intentionally unsupported because they require structured MCP payloads.
     const payload: attestation.AttestationEvent.Payload = if (std.mem.eql(u8, event_type, "user_prompt"))
         .{ .user_prompt = .{
             .content_hash = content_hash_owned orelse "",
@@ -98,10 +91,6 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         .{ .setup = .{} }
     else if (std.mem.eql(u8, event_type, "discover"))
         .{ .discover = .{} }
-    else if (std.mem.eql(u8, event_type, "load"))
-        .{ .discover = .{} } // CLI hook doesn't carry rule_id; fallback to void variant
-    else if (std.mem.eql(u8, event_type, "refer"))
-        .{ .discover = .{} } // CLI hook doesn't carry rule_id/constraint_id; fallback to void variant
     else if (std.mem.eql(u8, event_type, "agent_report"))
         .{ .agent_report = .{ .summary = content_opt orelse "" } }
     else
@@ -119,10 +108,24 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
 }
 
+fn isAllowedType(event_type: []const u8) bool {
+    for (ALLOWED_TYPES) |t| {
+        if (std.mem.eql(u8, t, event_type)) return true;
+    }
+    return false;
+}
+
 fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}{s}clumsies _agent attestation-append{s}\n\n", .{ P, Color.bold, Color.reset });
     try out.print("Append a single attestation event to the current workspace's attestation log.\n", .{});
     try out.print("Intended for adapter hooks (UserPromptSubmit, etc).\n\n", .{});
     try out.print("{s}Usage:{s}\n", .{ Color.bold, Color.reset });
     try out.print("  clumsies _agent attestation-append --type user_prompt --content \"hello\"\n", .{});
+}
+
+test "attestation append rejects structured MCP-only event types" {
+    try std.testing.expect(!isAllowedType("load"));
+    try std.testing.expect(!isAllowedType("refer"));
+    try std.testing.expect(isAllowedType("user_prompt"));
+    try std.testing.expect(isAllowedType("agent_report"));
 }
