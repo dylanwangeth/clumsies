@@ -778,15 +778,17 @@ pub const Dashboard = struct {
         if (show_workspace_drawer) {
             const drawer_w: u16 = @min(@as(u16, 44), size.width -| 6);
             const drawer_top: u16 = 1;
-            const drawer_h: u16 = size.height - drawer_top;
-            const drawer_ctx = ctx.withConstraints(
-                .{ .width = drawer_w, .height = drawer_h },
-                .{ .width = drawer_w, .height = drawer_h },
-            );
-            children[3] = .{
-                .origin = .{ .row = drawer_top, .col = size.width - drawer_w },
-                .surface = try workspace_panel.drawWorkspaceDrawer(self, drawer_ctx),
-            };
+            if (drawer_w > 0 and size.height > drawer_top) {
+                const drawer_h: u16 = size.height - drawer_top;
+                const drawer_ctx = ctx.withConstraints(
+                    .{ .width = drawer_w, .height = drawer_h },
+                    .{ .width = drawer_w, .height = drawer_h },
+                );
+                children[3] = .{
+                    .origin = .{ .row = drawer_top, .col = size.width - drawer_w },
+                    .surface = try workspace_panel.drawWorkspaceDrawer(self, drawer_ctx),
+                };
+            }
         }
 
         root.children = children;

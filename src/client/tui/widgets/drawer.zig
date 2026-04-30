@@ -5,6 +5,11 @@ const theme = @import("../theme.zig");
 const d = @import("draw.zig");
 
 pub const Drawer = struct {
+    pub const child_origin_row: u16 = 4;
+    pub const child_origin_col: u16 = 4;
+    pub const min_child_width: u16 = child_origin_col + 1;
+    pub const min_child_height: u16 = child_origin_row + 1;
+
     title: []const u8,
     border_color: vaxis.Color = theme.ACCENT_SOFT,
     background: vaxis.Color = theme.PANEL_SOFT,
@@ -14,6 +19,7 @@ pub const Drawer = struct {
         const size = ctx.max.size();
         var surface = try vxfw.Surface.init(ctx.arena, owner, size);
         d.fillSurface(&surface, self.background);
+        if (size.width == 0 or size.height == 0) return surface;
 
         var row: u16 = 0;
         while (row < size.height) : (row += 1) {
@@ -21,14 +27,18 @@ pub const Drawer = struct {
                 .char = .{ .grapheme = "▌", .width = 1 },
                 .style = .{ .fg = self.border_color, .bg = self.background },
             });
-            surface.writeCell(1, row, .{
-                .char = .{ .grapheme = "┊", .width = 1 },
-                .style = .{ .fg = theme.BORDER_MUTED, .bg = self.background },
-            });
-            surface.writeCell(2, row, .{
-                .char = .{ .grapheme = " ", .width = 1 },
-                .style = .{ .fg = theme.TEXT, .bg = self.background },
-            });
+            if (size.width > 1) {
+                surface.writeCell(1, row, .{
+                    .char = .{ .grapheme = "┊", .width = 1 },
+                    .style = .{ .fg = theme.BORDER_MUTED, .bg = self.background },
+                });
+            }
+            if (size.width > 2) {
+                surface.writeCell(2, row, .{
+                    .char = .{ .grapheme = " ", .width = 1 },
+                    .style = .{ .fg = theme.TEXT, .bg = self.background },
+                });
+            }
         }
 
         d.writeText(&surface, ctx, 4, 1, "╴", theme.textOn(self.background, self.border_color));
@@ -44,8 +54,9 @@ pub const Drawer = struct {
             });
         }
 
+        if (size.width < min_child_width or size.height < min_child_height) return surface;
         const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-        children[0] = .{ .origin = .{ .row = 4, .col = 4 }, .surface = self.body };
+        children[0] = .{ .origin = .{ .row = child_origin_row, .col = child_origin_col }, .surface = self.body };
         surface.children = children;
         return surface;
     }
