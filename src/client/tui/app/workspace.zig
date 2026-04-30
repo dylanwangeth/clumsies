@@ -451,8 +451,14 @@ pub fn drawWorkspaceDrawer(
     ctx: vxfw.DrawContext,
 ) std.mem.Allocator.Error!vxfw.Surface {
     const size = ctx.max.size();
-    const body_w = size.width -| 5;
-    const body_h = size.height -| 4;
+    if (size.width < w.Drawer.min_child_width or size.height < w.Drawer.min_child_height) {
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&surface, theme.PANEL_SOFT);
+        return surface;
+    }
+
+    const body_w = size.width - w.Drawer.child_origin_col;
+    const body_h = size.height - w.Drawer.child_origin_row;
     var body = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = body_w, .height = body_h });
     w.fillSurface(&body, theme.PANEL_SOFT);
 
