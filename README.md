@@ -31,6 +31,10 @@ You own the rules. The agent loads them on demand. Every interaction is traced a
 
 ## TUI preview
 
+Dashboard view:
+
+![TUI dashboard view](assets/screenshots/tui_dashboard.png)
+
 Library view:
 
 ![TUI library view](assets/screenshots/tui_library.png)
@@ -47,10 +51,11 @@ https://github.com/user-attachments/assets/3ae8473c-dac1-45b5-8a72-6ad21906f235
 
 For the full documentation site content, start here:
 
-- [Overview](docs/overview.md)
-- [Architecture](docs/architecture.md)
-- [Guides](docs/guides/index.md)
-- [Reference](docs/reference/index.md)
+- [Documentation site](https://lilhammerfun.github.io/clumsies/)
+- [Overview](https://lilhammerfun.github.io/clumsies/overview/)
+- [Architecture](https://lilhammerfun.github.io/clumsies/architecture/)
+- [Guides](https://lilhammerfun.github.io/clumsies/guides/)
+- [Reference](https://lilhammerfun.github.io/clumsies/reference/)
 
 ## Quick start
 
