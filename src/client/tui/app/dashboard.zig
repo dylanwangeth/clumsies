@@ -4,6 +4,7 @@ const vxfw = vaxis.vxfw;
 const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
 const attestation_reader = @import("../attestation_reader.zig");
+const drafts_mod = @import("../../drafts.zig");
 const workspace_rule = @import("../../rule.zig");
 pub const ARENA_HEIGHT: u16 = 7;
 const ROUND_ROW_COUNT = 5;
@@ -19,7 +20,7 @@ const TRACE_REFER = theme.rgb(0xd9905f);
 const TRACE_AGENT = theme.OK;
 const TRACE_REJECT = theme.DANGER;
 const TRACE_DISCOVER = theme.rgb(0x8fb8a5);
-const TRACE_DRAFT = theme.rgb(0xb4a36a);
+const TRACE_REFINE = theme.rgb(0x9f8ad7);
 const TRACE_OTHER = theme.TEXT_SOFT;
 
 pub fn drawRoot(
@@ -196,7 +197,7 @@ const ProtocolCounts = struct {
     load: u16 = 0,
     refer: u16 = 0,
     reject: u16 = 0,
-    draft: u16 = 0,
+    refine: u16 = 0,
     agent: u16 = 0,
     other: u16 = 0,
 };
@@ -241,7 +242,7 @@ fn drawProtocolBar(
         .{ .count = counts.load, .color = TRACE_LOAD },
         .{ .count = counts.refer, .color = TRACE_REFER },
         .{ .count = counts.reject, .color = TRACE_REJECT },
-        .{ .count = counts.draft, .color = TRACE_DRAFT },
+        .{ .count = counts.refine, .color = TRACE_REFINE },
         .{ .count = counts.agent, .color = TRACE_AGENT },
         .{ .count = counts.other, .color = TRACE_OTHER },
     };
@@ -333,7 +334,7 @@ fn protocolCounts(round: attestation_reader.RoundEvent) ProtocolCounts {
         } else if (std.mem.eql(u8, tool.kind, "reject")) {
             counts.reject += 1;
         } else if (isProposeTool(tool.kind)) {
-            counts.draft += 1;
+            counts.refine += 1;
         } else if (std.mem.eql(u8, tool.kind, "agent_report")) {
             counts.agent += 1;
         } else {
@@ -917,11 +918,7 @@ fn toolHeaderSubject(
         return "constraint";
     }
     if (isProposeTool(tool.kind)) {
-        if (tool.new_path) |path| return path;
-        if (tool.path) |path| return path;
-        if (tool.rule_id) |rule_id| return rule_id;
-        if (tool.context_id) |context_id| return context_id;
-        return "draft";
+        return try proposeHeaderSubject(ctx, ws_id, tool);
     }
     if (tool.rule_id) |rule_id| {
         const rule = try resolveRulePreview(ctx, ws_id, rule_id);
@@ -951,6 +948,8 @@ fn appendChainTool(
     const subject = try toolHeaderSubject(ctx, ws_id, tool);
     const preview = if (std.mem.eql(u8, tool.kind, "refer"))
         toolConstraintText(ctx, ws_id, tool) orelse toolBriefText(tool) orelse subject
+    else if (isProposeTool(tool.kind))
+        proposeChangeSummary(ctx, ws_id, tool) orelse toolBriefText(tool) orelse subject
     else
         toolBriefText(tool) orelse subject;
 
@@ -963,7 +962,7 @@ fn appendChainTool(
     appendChainLine(self, out, if (is_selected) try padLine(ctx, head_text, width) else head_text, traceHeaderStyle(tool.kind, is_selected), is_selected);
 
     if (is_expanded) {
-        try appendToolMetadata(self, ctx, out, width, tool, is_selected);
+        try appendToolMetadata(self, ctx, out, width, ws_id, tool, is_selected);
 
         if (std.mem.eql(u8, tool.kind, "refer")) {
             if (toolConstraintName(ctx, ws_id, tool)) |name| {
@@ -974,7 +973,8 @@ fn appendChainTool(
             }
         }
 
-        if (tool.rule_id) |rule_id| {
+        if (!isProposeTool(tool.kind) and tool.rule_id != null) {
+            const rule_id = tool.rule_id.?;
             const rule = try resolveRulePreview(ctx, ws_id, rule_id);
             if (std.mem.eql(u8, tool.kind, "refer")) {
                 try appendDetailField(self, ctx, out, width, "rule", rule.name, is_selected);
@@ -1013,6 +1013,7 @@ fn appendToolMetadata(
     ctx: vxfw.DrawContext,
     out: *usize,
     width: u16,
+    ws_id: []const u8,
     tool: attestation_reader.RoundTool,
     is_selected: bool,
 ) std.mem.Allocator.Error!void {
@@ -1048,20 +1049,28 @@ fn appendToolMetadata(
     }
 
     if (isProposeTool(tool.kind)) {
-        try appendDetailField(self, ctx, out, width, "category", proposeCategory(tool.kind), is_selected);
         try appendDetailField(self, ctx, out, width, "operation", proposeOperation(tool.kind), is_selected);
+        if (proposeDisplayName(ctx, ws_id, tool)) |name| {
+            if (!proposeNameDuplicatesPath(tool, name)) {
+                try appendDetailField(self, ctx, out, width, proposeEntityLabel(tool.kind), name, is_selected);
+            }
+        }
         if (tool.path) |path| {
-            const label = if (tool.new_path == null) "draft" else "current";
+            const label = if (tool.new_path == null) "path" else "from";
             try appendDetailField(self, ctx, out, width, label, path, is_selected);
         }
         if (tool.new_path) |new_path| {
-            try appendDetailField(self, ctx, out, width, "draft", new_path, is_selected);
+            try appendDetailField(self, ctx, out, width, "to", new_path, is_selected);
         }
-        if (tool.rule_id) |rule_id| {
-            try appendDetailField(self, ctx, out, width, "rule id", rule_id, is_selected);
+        if (proposeChangeSummary(ctx, ws_id, tool)) |summary| {
+            try appendEvidenceText(self, ctx, out, width, "change", summary, is_selected);
         }
-        if (tool.context_id) |context_id| {
-            try appendDetailField(self, ctx, out, width, "context id", context_id, is_selected);
+        if (proposeNeedsRawId(tool)) {
+            if (tool.rule_id) |rule_id| {
+                try appendDetailField(self, ctx, out, width, "id", rule_id, is_selected);
+            } else if (tool.context_id) |context_id| {
+                try appendDetailField(self, ctx, out, width, "id", context_id, is_selected);
+            }
         }
     }
 }
@@ -1294,7 +1303,7 @@ fn briefLabel(kind: []const u8) []const u8 {
     if (std.mem.eql(u8, kind, "refer")) return "content";
     if (std.mem.eql(u8, kind, "agent_report")) return "summary";
     if (std.mem.eql(u8, kind, "reject")) return "reason";
-    if (isProposeTool(kind)) return "draft";
+    if (isProposeTool(kind)) return "change";
     return "detail";
 }
 
@@ -1320,16 +1329,13 @@ fn toolBriefText(tool: attestation_reader.RoundTool) ?[]const u8 {
         if (tool.constraint_name) |name| return name;
     }
     if (isProposeTool(tool.kind)) {
-        if (tool.new_path) |path| return path;
-        if (tool.path) |path| return path;
-        if (tool.rule_id) |rule_id| return rule_id;
-        if (tool.context_id) |context_id| return context_id;
+        return null;
     }
     return null;
 }
 
 fn toolVerb(kind: []const u8) []const u8 {
-    if (isProposeTool(kind)) return "DRAFT";
+    if (isProposeTool(kind)) return "REFINE";
     if (std.mem.eql(u8, kind, "agent_report")) return "AGENT";
     if (std.mem.eql(u8, kind, "refer")) return "REFER";
     if (std.mem.eql(u8, kind, "reject")) return "REJECT";
@@ -1385,7 +1391,7 @@ fn traceVerbColor(kind: []const u8) vaxis.Color {
     if (std.mem.eql(u8, kind, "agent_report")) return TRACE_AGENT;
     if (std.mem.eql(u8, kind, "reject")) return TRACE_REJECT;
     if (std.mem.eql(u8, kind, "discover") or std.mem.eql(u8, kind, "search")) return TRACE_DISCOVER;
-    if (isProposeTool(kind)) return TRACE_DRAFT;
+    if (isProposeTool(kind)) return TRACE_REFINE;
     return theme.TEXT_SOFT;
 }
 
@@ -1415,6 +1421,248 @@ fn proposeOperation(kind: []const u8) []const u8 {
     return "propose";
 }
 
+fn proposeHeaderSubject(
+    ctx: vxfw.DrawContext,
+    ws_id: []const u8,
+    tool: attestation_reader.RoundTool,
+) std.mem.Allocator.Error![]const u8 {
+    const name = proposeDisplayName(ctx, ws_id, tool) orelse
+        proposePath(tool) orelse
+        proposeId(tool) orelse
+        proposeCategory(tool.kind);
+    return try std.fmt.allocPrint(ctx.arena, "{s} {s}", .{ proposeOperation(tool.kind), name });
+}
+
+fn proposeDisplayName(
+    ctx: vxfw.DrawContext,
+    ws_id: []const u8,
+    tool: attestation_reader.RoundTool,
+) ?[]const u8 {
+    const path = proposePath(tool);
+    if (path != null and std.mem.eql(u8, path.?, "META_PROMPT.md")) return path;
+    if (tool.rule_id) |rule_id| {
+        const rule = resolveRulePreview(ctx, ws_id, rule_id) catch return proposePath(tool) orelse rule_id;
+        if (std.mem.eql(u8, rule.name, rule_id)) return path orelse rule_id;
+        return rule.name;
+    }
+    if (tool.context_id) |_| {
+        return proposePath(tool);
+    }
+    return proposePath(tool);
+}
+
+fn proposePath(tool: attestation_reader.RoundTool) ?[]const u8 {
+    if (tool.new_path) |path| return path;
+    if (tool.path) |path| return path;
+    return null;
+}
+
+fn proposeId(tool: attestation_reader.RoundTool) ?[]const u8 {
+    if (tool.rule_id) |rule_id| return rule_id;
+    if (tool.context_id) |context_id| return context_id;
+    return null;
+}
+
+fn proposeEntityLabel(kind: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, kind, "context_propose_")) return "context";
+    if (std.mem.startsWith(u8, kind, "rule_propose_")) return "rule";
+    return "draft";
+}
+
+fn proposeNameDuplicatesPath(tool: attestation_reader.RoundTool, name: []const u8) bool {
+    if (tool.path) |path| {
+        if (std.mem.eql(u8, name, path)) return true;
+    }
+    if (tool.new_path) |path| {
+        if (std.mem.eql(u8, name, path)) return true;
+    }
+    return false;
+}
+
+fn proposeNeedsRawId(tool: attestation_reader.RoundTool) bool {
+    if (tool.rule_id == null and tool.context_id == null) return false;
+    const id = proposeId(tool) orelse return false;
+    if (proposeDisplayNameFallback(tool)) |display| {
+        return std.mem.eql(u8, display, id);
+    }
+    return true;
+}
+
+fn proposeDisplayNameFallback(tool: attestation_reader.RoundTool) ?[]const u8 {
+    return proposePath(tool) orelse proposeId(tool);
+}
+
+fn proposeChangeSummary(
+    ctx: vxfw.DrawContext,
+    ws_id: []const u8,
+    tool: attestation_reader.RoundTool,
+) ?[]const u8 {
+    if (ws_id.len == 0) return null;
+    const ws_dir = workspaceDir(ctx.arena, ws_id) orelse return null;
+    var index = drafts_mod.loadIndex(ctx.arena, ws_dir) catch return null;
+    const entry = findProposeDraft(&index, tool) orelse return null;
+
+    if (entry.description) |description| {
+        const trimmed = std.mem.trim(u8, description, " \t\r\n");
+        if (trimmed.len > 0) return trimmed;
+    }
+
+    const draft = readDraftBytes(ctx.arena, ws_dir, entry.category, entry.draft_path) catch null;
+    const cache = if (entry.current_path) |path|
+        readCacheBytes(ctx.arena, ws_dir, entry.category, path) catch null
+    else
+        null;
+
+    return switch (entry.operation) {
+        .create => createdSummary(ctx, draft),
+        .delete => deletedSummary(ctx, entry.current_path orelse entry.draft_path),
+        .rename => renameSummary(ctx, entry.current_path, entry.draft_path, cache, draft),
+        .modify => modifySummary(ctx, cache, draft),
+    };
+}
+
+fn findProposeDraft(
+    index: *const drafts_mod.DraftsIndex,
+    tool: attestation_reader.RoundTool,
+) ?*const drafts_mod.DraftEntry {
+    const category = proposeDraftCategory(tool);
+    for (index.entries.items) |*entry| {
+        if (entry.category != category) continue;
+        if (tool.rule_id) |rule_id| {
+            if (entry.rule_id) |id| {
+                if (std.mem.eql(u8, id, rule_id)) return entry;
+            }
+        }
+        if (tool.context_id) |context_id| {
+            if (entry.context_id) |id| {
+                if (std.mem.eql(u8, id, context_id)) return entry;
+            }
+        }
+        if (tool.path) |path| {
+            if (entry.current_path) |current| {
+                if (std.mem.eql(u8, current, path)) return entry;
+            }
+            if (std.mem.eql(u8, entry.draft_path, path)) return entry;
+        }
+        if (tool.new_path) |path| {
+            if (std.mem.eql(u8, entry.draft_path, path)) return entry;
+        }
+    }
+    return null;
+}
+
+fn proposeDraftCategory(tool: attestation_reader.RoundTool) drafts_mod.DraftCategory {
+    if (tool.path) |path| {
+        if (std.mem.eql(u8, path, "META_PROMPT.md")) return .meta_prompt;
+    }
+    if (tool.new_path) |path| {
+        if (std.mem.eql(u8, path, "META_PROMPT.md")) return .meta_prompt;
+    }
+    if (std.mem.startsWith(u8, tool.kind, "context_propose_")) return .context;
+    return .rule;
+}
+
+fn readDraftBytes(
+    arena: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: drafts_mod.DraftCategory,
+    draft_path: []const u8,
+) ![]const u8 {
+    return drafts_mod.readDraftFile(arena, ws_dir, category, draft_path);
+}
+
+fn readCacheBytes(
+    arena: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: drafts_mod.DraftCategory,
+    path: []const u8,
+) ![]const u8 {
+    const abs_path = switch (category) {
+        .meta_prompt => try std.fs.path.join(arena, &.{ ws_dir, "cache", path }),
+        .rule => try std.fs.path.join(arena, &.{ ws_dir, "cache", "rule", path }),
+        .context => try std.fs.path.join(arena, &.{ ws_dir, "cache", "context", path }),
+    };
+    const file = try std.fs.openFileAbsolute(abs_path, .{});
+    defer file.close();
+    var read_buf: [4096]u8 = undefined;
+    var reader = std.fs.File.Reader.init(file, &read_buf);
+    return reader.interface.allocRemaining(arena, std.io.Limit.limited(1 * 1024 * 1024));
+}
+
+fn createdSummary(ctx: vxfw.DrawContext, draft: ?[]const u8) ?[]const u8 {
+    const bytes = draft orelse return "created draft";
+    return std.fmt.allocPrint(ctx.arena, "created {d} line(s)", .{lineCount(bytes)}) catch null;
+}
+
+fn deletedSummary(ctx: vxfw.DrawContext, path: []const u8) ?[]const u8 {
+    return std.fmt.allocPrint(ctx.arena, "deleted {s}", .{path}) catch null;
+}
+
+fn renameSummary(
+    ctx: vxfw.DrawContext,
+    current_path: ?[]const u8,
+    draft_path: []const u8,
+    cache: ?[]const u8,
+    draft: ?[]const u8,
+) ?[]const u8 {
+    if (cache != null and draft != null and !std.mem.eql(u8, cache.?, draft.?)) {
+        return modifySummary(ctx, cache, draft);
+    }
+    if (current_path) |from| {
+        return std.fmt.allocPrint(ctx.arena, "renamed {s} -> {s}", .{ from, draft_path }) catch null;
+    }
+    return std.fmt.allocPrint(ctx.arena, "renamed to {s}", .{draft_path}) catch null;
+}
+
+fn modifySummary(ctx: vxfw.DrawContext, cache: ?[]const u8, draft: ?[]const u8) ?[]const u8 {
+    const before = cache orelse return createdSummary(ctx, draft);
+    const after = draft orelse return null;
+    if (std.mem.eql(u8, before, after)) return "no content changes";
+    const delta = lineDelta(before, after);
+    return std.fmt.allocPrint(ctx.arena, "changed {d} line(s) (+{d} -{d})", .{
+        delta.changed,
+        delta.added,
+        delta.removed,
+    }) catch null;
+}
+
+const LineDelta = struct {
+    changed: usize,
+    added: usize,
+    removed: usize,
+};
+
+fn lineDelta(before: []const u8, after: []const u8) LineDelta {
+    const before_lines = lineCount(before);
+    const after_lines = lineCount(after);
+    var prefix: usize = 0;
+    var before_it = std.mem.splitScalar(u8, before, '\n');
+    var after_it = std.mem.splitScalar(u8, after, '\n');
+    while (true) {
+        const before_line = before_it.next() orelse break;
+        const after_line = after_it.next() orelse break;
+        if (!std.mem.eql(u8, before_line, after_line)) break;
+        prefix += 1;
+    }
+    const comparable = @min(before_lines, after_lines);
+    const changed = if (comparable > prefix) comparable - prefix else 1;
+    return .{
+        .changed = changed,
+        .added = if (after_lines > before_lines) after_lines - before_lines else 0,
+        .removed = if (before_lines > after_lines) before_lines - after_lines else 0,
+    };
+}
+
+fn lineCount(bytes: []const u8) usize {
+    if (bytes.len == 0) return 0;
+    var count: usize = 1;
+    for (bytes) |byte| {
+        if (byte == '\n') count += 1;
+    }
+    if (bytes[bytes.len - 1] == '\n') count -= 1;
+    return count;
+}
+
 fn formatHm(arena: std.mem.Allocator, ts_ms: i64) std.mem.Allocator.Error![]const u8 {
     const secs = @divTrunc(ts_ms, 1000);
     const day_secs: i64 = 86400;
@@ -1427,7 +1675,7 @@ fn formatHm(arena: std.mem.Allocator, ts_ms: i64) std.mem.Allocator.Error![]cons
     });
 }
 
-test "protocolCounts groups rule and context proposals as draft tools" {
+test "protocolCounts groups rule and context proposals as refine tools" {
     const round = attestation_reader.RoundEvent{
         .timestamp = 1000,
         .content = "ask",
@@ -1446,7 +1694,7 @@ test "protocolCounts groups rule and context proposals as draft tools" {
     const counts = protocolCounts(round);
 
     try std.testing.expectEqual(@as(u16, 1), counts.user);
-    try std.testing.expectEqual(@as(u16, 8), counts.draft);
+    try std.testing.expectEqual(@as(u16, 8), counts.refine);
     try std.testing.expectEqual(@as(u16, 0), counts.other);
 }
 
