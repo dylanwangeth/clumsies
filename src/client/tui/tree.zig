@@ -228,14 +228,17 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
         text_lens: [max_rows]usize = .{0} ** max_rows,
         text_bufs: [max_rows][text_buf_len]u8 = undefined,
         expanded: std.StringHashMapUnmanaged(void) = .empty,
+        seen_top_level: std.StringHashMapUnmanaged(void) = .empty,
         initialized: bool = false,
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             self.expanded.deinit(allocator);
+            self.seen_top_level.deinit(allocator);
         }
 
         pub fn reset(self: *Self) void {
             self.expanded.clearRetainingCapacity();
+            self.seen_top_level.clearRetainingCapacity();
             self.initialized = false;
             self.clearRows();
         }
@@ -308,10 +311,8 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
                 return;
             }
 
-            if (!self.initialized) {
-                self.expandTopLevelPrefixes(allocator, paths[0..item_count]);
-                self.initialized = true;
-            }
+            self.expandNewTopLevelPrefixes(allocator, paths[0..item_count]);
+            self.initialized = true;
 
             var sort_idx: [max_rows]usize = undefined;
             sortPathIndices(paths[0..item_count], sort_idx[0..item_count]);
@@ -368,13 +369,13 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             }
         }
 
-        fn expandTopLevelPrefixes(self: *Self, allocator: std.mem.Allocator, paths: []const []const u8) void {
+        fn expandNewTopLevelPrefixes(self: *Self, allocator: std.mem.Allocator, paths: []const []const u8) void {
             for (paths) |path| {
                 if (std.mem.indexOfScalar(u8, path, '/')) |slash| {
                     const top = path[0 .. slash + 1];
-                    if (!self.expanded.contains(top)) {
-                        self.expanded.put(allocator, top, {}) catch {};
-                    }
+                    if (self.seen_top_level.contains(top)) continue;
+                    self.seen_top_level.put(allocator, top, {}) catch continue;
+                    self.expanded.put(allocator, top, {}) catch {};
                 }
             }
         }
@@ -513,6 +514,55 @@ test "State sync default-expands top level prefixes and maps leaf indices" {
     try std.testing.expectEqual(@as(?usize, 30), state.leafIndexAt(4));
     try std.testing.expect(state.isExpanded("rule/"));
     try std.testing.expect(state.isExpanded("workflow/"));
+}
+
+test "State sync expands top level prefixes that appear after first sync" {
+    const TreeState = State(16, 64);
+    var state: TreeState = .{};
+    defer state.deinit(std.testing.allocator);
+
+    const draft_paths = [_][]const u8{
+        "research/R20.md",
+        "todo/WORK.md",
+    };
+    const draft_orig = [_]usize{ 0, 1 };
+    state.sync(std.testing.allocator, draft_paths[0..], draft_orig[0..]);
+
+    const live_paths = [_][]const u8{
+        "adr/ADR-001.md",
+        "research/R1.md",
+        "spec/s1.md",
+        "todo/WORK.md",
+    };
+    const live_orig = [_]usize{ 10, 11, 12, 13 };
+    state.sync(std.testing.allocator, live_paths[0..], live_orig[0..]);
+
+    try std.testing.expect(state.isExpanded("adr/"));
+    try std.testing.expect(state.isExpanded("research/"));
+    try std.testing.expect(state.isExpanded("spec/"));
+    try std.testing.expect(state.isExpanded("todo/"));
+}
+
+test "State sync does not re-expand a top level prefix after user collapse" {
+    const TreeState = State(16, 64);
+    var state: TreeState = .{};
+    defer state.deinit(std.testing.allocator);
+
+    const first_paths = [_][]const u8{
+        "research/R20.md",
+    };
+    const first_orig = [_]usize{0};
+    state.sync(std.testing.allocator, first_paths[0..], first_orig[0..]);
+    try std.testing.expect(state.collapseDir("research/"));
+
+    const next_paths = [_][]const u8{
+        "research/R1.md",
+        "research/R20.md",
+    };
+    const next_orig = [_]usize{ 0, 1 };
+    state.sync(std.testing.allocator, next_paths[0..], next_orig[0..]);
+
+    try std.testing.expect(!state.isExpanded("research/"));
 }
 
 test "State parentRow returns the nearest shallower visible ancestor" {

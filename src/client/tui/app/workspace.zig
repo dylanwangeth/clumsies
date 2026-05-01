@@ -108,7 +108,20 @@ pub fn drawList(
     const body_h: u16 = ctx.max.height.? -| body_origin_row -| 1;
     const body_w: u16 = ctx.max.width.? -| body_origin_col -| 1;
     if (ws_tree.rowCount() == 0) {
-        const empty_msg = switch (self.ws_tab) {
+        const empty_msg = if (self.activeWsId()) |ws_id| switch (self.ws_tab) {
+            .context => if (self.api_state.ws_context_files_pending.isInflight())
+                "Loading context files..."
+            else if (self.api_state.ws_context_files_cache.isFailed(.{ .value = ws_id }))
+                "Context failed to load. Press r to retry."
+            else
+                "No context files.",
+            .rules => if (self.api_state.ws_manifest_pending.isInflight())
+                "Loading workspace rules..."
+            else if (self.api_state.ws_manifest_cache.isFailed(.{ .value = ws_id }))
+                "Workspace rules failed to load. Press r to retry."
+            else
+                "No workspace rules.",
+        } else switch (self.ws_tab) {
             .context => "No context files.",
             .rules => "No workspace rules.",
         };
@@ -615,6 +628,8 @@ pub fn handleModuleEvent(
     if (key.matches('r', .{})) {
         api.state.invalidateOnDemandCaches(self.api_state);
         self.invalidateRemoteDetailRequests();
+        self.resetLocalWorkspaceDetail();
+        self.ensureActiveWorkspaceDetailRequested();
         api.fetch.refetchAllAsync(self.api_state);
         self.status_line = "Refreshing data...";
         ctx.consumeAndRedraw();
@@ -741,7 +756,10 @@ fn handleContentFocusEvent(
 /// respective PendingRequest slots; `syncWsRows` composes them once
 /// both caches are populated via `state.wsDetail`.
 pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
-    if (self.api_state.ws_context_files_cache.shouldDispatch(.{ .value = ws_id })) {
+    if (self.api_state.ws_context_files_cache.shouldDispatch(.{ .value = ws_id }) and
+        !self.api_state.ws_context_files_pending.isInflight())
+    {
+        self.system_notices.push(.workspace_context_files, .loading, .persistent, "Loading workspace context...");
         api.specs.dispatchFromState(
             api.specs.WsIdParams,
             api.specs.WsContextFilesPayload,
@@ -751,7 +769,10 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
             .{ .ws_id = ws_id },
         );
     }
-    if (self.api_state.ws_manifest_cache.shouldDispatch(.{ .value = ws_id })) {
+    if (self.api_state.ws_manifest_cache.shouldDispatch(.{ .value = ws_id }) and
+        !self.api_state.ws_manifest_pending.isInflight())
+    {
+        self.system_notices.push(.workspace_manifest, .loading, .persistent, "Loading workspace manifest...");
         api.specs.dispatchFromState(
             api.specs.WsIdParams,
             api.specs.WsManifestPayload,
@@ -765,7 +786,7 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
 
 pub fn syncWsRows(self: anytype) void {
     const live_ws = if (self.activeWsId()) |ws_id|
-        api.state.wsDetail(self.api_state, ws_id)
+        self.workspaceDetailForView(ws_id)
     else
         null;
 

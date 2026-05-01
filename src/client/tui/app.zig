@@ -12,6 +12,7 @@ const rule_detail_panel = @import("app/rule_detail.zig");
 const settings_panel = @import("app/settings.zig");
 const workspace_panel = @import("app/workspace.zig");
 const drafts_mod = @import("../drafts.zig");
+const workspace_rule = @import("../rule.zig");
 const workspace_config = @import("../workspace_config.zig");
 const editor_host = @import("editor_host.zig");
 const surface_size = @import("surface_size.zig");
@@ -121,6 +122,7 @@ const MAX_PR_ROWS = 64;
 const MAX_DASHBOARD_ROUND_ROWS = 2048;
 const MAX_DASHBOARD_CHAIN_ROWS = 1024;
 const DASHBOARD_ROUND_ROW_COUNT = 5;
+const FOOTER_STATUS_TICKS = 60;
 const detail_tabs = [_]DetailTab{ .content, .pull_requests };
 const PathTreeState = tree.State(MAX_TREE_ROWS, 96);
 
@@ -152,6 +154,8 @@ pub const Dashboard = struct {
     settings_focus: enum { sidebar, content } = .sidebar,
     settings_content_sel: usize = 0, // cursor within content (members/workspaces list)
     status_line: []const u8 = "Ready.",
+    last_status_line: []const u8 = "Ready.",
+    status_line_since_tick: u64 = 0,
 
     // Library: tree-structured display with bundle filter
     library_bundle_filter: usize = 0,
@@ -216,6 +220,11 @@ pub const Dashboard = struct {
     ws_list_widgets: [MAX_TREE_ROWS]vxfw.Widget = undefined,
     ws_list_rows: [MAX_TREE_ROWS]vxfw.Text = undefined,
     last_safe_layout_size: vxfw.Size = .{},
+    local_ws_arena: std.heap.ArenaAllocator,
+    local_ws_cache_id: ?[]const u8 = null,
+    local_ws_detail: ?api.model.WsDetail = null,
+    local_ws_load_failed: bool = false,
+    system_notices: w.SystemNoticeQueue = .{},
 
     // Dashboard / Analysis shared state
     analysis_scope_idx: usize = 0,
@@ -315,6 +324,7 @@ pub const Dashboard = struct {
             .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
             .ws_list_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .local_ws_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
             .dashboard_round_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .dashboard_chain_scroll_bars = w.initPlainScrollBars(theme.PANEL, 3),
             .view_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
@@ -327,6 +337,7 @@ pub const Dashboard = struct {
     pub fn deinit(self: *Dashboard) void {
         self.releaseComposerTarget();
         self.releasePendingDiscardTarget();
+        self.local_ws_arena.deinit();
         self.view_arena.deinit();
         self.drafts_arena.deinit();
         const alloc = self.api_state.allocator();
@@ -361,6 +372,18 @@ pub const Dashboard = struct {
         return switch (self.ws_tab) {
             .context => &self.ws_context_tree,
             .rules => &self.ws_rules_tree,
+        };
+    }
+
+    fn connectionHeaderNotice(self: *Dashboard) ?w.SystemNotice {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const now = self.system_notices.now();
+        return switch (self.api_state.status) {
+            .connected => null,
+            .connecting => .{ .key = .connection, .kind = .loading, .persistence = .transient, .text = "\xe2\x86\xbb Connecting...", .created_tick = now },
+            .disconnected => .{ .key = .connection, .kind = .warning, .persistence = .transient, .text = "Not connected", .created_tick = now },
+            .error_auth, .error_network => .{ .key = .connection, .kind = .failure, .persistence = .transient, .text = "\xe2\x9c\x97 Connection failed", .created_tick = now },
         };
     }
 
@@ -650,6 +673,7 @@ pub const Dashboard = struct {
             .tick => {
                 // Advance breathing cycle: 0→20→0 (2 seconds at 100ms intervals)
                 self.breathing_phase = (self.breathing_phase + 1) % 21;
+                self.system_notices.tick();
                 if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.breathing_phase == 0 or self.breathing_phase == 10)) {
                     api.state.refreshLocalState(self.api_state);
                 }
@@ -659,6 +683,9 @@ pub const Dashboard = struct {
                 // and the footer counter come up populated.
                 if (!self.drafts_cache_seeded and self.activeWsId() != null) {
                     self.refreshDraftsCache();
+                    self.ensureActiveWorkspaceDetailRequested();
+                } else if (self.selected_module == .workspace) {
+                    self.ensureActiveWorkspaceDetailRequested();
                 }
                 _ = self.consumeCreateWsResult();
                 self.consumeRuleContentResult();
@@ -690,6 +717,7 @@ pub const Dashboard = struct {
         var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&root, theme.PANEL);
 
+        const header_band_h: u16 = 1;
         const header_h: u16 = 4;
         const footer_h: u16 = 1;
         const body_h = size.height - header_h - footer_h;
@@ -710,29 +738,35 @@ pub const Dashboard = struct {
         const show_workspace_drawer = self.show_workspace_drawer and self.selected_module == .workspace and
             !self.show_settings and !self.show_help and !self.show_confirm and !self.show_comment_editor and
             !self.show_create_workspace and !self.show_pr_composer and !self.show_new_draft_form;
-        var child_count: usize = 3;
-        if (self.show_help or self.show_confirm or self.show_comment_editor or
+        const modal_active = self.show_help or self.show_confirm or self.show_comment_editor or
             self.show_create_workspace or self.show_pr_composer or
-            self.show_new_draft_form or show_workspace_drawer) child_count = 4;
+            self.show_new_draft_form or show_workspace_drawer;
+        const show_notice_overlay = !modal_active and self.system_notices.hasVisible();
+        var child_count: usize = 3;
+        if (modal_active) child_count += 1;
+        if (show_notice_overlay) child_count += 1;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
         children[1] = .{ .origin = .{ .row = header_h, .col = 0 }, .surface = try self.drawBody(body_ctx) };
         children[2] = .{ .origin = .{ .row = header_h + body_h, .col = 0 }, .surface = try self.drawFooter(footer_ctx) };
+        var child_idx: usize = 3;
 
         if (self.show_help) {
             const help_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
             );
-            children[3] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHelpOverlay(help_ctx) };
+            children[child_idx] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHelpOverlay(help_ctx) };
+            child_idx += 1;
         }
         if (self.show_confirm) {
             const confirm_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
             );
-            children[3] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawConfirmOverlay(confirm_ctx) };
+            children[child_idx] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawConfirmOverlay(confirm_ctx) };
+            child_idx += 1;
         }
         if (self.show_comment_editor) {
             const box_w: u16 = 42;
@@ -743,37 +777,41 @@ pub const Dashboard = struct {
                 .{ .width = box_w, .height = box_h },
                 .{ .width = box_w, .height = box_h },
             );
-            children[3] = .{ .origin = .{ .row = box_row, .col = box_col }, .surface = try self.drawCommentEditorOverlay(comment_ctx) };
+            children[child_idx] = .{ .origin = .{ .row = box_row, .col = box_col }, .surface = try self.drawCommentEditorOverlay(comment_ctx) };
+            child_idx += 1;
         }
         if (self.show_create_workspace) {
             const full_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
             );
-            children[3] = .{
+            children[child_idx] = .{
                 .origin = .{ .row = 0, .col = 0 },
                 .surface = try workspace_panel.drawCreateOverlay(self, full_ctx),
             };
+            child_idx += 1;
         }
         if (self.show_pr_composer) {
             const full_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
             );
-            children[3] = .{
+            children[child_idx] = .{
                 .origin = .{ .row = 0, .col = 0 },
                 .surface = try self.drawPrComposerOverlay(full_ctx),
             };
+            child_idx += 1;
         }
         if (self.show_new_draft_form) {
             const full_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
             );
-            children[3] = .{
+            children[child_idx] = .{
                 .origin = .{ .row = 0, .col = 0 },
                 .surface = try self.drawNewDraftFormOverlay(full_ctx),
             };
+            child_idx += 1;
         }
         if (show_workspace_drawer) {
             const drawer_w: u16 = @min(@as(u16, 44), size.width -| 6);
@@ -784,10 +822,31 @@ pub const Dashboard = struct {
                     .{ .width = drawer_w, .height = drawer_h },
                     .{ .width = drawer_w, .height = drawer_h },
                 );
-                children[3] = .{
+                children[child_idx] = .{
                     .origin = .{ .row = drawer_top, .col = size.width - drawer_w },
                     .surface = try workspace_panel.drawWorkspaceDrawer(self, drawer_ctx),
                 };
+                child_idx += 1;
+            }
+        }
+        if (show_notice_overlay) {
+            const notice_max_size = vxfw.Size{
+                .width = size.width,
+                .height = size.height - header_band_h - footer_h,
+            };
+            const notice_size = self.system_notices.overlaySize(ctx, notice_max_size);
+            const notice_w = notice_size.width;
+            const notice_h = notice_size.height;
+            if (notice_w >= 24 and notice_h >= 3) {
+                const notice_ctx = ctx.withConstraints(
+                    .{ .width = notice_w, .height = notice_h },
+                    .{ .width = notice_w, .height = notice_h },
+                );
+                children[child_idx] = .{
+                    .origin = .{ .row = header_band_h, .col = size.width - notice_w -| 1 },
+                    .surface = try self.system_notices.drawOverlay(self.widget(), notice_ctx),
+                };
+                child_idx += 1;
             }
         }
 
@@ -828,21 +887,9 @@ pub const Dashboard = struct {
             .bg = theme.ACCENT,
             .bold = true,
         });
-        const sync_label: []const u8 = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            break :blk switch (self.api_state.status) {
-                .connected => "\xe2\x9c\x93 Synced",
-                .connecting => "\xe2\x86\xbb Connecting...",
-                .disconnected => "Not connected",
-                .error_auth, .error_network => "\xe2\x9c\x97 Connection failed",
-            };
-        };
-        w.writeRightText(&surface, ctx, 0, sync_label, .{
-            .fg = theme.PANEL,
-            .bg = theme.ACCENT,
-            .bold = true,
-        });
+        if (self.connectionHeaderNotice()) |notice| {
+            w.writeRightText(&surface, ctx, 0, notice.text, w.systemNoticeHeaderStyle(notice.kind));
+        }
 
         // Row 2: Tab badges (row 1 and 3 are padding)
         var col: u16 = 1;
@@ -929,35 +976,34 @@ pub const Dashboard = struct {
             }
         }
 
-        // Status line on the right side of footer
-        if (!std.mem.eql(u8, self.status_line, "Ready.")) {
-            const sw: u16 = @intCast(ctx.stringWidth(self.status_line));
+        if (self.visibleFooterStatus()) |label| {
+            const sw: u16 = @intCast(ctx.stringWidth(label));
             if (ctx.max.width) |max_w| {
                 if (sw + 2 < max_w) {
-                    w.writeText(&surface, ctx, max_w - sw - 1, 0, self.status_line, theme.fg(theme.ACCENT_SOFT));
+                    w.writeText(&surface, ctx, max_w - sw - 1, 0, label, theme.fg(theme.ACCENT_SOFT));
                 }
             }
         }
 
-        // Right-aligned contextual hint for workspace items
-        if (!self.show_help and !self.show_confirm and !self.show_settings and
-            !self.show_comment_editor and
-            !self.show_workspace_drawer and
-            self.selected_module == .workspace)
-        {
-            const hint: []const u8 = if (self.ws_focus == .content)
-                (if (self.ws_show_diff) "d content" else "d diff")
-            else blk: {
-                const wss = self.getWorkspaces();
-                if (wss.len == 0) break :blk "No workspaces";
-                const ws_idx = @min(self.ws_sel, wss.len - 1);
-                const wsi = &wss[ws_idx];
-                break :blk if (wsi.local_rev != wsi.remote_rev) "w workspaces · update available" else "w workspaces";
-            };
-            w.writeRightText(&surface, ctx, 0, hint, theme.fg(theme.TEXT_SOFT));
-        }
-
         return surface;
+    }
+
+    fn visibleFooterStatus(self: *Dashboard) ?[]const u8 {
+        if (std.mem.eql(u8, self.status_line, "Ready.")) {
+            self.last_status_line = "Ready.";
+            self.status_line_since_tick = self.system_notices.now();
+            return null;
+        }
+        if (!std.mem.eql(u8, self.status_line, self.last_status_line)) {
+            self.last_status_line = self.status_line;
+            self.status_line_since_tick = self.system_notices.now();
+        }
+        if (self.system_notices.now() -| self.status_line_since_tick >= FOOTER_STATUS_TICKS) {
+            self.status_line = "Ready.";
+            self.last_status_line = "Ready.";
+            return null;
+        }
+        return self.status_line;
     }
 
     // Library: master-detail. Left panel carries a Files / Pull Requests
@@ -1048,7 +1094,7 @@ pub const Dashboard = struct {
     fn drawWsList(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         workspace_panel.syncWsRows(self);
         const live_ws = if (self.activeWsId()) |ws_id|
-            api.state.wsDetail(self.api_state, ws_id)
+            self.workspaceDetailForView(ws_id)
         else
             null;
         const lib_rules: []const data.RuleEntry = if (self.ws_tab == .rules) self.getRules() else &.{};
@@ -1077,6 +1123,96 @@ pub const Dashboard = struct {
         return user.workspaces[idx].name;
     }
 
+    pub fn resetLocalWorkspaceDetail(self: *Dashboard) void {
+        _ = self.local_ws_arena.reset(.retain_capacity);
+        self.local_ws_cache_id = null;
+        self.local_ws_detail = null;
+        self.local_ws_load_failed = false;
+    }
+
+    fn ensureLocalWorkspaceDetail(self: *Dashboard, ws_id: []const u8) void {
+        if (self.local_ws_cache_id) |cached| {
+            if (std.mem.eql(u8, cached, ws_id)) return;
+        }
+        self.resetLocalWorkspaceDetail();
+
+        const arena = self.local_ws_arena.allocator();
+        const ws_id_copy = arena.dupe(u8, ws_id) catch {
+            self.local_ws_load_failed = true;
+            return;
+        };
+        self.local_ws_cache_id = ws_id_copy;
+
+        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch {
+            self.local_ws_load_failed = true;
+            return;
+        };
+        var manifest = workspace_rule.loadManifest(arena, ws_dir) catch {
+            self.local_ws_load_failed = true;
+            return;
+        };
+        defer manifest.deinit(arena);
+
+        const context_files = arena.alloc(api.model.ContextFileData, manifest.context.count()) catch {
+            self.local_ws_load_failed = true;
+            return;
+        };
+        var context_i: usize = 0;
+        var context_it = manifest.context.iterator();
+        while (context_it.next()) |entry| {
+            context_files[context_i] = .{
+                .context_id = arena.dupe(u8, entry.key_ptr.*) catch "",
+                .path = arena.dupe(u8, entry.value_ptr.path) catch "",
+                .hash = arena.dupe(u8, entry.value_ptr.hash) catch "",
+                .size = 0,
+                .author = "local",
+                .updated_at = "",
+            };
+            context_i += 1;
+        }
+
+        const ws_rules = arena.alloc(api.model.WsRuleData, manifest.rules.count()) catch {
+            self.local_ws_load_failed = true;
+            return;
+        };
+        var rule_i: usize = 0;
+        var rule_it = manifest.rules.iterator();
+        while (rule_it.next()) |entry| {
+            ws_rules[rule_i] = .{
+                .rule_id = arena.dupe(u8, entry.key_ptr.*) catch "",
+                .content_hash = arena.dupe(u8, entry.value_ptr.hash) catch "",
+                .path = arena.dupe(u8, entry.value_ptr.path) catch "",
+            };
+            rule_i += 1;
+        }
+
+        self.local_ws_detail = .{
+            .ws_id = ws_id_copy,
+            .context_files = context_files[0..context_i],
+            .ws_rules = ws_rules[0..rule_i],
+        };
+    }
+
+    pub fn workspaceDetailForView(self: *Dashboard, ws_id: []const u8) ?api.model.WsDetail {
+        if (api.state.wsDetail(self.api_state, ws_id)) |remote| {
+            return remote;
+        }
+        self.ensureLocalWorkspaceDetail(ws_id);
+        return self.local_ws_detail;
+    }
+
+    fn hasLocalWorkspaceDetail(self: *Dashboard, ws_id: []const u8) bool {
+        self.ensureLocalWorkspaceDetail(ws_id);
+        const local = self.local_ws_detail orelse return false;
+        return local.context_files.len > 0 or local.ws_rules.len > 0;
+    }
+
+    pub fn ensureActiveWorkspaceDetailRequested(self: *Dashboard) void {
+        const ws_id = self.activeWsId() orelse return;
+        self.ensureLocalWorkspaceDetail(ws_id);
+        workspace_panel.requestWorkspaceDetail(self, ws_id);
+    }
+
     pub fn selectWorkspaceIndex(self: *Dashboard, idx: usize) void {
         var selected_ws_id: ?[]const u8 = null;
         self.api_state.mutex.lock();
@@ -1100,8 +1236,10 @@ pub const Dashboard = struct {
         self.ws_list_scroll_bars.scroll_view.scroll.top = 0;
         self.ws_list_scroll_bars.scroll_view.scroll.vertical_offset = 0;
         self.ws_list_scroll_bars.scroll_view.scroll.left = 0;
+        self.resetLocalWorkspaceDetail();
         self.ensureDraftsCacheForActiveWorkspace();
         if (selected_ws_id) |ws_id| {
+            self.ensureLocalWorkspaceDetail(ws_id);
             workspace_panel.requestWorkspaceDetail(self, ws_id);
         }
     }
@@ -1134,12 +1272,22 @@ pub const Dashboard = struct {
     };
 
     pub fn cachedWorkspaceContextBody(self: *Dashboard, ws_id: []const u8, path: []const u8) ?[]const u8 {
-        return self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_id, .path = path });
+        if (self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_id, .path = path })) |body| {
+            return body;
+        }
+        const arena = self.viewAllocator();
+        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
+        return workspace_rule.readContextCacheFile(arena, ws_dir, path) catch null;
     }
 
     pub fn cachedRuleBody(self: *Dashboard, path: []const u8) ?[]const u8 {
-        const resp = self.api_state.rule_content_cache.lookup(.{ .value = path }) orelse return null;
-        return resp.body;
+        if (self.api_state.rule_content_cache.lookup(.{ .value = path })) |resp| {
+            return resp.body;
+        }
+        const ws_id = self.activeWsId() orelse return null;
+        const arena = self.viewAllocator();
+        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
+        return workspace_rule.readRuleCacheFile(arena, ws_dir, path) catch null;
     }
 
     pub fn cachedLibraryRuleBody(
@@ -1311,7 +1459,7 @@ pub const Dashboard = struct {
     fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const active_ws_id = self.activeWsId();
         const live_ws = if (active_ws_id) |ws_id|
-            api.state.wsDetail(self.api_state, ws_id)
+            self.workspaceDetailForView(ws_id)
         else
             null;
         workspace_panel.syncWsRows(self);
@@ -1757,10 +1905,22 @@ pub const Dashboard = struct {
         switch (result) {
             .ok => |payload| {
                 self.api_state.ws_context_files_cache.store(.{ .value = payload.ws_id }, payload.files);
+                self.system_notices.clear(.workspace_context_files);
+                const message = std.fmt.allocPrint(
+                    self.api_state.allocator(),
+                    "Workspace context loaded: {d} files.",
+                    .{payload.files.len},
+                ) catch "Workspace context loaded.";
+                self.system_notices.push(.workspace_context_files, .success, .transient, message);
             },
             else => {
                 if (self.activeWsId()) |ws_id| {
                     self.api_state.ws_context_files_cache.markFailed(.{ .value = ws_id });
+                    const text: []const u8 = if (self.hasLocalWorkspaceDetail(ws_id))
+                        "Workspace context failed; showing local cache; press r to retry."
+                    else
+                        "Workspace context failed; press r to retry.";
+                    self.system_notices.push(.workspace_context_files, .failure, .persistent, text);
                 }
             },
         }
@@ -1771,10 +1931,22 @@ pub const Dashboard = struct {
         switch (result) {
             .ok => |payload| {
                 self.api_state.ws_manifest_cache.store(.{ .value = payload.ws_id }, payload.rules);
+                self.system_notices.clear(.workspace_manifest);
+                const message = std.fmt.allocPrint(
+                    self.api_state.allocator(),
+                    "Workspace manifest loaded: {d} rules.",
+                    .{payload.rules.len},
+                ) catch "Workspace manifest loaded.";
+                self.system_notices.push(.workspace_manifest, .success, .transient, message);
             },
             else => {
                 if (self.activeWsId()) |ws_id| {
                     self.api_state.ws_manifest_cache.markFailed(.{ .value = ws_id });
+                    const text: []const u8 = if (self.hasLocalWorkspaceDetail(ws_id))
+                        "Workspace manifest failed; showing local cache; press r to retry."
+                    else
+                        "Workspace manifest failed; press r to retry.";
+                    self.system_notices.push(.workspace_manifest, .failure, .persistent, text);
                 }
             },
         }
@@ -1948,15 +2120,17 @@ pub const Dashboard = struct {
                     .{ .ws_id = payload.ws_id, .path = payload.path },
                     payload.body,
                 );
+                self.system_notices.clear(.workspace_context_content);
             },
             else => {
                 const ws_id = self.activeWsId() orelse return;
-                const ws_d = api.state.wsDetail(self.api_state, ws_id) orelse return;
+                const ws_d = self.workspaceDetailForView(ws_id) orelse return;
                 const context_sel = self.resolveWsContextSelection(&ws_d) orelse return;
                 const file = ws_d.context_files[context_sel];
                 self.api_state.ws_context_content_cache.markFailed(
                     .{ .ws_id = ws_d.ws_id, .path = file.path },
                 );
+                self.system_notices.push(.workspace_context_content, .failure, .persistent, "Workspace context content failed; showing local cache when available.");
             },
         }
     }
@@ -2422,7 +2596,7 @@ pub const Dashboard = struct {
                 };
             },
             .workspace => {
-                const live = api.state.wsDetail(self.api_state, ws_id);
+                const live = self.workspaceDetailForView(ws_id);
                 const ws_tree = self.currentWsTree();
                 if (ws_tree.dirPathAt(self.ws_list_sel) != null) return null;
                 const leaf = ws_tree.leafIndexAt(self.ws_list_sel) orelse return null;
@@ -2480,7 +2654,7 @@ pub const Dashboard = struct {
             },
             .workspace => {
                 const ws_id = self.activeWsId() orelse return null;
-                const live = api.state.wsDetail(self.api_state, ws_id) orelse return null;
+                const live = self.workspaceDetailForView(ws_id) orelse return null;
                 const ws_tree = self.currentWsTree();
                 if (ws_tree.dirPathAt(self.ws_list_sel) != null) return null;
                 const leaf = ws_tree.leafIndexAt(self.ws_list_sel) orelse return null;
@@ -3266,9 +3440,12 @@ pub const Dashboard = struct {
                     self.analysis_focus = .rules;
                 }
             },
+            .workspace => {
+                self.ensureActiveWorkspaceDetailRequested();
+            },
             else => {},
         }
-        self.status_line = tab.label();
+        self.status_line = "Ready.";
         ctx.consumeAndRedraw();
     }
 

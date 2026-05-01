@@ -14,6 +14,7 @@ const empty_state = @import("widgets/empty_state.zig");
 const modal_mod = @import("widgets/modal.zig");
 const text_input = @import("widgets/text_input.zig");
 const content_view = @import("widgets/content_view.zig");
+const system_notice = @import("widgets/system_notice.zig");
 
 pub const fillSurface = draw.fillSurface;
 pub const paintBand = draw.paintBand;
@@ -59,6 +60,12 @@ pub const Modal = modal_mod.Modal;
 pub const TextInputResult = text_input.TextInputResult;
 pub const TextInput = text_input.TextInput;
 pub const ContentView = content_view.ContentView;
+pub const SystemNoticeQueue = system_notice.Queue;
+pub const SystemNotice = system_notice.Notice;
+pub const SystemNoticeKind = system_notice.Kind;
+pub const SystemNoticePersistence = system_notice.Persistence;
+pub const SystemNoticeKey = system_notice.Key;
+pub const systemNoticeHeaderStyle = system_notice.headerStyle;
 
 pub fn countLines(text: []const u8) usize {
     if (text.len == 0) return 0;
@@ -138,4 +145,5 @@ test {
     _ = @import("widgets/text_input.zig");
     _ = @import("widgets/diff_viewer.zig");
     _ = @import("widgets/content_view.zig");
+    _ = @import("widgets/system_notice.zig");
 }
