@@ -170,8 +170,7 @@ pub fn drawList(
         tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, wsTabLabel(tab), tab == self.workspace.tab);
         tab_col +|= 1;
     }
-    const ws_label = try std.fmt.allocPrint(ctx.arena, "w {s}", .{self.activeWorkspaceName()});
-    _ = w.writeHeaderRightIfFits(&surface, ctx, 0, tab_col + 1, ws_label, theme.fg(theme.TEXT_SOFT));
+    _ = w.writeHeaderRightIfFits(&surface, ctx, 0, tab_col + 1, self.activeWorkspaceName(), theme.fg(theme.TEXT_SOFT));
 
     const body_origin_row: u16 = 1;
     const body_origin_col: u16 = 2;
@@ -654,7 +653,7 @@ pub fn handleModuleEvent(
         return;
     }
 
-    if (key.matches(']', .{})) {
+    if (self.workspace.focus == .list and key.matches('l', .{})) {
         self.shiftWsTab(1);
         self.workspace.list_sel = 0;
         resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
@@ -662,7 +661,7 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('[', .{})) {
+    if (self.workspace.focus == .list and key.matches('h', .{})) {
         self.shiftWsTab(-1);
         self.workspace.list_sel = 0;
         resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
@@ -706,6 +705,44 @@ pub fn handleModuleEvent(
     }
 }
 
+pub fn shortcuts(self: anytype) []const w.Shortcut {
+    return switch (self.workspace.focus) {
+        .list => if (self.workspace.tab == .context) &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "open" },
+            .{ .key = "h/l", .label = "switch tab" },
+            .{ .key = "n", .label = "new context" },
+            .{ .key = "c", .label = "create ws" },
+            .{ .key = "w", .label = "workspaces" },
+            .{ .key = "r", .label = "refresh" },
+            .{ .key = "y", .label = "copy id" },
+            .{ .key = "?", .label = "help" },
+        } else &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "open" },
+            .{ .key = "h/l", .label = "switch tab" },
+            .{ .key = "c", .label = "create ws" },
+            .{ .key = "w", .label = "workspaces" },
+            .{ .key = "r", .label = "refresh" },
+            .{ .key = "y", .label = "copy id" },
+            .{ .key = "?", .label = "help" },
+        },
+        .content => &.{
+            .{ .key = "y", .label = "copy id" },
+            .{ .key = "j/k", .label = "scroll" },
+            .{ .key = "e", .label = "edit" },
+            .{ .key = "p", .label = "submit" },
+            .{ .key = "d", .label = "show diff" },
+            .{ .key = "D", .label = "discard draft" },
+            .{ .key = "w", .label = "workspaces" },
+            .{ .key = "m", .label = "mark ready" },
+            .{ .key = "r", .label = "refresh" },
+            .{ .key = "Esc", .label = "back" },
+            .{ .key = "?", .label = "help" },
+        },
+    };
+}
+
 fn wsTabLabel(tab: anytype) []const u8 {
     return switch (tab) {
         .context => "Context",
@@ -721,32 +758,6 @@ fn handleListFocusEvent(
     syncWsRows(self);
     const ws_tree = self.currentWsTree();
 
-    if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-        if (ws_tree.dirPathAt(self.workspace.list_sel)) |dir| {
-            if (ws_tree.collapseDir(dir)) {
-                self.workspace.show_diff = false;
-                ctx.consumeAndRedraw();
-                return;
-            }
-        }
-        if (ws_tree.parentRow(self.workspace.list_sel)) |parent| {
-            self.workspace.list_sel = parent;
-            self.workspace.show_diff = false;
-            ctx.consumeAndRedraw();
-            return;
-        }
-        return;
-    }
-    if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-        if (ws_tree.dirPathAt(self.workspace.list_sel)) |dir| {
-            if (ws_tree.expandDir(self.api_state.allocator(), dir)) {
-                self.workspace.show_diff = false;
-                ctx.consumeAndRedraw();
-                return;
-            }
-        }
-        return;
-    }
     if (key.matches(vaxis.Key.enter, .{})) {
         if (ws_tree.dirPathAt(self.workspace.list_sel)) |dir| {
             ws_tree.toggleDir(self.api_state.allocator(), dir);

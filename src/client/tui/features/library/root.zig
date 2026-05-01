@@ -199,12 +199,12 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches(']', .{})) {
+    if (!self.review.detail_focus_content and key.matches('l', .{})) {
         self.shiftDetailTab(1);
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('[', .{})) {
+    if (!self.review.detail_focus_content and key.matches('h', .{})) {
         self.shiftDetailTab(-1);
         ctx.consumeAndRedraw();
         return;
@@ -239,6 +239,46 @@ pub fn handleModuleEvent(
     }
 }
 
+pub fn shortcuts(self: anytype) []const w.Shortcut {
+    if (self.review.detail_focus_content and self.review.detail_tab == .pull_requests) return &.{
+        .{ .key = "j/k", .label = "scroll" },
+        .{ .key = "a", .label = "accept" },
+        .{ .key = "x", .label = "reject" },
+        .{ .key = "c", .label = "comment" },
+        .{ .key = "Esc", .label = "back" },
+        .{ .key = "?", .label = "help" },
+    };
+    if (self.review.detail_focus_content) return &.{
+        .{ .key = "y", .label = "copy id" },
+        .{ .key = "e", .label = "edit" },
+        .{ .key = "p", .label = "submit" },
+        .{ .key = "D", .label = "discard" },
+        .{ .key = "m", .label = "mark ready" },
+        .{ .key = "j/k", .label = "scroll" },
+        .{ .key = "Esc", .label = "back" },
+    };
+    if (self.review.detail_tab == .pull_requests) return &.{
+        .{ .key = "j/k", .label = "move" },
+        .{ .key = "f", .label = "filter" },
+        .{ .key = "h/l", .label = "switch tab" },
+        .{ .key = "Tab", .label = "switch focus" },
+        .{ .key = "r", .label = "refresh" },
+        .{ .key = "?", .label = "help" },
+        .{ .key = "q", .label = "quit" },
+    };
+    return &.{
+        .{ .key = "j/k", .label = "move" },
+        .{ .key = "Enter", .label = "open" },
+        .{ .key = "h/l", .label = "switch tab" },
+        .{ .key = "y", .label = "copy id" },
+        .{ .key = "n", .label = "new rule" },
+        .{ .key = "r", .label = "refresh" },
+        .{ .key = "b", .label = "bundle filter" },
+        .{ .key = "?", .label = "help" },
+        .{ .key = "q", .label = "quit" },
+    };
+}
+
 fn handleFileListEvent(
     self: anytype,
     ctx: *vxfw.EventContext,
@@ -253,35 +293,8 @@ fn handleFileListEvent(
             ctx.consumeAndRedraw();
             return;
         }
-        self.review.detail_focus_content = true;
         ctx.consumeAndRedraw();
         return;
-    }
-    if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-        syncLibraryWidgets(self);
-        const pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
-        if (self.library.tree.dirPathAt(pos)) |dir| {
-            if (self.library.tree.expandDir(self.api_state.allocator(), dir)) {
-                ctx.consumeAndRedraw();
-                return;
-            }
-        }
-    }
-    if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-        syncLibraryWidgets(self);
-        const pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
-        if (self.library.tree.dirPathAt(pos)) |dir| {
-            if (self.library.tree.collapseDir(dir)) {
-                ctx.consumeAndRedraw();
-                return;
-            }
-        }
-        if (self.library.tree.parentRow(pos)) |parent| {
-            self.library.scroll_bars.scroll_view.cursor = @intCast(parent);
-            self.library.scroll_bars.scroll_view.ensureScroll();
-            ctx.consumeAndRedraw();
-            return;
-        }
     }
 
     if (self.library.tree.rowCount() == 0) {
