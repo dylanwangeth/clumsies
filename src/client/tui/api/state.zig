@@ -74,6 +74,18 @@ pub const ConnectionStatus = enum {
     error_network,
 };
 
+pub const AttestationFlushSummary = struct {
+    workspace_count: usize = 0,
+    events_sent: usize = 0,
+    batches_sent: usize = 0,
+};
+
+pub const AttestationFlushResult = union(enum) {
+    ok: AttestationFlushSummary,
+    not_authenticated,
+    failed: []const u8,
+};
+
 pub const ApiState = struct {
     mutex: std.Thread.Mutex = .{},
     status: ConnectionStatus = .disconnected,
@@ -126,6 +138,7 @@ pub const ApiState = struct {
     pr_action_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     create_rule_pr_pending: request.PendingRequest(dispatcher.Result(CreateRulePrResponse)) = .{},
     create_context_pr_pending: request.PendingRequest(dispatcher.Result(CreateContextPrResponse)) = .{},
+    attestation_flush_pending: request.PendingRequest(AttestationFlushResult) = .{},
     // Derived pr_detail view state, recomputed by consumers whenever
     // pr_detail_cache or pr_comments_cache changes. Kept here because
     // computing the diff on every draw would be wasteful; the consumer
@@ -146,6 +159,7 @@ pub const ApiState = struct {
     /// triggers; does not gate any other endpoint, which now run
     /// independently via their own PendingRequest slots.
     bootstrap_inflight: bool = false,
+    bootstrap_refetch_requested: bool = false,
     create_ws_pending: request.PendingRequest(dispatcher.Result(workspace_api.CreateWorkspaceResponse)) = .{},
     thread_registry: dispatcher.ThreadRegistry = .{},
     backing_allocator: std.mem.Allocator,

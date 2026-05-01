@@ -32,6 +32,18 @@ const AttestationEventInput = struct {
     content: ?[]const u8 = null,
     content_hash: ?[]const u8 = null,
     model: ?[]const u8 = null,
+    mpf_hash: ?[]const u8 = null,
+    mpf_content: ?[]const u8 = null,
+    mpf_changed: ?bool = null,
+    kind: ?[]const u8 = null,
+    group: ?[]const u8 = null,
+    query: ?[]const u8 = null,
+    result_count: ?u32 = null,
+    result_names: ?[]const u8 = null,
+    summary: ?[]const u8 = null,
+    context_id: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+    new_path: ?[]const u8 = null,
 };
 
 const BatchRequest = struct {
@@ -48,6 +60,28 @@ fn parsePeriod(period: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, period, "weekly")) return "week";
     if (std.mem.eql(u8, period, "monthly")) return "month";
     return null;
+}
+
+test "BatchRequest accepts all client attestation event payload shapes" {
+    const body =
+        \\{"events":[
+        \\{"event_id":1,"session_id":"s","ws_id":"w","type":"setup","timestamp":1,"mpf_hash":"h","mpf_content":"body","mpf_changed":true},
+        \\{"event_id":2,"session_id":"s","ws_id":"w","type":"discover","timestamp":2,"kind":"rule","group":"zig","query":"style","result_count":2,"result_names":"A,B"},
+        \\{"event_id":3,"session_id":"s","ws_id":"w","type":"user_prompt","timestamp":3,"content":"prompt","content_hash":"ch","model":"gpt-5.5"},
+        \\{"event_id":4,"session_id":"s","ws_id":"w","type":"refer","timestamp":4,"rule_id":"r","rule_hash":"rh","constraint_id":"c","constraint_name":"n","constraint_text":"t","reason":"why"},
+        \\{"event_id":5,"session_id":"s","ws_id":"w","type":"agent_report","timestamp":5,"summary":"done"},
+        \\{"event_id":6,"session_id":"s","ws_id":"w","type":"context_propose_create","timestamp":6,"context_id":"ctx","path":"research/x.md","new_path":"research/y.md"}
+        \\]}
+    ;
+
+    const parsed = try std.json.parseFromSlice(BatchRequest, std.testing.allocator, body, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 6), parsed.value.events.len);
+    try std.testing.expectEqualStrings("done", parsed.value.events[4].summary.?);
+    try std.testing.expectEqualStrings("research/y.md", parsed.value.events[5].new_path.?);
 }
 
 fn defaultDays(period: []const u8) u32 {

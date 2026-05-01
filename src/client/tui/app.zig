@@ -700,6 +700,7 @@ pub const Dashboard = struct {
                 self.consumePrActionResult();
                 self.consumeCreateRulePrResult();
                 self.consumeCreateContextPrResult();
+                self.consumeAttestationFlushResult();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -937,9 +938,9 @@ pub const Dashboard = struct {
             "j/k move  Enter switch  Esc close"
         else switch (self.selected_module) {
             .dashboard => switch (self.analysis_focus) {
-                .chart => "j/k trail  Enter expand  Tab focus  Shift-F flush  ? help  q quit",
-                .inputs => "j/k move  Tab focus  Shift-F flush  ? help  q quit",
-                else => "Tab focus  Shift-F flush  ? help  q quit",
+                .chart => "j/k trail  Enter expand  Tab focus  ? help  q quit",
+                .inputs => "j/k move  Tab focus  ? help  q quit",
+                else => "Tab focus  ? help  q quit",
             },
             .library => if (self.detail_focus_content and self.detail_tab == .pull_requests)
                 "j/k scroll  a accept  x reject  c comment  Esc list  ? help"
@@ -1590,45 +1591,6 @@ pub const Dashboard = struct {
         return settings_panel.drawSettings(self, ctx);
     }
 
-    // Spawn `clumsies flush` synchronously and report the result in
-    // the status line. Synchronous is fine here: the upload worker is a
-    // short-lived CLI that flushes buffered attestation events and exits.
-    pub fn flushAttestation(self: *Dashboard) void {
-        self.status_line = "Flushing attestation...";
-        const alloc = self.api_state.allocator();
-        var child = std.process.Child.init(&.{ "clumsies", "flush" }, alloc);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        child.spawn() catch {
-            self.status_line = "Flush failed: clumsies binary not found";
-            return;
-        };
-        var stdout: std.ArrayList(u8) = .empty;
-        var stderr: std.ArrayList(u8) = .empty;
-        child.collectOutput(alloc, &stdout, &stderr, 64 * 1024) catch {};
-        const term = child.wait() catch {
-            self.status_line = "Flush failed: child wait error";
-            return;
-        };
-        switch (term) {
-            .Exited => |code| {
-                if (code == 0) {
-                    api.state.refreshLocalState(self.api_state);
-                    const trimmed = std.mem.trim(u8, stdout.items, " \n\r\t");
-                    if (trimmed.len > 0) {
-                        self.status_line = std.fmt.allocPrint(alloc, "Flush: {s}", .{trimmed}) catch "Flush: ok";
-                    } else {
-                        self.status_line = "Flush: ok";
-                    }
-                } else {
-                    const trimmed = std.mem.trim(u8, stderr.items, " \n\r\t");
-                    self.status_line = std.fmt.allocPrint(alloc, "Flush exit {d}: {s}", .{ code, trimmed }) catch "Flush failed";
-                }
-            },
-            else => self.status_line = "Flush terminated abnormally",
-        }
-    }
-
     // Count active drafts (status != "merged") across all categories.
     fn draftCount(self: *Dashboard) usize {
         self.api_state.mutex.lock();
@@ -2096,6 +2058,34 @@ pub const Dashboard = struct {
             .network_error => "PR action failed: network error.",
             .invalid_response => "PR action failed: malformed response.",
         };
+    }
+
+    fn consumeAttestationFlushResult(self: *Dashboard) void {
+        const result = self.api_state.attestation_flush_pending.consume() orelse return;
+        switch (result) {
+            .ok => |summary| {
+                self.system_notices.clear(.attestation_upload);
+                if (summary.events_sent == 0) return;
+                const message = std.fmt.allocPrint(
+                    self.api_state.allocator(),
+                    "Uploaded attestation logs: {d} events from {d} workspaces.",
+                    .{ summary.events_sent, summary.workspace_count },
+                ) catch "Uploaded attestation logs.";
+                self.system_notices.push(.attestation_upload, .success, .transient, message);
+                api.fetch.refetchAllAsync(self.api_state);
+            },
+            .not_authenticated => {
+                self.system_notices.clear(.attestation_upload);
+            },
+            .failed => |name| {
+                const message = std.fmt.allocPrint(
+                    self.api_state.allocator(),
+                    "Attestation upload failed: {s}; restart TUI after fixing Hub or auth.",
+                    .{name},
+                ) catch "Attestation upload failed; restart TUI after fixing Hub or auth.";
+                self.system_notices.push(.attestation_upload, .failure, .persistent, message);
+            },
+        }
     }
 
     /// Format `context: <server message> (CODE)` into the Dashboard's

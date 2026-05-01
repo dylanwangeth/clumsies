@@ -25,6 +25,7 @@ pub fn run() !void {
     if (auth_mod.loadAuth(allocator)) |auth_info| {
         defer auth_info.deinit(allocator);
         api.fetch.startFetch(&api_state, auth_info.hub_url, auth_info.access_token) catch {};
+        api.fetch.startAttestationFlush(&api_state) catch {};
     } else |_| {}
 
     var app = try vxfw.App.init(allocator);
