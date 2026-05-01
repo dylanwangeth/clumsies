@@ -1,11 +1,14 @@
+//! Review feature container. Owns pull-request detail, diff, comments, and
+//! action state for rule review workflows.
+
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
-const theme = @import("../theme.zig");
-const w = @import("../widgets.zig");
-const api = @import("../api.zig");
-const data = @import("../models/view_types.zig");
-const diff_viewer = @import("../widgets/diff_viewer.zig");
+const theme = @import("../../theme.zig");
+const w = @import("../../widgets.zig");
+const api = @import("../../api.zig");
+const data = @import("../../models/view_types.zig");
+const diff_viewer = @import("../../widgets/diff_viewer.zig");
 
 const RuleDetailLayout = struct {
     inner_h_pad: u16,
@@ -14,6 +17,73 @@ const RuleDetailLayout = struct {
     content_origin_row: i17,
     pr_diff_origin_col: i17,
     pr_diff_origin_row: i17,
+};
+
+pub const PrFilter = enum {
+    open,
+    all,
+    closed,
+
+    pub fn label(self: PrFilter) []const u8 {
+        return switch (self) {
+            .open => "open",
+            .all => "all",
+            .closed => "closed",
+        };
+    }
+
+    pub fn next(self: PrFilter) PrFilter {
+        return switch (self) {
+            .open => .all,
+            .all => .closed,
+            .closed => .open,
+        };
+    }
+};
+
+pub const DetailTab = enum(u8) {
+    content,
+    pull_requests,
+
+    pub fn label(self: DetailTab) []const u8 {
+        return switch (self) {
+            .content => "Content",
+            .pull_requests => "Pull Requests",
+        };
+    }
+};
+
+pub const detail_tabs = [_]DetailTab{ .content, .pull_requests };
+
+pub const State = struct {
+    detail_tab: DetailTab = .content,
+    detail_focus_content: bool = false,
+    content_view: w.ContentView,
+    pr_filter: PrFilter = .open,
+    pr_scroll_bars: vxfw.ScrollBars,
+    pr_widgets: [64 * 2]vxfw.Widget = undefined,
+    pr_table_rows: [64]w.TableRow = undefined,
+    pr_table_cols: [64][4]w.Column = undefined,
+    pr_text_rows: [64]vxfw.Text = undefined,
+    pr_indices: [64 * 2]?usize = .{null} ** (64 * 2),
+    pr_desc_bufs: [64][160]u8 = undefined,
+    pr_row_count: usize = 0,
+    selected_pr_idx: usize = 0,
+    pr_diff_scroll_bars: vxfw.ScrollBars,
+    pr_diff_widgets: [32]vxfw.Widget = undefined,
+    pr_diff_rows: [32]vxfw.Text = undefined,
+    pr_diff_count: usize = 0,
+    show_comment_editor: bool = false,
+    comment_input_buf: [256]u8 = .{0} ** 256,
+    comment_input_len: usize = 0,
+
+    pub fn init() State {
+        return .{
+            .content_view = w.ContentView.init(),
+            .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
+        };
+    }
 };
 
 const embedded_layout: RuleDetailLayout = .{
@@ -40,7 +110,7 @@ pub fn drawEmbeddedEmpty(
     ctx: vxfw.DrawContext,
 ) std.mem.Allocator.Error!vxfw.Surface {
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-    const border_color = theme.focusBorder(self.detail_focus_content);
+    const border_color = theme.focusBorder(self.review.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Detail", theme.boldOn(theme.PANEL, theme.TEXT));
@@ -56,7 +126,7 @@ pub fn drawEmbedded(
     const body = try buildRuleDetailBody(self, ctx, rule, embedded_layout);
 
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-    const border_color = theme.focusBorder(self.detail_focus_content);
+    const border_color = theme.focusBorder(self.review.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
     try fillRuleDetailSurface(self, &surface, ctx, rule, embedded_layout, body);
@@ -70,11 +140,11 @@ pub fn handleEmbeddedPaneEvent(
     key: vaxis.Key,
 ) anyerror!void {
     if (key.matches(vaxis.Key.escape, .{})) {
-        self.detail_focus_content = false;
+        self.review.detail_focus_content = false;
         ctx.consumeAndRedraw();
         return;
     }
-    switch (self.detail_tab) {
+    switch (self.review.detail_tab) {
         .content => {
             if (key.matches('y', .{})) {
                 if (self.copySelectedContentId()) {
@@ -105,7 +175,7 @@ pub fn handleEmbeddedPaneEvent(
                 ctx.consumeAndRedraw();
                 return;
             }
-            try self.content_view.handleEvent(ctx, event);
+            try self.review.content_view.handleEvent(ctx, event);
         },
         .pull_requests => try handlePrDiffEvent(self, ctx, event, key),
     }
@@ -127,7 +197,7 @@ fn buildRuleDetailBody(
     rule: *const data.RuleEntry,
     layout: RuleDetailLayout,
 ) std.mem.Allocator.Error!DetailBody {
-    switch (self.detail_tab) {
+    switch (self.review.detail_tab) {
         .content => {
             return .{
                 .content = try buildRuleContentSurface(self, ctx, layout.inner_w_pad, ctx.max.height.? -| 2),
@@ -140,7 +210,7 @@ fn buildRuleDetailBody(
             const inner_h = ctx.max.height.? -| layout.inner_h_pad;
             const inner_w = ctx.max.width.? -| layout.inner_w_pad;
 
-            const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
+            const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
             const pr = &prs[pr_idx];
             // Title matches design/04 drill-down layout:
             // "{pr_id} ─ {rule_path} ─ {status} ─ {author} ─ {created}"
@@ -163,7 +233,7 @@ fn buildRuleDetailBody(
                 .pull_request_diff = .{
                     .title = title,
                     .op_line = op_line,
-                    .surface = try self.pr_diff_scroll_bars.widget().draw(diff_ctx),
+                    .surface = try self.review.pr_diff_scroll_bars.widget().draw(diff_ctx),
                 },
             };
         },
@@ -332,22 +402,22 @@ fn handlePrDiffEvent(
         return;
     }
     if (key.matches('c', .{})) {
-        self.show_comment_editor = true;
-        self.comment_input_len = 0;
+        self.review.show_comment_editor = true;
+        self.review.comment_input_len = 0;
         ctx.consumeAndRedraw();
         return;
     }
-    if (self.pr_diff_count == 0) return;
-    try self.pr_diff_scroll_bars.scroll_view.handleEvent(ctx, event);
+    if (self.review.pr_diff_count == 0) return;
+    try self.review.pr_diff_scroll_bars.scroll_view.handleEvent(ctx, event);
 }
 
 pub fn fetchSelectedPrDetail(self: anytype) void {
     const rules = self.getRules();
-    const rule_idx = @min(self.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+    const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
     if (rules.len == 0) return;
 
     const prs = self.getPrsForRule(rules[rule_idx].path);
-    const pr_idx = @min(self.selected_pr_idx, if (prs.len > 0) prs.len - 1 else 0);
+    const pr_idx = @min(self.review.selected_pr_idx, if (prs.len > 0) prs.len - 1 else 0);
     if (prs.len == 0) return;
 
     const pr_id = prs[pr_idx].id;
@@ -379,12 +449,12 @@ pub fn syncContentWidget(self: anytype) void {
     // rules.len and have no server-side entry — their path lives
     // in drafts_create_rule_paths. Without this branch the
     // content panel renders empty for any draft created via `n`.
-    const selected_path: ?[]const u8 = if (self.selected_rule < rules.len)
-        rules[self.selected_rule].path
+    const selected_path: ?[]const u8 = if (self.library.selected_rule < rules.len)
+        rules[self.library.selected_rule].path
     else blk: {
-        const k = self.selected_rule - rules.len;
-        if (k >= self.drafts_create_rule_paths.len) break :blk null;
-        break :blk self.drafts_create_rule_paths[k];
+        const k = self.library.selected_rule - rules.len;
+        if (k >= self.drafts.create_rule_paths.len) break :blk null;
+        break :blk self.drafts.create_rule_paths[k];
     };
     const category = if (selected_path) |path| self.libraryCategoryForPath(path) else .rule;
     const cache_content: []const u8 = if (selected_path) |path|
@@ -397,7 +467,7 @@ pub fn syncContentWidget(self: anytype) void {
 }
 
 /// Render the working-copy view for an arbitrary (cache, draft)
-/// byte pair into Dashboard.content_scroll_bars. Shared by the
+/// byte pair into Shell.content_scroll_bars. Shared by the
 /// Library rule detail pane and the Workspace context / rules
 /// content panes so both surfaces scroll identically and use the
 /// same DiffViewer gutter formatter. When draft_content is null the
@@ -408,7 +478,7 @@ pub fn syncContentWidgetBytes(
     cache_content: []const u8,
     draft_content: ?[]const u8,
 ) void {
-    self.content_view.syncBytes(self.viewAllocator(), cache_content, draft_content);
+    self.review.content_view.syncBytes(self.viewAllocator(), cache_content, draft_content);
 }
 
 /// Workspace-side entrypoint: render the working copy for a
@@ -443,7 +513,7 @@ pub fn syncWsRuleContentWidget(
 }
 
 /// Build the scrollable content surface against the current
-/// Dashboard.content_scroll_bars state. Call syncContentWidgetBytes
+/// Shell.content_scroll_bars state. Call syncContentWidgetBytes
 /// before this (or another `sync*` variant) so the scroll view's
 /// children slice is populated. Layout params match
 /// buildRuleContentSurface's contract.
@@ -453,73 +523,73 @@ pub fn buildContentSurface(
     width_pad: u16,
     child_height: u16,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    return self.content_view.buildSurface(self.viewAllocator(), ctx, width_pad, child_height);
+    return self.review.content_view.buildSurface(self.viewAllocator(), ctx, width_pad, child_height);
 }
 
 pub fn syncPrWidgets(self: anytype) void {
     const all_rules = self.getRules();
     if (all_rules.len == 0) {
-        self.pr_row_count = 0;
-        self.pr_scroll_bars.scroll_view.children = .{ .slice = self.pr_widgets[0..0] };
-        self.pr_scroll_bars.estimated_content_height = 0;
+        self.review.pr_row_count = 0;
+        self.review.pr_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_widgets[0..0] };
+        self.review.pr_scroll_bars.estimated_content_height = 0;
         return;
     }
-    const sel_idx = @min(self.selected_rule, all_rules.len - 1);
+    const sel_idx = @min(self.library.selected_rule, all_rules.len - 1);
     const p = &all_rules[sel_idx];
     const prs = self.getPrsForRule(p.path);
     const view_alloc = self.viewAllocator();
     var row_idx: usize = 0;
     for (prs, 0..) |pr, pi| {
-        if (row_idx + 1 >= self.pr_widgets.len) break;
-        const show = switch (self.pr_filter) {
+        if (row_idx + 1 >= self.review.pr_widgets.len) break;
+        const show = switch (self.review.pr_filter) {
             .open => std.mem.eql(u8, pr.status, "open"),
             .closed => !std.mem.eql(u8, pr.status, "open"),
             .all => true,
         };
         if (!show) continue;
-        const sel = pi == self.selected_pr_idx;
+        const sel = pi == self.review.selected_pr_idx;
         const created_short = w.formatShortTimestamp(view_alloc, pr.created) catch pr.created;
         // Row 1: id, status, author, created. padding_left = 0 so
         // the first cell of the row sits immediately to the right
         // of the cursor bar, matching the Library file list.
-        self.pr_table_cols[pi] = .{
+        self.review.pr_table_cols[pi] = .{
             .{ .text = pr.id, .flex = 0 },
             .{ .text = pr.status, .flex = 0 },
             .{ .text = pr.author, .flex = 0 },
             .{ .text = created_short, .flex = 1, .alignment = .right },
         };
-        self.pr_table_rows[pi] = .{
-            .columns = &self.pr_table_cols[pi],
+        self.review.pr_table_rows[pi] = .{
+            .columns = &self.review.pr_table_cols[pi],
             .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
             .gap = 2,
             .padding_left = 0,
         };
-        self.pr_widgets[row_idx] = self.pr_table_rows[pi].widget();
-        self.pr_indices[row_idx] = pi;
+        self.review.pr_widgets[row_idx] = self.review.pr_table_rows[pi].widget();
+        self.review.pr_indices[row_idx] = pi;
         row_idx += 1;
         // Row 2: description + multi-op hint (muted)
         const desc_text: []const u8 = if (pr.operation_count > 1) blk: {
-            const buf = &self.pr_desc_bufs[pi];
+            const buf = &self.review.pr_desc_bufs[pi];
             const written = std.fmt.bufPrint(buf, "{s}  \xc2\xb7 {d} ops", .{ pr.description, pr.operation_count }) catch break :blk pr.description;
             break :blk written;
         } else pr.description;
-        self.pr_text_rows[pi] = .{
+        self.review.pr_text_rows[pi] = .{
             .text = desc_text,
             .style = theme.textOn(theme.PANEL, theme.MUTED),
         };
-        self.pr_widgets[row_idx] = self.pr_text_rows[pi].widget();
-        self.pr_indices[row_idx] = null; // skip on cursor
+        self.review.pr_widgets[row_idx] = self.review.pr_text_rows[pi].widget();
+        self.review.pr_indices[row_idx] = null; // skip on cursor
         row_idx += 1;
     }
-    self.pr_row_count = row_idx;
-    self.pr_scroll_bars.scroll_view.children = .{ .slice = self.pr_widgets[0..row_idx] };
-    self.pr_scroll_bars.estimated_content_height = @intCast(row_idx);
+    self.review.pr_row_count = row_idx;
+    self.review.pr_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_widgets[0..row_idx] };
+    self.review.pr_scroll_bars.estimated_content_height = @intCast(row_idx);
     // Ensure cursor is on a TableRow, not a description
-    var cur = @as(usize, @intCast(self.pr_scroll_bars.scroll_view.cursor));
-    while (cur < row_idx and self.pr_indices[cur] == null) cur += 1;
-    self.pr_scroll_bars.scroll_view.cursor = @intCast(cur);
+    var cur = @as(usize, @intCast(self.review.pr_scroll_bars.scroll_view.cursor));
+    while (cur < row_idx and self.review.pr_indices[cur] == null) cur += 1;
+    self.review.pr_scroll_bars.scroll_view.cursor = @intCast(cur);
     if (cur < row_idx) {
-        if (self.pr_indices[cur]) |pi| self.selected_pr_idx = pi;
+        if (self.review.pr_indices[cur]) |pi| self.review.selected_pr_idx = pi;
     }
     // Kick a detail fetch for the current selection so the diff /
     // description / comment count populate without requiring the
@@ -531,73 +601,73 @@ pub fn syncPrWidgets(self: anytype) void {
 pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
     const all_rules = self.getRules();
     if (all_rules.len == 0) {
-        self.pr_diff_count = 0;
+        self.review.pr_diff_count = 0;
         return;
     }
-    const sel_idx = @min(self.selected_rule, all_rules.len - 1);
+    const sel_idx = @min(self.library.selected_rule, all_rules.len - 1);
     const p = &all_rules[sel_idx];
     const prs = self.getPrsForRule(p.path);
     if (prs.len == 0) {
-        self.pr_diff_count = 0;
+        self.review.pr_diff_count = 0;
         return;
     }
-    const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
+    const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
     const pr = &prs[pr_idx];
     var count: usize = 0;
     for (pr.diff) |line| {
-        if (count >= self.pr_diff_rows.len) break;
-        self.pr_diff_rows[count] = .{
+        if (count >= self.review.pr_diff_rows.len) break;
+        self.review.pr_diff_rows[count] = .{
             .text = line,
             .style = diff_viewer.styleLine(line),
         };
-        self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+        self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
         count += 1;
     }
     // Comment section
     if (pr.comments.len > 0) {
-        if (count < self.pr_diff_rows.len) {
-            self.pr_diff_rows[count] = .{
+        if (count < self.review.pr_diff_rows.len) {
+            self.review.pr_diff_rows[count] = .{
                 .text = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Comments \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",
                 .style = theme.fg(theme.MUTED),
             };
-            self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+            self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
             count += 1;
         }
         for (pr.comments) |comment| {
             // Header: "author · created". Timestamp is compacted
             // through the shared formatter so comment rows match PR
             // list + rule panel timestamp layout.
-            if (count < self.pr_diff_rows.len) {
+            if (count < self.review.pr_diff_rows.len) {
                 const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
                 const header = std.fmt.allocPrint(allocator, "{s} \xc2\xb7 {s}", .{ comment.author, created_short }) catch "??";
-                self.pr_diff_rows[count] = .{
+                self.review.pr_diff_rows[count] = .{
                     .text = header,
                     .style = theme.fgBold(theme.TEXT_SOFT),
                 };
-                self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
                 count += 1;
             }
             // Body
-            if (count < self.pr_diff_rows.len) {
-                self.pr_diff_rows[count] = .{
+            if (count < self.review.pr_diff_rows.len) {
+                self.review.pr_diff_rows[count] = .{
                     .text = comment.body,
                     .style = theme.fg(theme.TEXT_SOFT),
                 };
-                self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
                 count += 1;
             }
             // Blank line for spacing
-            if (count < self.pr_diff_rows.len) {
-                self.pr_diff_rows[count] = .{
+            if (count < self.review.pr_diff_rows.len) {
+                self.review.pr_diff_rows[count] = .{
                     .text = " ",
                     .style = theme.fg(theme.MUTED),
                 };
-                self.pr_diff_widgets[count] = self.pr_diff_rows[count].widget();
+                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
                 count += 1;
             }
         }
     }
-    self.pr_diff_count = count;
-    self.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.pr_diff_widgets[0..count] };
-    self.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
+    self.review.pr_diff_count = count;
+    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_diff_widgets[0..count] };
+    self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
 }

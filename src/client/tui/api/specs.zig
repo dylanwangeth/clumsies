@@ -190,7 +190,7 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
     // `"field": null` as equivalent to "field absent" (see
     // hub/collab.zig `Operation`), so emitting all fields keeps the
     // body shape uniform and lets the validator branch on `type`.
-    // submit code in app.zig decides which fields to populate per
+    // submit code in shell.zig decides which fields to populate per
     // operation_type based on the draft index entry; this function
     // just serializes the decision.
     const Op = struct {

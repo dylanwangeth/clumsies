@@ -1,9 +1,25 @@
+//! Analysis feature container. Renders hub statistics for rules, members,
+//! models, and attestation activity with local focus state.
+
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
-const theme = @import("../theme.zig");
-const w = @import("../widgets.zig");
-const data = @import("../models/view_types.zig");
+const theme = @import("../../theme.zig");
+const w = @import("../../widgets.zig");
+const data = @import("../../models/view_types.zig");
+
+pub const Focus = enum { chart, rules, members, inputs };
+
+pub const State = struct {
+    scope_idx: usize = 0,
+    breathing_phase: u8 = 0,
+    focus: Focus = .inputs,
+    rule_cursor: usize = 0,
+    member_cursor: usize = 0,
+    input_cursor: usize = 0,
+    expanded_rule: ?usize = null,
+    show_member_detail: bool = false,
+};
 
 pub fn drawRoot(
     self: anytype,
@@ -19,7 +35,7 @@ pub fn drawRoot(
     const rules_w: u16 = size.width -| members_w;
     const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
 
-    const main_surface = if (self.analysis_show_member_detail)
+    const main_surface = if (self.analysis.show_member_detail)
         try drawMemberDetail(self, ctx, rules_w, size.height, insights)
     else
         try drawRules(self, ctx, rules_w, size.height, insights, available);
@@ -41,7 +57,7 @@ pub fn drawRules(
     insights: *const data.AnalysisData,
     available: bool,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const border_color = theme.focusBorder(self.analysis_focus == .rules);
+    const border_color = theme.focusBorder(self.analysis.focus == .rules);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
@@ -90,12 +106,12 @@ pub fn drawRules(
     const bar_end: u16 = col_reach -| 2;
     const bar_max_w: u16 = bar_end -| bar_start;
 
-    const focused = self.analysis_focus == .rules;
+    const focused = self.analysis.focus == .rules;
     var row: u16 = 1;
     for (insights.rules, 0..) |rule, rule_idx| {
         if (row >= height -| 1) break;
         const is_idle = rule.refer_count == 0;
-        const is_sel = rule_idx == self.analysis_rule_cursor and focused;
+        const is_sel = rule_idx == self.analysis.rule_cursor and focused;
 
         if (is_sel) {
             w.writeCursorMarker(&surface, 1, row);
@@ -148,7 +164,7 @@ pub fn drawRules(
         w.writeText(&surface, ctx, col_last, row, last_txt, theme.fg(theme.MUTED));
         row += 1;
 
-        if (self.analysis_expanded_rule == rule_idx) {
+        if (self.analysis.expanded_rule == rule_idx) {
             var constraint_max: u32 = 1;
             for (rule.constraints) |constraint| {
                 if (constraint.refer_count > constraint_max) constraint_max = constraint.refer_count;
@@ -218,7 +234,7 @@ pub fn drawMembers(
     insights: *const data.AnalysisData,
     available: bool,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const border_color = theme.focusBorder(self.analysis_focus == .members);
+    const border_color = theme.focusBorder(self.analysis.focus == .members);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
@@ -250,7 +266,7 @@ pub fn drawMembers(
 
     for (insights.members, 0..) |member, member_idx| {
         if (row + 8 >= height) break;
-        const is_sel = member_idx == self.analysis_member_cursor and self.analysis_focus == .members;
+        const is_sel = member_idx == self.analysis.member_cursor and self.analysis.focus == .members;
         if (is_sel) {
             w.writeCursorMarker(&surface, 1, row);
         }
@@ -302,7 +318,7 @@ pub fn drawMemberDetail(
         return empty_surface;
     }
 
-    const member_idx = @min(self.analysis_member_cursor, insights.members.len - 1);
+    const member_idx = @min(self.analysis.member_cursor, insights.members.len - 1);
     const member = &insights.members[member_idx];
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
@@ -369,26 +385,26 @@ pub fn handleModuleEvent(
     member_count: usize,
 ) anyerror!void {
     if (key.matches(vaxis.Key.tab, .{})) {
-        self.analysis_focus = switch (self.analysis_focus) {
+        self.analysis.focus = switch (self.analysis.focus) {
             .rules => .members,
             else => .rules,
         };
-        self.analysis_expanded_rule = null;
-        self.analysis_show_member_detail = false;
+        self.analysis.expanded_rule = null;
+        self.analysis.show_member_detail = false;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-        switch (self.analysis_focus) {
+        switch (self.analysis.focus) {
             .rules => {
-                if (rule_count > 0 and self.analysis_rule_cursor < rule_count - 1)
-                    self.analysis_rule_cursor += 1;
+                if (rule_count > 0 and self.analysis.rule_cursor < rule_count - 1)
+                    self.analysis.rule_cursor += 1;
                 ctx.consumeAndRedraw();
                 return;
             },
             .members => {
-                if (member_count > 0 and self.analysis_member_cursor < member_count - 1)
-                    self.analysis_member_cursor += 1;
+                if (member_count > 0 and self.analysis.member_cursor < member_count - 1)
+                    self.analysis.member_cursor += 1;
                 ctx.consumeAndRedraw();
                 return;
             },
@@ -396,14 +412,14 @@ pub fn handleModuleEvent(
         }
     }
     if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-        switch (self.analysis_focus) {
+        switch (self.analysis.focus) {
             .rules => {
-                self.analysis_rule_cursor -|= 1;
+                self.analysis.rule_cursor -|= 1;
                 ctx.consumeAndRedraw();
                 return;
             },
             .members => {
-                self.analysis_member_cursor -|= 1;
+                self.analysis.member_cursor -|= 1;
                 ctx.consumeAndRedraw();
                 return;
             },
@@ -411,18 +427,18 @@ pub fn handleModuleEvent(
         }
     }
     if (key.matches(vaxis.Key.enter, .{})) {
-        switch (self.analysis_focus) {
+        switch (self.analysis.focus) {
             .rules => {
-                if (self.analysis_expanded_rule == self.analysis_rule_cursor) {
-                    self.analysis_expanded_rule = null;
+                if (self.analysis.expanded_rule == self.analysis.rule_cursor) {
+                    self.analysis.expanded_rule = null;
                 } else {
-                    self.analysis_expanded_rule = self.analysis_rule_cursor;
+                    self.analysis.expanded_rule = self.analysis.rule_cursor;
                 }
                 ctx.consumeAndRedraw();
                 return;
             },
             .members => {
-                self.analysis_show_member_detail = !self.analysis_show_member_detail;
+                self.analysis.show_member_detail = !self.analysis.show_member_detail;
                 ctx.consumeAndRedraw();
                 return;
             },
@@ -430,12 +446,12 @@ pub fn handleModuleEvent(
         }
     }
     if (key.matches(vaxis.Key.escape, .{})) {
-        if (self.analysis_expanded_rule != null) {
-            self.analysis_expanded_rule = null;
-        } else if (self.analysis_show_member_detail) {
-            self.analysis_show_member_detail = false;
+        if (self.analysis.expanded_rule != null) {
+            self.analysis.expanded_rule = null;
+        } else if (self.analysis.show_member_detail) {
+            self.analysis.show_member_detail = false;
         } else {
-            self.analysis_focus = .rules;
+            self.analysis.focus = .rules;
         }
         ctx.consumeAndRedraw();
     }

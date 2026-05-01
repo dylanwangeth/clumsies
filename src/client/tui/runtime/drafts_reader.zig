@@ -1,4 +1,4 @@
-// Read local drafts/index.json files across all workspaces.
+//! Read local drafts/index.json files across all workspaces.
 const std = @import("std");
 
 pub const DraftEntry = struct {

@@ -1,13 +1,13 @@
-// Tree flattening for path-structured lists.
-//
-// Given a sorted list of slash-separated paths and a set of expanded
-// directory prefixes, produces a flat sequence of visible rows: directory
-// headers whose ancestors are all expanded, and leaves whose full ancestor
-// chain is expanded. Siblings are adjacent so tree connectors (├/└) can be
-// computed with a single forward sweep.
-//
-// Callers own the output buffer. Pass `expanded = null` to render the
-// whole tree as fully expanded (useful for non-interactive nested views).
+//! Tree flattening for path-structured lists.
+//!
+//! Given a sorted list of slash-separated paths and a set of expanded
+//! directory prefixes, produces a flat sequence of visible rows: directory
+//! headers whose ancestors are all expanded, and leaves whose full ancestor
+//! chain is expanded. Siblings are adjacent so tree connectors (├/└) can be
+//! computed with a single forward sweep.
+//!
+//! Callers own the output buffer. Pass `expanded = null` to render the
+//! whole tree as fully expanded (useful for non-interactive nested views).
 
 const std = @import("std");
 

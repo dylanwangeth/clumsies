@@ -1,13 +1,18 @@
+//! Dashboard feature container. Renders local attestation rounds, protocol
+//! traces, and summary panels for the active analysis scope.
+
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
-const theme = @import("../theme.zig");
-const w = @import("../widgets.zig");
-const attestation_reader = @import("../runtime/attestation_reader.zig");
-const drafts_mod = @import("../../drafts.zig");
-const workspace_rule = @import("../../rule.zig");
+const theme = @import("../../theme.zig");
+const w = @import("../../widgets.zig");
+const attestation_reader = @import("../../runtime/attestation_reader.zig");
+const drafts_mod = @import("../../../drafts.zig");
+const workspace_rule = @import("../../../rule.zig");
 pub const ARENA_HEIGHT: u16 = 7;
-const ROUND_ROW_COUNT = 5;
+const MAX_ROUND_ROWS = 2048;
+const MAX_CHAIN_ROWS = 1024;
+pub const ROUND_ROW_COUNT = 5;
 const ROUND_CURSOR_HEIGHT = ROUND_ROW_COUNT - 1;
 const BAR_HEIGHT: u16 = 5;
 const BAR_WIDTH: u16 = 2;
@@ -22,6 +27,27 @@ const TRACE_REJECT = theme.DANGER;
 const TRACE_DISCOVER = theme.rgb(0x8fb8a5);
 const TRACE_REFINE = theme.rgb(0x9f8ad7);
 const TRACE_OTHER = theme.TEXT_SOFT;
+
+pub const State = struct {
+    input_capacity: usize = 1,
+    round_scroll_bars: vxfw.ScrollBars,
+    round_widgets: [MAX_ROUND_ROWS]vxfw.Widget = undefined,
+    round_rows: [MAX_ROUND_ROWS]vxfw.Text = undefined,
+    round_rich_rows: [MAX_ROUND_ROWS]vxfw.RichText = undefined,
+    chain_scroll_bars: vxfw.ScrollBars,
+    chain_widgets: [MAX_CHAIN_ROWS]vxfw.Widget = undefined,
+    chain_rows: [MAX_CHAIN_ROWS]vxfw.Text = undefined,
+    chain_rich_rows: [MAX_CHAIN_ROWS]vxfw.RichText = undefined,
+    chain_cursor: usize = 0,
+    chain_expanded_items: [MAX_CHAIN_ROWS]bool = .{false} ** MAX_CHAIN_ROWS,
+
+    pub fn init() State {
+        return .{
+            .round_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .chain_scroll_bars = w.initPlainScrollBars(theme.PANEL, 3),
+        };
+    }
+};
 
 pub fn drawRoot(
     self: anytype,
@@ -106,7 +132,7 @@ fn drawFingerprintPanel(
     w.drawBorder(&surface, theme.BORDER, theme.PANEL);
 
     const breath_t: f32 = blk: {
-        const phase = self.breathing_phase;
+        const phase = self.analysis.breathing_phase;
         const half: f32 = if (phase <= 10)
             @as(f32, @floatFromInt(phase)) / 10.0
         else
@@ -351,7 +377,7 @@ pub fn drawRounds(
     height: u16,
     rounds: []const attestation_reader.RoundEvent,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const border_color = theme.focusBorder(self.analysis_focus == .inputs);
+    const border_color = theme.focusBorder(self.analysis.focus == .inputs);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
@@ -368,17 +394,17 @@ pub fn drawRounds(
     const body_h: u16 = height -| body_origin_row -| 1;
     const body_w: u16 = width -| body_origin_col -| 1;
     try syncRoundWidgets(self, ctx, rounds, body_w);
-    self.dashboard_round_scroll_bars.scroll_view.draw_cursor = false;
-    defer self.dashboard_round_scroll_bars.scroll_view.draw_cursor = true;
+    self.dashboard.round_scroll_bars.scroll_view.draw_cursor = false;
+    defer self.dashboard.round_scroll_bars.scroll_view.draw_cursor = true;
     const body_ctx = ctx.withConstraints(
         .{ .width = body_w, .height = body_h },
         .{ .width = body_w, .height = body_h },
     );
-    const body = try self.dashboard_round_scroll_bars.widget().draw(body_ctx);
+    const body = try self.dashboard.round_scroll_bars.widget().draw(body_ctx);
     const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
     children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
     surface.children = children;
-    writeDoubleCursorBar(&surface, &self.dashboard_round_scroll_bars.scroll_view, body_origin_row, body_h);
+    writeDoubleCursorBar(&surface, &self.dashboard.round_scroll_bars.scroll_view, body_origin_row, body_h);
 
     return surface;
 }
@@ -403,7 +429,7 @@ pub fn drawProtocolTrace(
     height: u16,
     selected_round: ?attestation_reader.RoundEvent,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const border_color = theme.focusBorder(self.analysis_focus == .chart);
+    const border_color = theme.focusBorder(self.analysis.focus == .chart);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
@@ -423,7 +449,7 @@ pub fn drawProtocolTrace(
         .{ .width = body_w, .height = body_h },
         .{ .width = body_w, .height = body_h },
     );
-    const body = try self.dashboard_chain_scroll_bars.widget().draw(body_ctx);
+    const body = try self.dashboard.chain_scroll_bars.widget().draw(body_ctx);
     const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
     children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
     surface.children = children;
@@ -437,7 +463,7 @@ pub fn handleModuleEvent(
     round_count: usize,
 ) anyerror!void {
     if (key.matches(vaxis.Key.tab, .{})) {
-        self.analysis_focus = switch (self.analysis_focus) {
+        self.analysis.focus = switch (self.analysis.focus) {
             .chart => .inputs,
             else => .chart,
         };
@@ -445,56 +471,56 @@ pub fn handleModuleEvent(
         return;
     }
     if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-        if (self.analysis_focus == .inputs) {
-            if (round_count > 0 and self.analysis_input_cursor < round_count - 1) {
-                self.analysis_input_cursor += 1;
-                self.dashboard_chain_cursor = 0;
+        if (self.analysis.focus == .inputs) {
+            if (round_count > 0 and self.analysis.input_cursor < round_count - 1) {
+                self.analysis.input_cursor += 1;
+                self.dashboard.chain_cursor = 0;
                 resetChainExpansion(self);
-                resetScrollView(&self.dashboard_chain_scroll_bars.scroll_view);
+                resetScrollView(&self.dashboard.chain_scroll_bars.scroll_view);
             }
             ctx.consumeAndRedraw();
             return;
         }
-        if (self.analysis_focus == .chart) {
-            self.dashboard_chain_cursor += 1;
+        if (self.analysis.focus == .chart) {
+            self.dashboard.chain_cursor += 1;
             ctx.consumeAndRedraw();
             return;
         }
     }
     if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-        if (self.analysis_focus == .inputs) {
-            const old_cursor = self.analysis_input_cursor;
-            self.analysis_input_cursor -|= 1;
-            if (self.analysis_input_cursor != old_cursor) {
-                self.dashboard_chain_cursor = 0;
+        if (self.analysis.focus == .inputs) {
+            const old_cursor = self.analysis.input_cursor;
+            self.analysis.input_cursor -|= 1;
+            if (self.analysis.input_cursor != old_cursor) {
+                self.dashboard.chain_cursor = 0;
                 resetChainExpansion(self);
-                resetScrollView(&self.dashboard_chain_scroll_bars.scroll_view);
+                resetScrollView(&self.dashboard.chain_scroll_bars.scroll_view);
             }
             ctx.consumeAndRedraw();
             return;
         }
-        if (self.analysis_focus == .chart) {
-            self.dashboard_chain_cursor -|= 1;
+        if (self.analysis.focus == .chart) {
+            self.dashboard.chain_cursor -|= 1;
             ctx.consumeAndRedraw();
             return;
         }
     }
     if (key.matches(vaxis.Key.enter, .{})) {
-        if (self.analysis_focus == .chart) {
-            const idx = @min(self.dashboard_chain_cursor, self.dashboard_chain_expanded_items.len - 1);
-            self.dashboard_chain_expanded_items[idx] = !self.dashboard_chain_expanded_items[idx];
+        if (self.analysis.focus == .chart) {
+            const idx = @min(self.dashboard.chain_cursor, self.dashboard.chain_expanded_items.len - 1);
+            self.dashboard.chain_expanded_items[idx] = !self.dashboard.chain_expanded_items[idx];
             ctx.consumeAndRedraw();
             return;
         }
     }
     if (key.matches(vaxis.Key.escape, .{})) {
-        self.analysis_focus = .chart;
+        self.analysis.focus = .chart;
         ctx.consumeAndRedraw();
     }
 }
 
 fn resetChainExpansion(self: anytype) void {
-    @memset(self.dashboard_chain_expanded_items[0..], false);
+    @memset(self.dashboard.chain_expanded_items[0..], false);
 }
 
 fn resetScrollView(scroll_view: *vxfw.ScrollView) void {
@@ -524,12 +550,12 @@ fn syncRoundWidgets(
     rounds: []const attestation_reader.RoundEvent,
     width: u16,
 ) std.mem.Allocator.Error!void {
-    const row_count = @min(rounds.len * ROUND_ROW_COUNT, self.dashboard_round_rows.len);
+    const row_count = @min(rounds.len * ROUND_ROW_COUNT, self.dashboard.round_rows.len);
     var out: usize = 0;
     var idx: usize = 0;
     while (idx < rounds.len and out + ROUND_ROW_COUNT <= row_count) : (idx += 1) {
         const round = rounds[idx];
-        const is_sel = idx == self.analysis_input_cursor;
+        const is_sel = idx == self.analysis.input_cursor;
         const row_bg = if (is_sel) theme.PANEL_ALT else theme.PANEL;
         const time_txt = try formatHm(ctx.arena, round.timestamp);
         const exception = isExceptionRound(round);
@@ -538,7 +564,7 @@ fn syncRoundWidgets(
         } else {
             const head = try flexBetween(ctx, round.session_id, time_txt, width -| 3);
             const head_line = try std.fmt.allocPrint(ctx.arena, " {s}", .{head});
-            self.dashboard_round_rows[out] = .{
+            self.dashboard.round_rows[out] = .{
                 .text = try padLine(ctx, firstLineTrimmed(head_line, width), width),
                 .style = if (is_sel)
                     theme.boldOn(row_bg, theme.ACCENT_SOFT)
@@ -546,7 +572,7 @@ fn syncRoundWidgets(
                     .{ .fg = theme.MUTED, .bg = row_bg },
                 .softwrap = false,
             };
-            self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
+            self.dashboard.round_widgets[out] = self.dashboard.round_rows[out].widget();
             out += 1;
         }
 
@@ -558,36 +584,36 @@ fn syncRoundWidgets(
         while (line_idx < 3) : (line_idx += 1) {
             const text = nextPromptPreviewLine(&remaining, width -| 3);
             const snippet = try std.fmt.allocPrint(ctx.arena, "  {s}", .{text});
-            self.dashboard_round_rows[out] = .{
+            self.dashboard.round_rows[out] = .{
                 .text = try padLine(ctx, snippet, width),
                 .style = if (is_sel) theme.boldOn(row_bg, theme.TEXT) else .{ .fg = theme.TEXT_SOFT, .bg = row_bg },
                 .softwrap = false,
             };
-            self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
+            self.dashboard.round_widgets[out] = self.dashboard.round_rows[out].widget();
             out += 1;
         }
 
         const sep = try ctx.arena.alloc(u8, width);
         @memset(sep, ' ');
         if (idx + 1 < rounds.len) {
-            self.dashboard_round_rows[out] = .{
+            self.dashboard.round_rows[out] = .{
                 .text = try padLine(ctx, " \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80", width),
                 .style = .{ .fg = theme.BORDER, .bg = theme.PANEL },
                 .softwrap = false,
             };
         } else {
-            self.dashboard_round_rows[out] = .{
+            self.dashboard.round_rows[out] = .{
                 .text = sep,
                 .style = .{ .fg = theme.PANEL, .bg = theme.PANEL },
                 .softwrap = false,
             };
         }
-        self.dashboard_round_widgets[out] = self.dashboard_round_rows[out].widget();
+        self.dashboard.round_widgets[out] = self.dashboard.round_rows[out].widget();
         out += 1;
     }
-    self.dashboard_round_scroll_bars.scroll_view.children = .{ .slice = self.dashboard_round_widgets[0..out] };
-    self.dashboard_round_scroll_bars.estimated_content_height = @intCast(out);
-    clampScrollTop(&self.dashboard_round_scroll_bars.scroll_view, out);
+    self.dashboard.round_scroll_bars.scroll_view.children = .{ .slice = self.dashboard.round_widgets[0..out] };
+    self.dashboard.round_scroll_bars.estimated_content_height = @intCast(out);
+    clampScrollTop(&self.dashboard.round_scroll_bars.scroll_view, out);
 }
 
 fn appendExceptionRoundHeader(
@@ -600,7 +626,7 @@ fn appendExceptionRoundHeader(
     row_bg: vaxis.Color,
     is_selected: bool,
 ) std.mem.Allocator.Error!void {
-    if (out.* >= self.dashboard_round_rich_rows.len) return;
+    if (out.* >= self.dashboard.round_rich_rows.len) return;
 
     const time_w: u16 = @intCast(ctx.stringWidth(time_txt));
     const session_budget = width -| time_w -| 3;
@@ -620,14 +646,14 @@ fn appendExceptionRoundHeader(
     spans[1] = .{ .text = session_text, .style = session_style };
     spans[2] = .{ .text = gap, .style = theme.textOn(row_bg, theme.MUTED) };
     spans[3] = .{ .text = time_txt, .style = theme.textOn(row_bg, theme.MUTED) };
-    self.dashboard_round_rich_rows[out.*] = .{
+    self.dashboard.round_rich_rows[out.*] = .{
         .text = spans,
         .base_style = theme.textOn(row_bg, theme.MUTED),
         .softwrap = false,
         .overflow = .clip,
         .width_basis = .longest_line,
     };
-    self.dashboard_round_widgets[out.*] = self.dashboard_round_rich_rows[out.*].widget();
+    self.dashboard.round_widgets[out.*] = self.dashboard.round_rich_rows[out.*].widget();
     out.* += 1;
 }
 
@@ -639,22 +665,22 @@ fn syncChainWidgets(
 ) std.mem.Allocator.Error!void {
     var out: usize = 0;
     const item_count = 1 + countTraceItems(round.tools);
-    if (self.dashboard_chain_cursor >= item_count) {
-        self.dashboard_chain_cursor = item_count - 1;
+    if (self.dashboard.chain_cursor >= item_count) {
+        self.dashboard.chain_cursor = item_count - 1;
     }
     var selected_row: usize = 0;
     var item_index: usize = 0;
 
-    if (self.analysis_focus == .chart and self.dashboard_chain_cursor == item_index) selected_row = out;
+    if (self.analysis.focus == .chart and self.dashboard.chain_cursor == item_index) selected_row = out;
     try appendUserPromptTool(self, ctx, &out, width, round, item_index);
     item_index += 1;
 
     if (round.tools.len > 0) {
         var idx: usize = 0;
         while (idx < round.tools.len) {
-            if (out >= self.dashboard_chain_rows.len) break;
+            if (out >= self.dashboard.chain_rows.len) break;
             const tool = round.tools[idx];
-            if (self.analysis_focus == .chart and item_index == self.dashboard_chain_cursor) selected_row = out;
+            if (self.analysis.focus == .chart and item_index == self.dashboard.chain_cursor) selected_row = out;
             if (std.mem.eql(u8, tool.kind, "load")) {
                 idx = try appendLoadGroup(self, ctx, &out, width, round.ws_id, round.tools, idx, item_index);
             } else {
@@ -664,14 +690,14 @@ fn syncChainWidgets(
             item_index += 1;
         }
     }
-    self.dashboard_chain_scroll_bars.scroll_view.cursor = @intCast(@min(selected_row, @as(usize, std.math.maxInt(u32))));
-    self.dashboard_chain_scroll_bars.scroll_view.ensureScroll();
+    self.dashboard.chain_scroll_bars.scroll_view.cursor = @intCast(@min(selected_row, @as(usize, std.math.maxInt(u32))));
+    self.dashboard.chain_scroll_bars.scroll_view.ensureScroll();
     if (out == 0) appendChainLine(self, &out, "", theme.fg(theme.MUTED), false);
-    self.dashboard_chain_scroll_bars.scroll_view.children = .{ .slice = self.dashboard_chain_widgets[0..out] };
-    self.dashboard_chain_scroll_bars.estimated_content_height = @intCast(out);
-    self.dashboard_chain_scroll_bars.estimated_content_width = null;
-    clampScrollTop(&self.dashboard_chain_scroll_bars.scroll_view, out);
-    self.dashboard_chain_scroll_bars.scroll_view.scroll.left = 0;
+    self.dashboard.chain_scroll_bars.scroll_view.children = .{ .slice = self.dashboard.chain_widgets[0..out] };
+    self.dashboard.chain_scroll_bars.estimated_content_height = @intCast(out);
+    self.dashboard.chain_scroll_bars.estimated_content_width = null;
+    clampScrollTop(&self.dashboard.chain_scroll_bars.scroll_view, out);
+    self.dashboard.chain_scroll_bars.scroll_view.scroll.left = 0;
 }
 
 fn countTraceItems(tools: []const attestation_reader.RoundTool) usize {
@@ -689,8 +715,8 @@ fn countTraceItems(tools: []const attestation_reader.RoundTool) usize {
 }
 
 fn chainItemExpanded(self: anytype, item_index: usize) bool {
-    if (item_index >= self.dashboard_chain_expanded_items.len) return false;
-    return self.dashboard_chain_expanded_items[item_index];
+    if (item_index >= self.dashboard.chain_expanded_items.len) return false;
+    return self.dashboard.chain_expanded_items[item_index];
 }
 
 fn nextPromptPreviewLine(remaining: *[]const u8, width: u16) []const u8 {
@@ -720,7 +746,7 @@ fn appendUserPromptTool(
     round: attestation_reader.RoundEvent,
     item_index: usize,
 ) std.mem.Allocator.Error!void {
-    const is_selected = self.analysis_focus == .chart and item_index == self.dashboard_chain_cursor;
+    const is_selected = self.analysis.focus == .chart and item_index == self.dashboard.chain_cursor;
     const is_expanded = chainItemExpanded(self, item_index);
     const time_txt = try formatHm(ctx.arena, round.timestamp);
     const marker = if (is_selected) "\xe2\x96\x8c" else " ";
@@ -752,7 +778,7 @@ fn appendUserPromptTool(
     } else {
         try appendBriefText(self, ctx, out, width, "prompt", round.content, is_selected);
     }
-    if (out.* < self.dashboard_chain_rows.len) {
+    if (out.* < self.dashboard.chain_rows.len) {
         appendChainLine(self, out, "", theme.fg(theme.DIM), false);
     }
 }
@@ -766,13 +792,13 @@ fn appendBriefText(
     text: []const u8,
     is_selected: bool,
 ) std.mem.Allocator.Error!void {
-    if (text.len == 0 or out.* >= self.dashboard_chain_rows.len) return;
+    if (text.len == 0 or out.* >= self.dashboard.chain_rows.len) return;
     const label_col = try traceFieldPrefix(ctx, label);
     const label_w = @as(u16, @intCast(ctx.stringWidth(label_col)));
     const continuation = try traceFieldPrefix(ctx, "");
     var remaining = text;
     var line_idx: usize = 0;
-    while (line_idx < 2 and remaining.len > 0 and out.* < self.dashboard_chain_rows.len) : (line_idx += 1) {
+    while (line_idx < 2 and remaining.len > 0 and out.* < self.dashboard.chain_rows.len) : (line_idx += 1) {
         const prefix = if (line_idx == 0) label_col else continuation;
         const body = nextPromptPreviewLine(&remaining, width -| label_w);
         const line = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ prefix, body });
@@ -790,7 +816,7 @@ fn appendLoadGroup(
     start: usize,
     item_index: usize,
 ) std.mem.Allocator.Error!usize {
-    const is_selected = self.analysis_focus == .chart and item_index == self.dashboard_chain_cursor;
+    const is_selected = self.analysis.focus == .chart and item_index == self.dashboard.chain_cursor;
     const is_expanded = chainItemExpanded(self, item_index);
     const first = tools[start];
     var end = start;
@@ -810,13 +836,13 @@ fn appendLoadGroup(
 
     if (is_expanded) {
         var idx: usize = 0;
-        while (idx < count and out.* < self.dashboard_chain_rows.len) : (idx += 1) {
+        while (idx < count and out.* < self.dashboard.chain_rows.len) : (idx += 1) {
             const tool = tools[start + idx];
             if (loadToolId(tool)) |id| {
                 const item = try resolveRulePreview(ctx, ws_id, id);
                 try appendLoadItemHeader(self, ctx, out, width, idx, count, item, is_selected);
                 try appendRulePreview(self, ctx, out, width, item, .expanded, is_selected, false);
-                if (idx + 1 < count and out.* < self.dashboard_chain_rows.len) {
+                if (idx + 1 < count and out.* < self.dashboard.chain_rows.len) {
                     appendTraceGuideBlank(self, out, is_selected);
                 }
             }
@@ -824,7 +850,7 @@ fn appendLoadGroup(
     } else {
         try appendBriefText(self, ctx, out, width, detail_label, preview, is_selected);
     }
-    if (end < tools.len and out.* < self.dashboard_chain_rows.len) {
+    if (end < tools.len and out.* < self.dashboard.chain_rows.len) {
         appendChainLine(self, out, "", theme.fg(theme.DIM), false);
     }
     return end;
@@ -970,8 +996,8 @@ fn appendChainTool(
     is_last: bool,
     item_index: usize,
 ) std.mem.Allocator.Error!void {
-    if (out.* >= self.dashboard_chain_rows.len) return;
-    const is_selected = self.analysis_focus == .chart and item_index == self.dashboard_chain_cursor;
+    if (out.* >= self.dashboard.chain_rows.len) return;
+    const is_selected = self.analysis.focus == .chart and item_index == self.dashboard.chain_cursor;
     const is_expanded = chainItemExpanded(self, item_index);
     const time_txt = try formatHm(ctx.arena, tool.timestamp);
     const verb = toolVerb(tool.kind);
@@ -1036,7 +1062,7 @@ fn appendChainTool(
         try appendBriefText(self, ctx, out, width, briefLabel(tool.kind), preview, is_selected);
     }
 
-    if (!is_last and out.* < self.dashboard_chain_rows.len) {
+    if (!is_last and out.* < self.dashboard.chain_rows.len) {
         appendChainLine(self, out, "", theme.fg(theme.DIM), false);
     }
 }
@@ -1249,7 +1275,7 @@ fn appendDetailField(
     if (body_w == 0) return;
     var remaining = text;
     var line_idx: usize = 0;
-    while (remaining.len > 0 and out.* < self.dashboard_chain_rows.len) {
+    while (remaining.len > 0 and out.* < self.dashboard.chain_rows.len) {
         const line_prefix = if (line_idx == 0) prefix else continuation;
         const before_len = remaining.len;
         const chunk = nextPromptPreviewLine(&remaining, body_w);
@@ -1380,11 +1406,11 @@ fn toolVerb(kind: []const u8) []const u8 {
 }
 
 fn appendChainLine(self: anytype, out: *usize, text: []const u8, style: vaxis.Style, is_selected: bool) void {
-    if (out.* >= self.dashboard_chain_rows.len) return;
+    if (out.* >= self.dashboard.chain_rows.len) return;
     var final_style = style;
     if (is_selected) final_style.bg = theme.PANEL_ALT;
-    self.dashboard_chain_rows[out.*] = .{ .text = text, .style = final_style, .softwrap = false };
-    self.dashboard_chain_widgets[out.*] = self.dashboard_chain_rows[out.*].widget();
+    self.dashboard.chain_rows[out.*] = .{ .text = text, .style = final_style, .softwrap = false };
+    self.dashboard.chain_widgets[out.*] = self.dashboard.chain_rows[out.*].widget();
     out.* += 1;
 }
 
@@ -1395,19 +1421,19 @@ fn appendChainRichLine(
     spans: []const vaxis.Segment,
     is_selected: bool,
 ) void {
-    if (out.* >= self.dashboard_chain_rich_rows.len) return;
+    if (out.* >= self.dashboard.chain_rich_rows.len) return;
     const final_spans = ctx.arena.alloc(vaxis.Segment, spans.len) catch return;
     for (spans, 0..) |span, idx| {
         final_spans[idx] = span;
         if (is_selected) final_spans[idx].style.bg = theme.PANEL_ALT;
     }
-    self.dashboard_chain_rich_rows[out.*] = .{
+    self.dashboard.chain_rich_rows[out.*] = .{
         .text = final_spans,
         .softwrap = false,
         .overflow = .ellipsis,
         .width_basis = .longest_line,
     };
-    self.dashboard_chain_widgets[out.*] = self.dashboard_chain_rich_rows[out.*].widget();
+    self.dashboard.chain_widgets[out.*] = self.dashboard.chain_rich_rows[out.*].widget();
     out.* += 1;
 }
 

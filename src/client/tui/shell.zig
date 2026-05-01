@@ -1,3 +1,6 @@
+//! Top-level TUI application shell. Owns global layout, overlays, shared
+//! runtime state, and routes input/draw calls into feature containers.
+
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
@@ -6,55 +9,22 @@ const w = @import("widgets.zig");
 const models = @import("models.zig");
 const data = models.view_types;
 const api = @import("api.zig");
-const analysis_panel = @import("app/analysis.zig");
-const dashboard_panel = @import("app/dashboard.zig");
-const library_panel = @import("app/library.zig");
-const rule_detail_panel = @import("app/rule_detail.zig");
-const settings_panel = @import("app/settings.zig");
-const workspace_panel = @import("app/workspace.zig");
+const features = @import("features.zig");
+const analysis_panel = features.analysis;
+const dashboard_panel = features.dashboard;
+const library_panel = features.library;
+const rule_detail_panel = features.review;
+const settings_panel = features.settings;
+const workspace_panel = features.workspace;
 const drafts_mod = @import("../drafts.zig");
 const workspace_rule = @import("../rule.zig");
 const workspace_config = @import("../workspace_config.zig");
 const runtime = @import("runtime.zig");
 const util_hash = @import("clumsies_lib").util.hash;
 
-const tree = models.path_tree;
 const editor_host = runtime.editor_host;
 const attestation_reader = runtime.attestation_reader;
 const Modal = w.Modal;
-const TextInput = w.TextInput;
-const TableRow = w.TableRow;
-const Column = w.Column;
-
-const WsTab = enum(u8) {
-    context,
-    rules,
-
-    fn label(self: WsTab) []const u8 {
-        return switch (self) {
-            .context => "Context",
-            .rules => "Rules",
-        };
-    }
-};
-
-const ws_tabs = [_]WsTab{ .context, .rules };
-
-const WsFocus = enum { list, content };
-
-const SettingsTab = enum(u8) {
-    account,
-    organization,
-    token,
-
-    fn label(self: SettingsTab) []const u8 {
-        return switch (self) {
-            .account => "Account",
-            .organization => "Organization",
-            .token => "Token",
-        };
-    }
-};
 
 const ConfirmAction = enum {
     none,
@@ -82,272 +52,71 @@ const TopModule = enum(u8) {
     }
 };
 
-const PrFilter = enum {
-    open,
-    all,
-    closed,
-
-    fn label(self: PrFilter) []const u8 {
-        return switch (self) {
-            .open => "open",
-            .all => "all",
-            .closed => "closed",
-        };
-    }
-
-    fn next(self: PrFilter) PrFilter {
-        return switch (self) {
-            .open => .all,
-            .all => .closed,
-            .closed => .open,
-        };
-    }
-};
-
-const DetailTab = enum(u8) {
-    content,
-    pull_requests,
-
-    fn label(self: DetailTab) []const u8 {
-        return switch (self) {
-            .content => "Content",
-            .pull_requests => "Pull Requests",
-        };
-    }
-};
-
 const top_tabs = [_]TopModule{ .dashboard, .workspace, .library, .analysis };
 
-const MAX_TREE_ROWS = 128;
-const MAX_PR_ROWS = 64;
-const MAX_DASHBOARD_ROUND_ROWS = 2048;
-const MAX_DASHBOARD_CHAIN_ROWS = 1024;
-const DASHBOARD_ROUND_ROW_COUNT = 5;
 const FOOTER_STATUS_TICKS = 60;
-const detail_tabs = [_]DetailTab{ .content, .pull_requests };
-const PathTreeState = tree.State(MAX_TREE_ROWS, 96);
+const PathTreeState = workspace_panel.PathTreeState;
 
-/// Identifies the draft the user's editing action should affect.
-/// Derived from the currently-focused module and list selection; all
-/// draft handlers (`edit`, `toggleReady`, `discard`, `openComposer`)
-/// accept a DraftTarget so the same implementation serves both the
-/// Library side and the Workspace side.
-pub const DraftTarget = struct {
-    ws_id: []const u8,
-    category: drafts_mod.DraftCategory,
-    path: []const u8,
-    rule_id: ?[]const u8 = null,
-    context_id: ?[]const u8 = null,
-};
+const DraftTarget = features.drafts.DraftTarget;
 
-pub const Dashboard = struct {
+pub const Shell = struct {
     api_state: *api.state.ApiState,
     selected_module: TopModule = .dashboard,
-    selected_rule: usize = 0,
+    library: library_panel.State,
+    review: rule_detail_panel.State,
+    workspace: workspace_panel.State,
+    dashboard: dashboard_panel.State,
+    analysis: analysis_panel.State = .{},
+    settings: settings_panel.State = .{},
+    drafts: features.drafts.State,
     show_help: bool = false,
     show_settings: bool = false,
     show_confirm: bool = false,
     confirm_message: []const u8 = "",
     confirm_action: ConfirmAction = .none,
-    detail_tab: DetailTab = .content,
-    detail_focus_content: bool = false,
-    settings_tab: SettingsTab = .account,
-    settings_focus: enum { sidebar, content } = .sidebar,
-    settings_content_sel: usize = 0, // cursor within content (members/workspaces list)
     status_line: []const u8 = "Ready.",
     last_status_line: []const u8 = "Ready.",
     status_line_since_tick: u64 = 0,
-
-    // Library: tree-structured display with bundle filter
-    library_bundle_filter: usize = 0,
-    library_scroll_bars: vxfw.ScrollBars,
-    library_tree: PathTreeState = .{},
-    library_widgets: [MAX_TREE_ROWS]vxfw.Widget = undefined,
-    library_text_rows: [MAX_TREE_ROWS]vxfw.Text = undefined,
-    library_table_rows: [MAX_TREE_ROWS]TableRow = undefined,
-    library_table_cols: [MAX_TREE_ROWS][2]Column = undefined,
-
-    content_view: w.ContentView,
-
-    // PR list within Rule Detail
-    pr_filter: PrFilter = .open,
-    pr_scroll_bars: vxfw.ScrollBars,
-    pr_widgets: [MAX_PR_ROWS * 2]vxfw.Widget = undefined,
-    pr_table_rows: [MAX_PR_ROWS]TableRow = undefined,
-    pr_table_cols: [MAX_PR_ROWS][4]Column = undefined,
-    pr_text_rows: [MAX_PR_ROWS]vxfw.Text = undefined,
-    pr_indices: [MAX_PR_ROWS * 2]?usize = .{null} ** (MAX_PR_ROWS * 2),
-    pr_desc_bufs: [MAX_PR_ROWS][160]u8 = undefined,
-    pr_row_count: usize = 0,
-    selected_pr_idx: usize = 0,
-    pr_diff_scroll_bars: vxfw.ScrollBars,
-    pr_diff_widgets: [32]vxfw.Widget = undefined,
-    pr_diff_rows: [32]vxfw.Text = undefined,
-    pr_diff_count: usize = 0,
-    // Comment editor state
-    show_comment_editor: bool = false,
-    comment_input_buf: [256]u8 = .{0} ** 256,
-    comment_input_len: usize = 0,
-
-    // Create Workspace overlay
-    show_create_workspace: bool = false,
-    create_ws_phase: workspace_panel.CreateWsPhase = .form,
-    create_ws_focus: workspace_panel.CreateWsFocus = .name,
-    create_ws_name_buf: [64]u8 = undefined,
-    create_ws_name_len: usize = 0,
-    create_ws_desc_buf: [256]u8 = undefined,
-    create_ws_desc_len: usize = 0,
-    create_ws_selected_bundle: ?usize = null,
-    create_ws_bundle_cursor: usize = 0,
-    create_ws_error_kind: workspace_panel.CreateWsErrorKind = .none,
-    create_ws_error_buf: [160]u8 = undefined,
-    create_ws_error_len: usize = 0,
-    create_ws_created_id_buf: [64]u8 = undefined,
-    create_ws_created_id_len: usize = 0,
-    create_ws_created_name_buf: [64]u8 = undefined,
-    create_ws_created_name_len: usize = 0,
-
-    // Workspace Status
-    ws_tab: WsTab = .context,
-    ws_focus: WsFocus = .list,
-    ws_sel: usize = 0,
-    show_workspace_drawer: bool = false,
-    workspace_drawer_cursor: usize = 0,
-    ws_list_sel: usize = 0,
-    ws_show_diff: bool = false,
-    ws_list_scroll_bars: vxfw.ScrollBars,
-    ws_context_tree: PathTreeState = .{},
-    ws_rules_tree: PathTreeState = .{},
-    ws_list_widgets: [MAX_TREE_ROWS]vxfw.Widget = undefined,
-    ws_list_rows: [MAX_TREE_ROWS]vxfw.Text = undefined,
     last_safe_layout_size: vxfw.Size = .{},
-    local_ws_arena: std.heap.ArenaAllocator,
-    local_ws_cache_id: ?[]const u8 = null,
-    local_ws_detail: ?api.model.WsDetail = null,
-    local_ws_load_failed: bool = false,
     system_notices: w.SystemNoticeQueue = .{},
-
-    // Dashboard / Analysis shared state
-    analysis_scope_idx: usize = 0,
-    breathing_phase: u8 = 0, // 0-20 for breathing animation cycle
-    analysis_focus: enum { chart, rules, members, inputs } = .inputs,
-    analysis_rule_cursor: usize = 0,
-    analysis_member_cursor: usize = 0,
-    analysis_input_cursor: usize = 0,
-    analysis_expanded_rule: ?usize = null,
-    analysis_show_member_detail: bool = false,
-    dashboard_input_capacity: usize = 1,
-    dashboard_round_scroll_bars: vxfw.ScrollBars,
-    dashboard_round_widgets: [MAX_DASHBOARD_ROUND_ROWS]vxfw.Widget = undefined,
-    dashboard_round_rows: [MAX_DASHBOARD_ROUND_ROWS]vxfw.Text = undefined,
-    dashboard_round_rich_rows: [MAX_DASHBOARD_ROUND_ROWS]vxfw.RichText = undefined,
-    dashboard_chain_scroll_bars: vxfw.ScrollBars,
-    dashboard_chain_widgets: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Widget = undefined,
-    dashboard_chain_rows: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.Text = undefined,
-    dashboard_chain_rich_rows: [MAX_DASHBOARD_CHAIN_ROWS]vxfw.RichText = undefined,
-    dashboard_chain_cursor: usize = 0,
-    dashboard_chain_expanded_items: [MAX_DASHBOARD_CHAIN_ROWS]bool = .{false} ** MAX_DASHBOARD_CHAIN_ROWS,
     view_arena: std.heap.ArenaAllocator,
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
-    // main.zig for the lifetime of the Dashboard. Active workspace is
+    // main.zig for the lifetime of the Shell. Active workspace is
     // resolved dynamically from `ws_sel` against the hub-provided
     // workspace list (see `activeWsId()`), not from a cwd binding.
     app: *vxfw.App,
     env_map: *const std.process.EnvMap,
 
-    // Drafts cache. Refreshed on startup and after every edit op so
-    // list rows and the footer counter stay in sync with disk. Prompt
-    // and context drafts live in separate maps because their path
-    // namespaces are distinct (library rules are org-wide, context
-    // files are workspace-local).
-    drafts_arena: std.heap.ArenaAllocator,
-    drafts_by_rule_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
-    drafts_by_context_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
-    drafts_by_meta_prompt_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
-    /// Paths of local `operation=create` drafts per category. These do
-    /// not exist on the hub yet, so the server-side rules /
-    /// context_files lists never carry them — the list renderers
-    /// append these as virtual rows so the user can see (and edit)
-    /// newly-created drafts before they are submitted.
-    drafts_create_rule_paths: []const []const u8 = &.{},
-    drafts_create_context_paths: []const []const u8 = &.{},
-    drafts_total: usize = 0,
-    drafts_ready: usize = 0,
-    drafts_cache_ws_id: ?[]const u8 = null,
-    /// Tracks whether refreshDraftsCache has ever run against a
-    /// resolved workspace. The cache is seeded once current_user
-    /// appears on the tick loop, then refreshed when the selected
-    /// workspace changes.
-    drafts_cache_seeded: bool = false,
-    pending_discard_target: ?DraftTarget = null,
-    /// Dup'd path owned by this struct for the pending discard so
-    /// confirm-overlay render and commit do not depend on
-    /// drafts_arena, which refreshDraftsCache resets.
-    pending_discard_path_owned: ?[]const u8 = null,
-
-    // PR Composer overlay state. MVP submits a single-draft PR; multi-
-    // draft selection and DiffViewer preview are follow-ups. The target
-    // captures category + path + ids at open time so the submit path
-    // doesn't need to re-derive them against a selection that may have
-    // moved.
-    show_pr_composer: bool = false,
-    pr_composer_desc_buf: [256]u8 = .{0} ** 256,
-    pr_composer_desc_len: usize = 0,
-    pr_composer_target: ?DraftTarget = null,
-    /// Operation type of the currently-open composer draft, captured
-    /// from the draft index at open time. Used by the overlay to
-    /// render an accurate `op:` line instead of hard-coding "modify".
-    pr_composer_operation: drafts_mod.DraftOperation = .modify,
-    /// Dup'd path owned by the composer so overlay render and submit
-    /// do not point into drafts_arena. Freed when the composer
-    /// closes (cancel, submit success, or re-open).
-    pr_composer_path_owned: ?[]const u8 = null,
-    pr_composer_submitting: bool = false,
-
-    // New-draft form. Opened from Library Files tab or Workspace
-    // Context tab via `n`. Category is set by the caller to route the
-    // draft into the right scope.
-    show_new_draft_form: bool = false,
-    new_draft_path_buf: [128]u8 = .{0} ** 128,
-    new_draft_path_len: usize = 0,
-    new_draft_category: drafts_mod.DraftCategory = .rule,
-
     pub fn init(
         api_state: *api.state.ApiState,
         app: *vxfw.App,
         env_map: *const std.process.EnvMap,
-    ) Dashboard {
+    ) Shell {
         return .{
             .api_state = api_state,
-            .library_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .content_view = w.ContentView.init(),
-            .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
-            .ws_list_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .local_ws_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
-            .dashboard_round_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .dashboard_chain_scroll_bars = w.initPlainScrollBars(theme.PANEL, 3),
+            .library = library_panel.State.init(),
+            .review = rule_detail_panel.State.init(),
+            .workspace = workspace_panel.State.init(api_state.backing_allocator),
+            .dashboard = dashboard_panel.State.init(),
+            .drafts = features.drafts.State.init(api_state.backing_allocator),
             .view_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
             .app = app,
             .env_map = env_map,
-            .drafts_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
         };
     }
 
-    pub fn deinit(self: *Dashboard) void {
+    pub fn deinit(self: *Shell) void {
         self.releaseComposerTarget();
         self.releasePendingDiscardTarget();
-        self.local_ws_arena.deinit();
-        self.view_arena.deinit();
-        self.drafts_arena.deinit();
         const alloc = self.api_state.allocator();
-        self.library_tree.deinit(alloc);
-        self.ws_context_tree.deinit(alloc);
-        self.ws_rules_tree.deinit(alloc);
+        self.workspace.deinit(alloc);
+        self.library.deinit(alloc);
+        self.drafts.deinit();
+        self.view_arena.deinit();
     }
 
-    pub fn widget(self: *Dashboard) vxfw.Widget {
+    pub fn widget(self: *Shell) vxfw.Widget {
         return .{
             .userdata = self,
             .eventHandler = typeErasedEventHandler,
@@ -356,27 +125,27 @@ pub const Dashboard = struct {
     }
 
     fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
-        const self: *Dashboard = @ptrCast(@alignCast(ptr));
+        const self: *Shell = @ptrCast(@alignCast(ptr));
         try self.handleEvent(ctx, event);
     }
 
     fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *Dashboard = @ptrCast(@alignCast(ptr));
+        const self: *Shell = @ptrCast(@alignCast(ptr));
         return self.draw(ctx);
     }
 
-    pub fn viewAllocator(self: *Dashboard) std.mem.Allocator {
+    pub fn viewAllocator(self: *Shell) std.mem.Allocator {
         return self.view_arena.allocator();
     }
 
-    pub fn currentWsTree(self: *Dashboard) *PathTreeState {
-        return switch (self.ws_tab) {
-            .context => &self.ws_context_tree,
-            .rules => &self.ws_rules_tree,
+    pub fn currentWsTree(self: *Shell) *PathTreeState {
+        return switch (self.workspace.tab) {
+            .context => &self.workspace.context_tree,
+            .rules => &self.workspace.rules_tree,
         };
     }
 
-    fn connectionHeaderNotice(self: *Dashboard) ?w.SystemNotice {
+    fn connectionHeaderNotice(self: *Shell) ?w.SystemNotice {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const now = self.system_notices.now();
@@ -388,7 +157,7 @@ pub const Dashboard = struct {
         };
     }
 
-    fn handleEvent(self: *Dashboard, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+    fn handleEvent(self: *Shell, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
         _ = self.view_arena.reset(.retain_capacity);
         switch (event) {
             .key_press => |key| {
@@ -450,42 +219,42 @@ pub const Dashboard = struct {
                     return;
                 }
 
-                if (self.show_workspace_drawer) {
+                if (self.workspace.show_drawer) {
                     workspace_panel.handleWorkspaceDrawerKey(self, ctx, key);
                     return;
                 }
 
                 // Create Workspace overlay absorbs all keys
-                if (self.show_create_workspace) {
-                    self.handleCreateWorkspaceKey(ctx, key);
+                if (self.workspace.show_create) {
+                    workspace_panel.handleCreateKey(self, ctx, key);
                     return;
                 }
 
                 // Comment editor absorbs all keys
-                if (self.show_comment_editor) {
+                if (self.review.show_comment_editor) {
                     if (key.matches(vaxis.Key.escape, .{})) {
-                        self.show_comment_editor = false;
-                        self.comment_input_len = 0;
+                        self.review.show_comment_editor = false;
+                        self.review.comment_input_len = 0;
                         ctx.consumeAndRedraw();
                     } else if (key.matches(vaxis.Key.enter, .{})) {
-                        if (self.comment_input_len > 0) {
+                        if (self.review.comment_input_len > 0) {
                             self.submitComment();
                         } else {
                             self.status_line = "Empty comment discarded.";
                         }
-                        self.show_comment_editor = false;
-                        self.comment_input_len = 0;
+                        self.review.show_comment_editor = false;
+                        self.review.comment_input_len = 0;
                         ctx.consumeAndRedraw();
                     } else if (key.matches(vaxis.Key.backspace, .{})) {
-                        if (self.comment_input_len > 0) {
-                            self.comment_input_len -= 1;
+                        if (self.review.comment_input_len > 0) {
+                            self.review.comment_input_len -= 1;
                             ctx.consumeAndRedraw();
                         }
                     } else if (key.text) |text| {
-                        const remaining = self.comment_input_buf.len - self.comment_input_len;
+                        const remaining = self.review.comment_input_buf.len - self.review.comment_input_len;
                         if (text.len > 0 and text.len <= remaining) {
-                            @memcpy(self.comment_input_buf[self.comment_input_len .. self.comment_input_len + text.len], text);
-                            self.comment_input_len += text.len;
+                            @memcpy(self.review.comment_input_buf[self.review.comment_input_len .. self.review.comment_input_len + text.len], text);
+                            self.review.comment_input_len += text.len;
                             ctx.consumeAndRedraw();
                         }
                     }
@@ -493,13 +262,13 @@ pub const Dashboard = struct {
                 }
 
                 // PR Composer overlay absorbs all keys while open.
-                if (self.show_pr_composer) {
+                if (self.drafts.show_pr_composer) {
                     self.handlePrComposerKey(ctx, key);
                     return;
                 }
 
                 // New-draft form absorbs all keys while open.
-                if (self.show_new_draft_form) {
+                if (self.drafts.show_new_draft_form) {
                     self.handleNewDraftFormKey(ctx, key);
                     return;
                 }
@@ -527,117 +296,7 @@ pub const Dashboard = struct {
 
                 // Settings mode
                 if (self.show_settings) {
-                    if (key.matches(vaxis.Key.escape, .{})) {
-                        self.show_settings = false;
-                        self.settings_focus = .sidebar;
-                        ctx.consumeAndRedraw();
-                        return;
-                    }
-                    if (key.matches(vaxis.Key.tab, .{})) {
-                        self.settings_focus = if (self.settings_focus == .sidebar) .content else .sidebar;
-                        ctx.consumeAndRedraw();
-                        return;
-                    }
-                    if (self.settings_focus == .sidebar) {
-                        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-                            self.shiftSettingsTab(1);
-                            self.settings_content_sel = 0;
-                            ctx.consumeAndRedraw();
-                            return;
-                        }
-                        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-                            self.shiftSettingsTab(-1);
-                            self.settings_content_sel = 0;
-                            ctx.consumeAndRedraw();
-                            return;
-                        }
-                        if (key.matches(vaxis.Key.enter, .{})) {
-                            self.settings_focus = .content;
-                            self.settings_content_sel = 0;
-                            ctx.consumeAndRedraw();
-                            return;
-                        }
-                    } else {
-                        // Content focus
-                        if (key.matches(vaxis.Key.escape, .{})) {
-                            self.settings_focus = .sidebar;
-                            ctx.consumeAndRedraw();
-                            return;
-                        }
-                        const max_items: usize = switch (self.settings_tab) {
-                            .account => self.accountWorkspaceCount(),
-                            .organization => self.orgMemberCount(),
-                            .token => data.ALL_SCOPES.len,
-                        };
-                        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-                            if (self.settings_content_sel + 1 < max_items)
-                                self.settings_content_sel += 1;
-                            ctx.consumeAndRedraw();
-                            return;
-                        }
-                        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-                            if (self.settings_content_sel > 0)
-                                self.settings_content_sel -= 1;
-                            ctx.consumeAndRedraw();
-                            return;
-                        }
-                        // Action keys per section
-                        if (self.settings_tab == .account) {
-                            if (key.matches(vaxis.Key.enter, .{})) {
-                                const ws_count = self.accountWorkspaceCount();
-                                if (ws_count == 0) return;
-                                const sel = @min(self.settings_content_sel, ws_count - 1);
-                                self.selectWorkspaceIndex(sel);
-                                self.show_settings = false;
-                                self.settings_focus = .sidebar;
-                                self.selected_module = .workspace;
-                                self.ws_focus = .list;
-                                self.show_workspace_drawer = false;
-                                ctx.consumeAndRedraw();
-                                return;
-                            }
-                            if (key.matches('x', .{})) {
-                                self.confirm_message = "sign out";
-                                self.confirm_action = .remove_member; // reuse for sign out
-                                self.show_confirm = true;
-                                ctx.consumeAndRedraw();
-                                return;
-                            }
-                        }
-                        if (self.settings_tab == .organization) {
-                            if (key.matches('r', .{})) {
-                                self.status_line = "Role change (requires input dialog)";
-                                ctx.consumeAndRedraw();
-                                return;
-                            }
-                            if (key.matches('x', .{})) {
-                                self.confirm_message = "selected member";
-                                self.confirm_action = .remove_member;
-                                self.show_confirm = true;
-                                ctx.consumeAndRedraw();
-                                return;
-                            }
-                            if (key.matches('a', .{})) {
-                                self.status_line = "Invite member (requires input dialog)";
-                                ctx.consumeAndRedraw();
-                                return;
-                            }
-                        }
-                        if (self.settings_tab == .token) {
-                            if (key.matches('r', .{})) {
-                                self.status_line = "Token refresh (not yet implemented)";
-                                ctx.consumeAndRedraw();
-                                return;
-                            }
-                            if (key.matches('x', .{})) {
-                                self.confirm_message = "current token";
-                                self.confirm_action = .revoke_token;
-                                self.show_confirm = true;
-                                ctx.consumeAndRedraw();
-                                return;
-                            }
-                        }
-                    }
+                    settings_panel.handleEvent(self, ctx, key);
                     return;
                 }
 
@@ -673,22 +332,22 @@ pub const Dashboard = struct {
             },
             .tick => {
                 // Advance breathing cycle: 0→20→0 (2 seconds at 100ms intervals)
-                self.breathing_phase = (self.breathing_phase + 1) % 21;
+                self.analysis.breathing_phase = (self.analysis.breathing_phase + 1) % 21;
                 self.system_notices.tick();
-                if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.breathing_phase == 0 or self.breathing_phase == 10)) {
+                if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.analysis.breathing_phase == 0 or self.analysis.breathing_phase == 10)) {
                     api.state.refreshLocalState(self.api_state);
                 }
                 // First tick after current_user lands (the /me fetch
                 // completes asynchronously, so activeWsId() was null
                 // at .init). Seed the drafts map now so row markers
                 // and the footer counter come up populated.
-                if (!self.drafts_cache_seeded and self.activeWsId() != null) {
+                if (!self.drafts.cache_seeded and self.activeWsId() != null) {
                     self.refreshDraftsCache();
                     self.ensureActiveWorkspaceDetailRequested();
                 } else if (self.selected_module == .workspace) {
                     self.ensureActiveWorkspaceDetailRequested();
                 }
-                _ = self.consumeCreateWsResult();
+                _ = workspace_panel.consumeCreateResult(self);
                 self.consumeRuleContentResult();
                 self.consumeRulePrsResult();
                 self.consumeWsContextContentResult();
@@ -709,7 +368,7 @@ pub const Dashboard = struct {
         }
     }
 
-    fn draw(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn draw(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         _ = self.view_arena.reset(.retain_capacity);
         const size = self.sanitizeLayoutSize(ctx.max.size());
         if (size.width < 96 or size.height < 24) {
@@ -737,12 +396,12 @@ pub const Dashboard = struct {
             .{ .width = size.width, .height = footer_h },
         );
 
-        const show_workspace_drawer = self.show_workspace_drawer and self.selected_module == .workspace and
-            !self.show_settings and !self.show_help and !self.show_confirm and !self.show_comment_editor and
-            !self.show_create_workspace and !self.show_pr_composer and !self.show_new_draft_form;
-        const modal_active = self.show_help or self.show_confirm or self.show_comment_editor or
-            self.show_create_workspace or self.show_pr_composer or
-            self.show_new_draft_form or show_workspace_drawer;
+        const show_workspace_drawer = self.workspace.show_drawer and self.selected_module == .workspace and
+            !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
+            !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form;
+        const modal_active = self.show_help or self.show_confirm or self.review.show_comment_editor or
+            self.workspace.show_create or self.drafts.show_pr_composer or
+            self.drafts.show_new_draft_form or show_workspace_drawer;
         const show_notice_overlay = !modal_active and self.system_notices.hasVisible();
         var child_count: usize = 3;
         if (modal_active) child_count += 1;
@@ -770,7 +429,7 @@ pub const Dashboard = struct {
             children[child_idx] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawConfirmOverlay(confirm_ctx) };
             child_idx += 1;
         }
-        if (self.show_comment_editor) {
+        if (self.review.show_comment_editor) {
             const box_w: u16 = 42;
             const box_h: u16 = 8;
             const box_col = size.width -| (box_w + 2);
@@ -782,7 +441,7 @@ pub const Dashboard = struct {
             children[child_idx] = .{ .origin = .{ .row = box_row, .col = box_col }, .surface = try self.drawCommentEditorOverlay(comment_ctx) };
             child_idx += 1;
         }
-        if (self.show_create_workspace) {
+        if (self.workspace.show_create) {
             const full_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
@@ -793,7 +452,7 @@ pub const Dashboard = struct {
             };
             child_idx += 1;
         }
-        if (self.show_pr_composer) {
+        if (self.drafts.show_pr_composer) {
             const full_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
@@ -804,7 +463,7 @@ pub const Dashboard = struct {
             };
             child_idx += 1;
         }
-        if (self.show_new_draft_form) {
+        if (self.drafts.show_new_draft_form) {
             const full_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
@@ -856,7 +515,7 @@ pub const Dashboard = struct {
         return root;
     }
 
-    fn sanitizeLayoutSize(self: *Dashboard, raw_size: vxfw.Size) vxfw.Size {
+    fn sanitizeLayoutSize(self: *Shell, raw_size: vxfw.Size) vxfw.Size {
         const size = w.sanitizeSurfaceSize(raw_size);
         if (raw_size.width == 0 or raw_size.height == 0) {
             if (self.last_safe_layout_size.width > 0 and self.last_safe_layout_size.height > 0) {
@@ -869,7 +528,7 @@ pub const Dashboard = struct {
         return size;
     }
 
-    fn drawHeader(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawHeader(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL_ALT);
 
@@ -905,8 +564,8 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn drawBody(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        if (self.show_settings) return self.drawSettings(ctx);
+    fn drawBody(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        if (self.show_settings) return settings_panel.drawSettings(self, ctx);
         return switch (self.selected_module) {
             .dashboard => self.drawDashboard(ctx),
             .library => self.drawLibrary(ctx),
@@ -915,7 +574,7 @@ pub const Dashboard = struct {
         };
     }
 
-    fn drawFooter(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawFooter(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
 
@@ -923,42 +582,42 @@ pub const Dashboard = struct {
             "Esc close help"
         else if (self.show_confirm)
             "y confirm  n cancel  Esc cancel"
-        else if (self.show_settings and self.settings_focus == .sidebar)
+        else if (self.show_settings and self.settings.focus == .sidebar)
             "j/k section  Enter open  Tab focus  Esc close"
-        else if (self.show_settings and self.settings_tab == .account)
+        else if (self.show_settings and self.settings.tab == .account)
             "j/k move  Enter go to workspace  x sign out  Esc back"
-        else if (self.show_settings and self.settings_tab == .organization)
+        else if (self.show_settings and self.settings.tab == .organization)
             "j/k move  a invite  r role  x remove  Esc back"
-        else if (self.show_settings and self.settings_tab == .token)
+        else if (self.show_settings and self.settings.tab == .token)
             "j/k move  r refresh  x revoke  Esc back"
         else if (self.show_settings)
             "j/k move  Esc back"
-        else if (self.show_comment_editor)
+        else if (self.review.show_comment_editor)
             "Enter send  Esc cancel"
-        else if (self.show_workspace_drawer)
+        else if (self.workspace.show_drawer)
             "j/k move  Enter switch  Esc close"
         else switch (self.selected_module) {
-            .dashboard => switch (self.analysis_focus) {
+            .dashboard => switch (self.analysis.focus) {
                 .chart => "j/k trail  Enter expand  Tab focus  ? help  q quit",
                 .inputs => "j/k move  Tab focus  ? help  q quit",
                 else => "Tab focus  ? help  q quit",
             },
-            .library => if (self.detail_focus_content and self.detail_tab == .pull_requests)
+            .library => if (self.review.detail_focus_content and self.review.detail_tab == .pull_requests)
                 "j/k scroll  a accept  x reject  c comment  Esc list  ? help"
-            else if (self.detail_focus_content)
+            else if (self.review.detail_focus_content)
                 "y copy id  e edit  D discard  m ready  j/k scroll  Esc list"
-            else if (self.detail_tab == .pull_requests)
+            else if (self.review.detail_tab == .pull_requests)
                 "j/k move  f filter  [/] tab  Tab detail  r refresh  ? help  q quit"
             else
                 "j/k move  y copy id  n new  [/] tab  Enter detail  r refresh  b bundle  ? help  q quit",
-            .workspace => switch (self.ws_focus) {
-                .list => if (self.ws_tab == .context)
+            .workspace => switch (self.workspace.focus) {
+                .list => if (self.workspace.tab == .context)
                     "w workspaces  [/] tab  j/k move  h/l tree  y copy id  Enter open  n new file  c create ws  ? help"
                 else
                     "w workspaces  [/] tab  j/k move  h/l tree  y copy id  Enter open  c create ws  ? help",
                 .content => "y copy id  j/k scroll  d toggle diff  e edit  D discard  m ready  p submit  Esc list  ? help",
             },
-            .analysis => switch (self.analysis_focus) {
+            .analysis => switch (self.analysis.focus) {
                 .rules => "j/k move  Enter expand  Tab focus  ? help  q quit",
                 .members => "j/k move  Enter detail  Tab focus  ? help  q quit",
                 else => "Tab focus  ? help  q quit",
@@ -966,11 +625,11 @@ pub const Dashboard = struct {
         };
         w.writeText(&surface, ctx, 1, 0, keys, theme.fg(theme.MUTED));
 
-        if (self.drafts_total > 0) {
+        if (self.drafts.total > 0) {
             const counter = std.fmt.allocPrint(
                 ctx.arena,
                 "drafts: {d} ({d} ready)",
-                .{ self.drafts_total, self.drafts_ready },
+                .{ self.drafts.total, self.drafts.ready },
             ) catch "";
             if (counter.len > 0) {
                 const keys_w: u16 = @intCast(ctx.stringWidth(keys));
@@ -990,7 +649,7 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn visibleFooterStatus(self: *Dashboard) ?[]const u8 {
+    fn visibleFooterStatus(self: *Shell) ?[]const u8 {
         if (std.mem.eql(u8, self.status_line, "Ready.")) {
             self.last_status_line = "Ready.";
             self.status_line_since_tick = self.system_notices.now();
@@ -1011,13 +670,13 @@ pub const Dashboard = struct {
     // Library: master-detail. Left panel carries a Files / Pull Requests
     // inner tab strip; right panel is a single detail surface that
     // follows whichever item the left panel has selected.
-    fn drawLibrary(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawLibrary(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         library_panel.syncLibraryWidgets(self);
 
         const size = ctx.max.size();
         const list_w: u16 = size.width / 3;
         const rules = self.getRules();
-        const create_paths = self.drafts_create_rule_paths;
+        const create_paths = self.drafts.create_rule_paths;
 
         const list_ctx = ctx.withConstraints(.{ .width = list_w, .height = size.height }, .{ .width = list_w, .height = size.height });
         const detail_w: u16 = size.width - list_w - 1;
@@ -1032,8 +691,8 @@ pub const Dashboard = struct {
         // the header stays in sync with the content.
         var virtual_entry: data.RuleEntry = undefined;
         const selected_entry: ?*const data.RuleEntry = blk: {
-            if (self.selected_rule < rules.len) break :blk &rules[self.selected_rule];
-            const k = self.selected_rule - rules.len;
+            if (self.library.selected_rule < rules.len) break :blk &rules[self.library.selected_rule];
+            const k = self.library.selected_rule - rules.len;
             if (k >= create_paths.len) break :blk null;
             virtual_entry = .{
                 .path = create_paths[k],
@@ -1062,12 +721,12 @@ pub const Dashboard = struct {
         return library_panel.drawRoot(self, ctx, list_surface, detail_surface);
     }
 
-    fn drawListPanel(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawListPanel(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const bundles_list = self.getBundles();
-        const bundle_label: []const u8 = if (self.library_bundle_filter == 0)
+        const bundle_label: []const u8 = if (self.library.bundle_filter == 0)
             "All"
-        else if (self.library_bundle_filter - 1 < bundles_list.len)
-            bundles_list[self.library_bundle_filter - 1].name
+        else if (self.library.bundle_filter - 1 < bundles_list.len)
+            bundles_list[self.library.bundle_filter - 1].name
         else
             "All";
         const rule_count: usize = blk: {
@@ -1081,7 +740,7 @@ pub const Dashboard = struct {
 
     // Workspace: master-detail content with a command drawer for switching
     // workspaces. Tab cycles focus between list and content.
-    fn drawWorkspaceStatus(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawWorkspaceStatus(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         self.ensureDraftsCacheForActiveWorkspace();
         const size = ctx.max.size();
         const list_w: u16 = size.width / 3;
@@ -1093,13 +752,13 @@ pub const Dashboard = struct {
         return workspace_panel.drawStatus(self, ctx, list_surface, detail_surface);
     }
 
-    fn drawWsList(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawWsList(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         workspace_panel.syncWsRows(self);
         const live_ws = if (self.activeWsId()) |ws_id|
             self.workspaceDetailForView(ws_id)
         else
             null;
-        const lib_rules: []const data.RuleEntry = if (self.ws_tab == .rules) self.getRules() else &.{};
+        const lib_rules: []const data.RuleEntry = if (self.workspace.tab == .rules) self.getRules() else &.{};
         return workspace_panel.drawList(self, ctx, self.currentWsTree(), live_ws, lib_rules);
     }
 
@@ -1107,56 +766,56 @@ pub const Dashboard = struct {
     /// workspace list is empty / not loaded yet. Reads ws_id directly
     /// off the authoritative `current_user.workspaces` list because
     /// the view-layer `WorkspaceEntry` intentionally omits it.
-    pub fn activeWsId(self: *Dashboard) ?[]const u8 {
+    pub fn activeWsId(self: *Shell) ?[]const u8 {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const user = self.api_state.current_user orelse return null;
         if (user.workspaces.len == 0) return null;
-        const idx = @min(self.ws_sel, user.workspaces.len - 1);
+        const idx = @min(self.workspace.sel, user.workspaces.len - 1);
         return user.workspaces[idx].ws_id;
     }
 
-    pub fn activeWorkspaceName(self: *Dashboard) []const u8 {
+    pub fn activeWorkspaceName(self: *Shell) []const u8 {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const user = self.api_state.current_user orelse return "No workspace";
         if (user.workspaces.len == 0) return "No workspace";
-        const idx = @min(self.ws_sel, user.workspaces.len - 1);
+        const idx = @min(self.workspace.sel, user.workspaces.len - 1);
         return user.workspaces[idx].name;
     }
 
-    pub fn resetLocalWorkspaceDetail(self: *Dashboard) void {
-        _ = self.local_ws_arena.reset(.retain_capacity);
-        self.local_ws_cache_id = null;
-        self.local_ws_detail = null;
-        self.local_ws_load_failed = false;
+    pub fn resetLocalWorkspaceDetail(self: *Shell) void {
+        _ = self.workspace.local_arena.reset(.retain_capacity);
+        self.workspace.local_cache_id = null;
+        self.workspace.local_detail = null;
+        self.workspace.local_load_failed = false;
     }
 
-    fn ensureLocalWorkspaceDetail(self: *Dashboard, ws_id: []const u8) void {
-        if (self.local_ws_cache_id) |cached| {
+    fn ensureLocalWorkspaceDetail(self: *Shell, ws_id: []const u8) void {
+        if (self.workspace.local_cache_id) |cached| {
             if (std.mem.eql(u8, cached, ws_id)) return;
         }
         self.resetLocalWorkspaceDetail();
 
-        const arena = self.local_ws_arena.allocator();
+        const arena = self.workspace.local_arena.allocator();
         const ws_id_copy = arena.dupe(u8, ws_id) catch {
-            self.local_ws_load_failed = true;
+            self.workspace.local_load_failed = true;
             return;
         };
-        self.local_ws_cache_id = ws_id_copy;
+        self.workspace.local_cache_id = ws_id_copy;
 
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch {
-            self.local_ws_load_failed = true;
+            self.workspace.local_load_failed = true;
             return;
         };
         var manifest = workspace_rule.loadManifest(arena, ws_dir) catch {
-            self.local_ws_load_failed = true;
+            self.workspace.local_load_failed = true;
             return;
         };
         defer manifest.deinit(arena);
 
         const context_files = arena.alloc(api.model.ContextFileData, manifest.context.count()) catch {
-            self.local_ws_load_failed = true;
+            self.workspace.local_load_failed = true;
             return;
         };
         var context_i: usize = 0;
@@ -1174,7 +833,7 @@ pub const Dashboard = struct {
         }
 
         const ws_rules = arena.alloc(api.model.WsRuleData, manifest.rules.count()) catch {
-            self.local_ws_load_failed = true;
+            self.workspace.local_load_failed = true;
             return;
         };
         var rule_i: usize = 0;
@@ -1188,56 +847,56 @@ pub const Dashboard = struct {
             rule_i += 1;
         }
 
-        self.local_ws_detail = .{
+        self.workspace.local_detail = .{
             .ws_id = ws_id_copy,
             .context_files = context_files[0..context_i],
             .ws_rules = ws_rules[0..rule_i],
         };
     }
 
-    pub fn workspaceDetailForView(self: *Dashboard, ws_id: []const u8) ?api.model.WsDetail {
+    pub fn workspaceDetailForView(self: *Shell, ws_id: []const u8) ?api.model.WsDetail {
         if (api.state.wsDetail(self.api_state, ws_id)) |remote| {
             return remote;
         }
         self.ensureLocalWorkspaceDetail(ws_id);
-        return self.local_ws_detail;
+        return self.workspace.local_detail;
     }
 
-    fn hasLocalWorkspaceDetail(self: *Dashboard, ws_id: []const u8) bool {
+    fn hasLocalWorkspaceDetail(self: *Shell, ws_id: []const u8) bool {
         self.ensureLocalWorkspaceDetail(ws_id);
-        const local = self.local_ws_detail orelse return false;
+        const local = self.workspace.local_detail orelse return false;
         return local.context_files.len > 0 or local.ws_rules.len > 0;
     }
 
-    pub fn ensureActiveWorkspaceDetailRequested(self: *Dashboard) void {
+    pub fn ensureActiveWorkspaceDetailRequested(self: *Shell) void {
         const ws_id = self.activeWsId() orelse return;
         self.ensureLocalWorkspaceDetail(ws_id);
         workspace_panel.requestWorkspaceDetail(self, ws_id);
     }
 
-    pub fn selectWorkspaceIndex(self: *Dashboard, idx: usize) void {
+    pub fn selectWorkspaceIndex(self: *Shell, idx: usize) void {
         var selected_ws_id: ?[]const u8 = null;
         self.api_state.mutex.lock();
         if (self.api_state.current_user) |user| {
             if (user.workspaces.len > 0) {
                 const next = @min(idx, user.workspaces.len - 1);
-                self.ws_sel = next;
+                self.workspace.sel = next;
                 selected_ws_id = user.workspaces[next].ws_id;
             } else {
-                self.ws_sel = 0;
+                self.workspace.sel = 0;
             }
         } else {
-            self.ws_sel = 0;
+            self.workspace.sel = 0;
         }
         self.api_state.mutex.unlock();
 
-        self.ws_list_sel = 0;
-        self.ws_show_diff = false;
+        self.workspace.list_sel = 0;
+        self.workspace.show_diff = false;
         self.resetWorkspaceTrees();
-        self.ws_list_scroll_bars.scroll_view.cursor = 0;
-        self.ws_list_scroll_bars.scroll_view.scroll.top = 0;
-        self.ws_list_scroll_bars.scroll_view.scroll.vertical_offset = 0;
-        self.ws_list_scroll_bars.scroll_view.scroll.left = 0;
+        self.workspace.list_scroll_bars.scroll_view.cursor = 0;
+        self.workspace.list_scroll_bars.scroll_view.scroll.top = 0;
+        self.workspace.list_scroll_bars.scroll_view.scroll.vertical_offset = 0;
+        self.workspace.list_scroll_bars.scroll_view.scroll.left = 0;
         self.resetLocalWorkspaceDetail();
         self.ensureDraftsCacheForActiveWorkspace();
         if (selected_ws_id) |ws_id| {
@@ -1246,18 +905,18 @@ pub const Dashboard = struct {
         }
     }
 
-    pub fn resetWorkspaceTrees(self: *Dashboard) void {
-        self.ws_context_tree.reset();
-        self.ws_rules_tree.reset();
-        self.ws_list_sel = 0;
+    pub fn resetWorkspaceTrees(self: *Shell) void {
+        self.workspace.context_tree.reset();
+        self.workspace.rules_tree.reset();
+        self.workspace.list_sel = 0;
     }
 
-    fn currentWsDirSelection(self: *Dashboard) ?[]const u8 {
-        return self.currentWsTree().dirPathAt(self.ws_list_sel);
+    fn currentWsDirSelection(self: *Shell) ?[]const u8 {
+        return self.currentWsTree().dirPathAt(self.workspace.list_sel);
     }
 
-    fn resolveWsContextSelection(self: *Dashboard, ws_d: *const api.model.WsDetail) ?usize {
-        const leaf = self.currentWsTree().leafIndexAt(self.ws_list_sel) orelse return null;
+    fn resolveWsContextSelection(self: *Shell, ws_d: *const api.model.WsDetail) ?usize {
+        const leaf = self.currentWsTree().leafIndexAt(self.workspace.list_sel) orelse return null;
         // Virtual rows (local create-op drafts) sit at indices past
         // the server-side context_files range. The detail-pane and
         // cache-fetch call sites index into ws_d.context_files
@@ -1273,7 +932,7 @@ pub const Dashboard = struct {
         path: []const u8,
     };
 
-    pub fn cachedWorkspaceContextBody(self: *Dashboard, ws_id: []const u8, path: []const u8) ?[]const u8 {
+    pub fn cachedWorkspaceContextBody(self: *Shell, ws_id: []const u8, path: []const u8) ?[]const u8 {
         if (self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_id, .path = path })) |body| {
             return body;
         }
@@ -1282,7 +941,7 @@ pub const Dashboard = struct {
         return workspace_rule.readContextCacheFile(arena, ws_dir, path) catch null;
     }
 
-    pub fn cachedRuleBody(self: *Dashboard, path: []const u8) ?[]const u8 {
+    pub fn cachedRuleBody(self: *Shell, path: []const u8) ?[]const u8 {
         if (self.api_state.rule_content_cache.lookup(.{ .value = path })) |resp| {
             return resp.body;
         }
@@ -1293,7 +952,7 @@ pub const Dashboard = struct {
     }
 
     pub fn cachedLibraryRuleBody(
-        self: *Dashboard,
+        self: *Shell,
         category: drafts_mod.DraftCategory,
         path: []const u8,
     ) ?[]const u8 {
@@ -1304,7 +963,7 @@ pub const Dashboard = struct {
         };
     }
 
-    pub fn cachedMetaPromptBody(self: *Dashboard) ?[]const u8 {
+    pub fn cachedMetaPromptBody(self: *Shell) ?[]const u8 {
         const ws_id = self.activeWsId() orelse return null;
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
@@ -1317,24 +976,24 @@ pub const Dashboard = struct {
     }
 
     pub fn libraryCategoryForPath(
-        self: *const Dashboard,
+        self: *const Shell,
         path: []const u8,
     ) drafts_mod.DraftCategory {
         _ = self;
         return if (std.mem.eql(u8, path, "META_PROMPT.md")) .meta_prompt else .rule;
     }
 
-    pub fn invalidateRemoteDetailRequests(self: *Dashboard) void {
+    pub fn invalidateRemoteDetailRequests(self: *Shell) void {
         self.api_state.rule_content_cache.invalidate();
         self.api_state.rule_prs_cache.invalidate();
         self.api_state.ws_context_content_cache.invalidate();
     }
 
-    pub fn requestSelectedRuleDetail(self: *Dashboard) void {
+    pub fn requestSelectedRuleDetail(self: *Shell) void {
         const rules = self.getRules();
-        if (self.selected_rule >= rules.len) return;
+        if (self.library.selected_rule >= rules.len) return;
 
-        const sel_path = rules[self.selected_rule].path;
+        const sel_path = rules[self.library.selected_rule].path;
         const key = api.cache.StringKey{ .value = sel_path };
 
         if (self.api_state.rule_content_cache.shouldDispatch(key)) {
@@ -1364,7 +1023,7 @@ pub const Dashboard = struct {
     /// Look up the rule_id that corresponds to `path` in the cached
     /// library rule list. Returns null if the library has not loaded
     /// yet or the path is unknown.
-    pub fn lookupRuleId(self: *Dashboard, path: []const u8) ?[]const u8 {
+    pub fn lookupRuleId(self: *Shell, path: []const u8) ?[]const u8 {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const lib = self.api_state.rules orelse return null;
@@ -1374,7 +1033,7 @@ pub const Dashboard = struct {
         return null;
     }
 
-    pub fn lookupRuleViewByPath(self: *Dashboard, path: []const u8) ?*const data.RuleEntry {
+    pub fn lookupRuleViewByPath(self: *Shell, path: []const u8) ?*const data.RuleEntry {
         const rules = self.getRules();
         for (rules) |*rule| {
             if (std.mem.eql(u8, rule.path, path)) return rule;
@@ -1386,7 +1045,7 @@ pub const Dashboard = struct {
     /// that the rule_prs cache is keyed by. Used by the rule-prs
     /// consumer so it can route a completed response against its
     /// request id rather than against the UI's current selection.
-    fn lookupRulePath(self: *Dashboard, rule_id: []const u8) ?[]const u8 {
+    fn lookupRulePath(self: *Shell, rule_id: []const u8) ?[]const u8 {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const lib = self.api_state.rules orelse return null;
@@ -1400,16 +1059,16 @@ pub const Dashboard = struct {
     /// rule is in focus. Used by failure-caching in the on-demand
     /// consumers, which do not have a request-scoped key to attribute
     /// the failure to and fall back to the current UI selection.
-    fn selectedRulePath(self: *Dashboard) ?[]const u8 {
+    fn selectedRulePath(self: *Shell) ?[]const u8 {
         const rules = self.getRules();
         if (rules.len == 0) return null;
-        const idx = @min(self.selected_rule, rules.len - 1);
+        const idx = @min(self.library.selected_rule, rules.len - 1);
         return rules[idx].path;
     }
 
-    fn requestWorkspaceSelectionContent(self: *Dashboard, ws_d: *const api.model.WsDetail) void {
+    fn requestWorkspaceSelectionContent(self: *Shell, ws_d: *const api.model.WsDetail) void {
         const dir_sel = self.currentWsDirSelection();
-        switch (self.ws_tab) {
+        switch (self.workspace.tab) {
             .context => {
                 if (dir_sel != null) return;
                 const context_sel = self.resolveWsContextSelection(ws_d) orelse return;
@@ -1444,8 +1103,8 @@ pub const Dashboard = struct {
         }
     }
 
-    fn resolveWsRuleSelection(self: *Dashboard, ws_d: *const api.model.WsDetail) ?ResolvedWsRule {
-        const idx = self.currentWsTree().leafIndexAt(self.ws_list_sel) orelse return null;
+    fn resolveWsRuleSelection(self: *Shell, ws_d: *const api.model.WsDetail) ?ResolvedWsRule {
+        const idx = self.currentWsTree().leafIndexAt(self.workspace.list_sel) orelse return null;
         if (idx >= ws_d.ws_rules.len) return null;
         const lib_rules = self.getRules();
         const wp = ws_d.ws_rules[idx];
@@ -1458,7 +1117,7 @@ pub const Dashboard = struct {
     }
 
     // Workspace content pane: shows selected item's content
-    fn drawWsDetail(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawWsDetail(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const active_ws_id = self.activeWsId();
         const live_ws = if (active_ws_id) |ws_id|
             self.workspaceDetailForView(ws_id)
@@ -1483,7 +1142,7 @@ pub const Dashboard = struct {
         // drafts_create_context_paths side-table.
         const context_sel_path: ?[]const u8 = blk: {
             if (dir_sel != null) break :blk null;
-            const leaf = self.currentWsTree().leafIndexAt(self.ws_list_sel) orelse break :blk null;
+            const leaf = self.currentWsTree().leafIndexAt(self.workspace.list_sel) orelse break :blk null;
             const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
             if (live_ws) |ws_d| {
                 if (context_sel) |idx| break :blk ws_d.context_files[idx].path;
@@ -1491,8 +1150,8 @@ pub const Dashboard = struct {
             }
             if (leaf < context_count) break :blk null;
             const k = leaf - context_count;
-            if (k >= self.drafts_create_context_paths.len) break :blk null;
-            break :blk self.drafts_create_context_paths[k];
+            if (k >= self.drafts.create_context_paths.len) break :blk null;
+            break :blk self.drafts.create_context_paths[k];
         };
         return workspace_panel.drawDetail(self, ctx, .{
             .live_ws = live_ws,
@@ -1512,7 +1171,7 @@ pub const Dashboard = struct {
         });
     }
 
-    fn loadAnalysisData(self: *Dashboard, arena: std.mem.Allocator) ?data.AnalysisData {
+    fn loadAnalysisData(self: *Shell, arena: std.mem.Allocator) ?data.AnalysisData {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.org_stats) |stats| {
@@ -1521,8 +1180,8 @@ pub const Dashboard = struct {
         return null;
     }
 
-    // Dashboard: live interaction rounds and attestation closure state.
-    fn drawDashboard(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    // Shell: live interaction rounds and attestation closure state.
+    fn drawDashboard(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         const scoped_attestation = self.scopedAttestationData();
         const rounds: []const attestation_reader.RoundEvent = if (scoped_attestation) |st| st.rounds else &.{};
@@ -1533,15 +1192,15 @@ pub const Dashboard = struct {
         const rounds_w: u16 = @min(size.width, @max(@as(u16, 64), @min(@as(u16, 96), preferred_rounds_w)));
         const trace_w: u16 = size.width -| rounds_w;
         const usable_round_rows: u16 = body_h -| 2;
-        self.dashboard_input_capacity = @max(@as(usize, 1), @as(usize, @intCast(usable_round_rows / 2)));
-        if (self.analysis_input_cursor >= rounds.len and rounds.len > 0) {
-            self.analysis_input_cursor = rounds.len - 1;
+        self.dashboard.input_capacity = @max(@as(usize, 1), @as(usize, @intCast(usable_round_rows / 2)));
+        if (self.analysis.input_cursor >= rounds.len and rounds.len > 0) {
+            self.analysis.input_cursor = rounds.len - 1;
         }
-        const max_round_cursor = std.math.maxInt(u32) / DASHBOARD_ROUND_ROW_COUNT;
-        self.dashboard_round_scroll_bars.scroll_view.cursor = @intCast(@min(self.analysis_input_cursor, max_round_cursor) * DASHBOARD_ROUND_ROW_COUNT);
-        self.dashboard_round_scroll_bars.scroll_view.ensureScroll();
+        const max_round_cursor = std.math.maxInt(u32) / dashboard_panel.ROUND_ROW_COUNT;
+        self.dashboard.round_scroll_bars.scroll_view.cursor = @intCast(@min(self.analysis.input_cursor, max_round_cursor) * dashboard_panel.ROUND_ROW_COUNT);
+        self.dashboard.round_scroll_bars.scroll_view.ensureScroll();
         const selected_round = if (rounds.len > 0)
-            rounds[@min(self.analysis_input_cursor, rounds.len - 1)]
+            rounds[@min(self.analysis.input_cursor, rounds.len - 1)]
         else
             null;
         const summary = dashboardSummary(ctx.arena, rounds);
@@ -1552,7 +1211,7 @@ pub const Dashboard = struct {
             arena_h,
             summary,
             rounds,
-            self.analysis_input_cursor,
+            self.analysis.input_cursor,
         );
         const rounds_surface = try dashboard_panel.drawRounds(
             self,
@@ -1566,7 +1225,7 @@ pub const Dashboard = struct {
     }
 
     // Analysis: aggregate rule/member views and drill-downs.
-    fn drawAnalysis(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawAnalysis(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         var live_analysis = self.loadAnalysisData(ctx.arena);
         const analysis_available = live_analysis != null;
         var empty_analysis: data.AnalysisData = .{
@@ -1587,13 +1246,8 @@ pub const Dashboard = struct {
         return analysis_panel.drawRoot(self, ctx, ins, analysis_available);
     }
 
-    // Settings: vertical sidebar + content pane (web-style layout)
-    fn drawSettings(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        return settings_panel.drawSettings(self, ctx);
-    }
-
     // Count active drafts (status != "merged") across all categories.
-    fn draftCount(self: *Dashboard) usize {
+    fn draftCount(self: *Shell) usize {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const drafts = self.api_state.drafts orelse return 0;
@@ -1604,14 +1258,14 @@ pub const Dashboard = struct {
         return count;
     }
 
-    pub fn getPrsForRule(self: *Dashboard, rule_path: []const u8) []const data.PullRequestEntry {
+    pub fn getPrsForRule(self: *Shell, rule_path: []const u8) []const data.PullRequestEntry {
         const prs = self.api_state.rule_prs_cache.lookup(.{ .value = rule_path }) orelse return &.{};
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         return api.view_model.toPrEntries(self.viewAllocator(), prs, rule_path, self.api_state);
     }
 
-    pub fn getRules(self: *Dashboard) []const data.RuleEntry {
+    pub fn getRules(self: *Shell) []const data.RuleEntry {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.rules) |lp| {
@@ -1620,7 +1274,7 @@ pub const Dashboard = struct {
         return &.{};
     }
 
-    pub fn getBundles(self: *Dashboard) []const data.BundleEntry {
+    pub fn getBundles(self: *Shell) []const data.BundleEntry {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.bundles) |lb| {
@@ -1629,203 +1283,13 @@ pub const Dashboard = struct {
         return &.{};
     }
 
-    pub fn openCreateWorkspace(self: *Dashboard) void {
-        workspace_panel.resetCreate(self);
-        self.show_create_workspace = true;
-    }
-
-    fn closeCreateWorkspace(self: *Dashboard) void {
-        self.show_create_workspace = false;
-        workspace_panel.resetCreate(self);
-    }
-
-    fn createWsBundleCount(self: *Dashboard) usize {
-        return workspace_panel.createBundleCount(self);
-    }
-
-    fn createWsSelectedBundleName(self: *Dashboard) ?[]const u8 {
-        return workspace_panel.createSelectedBundleName(self);
-    }
-
-    fn handleCreateWorkspaceKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
-        switch (self.create_ws_phase) {
-            .form => self.handleCreateWsFormKey(ctx, key),
-            .submitting => self.handleCreateWsSubmittingKey(ctx, key),
-            .success => self.handleCreateWsSuccessKey(ctx, key),
-        }
-    }
-
-    fn handleCreateWsFormKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
-        if (key.matches(vaxis.Key.escape, .{})) {
-            self.closeCreateWorkspace();
-            ctx.consumeAndRedraw();
-            return;
-        }
-
-        const bundles_n = self.createWsBundleCount();
-
-        if (key.matches(vaxis.Key.tab, .{})) {
-            self.create_ws_focus = self.create_ws_focus.next(bundles_n);
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
-            self.create_ws_focus = self.create_ws_focus.prev(bundles_n);
-            ctx.consumeAndRedraw();
-            return;
-        }
-
-        switch (self.create_ws_focus) {
-            .name => self.routeCreateWsTextInput(
-                ctx,
-                key,
-                &self.create_ws_name_buf,
-                &self.create_ws_name_len,
-            ),
-            .description => self.routeCreateWsTextInput(
-                ctx,
-                key,
-                &self.create_ws_desc_buf,
-                &self.create_ws_desc_len,
-            ),
-            .bundle => self.handleCreateWsBundleKey(ctx, key),
-            .submit => self.handleCreateWsSubmitKey(ctx, key),
-        }
-    }
-
-    fn routeCreateWsTextInput(
-        self: *Dashboard,
-        ctx: *vxfw.EventContext,
-        key: vaxis.Key,
-        buf: []u8,
-        len: *usize,
-    ) void {
-        var input = TextInput{ .buf = buf, .len = len };
-        switch (input.handleKey(key)) {
-            .submit => {
-                const bundles_n = self.createWsBundleCount();
-                self.create_ws_focus = self.create_ws_focus.next(bundles_n);
-                ctx.consumeAndRedraw();
-            },
-            .consumed => {
-                self.create_ws_error_kind = .none;
-                self.create_ws_error_len = 0;
-                ctx.consumeAndRedraw();
-            },
-            .cancel, .ignored => ctx.consumeEvent(),
-        }
-    }
-
-    fn handleCreateWsBundleKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
-        const count = self.createWsBundleCount();
-        if (count == 0) {
-            ctx.consumeEvent();
-            return;
-        }
-        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-            if (self.create_ws_bundle_cursor + 1 < count) self.create_ws_bundle_cursor += 1;
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-            if (self.create_ws_bundle_cursor > 0) self.create_ws_bundle_cursor -= 1;
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches(' ', .{}) or key.matches(vaxis.Key.enter, .{})) {
-            if (self.create_ws_selected_bundle) |idx| {
-                if (idx == self.create_ws_bundle_cursor) {
-                    self.create_ws_selected_bundle = null;
-                } else {
-                    self.create_ws_selected_bundle = self.create_ws_bundle_cursor;
-                }
-            } else {
-                self.create_ws_selected_bundle = self.create_ws_bundle_cursor;
-            }
-            ctx.consumeAndRedraw();
-            return;
-        }
-        ctx.consumeEvent();
-    }
-
-    fn handleCreateWsSubmitKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
-        if (key.matches(vaxis.Key.enter, .{}) or key.matches(' ', .{})) {
-            self.submitCreateWorkspace();
-            ctx.consumeAndRedraw();
-            return;
-        }
-        ctx.consumeEvent();
-    }
-
-    fn submitCreateWorkspace(self: *Dashboard) void {
-        const name = self.create_ws_name_buf[0..self.create_ws_name_len];
-        if (name.len == 0) {
-            workspace_panel.setCreateNameRequired(self);
-            self.create_ws_focus = .name;
-            return;
-        }
-
-        self.create_ws_phase = .submitting;
-        self.create_ws_error_kind = .none;
-        self.create_ws_error_len = 0;
-
-        const workspace_api = @import("clumsies_lib").protocol.workspace_api;
-        api.specs.dispatchFromState(
-            workspace_api.CreateWorkspaceRequest,
-            workspace_api.CreateWorkspaceResponse,
-            api.specs.create_workspace,
-            &self.api_state.create_ws_pending,
-            self.api_state,
-            .{
-                .name = name,
-                .bundle_id = self.createWsSelectedBundleName(),
-            },
-        );
-    }
-
-    fn handleCreateWsSubmittingKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
-        if (key.matches(vaxis.Key.escape, .{})) {
-            // Abandon the in-flight result; bg thread still finishes but result will be dropped
-            // in consumeCreateWsResult when phase is no longer .submitting.
-            self.closeCreateWorkspace();
-            ctx.consumeAndRedraw();
-            return;
-        }
-        ctx.consumeEvent();
-    }
-
-    fn handleCreateWsSuccessKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
-        if (key.matches(vaxis.Key.escape, .{})) {
-            self.closeCreateWorkspace();
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches('c', .{})) {
-            workspace_panel.copyCreateInitCommand(self);
-            self.status_line = "Copied clumsies init command to clipboard.";
-            ctx.consumeAndRedraw();
-            return;
-        }
-        ctx.consumeEvent();
-    }
-
-    fn consumeCreateWsResult(self: *Dashboard) bool {
-        const result = self.api_state.create_ws_pending.consume() orelse return false;
-        if (!self.show_create_workspace or self.create_ws_phase != .submitting) {
-            // Overlay was closed while request was in flight — drop the result.
-            return false;
-        }
-        workspace_panel.applyCreateResult(self, result);
-        return true;
-    }
-
     /// Pump the library rule content pending slot: on .ok, stash the
     /// response in the cache keyed by path so subsequent draws can
     /// retrieve it synchronously. On any error outcome, record the
     /// failure against the selected path so widget sync does not
     /// re-dispatch on every tick; the next `invalidateOnDemandCaches`
     /// or a navigation to a different rule clears the marker.
-    fn consumeRuleContentResult(self: *Dashboard) void {
+    fn consumeRuleContentResult(self: *Shell) void {
         const result = self.api_state.rule_content_pending.consume() orelse return;
         switch (result) {
             .ok => |resp| {
@@ -1845,7 +1309,7 @@ pub const Dashboard = struct {
     /// switch mid-flight cannot store the list under the wrong path.
     /// On error, mark the currently selected rule as failed so the
     /// widget loop does not re-dispatch on every tick.
-    fn consumeRulePrsResult(self: *Dashboard) void {
+    fn consumeRulePrsResult(self: *Shell) void {
         const result = self.api_state.rule_prs_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
@@ -1863,7 +1327,7 @@ pub const Dashboard = struct {
     /// Pump the workspace context files pending slot. Stores under the
     /// ws_id the request was issued for; `state.wsDetail` combines it
     /// with the manifest half to form the view.
-    fn consumeWsContextFilesResult(self: *Dashboard) void {
+    fn consumeWsContextFilesResult(self: *Shell) void {
         const result = self.api_state.ws_context_files_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
@@ -1889,7 +1353,7 @@ pub const Dashboard = struct {
         }
     }
 
-    fn consumeWsManifestResult(self: *Dashboard) void {
+    fn consumeWsManifestResult(self: *Shell) void {
         const result = self.api_state.ws_manifest_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
@@ -1920,7 +1384,7 @@ pub const Dashboard = struct {
     /// operation, diff lines, attestation refers) against the response's
     /// own pr_id so selection changes mid-flight cannot misroute
     /// either the cache entry or the derived fields.
-    fn consumePrDetailResult(self: *Dashboard) void {
+    fn consumePrDetailResult(self: *Shell) void {
         const result = self.api_state.pr_detail_pending.consume() orelse return;
         switch (result) {
             .ok => |resp| {
@@ -1935,7 +1399,7 @@ pub const Dashboard = struct {
         }
     }
 
-    fn consumePrCommentsResult(self: *Dashboard) void {
+    fn consumePrCommentsResult(self: *Shell) void {
         const result = self.api_state.pr_comments_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
@@ -1951,13 +1415,13 @@ pub const Dashboard = struct {
 
     /// pr_id of the currently-selected PR in the rule-detail drill-
     /// down, or null when nothing is selected.
-    fn activePrId(self: *Dashboard) ?[]const u8 {
+    fn activePrId(self: *Shell) ?[]const u8 {
         const rules = self.getRules();
-        const rule_idx = @min(self.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+        const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
         if (rules.len == 0) return null;
         const prs = self.getPrsForRule(rules[rule_idx].path);
         if (prs.len == 0) return null;
-        const pr_idx = @min(self.selected_pr_idx, prs.len - 1);
+        const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
         return prs[pr_idx].id;
     }
 
@@ -1966,14 +1430,14 @@ pub const Dashboard = struct {
     /// cached library PR list so the op matching the selected rule
     /// is surfaced first.
     fn refreshPrDetailDerivedFields(
-        self: *Dashboard,
+        self: *Shell,
         pr_id: []const u8,
         resp: @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
     ) void {
         const alloc = self.api_state.allocator();
 
         const rules = self.getRules();
-        const rule_idx = @min(self.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+        const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
         const target_rule_id: ?[]const u8 = if (rules.len > 0)
             self.lookupRuleId(rules[rule_idx].path)
         else
@@ -2031,7 +1495,7 @@ pub const Dashboard = struct {
     /// outcome on status_line so the user sees the deferred result of
     /// their action; body payloads are void so the Result carries only
     /// ok / api_error / network_error / invalid_response.
-    fn consumeSignOutResult(self: *Dashboard) void {
+    fn consumeSignOutResult(self: *Shell) void {
         const result = self.api_state.sign_out_pending.consume() orelse return;
         self.status_line = switch (result) {
             .ok => "Token revoked. Please re-login.",
@@ -2041,7 +1505,7 @@ pub const Dashboard = struct {
         };
     }
 
-    fn consumeSubmitCommentResult(self: *Dashboard) void {
+    fn consumeSubmitCommentResult(self: *Shell) void {
         const result = self.api_state.submit_comment_pending.consume() orelse return;
         self.status_line = switch (result) {
             .ok => "Comment submitted.",
@@ -2051,7 +1515,7 @@ pub const Dashboard = struct {
         };
     }
 
-    fn consumePrActionResult(self: *Dashboard) void {
+    fn consumePrActionResult(self: *Shell) void {
         const result = self.api_state.pr_action_pending.consume() orelse return;
         self.status_line = switch (result) {
             .ok => "PR action applied.",
@@ -2061,7 +1525,7 @@ pub const Dashboard = struct {
         };
     }
 
-    fn consumeAttestationUploadResult(self: *Dashboard) void {
+    fn consumeAttestationUploadResult(self: *Shell) void {
         const result = self.api_state.attestation_upload_pending.consume() orelse return;
         switch (result) {
             .ok => |summary| {
@@ -2089,10 +1553,10 @@ pub const Dashboard = struct {
         }
     }
 
-    /// Format `context: <server message> (CODE)` into the Dashboard's
+    /// Format `context: <server message> (CODE)` into the Shell's
     /// owned status_line buffer-via-arena. Returns a slice valid until
     /// the next status_line update.
-    fn writeErrorStatus(self: *Dashboard, context: []const u8, err: api.request.ApiErrorPayload) []const u8 {
+    fn writeErrorStatus(self: *Shell, context: []const u8, err: api.request.ApiErrorPayload) []const u8 {
         const alloc = self.api_state.allocator();
         return std.fmt.allocPrint(alloc, "{s}: {s} ({s})", .{ context, err.message, err.code }) catch context;
     }
@@ -2103,7 +1567,7 @@ pub const Dashboard = struct {
     /// than against whatever the user now has selected. On error,
     /// mark the currently selected (ws_id, path) as failed to stop the
     /// widget loop from re-dispatching on every tick.
-    fn consumeWsContextContentResult(self: *Dashboard) void {
+    fn consumeWsContextContentResult(self: *Shell) void {
         const result = self.api_state.ws_context_content_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
@@ -2126,15 +1590,15 @@ pub const Dashboard = struct {
         }
     }
 
-    fn submitComment(self: *Dashboard) void {
+    fn submitComment(self: *Shell) void {
         const all_p = self.getRules();
-        const si = @min(self.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
+        const si = @min(self.library.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
         if (all_p.len == 0) return;
         const prs_for = self.getPrsForRule(all_p[si].path);
-        const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
+        const pri = @min(self.review.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
         if (prs_for.len == 0) return;
 
-        const comment_text = self.comment_input_buf[0..self.comment_input_len];
+        const comment_text = self.review.comment_input_buf[0..self.review.comment_input_len];
         api.specs.dispatchFromState(
             api.specs.SubmitCommentParams,
             void,
@@ -2146,12 +1610,12 @@ pub const Dashboard = struct {
         self.status_line = "Submitting comment...";
     }
 
-    pub fn doPrAction(self: *Dashboard, action: []const u8) void {
+    pub fn doPrAction(self: *Shell, action: []const u8) void {
         const all_p = self.getRules();
-        const si = @min(self.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
+        const si = @min(self.library.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
         if (all_p.len == 0) return;
         const prs_for = self.getPrsForRule(all_p[si].path);
-        const pri = @min(self.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
+        const pri = @min(self.review.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
         if (prs_for.len == 0) return;
 
         api.specs.dispatchFromState(
@@ -2165,19 +1629,11 @@ pub const Dashboard = struct {
         self.status_line = if (std.mem.eql(u8, action, "accept")) "Accepting PR..." else "Rejecting PR...";
     }
 
-    fn orgMemberCount(self: *Dashboard) usize {
-        return settings_panel.orgMemberCount(self);
-    }
-
-    fn accountWorkspaceCount(self: *Dashboard) usize {
-        return settings_panel.accountWorkspaceCount(self);
-    }
-
-    pub fn wsCount(self: *Dashboard) usize {
+    pub fn wsCount(self: *Shell) usize {
         return self.getWorkspaces().len;
     }
 
-    pub fn getWorkspaces(self: *Dashboard) []const data.WorkspaceEntry {
+    pub fn getWorkspaces(self: *Shell) []const data.WorkspaceEntry {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.current_user) |u| {
@@ -2202,14 +1658,14 @@ pub const Dashboard = struct {
         return &.{};
     }
 
-    fn wsContextCount(self: *Dashboard) usize {
+    fn wsContextCount(self: *Shell) usize {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.ws_detail) |ws_d| return ws_d.context_files.len;
         return 0;
     }
 
-    fn wsRulesCount(self: *Dashboard) usize {
+    fn wsRulesCount(self: *Shell) usize {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.ws_detail) |ws_d| return ws_d.ws_rules.len;
@@ -2227,33 +1683,33 @@ pub const Dashboard = struct {
         rounds: []const attestation_reader.RoundEvent,
     };
 
-    fn currentAnalysisScopeLocked(self: *const Dashboard) AnalysisScopeInfo {
+    fn currentAnalysisScopeLocked(self: *const Shell) AnalysisScopeInfo {
         const workspaces = if (self.api_state.current_user) |u| u.workspaces else &.{};
-        if (workspaces.len == 0 or self.analysis_scope_idx == 0) {
+        if (workspaces.len == 0 or self.analysis.scope_idx == 0) {
             return .{ .label = "All Workspaces", .ws_id = null };
         }
 
-        const scope_idx = @min(self.analysis_scope_idx, workspaces.len);
+        const scope_idx = @min(self.analysis.scope_idx, workspaces.len);
         const ws = workspaces[scope_idx - 1];
         return .{ .label = ws.name, .ws_id = ws.ws_id };
     }
 
-    fn currentAnalysisScope(self: *const Dashboard) AnalysisScopeInfo {
+    fn currentAnalysisScope(self: *const Shell) AnalysisScopeInfo {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         return self.currentAnalysisScopeLocked();
     }
 
-    pub fn cycleAnalysisScope(self: *Dashboard) AnalysisScopeInfo {
+    pub fn cycleAnalysisScope(self: *Shell) AnalysisScopeInfo {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const workspaces = if (self.api_state.current_user) |u| u.workspaces else &.{};
         const scope_count = workspaces.len + 1;
-        self.analysis_scope_idx = (self.analysis_scope_idx + 1) % scope_count;
+        self.analysis.scope_idx = (self.analysis.scope_idx + 1) % scope_count;
         return self.currentAnalysisScopeLocked();
     }
 
-    fn scopedAttestationData(self: *const Dashboard) ?ScopedAttestationData {
+    fn scopedAttestationData(self: *const Shell) ?ScopedAttestationData {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
 
@@ -2292,7 +1748,7 @@ pub const Dashboard = struct {
         return summary;
     }
 
-    fn getAnalysisCounts(self: *Dashboard) AnalysisCounts {
+    fn getAnalysisCounts(self: *Shell) AnalysisCounts {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
 
@@ -2317,11 +1773,7 @@ pub const Dashboard = struct {
         };
     }
 
-    fn shiftSettingsTab(self: *Dashboard, delta: i8) void {
-        settings_panel.shiftSettingsTab(self, delta);
-    }
-
-    fn drawHelpOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawHelpOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const modal = Modal{ .title = "Keyboard Reference", .box_width = 52, .box_height = 19 };
         const result = try modal.draw(ctx, self.widget());
         var surface = result.surface;
@@ -2339,7 +1791,7 @@ pub const Dashboard = struct {
             "g              Jump to first row",
             "G              Jump to last row",
             "r              Refresh / sync",
-            "w              Dashboard scope",
+            "w              Shell scope",
             "?              Toggle this help",
             "q / Ctrl+C     Quit",
         };
@@ -2350,7 +1802,7 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn drawConfirmOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawConfirmOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const modal = Modal{
             .title = "Confirm",
             .box_width = 44,
@@ -2378,17 +1830,17 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn drawCommentEditorOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawCommentEditorOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
 
         // Title: show reply context or "New Comment"
         const all_rules = self.getRules();
-        const sel_idx = @min(self.selected_rule, if (all_rules.len > 0) all_rules.len - 1 else 0);
+        const sel_idx = @min(self.library.selected_rule, if (all_rules.len > 0) all_rules.len - 1 else 0);
         const title = if (all_rules.len > 0) blk: {
             const p = &all_rules[sel_idx];
             const prs = self.getPrsForRule(p.path);
-            break :blk if (prs.len > 0 and self.selected_pr_idx < prs.len)
-                try std.fmt.allocPrint(ctx.arena, "Comment on {s}", .{prs[self.selected_pr_idx].id})
+            break :blk if (prs.len > 0 and self.review.selected_pr_idx < prs.len)
+                try std.fmt.allocPrint(ctx.arena, "Comment on {s}", .{prs[self.review.selected_pr_idx].id})
             else
                 @as([]const u8, "New Comment");
         } else @as([]const u8, "New Comment");
@@ -2406,7 +1858,7 @@ pub const Dashboard = struct {
         var surface = result.surface;
 
         // Input text with cursor
-        const input_text = self.comment_input_buf[0..self.comment_input_len];
+        const input_text = self.review.comment_input_buf[0..self.review.comment_input_len];
         const max_visible: usize = @as(usize, box_w -| 4);
         const visible_start = if (input_text.len > max_visible) input_text.len - max_visible else 0;
         const visible = input_text[visible_start..];
@@ -2416,7 +1868,7 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn drawTooSmall(self: *Dashboard, ctx: vxfw.DrawContext, size: vxfw.Size) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawTooSmall(self: *Shell, ctx: vxfw.DrawContext, size: vxfw.Size) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
         w.fillSurface(&surface, theme.PANEL);
         w.writeText(&surface, ctx, 1, 0, "clumsies", theme.boldOn(theme.PANEL, theme.ACCENT));
@@ -2425,7 +1877,7 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn contextHint(self: *const Dashboard) []const u8 {
+    fn contextHint(self: *const Shell) []const u8 {
         if (self.show_help) return "Keyboard reference overlay.";
         return switch (self.selected_module) {
             .dashboard => "Live interaction rounds and attestation closure.",
@@ -2435,9 +1887,9 @@ pub const Dashboard = struct {
         };
     }
 
-    fn ensureDraftsCacheForActiveWorkspace(self: *Dashboard) void {
+    fn ensureDraftsCacheForActiveWorkspace(self: *Shell) void {
         const ws_id = self.activeWsId() orelse return;
-        if (self.drafts_cache_ws_id) |cached| {
+        if (self.drafts.cache_ws_id) |cached| {
             if (std.mem.eql(u8, cached, ws_id)) return;
         }
         self.refreshDraftsCache();
@@ -2448,10 +1900,10 @@ pub const Dashboard = struct {
     /// selected workspace changes and after draft edit ops (`e`, `D`,
     /// `m`). No-op when no workspace is active — draft features just
     /// stay silent rather than surface an error.
-    pub fn refreshDraftsCache(self: *Dashboard) void {
-        self.drafts_by_rule_path = .{};
-        self.drafts_by_context_path = .{};
-        self.drafts_by_meta_prompt_path = .{};
+    pub fn refreshDraftsCache(self: *Shell) void {
+        self.drafts.by_rule_path = .{};
+        self.drafts.by_context_path = .{};
+        self.drafts.by_meta_prompt_path = .{};
         // drafts_create_*_paths are handed to the file tree, which
         // stores them in its `expanded` StringHashMap and `dir_paths`
         // array without duping. Both the hashmap key and the dir
@@ -2463,17 +1915,17 @@ pub const Dashboard = struct {
         // arena. Individual `free` calls are no-ops there, so the
         // old slices leak within the arena until session end — that
         // is acceptable for the few bytes per refresh this costs.
-        self.drafts_create_rule_paths = &.{};
-        self.drafts_create_context_paths = &.{};
-        self.drafts_total = 0;
-        self.drafts_ready = 0;
-        self.drafts_cache_ws_id = null;
+        self.drafts.create_rule_paths = &.{};
+        self.drafts.create_context_paths = &.{};
+        self.drafts.total = 0;
+        self.drafts.ready = 0;
+        self.drafts.cache_ws_id = null;
         const ws_id = self.activeWsId() orelse return;
-        self.drafts_cache_seeded = true;
-        _ = self.drafts_arena.reset(.retain_capacity);
-        const arena = self.drafts_arena.allocator();
+        self.drafts.cache_seeded = true;
+        _ = self.drafts.arena.reset(.retain_capacity);
+        const arena = self.drafts.arena.allocator();
         const api_alloc = self.api_state.allocator();
-        self.drafts_cache_ws_id = api_alloc.dupe(u8, ws_id) catch ws_id;
+        self.drafts.cache_ws_id = api_alloc.dupe(u8, ws_id) catch ws_id;
 
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return;
         var index = drafts_mod.loadIndex(arena, ws_dir) catch return;
@@ -2487,8 +1939,8 @@ pub const Dashboard = struct {
                 .merged, .rejected => continue,
                 else => {},
             }
-            self.drafts_total += 1;
-            if (entry.status == .ready) self.drafts_ready += 1;
+            self.drafts.total += 1;
+            if (entry.status == .ready) self.drafts.ready += 1;
 
             // Lookup map keys can live in drafts_arena: the maps are
             // rebuilt from scratch on every refresh, so no key is
@@ -2496,9 +1948,9 @@ pub const Dashboard = struct {
             const key_src = entry.current_path orelse entry.draft_path;
             const key = arena.dupe(u8, key_src) catch continue;
             const target_map = switch (entry.category) {
-                .rule => &self.drafts_by_rule_path,
-                .context => &self.drafts_by_context_path,
-                .meta_prompt => &self.drafts_by_meta_prompt_path,
+                .rule => &self.drafts.by_rule_path,
+                .context => &self.drafts.by_context_path,
+                .meta_prompt => &self.drafts.by_meta_prompt_path,
             };
             target_map.put(arena, key, entry.status) catch {};
 
@@ -2516,19 +1968,19 @@ pub const Dashboard = struct {
             }
         }
 
-        self.drafts_create_rule_paths = create_rules.toOwnedSlice(api_alloc) catch &.{};
-        self.drafts_create_context_paths = create_contexts.toOwnedSlice(api_alloc) catch &.{};
+        self.drafts.create_rule_paths = create_rules.toOwnedSlice(api_alloc) catch &.{};
+        self.drafts.create_context_paths = create_contexts.toOwnedSlice(api_alloc) catch &.{};
     }
 
     pub fn draftStatusFor(
-        self: *const Dashboard,
+        self: *const Shell,
         category: drafts_mod.DraftCategory,
         path: []const u8,
     ) ?drafts_mod.DraftStatus {
         return switch (category) {
-            .rule => self.drafts_by_rule_path.get(path),
-            .context => self.drafts_by_context_path.get(path),
-            .meta_prompt => self.drafts_by_meta_prompt_path.get(path),
+            .rule => self.drafts.by_rule_path.get(path),
+            .context => self.drafts.by_context_path.get(path),
+            .meta_prompt => self.drafts.by_meta_prompt_path.get(path),
         };
     }
 
@@ -2539,15 +1991,15 @@ pub const Dashboard = struct {
     /// content panels call this to overlay the working copy on top of
     /// the authoritative cache.
     pub fn draftContentForView(
-        self: *Dashboard,
+        self: *Shell,
         category: drafts_mod.DraftCategory,
         path: []const u8,
     ) ?[]const u8 {
         const ws_id = self.activeWsId() orelse return null;
         const has_draft = switch (category) {
-            .rule => self.drafts_by_rule_path.contains(path),
-            .context => self.drafts_by_context_path.contains(path),
-            .meta_prompt => self.drafts_by_meta_prompt_path.contains(path),
+            .rule => self.drafts.by_rule_path.contains(path),
+            .context => self.drafts.by_context_path.contains(path),
+            .meta_prompt => self.drafts.by_meta_prompt_path.contains(path),
         };
         if (!has_draft) return null;
         const arena = self.viewAllocator();
@@ -2560,13 +2012,13 @@ pub const Dashboard = struct {
     /// an editable selection (e.g. no workspace bound or a directory
     /// row is highlighted). Workspace context create-draft rows remain
     /// editable even before hub detail has loaded.
-    pub fn selectedDraftTarget(self: *Dashboard) ?DraftTarget {
+    pub fn selectedDraftTarget(self: *Shell) ?DraftTarget {
         const ws_id = self.activeWsId() orelse return null;
         switch (self.selected_module) {
             .library => {
                 const rules = self.getRules();
-                if (self.selected_rule < rules.len) {
-                    const rule = &rules[self.selected_rule];
+                if (self.library.selected_rule < rules.len) {
+                    const rule = &rules[self.library.selected_rule];
                     return .{
                         .ws_id = ws_id,
                         .category = self.libraryCategoryForPath(rule.path),
@@ -2578,20 +2030,20 @@ pub const Dashboard = struct {
                 // server-side rule yet. The index is offset by
                 // `rules.len` so we can recover the create-draft
                 // path from drafts_create_rule_paths.
-                const k = self.selected_rule - rules.len;
-                if (k >= self.drafts_create_rule_paths.len) return null;
+                const k = self.library.selected_rule - rules.len;
+                if (k >= self.drafts.create_rule_paths.len) return null;
                 return .{
                     .ws_id = ws_id,
                     .category = .rule,
-                    .path = self.drafts_create_rule_paths[k],
+                    .path = self.drafts.create_rule_paths[k],
                 };
             },
             .workspace => {
                 const live = self.workspaceDetailForView(ws_id);
                 const ws_tree = self.currentWsTree();
-                if (ws_tree.dirPathAt(self.ws_list_sel) != null) return null;
-                const leaf = ws_tree.leafIndexAt(self.ws_list_sel) orelse return null;
-                switch (self.ws_tab) {
+                if (ws_tree.dirPathAt(self.workspace.list_sel) != null) return null;
+                const leaf = ws_tree.leafIndexAt(self.workspace.list_sel) orelse return null;
+                switch (self.workspace.tab) {
                     .context => {
                         const context_count = if (live) |ws_d| ws_d.context_files.len else 0;
                         if (live) |ws_d| if (leaf < ws_d.context_files.len) {
@@ -2606,11 +2058,11 @@ pub const Dashboard = struct {
                         if (leaf < context_count) return null;
                         // Virtual row: create-op context draft.
                         const k = leaf - context_count;
-                        if (k >= self.drafts_create_context_paths.len) return null;
+                        if (k >= self.drafts.create_context_paths.len) return null;
                         return .{
                             .ws_id = ws_id,
                             .category = .context,
-                            .path = self.drafts_create_context_paths[k],
+                            .path = self.drafts.create_context_paths[k],
                         };
                     },
                     .rules => {
@@ -2636,20 +2088,20 @@ pub const Dashboard = struct {
         }
     }
 
-    pub fn selectedContentId(self: *Dashboard) ?[]const u8 {
+    pub fn selectedContentId(self: *Shell) ?[]const u8 {
         switch (self.selected_module) {
             .library => {
                 const rules = self.getRules();
-                if (self.selected_rule >= rules.len) return null;
-                return self.lookupRuleId(rules[self.selected_rule].path);
+                if (self.library.selected_rule >= rules.len) return null;
+                return self.lookupRuleId(rules[self.library.selected_rule].path);
             },
             .workspace => {
                 const ws_id = self.activeWsId() orelse return null;
                 const live = self.workspaceDetailForView(ws_id) orelse return null;
                 const ws_tree = self.currentWsTree();
-                if (ws_tree.dirPathAt(self.ws_list_sel) != null) return null;
-                const leaf = ws_tree.leafIndexAt(self.ws_list_sel) orelse return null;
-                return switch (self.ws_tab) {
+                if (ws_tree.dirPathAt(self.workspace.list_sel) != null) return null;
+                const leaf = ws_tree.leafIndexAt(self.workspace.list_sel) orelse return null;
+                return switch (self.workspace.tab) {
                     .context => if (leaf < live.context_files.len) live.context_files[leaf].context_id else null,
                     .rules => if (leaf < live.ws_rules.len) live.ws_rules[leaf].rule_id else null,
                 };
@@ -2658,7 +2110,7 @@ pub const Dashboard = struct {
         }
     }
 
-    pub fn copySelectedContentId(self: *Dashboard) bool {
+    pub fn copySelectedContentId(self: *Shell) bool {
         const id = self.selectedContentId() orelse return false;
         workspace_panel.copyTextToClipboard(self.api_state.backing_allocator, id);
         self.status_line = "Copied id to clipboard.";
@@ -2669,7 +2121,7 @@ pub const Dashboard = struct {
     /// the currently selected file, shells out to $EDITOR, then
     /// refreshes caches so the right panel picks up the new draft
     /// bytes on the next render.
-    pub fn editSelectedDraft(self: *Dashboard) void {
+    pub fn editSelectedDraft(self: *Shell) void {
         // Refresh must run BEFORE target capture. refreshDraftsCache
         // resets drafts_arena, which backs the virtual-row path
         // slices in drafts_create_*_paths. A target captured before
@@ -2684,7 +2136,7 @@ pub const Dashboard = struct {
         self.editDraft(target);
     }
 
-    fn editDraft(self: *Dashboard, target: DraftTarget) void {
+    fn editDraft(self: *Shell, target: DraftTarget) void {
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch {
             self.status_line = "Could not resolve workspace directory.";
@@ -2745,7 +2197,7 @@ pub const Dashboard = struct {
     /// Pull the authoritative bytes for a file so a new modify-draft
     /// can seed its copy. Rules pull from the library cache; context
     /// files from the workspace context content cache.
-    fn seedContentForTarget(self: *Dashboard, target: DraftTarget) ?[]const u8 {
+    fn seedContentForTarget(self: *Shell, target: DraftTarget) ?[]const u8 {
         return switch (target.category) {
             .rule => self.cachedRuleBody(target.path),
             .context => self.cachedWorkspaceContextBody(target.ws_id, target.path),
@@ -2756,7 +2208,7 @@ pub const Dashboard = struct {
     /// Handler for the `m` key. Flips between `editing` and `ready`.
     /// Submitted / merged / rejected / conflicted drafts are not
     /// toggled — they represent terminal or pending-review state.
-    pub fn toggleSelectedDraftReady(self: *Dashboard) void {
+    pub fn toggleSelectedDraftReady(self: *Shell) void {
         self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse return;
         const current = self.draftStatusFor(target.category, target.path) orelse {
@@ -2786,7 +2238,7 @@ pub const Dashboard = struct {
     /// Arms the confirm overlay for a discard. The actual discard runs
     /// from the confirm `y` branch so it matches the rest of the
     /// destructive-operation UX.
-    pub fn requestDiscardSelectedDraft(self: *Dashboard) void {
+    pub fn requestDiscardSelectedDraft(self: *Shell) void {
         self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse return;
         if (self.draftStatusFor(target.category, target.path) == null) {
@@ -2802,14 +2254,14 @@ pub const Dashboard = struct {
             self.status_line = "Out of memory capturing draft target.";
             return;
         };
-        self.pending_discard_target = .{
+        self.drafts.pending_discard_target = .{
             .ws_id = target.ws_id,
             .category = target.category,
             .path = path_copy,
             .rule_id = target.rule_id,
             .context_id = target.context_id,
         };
-        self.pending_discard_path_owned = path_copy;
+        self.drafts.pending_discard_path_owned = path_copy;
         self.confirm_message = path_copy;
         self.confirm_action = .discard_draft;
         self.show_confirm = true;
@@ -2817,16 +2269,16 @@ pub const Dashboard = struct {
 
     /// Free the duped strings backing pending_discard_target, if any.
     /// Safe to call with no pending discard.
-    fn releasePendingDiscardTarget(self: *Dashboard) void {
-        if (self.pending_discard_path_owned) |p| {
+    fn releasePendingDiscardTarget(self: *Shell) void {
+        if (self.drafts.pending_discard_path_owned) |p| {
             self.api_state.allocator().free(p);
-            self.pending_discard_path_owned = null;
+            self.drafts.pending_discard_path_owned = null;
         }
-        self.pending_discard_target = null;
+        self.drafts.pending_discard_target = null;
     }
 
-    fn commitDiscardDraft(self: *Dashboard) void {
-        const target = self.pending_discard_target orelse return;
+    fn commitDiscardDraft(self: *Shell) void {
+        const target = self.drafts.pending_discard_target orelse return;
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
         defer alloc.free(ws_dir);
@@ -2843,7 +2295,7 @@ pub const Dashboard = struct {
     /// selected file has a ready draft. The composer is intentionally
     /// single-op for the initial cut — multi-draft select is deferred
     /// to a follow-up.
-    pub fn openPrComposer(self: *Dashboard) void {
+    pub fn openPrComposer(self: *Shell) void {
         self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse {
             self.status_line = "No editable selection.";
@@ -2867,26 +2319,26 @@ pub const Dashboard = struct {
             self.status_line = "Out of memory opening composer.";
             return;
         };
-        self.pr_composer_target = .{
+        self.drafts.pr_composer_target = .{
             .ws_id = target.ws_id,
             .category = target.category,
             .path = path_copy,
             .rule_id = target.rule_id,
             .context_id = target.context_id,
         };
-        self.pr_composer_path_owned = path_copy;
+        self.drafts.pr_composer_path_owned = path_copy;
         // Capture the draft's operation so the overlay can label
         // `op:` correctly (create / modify / rename / delete). Falls
         // back to .modify when the index lookup fails, which is the
         // historical default and keeps the overlay usable if the
         // draft file was tampered with out of band.
-        self.pr_composer_operation = self.lookupDraftOperation(target) orelse .modify;
-        self.pr_composer_desc_len = 0;
-        self.pr_composer_submitting = false;
-        self.show_pr_composer = true;
+        self.drafts.pr_composer_operation = self.lookupDraftOperation(target) orelse .modify;
+        self.drafts.pr_composer_desc_len = 0;
+        self.drafts.pr_composer_submitting = false;
+        self.drafts.show_pr_composer = true;
     }
 
-    fn lookupDraftOperation(self: *Dashboard, target: DraftTarget) ?drafts_mod.DraftOperation {
+    fn lookupDraftOperation(self: *Shell, target: DraftTarget) ?drafts_mod.DraftOperation {
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return null;
         defer alloc.free(ws_dir);
@@ -2902,28 +2354,28 @@ pub const Dashboard = struct {
 
     /// Free the duped strings backing pr_composer_target, if any.
     /// Safe to call when no composer is open.
-    fn releaseComposerTarget(self: *Dashboard) void {
-        if (self.pr_composer_path_owned) |p| {
+    fn releaseComposerTarget(self: *Shell) void {
+        if (self.drafts.pr_composer_path_owned) |p| {
             self.api_state.allocator().free(p);
-            self.pr_composer_path_owned = null;
+            self.drafts.pr_composer_path_owned = null;
         }
-        self.pr_composer_target = null;
+        self.drafts.pr_composer_target = null;
     }
 
-    pub fn cancelPrComposer(self: *Dashboard) void {
-        self.show_pr_composer = false;
-        self.pr_composer_submitting = false;
-        self.pr_composer_desc_len = 0;
+    pub fn cancelPrComposer(self: *Shell) void {
+        self.drafts.show_pr_composer = false;
+        self.drafts.pr_composer_submitting = false;
+        self.drafts.pr_composer_desc_len = 0;
         self.releaseComposerTarget();
     }
 
-    pub fn submitPrComposer(self: *Dashboard) void {
-        if (self.pr_composer_submitting) return;
-        if (self.pr_composer_desc_len == 0) {
+    pub fn submitPrComposer(self: *Shell) void {
+        if (self.drafts.pr_composer_submitting) return;
+        if (self.drafts.pr_composer_desc_len == 0) {
             self.status_line = "Description is required.";
             return;
         }
-        const target = self.pr_composer_target orelse {
+        const target = self.drafts.pr_composer_target orelse {
             self.status_line = "No composer target set.";
             return;
         };
@@ -2935,7 +2387,7 @@ pub const Dashboard = struct {
     }
 
     fn readDraftForSubmit(
-        self: *Dashboard,
+        self: *Shell,
         alloc: std.mem.Allocator,
         target: DraftTarget,
     ) ?struct {
@@ -2980,7 +2432,7 @@ pub const Dashboard = struct {
         base_hash: ?[]const u8,
     };
 
-    fn submitRulePr(self: *Dashboard, target: DraftTarget) void {
+    fn submitRulePr(self: *Shell, target: DraftTarget) void {
         const alloc = self.api_state.allocator();
         const read = self.readDraftForSubmit(alloc, target) orelse return;
         defer alloc.free(read.ws_dir);
@@ -3003,7 +2455,7 @@ pub const Dashboard = struct {
             .delete => "delete",
         };
 
-        const desc_copy = alloc.dupe(u8, self.pr_composer_desc_buf[0..self.pr_composer_desc_len]) catch return;
+        const desc_copy = alloc.dupe(u8, self.drafts.pr_composer_desc_buf[0..self.drafts.pr_composer_desc_len]) catch return;
         defer alloc.free(desc_copy);
         const content_copy: ?[]const u8 = if (entry.operation == .delete)
             null
@@ -3060,11 +2512,11 @@ pub const Dashboard = struct {
                 .base_hash = base_hash_copy_opt,
             },
         );
-        self.pr_composer_submitting = true;
+        self.drafts.pr_composer_submitting = true;
         self.status_line = "Submitting PR...";
     }
 
-    fn submitContextPr(self: *Dashboard, target: DraftTarget) void {
+    fn submitContextPr(self: *Shell, target: DraftTarget) void {
         const alloc = self.api_state.allocator();
         const read = self.readDraftForSubmit(alloc, target) orelse return;
         defer alloc.free(read.ws_dir);
@@ -3084,7 +2536,7 @@ pub const Dashboard = struct {
             .delete => "delete",
         };
 
-        const desc_copy = alloc.dupe(u8, self.pr_composer_desc_buf[0..self.pr_composer_desc_len]) catch return;
+        const desc_copy = alloc.dupe(u8, self.drafts.pr_composer_desc_buf[0..self.drafts.pr_composer_desc_len]) catch return;
         defer alloc.free(desc_copy);
         const content_copy = alloc.dupe(u8, read.content) catch return;
         defer alloc.free(content_copy);
@@ -3127,14 +2579,14 @@ pub const Dashboard = struct {
                 .base_hash = base_hash_copy_opt,
             },
         );
-        self.pr_composer_submitting = true;
+        self.drafts.pr_composer_submitting = true;
         self.status_line = "Submitting PR...";
     }
 
-    fn handlePrComposerKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
-        if (self.pr_composer_submitting) {
+    fn handlePrComposerKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (self.drafts.pr_composer_submitting) {
             if (key.matches(vaxis.Key.escape, .{})) {
-                self.pr_composer_submitting = false;
+                self.drafts.pr_composer_submitting = false;
                 ctx.consumeAndRedraw();
             }
             return;
@@ -3150,33 +2602,33 @@ pub const Dashboard = struct {
             return;
         }
         if (key.matches(vaxis.Key.backspace, .{})) {
-            if (self.pr_composer_desc_len > 0) {
-                self.pr_composer_desc_len -= 1;
+            if (self.drafts.pr_composer_desc_len > 0) {
+                self.drafts.pr_composer_desc_len -= 1;
                 ctx.consumeAndRedraw();
             }
             return;
         }
         if (key.text) |text| {
-            const remaining = self.pr_composer_desc_buf.len - self.pr_composer_desc_len;
+            const remaining = self.drafts.pr_composer_desc_buf.len - self.drafts.pr_composer_desc_len;
             if (text.len > 0 and text.len <= remaining) {
-                @memcpy(self.pr_composer_desc_buf[self.pr_composer_desc_len..][0..text.len], text);
-                self.pr_composer_desc_len += text.len;
+                @memcpy(self.drafts.pr_composer_desc_buf[self.drafts.pr_composer_desc_len..][0..text.len], text);
+                self.drafts.pr_composer_desc_len += text.len;
                 ctx.consumeAndRedraw();
             }
         } else if (key.codepoint >= 0x20 and key.codepoint < 0x7f) {
-            if (self.pr_composer_desc_len < self.pr_composer_desc_buf.len) {
-                self.pr_composer_desc_buf[self.pr_composer_desc_len] = @intCast(key.codepoint);
-                self.pr_composer_desc_len += 1;
+            if (self.drafts.pr_composer_desc_len < self.drafts.pr_composer_desc_buf.len) {
+                self.drafts.pr_composer_desc_buf[self.drafts.pr_composer_desc_len] = @intCast(key.codepoint);
+                self.drafts.pr_composer_desc_len += 1;
                 ctx.consumeAndRedraw();
             }
         }
     }
 
-    fn drawPrComposerOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawPrComposerOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         const box_w = @min(size.width -| 4, 60);
         const box_h: u16 = 9;
-        const target = self.pr_composer_target orelse DraftTarget{
+        const target = self.drafts.pr_composer_target orelse DraftTarget{
             .ws_id = "",
             .category = .rule,
             .path = "",
@@ -3196,7 +2648,7 @@ pub const Dashboard = struct {
             .box_width = box_w,
             .box_height = box_h,
             .anchor = .center,
-            .footer = if (self.pr_composer_submitting) "Submitting... Esc cancel wait" else "Enter submit  Esc cancel",
+            .footer = if (self.drafts.pr_composer_submitting) "Submitting... Esc cancel wait" else "Enter submit  Esc cancel",
         };
         const result = try modal.draw(ctx, self.widget());
         var surface = result.surface;
@@ -3206,7 +2658,7 @@ pub const Dashboard = struct {
         w.writeText(&surface, ctx, col, row, path_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
         w.writeText(&surface, ctx, col + 8, row, target.path, theme.boldOn(theme.PANEL_ALT, theme.TEXT));
         w.writeText(&surface, ctx, col, row + 1, "op:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        const op_label: []const u8 = switch (self.pr_composer_operation) {
+        const op_label: []const u8 = switch (self.drafts.pr_composer_operation) {
             .create => "create",
             .modify => "modify",
             .rename => "rename",
@@ -3215,7 +2667,7 @@ pub const Dashboard = struct {
         w.writeText(&surface, ctx, col + 8, row + 1, op_label, theme.textOn(theme.PANEL_ALT, theme.TEXT));
 
         w.writeText(&surface, ctx, col, row + 3, "description:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        const desc_text = self.pr_composer_desc_buf[0..self.pr_composer_desc_len];
+        const desc_text = self.drafts.pr_composer_desc_buf[0..self.drafts.pr_composer_desc_len];
         const max_visible: usize = @as(usize, box_w -| 4);
         const visible_start = if (desc_text.len > max_visible) desc_text.len - max_visible else 0;
         const visible = desc_text[visible_start..];
@@ -3225,28 +2677,28 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    pub fn openNewDraftForm(self: *Dashboard, category: drafts_mod.DraftCategory) void {
+    pub fn openNewDraftForm(self: *Shell, category: drafts_mod.DraftCategory) void {
         if (self.activeWsId() == null) {
             self.status_line = "No workspace loaded yet; wait for bootstrap.";
             return;
         }
-        self.new_draft_path_len = 0;
-        self.new_draft_category = category;
-        self.show_new_draft_form = true;
+        self.drafts.new_draft_path_len = 0;
+        self.drafts.new_draft_category = category;
+        self.drafts.show_new_draft_form = true;
     }
 
-    pub fn cancelNewDraftForm(self: *Dashboard) void {
-        self.show_new_draft_form = false;
-        self.new_draft_path_len = 0;
+    pub fn cancelNewDraftForm(self: *Shell) void {
+        self.drafts.show_new_draft_form = false;
+        self.drafts.new_draft_path_len = 0;
     }
 
-    pub fn submitNewDraftForm(self: *Dashboard) void {
-        if (self.new_draft_path_len == 0) {
+    pub fn submitNewDraftForm(self: *Shell) void {
+        if (self.drafts.new_draft_path_len == 0) {
             self.status_line = "Path is required.";
             return;
         }
         const ws_id = self.activeWsId() orelse return;
-        const path = self.new_draft_path_buf[0..self.new_draft_path_len];
+        const path = self.drafts.new_draft_path_buf[0..self.drafts.new_draft_path_len];
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
             self.status_line = "Could not resolve workspace directory.";
@@ -3257,7 +2709,7 @@ pub const Dashboard = struct {
         const path_copy = alloc.dupe(u8, path) catch return;
         defer alloc.free(path_copy);
 
-        const category = self.new_draft_category;
+        const category = self.drafts.new_draft_category;
         drafts_mod.createDraft(alloc, ws_dir, .{
             .category = category,
             .operation = .create,
@@ -3267,8 +2719,8 @@ pub const Dashboard = struct {
             return;
         };
 
-        self.show_new_draft_form = false;
-        self.new_draft_path_len = 0;
+        self.drafts.show_new_draft_form = false;
+        self.drafts.new_draft_path_len = 0;
         self.refreshDraftsCache();
 
         const draft_abs = std.fs.path.join(alloc, &.{ ws_dir, "drafts", @tagName(category), path_copy }) catch return;
@@ -3293,7 +2745,7 @@ pub const Dashboard = struct {
         self.refreshDraftsCache();
     }
 
-    fn handleNewDraftFormKey(self: *Dashboard, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+    fn handleNewDraftFormKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
         if (key.matches(vaxis.Key.escape, .{})) {
             self.cancelNewDraftForm();
             ctx.consumeAndRedraw();
@@ -3305,38 +2757,38 @@ pub const Dashboard = struct {
             return;
         }
         if (key.matches(vaxis.Key.backspace, .{})) {
-            if (self.new_draft_path_len > 0) {
-                self.new_draft_path_len -= 1;
+            if (self.drafts.new_draft_path_len > 0) {
+                self.drafts.new_draft_path_len -= 1;
                 ctx.consumeAndRedraw();
             }
             return;
         }
         if (key.text) |text| {
-            const remaining = self.new_draft_path_buf.len - self.new_draft_path_len;
+            const remaining = self.drafts.new_draft_path_buf.len - self.drafts.new_draft_path_len;
             if (text.len > 0 and text.len <= remaining) {
-                @memcpy(self.new_draft_path_buf[self.new_draft_path_len..][0..text.len], text);
-                self.new_draft_path_len += text.len;
+                @memcpy(self.drafts.new_draft_path_buf[self.drafts.new_draft_path_len..][0..text.len], text);
+                self.drafts.new_draft_path_len += text.len;
                 ctx.consumeAndRedraw();
             }
         } else if (key.codepoint >= 0x20 and key.codepoint < 0x7f) {
-            if (self.new_draft_path_len < self.new_draft_path_buf.len) {
-                self.new_draft_path_buf[self.new_draft_path_len] = @intCast(key.codepoint);
-                self.new_draft_path_len += 1;
+            if (self.drafts.new_draft_path_len < self.drafts.new_draft_path_buf.len) {
+                self.drafts.new_draft_path_buf[self.drafts.new_draft_path_len] = @intCast(key.codepoint);
+                self.drafts.new_draft_path_len += 1;
                 ctx.consumeAndRedraw();
             }
         }
     }
 
-    fn drawNewDraftFormOverlay(self: *Dashboard, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawNewDraftFormOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         const box_w = @min(size.width -| 4, 54);
         const box_h: u16 = 7;
-        const title = switch (self.new_draft_category) {
+        const title = switch (self.drafts.new_draft_category) {
             .rule => "New Rule Draft",
             .context => "New Context Draft",
             .meta_prompt => "New Meta-Prompt Draft",
         };
-        const hint = switch (self.new_draft_category) {
+        const hint = switch (self.drafts.new_draft_category) {
             .rule => "e.g. rule/00_MY_RULE.md",
             .context => "e.g. spec/NEW_SPEC.md",
             .meta_prompt => "META_PROMPT.md",
@@ -3354,7 +2806,7 @@ pub const Dashboard = struct {
         const row = result.content_row;
 
         w.writeText(&surface, ctx, col, row, "path:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        const path_text = self.new_draft_path_buf[0..self.new_draft_path_len];
+        const path_text = self.drafts.new_draft_path_buf[0..self.drafts.new_draft_path_len];
         const max_visible: usize = @as(usize, box_w -| 4);
         const visible_start = if (path_text.len > max_visible) path_text.len - max_visible else 0;
         const visible = path_text[visible_start..];
@@ -3365,9 +2817,9 @@ pub const Dashboard = struct {
         return surface;
     }
 
-    fn consumeCreateRulePrResult(self: *Dashboard) void {
+    fn consumeCreateRulePrResult(self: *Shell) void {
         const result = self.api_state.create_rule_pr_pending.consume() orelse return;
-        self.pr_composer_submitting = false;
+        self.drafts.pr_composer_submitting = false;
         switch (result) {
             .ok => |resp| {
                 self.markComposerSubmitted(resp.pr_id, resp.status);
@@ -3378,9 +2830,9 @@ pub const Dashboard = struct {
         }
     }
 
-    fn consumeCreateContextPrResult(self: *Dashboard) void {
+    fn consumeCreateContextPrResult(self: *Shell) void {
         const result = self.api_state.create_context_pr_pending.consume() orelse return;
-        self.pr_composer_submitting = false;
+        self.drafts.pr_composer_submitting = false;
         switch (result) {
             .ok => |resp| {
                 self.markComposerSubmitted(resp.pr_id, resp.status);
@@ -3394,8 +2846,8 @@ pub const Dashboard = struct {
     /// Shared post-submit path for both rule and context PRs. Marks
     /// the draft as submitted against disk, refreshes the in-memory
     /// cache, closes the composer, and posts a user-facing confirmation.
-    fn markComposerSubmitted(self: *Dashboard, pr_id: []const u8, status: []const u8) void {
-        const target = self.pr_composer_target orelse return;
+    fn markComposerSubmitted(self: *Shell, pr_id: []const u8, status: []const u8) void {
+        const target = self.drafts.pr_composer_target orelse return;
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
         defer alloc.free(ws_dir);
@@ -3406,8 +2858,8 @@ pub const Dashboard = struct {
         // would render stale rows until a manual `r` refresh. Drop
         // the cached details so the next render re-fetches.
         self.invalidateRemoteDetailRequests();
-        self.show_pr_composer = false;
-        self.pr_composer_desc_len = 0;
+        self.drafts.show_pr_composer = false;
+        self.drafts.pr_composer_desc_len = 0;
         self.releaseComposerTarget();
         self.status_line = std.fmt.allocPrint(
             self.api_state.allocator(),
@@ -3416,19 +2868,19 @@ pub const Dashboard = struct {
         ) catch "PR submitted.";
     }
 
-    fn selectTab(self: *Dashboard, ctx: *vxfw.EventContext, tab: TopModule) void {
+    fn selectTab(self: *Shell, ctx: *vxfw.EventContext, tab: TopModule) void {
         self.selected_module = tab;
-        self.analysis_show_member_detail = false;
-        self.analysis_expanded_rule = null;
+        self.analysis.show_member_detail = false;
+        self.analysis.expanded_rule = null;
         switch (tab) {
             .dashboard => {
-                if (self.analysis_focus != .chart and self.analysis_focus != .inputs) {
-                    self.analysis_focus = .inputs;
+                if (self.analysis.focus != .chart and self.analysis.focus != .inputs) {
+                    self.analysis.focus = .inputs;
                 }
             },
             .analysis => {
-                if (self.analysis_focus != .rules and self.analysis_focus != .members) {
-                    self.analysis_focus = .rules;
+                if (self.analysis.focus != .rules and self.analysis.focus != .members) {
+                    self.analysis.focus = .rules;
                 }
             },
             .workspace => {
@@ -3440,21 +2892,21 @@ pub const Dashboard = struct {
         ctx.consumeAndRedraw();
     }
 
-    pub fn shiftDetailTab(self: *Dashboard, delta: i8) void {
-        const current: i8 = @intCast(@intFromEnum(self.detail_tab));
-        const count: i8 = @intCast(detail_tabs.len);
+    pub fn shiftDetailTab(self: *Shell, delta: i8) void {
+        const current: i8 = @intCast(@intFromEnum(self.review.detail_tab));
+        const count: i8 = @intCast(rule_detail_panel.detail_tabs.len);
         const next = @mod(current + delta + count, count);
-        self.detail_tab = @enumFromInt(@as(u8, @intCast(next)));
-        self.show_comment_editor = false;
-        self.pr_filter = .open;
-        self.selected_pr_idx = 0;
-        self.pr_scroll_bars.scroll_view.cursor = 0;
+        self.review.detail_tab = @enumFromInt(@as(u8, @intCast(next)));
+        self.review.show_comment_editor = false;
+        self.review.pr_filter = .open;
+        self.review.selected_pr_idx = 0;
+        self.review.pr_scroll_bars.scroll_view.cursor = 0;
     }
 
-    pub fn shiftWsTab(self: *Dashboard, delta: i8) void {
-        const current: i8 = @intCast(@intFromEnum(self.ws_tab));
-        const count: i8 = @intCast(ws_tabs.len);
+    pub fn shiftWsTab(self: *Shell, delta: i8) void {
+        const current: i8 = @intCast(@intFromEnum(self.workspace.tab));
+        const count: i8 = @intCast(workspace_panel.tabs.len);
         const next = @mod(current + delta + count, count);
-        self.ws_tab = @enumFromInt(@as(u8, @intCast(next)));
+        self.workspace.tab = @enumFromInt(@as(u8, @intCast(next)));
     }
 };
