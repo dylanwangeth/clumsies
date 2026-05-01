@@ -5,6 +5,7 @@ const vxfw = vaxis.vxfw;
 const Dashboard = @import("app.zig").Dashboard;
 const auth_mod = @import("../auth.zig");
 const api = @import("api.zig");
+const tasks = @import("tasks.zig");
 
 pub fn run() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
@@ -25,7 +26,7 @@ pub fn run() !void {
     if (auth_mod.loadAuth(allocator)) |auth_info| {
         defer auth_info.deinit(allocator);
         api.fetch.startFetch(&api_state, auth_info.hub_url, auth_info.access_token) catch {};
-        api.fetch.startAttestationFlush(&api_state) catch {};
+        tasks.attestation_upload.start(&api_state) catch {};
     } else |_| {}
 
     var app = try vxfw.App.init(allocator);

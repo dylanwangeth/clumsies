@@ -3,7 +3,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
-const data = @import("../view_types.zig");
+const data = @import("../models/view_types.zig");
 
 pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
     const SettingsTab = @TypeOf(self.settings_tab);

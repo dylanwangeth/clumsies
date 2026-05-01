@@ -55,7 +55,7 @@ These are the route families that matter most in the current implementation:
 | workspace context | `/api/workspaces/:ws_id/context/*` | sync, TUI, agent proposals |
 | Library | `/api/org/library/*`, `/api/org/bundles*` | sync, TUI, CLI |
 | rule review | `/api/org/rule-prs*` | TUI, collaboration flow |
-| attestation and stats | `/api/attestations`, `/api/stats*` | local runtime flush, TUI analysis |
+| attestation and stats | `/api/attestations`, `/api/stats*` | TUI startup upload, TUI analysis |
 
 The important point is architectural. Hub is not "the place that sometimes answers manifest requests." It owns the wire contract that every serious client surface already depends on.
 

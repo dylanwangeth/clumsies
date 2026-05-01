@@ -41,7 +41,7 @@ flowchart TB
     Manifest["manifest"]
     Cache["cache"]
     MCP["MCP"]
-    AttBuf["attestation buffer"]
+    AttLog["attestation log"]
     CLI["CLI"]
     TUI["TUI"]
     Adapter["adapter"]
@@ -50,15 +50,15 @@ flowchart TB
     Hub -->|publish| Manifest
     Manifest -->|materialize| Cache
     Cache -->|serve| MCP
-    MCP -->|record| AttBuf
+    MCP -->|record| AttLog
     CLI -->|operate| Hub
     TUI -->|review| Hub
     Adapter -->|install| Host
     Host -->|invoke| MCP
-    AttBuf -->|flush| Hub
+    TUI -->|upload attestation| Hub
 
     class Hub authority;
-    class Manifest,Cache,AttBuf runtime;
+    class Manifest,Cache,AttLog runtime;
     class CLI,TUI,MCP surface;
     class Adapter integration;
     class Host external;

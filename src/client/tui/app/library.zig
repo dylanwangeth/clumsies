@@ -4,9 +4,9 @@ const vxfw = vaxis.vxfw;
 const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
 const api = @import("../api.zig");
-const data = @import("../view_types.zig");
-const TableRow = @import("../table_row.zig").TableRow;
-const Column = @import("../table_row.zig").Column;
+const data = @import("../models/view_types.zig");
+const TableRow = w.TableRow;
+const Column = w.Column;
 const rule_detail_panel = @import("rule_detail.zig");
 
 const MAX_TREE_ROWS = 128;

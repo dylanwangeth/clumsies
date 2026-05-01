@@ -64,7 +64,7 @@ The current local files are:
 ~/.clumsies/workspaces/{ws_id}/attestation.cursor
 ```
 
-`attestation.jsonl` stores the append-only local event stream. `attestation.cursor` stores the upload cursor so later flush operations know which events have already been delivered to Hub.
+`attestation.jsonl` stores the append-only local event stream. `attestation.cursor` stores the upload cursor so the TUI startup uploader knows which events have already been delivered to Hub.
 
 The upload path on the server side is:
 

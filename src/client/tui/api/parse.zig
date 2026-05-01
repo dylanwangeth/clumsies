@@ -4,7 +4,7 @@ const collab_api = @import("clumsies_lib").protocol.collab_api;
 const library_api = @import("clumsies_lib").protocol.library_api;
 const stats_api = @import("clumsies_lib").protocol.stats_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
-const data = @import("../view_types.zig");
+const data = @import("../models/view_types.zig");
 const model = @import("model.zig");
 
 pub fn parseComments(alloc: std.mem.Allocator, body: []const u8) ?[]const data.CommentEntry {

@@ -3,7 +3,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
-const data = @import("../view_types.zig");
+const data = @import("../models/view_types.zig");
 
 pub fn drawRoot(
     self: anytype,
