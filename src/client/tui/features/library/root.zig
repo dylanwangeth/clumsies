@@ -1,15 +1,38 @@
+//! Library feature container. Owns rule/bundle navigation state and syncs
+//! list widgets for the organization rule collection.
+
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
-const theme = @import("../theme.zig");
-const w = @import("../widgets.zig");
-const api = @import("../api.zig");
-const data = @import("../models/view_types.zig");
+const theme = @import("../../theme.zig");
+const w = @import("../../widgets.zig");
+const api = @import("../../api.zig");
+const data = @import("../../models/view_types.zig");
 const TableRow = w.TableRow;
 const Column = w.Column;
-const rule_detail_panel = @import("rule_detail.zig");
+const rule_detail_panel = @import("../review/root.zig");
 
 const MAX_TREE_ROWS = 128;
+const PathTreeState = @import("../../models.zig").path_tree.State(MAX_TREE_ROWS, 96);
+
+pub const State = struct {
+    selected_rule: usize = 0,
+    bundle_filter: usize = 0,
+    scroll_bars: vxfw.ScrollBars,
+    tree: PathTreeState = .{},
+    widgets: [MAX_TREE_ROWS]vxfw.Widget = undefined,
+    text_rows: [MAX_TREE_ROWS]vxfw.Text = undefined,
+    table_rows: [MAX_TREE_ROWS]TableRow = undefined,
+    table_cols: [MAX_TREE_ROWS][2]Column = undefined,
+
+    pub fn init() State {
+        return .{ .scroll_bars = w.initCursorScrollBars(theme.PANEL) };
+    }
+
+    pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
+        self.tree.deinit(allocator);
+    }
+};
 
 pub fn drawRoot(
     self: anytype,
@@ -29,7 +52,7 @@ pub fn drawListPanel(
 ) std.mem.Allocator.Error!vxfw.Surface {
     const size = ctx.max.size();
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
-    const border_color = theme.focusBorder(!self.detail_focus_content);
+    const border_color = theme.focusBorder(!self.review.detail_focus_content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
 
@@ -38,13 +61,13 @@ pub fn drawListPanel(
     // goes on row 0 top-right only if what's left after the tab strip
     // has room for it — otherwise drop it rather than stomp the tabs.
     var tab_col: u16 = 2;
-    const tabs = [_]@TypeOf(self.detail_tab){ .content, .pull_requests };
+    const tabs = [_]@TypeOf(self.review.detail_tab){ .content, .pull_requests };
     for (tabs) |tab| {
-        tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, listTabLabel(tab), tab == self.detail_tab);
+        tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, listTabLabel(tab), tab == self.review.detail_tab);
         tab_col +|= 1;
     }
 
-    const hint = switch (self.detail_tab) {
+    const hint = switch (self.review.detail_tab) {
         .content => try std.fmt.allocPrint(
             ctx.arena,
             "{d} rules  bundle: {s}  / search  b filter",
@@ -52,13 +75,13 @@ pub fn drawListPanel(
         ),
         .pull_requests => blk: {
             const rules = self.getRules();
-            const sel_idx = @min(self.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+            const sel_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
             if (rules.len == 0) break :blk @as([]const u8, "no rules");
             const prs = self.getPrsForRule(rules[sel_idx].path);
             break :blk try std.fmt.allocPrint(
                 ctx.arena,
                 "{d} PRs  filter:{s}  f cycle",
-                .{ prs.len, @tagName(self.pr_filter) },
+                .{ prs.len, @tagName(self.review.pr_filter) },
             );
         },
     };
@@ -80,9 +103,9 @@ pub fn drawListPanel(
         .{ .width = body_w, .height = body_h },
     );
 
-    switch (self.detail_tab) {
+    switch (self.review.detail_tab) {
         .content => {
-            if (self.library_tree.rowCount() == 0) {
+            if (self.library.tree.rowCount() == 0) {
                 const status = blk: {
                     self.api_state.mutex.lock();
                     defer self.api_state.mutex.unlock();
@@ -93,27 +116,27 @@ pub fn drawListPanel(
                 // writeCell would trip the vxfw assert.
                 w.drawEmptyState(&surface, ctx, body_origin_col, body_origin_row, status, "rules");
             } else {
-                self.library_scroll_bars.scroll_view.draw_cursor = false;
-                defer self.library_scroll_bars.scroll_view.draw_cursor = true;
-                const body = try self.library_scroll_bars.widget().draw(body_ctx);
+                self.library.scroll_bars.scroll_view.draw_cursor = false;
+                defer self.library.scroll_bars.scroll_view.draw_cursor = true;
+                const body = try self.library.scroll_bars.widget().draw(body_ctx);
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
                 children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
                 surface.children = children;
-                writeCursorBar(&surface, &self.library_scroll_bars.scroll_view, body_origin_row, body_h);
+                writeCursorBar(&surface, &self.library.scroll_bars.scroll_view, body_origin_row, body_h);
             }
         },
         .pull_requests => {
             rule_detail_panel.syncPrWidgets(self);
-            if (self.pr_row_count == 0) {
+            if (self.review.pr_row_count == 0) {
                 w.writeText(&surface, ctx, body_origin_col, body_origin_row, "No pull requests for this rule.", theme.fg(theme.MUTED));
             } else {
-                self.pr_scroll_bars.scroll_view.draw_cursor = false;
-                defer self.pr_scroll_bars.scroll_view.draw_cursor = true;
-                const body = try self.pr_scroll_bars.widget().draw(body_ctx);
+                self.review.pr_scroll_bars.scroll_view.draw_cursor = false;
+                defer self.review.pr_scroll_bars.scroll_view.draw_cursor = true;
+                const body = try self.review.pr_scroll_bars.widget().draw(body_ctx);
                 const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
                 children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
                 surface.children = children;
-                writeCursorBar(&surface, &self.pr_scroll_bars.scroll_view, body_origin_row, body_h);
+                writeCursorBar(&surface, &self.review.pr_scroll_bars.scroll_view, body_origin_row, body_h);
             }
         },
     }
@@ -164,15 +187,15 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('b', .{}) and self.detail_tab == .content) {
+    if (key.matches('b', .{}) and self.review.detail_tab == .content) {
         const bundle_count = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
             if (self.api_state.bundles) |bundles| break :blk bundles.len;
             break :blk 0;
         };
-        self.library_bundle_filter = (self.library_bundle_filter + 1) % (bundle_count + 1);
-        resetScrollView(&self.library_scroll_bars.scroll_view);
+        self.library.bundle_filter = (self.library.bundle_filter + 1) % (bundle_count + 1);
+        resetScrollView(&self.library.scroll_bars.scroll_view);
         ctx.consumeAndRedraw();
         return;
     }
@@ -186,12 +209,12 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('n', .{}) and self.detail_tab == .content and !self.detail_focus_content) {
+    if (key.matches('n', .{}) and self.review.detail_tab == .content and !self.review.detail_focus_content) {
         self.openNewDraftForm(.rule);
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('y', .{}) and self.detail_tab == .content) {
+    if (key.matches('y', .{}) and self.review.detail_tab == .content) {
         if (self.copySelectedContentId()) {
             ctx.consumeAndRedraw();
         } else {
@@ -201,16 +224,16 @@ pub fn handleModuleEvent(
         return;
     }
     if (key.matches(vaxis.Key.tab, .{})) {
-        self.detail_focus_content = !self.detail_focus_content;
+        self.review.detail_focus_content = !self.review.detail_focus_content;
         ctx.consumeAndRedraw();
         return;
     }
 
-    if (self.detail_focus_content) {
+    if (self.review.detail_focus_content) {
         try rule_detail_panel.handleEmbeddedPaneEvent(self, ctx, event, key);
         return;
     }
-    switch (self.detail_tab) {
+    switch (self.review.detail_tab) {
         .content => try handleFileListEvent(self, ctx, event, key),
         .pull_requests => try handlePrListEvent(self, ctx, event, key),
     }
@@ -224,21 +247,21 @@ fn handleFileListEvent(
 ) anyerror!void {
     if (key.matches(vaxis.Key.enter, .{})) {
         syncLibraryWidgets(self);
-        const pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
-        if (self.library_tree.dirPathAt(pos)) |dir| {
-            self.library_tree.toggleDir(self.api_state.allocator(), dir);
+        const pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
+        if (self.library.tree.dirPathAt(pos)) |dir| {
+            self.library.tree.toggleDir(self.api_state.allocator(), dir);
             ctx.consumeAndRedraw();
             return;
         }
-        self.detail_focus_content = true;
+        self.review.detail_focus_content = true;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
         syncLibraryWidgets(self);
-        const pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
-        if (self.library_tree.dirPathAt(pos)) |dir| {
-            if (self.library_tree.expandDir(self.api_state.allocator(), dir)) {
+        const pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
+        if (self.library.tree.dirPathAt(pos)) |dir| {
+            if (self.library.tree.expandDir(self.api_state.allocator(), dir)) {
                 ctx.consumeAndRedraw();
                 return;
             }
@@ -246,37 +269,37 @@ fn handleFileListEvent(
     }
     if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
         syncLibraryWidgets(self);
-        const pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
-        if (self.library_tree.dirPathAt(pos)) |dir| {
-            if (self.library_tree.collapseDir(dir)) {
+        const pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
+        if (self.library.tree.dirPathAt(pos)) |dir| {
+            if (self.library.tree.collapseDir(dir)) {
                 ctx.consumeAndRedraw();
                 return;
             }
         }
-        if (self.library_tree.parentRow(pos)) |parent| {
-            self.library_scroll_bars.scroll_view.cursor = @intCast(parent);
-            self.library_scroll_bars.scroll_view.ensureScroll();
+        if (self.library.tree.parentRow(pos)) |parent| {
+            self.library.scroll_bars.scroll_view.cursor = @intCast(parent);
+            self.library.scroll_bars.scroll_view.ensureScroll();
             ctx.consumeAndRedraw();
             return;
         }
     }
 
-    if (self.library_tree.rowCount() == 0) {
+    if (self.library.tree.rowCount() == 0) {
         ctx.consumeEvent();
         return;
     }
-    try self.library_scroll_bars.scroll_view.handleEvent(ctx, event);
+    try self.library.scroll_bars.scroll_view.handleEvent(ctx, event);
 
-    var pos = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
-    if (pos >= self.library_tree.rowCount()) pos = self.library_tree.rowCount() - 1;
-    self.library_scroll_bars.scroll_view.cursor = @intCast(pos);
+    var pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
+    if (pos >= self.library.tree.rowCount()) pos = self.library.tree.rowCount() - 1;
+    self.library.scroll_bars.scroll_view.cursor = @intCast(pos);
 
-    if (self.library_tree.leafIndexAt(pos)) |rule_idx| {
-        if (self.selected_rule != rule_idx) {
-            self.selected_rule = rule_idx;
-            self.selected_pr_idx = 0;
-            self.pr_scroll_bars.scroll_view.cursor = 0;
-            self.pr_filter = .open;
+    if (self.library.tree.leafIndexAt(pos)) |rule_idx| {
+        if (self.library.selected_rule != rule_idx) {
+            self.library.selected_rule = rule_idx;
+            self.review.selected_pr_idx = 0;
+            self.review.pr_scroll_bars.scroll_view.cursor = 0;
+            self.review.pr_filter = .open;
         }
     }
 }
@@ -288,42 +311,42 @@ fn handlePrListEvent(
     key: vaxis.Key,
 ) anyerror!void {
     if (key.matches('f', .{})) {
-        self.pr_filter = switch (self.pr_filter) {
+        self.review.pr_filter = switch (self.review.pr_filter) {
             .open => .all,
             .all => .closed,
             .closed => .open,
         };
-        self.pr_scroll_bars.scroll_view.cursor = 0;
-        self.selected_pr_idx = 0;
+        self.review.pr_scroll_bars.scroll_view.cursor = 0;
+        self.review.selected_pr_idx = 0;
         rule_detail_panel.fetchSelectedPrDetail(self);
         ctx.consumeAndRedraw();
         return;
     }
 
     rule_detail_panel.syncPrWidgets(self);
-    if (self.pr_row_count == 0) {
+    if (self.review.pr_row_count == 0) {
         ctx.consumeEvent();
         return;
     }
 
-    const prev = self.pr_scroll_bars.scroll_view.cursor;
-    try self.pr_scroll_bars.scroll_view.handleEvent(ctx, event);
+    const prev = self.review.pr_scroll_bars.scroll_view.cursor;
+    try self.review.pr_scroll_bars.scroll_view.handleEvent(ctx, event);
 
-    var pos = @as(usize, @intCast(self.pr_scroll_bars.scroll_view.cursor));
-    if (pos >= self.pr_row_count) pos = if (self.pr_row_count > 0) self.pr_row_count - 1 else 0;
-    if (pos < self.pr_row_count and self.pr_indices[pos] == null) {
-        const moving_down = self.pr_scroll_bars.scroll_view.cursor > prev;
-        if (moving_down and pos + 1 < self.pr_row_count and self.pr_indices[pos + 1] != null) {
+    var pos = @as(usize, @intCast(self.review.pr_scroll_bars.scroll_view.cursor));
+    if (pos >= self.review.pr_row_count) pos = if (self.review.pr_row_count > 0) self.review.pr_row_count - 1 else 0;
+    if (pos < self.review.pr_row_count and self.review.pr_indices[pos] == null) {
+        const moving_down = self.review.pr_scroll_bars.scroll_view.cursor > prev;
+        if (moving_down and pos + 1 < self.review.pr_row_count and self.review.pr_indices[pos + 1] != null) {
             pos += 1;
         } else {
             pos = @intCast(prev);
         }
     }
-    self.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
-    if (pos < self.pr_row_count) {
-        if (self.pr_indices[pos]) |pr_idx| {
-            if (self.selected_pr_idx != pr_idx) {
-                self.selected_pr_idx = pr_idx;
+    self.review.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
+    if (pos < self.review.pr_row_count) {
+        if (self.review.pr_indices[pos]) |pr_idx| {
+            if (self.review.selected_pr_idx != pr_idx) {
+                self.review.selected_pr_idx = pr_idx;
                 rule_detail_panel.fetchSelectedPrDetail(self);
             }
         }
@@ -333,11 +356,11 @@ fn handlePrListEvent(
 pub fn syncLibraryWidgets(self: anytype) void {
     const rules = self.getRules();
     const bundles = self.getBundles();
-    const create_paths = self.drafts_create_rule_paths;
-    const filter_name: ?[]const u8 = if (self.library_bundle_filter == 0)
+    const create_paths = self.drafts.create_rule_paths;
+    const filter_name: ?[]const u8 = if (self.library.bundle_filter == 0)
         null
-    else if (self.library_bundle_filter - 1 < bundles.len)
-        bundles[self.library_bundle_filter - 1].name
+    else if (self.library.bundle_filter - 1 < bundles.len)
+        bundles[self.library.bundle_filter - 1].name
     else
         null;
 
@@ -366,26 +389,26 @@ pub fn syncLibraryWidgets(self: anytype) void {
         filtered_len += 1;
     }
 
-    self.library_tree.sync(self.api_state.allocator(), filtered_paths[0..filtered_len], filtered_orig[0..filtered_len]);
+    self.library.tree.sync(self.api_state.allocator(), filtered_paths[0..filtered_len], filtered_orig[0..filtered_len]);
 
-    const row_count = self.library_tree.rowCount();
+    const row_count = self.library.tree.rowCount();
     const selected_row: usize = if (row_count > 0)
-        @min(@as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor)), row_count - 1)
+        @min(@as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor)), row_count - 1)
     else
         0;
 
     var i: usize = 0;
     while (i < row_count) : (i += 1) {
-        const row_text = self.library_tree.rowText(i);
-        if (self.library_tree.dirPathAt(i) != null) {
+        const row_text = self.library.tree.rowText(i);
+        if (self.library.tree.dirPathAt(i) != null) {
             const row_sel = i == selected_row;
-            self.library_text_rows[i] = .{
+            self.library.text_rows[i] = .{
                 .text = row_text,
                 .style = theme.boldOn(theme.PANEL, if (row_sel) theme.TEXT else theme.TEXT_SOFT),
             };
-            self.library_widgets[i] = self.library_text_rows[i].widget();
+            self.library.widgets[i] = self.library.text_rows[i].widget();
         } else {
-            const orig_pidx = self.library_tree.leafIndexAt(i) orelse continue;
+            const orig_pidx = self.library.tree.leafIndexAt(i) orelse continue;
             const is_virtual = orig_pidx >= rules.len;
             const row_path: []const u8 = if (is_virtual) blk: {
                 const k = orig_pidx - rules.len;
@@ -406,29 +429,29 @@ pub fn syncLibraryWidgets(self: anytype) void {
             else
                 row_text;
             const row_style = w.draftRowStyle(row_sel, draft_status_opt);
-            self.library_table_cols[i] = .{
+            self.library.table_cols[i] = .{
                 .{ .text = labeled_text, .flex = 1 },
                 .{ .text = pr_label, .flex = 0, .min_width = 2, .alignment = .right },
             };
-            self.library_table_rows[i] = .{
-                .columns = &self.library_table_cols[i],
+            self.library.table_rows[i] = .{
+                .columns = &self.library.table_cols[i],
                 .style = row_style,
                 .gap = 2,
                 .padding_left = 0,
             };
-            self.library_widgets[i] = self.library_table_rows[i].widget();
+            self.library.widgets[i] = self.library.table_rows[i].widget();
         }
     }
-    self.library_scroll_bars.scroll_view.children = .{ .slice = self.library_widgets[0..row_count] };
-    self.library_scroll_bars.estimated_content_height = @intCast(row_count);
+    self.library.scroll_bars.scroll_view.children = .{ .slice = self.library.widgets[0..row_count] };
+    self.library.scroll_bars.estimated_content_height = @intCast(row_count);
 
-    var cur = @as(usize, @intCast(self.library_scroll_bars.scroll_view.cursor));
+    var cur = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
     if (cur >= row_count) cur = if (row_count > 0) row_count - 1 else 0;
-    self.library_scroll_bars.scroll_view.cursor = @intCast(cur);
-    clampScrollTop(&self.library_scroll_bars.scroll_view, row_count);
+    self.library.scroll_bars.scroll_view.cursor = @intCast(cur);
+    clampScrollTop(&self.library.scroll_bars.scroll_view, row_count);
     if (cur < row_count) {
-        if (self.library_tree.leafIndexAt(cur)) |pi| {
-            self.selected_rule = pi;
+        if (self.library.tree.leafIndexAt(cur)) |pi| {
+            self.library.selected_rule = pi;
         }
     }
 }

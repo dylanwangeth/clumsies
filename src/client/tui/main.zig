@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
-const Dashboard = @import("app.zig").Dashboard;
+const Shell = @import("shell.zig").Shell;
 const auth_mod = @import("../auth.zig");
 const api = @import("api.zig");
 const tasks = @import("tasks.zig");
@@ -42,7 +42,7 @@ pub fn run() !void {
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
 
-    var dashboard = Dashboard.init(&api_state, &app, &env_map);
+    var dashboard = Shell.init(&api_state, &app, &env_map);
     defer dashboard.deinit();
     try app.run(dashboard.widget(), .{});
 }

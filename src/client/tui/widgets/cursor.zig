@@ -90,7 +90,7 @@ pub fn initPlainScrollBars(background: vaxis.Color, wheel_scroll: u8) vxfw.Scrol
 //
 // TODO: Remove this workaround when libvaxis merges PR #256 and we
 // update the dependency. Re-enable draw_cursor in initCursorScrollBars
-// and delete the applyCursorOverlay calls in app.zig.
+// and delete the applyCursorOverlay calls in shell.zig.
 //
 // Constraints: Panel must have a 1-cell border (content starts at
 // col=1, row=1). Each ScrollView child must be exactly 1 row tall

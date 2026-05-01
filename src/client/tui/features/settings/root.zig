@@ -1,12 +1,37 @@
+//! Settings feature container. Renders account, organization, and token
+//! panes and handles settings-mode navigation.
+
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
-const theme = @import("../theme.zig");
-const w = @import("../widgets.zig");
-const data = @import("../models/view_types.zig");
+const theme = @import("../../theme.zig");
+const w = @import("../../widgets.zig");
+const data = @import("../../models/view_types.zig");
+
+pub const Tab = enum(u8) {
+    account,
+    organization,
+    token,
+
+    pub fn label(self: Tab) []const u8 {
+        return switch (self) {
+            .account => "Account",
+            .organization => "Organization",
+            .token => "Token",
+        };
+    }
+};
+
+pub const Focus = enum { sidebar, content };
+
+pub const State = struct {
+    tab: Tab = .account,
+    focus: Focus = .sidebar,
+    content_sel: usize = 0,
+};
 
 pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-    const SettingsTab = @TypeOf(self.settings_tab);
+    const SettingsTab = @TypeOf(self.settings.tab);
     const settings_tabs = [_]SettingsTab{ .account, .organization, .token };
 
     const size = ctx.max.size();
@@ -14,7 +39,7 @@ pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Erro
     w.fillSurface(&root, theme.PANEL);
 
     const sidebar_w: u16 = 18;
-    const sidebar_border = theme.focusBorder(self.settings_focus == .sidebar);
+    const sidebar_border = theme.focusBorder(self.settings.focus == .sidebar);
     var sidebar = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = sidebar_w, .height = size.height });
     w.fillSurface(&sidebar, theme.PANEL);
     w.drawBorder(&sidebar, sidebar_border, theme.PANEL);
@@ -22,7 +47,7 @@ pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Erro
 
     var row: u16 = 2;
     for (settings_tabs) |tab| {
-        const is_sel = tab == self.settings_tab;
+        const is_sel = tab == self.settings.tab;
         if (is_sel) {
             w.writeCursorMarker(&sidebar, 1, row);
         }
@@ -36,7 +61,7 @@ pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Erro
         .{ .width = content_w, .height = size.height },
         .{ .width = content_w, .height = size.height },
     );
-    const content = switch (self.settings_tab) {
+    const content = switch (self.settings.tab) {
         .account => try drawSettingsAccount(self, content_ctx),
         .organization => try drawSettingsOrg(self, content_ctx),
         .token => try drawSettingsToken(self, content_ctx),
@@ -49,28 +74,178 @@ pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Erro
     return root;
 }
 
-pub fn shiftSettingsTab(self: anytype, delta: i8) void {
-    const SettingsTab = @TypeOf(self.settings_tab);
-    const settings_tabs = [_]SettingsTab{ .account, .organization, .token };
-
-    const current: i8 = @intCast(@intFromEnum(self.settings_tab));
-    const count: i8 = @intCast(settings_tabs.len);
-    const next = @mod(current + delta + count, count);
-    self.settings_tab = @enumFromInt(@as(u8, @intCast(next)));
+pub fn handleEvent(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches(vaxis.Key.escape, .{})) {
+        self.show_settings = false;
+        self.settings.focus = .sidebar;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches(vaxis.Key.tab, .{})) {
+        self.settings.focus = if (self.settings.focus == .sidebar) .content else .sidebar;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (self.settings.focus == .sidebar) {
+        handleSidebarEvent(self, ctx, key);
+    } else {
+        handleContentEvent(self, ctx, key);
+    }
 }
 
-pub fn orgMemberCount(self: anytype) usize {
+fn shiftSettingsTab(self: anytype, delta: i8) void {
+    const SettingsTab = @TypeOf(self.settings.tab);
+    const settings_tabs = [_]SettingsTab{ .account, .organization, .token };
+
+    const current: i8 = @intCast(@intFromEnum(self.settings.tab));
+    const count: i8 = @intCast(settings_tabs.len);
+    const next = @mod(current + delta + count, count);
+    self.settings.tab = @enumFromInt(@as(u8, @intCast(next)));
+}
+
+fn orgMemberCount(self: anytype) usize {
     self.api_state.mutex.lock();
     defer self.api_state.mutex.unlock();
     if (self.api_state.directory) |dir| return dir.members.len;
     return 0;
 }
 
-pub fn accountWorkspaceCount(self: anytype) usize {
+fn accountWorkspaceCount(self: anytype) usize {
     self.api_state.mutex.lock();
     defer self.api_state.mutex.unlock();
     if (self.api_state.current_user) |u| return u.workspaces.len;
     return 0;
+}
+
+fn handleSidebarEvent(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+        shiftSettingsTab(self, 1);
+        self.settings.content_sel = 0;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+        shiftSettingsTab(self, -1);
+        self.settings.content_sel = 0;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches(vaxis.Key.enter, .{})) {
+        self.settings.focus = .content;
+        self.settings.content_sel = 0;
+        ctx.consumeAndRedraw();
+        return;
+    }
+}
+
+fn handleContentEvent(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches(vaxis.Key.escape, .{})) {
+        self.settings.focus = .sidebar;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    const max_items: usize = switch (self.settings.tab) {
+        .account => accountWorkspaceCount(self),
+        .organization => orgMemberCount(self),
+        .token => data.ALL_SCOPES.len,
+    };
+    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+        if (self.settings.content_sel + 1 < max_items)
+            self.settings.content_sel += 1;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+        if (self.settings.content_sel > 0)
+            self.settings.content_sel -= 1;
+        ctx.consumeAndRedraw();
+        return;
+    }
+
+    switch (self.settings.tab) {
+        .account => handleAccountAction(self, ctx, key),
+        .organization => handleOrganizationAction(self, ctx, key),
+        .token => handleTokenAction(self, ctx, key),
+    }
+}
+
+fn handleAccountAction(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches(vaxis.Key.enter, .{})) {
+        const ws_count = accountWorkspaceCount(self);
+        if (ws_count == 0) return;
+        const sel = @min(self.settings.content_sel, ws_count - 1);
+        self.selectWorkspaceIndex(sel);
+        self.show_settings = false;
+        self.settings.focus = .sidebar;
+        self.selected_module = .workspace;
+        self.workspace.focus = .list;
+        self.workspace.show_drawer = false;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('x', .{})) {
+        self.confirm_message = "sign out";
+        self.confirm_action = .remove_member;
+        self.show_confirm = true;
+        ctx.consumeAndRedraw();
+    }
+}
+
+fn handleOrganizationAction(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches('r', .{})) {
+        self.status_line = "Role change (requires input dialog)";
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('x', .{})) {
+        self.confirm_message = "selected member";
+        self.confirm_action = .remove_member;
+        self.show_confirm = true;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('a', .{})) {
+        self.status_line = "Invite member (requires input dialog)";
+        ctx.consumeAndRedraw();
+    }
+}
+
+fn handleTokenAction(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches('r', .{})) {
+        self.status_line = "Token refresh (not yet implemented)";
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('x', .{})) {
+        self.confirm_message = "current token";
+        self.confirm_action = .revoke_token;
+        self.show_confirm = true;
+        ctx.consumeAndRedraw();
+    }
 }
 
 fn settingsTabLabel(tab: anytype) []const u8 {
@@ -83,7 +258,7 @@ fn settingsTabLabel(tab: anytype) []const u8 {
 
 fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
     const size = ctx.max.size();
-    const focused = self.settings_focus == .content;
+    const focused = self.settings.focus == .content;
     const UserView = struct {
         user_id: []const u8,
         username: []const u8,
@@ -151,7 +326,7 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
         return surface;
     }
 
-    const sel = @min(self.settings_content_sel, user.workspaces.len - 1);
+    const sel = @min(self.settings.content_sel, user.workspaces.len - 1);
     for (user.workspaces, 0..) |ws_access, i| {
         if (row >= size.height -| 4) break;
         const is_sel = i == sel and focused;
@@ -198,14 +373,14 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
 
 fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
     const size = ctx.max.size();
-    const focused = self.settings_focus == .content;
+    const focused = self.settings.focus == .content;
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, theme.focusBorder(focused), theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Organization", theme.boldOn(theme.PANEL, theme.TEXT));
 
     var row: u16 = 2;
-    const sel = self.settings_content_sel;
+    const sel = self.settings.content_sel;
 
     self.api_state.mutex.lock();
     const live_dir = self.api_state.directory;
@@ -254,7 +429,7 @@ fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error
 
 fn drawSettingsToken(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
     const size = ctx.max.size();
-    const focused = self.settings_focus == .content;
+    const focused = self.settings.focus == .content;
     const live_scopes: ?[]const u8 = blk: {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
@@ -288,7 +463,7 @@ fn drawSettingsToken(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Err
     row += 1;
 
     row = w.writeSectionHeader(&surface, ctx, 2, row, "Scope Permissions");
-    const sel = @min(self.settings_content_sel, data.ALL_SCOPES.len - 1);
+    const sel = @min(self.settings.content_sel, data.ALL_SCOPES.len - 1);
     for (data.ALL_SCOPES, 0..) |scope_def, i| {
         if (row >= size.height -| 5) break;
         const is_sel = i == sel and focused;

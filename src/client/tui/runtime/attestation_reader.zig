@@ -1,4 +1,4 @@
-// Read local attestation logs and compute analysis stats.
+//! Read local attestation logs and compute analysis stats.
 const std = @import("std");
 const workspace_rule = @import("../../rule.zig");
 const data = @import("../models/view_types.zig");

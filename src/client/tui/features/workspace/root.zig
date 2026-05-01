@@ -1,15 +1,85 @@
+//! Workspace feature container. Owns workspace tree state, content detail
+//! rendering, drawer interaction, and workspace creation flow.
+
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
-const theme = @import("../theme.zig");
-const w = @import("../widgets.zig");
-const data = @import("../models/view_types.zig");
-const api = @import("../api.zig");
-const drafts_mod = @import("../../drafts.zig");
-const rule_detail = @import("rule_detail.zig");
+const theme = @import("../../theme.zig");
+const w = @import("../../widgets.zig");
+const data = @import("../../models/view_types.zig");
+const api = @import("../../api.zig");
+const drafts_mod = @import("../../../drafts.zig");
+const rule_detail = @import("../review/root.zig");
 const Modal = w.Modal;
+const TextInput = w.TextInput;
 
 const MAX_TREE_ROWS = 128;
+pub const PathTreeState = @import("../../models.zig").path_tree.State(MAX_TREE_ROWS, 96);
+
+pub const Tab = enum(u8) {
+    context,
+    rules,
+
+    pub fn label(self: Tab) []const u8 {
+        return switch (self) {
+            .context => "Context",
+            .rules => "Rules",
+        };
+    }
+};
+
+pub const tabs = [_]Tab{ .context, .rules };
+
+pub const Focus = enum { list, content };
+
+pub const State = struct {
+    tab: Tab = .context,
+    focus: Focus = .list,
+    sel: usize = 0,
+    show_drawer: bool = false,
+    drawer_cursor: usize = 0,
+    list_sel: usize = 0,
+    show_diff: bool = false,
+    list_scroll_bars: vxfw.ScrollBars,
+    context_tree: PathTreeState = .{},
+    rules_tree: PathTreeState = .{},
+    list_widgets: [MAX_TREE_ROWS]vxfw.Widget = undefined,
+    list_rows: [MAX_TREE_ROWS]vxfw.Text = undefined,
+    local_arena: std.heap.ArenaAllocator,
+    local_cache_id: ?[]const u8 = null,
+    local_detail: ?api.model.WsDetail = null,
+    local_load_failed: bool = false,
+
+    show_create: bool = false,
+    create_phase: CreateWsPhase = .form,
+    create_focus: CreateWsFocus = .name,
+    create_name_buf: [64]u8 = undefined,
+    create_name_len: usize = 0,
+    create_desc_buf: [256]u8 = undefined,
+    create_desc_len: usize = 0,
+    create_selected_bundle: ?usize = null,
+    create_bundle_cursor: usize = 0,
+    create_error_kind: CreateWsErrorKind = .none,
+    create_error_buf: [160]u8 = undefined,
+    create_error_len: usize = 0,
+    create_created_id_buf: [64]u8 = undefined,
+    create_created_id_len: usize = 0,
+    create_created_name_buf: [64]u8 = undefined,
+    create_created_name_len: usize = 0,
+
+    pub fn init(allocator: std.mem.Allocator) State {
+        return .{
+            .list_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .local_arena = std.heap.ArenaAllocator.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
+        self.local_arena.deinit();
+        self.context_tree.deinit(allocator);
+        self.rules_tree.deinit(allocator);
+    }
+};
 
 pub const CreateWsPhase = enum { form, submitting, success };
 
@@ -88,16 +158,16 @@ pub fn drawList(
     live_ws: ?api.model.WsDetail,
     lib_rules: []const data.RuleEntry,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const list_border = theme.focusBorder(self.ws_focus == .list);
+    const list_border = theme.focusBorder(self.workspace.focus == .list);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, list_border, theme.PANEL);
     const row_col: u16 = 2;
 
     var tab_col: u16 = 2;
-    const ws_tabs = [_]@TypeOf(self.ws_tab){ .context, .rules };
+    const ws_tabs = [_]@TypeOf(self.workspace.tab){ .context, .rules };
     for (ws_tabs) |tab| {
-        tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, wsTabLabel(tab), tab == self.ws_tab);
+        tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, wsTabLabel(tab), tab == self.workspace.tab);
         tab_col +|= 1;
     }
     const ws_label = try std.fmt.allocPrint(ctx.arena, "w {s}", .{self.activeWorkspaceName()});
@@ -108,7 +178,7 @@ pub fn drawList(
     const body_h: u16 = ctx.max.height.? -| body_origin_row -| 1;
     const body_w: u16 = ctx.max.width.? -| body_origin_col -| 1;
     if (ws_tree.rowCount() == 0) {
-        const empty_msg = if (self.activeWsId()) |ws_id| switch (self.ws_tab) {
+        const empty_msg = if (self.activeWsId()) |ws_id| switch (self.workspace.tab) {
             .context => if (self.api_state.ws_context_files_pending.isInflight())
                 "Loading context files..."
             else if (self.api_state.ws_context_files_cache.isFailed(.{ .value = ws_id }))
@@ -121,7 +191,7 @@ pub fn drawList(
                 "Workspace rules failed to load. Press r to retry."
             else
                 "No workspace rules.",
-        } else switch (self.ws_tab) {
+        } else switch (self.workspace.tab) {
             .context => "No context files.",
             .rules => "No workspace rules.",
         };
@@ -129,17 +199,17 @@ pub fn drawList(
         return surface;
     }
     syncListWidgets(self, ws_tree, live_ws, lib_rules);
-    self.ws_list_scroll_bars.scroll_view.draw_cursor = false;
-    defer self.ws_list_scroll_bars.scroll_view.draw_cursor = true;
+    self.workspace.list_scroll_bars.scroll_view.draw_cursor = false;
+    defer self.workspace.list_scroll_bars.scroll_view.draw_cursor = true;
     const body_ctx = ctx.withConstraints(
         .{ .width = body_w, .height = body_h },
         .{ .width = body_w, .height = body_h },
     );
-    const body = try self.ws_list_scroll_bars.widget().draw(body_ctx);
+    const body = try self.workspace.list_scroll_bars.widget().draw(body_ctx);
     const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
     children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
     surface.children = children;
-    writeCursorBar(&surface, &self.ws_list_scroll_bars.scroll_view, body_origin_row, body_h);
+    writeCursorBar(&surface, &self.workspace.list_scroll_bars.scroll_view, body_origin_row, body_h);
 
     return surface;
 }
@@ -150,7 +220,7 @@ pub fn drawDetail(
     args: DetailArgs,
 ) std.mem.Allocator.Error!vxfw.Surface {
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-    const content_border = theme.focusBorder(self.ws_focus == .content);
+    const content_border = theme.focusBorder(self.workspace.focus == .content);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, content_border, theme.PANEL);
 
@@ -161,7 +231,7 @@ pub fn drawDetail(
         return surface;
     }
 
-    const title: []const u8 = switch (self.ws_tab) {
+    const title: []const u8 = switch (self.workspace.tab) {
         .context => if (args.dir_sel != null) "Directory" else if (args.context_sel_id) |id| id else if (args.context_sel_path != null) "(new)" else "No context selected",
         .rules => if (args.dir_sel != null) "Directory" else if (args.rule_sel_id) |id| id else if (args.rule_sel_path != null) "(new)" else "No rule selected",
     };
@@ -170,7 +240,7 @@ pub fn drawDetail(
     // right-aligned metadata badge never overlaps the path.
     const title_w: u16 = @intCast(ctx.stringWidth(title));
     const meta_min_col: u16 = 2 + title_w + 2;
-    if (self.ws_show_diff) {
+    if (self.workspace.show_diff) {
         w.writeText(&surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
     } else if (args.dir_sel == null) if (args.live_ws) |ws_d| {
         try writeWsMetaOnHeader(&surface, ctx, meta_min_col, self, ws_d, args);
@@ -181,7 +251,7 @@ pub fn drawDetail(
     const kv_row: u16 = 2;
     const max_row = ctx.max.height.? -| 1;
 
-    switch (self.ws_tab) {
+    switch (self.workspace.tab) {
         .context => {
             if (args.dir_sel != null) {
                 try drawDirSelected(&surface, ctx, kv_row, max_row);
@@ -219,7 +289,7 @@ fn writeWsMetaOnHeader(
     ws_d: api.model.WsDetail,
     args: DetailArgs,
 ) !void {
-    switch (self.ws_tab) {
+    switch (self.workspace.tab) {
         .context => {
             if (args.context_sel) |idx| {
                 if (idx >= ws_d.context_files.len) return;
@@ -266,7 +336,7 @@ fn drawContextFileDetail(
     ws_d: ?api.model.WsDetail,
     path: []const u8,
 ) !void {
-    if (self.ws_show_diff) {
+    if (self.workspace.show_diff) {
         w.writeText(surface, ctx, 2, start_row, "No diff available", theme.fg(theme.MUTED));
         return;
     }
@@ -284,7 +354,7 @@ fn drawRuleFileDetail(
     max_row: u16,
     rule_path: []const u8,
 ) !void {
-    if (self.ws_show_diff) {
+    if (self.workspace.show_diff) {
         w.writeText(surface, ctx, 2, start_row, "No diff available", theme.fg(theme.MUTED));
         return;
     }
@@ -338,10 +408,10 @@ fn syncListWidgets(
 ) void {
     const row_count = @min(ws_tree.rowCount(), MAX_TREE_ROWS);
     for (0..row_count) |r| {
-        const sel = r == self.ws_list_sel;
+        const sel = r == self.workspace.list_sel;
         const rendered = ws_tree.rowText(r);
         if (ws_tree.dirPathAt(r) != null) {
-            self.ws_list_rows[r] = .{
+            self.workspace.list_rows[r] = .{
                 .text = rendered,
                 .style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.boldOn(theme.PANEL, theme.TEXT_SOFT),
                 .softwrap = false,
@@ -353,25 +423,25 @@ fn syncListWidgets(
                 std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{rendered}) catch rendered
             else
                 rendered;
-            self.ws_list_rows[r] = .{
+            self.workspace.list_rows[r] = .{
                 .text = text,
                 .style = row_style,
                 .softwrap = false,
             };
         }
-        self.ws_list_widgets[r] = self.ws_list_rows[r].widget();
+        self.workspace.list_widgets[r] = self.workspace.list_rows[r].widget();
     }
-    self.ws_list_scroll_bars.scroll_view.children = .{ .slice = self.ws_list_widgets[0..row_count] };
-    self.ws_list_scroll_bars.estimated_content_height = @intCast(row_count);
-    var cur = @as(usize, @intCast(self.ws_list_scroll_bars.scroll_view.cursor));
+    self.workspace.list_scroll_bars.scroll_view.children = .{ .slice = self.workspace.list_widgets[0..row_count] };
+    self.workspace.list_scroll_bars.estimated_content_height = @intCast(row_count);
+    var cur = @as(usize, @intCast(self.workspace.list_scroll_bars.scroll_view.cursor));
     if (row_count == 0) {
         cur = 0;
     } else if (cur >= row_count) {
         cur = row_count - 1;
     }
-    self.ws_list_scroll_bars.scroll_view.cursor = @intCast(cur);
-    clampScrollTop(&self.ws_list_scroll_bars.scroll_view, row_count);
-    self.ws_list_sel = cur;
+    self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(cur);
+    clampScrollTop(&self.workspace.list_scroll_bars.scroll_view, row_count);
+    self.workspace.list_sel = cur;
 }
 
 fn draftStatusForRow(
@@ -386,7 +456,7 @@ fn draftStatusForRow(
         category: drafts_mod.DraftCategory,
         path: []const u8,
     };
-    const marker_info: ?MarkerInfo = switch (self.ws_tab) {
+    const marker_info: ?MarkerInfo = switch (self.workspace.tab) {
         .context => inner: {
             const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
             if (live_ws) |ws_d| if (leaf < ws_d.context_files.len) {
@@ -397,10 +467,10 @@ fn draftStatusForRow(
             };
             if (leaf < context_count) break :inner null;
             const k = leaf - context_count;
-            if (k >= self.drafts_create_context_paths.len) break :inner null;
+            if (k >= self.drafts.create_context_paths.len) break :inner null;
             break :inner MarkerInfo{
                 .category = .context,
-                .path = self.drafts_create_context_paths[k],
+                .path = self.drafts.create_context_paths[k],
             };
         },
         .rules => inner: {
@@ -486,11 +556,11 @@ pub fn drawWorkspaceDrawer(
     if (workspaces.len == 0) {
         w.writeText(&body, ctx, 1, 1, "No workspaces.", theme.textOn(theme.PANEL_SOFT, theme.MUTED));
     } else {
-        if (self.workspace_drawer_cursor >= workspaces.len) self.workspace_drawer_cursor = workspaces.len - 1;
+        if (self.workspace.drawer_cursor >= workspaces.len) self.workspace.drawer_cursor = workspaces.len - 1;
         const max_rows: usize = @intCast(body_h);
         const visible_rows = if (max_rows > 2) max_rows - 2 else max_rows;
-        const start = if (self.workspace_drawer_cursor >= visible_rows)
-            self.workspace_drawer_cursor - visible_rows + 1
+        const start = if (self.workspace.drawer_cursor >= visible_rows)
+            self.workspace.drawer_cursor - visible_rows + 1
         else
             0;
         var out_row: u16 = 0;
@@ -500,8 +570,8 @@ pub fn drawWorkspaceDrawer(
             out_row += 1;
         }) {
             const entry = workspaces[i];
-            const is_cursor = i == self.workspace_drawer_cursor;
-            const is_active = i == self.ws_sel;
+            const is_cursor = i == self.workspace.drawer_cursor;
+            const is_active = i == self.workspace.sel;
             if (is_cursor) {
                 w.writeText(&body, ctx, 0, out_row, "\xe2\x96\x8c", theme.textOn(theme.PANEL_SOFT, theme.ACCENT_SOFT));
             }
@@ -533,23 +603,23 @@ pub fn handleWorkspaceDrawerKey(
 ) void {
     const count = self.wsCount();
     if (key.matches(vaxis.Key.escape, .{}) or key.matches('w', .{})) {
-        self.show_workspace_drawer = false;
+        self.workspace.show_drawer = false;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-        if (self.workspace_drawer_cursor + 1 < count) self.workspace_drawer_cursor += 1;
+        if (self.workspace.drawer_cursor + 1 < count) self.workspace.drawer_cursor += 1;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-        if (self.workspace_drawer_cursor > 0) self.workspace_drawer_cursor -= 1;
+        if (self.workspace.drawer_cursor > 0) self.workspace.drawer_cursor -= 1;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches(vaxis.Key.enter, .{})) {
         if (count > 0) {
-            self.selectWorkspaceIndex(self.workspace_drawer_cursor);
+            self.selectWorkspaceIndex(self.workspace.drawer_cursor);
         }
         ctx.consumeAndRedraw();
         return;
@@ -563,7 +633,7 @@ pub fn handleModuleEvent(
     key: vaxis.Key,
 ) anyerror!void {
     if (key.matches(vaxis.Key.tab, .{})) {
-        self.ws_focus = switch (self.ws_focus) {
+        self.workspace.focus = switch (self.workspace.focus) {
             .list => .content,
             .content => .list,
         };
@@ -572,31 +642,31 @@ pub fn handleModuleEvent(
     }
 
     if (key.matches('w', .{})) {
-        self.workspace_drawer_cursor = self.ws_sel;
-        self.show_workspace_drawer = true;
+        self.workspace.drawer_cursor = self.workspace.sel;
+        self.workspace.show_drawer = true;
         ctx.consumeAndRedraw();
         return;
     }
 
     if (key.matches('c', .{})) {
-        self.openCreateWorkspace();
+        openCreate(self);
         ctx.consumeAndRedraw();
         return;
     }
 
     if (key.matches(']', .{})) {
         self.shiftWsTab(1);
-        self.ws_list_sel = 0;
-        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
-        self.ws_show_diff = false;
+        self.workspace.list_sel = 0;
+        resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
+        self.workspace.show_diff = false;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('[', .{})) {
         self.shiftWsTab(-1);
-        self.ws_list_sel = 0;
-        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
-        self.ws_show_diff = false;
+        self.workspace.list_sel = 0;
+        resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
+        self.workspace.show_diff = false;
         ctx.consumeAndRedraw();
         return;
     }
@@ -605,7 +675,7 @@ pub fn handleModuleEvent(
     // (like Library's `n`) so both workspace focus modes can reach it.
     // Rules are org-owned — workspace does not create them, so `n` is
     // gated on the Context tab.
-    if (key.matches('n', .{}) and self.ws_tab == .context) {
+    if (key.matches('n', .{}) and self.workspace.tab == .context) {
         self.openNewDraftForm(.context);
         ctx.consumeAndRedraw();
         return;
@@ -620,7 +690,7 @@ pub fn handleModuleEvent(
         return;
     }
 
-    switch (self.ws_focus) {
+    switch (self.workspace.focus) {
         .list => try handleListFocusEvent(self, ctx, key),
         .content => try handleContentFocusEvent(self, ctx, key),
     }
@@ -652,25 +722,25 @@ fn handleListFocusEvent(
     const ws_tree = self.currentWsTree();
 
     if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-        if (ws_tree.dirPathAt(self.ws_list_sel)) |dir| {
+        if (ws_tree.dirPathAt(self.workspace.list_sel)) |dir| {
             if (ws_tree.collapseDir(dir)) {
-                self.ws_show_diff = false;
+                self.workspace.show_diff = false;
                 ctx.consumeAndRedraw();
                 return;
             }
         }
-        if (ws_tree.parentRow(self.ws_list_sel)) |parent| {
-            self.ws_list_sel = parent;
-            self.ws_show_diff = false;
+        if (ws_tree.parentRow(self.workspace.list_sel)) |parent| {
+            self.workspace.list_sel = parent;
+            self.workspace.show_diff = false;
             ctx.consumeAndRedraw();
             return;
         }
         return;
     }
     if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-        if (ws_tree.dirPathAt(self.ws_list_sel)) |dir| {
+        if (ws_tree.dirPathAt(self.workspace.list_sel)) |dir| {
             if (ws_tree.expandDir(self.api_state.allocator(), dir)) {
-                self.ws_show_diff = false;
+                self.workspace.show_diff = false;
                 ctx.consumeAndRedraw();
                 return;
             }
@@ -678,20 +748,20 @@ fn handleListFocusEvent(
         return;
     }
     if (key.matches(vaxis.Key.enter, .{})) {
-        if (ws_tree.dirPathAt(self.ws_list_sel)) |dir| {
+        if (ws_tree.dirPathAt(self.workspace.list_sel)) |dir| {
             ws_tree.toggleDir(self.api_state.allocator(), dir);
-            self.ws_show_diff = false;
+            self.workspace.show_diff = false;
             ctx.consumeAndRedraw();
             return;
         }
-        self.ws_focus = .content;
-        self.ws_show_diff = false;
+        self.workspace.focus = .content;
+        self.workspace.show_diff = false;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches(vaxis.Key.escape, .{})) {
-        self.workspace_drawer_cursor = self.ws_sel;
-        self.show_workspace_drawer = true;
+        self.workspace.drawer_cursor = self.workspace.sel;
+        self.workspace.show_drawer = true;
         ctx.consumeAndRedraw();
         return;
     }
@@ -699,13 +769,13 @@ fn handleListFocusEvent(
         ctx.consumeEvent();
         return;
     }
-    try self.ws_list_scroll_bars.scroll_view.handleEvent(ctx, .{ .key_press = key });
-    var pos = @as(usize, @intCast(self.ws_list_scroll_bars.scroll_view.cursor));
+    try self.workspace.list_scroll_bars.scroll_view.handleEvent(ctx, .{ .key_press = key });
+    var pos = @as(usize, @intCast(self.workspace.list_scroll_bars.scroll_view.cursor));
     if (pos >= ws_tree.rowCount()) pos = ws_tree.rowCount() - 1;
-    self.ws_list_scroll_bars.scroll_view.cursor = @intCast(pos);
-    self.ws_list_scroll_bars.scroll_view.ensureScroll();
-    self.ws_list_sel = pos;
-    self.ws_show_diff = false;
+    self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(pos);
+    self.workspace.list_scroll_bars.scroll_view.ensureScroll();
+    self.workspace.list_sel = pos;
+    self.workspace.show_diff = false;
 }
 
 fn handleContentFocusEvent(
@@ -714,12 +784,12 @@ fn handleContentFocusEvent(
     key: vaxis.Key,
 ) anyerror!void {
     if (key.matches(vaxis.Key.escape, .{})) {
-        self.ws_focus = .list;
+        self.workspace.focus = .list;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('d', .{})) {
-        self.ws_show_diff = !self.ws_show_diff;
+        self.workspace.show_diff = !self.workspace.show_diff;
         ctx.consumeAndRedraw();
         return;
     }
@@ -748,7 +818,7 @@ fn handleContentFocusEvent(
     // to the Library rule-detail pane. vxfw's ScrollView consumes
     // the ones it knows and ignores the rest, so this is safe as a
     // catch-all.
-    try self.content_view.handleEvent(ctx, .{ .key_press = key });
+    try self.review.content_view.handleEvent(ctx, .{ .key_press = key });
 }
 
 /// Trigger the workspace-detail compound fetch. Issues two dispatches
@@ -794,7 +864,7 @@ pub fn syncWsRows(self: anytype) void {
     var orig_idx: [MAX_TREE_ROWS]usize = undefined;
     var item_count: usize = 0;
 
-    switch (self.ws_tab) {
+    switch (self.workspace.tab) {
         .context => {
             const context_count = if (live_ws) |ws_d| @min(ws_d.context_files.len, MAX_TREE_ROWS) else 0;
             item_count = context_count;
@@ -808,7 +878,7 @@ pub fn syncWsRows(self: anytype) void {
             // Leaf index is offset by the live context count so
             // selectedDraftTarget can distinguish server rows from
             // create-only drafts.
-            const create_paths = self.drafts_create_context_paths;
+            const create_paths = self.drafts.create_context_paths;
             var k: usize = 0;
             while (k < create_paths.len and item_count < MAX_TREE_ROWS) : (k += 1) {
                 paths_buf[item_count] = create_paths[k];
@@ -840,12 +910,12 @@ pub fn syncWsRows(self: anytype) void {
     const ws_tree = self.currentWsTree();
     ws_tree.sync(self.api_state.allocator(), paths_buf[0..item_count], orig_idx[0..item_count]);
     if (ws_tree.rowCount() == 0) {
-        self.ws_list_sel = 0;
-        resetScrollView(&self.ws_list_scroll_bars.scroll_view);
-    } else if (self.ws_list_sel >= ws_tree.rowCount()) {
-        self.ws_list_sel = ws_tree.rowCount() - 1;
-        self.ws_list_scroll_bars.scroll_view.cursor = @intCast(self.ws_list_sel);
-        self.ws_list_scroll_bars.scroll_view.ensureScroll();
+        self.workspace.list_sel = 0;
+        resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
+    } else if (self.workspace.list_sel >= ws_tree.rowCount()) {
+        self.workspace.list_sel = ws_tree.rowCount() - 1;
+        self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(self.workspace.list_sel);
+        self.workspace.list_scroll_bars.scroll_view.ensureScroll();
     }
 }
 
@@ -878,34 +948,240 @@ pub fn drawCreateOverlay(
     self: anytype,
     ctx: vxfw.DrawContext,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    return switch (self.create_ws_phase) {
+    return switch (self.workspace.create_phase) {
         .form, .submitting => drawCreateForm(self, ctx),
         .success => drawCreateSuccess(self, ctx),
     };
 }
 
-pub fn resetCreate(self: anytype) void {
-    self.create_ws_phase = .form;
-    self.create_ws_focus = .name;
-    self.create_ws_name_len = 0;
-    self.create_ws_desc_len = 0;
-    self.create_ws_selected_bundle = null;
-    self.create_ws_bundle_cursor = 0;
-    self.create_ws_error_kind = .none;
-    self.create_ws_error_len = 0;
-    self.create_ws_created_id_len = 0;
-    self.create_ws_created_name_len = 0;
+fn resetCreate(self: anytype) void {
+    self.workspace.create_phase = .form;
+    self.workspace.create_focus = .name;
+    self.workspace.create_name_len = 0;
+    self.workspace.create_desc_len = 0;
+    self.workspace.create_selected_bundle = null;
+    self.workspace.create_bundle_cursor = 0;
+    self.workspace.create_error_kind = .none;
+    self.workspace.create_error_len = 0;
+    self.workspace.create_created_id_len = 0;
+    self.workspace.create_created_name_len = 0;
 }
 
-pub fn createBundleCount(self: anytype) usize {
+pub fn openCreate(self: anytype) void {
+    resetCreate(self);
+    self.workspace.show_create = true;
+}
+
+fn closeCreate(self: anytype) void {
+    self.workspace.show_create = false;
+    resetCreate(self);
+}
+
+pub fn handleCreateKey(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    switch (self.workspace.create_phase) {
+        .form => handleCreateFormKey(self, ctx, key),
+        .submitting => handleCreateSubmittingKey(self, ctx, key),
+        .success => handleCreateSuccessKey(self, ctx, key),
+    }
+}
+
+fn handleCreateFormKey(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches(vaxis.Key.escape, .{})) {
+        closeCreate(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
+
+    const bundles_n = createBundleCount(self);
+
+    if (key.matches(vaxis.Key.tab, .{})) {
+        self.workspace.create_focus = self.workspace.create_focus.next(bundles_n);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
+        self.workspace.create_focus = self.workspace.create_focus.prev(bundles_n);
+        ctx.consumeAndRedraw();
+        return;
+    }
+
+    switch (self.workspace.create_focus) {
+        .name => routeCreateTextInput(
+            self,
+            ctx,
+            key,
+            &self.workspace.create_name_buf,
+            &self.workspace.create_name_len,
+        ),
+        .description => routeCreateTextInput(
+            self,
+            ctx,
+            key,
+            &self.workspace.create_desc_buf,
+            &self.workspace.create_desc_len,
+        ),
+        .bundle => handleCreateBundleKey(self, ctx, key),
+        .submit => handleCreateSubmitKey(self, ctx, key),
+    }
+}
+
+fn routeCreateTextInput(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+    buf: []u8,
+    len: *usize,
+) void {
+    var input = TextInput{ .buf = buf, .len = len };
+    switch (input.handleKey(key)) {
+        .submit => {
+            const bundles_n = createBundleCount(self);
+            self.workspace.create_focus = self.workspace.create_focus.next(bundles_n);
+            ctx.consumeAndRedraw();
+        },
+        .consumed => {
+            self.workspace.create_error_kind = .none;
+            self.workspace.create_error_len = 0;
+            ctx.consumeAndRedraw();
+        },
+        .cancel, .ignored => ctx.consumeEvent(),
+    }
+}
+
+fn handleCreateBundleKey(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    const count = createBundleCount(self);
+    if (count == 0) {
+        ctx.consumeEvent();
+        return;
+    }
+    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+        if (self.workspace.create_bundle_cursor + 1 < count) self.workspace.create_bundle_cursor += 1;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+        if (self.workspace.create_bundle_cursor > 0) self.workspace.create_bundle_cursor -= 1;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches(' ', .{}) or key.matches(vaxis.Key.enter, .{})) {
+        if (self.workspace.create_selected_bundle) |idx| {
+            if (idx == self.workspace.create_bundle_cursor) {
+                self.workspace.create_selected_bundle = null;
+            } else {
+                self.workspace.create_selected_bundle = self.workspace.create_bundle_cursor;
+            }
+        } else {
+            self.workspace.create_selected_bundle = self.workspace.create_bundle_cursor;
+        }
+        ctx.consumeAndRedraw();
+        return;
+    }
+    ctx.consumeEvent();
+}
+
+fn handleCreateSubmitKey(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches(vaxis.Key.enter, .{}) or key.matches(' ', .{})) {
+        submitCreate(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    ctx.consumeEvent();
+}
+
+fn submitCreate(self: anytype) void {
+    const name = self.workspace.create_name_buf[0..self.workspace.create_name_len];
+    if (name.len == 0) {
+        setCreateNameRequired(self);
+        self.workspace.create_focus = .name;
+        return;
+    }
+
+    self.workspace.create_phase = .submitting;
+    self.workspace.create_error_kind = .none;
+    self.workspace.create_error_len = 0;
+
+    api.specs.dispatchFromState(
+        workspace_api.CreateWorkspaceRequest,
+        workspace_api.CreateWorkspaceResponse,
+        api.specs.create_workspace,
+        &self.api_state.create_ws_pending,
+        self.api_state,
+        .{
+            .name = name,
+            .bundle_id = createSelectedBundleName(self),
+        },
+    );
+}
+
+fn handleCreateSubmittingKey(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches(vaxis.Key.escape, .{})) {
+        // Abandon the in-flight result; the background thread can finish and
+        // consumeCreateResult will drop it because the overlay is closed.
+        closeCreate(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    ctx.consumeEvent();
+}
+
+fn handleCreateSuccessKey(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches(vaxis.Key.escape, .{})) {
+        closeCreate(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('c', .{})) {
+        copyCreateInitCommand(self);
+        self.status_line = "Copied clumsies init command to clipboard.";
+        ctx.consumeAndRedraw();
+        return;
+    }
+    ctx.consumeEvent();
+}
+
+pub fn consumeCreateResult(self: anytype) bool {
+    const result = self.api_state.create_ws_pending.consume() orelse return false;
+    if (!self.workspace.show_create or self.workspace.create_phase != .submitting) {
+        return false;
+    }
+    applyCreateResult(self, result);
+    return true;
+}
+
+fn createBundleCount(self: anytype) usize {
     self.api_state.mutex.lock();
     defer self.api_state.mutex.unlock();
     if (self.api_state.bundles) |list| return list.len;
     return 0;
 }
 
-pub fn createSelectedBundleName(self: anytype) ?[]const u8 {
-    const idx = self.create_ws_selected_bundle orelse return null;
+fn createSelectedBundleName(self: anytype) ?[]const u8 {
+    const idx = self.workspace.create_selected_bundle orelse return null;
     self.api_state.mutex.lock();
     defer self.api_state.mutex.unlock();
     const bundles = self.api_state.bundles orelse return null;
@@ -913,8 +1189,8 @@ pub fn createSelectedBundleName(self: anytype) ?[]const u8 {
     return bundles[idx].name;
 }
 
-pub fn setCreateNameRequired(self: anytype) void {
-    self.create_ws_error_kind = .name_required;
+fn setCreateNameRequired(self: anytype) void {
+    self.workspace.create_error_kind = .name_required;
     writeErrorMessage(self, "Name is required");
 }
 
@@ -926,44 +1202,44 @@ pub fn applyCreateResult(
 ) void {
     switch (result) {
         .ok => |resp| {
-            writeFixedBuf(&self.create_ws_created_id_buf, &self.create_ws_created_id_len, resp.ws_id);
-            writeFixedBuf(&self.create_ws_created_name_buf, &self.create_ws_created_name_len, resp.name);
-            self.create_ws_phase = .success;
-            self.create_ws_error_kind = .none;
-            self.create_ws_error_len = 0;
+            writeFixedBuf(&self.workspace.create_created_id_buf, &self.workspace.create_created_id_len, resp.ws_id);
+            writeFixedBuf(&self.workspace.create_created_name_buf, &self.workspace.create_created_name_len, resp.name);
+            self.workspace.create_phase = .success;
+            self.workspace.create_error_kind = .none;
+            self.workspace.create_error_len = 0;
             // Refresh the cached workspace list so the new workspace
             // appears in the grid once the background fetch completes.
             api.fetch.refetchAllAsync(self.api_state);
         },
         .api_error => |err| {
-            self.create_ws_phase = .form;
-            self.create_ws_error_kind = .api;
+            self.workspace.create_phase = .form;
+            self.workspace.create_error_kind = .api;
             writeErrorMessage(self, err.message);
-            if (err.status == .conflict) self.create_ws_focus = .name;
+            if (err.status == .conflict) self.workspace.create_focus = .name;
         },
         .network_error => {
-            self.create_ws_phase = .form;
-            self.create_ws_error_kind = .network;
+            self.workspace.create_phase = .form;
+            self.workspace.create_error_kind = .network;
             writeErrorMessage(self, "Network error. Check connection and retry.");
         },
         .invalid_response => {
-            self.create_ws_phase = .form;
-            self.create_ws_error_kind = .invalid_response;
+            self.workspace.create_phase = .form;
+            self.workspace.create_error_kind = .invalid_response;
             writeErrorMessage(self, "Unexpected response from Hub.");
         },
     }
 }
 
-pub fn copyCreateInitCommand(self: anytype) void {
+fn copyCreateInitCommand(self: anytype) void {
     const alloc = self.api_state.backing_allocator;
-    const id = self.create_ws_created_id_buf[0..self.create_ws_created_id_len];
+    const id = self.workspace.create_created_id_buf[0..self.workspace.create_created_id_len];
     const cmd = std.fmt.allocPrint(alloc, "clumsies init --ws-id {s}", .{id}) catch return;
     defer alloc.free(cmd);
     copyTextToClipboard(alloc, cmd);
 }
 
 fn writeErrorMessage(self: anytype, message: []const u8) void {
-    writeFixedBuf(&self.create_ws_error_buf, &self.create_ws_error_len, message);
+    writeFixedBuf(&self.workspace.create_error_buf, &self.workspace.create_error_len, message);
 }
 
 fn writeFixedBuf(buf: []u8, len: *usize, src: []const u8) void {
@@ -1001,7 +1277,7 @@ fn drawCreateForm(
     self: anytype,
     ctx: vxfw.DrawContext,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const footer = if (self.create_ws_phase == .submitting)
+    const footer = if (self.workspace.create_phase == .submitting)
         "Submitting... Esc to cancel"
     else
         "Tab next  Enter advance  Space toggle bundle  Esc cancel";
@@ -1027,10 +1303,10 @@ fn drawCreateForm(
         c0,
         row,
         "Name *",
-        self.create_ws_name_buf[0..self.create_ws_name_len],
+        self.workspace.create_name_buf[0..self.workspace.create_name_len],
         label_w,
     );
-    if (self.create_ws_focus == .name) w.writeCursorMarker(&surface, c0 - 1, row - 1);
+    if (self.workspace.create_focus == .name) w.writeCursorMarker(&surface, c0 - 1, row - 1);
     row += 1;
 
     row = w.writeKv(
@@ -1039,10 +1315,10 @@ fn drawCreateForm(
         c0,
         row,
         "Description",
-        self.create_ws_desc_buf[0..self.create_ws_desc_len],
+        self.workspace.create_desc_buf[0..self.workspace.create_desc_len],
         label_w,
     );
-    if (self.create_ws_focus == .description) w.writeCursorMarker(&surface, c0 - 1, row - 1);
+    if (self.workspace.create_focus == .description) w.writeCursorMarker(&surface, c0 - 1, row - 1);
     row += 1;
 
     w.writeText(&surface, ctx, c0, row, "Bundle", theme.textOn(bg, theme.MUTED));
@@ -1058,8 +1334,8 @@ fn drawCreateForm(
     drawCreateBundleList(self, &surface, ctx, c0, row, CREATE_BOX_W - 4, 8, bg);
     row += 9;
 
-    const focused = self.create_ws_focus == .submit;
-    const button_label = if (self.create_ws_phase == .submitting)
+    const focused = self.workspace.create_focus == .submit;
+    const button_label = if (self.workspace.create_phase == .submitting)
         "[ Submitting... ]"
     else
         "[ Create Workspace ]";
@@ -1069,9 +1345,9 @@ fn drawCreateForm(
         theme.boldOn(theme.PANEL_SOFT, theme.TEXT);
     w.writeText(&surface, ctx, c0, row, button_label, button_style);
 
-    if (self.create_ws_error_kind != .none) {
+    if (self.workspace.create_error_kind != .none) {
         const err_row = r0 + CREATE_FORM_BOX_H - 4;
-        const err_text = self.create_ws_error_buf[0..self.create_ws_error_len];
+        const err_text = self.workspace.create_error_buf[0..self.workspace.create_error_len];
         w.writeText(&surface, ctx, c0, err_row, err_text, theme.textOn(bg, theme.DANGER));
     }
 
@@ -1093,7 +1369,7 @@ fn drawCreateBundleList(
     const bundles_opt = self.api_state.bundles;
     self.api_state.mutex.unlock();
 
-    const list_focused = self.create_ws_focus == .bundle;
+    const list_focused = self.workspace.create_focus == .bundle;
 
     const bundles = bundles_opt orelse {
         w.writeText(surface, ctx, col + 2, row + 1, "(loading bundles...)", theme.textOn(bg, theme.MUTED));
@@ -1105,7 +1381,7 @@ fn drawCreateBundleList(
     }
 
     const visible_rows: u16 = height - 2;
-    const cursor = self.create_ws_bundle_cursor;
+    const cursor = self.workspace.create_bundle_cursor;
     const scroll_start: usize = if (cursor >= visible_rows) cursor - visible_rows + 1 else 0;
     const end: usize = @min(bundles.len, scroll_start + @as(usize, visible_rows));
 
@@ -1113,8 +1389,8 @@ fn drawCreateBundleList(
     while (i < end) : (i += 1) {
         const b = bundles[i];
         const is_cursor = i == cursor;
-        const is_selected = self.create_ws_selected_bundle != null and
-            self.create_ws_selected_bundle.? == i;
+        const is_selected = self.workspace.create_selected_bundle != null and
+            self.workspace.create_selected_bundle.? == i;
         const marker: []const u8 = if (is_selected) "\xe2\x97\x8f " else "  ";
 
         const text = std.fmt.allocPrint(
@@ -1153,8 +1429,8 @@ fn drawCreateSuccess(
     const bg = theme.PANEL_ALT;
 
     var row: u16 = r0;
-    const ws_id = self.create_ws_created_id_buf[0..self.create_ws_created_id_len];
-    const ws_name = self.create_ws_created_name_buf[0..self.create_ws_created_name_len];
+    const ws_id = self.workspace.create_created_id_buf[0..self.workspace.create_created_id_len];
+    const ws_name = self.workspace.create_created_name_buf[0..self.workspace.create_created_name_len];
 
     row = w.writeKv(&surface, ctx, c0, row, "ws_id", ws_id, 10);
     row = w.writeKv(&surface, ctx, c0, row, "name", ws_name, 10);

@@ -158,7 +158,7 @@ pub fn main() !void {
                     try tui.run();
                 } else {
                     try stdout_writer.print("{s}{s}{s}clumsies{s} {s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, version });
-                    try stdout_writer.print("TUI Dashboard requires an interactive terminal.\n\n", .{});
+                    try stdout_writer.print("TUI Shell requires an interactive terminal.\n\n", .{});
                     try cmd_help.run(stdout_writer);
                 }
             }
@@ -237,10 +237,25 @@ test {
     _ = @import("tui/api/parse.zig");
     _ = @import("tui/api/request.zig");
     _ = @import("tui/api/view_model.zig");
-    _ = @import("tui/app/workspace.zig");
+    _ = @import("tui/api.zig");
+    _ = @import("tui/features.zig");
+    _ = @import("tui/features/analysis/root.zig");
+    _ = @import("tui/features/dashboard/root.zig");
+    _ = @import("tui/features/drafts/root.zig");
+    _ = @import("tui/features/library/root.zig");
+    _ = @import("tui/features/review/root.zig");
+    _ = @import("tui/features/settings/root.zig");
+    _ = @import("tui/features/workspace/root.zig");
+    _ = @import("tui/main.zig");
+    _ = @import("tui/models.zig");
+    _ = @import("tui/models/view_types.zig");
+    _ = @import("tui/runtime.zig");
+    _ = @import("tui/runtime/drafts_reader.zig");
     _ = @import("tui/runtime/editor_host.zig");
     _ = @import("tui/runtime/attestation_reader.zig");
     _ = @import("tui/models/path_tree.zig");
+    _ = @import("tui/shell.zig");
+    _ = @import("tui/tasks.zig");
     _ = @import("tui/tasks/attestation_upload.zig");
     _ = @import("tui/widgets.zig");
     _ = @import("tui/widgets/diff_viewer.zig");
