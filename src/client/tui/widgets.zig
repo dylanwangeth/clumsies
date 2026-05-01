@@ -18,6 +18,7 @@ const system_notice = @import("widgets/system_notice.zig");
 const table_row = @import("widgets/table_row.zig");
 const surface_size = @import("widgets/surface_size.zig");
 const diff_viewer = @import("widgets/diff_viewer.zig");
+const shortcut_bar = @import("widgets/shortcut_bar.zig");
 
 pub const fillSurface = draw.fillSurface;
 pub const paintBand = draw.paintBand;
@@ -73,6 +74,9 @@ pub const TableRow = table_row.TableRow;
 pub const Column = table_row.Column;
 pub const sanitizeSurfaceSize = surface_size.sanitize;
 pub const computeDiffLines = diff_viewer.computeDiffLines;
+pub const Shortcut = shortcut_bar.Shortcut;
+pub const ShortcutBarOptions = shortcut_bar.Options;
+pub const drawShortcutBar = shortcut_bar.drawInline;
 
 pub fn countLines(text: []const u8) usize {
     if (text.len == 0) return 0;
@@ -153,4 +157,5 @@ test {
     _ = @import("widgets/diff_viewer.zig");
     _ = @import("widgets/content_view.zig");
     _ = @import("widgets/system_notice.zig");
+    _ = @import("widgets/shortcut_bar.zig");
 }

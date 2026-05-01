@@ -457,6 +457,30 @@ pub fn handleModuleEvent(
     }
 }
 
+pub fn shortcuts(self: anytype) []const w.Shortcut {
+    return switch (self.analysis.focus) {
+        .rules => &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "expand" },
+            .{ .key = "Tab", .label = "switch focus" },
+            .{ .key = "?", .label = "help" },
+            .{ .key = "q", .label = "quit" },
+        },
+        .members => &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "show detail" },
+            .{ .key = "Tab", .label = "switch focus" },
+            .{ .key = "?", .label = "help" },
+            .{ .key = "q", .label = "quit" },
+        },
+        else => &.{
+            .{ .key = "Tab", .label = "switch focus" },
+            .{ .key = "?", .label = "help" },
+            .{ .key = "q", .label = "quit" },
+        },
+    };
+}
+
 const TrendSummaryKind = enum {
     up,
     down,

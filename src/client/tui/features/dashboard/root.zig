@@ -519,6 +519,29 @@ pub fn handleModuleEvent(
     }
 }
 
+pub fn shortcuts(self: anytype) []const w.Shortcut {
+    return switch (self.analysis.focus) {
+        .chart => &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "expand" },
+            .{ .key = "Tab", .label = "switch focus" },
+            .{ .key = "?", .label = "help" },
+            .{ .key = "q", .label = "quit" },
+        },
+        .inputs => &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Tab", .label = "switch focus" },
+            .{ .key = "?", .label = "help" },
+            .{ .key = "q", .label = "quit" },
+        },
+        else => &.{
+            .{ .key = "Tab", .label = "switch focus" },
+            .{ .key = "?", .label = "help" },
+            .{ .key = "q", .label = "quit" },
+        },
+    };
+}
+
 fn resetChainExpansion(self: anytype) void {
     @memset(self.dashboard.chain_expanded_items[0..], false);
 }

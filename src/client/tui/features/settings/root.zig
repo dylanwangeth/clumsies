@@ -97,6 +97,37 @@ pub fn handleEvent(
     }
 }
 
+pub fn shortcuts(self: anytype) []const w.Shortcut {
+    if (self.settings.focus == .sidebar) return &.{
+        .{ .key = "j/k", .label = "move" },
+        .{ .key = "Enter", .label = "open" },
+        .{ .key = "Tab", .label = "switch focus" },
+        .{ .key = "Esc", .label = "close" },
+    };
+    return switch (self.settings.tab) {
+        .account => &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "switch ws" },
+            .{ .key = "c", .label = "change password" },
+            .{ .key = "x", .label = "sign out" },
+            .{ .key = "Esc", .label = "back" },
+        },
+        .organization => &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "a", .label = "invite" },
+            .{ .key = "r", .label = "change role" },
+            .{ .key = "x", .label = "remove" },
+            .{ .key = "Esc", .label = "back" },
+        },
+        .token => &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "r", .label = "refresh" },
+            .{ .key = "x", .label = "revoke" },
+            .{ .key = "Esc", .label = "back" },
+        },
+    };
+}
+
 fn shiftSettingsTab(self: anytype, delta: i8) void {
     const SettingsTab = @TypeOf(self.settings.tab);
     const settings_tabs = [_]SettingsTab{ .account, .organization, .token };
@@ -203,6 +234,11 @@ fn handleAccountAction(
         self.confirm_message = "sign out";
         self.confirm_action = .remove_member;
         self.show_confirm = true;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('c', .{})) {
+        self.status_line = "Password change (requires input dialog)";
         ctx.consumeAndRedraw();
     }
 }

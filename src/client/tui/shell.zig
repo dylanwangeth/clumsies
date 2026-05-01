@@ -26,6 +26,10 @@ const editor_host = runtime.editor_host;
 const attestation_reader = runtime.attestation_reader;
 const Modal = w.Modal;
 
+const WORKSPACE_DRAWER_WIDTH: u16 = 44;
+const HELP_DRAWER_WIDTH: u16 = WORKSPACE_DRAWER_WIDTH;
+const DRAWER_SIDE_MARGIN: u16 = 6;
+
 const ConfirmAction = enum {
     none,
     remove_member,
@@ -210,7 +214,7 @@ pub const Shell = struct {
                     return;
                 }
 
-                // Help overlay absorbs all keys
+                // Help drawer absorbs all keys
                 if (self.show_help) {
                     if (key.matches(vaxis.Key.escape, .{}) or key.matches('?', .{})) {
                         self.show_help = false;
@@ -414,12 +418,30 @@ pub const Shell = struct {
         var child_idx: usize = 3;
 
         if (self.show_help) {
-            const help_ctx = ctx.withConstraints(
-                .{ .width = size.width, .height = size.height },
-                .{ .width = size.width, .height = size.height },
-            );
-            children[child_idx] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHelpOverlay(help_ctx) };
-            child_idx += 1;
+            const drawer_w: u16 = @min(HELP_DRAWER_WIDTH, size.width -| DRAWER_SIDE_MARGIN);
+            const drawer_top: u16 = header_band_h;
+            if (drawer_w >= w.Drawer.min_child_width and size.height > drawer_top) {
+                const drawer_h: u16 = size.height - drawer_top;
+                const help_ctx = ctx.withConstraints(
+                    .{ .width = drawer_w, .height = drawer_h },
+                    .{ .width = drawer_w, .height = drawer_h },
+                );
+                children[child_idx] = .{
+                    .origin = .{ .row = drawer_top, .col = size.width - drawer_w },
+                    .surface = try self.drawHelpDrawer(help_ctx),
+                };
+                child_idx += 1;
+            } else {
+                const help_ctx = ctx.withConstraints(
+                    .{ .width = size.width, .height = size.height },
+                    .{ .width = size.width, .height = size.height },
+                );
+                children[child_idx] = .{
+                    .origin = .{ .row = 0, .col = 0 },
+                    .surface = try self.drawHelpDrawer(help_ctx),
+                };
+                child_idx += 1;
+            }
         }
         if (self.show_confirm) {
             const confirm_ctx = ctx.withConstraints(
@@ -475,7 +497,7 @@ pub const Shell = struct {
             child_idx += 1;
         }
         if (show_workspace_drawer) {
-            const drawer_w: u16 = @min(@as(u16, 44), size.width -| 6);
+            const drawer_w: u16 = @min(WORKSPACE_DRAWER_WIDTH, size.width -| DRAWER_SIDE_MARGIN);
             const drawer_top: u16 = 1;
             if (drawer_w > 0 and size.height > drawer_top) {
                 const drawer_h: u16 = size.height - drawer_top;
@@ -578,52 +600,17 @@ pub const Shell = struct {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
 
-        const keys = if (self.show_help)
-            "Esc close help"
-        else if (self.show_confirm)
-            "y confirm  n cancel  Esc cancel"
-        else if (self.show_settings and self.settings.focus == .sidebar)
-            "j/k section  Enter open  Tab focus  Esc close"
-        else if (self.show_settings and self.settings.tab == .account)
-            "j/k move  Enter go to workspace  x sign out  Esc back"
-        else if (self.show_settings and self.settings.tab == .organization)
-            "j/k move  a invite  r role  x remove  Esc back"
-        else if (self.show_settings and self.settings.tab == .token)
-            "j/k move  r refresh  x revoke  Esc back"
-        else if (self.show_settings)
-            "j/k move  Esc back"
-        else if (self.review.show_comment_editor)
-            "Enter send  Esc cancel"
-        else if (self.workspace.show_drawer)
-            "j/k move  Enter switch  Esc close"
-        else switch (self.selected_module) {
-            .dashboard => switch (self.analysis.focus) {
-                .chart => "j/k trail  Enter expand  Tab focus  ? help  q quit",
-                .inputs => "j/k move  Tab focus  ? help  q quit",
-                else => "Tab focus  ? help  q quit",
-            },
-            .library => if (self.review.detail_focus_content and self.review.detail_tab == .pull_requests)
-                "j/k scroll  a accept  x reject  c comment  Esc list  ? help"
-            else if (self.review.detail_focus_content)
-                "y copy id  e edit  D discard  m ready  j/k scroll  Esc list"
-            else if (self.review.detail_tab == .pull_requests)
-                "j/k move  f filter  [/] tab  Tab detail  r refresh  ? help  q quit"
-            else
-                "j/k move  y copy id  n new  [/] tab  Enter detail  r refresh  b bundle  ? help  q quit",
-            .workspace => switch (self.workspace.focus) {
-                .list => if (self.workspace.tab == .context)
-                    "w workspaces  [/] tab  j/k move  h/l tree  y copy id  Enter open  n new file  c create ws  ? help"
-                else
-                    "w workspaces  [/] tab  j/k move  h/l tree  y copy id  Enter open  c create ws  ? help",
-                .content => "y copy id  j/k scroll  d toggle diff  e edit  D discard  m ready  p submit  Esc list  ? help",
-            },
-            .analysis => switch (self.analysis.focus) {
-                .rules => "j/k move  Enter expand  Tab focus  ? help  q quit",
-                .members => "j/k move  Enter detail  Tab focus  ? help  q quit",
-                else => "Tab focus  ? help  q quit",
-            },
-        };
-        w.writeText(&surface, ctx, 1, 0, keys, theme.fg(theme.MUTED));
+        var shortcuts_max_col = surface.size.width;
+        if (self.visibleFooterStatus()) |label| {
+            const sw: u16 = @intCast(ctx.stringWidth(label));
+            if (ctx.max.width) |max_w| {
+                if (sw + 2 < max_w) {
+                    const status_col = max_w - sw - 1;
+                    shortcuts_max_col = @min(shortcuts_max_col, status_col -| 2);
+                    w.writeText(&surface, ctx, status_col, 0, label, theme.fg(theme.ACCENT_SOFT));
+                }
+            }
+        }
 
         if (self.drafts.total > 0) {
             const counter = std.fmt.allocPrint(
@@ -631,22 +618,93 @@ pub const Shell = struct {
                 "drafts: {d} ({d} ready)",
                 .{ self.drafts.total, self.drafts.ready },
             ) catch "";
-            if (counter.len > 0) {
-                const keys_w: u16 = @intCast(ctx.stringWidth(keys));
-                w.writeText(&surface, ctx, 2 + keys_w + 2, 0, counter, theme.fg(theme.ACCENT));
+            const counter_w: u16 = @intCast(ctx.stringWidth(counter));
+            if (counter.len > 0 and counter_w + 2 < shortcuts_max_col) {
+                const counter_col = shortcuts_max_col - counter_w - 1;
+                shortcuts_max_col = counter_col -| 2;
+                w.writeText(&surface, ctx, counter_col, 0, counter, theme.fg(theme.ACCENT));
             }
         }
 
-        if (self.visibleFooterStatus()) |label| {
-            const sw: u16 = @intCast(ctx.stringWidth(label));
-            if (ctx.max.width) |max_w| {
-                if (sw + 2 < max_w) {
-                    w.writeText(&surface, ctx, max_w - sw - 1, 0, label, theme.fg(theme.ACCENT_SOFT));
-                }
-            }
-        }
+        _ = w.drawShortcutBar(&surface, ctx, try self.footerShortcuts(ctx.arena), .{
+            .row = 0,
+            .col = 1,
+            .max_col = shortcuts_max_col,
+        });
 
         return surface;
+    }
+
+    fn footerShortcuts(self: *Shell, arena: std.mem.Allocator) std.mem.Allocator.Error![]const w.Shortcut {
+        if (self.show_confirm or self.review.show_comment_editor or self.workspace.show_drawer) {
+            return self.contextShortcuts();
+        }
+        return filteredFooterShortcuts(arena, self.contextShortcuts());
+    }
+
+    fn contextShortcuts(self: *Shell) []const w.Shortcut {
+        if (self.show_confirm) return &.{
+            .{ .key = "y", .label = "confirm" },
+            .{ .key = "n", .label = "cancel" },
+            .{ .key = "Esc", .label = "cancel" },
+        };
+        if (self.show_settings) return settings_panel.shortcuts(self);
+        if (self.review.show_comment_editor) return &.{
+            .{ .key = "Enter", .label = "send" },
+            .{ .key = "Esc", .label = "cancel" },
+        };
+        if (self.workspace.show_drawer) return &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "switch" },
+            .{ .key = "w", .label = "close" },
+            .{ .key = "Esc", .label = "close" },
+        };
+
+        return switch (self.selected_module) {
+            .dashboard => dashboard_panel.shortcuts(self),
+            .library => library_panel.shortcuts(self),
+            .workspace => workspace_panel.shortcuts(self),
+            .analysis => analysis_panel.shortcuts(self),
+        };
+    }
+
+    fn filteredFooterShortcuts(
+        arena: std.mem.Allocator,
+        shortcuts: []const w.Shortcut,
+    ) std.mem.Allocator.Error![]const w.Shortcut {
+        var visible_count: usize = 0;
+        var has_help = false;
+        for (shortcuts) |shortcut| {
+            if (std.mem.eql(u8, shortcut.key, "?")) {
+                has_help = true;
+                visible_count += 1;
+            } else if (!isCommonShortcutKey(shortcut.key)) {
+                visible_count += 1;
+            }
+        }
+        if (!has_help) visible_count += 1;
+
+        const out = try arena.alloc(w.Shortcut, visible_count);
+        var idx: usize = 0;
+        for (shortcuts) |shortcut| {
+            if (std.mem.eql(u8, shortcut.key, "?") or !isCommonShortcutKey(shortcut.key)) {
+                out[idx] = shortcut;
+                idx += 1;
+            }
+        }
+        if (!has_help) {
+            out[idx] = .{ .key = "?", .label = "help" };
+        }
+        return out;
+    }
+
+    fn isCommonShortcutKey(key: []const u8) bool {
+        return std.mem.eql(u8, key, "j/k") or
+            std.mem.eql(u8, key, "h/l") or
+            std.mem.eql(u8, key, "Enter") or
+            std.mem.eql(u8, key, "Tab") or
+            std.mem.eql(u8, key, "Esc") or
+            std.mem.eql(u8, key, "q");
     }
 
     fn visibleFooterStatus(self: *Shell) ?[]const u8 {
@@ -1773,33 +1831,142 @@ pub const Shell = struct {
         };
     }
 
-    fn drawHelpOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const modal = Modal{ .title = "Keyboard Reference", .box_width = 52, .box_height = 19 };
-        const result = try modal.draw(ctx, self.widget());
-        var surface = result.surface;
-        const col = result.content_col;
-        const row = result.content_row;
-
-        const lines = [_][]const u8{
-            "1-4            Switch top-level module",
-            "j / \xe2\x86\x93           Move down / next row",
-            "k / \xe2\x86\x91           Move up / previous row",
-            "h / \xe2\x86\x90           Previous tab / region",
-            "l / \xe2\x86\x92           Next tab / region",
-            "Enter          Open selected / confirm",
-            "Esc            Back / close overlay",
-            "g              Jump to first row",
-            "G              Jump to last row",
-            "r              Refresh / sync",
-            "w              Shell scope",
-            "?              Toggle this help",
-            "q / Ctrl+C     Quit",
-        };
-        for (lines, 0..) |line, i| {
-            w.writeText(&surface, ctx, col, @intCast(row + i), line, theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT));
+    fn drawHelpDrawer(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        if (size.width < w.Drawer.min_child_width or size.height < w.Drawer.min_child_height) {
+            var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+            w.fillSurface(&surface, theme.PANEL_SOFT);
+            return surface;
         }
 
-        return surface;
+        const body_w = size.width - w.Drawer.child_origin_col;
+        const body_h = size.height - w.Drawer.child_origin_row;
+        var body = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = body_w, .height = body_h });
+        w.fillSurface(&body, theme.PANEL_SOFT);
+
+        var row: u16 = 0;
+        row = self.drawHelpSection(&body, ctx, row, "Navigation", &.{
+            .{ .key = "j/k", .label = "move the active cursor or selection" },
+            .{ .key = "\xe2\x86\x91/\xe2\x86\x93", .label = "same as j/k in lists and tables" },
+            .{ .key = "h/l", .label = "switch inner tabs when a panel has them" },
+            .{ .key = "Tab", .label = "switch focus between panels or regions" },
+            .{ .key = "Enter", .label = "open, toggle, or confirm the selected item" },
+            .{ .key = "Esc", .label = "go back, close a drawer, or leave detail focus" },
+        });
+        if (row < body_h) row += 1;
+        row = self.drawHelpSection(&body, ctx, row, "Application", &.{
+            .{ .key = "1-4", .label = "switch the top-level module" },
+            .{ .key = "S", .label = "open settings" },
+            .{ .key = "?", .label = "open or close this help drawer" },
+            .{ .key = "q", .label = "open quit confirmation" },
+            .{ .key = "Ctrl+C", .label = "quit immediately" },
+        });
+
+        const drawer = w.Drawer{
+            .title = "Keyboard Reference",
+            .border_color = theme.ACCENT_SOFT,
+            .background = theme.PANEL_SOFT,
+            .body = body,
+        };
+        return drawer.draw(ctx, self.widget());
+    }
+
+    fn drawHelpSection(
+        self: *Shell,
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        start_row: u16,
+        title: []const u8,
+        shortcuts: []const w.Shortcut,
+    ) u16 {
+        _ = self;
+        var row = start_row;
+        if (row >= surface.size.height) return row;
+        w.writeText(surface, ctx, 0, row, title, theme.boldOn(theme.PANEL_SOFT, theme.TEXT));
+        row += 1;
+
+        const key_col_width = helpKeyColumnWidth(ctx, shortcuts);
+        for (shortcuts) |shortcut| {
+            if (row >= surface.size.height) break;
+            row = drawHelpShortcut(surface, ctx, row, shortcut, key_col_width);
+        }
+        return row;
+    }
+
+    fn helpKeyColumnWidth(ctx: vxfw.DrawContext, shortcuts: []const w.Shortcut) u16 {
+        var width: u16 = 0;
+        for (shortcuts) |shortcut| {
+            width = @max(width, @as(u16, @intCast(ctx.stringWidth(shortcut.key))));
+        }
+        return width;
+    }
+
+    fn drawHelpShortcut(
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        row: u16,
+        shortcut: w.Shortcut,
+        key_col_width: u16,
+    ) u16 {
+        if (row >= surface.size.height) return row;
+        const key_style = theme.boldOn(theme.PANEL_SOFT, theme.ACCENT_SOFT);
+        w.writeText(surface, ctx, 0, row, shortcut.key, key_style);
+
+        const label_col = key_col_width + 3;
+        if (label_col >= surface.size.width) return row + 1;
+        return drawWrappedHelpLabel(surface, ctx, row, label_col, shortcut.label);
+    }
+
+    fn drawWrappedHelpLabel(
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        start_row: u16,
+        col: u16,
+        text: []const u8,
+    ) u16 {
+        const max_width = surface.size.width - col;
+        if (max_width == 0) return start_row + 1;
+
+        var row = start_row;
+        var rest = text;
+        while (rest.len > 0 and row < surface.size.height) : (row += 1) {
+            const line_len = wrappedLineLen(ctx, rest, max_width);
+            w.writeText(
+                surface,
+                ctx,
+                col,
+                row,
+                rest[0..line_len],
+                theme.textOn(theme.PANEL_SOFT, theme.TEXT_SOFT),
+            );
+            rest = trimLeadingSpaces(rest[line_len..]);
+        }
+        return @max(row, start_row + 1);
+    }
+
+    fn wrappedLineLen(ctx: vxfw.DrawContext, text: []const u8, max_width: u16) usize {
+        var iter = ctx.graphemeIterator(text);
+        var byte_len: usize = 0;
+        var width: u16 = 0;
+        var last_space: usize = 0;
+        while (iter.next()) |grapheme| {
+            const bytes = grapheme.bytes(text);
+            const grapheme_width: u16 = @intCast(ctx.stringWidth(bytes));
+            if (width + grapheme_width > max_width) {
+                if (last_space > 0) return last_space;
+                return byte_len;
+            }
+            byte_len += bytes.len;
+            width += grapheme_width;
+            if (bytes.len == 1 and bytes[0] == ' ') last_space = byte_len - 1;
+        }
+        return text.len;
+    }
+
+    fn trimLeadingSpaces(text: []const u8) []const u8 {
+        var i: usize = 0;
+        while (i < text.len and text[i] == ' ') : (i += 1) {}
+        return text[i..];
     }
 
     fn drawConfirmOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -1878,7 +2045,7 @@ pub const Shell = struct {
     }
 
     fn contextHint(self: *const Shell) []const u8 {
-        if (self.show_help) return "Keyboard reference overlay.";
+        if (self.show_help) return "Keyboard reference drawer.";
         return switch (self.selected_module) {
             .dashboard => "Live interaction rounds and attestation closure.",
             .library => "Bundle facet, rule list, and passive preview.",
