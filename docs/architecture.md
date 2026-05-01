@@ -36,7 +36,7 @@ flowchart TB
     subgraph runtime["local runtime"]
         Manifest["manifest"]
         Cache["cache"]
-        AttBuf["attestation buffer"]
+        AttLog["attestation log"]
     end
 
     subgraph clients["client surfaces"]
@@ -53,8 +53,8 @@ flowchart TB
     Hub -->|publish| Manifest
     Manifest -->|materialize| Cache
     Cache -->|serve| MCP
-    MCP -->|record| AttBuf
-    AttBuf -->|flush| Hub
+    MCP -->|record| AttLog
+    TUI -->|upload attestation| Hub
 
     CLI -->|operate| Hub
     TUI -->|review| Hub
@@ -63,7 +63,7 @@ flowchart TB
     Host -->|invoke| MCP
 
     class Hub authority;
-    class Manifest,Cache,AttBuf runtime;
+    class Manifest,Cache,AttLog runtime;
     class CLI,TUI,MCP surface;
     class Adapter integration;
     class Host external;
@@ -78,7 +78,7 @@ If the short labels look too terse on their own, read them as:
 | `Hub` | orgs, Library, workspaces, attestation ingest |
 | `manifest` | `manifest.json`, the current workspace snapshot |
 | `cache` | materialized local rules, context, and `META_PROMPT` |
-| `attestation buffer` | pending local runtime events |
+| `attestation log` | append-only local runtime events awaiting TUI upload |
 | `MCP` | the current `memory.*` tool surface |
 | `adapter` | plan, install, update, and remove logic for host integration |
 

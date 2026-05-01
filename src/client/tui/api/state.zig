@@ -2,9 +2,9 @@ const std = @import("std");
 const collab_api = @import("clumsies_lib").protocol.collab_api;
 const library_api = @import("clumsies_lib").protocol.library_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
-const data = @import("../view_types.zig");
-const drafts_reader = @import("../drafts_reader.zig");
-const attestation_reader = @import("../attestation_reader.zig");
+const data = @import("../models/view_types.zig");
+const drafts_reader = @import("../runtime/drafts_reader.zig");
+const attestation_reader = @import("../runtime/attestation_reader.zig");
 const model = @import("model.zig");
 const cache = @import("cache.zig");
 const dispatcher = @import("dispatcher.zig");
@@ -74,14 +74,14 @@ pub const ConnectionStatus = enum {
     error_network,
 };
 
-pub const AttestationFlushSummary = struct {
+pub const AttestationUploadSummary = struct {
     workspace_count: usize = 0,
     events_sent: usize = 0,
     batches_sent: usize = 0,
 };
 
-pub const AttestationFlushResult = union(enum) {
-    ok: AttestationFlushSummary,
+pub const AttestationUploadResult = union(enum) {
+    ok: AttestationUploadSummary,
     not_authenticated,
     failed: []const u8,
 };
@@ -138,7 +138,7 @@ pub const ApiState = struct {
     pr_action_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     create_rule_pr_pending: request.PendingRequest(dispatcher.Result(CreateRulePrResponse)) = .{},
     create_context_pr_pending: request.PendingRequest(dispatcher.Result(CreateContextPrResponse)) = .{},
-    attestation_flush_pending: request.PendingRequest(AttestationFlushResult) = .{},
+    attestation_upload_pending: request.PendingRequest(AttestationUploadResult) = .{},
     // Derived pr_detail view state, recomputed by consumers whenever
     // pr_detail_cache or pr_comments_cache changes. Kept here because
     // computing the diff on every draw would be wasteful; the consumer

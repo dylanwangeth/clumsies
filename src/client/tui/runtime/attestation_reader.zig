@@ -1,7 +1,7 @@
 // Read local attestation logs and compute analysis stats.
 const std = @import("std");
-const workspace_rule = @import("../rule.zig");
-const data = @import("view_types.zig");
+const workspace_rule = @import("../../rule.zig");
+const data = @import("../models/view_types.zig");
 
 pub const LocalStats = struct {
     total_refer_count: u32 = 0,

@@ -4,7 +4,7 @@ const vxfw = vaxis.vxfw;
 const theme = @import("../theme.zig");
 const w = @import("../widgets.zig");
 const api = @import("../api.zig");
-const data = @import("../view_types.zig");
+const data = @import("../models/view_types.zig");
 const diff_viewer = @import("../widgets/diff_viewer.zig");
 
 const RuleDetailLayout = struct {

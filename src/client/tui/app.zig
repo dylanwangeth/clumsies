@@ -3,7 +3,8 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const theme = @import("theme.zig");
 const w = @import("widgets.zig");
-const data = @import("view_types.zig");
+const models = @import("models.zig");
+const data = models.view_types;
 const api = @import("api.zig");
 const analysis_panel = @import("app/analysis.zig");
 const dashboard_panel = @import("app/dashboard.zig");
@@ -14,16 +15,16 @@ const workspace_panel = @import("app/workspace.zig");
 const drafts_mod = @import("../drafts.zig");
 const workspace_rule = @import("../rule.zig");
 const workspace_config = @import("../workspace_config.zig");
-const editor_host = @import("editor_host.zig");
-const surface_size = @import("surface_size.zig");
+const runtime = @import("runtime.zig");
 const util_hash = @import("clumsies_lib").util.hash;
 
-const tree = @import("tree.zig");
-const attestation_reader = @import("attestation_reader.zig");
+const tree = models.path_tree;
+const editor_host = runtime.editor_host;
+const attestation_reader = runtime.attestation_reader;
 const Modal = w.Modal;
 const TextInput = w.TextInput;
-const TableRow = @import("table_row.zig").TableRow;
-const Column = @import("table_row.zig").Column;
+const TableRow = w.TableRow;
+const Column = w.Column;
 
 const WsTab = enum(u8) {
     context,
@@ -700,7 +701,7 @@ pub const Dashboard = struct {
                 self.consumePrActionResult();
                 self.consumeCreateRulePrResult();
                 self.consumeCreateContextPrResult();
-                self.consumeAttestationFlushResult();
+                self.consumeAttestationUploadResult();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -856,7 +857,7 @@ pub const Dashboard = struct {
     }
 
     fn sanitizeLayoutSize(self: *Dashboard, raw_size: vxfw.Size) vxfw.Size {
-        const size = surface_size.sanitize(raw_size);
+        const size = w.sanitizeSurfaceSize(raw_size);
         if (raw_size.width == 0 or raw_size.height == 0) {
             if (self.last_safe_layout_size.width > 0 and self.last_safe_layout_size.height > 0) {
                 return self.last_safe_layout_size;
@@ -2003,7 +2004,7 @@ pub const Dashboard = struct {
             const op = resp.operations[i];
             const base = op.base_content orelse "";
             const proposed = op.content orelse "";
-            diff_lines = api.fetch.computeDiffLines(alloc, base, proposed);
+            diff_lines = w.computeDiffLines(alloc, base, proposed);
             op_type = alloc.dupe(u8, op.type) catch null;
             if (op.current_path) |cp| op_current_path = alloc.dupe(u8, cp) catch null;
             if (op.path) |np| op_new_path = alloc.dupe(u8, np) catch null;
@@ -2060,8 +2061,8 @@ pub const Dashboard = struct {
         };
     }
 
-    fn consumeAttestationFlushResult(self: *Dashboard) void {
-        const result = self.api_state.attestation_flush_pending.consume() orelse return;
+    fn consumeAttestationUploadResult(self: *Dashboard) void {
+        const result = self.api_state.attestation_upload_pending.consume() orelse return;
         switch (result) {
             .ok => |summary| {
                 self.system_notices.clear(.attestation_upload);

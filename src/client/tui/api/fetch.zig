@@ -1,7 +1,5 @@
 const std = @import("std");
-const attestation_upload = @import("../../attestation_upload.zig");
 const HubClient = @import("../../hub_client.zig").HubClient;
-const workspace_config = @import("../../workspace_config.zig");
 const model = @import("model.zig");
 const parse = @import("parse.zig");
 const state = @import("state.zig");
@@ -53,15 +51,6 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
         api_state.bootstrap_inflight = false;
         api_state.mutex.unlock();
         return;
-    };
-    api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
-}
-
-pub fn startAttestationFlush(api_state: *state.ApiState) !void {
-    const gen = api_state.attestation_flush_pending.tryBegin() orelse return;
-    const thread = std.Thread.spawn(.{}, flushAttestationWorker, .{ api_state, gen }) catch |err| {
-        api_state.attestation_flush_pending.complete(gen, .{ .failed = @errorName(err) });
-        return err;
     };
     api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
 }
@@ -162,76 +151,6 @@ fn fetchAll(
     api_state.org_stats = org_stats;
     api_state.status = .connected;
     api_state.mutex.unlock();
-}
-
-fn flushAttestationWorker(api_state: *state.ApiState, gen: u64) void {
-    var arena = std.heap.ArenaAllocator.init(api_state.backing_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const workspaces = workspace_config.listWorkspaces(alloc) catch |err| {
-        api_state.attestation_flush_pending.complete(gen, .{ .failed = @errorName(err) });
-        return;
-    };
-
-    var summary: state.AttestationFlushSummary = .{ .workspace_count = workspaces.len };
-    for (workspaces) |ws| {
-        switch (attestation_upload.flushWorkspace(alloc, ws.ws_id)) {
-            .flushed => |result| {
-                summary.events_sent += result.events_sent;
-                summary.batches_sent += result.batches_sent;
-            },
-            .not_authenticated => {
-                api_state.attestation_flush_pending.complete(gen, .not_authenticated);
-                return;
-            },
-            .failed => |err| {
-                api_state.attestation_flush_pending.complete(gen, .{ .failed = @errorName(err) });
-                return;
-            },
-        }
-    }
-
-    api_state.attestation_flush_pending.complete(gen, .{ .ok = summary });
-}
-
-/// Produce a unified-diff rendering (prefixed with `  ` / `- ` / `+ `)
-/// between two text blobs split on newlines. Used by the PR detail
-/// consumer to materialise the diff view after fetching the operation.
-pub fn computeDiffLines(
-    alloc: std.mem.Allocator,
-    base: []const u8,
-    proposed: []const u8,
-) []const []const u8 {
-    var lines: std.ArrayList([]const u8) = .empty;
-    var base_it = std.mem.splitScalar(u8, base, '\n');
-    var prop_it = std.mem.splitScalar(u8, proposed, '\n');
-
-    while (true) {
-        const b = base_it.next();
-        const p = prop_it.next();
-        if (b == null and p == null) break;
-        if (b != null and p != null and std.mem.eql(u8, b.?, p.?)) {
-            lines.append(
-                alloc,
-                std.fmt.allocPrint(alloc, "  {s}", .{b.?}) catch continue,
-            ) catch continue;
-        } else {
-            if (b) |bl| {
-                lines.append(
-                    alloc,
-                    std.fmt.allocPrint(alloc, "- {s}", .{bl}) catch continue,
-                ) catch continue;
-            }
-            if (p) |pl| {
-                lines.append(
-                    alloc,
-                    std.fmt.allocPrint(alloc, "+ {s}", .{pl}) catch continue,
-                ) catch continue;
-            }
-        }
-    }
-    return lines.items;
 }
 
 fn setStatus(api_state: *state.ApiState, status: state.ConnectionStatus) void {

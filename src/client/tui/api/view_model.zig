@@ -1,6 +1,6 @@
 const std = @import("std");
-const data = @import("../view_types.zig");
-const attestation_reader = @import("../attestation_reader.zig");
+const data = @import("../models/view_types.zig");
+const attestation_reader = @import("../runtime/attestation_reader.zig");
 const model = @import("model.zig");
 const state = @import("state.zig");
 

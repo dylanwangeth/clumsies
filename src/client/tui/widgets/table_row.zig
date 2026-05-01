@@ -1,7 +1,7 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
-const theme = @import("theme.zig");
+const theme = @import("../theme.zig");
 
 // A table row widget that distributes columns across the available width.
 // Uses ctx.min.width (set by ScrollView from the parent Panel's inner width)

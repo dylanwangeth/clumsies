@@ -43,7 +43,7 @@ agent host
   -> MCP stdio server (`clumsies mcp serve`)
   -> local workspace manifest + cache
   -> attestation.jsonl
-  -> later flush to Hub
+  -> TUI startup background upload to Hub
 ```
 
 That path is why MCP should be described as a local runtime surface rather than as a direct Hub API wrapper. It serves the synchronized local workspace state first, and only later do attestation events move back up to Hub.

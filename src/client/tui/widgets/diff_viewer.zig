@@ -35,6 +35,45 @@ pub fn styleLine(line: []const u8) vaxis.Style {
     };
 }
 
+/// Produce a unified-diff rendering (prefixed with `  ` / `- ` / `+ `)
+/// between two text blobs split on newlines. Used by the PR detail
+/// consumer to materialise the diff view after fetching the operation.
+pub fn computeDiffLines(
+    alloc: std.mem.Allocator,
+    base: []const u8,
+    proposed: []const u8,
+) []const []const u8 {
+    var lines: std.ArrayList([]const u8) = .empty;
+    var base_it = std.mem.splitScalar(u8, base, '\n');
+    var prop_it = std.mem.splitScalar(u8, proposed, '\n');
+
+    while (true) {
+        const b = base_it.next();
+        const p = prop_it.next();
+        if (b == null and p == null) break;
+        if (b != null and p != null and std.mem.eql(u8, b.?, p.?)) {
+            lines.append(
+                alloc,
+                std.fmt.allocPrint(alloc, "  {s}", .{b.?}) catch continue,
+            ) catch continue;
+        } else {
+            if (b) |bl| {
+                lines.append(
+                    alloc,
+                    std.fmt.allocPrint(alloc, "- {s}", .{bl}) catch continue,
+                ) catch continue;
+            }
+            if (p) |pl| {
+                lines.append(
+                    alloc,
+                    std.fmt.allocPrint(alloc, "+ {s}", .{pl}) catch continue,
+                ) catch continue;
+            }
+        }
+    }
+    return lines.items;
+}
+
 pub const Marker = enum { unchanged, added, removed };
 
 pub const DiffRow = struct {

@@ -238,9 +238,10 @@ test {
     _ = @import("tui/api/request.zig");
     _ = @import("tui/api/view_model.zig");
     _ = @import("tui/app/workspace.zig");
-    _ = @import("tui/editor_host.zig");
-    _ = @import("tui/attestation_reader.zig");
-    _ = @import("tui/tree.zig");
+    _ = @import("tui/runtime/editor_host.zig");
+    _ = @import("tui/runtime/attestation_reader.zig");
+    _ = @import("tui/models/path_tree.zig");
+    _ = @import("tui/tasks/attestation_upload.zig");
     _ = @import("tui/widgets.zig");
     _ = @import("tui/widgets/diff_viewer.zig");
 }

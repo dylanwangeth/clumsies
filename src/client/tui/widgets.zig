@@ -15,6 +15,9 @@ const modal_mod = @import("widgets/modal.zig");
 const text_input = @import("widgets/text_input.zig");
 const content_view = @import("widgets/content_view.zig");
 const system_notice = @import("widgets/system_notice.zig");
+const table_row = @import("widgets/table_row.zig");
+const surface_size = @import("widgets/surface_size.zig");
+const diff_viewer = @import("widgets/diff_viewer.zig");
 
 pub const fillSurface = draw.fillSurface;
 pub const paintBand = draw.paintBand;
@@ -66,6 +69,10 @@ pub const SystemNoticeKind = system_notice.Kind;
 pub const SystemNoticePersistence = system_notice.Persistence;
 pub const SystemNoticeKey = system_notice.Key;
 pub const systemNoticeHeaderStyle = system_notice.headerStyle;
+pub const TableRow = table_row.TableRow;
+pub const Column = table_row.Column;
+pub const sanitizeSurfaceSize = surface_size.sanitize;
+pub const computeDiffLines = diff_viewer.computeDiffLines;
 
 pub fn countLines(text: []const u8) usize {
     if (text.len == 0) return 0;

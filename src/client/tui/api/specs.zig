@@ -13,7 +13,7 @@ const collab_api = @import("clumsies_lib").protocol.collab_api;
 const library_api = @import("clumsies_lib").protocol.library_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 
-const data = @import("../view_types.zig");
+const data = @import("../models/view_types.zig");
 const dispatcher = @import("dispatcher.zig");
 const request = @import("request.zig");
 const state = @import("state.zig");
