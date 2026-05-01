@@ -30,6 +30,7 @@ pub const Key = enum {
     workspace_manifest,
     workspace_context_content,
     workspace_local_cache,
+    attestation_upload,
 };
 
 pub const Notice = struct {

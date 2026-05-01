@@ -1,6 +1,5 @@
-//! Attestation upload orchestrator. Authenticates with the Hub, wraps batch_upload with an HTTP POST
-//! uploader targeting /api/attestations, and provides flushWorkspace() called by CLI and the MCP
-//! server on session end.
+//! Attestation upload orchestrator. Authenticates with the Hub and wraps batch_upload with an HTTP
+//! POST uploader targeting /api/attestations for the TUI background upload task.
 const std = @import("std");
 const upload_worker = @import("batch_upload.zig");
 const auth_mod = @import("auth.zig");

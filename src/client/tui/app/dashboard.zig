@@ -436,11 +436,6 @@ pub fn handleModuleEvent(
     key: vaxis.Key,
     round_count: usize,
 ) anyerror!void {
-    if (key.matches('F', .{ .shift = true })) {
-        self.flushAttestation();
-        ctx.consumeAndRedraw();
-        return;
-    }
     if (key.matches(vaxis.Key.tab, .{})) {
         self.analysis_focus = switch (self.analysis_focus) {
             .chart => .inputs,

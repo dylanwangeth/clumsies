@@ -12,7 +12,6 @@ This page is the command surface in one place. Every command listed here is base
 | `clumsies sync` | sync local cache from Hub |
 | `clumsies adapt` | install or update an adapter |
 | `clumsies remove-adapter` | remove an adapter |
-| `clumsies flush` | upload pending attestation events |
 | `clumsies mcp serve` | start the MCP server |
 
 ## login
@@ -96,16 +95,6 @@ clumsies remove-adapter [--agent <name>] [--scope workspace|user] [--yes]
 | `--agent <name>` | adapter package to remove |
 | `--scope workspace|user` | scope to remove from |
 | `--yes` | skip confirmation |
-
-## flush
-
-Usage:
-
-```bash
-clumsies flush
-```
-
-The current help text describes this as attestation flush. Its job is to upload pending attestation events from the current workspace to the Hub.
 
 ## mcp serve
 

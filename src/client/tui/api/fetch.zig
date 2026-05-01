@@ -1,5 +1,7 @@
 const std = @import("std");
+const attestation_upload = @import("../../attestation_upload.zig");
 const HubClient = @import("../../hub_client.zig").HubClient;
+const workspace_config = @import("../../workspace_config.zig");
 const model = @import("model.zig");
 const parse = @import("parse.zig");
 const state = @import("state.zig");
@@ -32,7 +34,12 @@ pub fn startFetch(
 
 pub fn refetchAllAsync(api_state: *state.ApiState) void {
     api_state.mutex.lock();
-    if (api_state.bootstrap_inflight or api_state.hub_url == null or api_state.access_token == null) {
+    if (api_state.hub_url == null or api_state.access_token == null) {
+        api_state.mutex.unlock();
+        return;
+    }
+    if (api_state.bootstrap_inflight) {
+        api_state.bootstrap_refetch_requested = true;
         api_state.mutex.unlock();
         return;
     }
@@ -50,15 +57,42 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
     api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
 }
 
+pub fn startAttestationFlush(api_state: *state.ApiState) !void {
+    const gen = api_state.attestation_flush_pending.tryBegin() orelse return;
+    const thread = std.Thread.spawn(.{}, flushAttestationWorker, .{ api_state, gen }) catch |err| {
+        api_state.attestation_flush_pending.complete(gen, .{ .failed = @errorName(err) });
+        return err;
+    };
+    api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
+}
+
 fn fetchAll(
     api_state: *state.ApiState,
     hub_url: []const u8,
     access_token: []const u8,
 ) void {
     defer {
+        var next_hub_url: ?[]const u8 = null;
+        var next_access_token: ?[]const u8 = null;
         api_state.mutex.lock();
         api_state.bootstrap_inflight = false;
+        if (api_state.bootstrap_refetch_requested and api_state.hub_url != null and api_state.access_token != null) {
+            api_state.bootstrap_refetch_requested = false;
+            api_state.bootstrap_inflight = true;
+            next_hub_url = api_state.hub_url.?;
+            next_access_token = api_state.access_token.?;
+        }
         api_state.mutex.unlock();
+        if (next_hub_url) |url| {
+            const token = next_access_token.?;
+            if (std.Thread.spawn(.{}, fetchAll, .{ api_state, url, token })) |thread| {
+                api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
+            } else |_| {
+                api_state.mutex.lock();
+                api_state.bootstrap_inflight = false;
+                api_state.mutex.unlock();
+            }
+        }
     }
     api_state.mutex.lock();
     api_state.status = .connecting;
@@ -128,6 +162,37 @@ fn fetchAll(
     api_state.org_stats = org_stats;
     api_state.status = .connected;
     api_state.mutex.unlock();
+}
+
+fn flushAttestationWorker(api_state: *state.ApiState, gen: u64) void {
+    var arena = std.heap.ArenaAllocator.init(api_state.backing_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const workspaces = workspace_config.listWorkspaces(alloc) catch |err| {
+        api_state.attestation_flush_pending.complete(gen, .{ .failed = @errorName(err) });
+        return;
+    };
+
+    var summary: state.AttestationFlushSummary = .{ .workspace_count = workspaces.len };
+    for (workspaces) |ws| {
+        switch (attestation_upload.flushWorkspace(alloc, ws.ws_id)) {
+            .flushed => |result| {
+                summary.events_sent += result.events_sent;
+                summary.batches_sent += result.batches_sent;
+            },
+            .not_authenticated => {
+                api_state.attestation_flush_pending.complete(gen, .not_authenticated);
+                return;
+            },
+            .failed => |err| {
+                api_state.attestation_flush_pending.complete(gen, .{ .failed = @errorName(err) });
+                return;
+            },
+        }
+    }
+
+    api_state.attestation_flush_pending.complete(gen, .{ .ok = summary });
 }
 
 /// Produce a unified-diff rendering (prefixed with `  ` / `- ` / `+ `)

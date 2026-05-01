@@ -10,6 +10,11 @@ pub const WorkspaceBinding = struct {
     name: []const u8,
 };
 
+pub const WorkspaceListEntry = struct {
+    ws_id: []const u8,
+    name: []const u8,
+};
+
 const WorkspaceMatch = struct {
     ws: *const WorkspaceEntry,
     path: []const u8,
@@ -37,6 +42,36 @@ pub fn resolveWorkspace(allocator: std.mem.Allocator, cwd: []const u8) !Workspac
         .ws_id = try allocator.dupe(u8, match.ws.ws_id),
         .name = try allocator.dupe(u8, match.ws.name),
     };
+}
+
+/// Return every workspace bound in ~/.clumsies/config.toml.
+pub fn listWorkspaces(allocator: std.mem.Allocator) ![]WorkspaceListEntry {
+    var parsed = try loadConfig(allocator);
+    defer parsed.deinit();
+
+    var list: std.ArrayList(WorkspaceListEntry) = .empty;
+    errdefer {
+        for (list.items) |entry| {
+            allocator.free(entry.ws_id);
+            allocator.free(entry.name);
+        }
+        list.deinit(allocator);
+    }
+
+    for (parsed.value.workspaces) |ws| {
+        {
+            const ws_id = try allocator.dupe(u8, ws.ws_id);
+            errdefer allocator.free(ws_id);
+            const name = try allocator.dupe(u8, ws.name);
+            errdefer allocator.free(name);
+            try list.append(allocator, .{
+                .ws_id = ws_id,
+                .name = name,
+            });
+        }
+    }
+
+    return try list.toOwnedSlice(allocator);
 }
 
 /// Resolve the current workspace root for local client operations.

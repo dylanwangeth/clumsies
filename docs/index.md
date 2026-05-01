@@ -63,9 +63,6 @@ hero:
         <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies remove-adapter</span> Remove an installed agent adapter</span>
       </div>
       <div class="home-terminal-line is-output">
-        <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies flush</span>         Upload pending attestation events to Hub</span>
-      </div>
-      <div class="home-terminal-line is-output">
         <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies mcp serve</span>    Start MCP server for AI agents</span>
       </div>
       <div class="home-terminal-line is-output">

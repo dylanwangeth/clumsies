@@ -20,7 +20,7 @@ The analysis view shows why the TUI matters as its own surface. This is the kind
 
 ## Why the TUI exists
 
-CLI is good at discrete actions: login, init, sync, adapter install, flush. It is not good at sustained observation, comparison, or review-heavy work.
+CLI is good at discrete actions: login, init, sync, and adapter install. It is not good at sustained observation, comparison, or review-heavy work.
 
 The TUI exists because the product needs a place where a human can keep state in view and move through it without constantly reissuing commands. That is especially important for:
 
@@ -111,7 +111,7 @@ Current details from `src/client/tui/app/dashboard.zig` include:
 
 - chart title: `Signal Trend`
 - scope switching hint: `w scope`
-- attestation flush hint: `Shift-F flush`
+- attestation upload: background upload starts when the TUI launches
 - live session count shown in the header when available
 - lower panel title shape: `Recent Inputs · <scope> · live feed`
 - input detail overlay for reading captured user input in full
