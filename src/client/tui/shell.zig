@@ -644,7 +644,7 @@ pub const Shell = struct {
 
     fn footerShortcuts(self: *Shell, arena: std.mem.Allocator) std.mem.Allocator.Error![]const w.Shortcut {
         if (self.show_confirm or self.review.show_comment_editor or self.workspace.show_drawer) {
-            return self.contextShortcuts();
+            return w.sortedShortcuts(arena, self.contextShortcuts());
         }
         return filteredFooterShortcuts(arena, self.contextShortcuts());
     }
@@ -702,7 +702,7 @@ pub const Shell = struct {
         if (!has_help) {
             out[idx] = .{ .key = "?", .label = "help" };
         }
-        return out;
+        return w.sortedShortcuts(arena, out);
     }
 
     fn isCommonShortcutKey(key: []const u8) bool {
@@ -2300,8 +2300,9 @@ pub const Shell = struct {
         w.writeText(surface, ctx, 0, row, title, theme.boldOn(theme.PANEL_SOFT, theme.TEXT));
         row += 1;
 
-        const key_col_width = helpKeyColumnWidth(ctx, shortcuts);
-        for (shortcuts) |shortcut| {
+        const sorted = w.sortedShortcuts(ctx.arena, shortcuts) catch shortcuts;
+        const key_col_width = helpKeyColumnWidth(ctx, sorted);
+        for (sorted) |shortcut| {
             if (row >= surface.size.height) break;
             row = drawHelpShortcut(surface, ctx, row, shortcut, key_col_width);
         }

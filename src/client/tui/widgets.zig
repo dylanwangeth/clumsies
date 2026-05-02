@@ -77,6 +77,7 @@ pub const computeDiffLines = diff_viewer.computeDiffLines;
 pub const Shortcut = shortcut_bar.Shortcut;
 pub const ShortcutBarOptions = shortcut_bar.Options;
 pub const drawShortcutBar = shortcut_bar.drawInline;
+pub const sortedShortcuts = shortcut_bar.sortedCopy;
 
 pub fn countLines(text: []const u8) usize {
     if (text.len == 0) return 0;

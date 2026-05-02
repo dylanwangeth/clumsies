@@ -27,6 +27,19 @@ pub const DrawResult = struct {
     hidden_count: usize,
 };
 
+pub fn sortedCopy(
+    arena: std.mem.Allocator,
+    shortcuts: []const Shortcut,
+) std.mem.Allocator.Error![]const Shortcut {
+    const out = try arena.dupe(Shortcut, shortcuts);
+    sortInPlace(out);
+    return out;
+}
+
+pub fn sortInPlace(shortcuts: []Shortcut) void {
+    std.mem.sort(Shortcut, shortcuts, {}, shortcutLessThan);
+}
+
 pub fn drawInline(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
@@ -107,6 +120,96 @@ fn drawShortcut(
 
 fn keyStyle() vaxis.Style {
     return theme.boldOn(theme.ACCENT_SOFT, theme.PANEL);
+}
+
+const ShortcutSortKey = struct {
+    layer: u8,
+    primary: u8,
+    text: []const u8,
+};
+
+fn shortcutLessThan(_: void, a: Shortcut, b: Shortcut) bool {
+    const ka = shortcutSortKey(a.key);
+    const kb = shortcutSortKey(b.key);
+    if (ka.layer != kb.layer) return ka.layer < kb.layer;
+    if (ka.primary != kb.primary) return ka.primary < kb.primary;
+    return asciiLessThan(ka.text, kb.text);
+}
+
+fn shortcutSortKey(key: []const u8) ShortcutSortKey {
+    if (stripModifier(key, "Ctrl")) |payload| {
+        return .{ .layer = 1, .primary = firstSortByte(payload), .text = payload };
+    }
+    if (stripModifier(key, "Shift")) |payload| {
+        return .{ .layer = 2, .primary = firstSortByte(payload), .text = payload };
+    }
+    if (isNamedKey(key)) {
+        return .{ .layer = 3, .primary = firstSortByte(key), .text = key };
+    }
+    if (key.len == 1 and std.ascii.isUpper(key[0])) {
+        return .{ .layer = 2, .primary = std.ascii.toLower(key[0]), .text = key };
+    }
+    return .{ .layer = 0, .primary = firstSortByte(key), .text = key };
+}
+
+fn stripModifier(key: []const u8, modifier: []const u8) ?[]const u8 {
+    if (key.len <= modifier.len + 1) return null;
+    if (!std.ascii.eqlIgnoreCase(key[0..modifier.len], modifier)) return null;
+    const sep = key[modifier.len];
+    if (sep != '+' and sep != '-') return null;
+    return key[modifier.len + 1 ..];
+}
+
+fn isNamedKey(key: []const u8) bool {
+    return std.mem.eql(u8, key, "Enter") or
+        std.mem.eql(u8, key, "Tab") or
+        std.mem.eql(u8, key, "Esc") or
+        std.mem.eql(u8, key, "Backspace") or
+        std.mem.eql(u8, key, "Delete") or
+        std.mem.eql(u8, key, "Space") or
+        std.mem.eql(u8, key, "Up") or
+        std.mem.eql(u8, key, "Down") or
+        std.mem.eql(u8, key, "Left") or
+        std.mem.eql(u8, key, "Right");
+}
+
+fn firstSortByte(key: []const u8) u8 {
+    if (key.len == 0) return 0;
+    return std.ascii.toLower(key[0]);
+}
+
+fn asciiLessThan(a: []const u8, b: []const u8) bool {
+    const len = @min(a.len, b.len);
+    for (0..len) |i| {
+        const ca = std.ascii.toLower(a[i]);
+        const cb = std.ascii.toLower(b[i]);
+        if (ca != cb) return ca < cb;
+    }
+    return a.len < b.len;
+}
+
+test "shortcut sort orders plain ctrl shift and named layers" {
+    const input = [_]Shortcut{
+        .{ .key = "Esc", .label = "" },
+        .{ .key = "Ctrl+r", .label = "" },
+        .{ .key = "?", .label = "" },
+        .{ .key = "D", .label = "" },
+        .{ .key = "a", .label = "" },
+        .{ .key = "Shift+b", .label = "" },
+        .{ .key = "Enter", .label = "" },
+        .{ .key = "1", .label = "" },
+    };
+    const sorted = try sortedCopy(std.testing.allocator, &input);
+    defer std.testing.allocator.free(sorted);
+
+    try std.testing.expectEqualStrings("1", sorted[0].key);
+    try std.testing.expectEqualStrings("?", sorted[1].key);
+    try std.testing.expectEqualStrings("a", sorted[2].key);
+    try std.testing.expectEqualStrings("Ctrl+r", sorted[3].key);
+    try std.testing.expectEqualStrings("Shift+b", sorted[4].key);
+    try std.testing.expectEqualStrings("D", sorted[5].key);
+    try std.testing.expectEqualStrings("Enter", sorted[6].key);
+    try std.testing.expectEqualStrings("Esc", sorted[7].key);
 }
 
 fn labelStyle() vaxis.Style {
