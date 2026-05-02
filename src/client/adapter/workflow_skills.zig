@@ -167,12 +167,13 @@ fn renderSkillContent(
             \\  short-description: Follow {s}
             \\---
             \\
-            \\Call the `memory.load` MCP tool with ids: ["{s}"].
+            \\Call the `memory.load` MCP tool with ids: ["{s}"] and
+            \\knownHashes: {{"{s}": ""}}.
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
             \\
         ,
-            .{ slug, filename, filename, workflow_id },
+            .{ slug, filename, filename, workflow_id, workflow_id },
         ),
         .claude_code => std.fmt.allocPrint(
             allocator,
@@ -182,11 +183,12 @@ fn renderSkillContent(
             \\argument-hint: "[task description]"
             \\user-invocable: true
             \\---
-            \\Call the `memory.load` MCP tool with ids: ["{s}"]
+            \\Call the `memory.load` MCP tool with ids: ["{s}"] and
+            \\knownHashes: {{"{s}": ""}}
             \\
             \\$ARGUMENTS
         ,
-            .{ slug, filename, workflow_id },
+            .{ slug, filename, workflow_id, workflow_id },
         ),
         .gemini_cli => std.fmt.allocPrint(
             allocator,
@@ -195,11 +197,12 @@ fn renderSkillContent(
             \\description: Run {s} workflow
             \\---
             \\
-            \\Call the `memory.load` MCP tool with ids: ["{s}"].
+            \\Call the `memory.load` MCP tool with ids: ["{s}"] and
+            \\knownHashes: {{"{s}": ""}}.
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
         ,
-            .{ slug, filename, workflow_id },
+            .{ slug, filename, workflow_id, workflow_id },
         ),
     };
 }
@@ -234,5 +237,6 @@ test "renderSkillContent uses stable rule ids for memory.load" {
     defer std.testing.allocator.free(content);
 
     try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"p-commit\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "knownHashes: {\"p-commit\": \"\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "workflow/GEN_COMMIT_MSG.md") == null);
 }

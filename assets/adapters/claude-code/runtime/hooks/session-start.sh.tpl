@@ -44,7 +44,8 @@ description: Run $filename workflow
 argument-hint: "[task description]"
 user-invocable: true
 ---
-Call the \`memory.load\` MCP tool with ids: ["workflow:$rel_path"]
+Call the \`memory.load\` MCP tool with ids: ["workflow:$rel_path"] and
+knownHashes: {"workflow:$rel_path": ""}
 
 \$ARGUMENTS
 SKILL
