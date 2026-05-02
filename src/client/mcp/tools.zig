@@ -23,7 +23,7 @@ const discover_schema =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
 const load_schema =
-    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule, workflow, or context content by ids. Returns delta based on knownHashes. Rule/workflow results include constraints: referable markdown sections parsed from H2 headings and H2 list items. Context results do not have referable constraints.\"," ++
+    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule, workflow, or context content by ids. Pass knownHashes for every requested id: use the remembered hash when known, or an empty string when unknown. Returns full content only when the current hash differs from knownHashes[id]. Rule/workflow results include referable constraints parsed from H2 headings and H2 list items; context results do not include constraints.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\",\"knownHashes\"],\"additionalProperties\":false}}";
 
 const refer_schema =
