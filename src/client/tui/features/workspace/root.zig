@@ -729,6 +729,36 @@ pub fn handleModuleEvent(
         }
         return;
     }
+    if (key.matches('e', .{})) {
+        self.editSelectedDraft();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('D', .{}) or key.matches('d', .{ .shift = true })) {
+        self.requestDiscardSelectedDraft();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('d', .{})) {
+        self.workspace.show_diff = !self.workspace.show_diff;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('m', .{})) {
+        self.toggleSelectedDraftReady();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('p', .{})) {
+        self.openPrComposer();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('u', .{})) {
+        self.pullSelectedWorkspaceContent();
+        ctx.consumeAndRedraw();
+        return;
+    }
 
     switch (self.workspace.focus) {
         .list => try handleListFocusEvent(self, ctx, key),
@@ -746,38 +776,35 @@ pub fn handleModuleEvent(
 }
 
 pub fn shortcuts(self: anytype) []const w.Shortcut {
-    return switch (self.workspace.focus) {
-        .list => if (self.workspace.tab == .context) &.{
-            .{ .key = "j/k", .label = "move" },
-            .{ .key = "Enter", .label = "open" },
-            .{ .key = "h/l", .label = "switch tab" },
-            .{ .key = "n", .label = "new context" },
-            .{ .key = "c", .label = "create ws" },
-            .{ .key = "w", .label = "workspaces" },
-            .{ .key = "y", .label = "copy id" },
-            .{ .key = "?", .label = "help" },
-        } else &.{
-            .{ .key = "j/k", .label = "move" },
-            .{ .key = "Enter", .label = "open" },
-            .{ .key = "h/l", .label = "switch tab" },
-            .{ .key = "c", .label = "create ws" },
-            .{ .key = "w", .label = "workspaces" },
-            .{ .key = "y", .label = "copy id" },
-            .{ .key = "?", .label = "help" },
-        },
-        .content => &.{
-            .{ .key = "y", .label = "copy id" },
-            .{ .key = "j/k", .label = "scroll" },
-            .{ .key = "e", .label = "edit" },
-            .{ .key = "p", .label = "submit" },
-            .{ .key = "u", .label = "pull" },
-            .{ .key = "d", .label = "toggle diff" },
-            .{ .key = "D", .label = "discard draft" },
-            .{ .key = "w", .label = "workspaces" },
-            .{ .key = "m", .label = "mark ready" },
-            .{ .key = "Esc", .label = "back" },
-            .{ .key = "?", .label = "help" },
-        },
+    return if (self.workspace.tab == .context) &.{
+        .{ .key = "j/k", .label = "move/scroll" },
+        .{ .key = "Enter", .label = "open" },
+        .{ .key = "h/l", .label = "switch tab" },
+        .{ .key = "n", .label = "new context" },
+        .{ .key = "c", .label = "create ws" },
+        .{ .key = "w", .label = "workspaces" },
+        .{ .key = "y", .label = "copy id" },
+        .{ .key = "e", .label = "edit" },
+        .{ .key = "p", .label = "submit" },
+        .{ .key = "u", .label = "pull" },
+        .{ .key = "d", .label = "toggle diff" },
+        .{ .key = "D", .label = "discard draft" },
+        .{ .key = "m", .label = "mark ready" },
+        .{ .key = "?", .label = "help" },
+    } else &.{
+        .{ .key = "j/k", .label = "move/scroll" },
+        .{ .key = "Enter", .label = "open" },
+        .{ .key = "h/l", .label = "switch tab" },
+        .{ .key = "c", .label = "create ws" },
+        .{ .key = "w", .label = "workspaces" },
+        .{ .key = "y", .label = "copy id" },
+        .{ .key = "e", .label = "edit" },
+        .{ .key = "p", .label = "submit" },
+        .{ .key = "u", .label = "pull" },
+        .{ .key = "d", .label = "toggle diff" },
+        .{ .key = "D", .label = "discard draft" },
+        .{ .key = "m", .label = "mark ready" },
+        .{ .key = "?", .label = "help" },
     };
 }
 
@@ -834,36 +861,6 @@ fn handleContentFocusEvent(
 ) anyerror!void {
     if (key.matches(vaxis.Key.escape, .{})) {
         self.workspace.focus = .list;
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('e', .{})) {
-        self.editSelectedDraft();
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('D', .{}) or key.matches('d', .{ .shift = true })) {
-        self.requestDiscardSelectedDraft();
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('d', .{})) {
-        self.workspace.show_diff = !self.workspace.show_diff;
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('m', .{})) {
-        self.toggleSelectedDraftReady();
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('p', .{})) {
-        self.openPrComposer();
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('u', .{})) {
-        self.pullSelectedWorkspaceContent();
         ctx.consumeAndRedraw();
         return;
     }
