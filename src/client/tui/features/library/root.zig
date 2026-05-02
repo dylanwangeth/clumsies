@@ -20,10 +20,6 @@ pub const State = struct {
     bundle_filter: usize = 0,
     scroll_bars: vxfw.ScrollBars,
     tree: PathTreeState = .{},
-    widgets: [MAX_TREE_ROWS]vxfw.Widget = undefined,
-    text_rows: [MAX_TREE_ROWS]vxfw.Text = undefined,
-    table_rows: [MAX_TREE_ROWS]TableRow = undefined,
-    table_cols: [MAX_TREE_ROWS][2]Column = undefined,
 
     pub fn init() State {
         return .{ .scroll_bars = w.initCursorScrollBars(theme.PANEL) };
@@ -315,7 +311,7 @@ fn handleFileListEvent(
     key: vaxis.Key,
 ) anyerror!void {
     if (key.matches(vaxis.Key.enter, .{})) {
-        syncLibraryWidgets(self);
+        syncLibraryTree(self);
         const pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
         if (self.library.tree.dirPathAt(pos)) |dir| {
             self.library.tree.toggleDir(self.api_state.allocator(), dir);
@@ -395,7 +391,7 @@ fn handlePrListEvent(
     }
 }
 
-pub fn syncLibraryWidgets(self: anytype) void {
+pub fn syncLibraryTree(self: anytype) void {
     const rules = self.getRules();
     const bundles = self.getBundles();
     const create_paths = self.drafts.create_rule_paths;
@@ -406,14 +402,17 @@ pub fn syncLibraryWidgets(self: anytype) void {
     else
         null;
 
-    var filtered_paths: [MAX_TREE_ROWS][]const u8 = undefined;
-    var filtered_orig: [MAX_TREE_ROWS]usize = undefined;
+    const allocator = self.api_state.allocator();
+    const path_capacity = rules.len + create_paths.len;
+    const filtered_paths = allocator.alloc([]const u8, path_capacity) catch return;
+    defer allocator.free(filtered_paths);
+    const filtered_orig = allocator.alloc(usize, path_capacity) catch return;
+    defer allocator.free(filtered_orig);
     var filtered_len: usize = 0;
     for (rules, 0..) |p, pidx| {
         if (filter_name) |fname| {
             if (std.mem.indexOf(u8, p.bundle_names, fname) == null) continue;
         }
-        if (filtered_len >= MAX_TREE_ROWS) break;
         filtered_paths[filtered_len] = p.path;
         filtered_orig[filtered_len] = pidx;
         filtered_len += 1;
@@ -425,15 +424,24 @@ pub fn syncLibraryWidgets(self: anytype) void {
     // does not constrain create drafts — the user created them
     // locally, they should always be visible.
     for (create_paths, 0..) |path, k| {
-        if (filtered_len >= MAX_TREE_ROWS) break;
         filtered_paths[filtered_len] = path;
         filtered_orig[filtered_len] = rules.len + k;
         filtered_len += 1;
     }
 
-    self.library.tree.sync(self.api_state.allocator(), filtered_paths[0..filtered_len], filtered_orig[0..filtered_len]);
+    self.library.tree.sync(allocator, filtered_paths[0..filtered_len], filtered_orig[0..filtered_len]);
+}
 
+pub fn syncLibraryWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!void {
+    syncLibraryTree(self);
+
+    const rules = self.getRules();
+    const create_paths = self.drafts.create_rule_paths;
     const row_count = self.library.tree.rowCount();
+    const widgets = try ctx.arena.alloc(vxfw.Widget, row_count);
+    const text_rows = try ctx.arena.alloc(vxfw.Text, row_count);
+    const table_rows = try ctx.arena.alloc(TableRow, row_count);
+    const table_cols = try ctx.arena.alloc([2]Column, row_count);
     const selected_row: usize = if (row_count > 0)
         @min(@as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor)), row_count - 1)
     else
@@ -444,11 +452,11 @@ pub fn syncLibraryWidgets(self: anytype) void {
         const row_text = self.library.tree.rowText(i);
         if (self.library.tree.dirPathAt(i) != null) {
             const row_sel = i == selected_row;
-            self.library.text_rows[i] = .{
+            text_rows[i] = .{
                 .text = row_text,
                 .style = theme.boldOn(theme.PANEL, if (row_sel) theme.TEXT else theme.TEXT_SOFT),
             };
-            self.library.widgets[i] = self.library.text_rows[i].widget();
+            widgets[i] = text_rows[i].widget();
         } else {
             const orig_pidx = self.library.tree.leafIndexAt(i) orelse continue;
             const is_virtual = orig_pidx >= rules.len;
@@ -471,20 +479,20 @@ pub fn syncLibraryWidgets(self: anytype) void {
             else
                 row_text;
             const row_style = w.draftRowStyle(row_sel, draft_status_opt);
-            self.library.table_cols[i] = .{
+            table_cols[i] = .{
                 .{ .text = labeled_text, .flex = 1 },
                 .{ .text = pr_label, .flex = 0, .min_width = 2, .alignment = .right },
             };
-            self.library.table_rows[i] = .{
-                .columns = &self.library.table_cols[i],
+            table_rows[i] = .{
+                .columns = &table_cols[i],
                 .style = row_style,
                 .gap = 2,
                 .padding_left = 0,
             };
-            self.library.widgets[i] = self.library.table_rows[i].widget();
+            widgets[i] = table_rows[i].widget();
         }
     }
-    self.library.scroll_bars.scroll_view.children = .{ .slice = self.library.widgets[0..row_count] };
+    self.library.scroll_bars.scroll_view.children = .{ .slice = widgets };
     self.library.scroll_bars.estimated_content_height = @intCast(row_count);
 
     var cur = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));

@@ -156,7 +156,6 @@ pub fn drawList(
     ctx: vxfw.DrawContext,
     ws_tree: anytype,
     live_ws: ?api.model.WsDetail,
-    lib_rules: []const data.RuleEntry,
 ) std.mem.Allocator.Error!vxfw.Surface {
     const list_border = theme.focusBorder(self.workspace.focus == .list);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
@@ -197,7 +196,7 @@ pub fn drawList(
         w.writeText(&surface, ctx, row_col, 1, empty_msg, theme.fg(theme.MUTED));
         return surface;
     }
-    try syncListWidgets(self, ctx, ws_tree, live_ws, lib_rules);
+    try syncListWidgets(self, ctx, ws_tree, live_ws);
     self.workspace.list_scroll_bars.scroll_view.draw_cursor = false;
     defer self.workspace.list_scroll_bars.scroll_view.draw_cursor = true;
     const body_ctx = ctx.withConstraints(
@@ -411,7 +410,6 @@ fn syncListWidgets(
     ctx: vxfw.DrawContext,
     ws_tree: anytype,
     live_ws: ?api.model.WsDetail,
-    lib_rules: []const data.RuleEntry,
 ) std.mem.Allocator.Error!void {
     const row_count = ws_tree.rowCount();
     const list_rows = try ctx.arena.alloc(vxfw.Text, row_count);
@@ -426,9 +424,9 @@ fn syncListWidgets(
                 .softwrap = false,
             };
         } else {
-            const draft_status = draftStatusForRow(self, ws_tree, r, live_ws, lib_rules);
+            const draft_status = draftStatusForRow(self, ws_tree, r, live_ws);
             const row_style = w.draftRowStyle(sel, draft_status);
-            const is_stale = isStaleRow(self, ws_tree, r, live_ws, lib_rules);
+            const is_stale = isStaleRow(self, ws_tree, r, live_ws);
             const text = if (is_stale)
                 std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{rendered}) catch rendered
             else
@@ -459,29 +457,14 @@ fn isStaleRow(
     ws_tree: anytype,
     row: usize,
     live_ws: ?api.model.WsDetail,
-    lib_rules: []const data.RuleEntry,
 ) bool {
-    const leaf = ws_tree.leafIndexAt(row) orelse return false;
-    switch (self.workspace.tab) {
-        .context => {
-            const ws_d = live_ws orelse return false;
-            if (leaf >= ws_d.context_files.len) return false;
-            const file = ws_d.context_files[leaf];
-            return !self.isLocalContentFresh(.context, file.path, file.hash);
-        },
-        .rules => {
-            const ws_d = live_ws orelse return false;
-            if (leaf >= ws_d.ws_rules.len) return false;
-            const wp = ws_d.ws_rules[leaf];
-            const rule_path = if (wp.path.len > 0)
-                wp.path
-            else for (lib_rules) |lp| {
-                if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-            } else wp.rule_id;
-            const category: drafts_mod.DraftCategory = if (std.mem.eql(u8, rule_path, "META_PROMPT.md")) .meta_prompt else .rule;
-            return !self.isLocalContentFresh(category, rule_path, wp.content_hash);
-        },
-    }
+    _ = ws_tree;
+    const selection = self.workspaceFileAtRow(row, live_ws) orelse return false;
+    const hash = switch (selection) {
+        .context => |c| c.hash,
+        .rule => |r| r.hash,
+    } orelse return false;
+    return !self.isLocalContentFresh(selection.draftCategory(), selection.path(), hash);
 }
 
 fn draftStatusForRow(
@@ -489,44 +472,10 @@ fn draftStatusForRow(
     ws_tree: anytype,
     row: usize,
     live_ws: ?api.model.WsDetail,
-    lib_rules: []const data.RuleEntry,
 ) ?drafts_mod.DraftStatus {
-    const leaf = ws_tree.leafIndexAt(row) orelse return null;
-    const MarkerInfo = struct {
-        category: drafts_mod.DraftCategory,
-        path: []const u8,
-    };
-    const marker_info: ?MarkerInfo = switch (self.workspace.tab) {
-        .context => inner: {
-            const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
-            if (live_ws) |ws_d| if (leaf < ws_d.context_files.len) {
-                break :inner MarkerInfo{
-                    .category = .context,
-                    .path = ws_d.context_files[leaf].path,
-                };
-            };
-            if (leaf < context_count) break :inner null;
-            const k = leaf - context_count;
-            if (k >= self.drafts.create_context_paths.len) break :inner null;
-            break :inner MarkerInfo{
-                .category = .context,
-                .path = self.drafts.create_context_paths[k],
-            };
-        },
-        .rules => inner: {
-            const ws_d = live_ws orelse break :inner null;
-            if (leaf >= ws_d.ws_rules.len) break :inner null;
-            const wp = ws_d.ws_rules[leaf];
-            const rule_path = if (wp.path.len > 0)
-                wp.path
-            else for (lib_rules) |lp| {
-                if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-            } else wp.rule_id;
-            break :inner MarkerInfo{ .category = .rule, .path = rule_path };
-        },
-    };
-    const m = marker_info orelse return null;
-    return self.draftStatusFor(m.category, m.path);
+    _ = ws_tree;
+    const selection = self.workspaceFileAtRow(row, live_ws) orelse return null;
+    return self.draftStatusFor(selection.draftCategory(), selection.path());
 }
 
 fn writeCursorBar(
@@ -915,7 +864,10 @@ pub fn syncWsRows(self: anytype) void {
             const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
             break :blk context_count + self.drafts.create_context_paths.len;
         },
-        .rules => if (live_ws) |ws_d| ws_d.ws_rules.len else 0,
+        .rules => blk: {
+            const rule_count = if (live_ws) |ws_d| ws_d.ws_rules.len else 0;
+            break :blk rule_count + self.drafts.create_rule_paths.len;
+        },
     };
     const paths_buf = allocator.alloc([]const u8, path_capacity) catch return;
     defer allocator.free(paths_buf);
@@ -945,23 +897,24 @@ pub fn syncWsRows(self: anytype) void {
             }
         },
         .rules => {
+            const rule_count = if (live_ws) |ws_d| ws_d.ws_rules.len else 0;
             if (live_ws) |ws_d| {
-                const lib_rules = self.getRules();
-                item_count = ws_d.ws_rules.len;
+                item_count = rule_count;
                 for (0..item_count) |i| {
                     const wp = ws_d.ws_rules[i];
-                    paths_buf[i] = if (wp.path.len > 0)
-                        wp.path
-                    else for (lib_rules) |lp| {
-                        if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
-                    } else wp.rule_id;
+                    paths_buf[i] = self.pathForWorkspaceRule(wp);
                     orig_idx[i] = i;
                 }
             }
-            // Workspace does not own rule creation, so no virtual
-            // rows are appended here. Library is the place to create
-            // a new rule draft; once submitted and merged it shows
-            // up through the workspace manifest.
+            // Append local create-op rule drafts as virtual rows so
+            // workspace-scoped drafts remain visible even before the
+            // hub manifest knows about them.
+            const create_paths = self.drafts.create_rule_paths;
+            for (create_paths, 0..) |path, k| {
+                paths_buf[item_count] = path;
+                orig_idx[item_count] = rule_count + k;
+                item_count += 1;
+            }
         },
     }
 
