@@ -90,6 +90,7 @@ pub fn handleEvent(
         ctx.consumeAndRedraw();
         return;
     }
+    if (handlePageAction(self, ctx, key)) return;
     if (self.settings.focus == .sidebar) {
         handleSidebarEvent(self, ctx, key);
     } else {
@@ -98,22 +99,19 @@ pub fn handleEvent(
 }
 
 pub fn shortcuts(self: anytype) []const w.Shortcut {
-    if (self.settings.focus == .sidebar) return &.{
-        .{ .key = "j/k", .label = "move" },
-        .{ .key = "Enter", .label = "open" },
-        .{ .key = "Tab", .label = "switch focus" },
-        .{ .key = "Esc", .label = "close" },
-    };
     return switch (self.settings.tab) {
         .account => &.{
             .{ .key = "j/k", .label = "move" },
-            .{ .key = "Enter", .label = "switch ws" },
+            .{ .key = "Enter", .label = "open/switch" },
+            .{ .key = "Tab", .label = "switch focus" },
             .{ .key = "c", .label = "change password" },
             .{ .key = "x", .label = "sign out" },
             .{ .key = "Esc", .label = "back" },
         },
         .organization => &.{
             .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "open" },
+            .{ .key = "Tab", .label = "switch focus" },
             .{ .key = "a", .label = "invite" },
             .{ .key = "r", .label = "change role" },
             .{ .key = "x", .label = "remove" },
@@ -121,11 +119,70 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
         },
         .token => &.{
             .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "open" },
+            .{ .key = "Tab", .label = "switch focus" },
             .{ .key = "r", .label = "refresh" },
             .{ .key = "x", .label = "revoke" },
             .{ .key = "Esc", .label = "back" },
         },
     };
+}
+
+fn handlePageAction(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) bool {
+    switch (self.settings.tab) {
+        .account => {
+            if (key.matches('x', .{})) {
+                self.confirm_message = "sign out";
+                self.confirm_action = .remove_member;
+                self.show_confirm = true;
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('c', .{})) {
+                self.status_line = "Password change (requires input dialog)";
+                ctx.consumeAndRedraw();
+                return true;
+            }
+        },
+        .organization => {
+            if (key.matches('r', .{})) {
+                self.status_line = "Role change (requires input dialog)";
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('x', .{})) {
+                self.confirm_message = "selected member";
+                self.confirm_action = .remove_member;
+                self.show_confirm = true;
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('a', .{})) {
+                self.status_line = "Invite member (requires input dialog)";
+                ctx.consumeAndRedraw();
+                return true;
+            }
+        },
+        .token => {
+            if (key.matches('r', .{})) {
+                self.status_line = "Token refresh (not yet implemented)";
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('x', .{})) {
+                self.confirm_message = "current token";
+                self.confirm_action = .revoke_token;
+                self.show_confirm = true;
+                ctx.consumeAndRedraw();
+                return true;
+            }
+        },
+    }
+    return false;
 }
 
 fn shiftSettingsTab(self: anytype, delta: i8) void {

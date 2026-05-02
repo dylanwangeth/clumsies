@@ -209,7 +209,7 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('n', .{}) and self.review.detail_tab == .content and !self.review.detail_focus_content) {
+    if (key.matches('n', .{}) and self.review.detail_tab == .content) {
         self.openNewDraftForm(.rule);
         ctx.consumeAndRedraw();
         return;
@@ -222,6 +222,45 @@ pub fn handleModuleEvent(
             ctx.consumeAndRedraw();
         }
         return;
+    }
+    if (self.review.detail_tab == .content) {
+        if (key.matches('e', .{})) {
+            self.editSelectedDraft();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches('D', .{}) or key.matches('d', .{ .shift = true })) {
+            self.requestDiscardSelectedDraft();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches('m', .{})) {
+            self.toggleSelectedDraftReady();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches('p', .{})) {
+            self.openPrComposer();
+            ctx.consumeAndRedraw();
+            return;
+        }
+    } else {
+        if (key.matches('a', .{})) {
+            self.doPrAction("accept");
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches('x', .{})) {
+            self.doPrAction("reject");
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches('c', .{})) {
+            self.review.show_comment_editor = true;
+            self.review.comment_input_len = 0;
+            ctx.consumeAndRedraw();
+            return;
+        }
     }
     if (key.matches(vaxis.Key.tab, .{})) {
         self.review.detail_focus_content = !self.review.detail_focus_content;
@@ -240,26 +279,12 @@ pub fn handleModuleEvent(
 }
 
 pub fn shortcuts(self: anytype) []const w.Shortcut {
-    if (self.review.detail_focus_content and self.review.detail_tab == .pull_requests) return &.{
-        .{ .key = "j/k", .label = "scroll" },
+    if (self.review.detail_tab == .pull_requests) return &.{
+        .{ .key = "j/k", .label = "move/scroll" },
+        .{ .key = "f", .label = "filter" },
         .{ .key = "a", .label = "accept" },
         .{ .key = "x", .label = "reject" },
         .{ .key = "c", .label = "comment" },
-        .{ .key = "Esc", .label = "back" },
-        .{ .key = "?", .label = "help" },
-    };
-    if (self.review.detail_focus_content) return &.{
-        .{ .key = "y", .label = "copy id" },
-        .{ .key = "e", .label = "edit" },
-        .{ .key = "p", .label = "submit" },
-        .{ .key = "D", .label = "discard" },
-        .{ .key = "m", .label = "mark ready" },
-        .{ .key = "j/k", .label = "scroll" },
-        .{ .key = "Esc", .label = "back" },
-    };
-    if (self.review.detail_tab == .pull_requests) return &.{
-        .{ .key = "j/k", .label = "move" },
-        .{ .key = "f", .label = "filter" },
         .{ .key = "h/l", .label = "switch tab" },
         .{ .key = "Tab", .label = "switch focus" },
         .{ .key = "r", .label = "refresh" },
@@ -267,11 +292,15 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
         .{ .key = "q", .label = "quit" },
     };
     return &.{
-        .{ .key = "j/k", .label = "move" },
+        .{ .key = "j/k", .label = "move/scroll" },
         .{ .key = "Enter", .label = "open" },
         .{ .key = "h/l", .label = "switch tab" },
         .{ .key = "y", .label = "copy id" },
         .{ .key = "n", .label = "new rule" },
+        .{ .key = "e", .label = "edit" },
+        .{ .key = "p", .label = "submit" },
+        .{ .key = "D", .label = "discard" },
+        .{ .key = "m", .label = "mark ready" },
         .{ .key = "r", .label = "refresh" },
         .{ .key = "b", .label = "bundle filter" },
         .{ .key = "?", .label = "help" },
