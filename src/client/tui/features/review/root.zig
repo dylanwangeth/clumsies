@@ -58,7 +58,7 @@ pub const detail_tabs = [_]DetailTab{ .content, .pull_requests };
 pub const State = struct {
     detail_tab: DetailTab = .content,
     detail_focus_content: bool = false,
-    show_diff: bool = false,
+    hide_diff: bool = false,
     content_view: w.ContentView,
     pr_filter: PrFilter = .open,
     pr_scroll_bars: vxfw.ScrollBars,
@@ -275,7 +275,7 @@ fn fillRuleDetailSurface(
             const title = self.lookupRuleId(rule.path) orelse "(new)";
             w.writeText(surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
             const meta_min_col: u16 = @intCast(2 + ctx.stringWidth(title) + 2);
-            if (self.review.show_diff) {
+            if (!self.review.hide_diff and selectedLibraryRuleHasDraft(self)) {
                 w.writeText(surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
             } else {
                 try writeRuleMetaOnPanelChrome(surface, ctx, meta_min_col, rule);
@@ -422,7 +422,7 @@ pub fn fetchSelectedPrDetail(self: anytype) void {
 }
 
 pub fn syncContentWidget(self: anytype) void {
-    syncContentWidgetForMode(self, self.review.show_diff);
+    syncContentWidgetForMode(self, !self.review.hide_diff);
     self.requestSelectedRuleDetail();
 }
 
@@ -454,6 +454,11 @@ fn selectedLibraryRulePath(self: anytype) ?[]const u8 {
     const k = self.library.selected_rule - rules.len;
     if (k >= self.drafts.create_rule_paths.len) return null;
     return self.drafts.create_rule_paths[k];
+}
+
+fn selectedLibraryRuleHasDraft(self: anytype) bool {
+    const path = selectedLibraryRulePath(self) orelse return false;
+    return self.draftContentForView(self.libraryCategoryForPath(path), path) != null;
 }
 
 /// Render the working-copy view for an arbitrary (cache, draft)

@@ -40,7 +40,7 @@ pub const State = struct {
     show_drawer: bool = false,
     drawer_cursor: usize = 0,
     list_sel: usize = 0,
-    show_diff: bool = false,
+    hide_diff: bool = false,
     list_scroll_bars: vxfw.ScrollBars,
     context_tree: PathTreeState = .{},
     rules_tree: PathTreeState = .{},
@@ -239,7 +239,7 @@ pub fn drawDetail(
     // right-aligned metadata badge never overlaps the path.
     const title_w: u16 = @intCast(ctx.stringWidth(title));
     const meta_min_col: u16 = 2 + title_w + 2;
-    if (self.workspace.show_diff) {
+    if (workspaceDetailShowsDiff(self, args)) {
         w.writeText(&surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
     } else if (args.dir_sel == null) if (args.live_ws) |ws_d| {
         try writeWsMetaOnHeader(&surface, ctx, meta_min_col, self, ws_d, args);
@@ -338,7 +338,7 @@ fn drawContextFileDetail(
     const ws_id = if (ws_d) |live| live.ws_id else self.activeWsId() orelse return;
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
         .context = .{ .ws_id = ws_id, .path = path },
-    }, self.workspace.show_diff);
+    }, !self.workspace.hide_diff);
 }
 
 fn drawRuleFileDetail(
@@ -351,7 +351,21 @@ fn drawRuleFileDetail(
 ) !void {
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
         .rule = .{ .path = rule_path },
-    }, self.workspace.show_diff);
+    }, !self.workspace.hide_diff);
+}
+
+fn workspaceDetailShowsDiff(self: anytype, args: DetailArgs) bool {
+    if (self.workspace.hide_diff or args.dir_sel != null) return false;
+    return switch (self.workspace.tab) {
+        .context => if (args.context_sel_path) |path|
+            self.draftContentForView(.context, path) != null
+        else
+            false,
+        .rules => if (args.rule_sel_path) |path|
+            self.draftContentForView(self.libraryCategoryForPath(path), path) != null
+        else
+            false,
+    };
 }
 
 const ContentSource = union(enum) {
@@ -635,7 +649,7 @@ pub fn handleModuleEvent(
         self.shiftWsTab(1);
         self.workspace.list_sel = 0;
         resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
-        self.workspace.show_diff = false;
+        self.workspace.hide_diff = false;
         ctx.consumeAndRedraw();
         return;
     }
@@ -643,7 +657,7 @@ pub fn handleModuleEvent(
         self.shiftWsTab(-1);
         self.workspace.list_sel = 0;
         resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
-        self.workspace.show_diff = false;
+        self.workspace.hide_diff = false;
         ctx.consumeAndRedraw();
         return;
     }
@@ -696,7 +710,7 @@ fn handleListFocusEvent(
     if (key.matches(vaxis.Key.enter, .{})) {
         if (ws_tree.dirPathAt(self.workspace.list_sel)) |dir| {
             ws_tree.toggleDir(self.api_state.allocator(), dir);
-            self.workspace.show_diff = false;
+            self.workspace.hide_diff = false;
             ctx.consumeAndRedraw();
             return;
         }
@@ -719,7 +733,7 @@ fn handleListFocusEvent(
     self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(pos);
     self.workspace.list_scroll_bars.scroll_view.ensureScroll();
     self.workspace.list_sel = pos;
-    self.workspace.show_diff = false;
+    self.workspace.hide_diff = false;
 }
 
 fn handleContentFocusEvent(
