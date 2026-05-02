@@ -90,6 +90,27 @@ pub const DraftsIndex = struct {
         }
         return null;
     }
+
+    /// Find a draft entry by any user-facing draft identifier.
+    pub fn findDraftById(self: *const DraftsIndex, category: DraftCategory, id: []const u8) ?*const DraftEntry {
+        for (self.entries.items) |*entry| {
+            if (entry.category != category) continue;
+            if (std.mem.eql(u8, entry.draft_path, id)) return entry;
+            if (entry.local_temp_id) |value| {
+                if (std.mem.eql(u8, value, id)) return entry;
+            }
+            if (entry.current_path) |value| {
+                if (std.mem.eql(u8, value, id)) return entry;
+            }
+            if (entry.rule_id) |value| {
+                if (std.mem.eql(u8, value, id)) return entry;
+            }
+            if (entry.context_id) |value| {
+                if (std.mem.eql(u8, value, id)) return entry;
+            }
+        }
+        return null;
+    }
 };
 
 /// Load `{ws_dir}/drafts/index.json` into memory. Returns an empty index if
@@ -323,6 +344,49 @@ pub fn discardDraft(
         error.FileNotFound => {},
         else => return err,
     };
+}
+
+/// Discard a draft by id, local temp id, current path, or draft path.
+/// Returns the discarded draft path, or null when no draft matched.
+pub fn discardDraftById(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    id: []const u8,
+) !?[]const u8 {
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    const entry = index.findDraftById(category, id) orelse return null;
+    const draft_path = try allocator.dupe(u8, entry.draft_path);
+    errdefer allocator.free(draft_path);
+
+    try discardDraft(allocator, ws_dir, category, draft_path);
+    return draft_path;
+}
+
+/// Discard a create-only draft addressed by the identity exposed through
+/// discovery. Create drafts use `local_temp_id` when available and
+/// otherwise fall back to `draft_path`, while `discardDraft` itself is
+/// intentionally keyed by `draft_path`.
+pub fn discardCreateDraftById(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    id: []const u8,
+) !?[]const u8 {
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    const entry = index.findByLocalTempId(id) orelse
+        index.findCreateByDraftPath(id) orelse
+        return null;
+    if (entry.category != category or entry.operation != .create) return null;
+
+    const draft_path = try allocator.dupe(u8, entry.draft_path);
+    errdefer allocator.free(draft_path);
+    try discardDraft(allocator, ws_dir, category, draft_path);
+    return draft_path;
 }
 
 pub const ReconcileSummary = struct {
@@ -842,6 +906,97 @@ test "discardDraft: removes entry and file" {
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 0), index.entries.items.len);
+}
+
+test "discardCreateDraftById: accepts local temp id and returns draft path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "projects/eth-p2p-z/project-context.md",
+        .local_temp_id = "tmp-context-1",
+    }, "draft body");
+
+    const draft_path = try discardCreateDraftById(testing.allocator, root, .context, "tmp-context-1") orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(draft_path);
+
+    try testing.expectEqualStrings("projects/eth-p2p-z/project-context.md", draft_path);
+    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .context, draft_path));
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expect(index.findByLocalTempId("tmp-context-1") == null);
+}
+
+test "discardCreateDraftById: accepts draft path fallback" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+    const path = "learning/zig-libp2p/eth-p2p-z.md";
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .create,
+        .draft_path = path,
+    }, "draft body");
+
+    const draft_path = try discardCreateDraftById(testing.allocator, root, .rule, path) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(draft_path);
+
+    try testing.expectEqualStrings(path, draft_path);
+    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .rule, path));
+}
+
+test "discardCreateDraftById: ignores non-create drafts" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .modify,
+        .draft_path = "coding/STYLE.md",
+        .current_path = "coding/STYLE.md",
+    }, "draft body");
+
+    try testing.expect(try discardCreateDraftById(testing.allocator, root, .rule, "coding/STYLE.md") == null);
+}
+
+test "discardDraftById: accepts rule id for modify draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .modify,
+        .draft_path = "coding/STYLE.md",
+        .current_path = "coding/STYLE.md",
+        .rule_id = "p-style",
+    }, "draft body");
+
+    const draft_path = try discardDraftById(testing.allocator, root, .rule, "p-style") orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(draft_path);
+
+    try testing.expectEqualStrings("coding/STYLE.md", draft_path);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expect(index.findDraftById(.rule, "p-style") == null);
 }
 
 test "discardDraft: idempotent when draft is absent" {

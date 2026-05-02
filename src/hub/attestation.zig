@@ -42,6 +42,9 @@ const AttestationEventInput = struct {
     result_names: ?[]const u8 = null,
     summary: ?[]const u8 = null,
     context_id: ?[]const u8 = null,
+    mpf_id: ?[]const u8 = null,
+    id: ?[]const u8 = null,
+    resource: ?[]const u8 = null,
     path: ?[]const u8 = null,
     new_path: ?[]const u8 = null,
 };
@@ -70,7 +73,9 @@ test "BatchRequest accepts all client attestation event payload shapes" {
         \\{"event_id":3,"session_id":"s","ws_id":"w","type":"user_prompt","timestamp":3,"content":"prompt","content_hash":"ch","model":"gpt-5.5"},
         \\{"event_id":4,"session_id":"s","ws_id":"w","type":"refer","timestamp":4,"rule_id":"r","rule_hash":"rh","constraint_id":"c","constraint_name":"n","constraint_text":"t","reason":"why"},
         \\{"event_id":5,"session_id":"s","ws_id":"w","type":"agent_report","timestamp":5,"summary":"done"},
-        \\{"event_id":6,"session_id":"s","ws_id":"w","type":"context_propose_create","timestamp":6,"context_id":"ctx","path":"research/x.md","new_path":"research/y.md"}
+        \\{"event_id":6,"session_id":"s","ws_id":"w","type":"context_propose_create","timestamp":6,"context_id":"ctx","path":"research/x.md","new_path":"research/y.md"},
+        \\{"event_id":7,"session_id":"s","ws_id":"w","type":"draft_discard","timestamp":7,"resource":"rule","id":"tmp-1","path":"coding/TEMP.md"},
+        \\{"event_id":8,"session_id":"s","ws_id":"w","type":"mpf_propose_update","timestamp":8,"mpf_id":"META_PROMPT.md","path":"META_PROMPT.md"}
         \\]}
     ;
 
@@ -79,9 +84,11 @@ test "BatchRequest accepts all client attestation event payload shapes" {
     });
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(usize, 6), parsed.value.events.len);
+    try std.testing.expectEqual(@as(usize, 8), parsed.value.events.len);
     try std.testing.expectEqualStrings("done", parsed.value.events[4].summary.?);
     try std.testing.expectEqualStrings("research/y.md", parsed.value.events[5].new_path.?);
+    try std.testing.expectEqualStrings("rule", parsed.value.events[6].resource.?);
+    try std.testing.expectEqualStrings("META_PROMPT.md", parsed.value.events[7].mpf_id.?);
 }
 
 fn defaultDays(period: []const u8) u32 {

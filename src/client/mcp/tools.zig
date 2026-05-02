@@ -1,6 +1,5 @@
-//! MCP tool definitions and dispatch. Exposes tools to the agent:
-//! memory.setup/discover/load/refer/submit and context.*/rule.* propose
-//! operations. Each call generates an attestation event.
+//! MCP tool definitions and dispatch. Exposes memory tools and the draft
+//! mutation tool to the agent. Each call generates an attestation event.
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("clumsies_lib").util.encoding;
@@ -39,49 +38,19 @@ const reject_schema =
     "{\"name\":\"" ++ tool_names.reject ++ "\",\"title\":\"Reject\",\"description\":\"Mark the current turn as unsatisfactory. Call when the user indicates the output did not follow loaded rules.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
-const propose_base_props = "\"path\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
-const propose_id_ctx = "\"context_id\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
-const propose_id_rule = "\"rule_id\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}";
-
-const context_propose_create_schema =
-    "{\"name\":\"" ++ tool_names.context_propose_create ++ "\",\"title\":\"Propose Context Create\"," ++
-    "\"description\":\"Propose creating a new workspace context file. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++ propose_base_props ++ "},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}}";
-
-const context_propose_update_schema =
-    "{\"name\":\"" ++ tool_names.context_propose_update ++ "\",\"title\":\"Propose Context Update\"," ++
-    "\"description\":\"Propose updating an existing workspace context file. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++ propose_id_ctx ++ "},\"required\":[\"context_id\",\"body\"],\"additionalProperties\":false}}";
-
-const context_propose_rename_schema =
-    "{\"name\":\"" ++ tool_names.context_propose_rename ++ "\",\"title\":\"Propose Context Rename\"," ++
-    "\"description\":\"Propose renaming a workspace context file. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"context_id\":{\"type\":\"string\"},\"new_path\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"context_id\",\"new_path\"],\"additionalProperties\":false}}";
-
-const context_propose_delete_schema =
-    "{\"name\":\"" ++ tool_names.context_propose_delete ++ "\",\"title\":\"Propose Context Delete\"," ++
-    "\"description\":\"Propose deleting a workspace context file. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"context_id\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"context_id\"],\"additionalProperties\":false}}";
-
-const rule_propose_create_schema =
-    "{\"name\":\"" ++ tool_names.rule_propose_create ++ "\",\"title\":\"Propose Rule Create\"," ++
-    "\"description\":\"Propose creating a new Library rule file. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++ propose_base_props ++ "},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}}";
-
-const rule_propose_update_schema =
-    "{\"name\":\"" ++ tool_names.rule_propose_update ++ "\",\"title\":\"Propose Rule Update\"," ++
-    "\"description\":\"Propose updating an existing Library rule. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++ propose_id_rule ++ "},\"required\":[\"rule_id\",\"body\"],\"additionalProperties\":false}}";
-
-const rule_propose_rename_schema =
-    "{\"name\":\"" ++ tool_names.rule_propose_rename ++ "\",\"title\":\"Propose Rule Rename\"," ++
-    "\"description\":\"Propose renaming a Library rule file. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"rule_id\":{\"type\":\"string\"},\"new_path\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"rule_id\",\"new_path\"],\"additionalProperties\":false}}";
-
-const rule_propose_delete_schema =
-    "{\"name\":\"" ++ tool_names.rule_propose_delete ++ "\",\"title\":\"Propose Rule Delete\"," ++
-    "\"description\":\"Propose deleting a Library rule. Creates a draft for user review.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"rule_id\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"rule_id\"],\"additionalProperties\":false}}";
+const draft_schema =
+    "{\"name\":\"" ++ tool_names.draft ++ "\",\"title\":\"Draft\"," ++
+    "\"description\":\"Create, update, rename, delete, or discard a draft for context, rule, or MPF resources. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
+    "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"mpf\"]}," ++
+    "\"op\":{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
+    "\"create\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}," ++
+    "\"update\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"body\"],\"additionalProperties\":false}," ++
+    "\"rename\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"new_path\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"new_path\"],\"additionalProperties\":false}," ++
+    "\"delete\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}," ++
+    "\"discard\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}" ++
+    "},\"additionalProperties\":false}" ++
+    "},\"required\":[\"resource\",\"op\"],\"additionalProperties\":false}}";
 
 pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(
@@ -93,14 +62,7 @@ pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
             refer_schema ++ "," ++
             submit_schema ++ "," ++
             reject_schema ++ "," ++
-            context_propose_create_schema ++ "," ++
-            context_propose_update_schema ++ "," ++
-            context_propose_rename_schema ++ "," ++
-            context_propose_delete_schema ++ "," ++
-            rule_propose_create_schema ++ "," ++
-            rule_propose_update_schema ++ "," ++
-            rule_propose_rename_schema ++ "," ++
-            rule_propose_delete_schema ++
+            draft_schema ++
             "]}",
     );
 }
@@ -159,33 +121,8 @@ pub fn handleCall(
     if (std.mem.eql(u8, name, tool_names.reject)) {
         return try handleReject(allocator, session, args_obj);
     }
-
-    // Context propose operations
-    if (std.mem.eql(u8, name, tool_names.context_propose_create)) {
-        return handleProposeCreate(allocator, workspace_root, session, args_obj, .context) catch |err| proposeErr(allocator, err);
-    }
-    if (std.mem.eql(u8, name, tool_names.context_propose_update)) {
-        return handleProposeUpdate(allocator, workspace_root, session, args_obj, .context) catch |err| proposeErr(allocator, err);
-    }
-    if (std.mem.eql(u8, name, tool_names.context_propose_rename)) {
-        return handleProposeRename(allocator, workspace_root, session, args_obj, .context) catch |err| proposeErr(allocator, err);
-    }
-    if (std.mem.eql(u8, name, tool_names.context_propose_delete)) {
-        return handleProposeDelete(allocator, workspace_root, session, args_obj, .context) catch |err| proposeErr(allocator, err);
-    }
-
-    // Prompt propose operations
-    if (std.mem.eql(u8, name, tool_names.rule_propose_create)) {
-        return handleProposeCreate(allocator, workspace_root, session, args_obj, .rule) catch |err| proposeErr(allocator, err);
-    }
-    if (std.mem.eql(u8, name, tool_names.rule_propose_update)) {
-        return handleProposeUpdate(allocator, workspace_root, session, args_obj, .rule) catch |err| proposeErr(allocator, err);
-    }
-    if (std.mem.eql(u8, name, tool_names.rule_propose_rename)) {
-        return handleProposeRename(allocator, workspace_root, session, args_obj, .rule) catch |err| proposeErr(allocator, err);
-    }
-    if (std.mem.eql(u8, name, tool_names.rule_propose_delete)) {
-        return handleProposeDelete(allocator, workspace_root, session, args_obj, .rule) catch |err| proposeErr(allocator, err);
+    if (std.mem.eql(u8, name, tool_names.draft)) {
+        return handleDraft(allocator, workspace_root, session, args_obj) catch |err| proposeErr(allocator, err);
     }
 
     return try tool_result.buildErrorResult(allocator, "Unknown tool");
@@ -793,6 +730,109 @@ fn proposeErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
     }) catch @constCast("{\"error\":{\"code\":-32603,\"message\":\"internal error\"}}");
 }
 
+const DraftOp = enum {
+    create,
+    update,
+    rename,
+    delete,
+    discard,
+};
+
+fn handleDraft(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session: *session_mod.Session,
+    args: std.json.ObjectMap,
+) ![]u8 {
+    const resource = requiredString(args, "resource") orelse return error.InvalidParams;
+    const category = parseDraftCategory(resource) orelse return error.InvalidParams;
+    const tagged_op = switch (args.get("op") orelse return error.InvalidParams) {
+        .object => |obj| obj,
+        else => return error.InvalidParams,
+    };
+    const parsed = parseDraftOp(tagged_op) orelse return error.InvalidParams;
+    const op_args = switch (tagged_op.get(draftOpName(parsed)) orelse return error.InvalidParams) {
+        .object => |obj| obj,
+        else => return error.InvalidParams,
+    };
+
+    return switch (parsed) {
+        .create => handleProposeCreate(allocator, workspace_root, session, op_args, category),
+        .update => handleProposeUpdate(allocator, workspace_root, session, op_args, category),
+        .rename => handleProposeRename(allocator, workspace_root, session, op_args, category),
+        .delete => handleProposeDelete(allocator, workspace_root, session, op_args, category),
+        .discard => handleDraftDiscard(allocator, workspace_root, session, op_args, category),
+    };
+}
+
+fn parseDraftCategory(resource: []const u8) ?drafts_mod.DraftCategory {
+    if (std.mem.eql(u8, resource, "context")) return .context;
+    if (std.mem.eql(u8, resource, "rule")) return .rule;
+    if (std.mem.eql(u8, resource, "mpf")) return .meta_prompt;
+    return null;
+}
+
+fn parseDraftOp(obj: std.json.ObjectMap) ?DraftOp {
+    if (obj.count() != 1) return null;
+    var found: ?DraftOp = null;
+    inline for (.{ DraftOp.create, DraftOp.update, DraftOp.rename, DraftOp.delete, DraftOp.discard }) |op| {
+        if (obj.get(draftOpName(op)) != null) {
+            if (found != null) return null;
+            found = op;
+        }
+    }
+    return found;
+}
+
+fn draftOpName(op: DraftOp) []const u8 {
+    return switch (op) {
+        .create => "create",
+        .update => "update",
+        .rename => "rename",
+        .delete => "delete",
+        .discard => "discard",
+    };
+}
+
+fn handleDraftDiscard(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session: *session_mod.Session,
+    args: std.json.ObjectMap,
+    category: drafts_mod.DraftCategory,
+) ![]u8 {
+    const id = resourceId(args, category) orelse return error.InvalidParams;
+    if (id.len == 0) return error.InvalidParams;
+
+    const draft_path = try drafts_mod.discardDraftById(allocator, workspace_root, category, id) orelse return error.FileNotFound;
+    defer allocator.free(draft_path);
+
+    session.recordEvent(allocator, .{ .draft_discard = .{
+        .resource = draftCategoryName(category),
+        .id = id,
+        .path = draft_path,
+    } });
+
+    return buildOkDraftPath(allocator, draft_path);
+}
+
+fn resourceId(obj: std.json.ObjectMap, category: drafts_mod.DraftCategory) ?[]const u8 {
+    if (requiredString(obj, "id")) |id| return id;
+    return switch (category) {
+        .context => requiredString(obj, "context_id"),
+        .rule => requiredString(obj, "rule_id"),
+        .meta_prompt => requiredString(obj, "mpf_id") orelse requiredString(obj, "path"),
+    };
+}
+
+fn draftCategoryName(category: drafts_mod.DraftCategory) []const u8 {
+    return switch (category) {
+        .context => "context",
+        .rule => "rule",
+        .meta_prompt => "mpf",
+    };
+}
+
 fn handleProposeCreate(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
@@ -804,6 +844,7 @@ fn handleProposeCreate(
     const body = requiredString(args, "body") orelse return error.InvalidParams;
     if (path.len == 0 or body.len == 0) return error.InvalidParams;
     const description = optionalString(args, "description");
+    if (category == .meta_prompt and !std.mem.eql(u8, path, "META_PROMPT.md")) return error.InvalidParams;
 
     try drafts_mod.createDraft(allocator, workspace_root, .{
         .category = category,
@@ -815,7 +856,7 @@ fn handleProposeCreate(
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_create = .{ .path = path } },
         .rule => .{ .rule_propose_create = .{ .path = path } },
-        .meta_prompt => return error.InvalidParams,
+        .meta_prompt => .{ .mpf_propose_create = .{ .path = path } },
     };
     session.recordEvent(allocator, payload);
 
@@ -829,11 +870,7 @@ fn handleProposeUpdate(
     args: std.json.ObjectMap,
     category: drafts_mod.DraftCategory,
 ) ![]u8 {
-    const id = switch (category) {
-        .context => requiredString(args, "context_id") orelse return error.InvalidParams,
-        .rule => requiredString(args, "rule_id") orelse return error.InvalidParams,
-        .meta_prompt => return error.InvalidParams,
-    };
+    const id = resourceId(args, category) orelse return error.InvalidParams;
     if (id.len == 0) return error.InvalidParams;
     const body = requiredString(args, "body") orelse return error.InvalidParams;
     if (body.len == 0) return error.InvalidParams;
@@ -842,12 +879,12 @@ fn handleProposeUpdate(
     var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
     defer manifest.deinit(allocator);
 
-    const m_entry = switch (category) {
+    const m_entry: workspace_rule.ManifestEntry = switch (category) {
         .context => manifest.context.get(id) orelse return error.FileNotFound,
         .rule => manifest.rules.get(id) orelse return error.FileNotFound,
-        .meta_prompt => return error.InvalidParams,
+        .meta_prompt => .{ .path = "META_PROMPT.md", .hash = "" },
     };
-    const draft_category = if (category == .rule and isMetaPromptPath(m_entry.path))
+    const draft_category = if ((category == .rule and isMetaPromptPath(m_entry.path)) or category == .meta_prompt)
         drafts_mod.DraftCategory.meta_prompt
     else
         category;
@@ -858,7 +895,7 @@ fn handleProposeUpdate(
             try readMetaPromptCacheFile(allocator, workspace_root)
         else
             try readRuleCacheFile(allocator, workspace_root, m_entry.path),
-        .meta_prompt => return error.InvalidParams,
+        .meta_prompt => try readMetaPromptCacheFile(allocator, workspace_root),
     };
     defer allocator.free(cache_content);
 
@@ -878,7 +915,7 @@ fn handleProposeUpdate(
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_update = .{ .id = id, .path = m_entry.path } },
         .rule => .{ .rule_propose_update = .{ .id = id, .path = m_entry.path } },
-        .meta_prompt => return error.InvalidParams,
+        .meta_prompt => .{ .mpf_propose_update = .{ .id = id, .path = m_entry.path } },
     };
     session.recordEvent(allocator, payload);
 
@@ -892,14 +929,11 @@ fn handleProposeRename(
     args: std.json.ObjectMap,
     category: drafts_mod.DraftCategory,
 ) ![]u8 {
-    const id = switch (category) {
-        .context => requiredString(args, "context_id") orelse return error.InvalidParams,
-        .rule => requiredString(args, "rule_id") orelse return error.InvalidParams,
-        .meta_prompt => return error.InvalidParams,
-    };
+    const id = resourceId(args, category) orelse return error.InvalidParams;
     if (id.len == 0) return error.InvalidParams;
     const new_path = requiredString(args, "new_path") orelse return error.InvalidParams;
     if (new_path.len == 0) return error.InvalidParams;
+    if (category == .meta_prompt) return error.InvalidParams;
     const description = optionalString(args, "description");
 
     var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
@@ -948,21 +982,31 @@ fn handleProposeDelete(
     args: std.json.ObjectMap,
     category: drafts_mod.DraftCategory,
 ) ![]u8 {
-    const id = switch (category) {
-        .context => requiredString(args, "context_id") orelse return error.InvalidParams,
-        .rule => requiredString(args, "rule_id") orelse return error.InvalidParams,
-        .meta_prompt => return error.InvalidParams,
-    };
+    const id = resourceId(args, category) orelse return error.InvalidParams;
     if (id.len == 0) return error.InvalidParams;
     const description = optionalString(args, "description");
 
     var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
     defer manifest.deinit(allocator);
 
-    const m_entry = switch (category) {
-        .context => manifest.context.get(id) orelse return error.FileNotFound,
-        .rule => manifest.rules.get(id) orelse return error.FileNotFound,
-        .meta_prompt => return error.InvalidParams,
+    const m_entry: workspace_rule.ManifestEntry = switch (category) {
+        .context => manifest.context.get(id) orelse {
+            if (try drafts_mod.discardCreateDraftById(allocator, workspace_root, category, id)) |draft_path| {
+                defer allocator.free(draft_path);
+                session.recordEvent(allocator, .{ .context_propose_delete = .{ .id = id, .path = draft_path } });
+                return buildOkDraftPath(allocator, draft_path);
+            }
+            return error.FileNotFound;
+        },
+        .rule => manifest.rules.get(id) orelse {
+            if (try drafts_mod.discardCreateDraftById(allocator, workspace_root, category, id)) |draft_path| {
+                defer allocator.free(draft_path);
+                session.recordEvent(allocator, .{ .rule_propose_delete = .{ .id = id, .path = draft_path } });
+                return buildOkDraftPath(allocator, draft_path);
+            }
+            return error.FileNotFound;
+        },
+        .meta_prompt => .{ .path = "META_PROMPT.md", .hash = "" },
     };
 
     try drafts_mod.createDraft(allocator, workspace_root, .{
@@ -978,7 +1022,7 @@ fn handleProposeDelete(
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_delete = .{ .id = id, .path = m_entry.path } },
         .rule => .{ .rule_propose_delete = .{ .id = id, .path = m_entry.path } },
-        .meta_prompt => return error.InvalidParams,
+        .meta_prompt => .{ .mpf_propose_delete = .{ .id = id, .path = m_entry.path } },
     };
     session.recordEvent(allocator, payload);
 
@@ -1039,7 +1083,7 @@ fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8)
     return tmp.dir.realpath(".", buf) catch "";
 }
 
-test "buildListResult: exposes all memory and propose tools" {
+test "buildListResult: exposes memory tools and unified draft tool" {
     const result = try buildListResult(testing.allocator);
     defer testing.allocator.free(result);
 
@@ -1048,20 +1092,241 @@ test "buildListResult: exposes all memory and propose tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.load ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.refer ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.submit ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.context_propose_create ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.context_propose_update ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.context_propose_rename ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.context_propose_delete ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.rule_propose_create ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.rule_propose_update ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.rule_propose_rename ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.rule_propose_delete ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.draft ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_create\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_update\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_rename\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_delete\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"rule.propose_create\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"rule.propose_update\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"rule.propose_rename\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"rule.propose_delete\"") == null);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.begin\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.complete\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.list\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
+}
+
+test "draft tool creates context draft through tagged op" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const args_json =
+        \\{
+        \\  "resource": "context",
+        \\  "op": {
+        \\    "create": {
+        \\      "path": "research/new-context.md",
+        \\      "body": "draft body",
+        \\      "description": "new context"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, root),
+    };
+    defer session.deinit(testing.allocator);
+
+    const result = try handleDraft(testing.allocator, root, &session, parsed.value.object);
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+
+    var index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    const entry = index.findCreateByDraftPath("research/new-context.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(drafts_mod.DraftCategory.context, entry.category);
+}
+
+test "draft tool discards rule draft by local temp id" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try drafts_mod.createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .create,
+        .draft_path = "coding/TEMP.md",
+        .local_temp_id = "tmp-rule-1",
+    }, "draft body");
+
+    const args_json =
+        \\{
+        \\  "resource": "rule",
+        \\  "op": {
+        \\    "discard": {
+        \\      "id": "tmp-rule-1"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, root),
+    };
+    defer session.deinit(testing.allocator);
+
+    const result = try handleDraft(testing.allocator, root, &session, parsed.value.object);
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+
+    var index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expect(index.findByLocalTempId("tmp-rule-1") == null);
+}
+
+test "draft tool updates MPF draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+    try tmp.dir.makePath("cache");
+    try writeTestFile(tmp.dir, "cache/META_PROMPT.md", "old mpf");
+
+    const args_json =
+        \\{
+        \\  "resource": "mpf",
+        \\  "op": {
+        \\    "update": {
+        \\      "id": "META_PROMPT.md",
+        \\      "body": "new mpf"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, root),
+    };
+    defer session.deinit(testing.allocator);
+
+    const result = try handleDraft(testing.allocator, root, &session, parsed.value.object);
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+
+    var index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    const entry = index.findByCurrentPath(.meta_prompt, "META_PROMPT.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(drafts_mod.DraftOperation.modify, entry.operation);
+}
+
+test "context propose delete discards create-only draft by path id" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+    const draft_path = "projects/eth-p2p-z/project-context.md";
+
+    try drafts_mod.createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = draft_path,
+        .description = "bad context",
+    }, "draft body");
+
+    const args_json =
+        \\{
+        \\  "context_id": "projects/eth-p2p-z/project-context.md",
+        \\  "description": "discard bad draft"
+        \\}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, root),
+    };
+    defer session.deinit(testing.allocator);
+
+    const result = try handleProposeDelete(
+        testing.allocator,
+        root,
+        &session,
+        parsed.value.object,
+        .context,
+    );
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+
+    var index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expect(index.findCreateByDraftPath(draft_path) == null);
+
+    var discovered = try workspace_rule.discoverSearchable(testing.allocator, root, .context, null, "eth-p2p-z");
+    defer workspace_rule.deinitRuleItems(testing.allocator, &discovered);
+    try testing.expectEqual(@as(usize, 0), discovered.items.len);
+}
+
+test "rule propose delete discards create-only draft by local temp id" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+    const draft_path = "learning/zig-libp2p/eth-p2p-z.md";
+
+    try drafts_mod.createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .create,
+        .draft_path = draft_path,
+        .local_temp_id = "tmp-rule-1",
+        .description = "bad rule",
+    }, "draft body");
+
+    const args_json =
+        \\{
+        \\  "rule_id": "tmp-rule-1",
+        \\  "description": "discard bad draft"
+        \\}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, root),
+    };
+    defer session.deinit(testing.allocator);
+
+    const result = try handleProposeDelete(
+        testing.allocator,
+        root,
+        &session,
+        parsed.value.object,
+        .rule,
+    );
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+
+    var index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expect(index.findByLocalTempId("tmp-rule-1") == null);
+    try testing.expect(index.findCreateByDraftPath(draft_path) == null);
 }
 
 test "discoverResultNames caps recorded names" {

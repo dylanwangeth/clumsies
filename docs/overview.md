@@ -36,7 +36,7 @@ The clearest way to understand clumsies is through eight core objects:
 | Rule | the basic behavioral asset that the rest of the lifecycle is built around |
 | Workspace | the project boundary that selects Library content and owns context |
 | Context | project facts such as specs, ADRs, and research |
-| Attestation | structured usage signals such as search, load, and refer |
+| Attestation | usage signals from discover, load, and refer |
 | Draft | local in-progress work before review or merge |
 | PR | the review path that moves changes back into shared authority |
 

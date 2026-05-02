@@ -48,11 +48,10 @@ Follow this loop every turn:
 3. **Apply.** Follow loaded rules in your work. Rules override your defaults.
 4. **Refer.** Call `memory.refer()` for each rule you applied. This is
    not optional — it is how the system measures rule effectiveness.
-5. **Refine.** When the user asks you to create, update, or delete rules or
-   context, use `context.propose_create()`, `context.propose_update()`,
-   `context.propose_rename()`, `context.propose_delete()` for workspace context,
-   and `rule.propose_create()`, `rule.propose_update()`,
-   `rule.propose_rename()`, `rule.propose_delete()` for library rules.
+5. **Refine.** When the user asks you to create, update, rename,
+   delete, or discard draft changes for rules, context, or MPF.
+   Use the `draft` tool with a `resource` value and exactly one
+   tagged `op` object.
 6. **Submit.** Call `memory.submit()` with a short summary of your work before
    finishing every response. The stop hook will block if you forget.
 
@@ -81,7 +80,8 @@ Most of the file still matches the current product model:
 
 - `META_PROMPT.md` is still a reserved workspace cache asset
 - the agent-facing loop is now explicit: discover, load, apply, refer, refine, submit
-- the file now describes the protocol in terms of `rule`, `workflow`, and `context`
+- the file now describes the protocol in terms of `rule`, `workflow`,
+  `context`, and MPF draft operations
 - loaded rules still outrank model defaults
 
 ## Where the protocol now lives in the docs

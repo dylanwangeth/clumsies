@@ -14,15 +14,17 @@ At a high level, attestation exists around three kinds of runtime action:
 
 | Signal | Meaning |
 | --- | --- |
-| search | the agent looked for relevant material |
+| discover | the agent looked for relevant material |
 | load | the agent pulled material into task context |
 | refer | the agent declared an applied constraint |
 
-Those signals are not equally strong. Search is weak evidence. Load is stronger. Refer is the strongest signal in the model because it claims that a specific constraint actually mattered during the task.
+Those signals are not equally strong. Discover is weak evidence. Load is
+stronger. Refer is strongest because it names the constraint used.
 
 The current attestation model also treats session setup and user input capture as part of the runtime event stream. In other words, attestation is not only about "which rule was mentioned." It is about reconstructing enough structured runtime behavior to support useful later analysis.
 
-In the current client implementation, attestation is not only `search`, `load`, and `refer`. The local event model in `src/client/attestation.zig` also includes:
+Attestation is not only `discover`, `load`, and `refer`. The local event
+model in `src/client/attestation.zig` also includes:
 
 - `setup`
 - `user_prompt`
@@ -36,6 +38,10 @@ In the current client implementation, attestation is not only `search`, `load`, 
 - `rule_propose_update`
 - `rule_propose_rename`
 - `rule_propose_delete`
+- `mpf_propose_create`
+- `mpf_propose_update`
+- `mpf_propose_delete`
+- `draft_discard`
 
 That matters because the product is trying to observe more than retrieval. It also wants evidence around turn setup, applied constraints, user input, and content change proposals.
 
@@ -57,14 +63,26 @@ Attestation is designed to be buffered locally and uploaded asynchronously rathe
 
 That is an architectural choice, not an implementation accident. It keeps runtime work non-blocking while still letting Hub become the place where deduplication, persistence, and aggregation happen.
 
-The current local files are:
+The current local files are session-scoped:
+
+```text
+~/.clumsies/workspaces/{ws_id}/logs/attestation/{session_id}.jsonl
+~/.clumsies/workspaces/{ws_id}/logs/attestation/{session_id}.cursor
+```
+
+The JSONL file stores the append-only event stream for one host-agent
+session. The cursor file stores that session's upload offset. The TUI
+background uploader can then flush pending events without blocking work.
+
+Older clients wrote a legacy workspace-level pair:
 
 ```text
 ~/.clumsies/workspaces/{ws_id}/attestation.jsonl
 ~/.clumsies/workspaces/{ws_id}/attestation.cursor
 ```
 
-`attestation.jsonl` stores the append-only local event stream. `attestation.cursor` stores the upload cursor so the TUI startup uploader knows which events have already been delivered to Hub.
+The upload worker still checks that legacy path. Buffered events are
+preserved, but new events are written under `logs/attestation/`.
 
 The upload path on the server side is:
 

@@ -72,7 +72,8 @@ That matters because sync, cache refresh, rename handling, and non-blocking loca
 
 ## Attestation
 
-Attestation is the structured event stream produced when agents search, load, and refer to Library behavior during real work.
+Attestation is the event stream produced when agents discover and load
+Library behavior, then refer to it during real work.
 
 Attestation is not decorative analytics. It is the feedback signal for the rule lifecycle and the broader improvement loop around Library content. Without it, teams are left guessing which constraints actually mattered and which ones were only present in theory.
 
