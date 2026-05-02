@@ -152,7 +152,12 @@ choose what is relevant before spending context window on full content.
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `ids` | string array | yes | one or more rule, workflow, or context IDs |
-| `knownHashes` | object map | no | optional `{id: hash}` map for delta loading |
+| `knownHashes` | object map | yes | `{id: hash}` map for delta loading; include every requested id |
+
+Each `ids` entry must also be present in `knownHashes`. Pass the remembered
+hash when available. Pass an empty string when the caller explicitly does not
+know the hash yet. Omitting `knownHashes`, or omitting one requested id from the
+map, is invalid.
 
 ### Structured result
 

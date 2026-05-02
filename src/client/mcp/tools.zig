@@ -24,7 +24,7 @@ const discover_schema =
 
 const load_schema =
     "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule, workflow, or context content by ids. Returns delta based on knownHashes. Rule/workflow results include constraints: referable markdown sections parsed from H2 headings and H2 list items. Context results do not have referable constraints.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\"],\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\",\"knownHashes\"],\"additionalProperties\":false}}";
 
 const refer_schema =
     "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare applied rule/workflow constraints. A constraint is one semantic markdown section returned in memory.load constraints: either a whole H2 section or one list item inside an H2 section. The constraintId wire field must be copied exactly from a returned constraint id: H2 title for a whole-section constraint, or H2/ordinal for a list-item constraint. ruleId must identify that rule/workflow, not context.\"," ++
@@ -299,7 +299,7 @@ fn handleLoad(
     var ids = try parseRequiredIds(allocator, args_obj.get("ids"));
     defer ids.deinit(allocator);
 
-    var known = try parseKnownHashes(allocator, args_obj.get("knownHashes"));
+    var known = try parseKnownHashes(allocator, ids.items, args_obj.get("knownHashes"));
     defer known.deinit(allocator);
 
     var result = try workspace_rule.loadRules(
@@ -650,12 +650,13 @@ fn parseStringList(
 
 fn parseKnownHashes(
     allocator: std.mem.Allocator,
+    ids: []const []const u8,
     value_opt: ?std.json.Value,
 ) !std.ArrayList(workspace_rule.KnownHash) {
     var known: std.ArrayList(workspace_rule.KnownHash) = .empty;
     errdefer known.deinit(allocator);
 
-    const value = value_opt orelse return known;
+    const value = value_opt orelse return error.InvalidParams;
     const obj = switch (value) {
         .object => |o| o,
         else => return error.InvalidParams,
@@ -668,6 +669,16 @@ fn parseKnownHashes(
             else => return error.InvalidParams,
         };
         try known.append(allocator, .{ .id = entry.key_ptr.*, .hash = hash });
+    }
+    for (ids) |id| {
+        var found = false;
+        for (known.items) |entry| {
+            if (std.mem.eql(u8, entry.id, id)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return error.InvalidParams;
     }
 
     return known;
@@ -1093,6 +1104,7 @@ test "buildListResult: exposes memory tools and unified draft tool" {
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.refer ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.submit ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.draft ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"required\":[\"ids\",\"knownHashes\"]") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_create\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_update\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_rename\"") == null);
@@ -1107,6 +1119,47 @@ test "buildListResult: exposes memory tools and unified draft tool" {
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.list\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
+}
+
+test "parseKnownHashes requires explicit map" {
+    try testing.expectError(
+        error.InvalidParams,
+        parseKnownHashes(testing.allocator, &.{"p-style"}, null),
+    );
+}
+
+test "parseKnownHashes requires an entry for every requested id" {
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"p-other":"sha256:abc"}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    try testing.expectError(
+        error.InvalidParams,
+        parseKnownHashes(testing.allocator, &.{"p-style"}, parsed.value),
+    );
+}
+
+test "parseKnownHashes accepts empty hash as explicit unknown" {
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"p-style":""}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    var known = try parseKnownHashes(testing.allocator, &.{"p-style"}, parsed.value);
+    defer known.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), known.items.len);
+    try testing.expectEqualStrings("p-style", known.items[0].id);
+    try testing.expectEqualStrings("", known.items[0].hash);
 }
 
 test "draft tool creates context draft through tagged op" {

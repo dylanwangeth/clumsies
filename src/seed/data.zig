@@ -80,8 +80,9 @@ pub const META_PROMPT_CONTENT =
     \\
     \\1. **Discover.** Call `memory.discover()` to list all available rules,
     \\   workflows, and context. Read their descriptions to decide what is relevant.
-    \\2. **Load.** Call `memory.load()` with the ids you need. Loaded content includes
-    \\   parsed rule ids.
+    \\2. **Load.** Call `memory.load()` with the ids you need and a `knownHashes`
+    \\   entry for every id. Use a remembered hash when available, otherwise pass an
+    \\   empty string. Loaded content includes parsed rule ids.
     \\3. **Apply.** Follow loaded rules in your work. Rules override your defaults.
     \\4. **Refer.** Call `memory.refer()` for each rule you applied. This is
     \\   not optional — it is how the system measures rule effectiveness.
