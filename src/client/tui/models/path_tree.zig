@@ -465,7 +465,17 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
                 return;
             };
 
-            self.clearRows();
+            var next_leaf_indices: std.ArrayListUnmanaged(?usize) = .empty;
+            defer next_leaf_indices.deinit(allocator);
+            var next_dir_paths: std.ArrayListUnmanaged(?[]const u8) = .empty;
+            defer next_dir_paths.deinit(allocator);
+            var next_depths: std.ArrayListUnmanaged(u8) = .empty;
+            defer next_depths.deinit(allocator);
+            var next_text_lens: std.ArrayListUnmanaged(usize) = .empty;
+            defer next_text_lens.deinit(allocator);
+            var next_text_bufs: std.ArrayListUnmanaged([text_buf_len]u8) = .empty;
+            defer next_text_bufs.deinit(allocator);
+
             var i: usize = 0;
             while (i < rows_buf.items.len) : (i += 1) {
                 const tr = rows_buf.items[i];
@@ -480,18 +490,37 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
 
                 switch (tr.kind) {
                     .dir => {
-                        self.leaf_indices.append(allocator, null) catch return;
-                        self.dir_paths.append(allocator, tr.dir_prefix) catch return;
+                        next_leaf_indices.append(allocator, null) catch return;
+                        next_dir_paths.append(allocator, tr.dir_prefix) catch return;
                     },
                     .leaf => {
-                        self.leaf_indices.append(allocator, sorted_orig[tr.leaf_idx]) catch return;
-                        self.dir_paths.append(allocator, null) catch return;
+                        next_leaf_indices.append(allocator, sorted_orig[tr.leaf_idx]) catch return;
+                        next_dir_paths.append(allocator, null) catch return;
                     },
                 }
-                self.depths.append(allocator, tr.depth) catch return;
-                self.text_lens.append(allocator, len) catch return;
-                self.text_bufs.append(allocator, buf) catch return;
+                next_depths.append(allocator, tr.depth) catch return;
+                next_text_lens.append(allocator, len) catch return;
+                next_text_bufs.append(allocator, buf) catch return;
             }
+
+            self.clearRows();
+            self.leaf_indices.appendSlice(allocator, next_leaf_indices.items) catch return;
+            self.dir_paths.appendSlice(allocator, next_dir_paths.items) catch {
+                self.clearRows();
+                return;
+            };
+            self.depths.appendSlice(allocator, next_depths.items) catch {
+                self.clearRows();
+                return;
+            };
+            self.text_lens.appendSlice(allocator, next_text_lens.items) catch {
+                self.clearRows();
+                return;
+            };
+            self.text_bufs.appendSlice(allocator, next_text_bufs.items) catch {
+                self.clearRows();
+                return;
+            };
         }
 
         fn clearRows(self: *Self) void {
