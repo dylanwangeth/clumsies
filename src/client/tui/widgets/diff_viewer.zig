@@ -42,8 +42,12 @@ pub fn computeDiffLines(
     alloc: std.mem.Allocator,
     base: []const u8,
     proposed: []const u8,
-) []const []const u8 {
+) ![]const []const u8 {
     var lines: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (lines.items) |line| alloc.free(line);
+        lines.deinit(alloc);
+    }
     var base_it = std.mem.splitScalar(u8, base, '\n');
     var prop_it = std.mem.splitScalar(u8, proposed, '\n');
 
@@ -52,26 +56,17 @@ pub fn computeDiffLines(
         const p = prop_it.next();
         if (b == null and p == null) break;
         if (b != null and p != null and std.mem.eql(u8, b.?, p.?)) {
-            lines.append(
-                alloc,
-                std.fmt.allocPrint(alloc, "  {s}", .{b.?}) catch continue,
-            ) catch continue;
+            try lines.append(alloc, try std.fmt.allocPrint(alloc, "  {s}", .{b.?}));
         } else {
             if (b) |bl| {
-                lines.append(
-                    alloc,
-                    std.fmt.allocPrint(alloc, "- {s}", .{bl}) catch continue,
-                ) catch continue;
+                try lines.append(alloc, try std.fmt.allocPrint(alloc, "- {s}", .{bl}));
             }
             if (p) |pl| {
-                lines.append(
-                    alloc,
-                    std.fmt.allocPrint(alloc, "+ {s}", .{pl}) catch continue,
-                ) catch continue;
+                try lines.append(alloc, try std.fmt.allocPrint(alloc, "+ {s}", .{pl}));
             }
         }
     }
-    return lines.items;
+    return try lines.toOwnedSlice(alloc);
 }
 
 pub const Marker = enum { unchanged, added, removed };
@@ -190,6 +185,19 @@ test "classifyLine: four shapes" {
 
 test "classifyLine: empty line is context" {
     try std.testing.expectEqual(LineKind.context, classifyLine(""));
+}
+
+test "computeDiffLines: returns owned prefixed lines" {
+    const lines = try computeDiffLines(std.testing.allocator, "a\nold", "a\nnew");
+    defer {
+        for (lines) |line| std.testing.allocator.free(line);
+        std.testing.allocator.free(lines);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    try std.testing.expectEqualStrings("  a", lines[0]);
+    try std.testing.expectEqualStrings("- old", lines[1]);
+    try std.testing.expectEqualStrings("+ new", lines[2]);
 }
 
 test "computeInlineGutter: identical input yields all unchanged" {

@@ -263,7 +263,7 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
 
 fn submitCommentPath(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror![]const u8 {
     if (p.target_kind == .context) {
-        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}/comments", .{ p.ws_id orelse "", p.pr_id });
+        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}/comments", .{ try requireContextWsId(p.ws_id), p.pr_id });
     }
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}/comments", .{p.pr_id});
 }
@@ -275,7 +275,7 @@ fn submitCommentBody(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror!
 
 fn prActionPath(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8 {
     if (p.target_kind == .context) {
-        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}", .{ p.ws_id orelse "", p.pr_id });
+        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}", .{ try requireContextWsId(p.ws_id), p.pr_id });
     }
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}", .{p.pr_id});
 }
@@ -321,16 +321,57 @@ fn wsManifestPath(alloc: std.mem.Allocator, p: WsIdParams) anyerror![]const u8 {
 
 fn prDetailPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
     if (p.target_kind == .context) {
-        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}", .{ p.ws_id orelse "", p.pr_id });
+        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}", .{ try requireContextWsId(p.ws_id), p.pr_id });
     }
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}", .{p.pr_id});
 }
 
 fn prCommentsPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
     if (p.target_kind == .context) {
-        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}/comments", .{ p.ws_id orelse "", p.pr_id });
+        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}/comments", .{ try requireContextWsId(p.ws_id), p.pr_id });
     }
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}/comments", .{p.pr_id});
+}
+
+fn requireContextWsId(ws_id: ?[]const u8) anyerror![]const u8 {
+    const value = ws_id orelse return error.MissingWorkspaceId;
+    if (value.len == 0) return error.MissingWorkspaceId;
+    return value;
+}
+
+test "context PR paths require workspace id" {
+    const alloc = std.testing.allocator;
+
+    try std.testing.expectError(error.MissingWorkspaceId, prDetailPath(alloc, .{
+        .pr_id = "cpr-1",
+        .target_kind = .context,
+    }));
+    try std.testing.expectError(error.MissingWorkspaceId, prCommentsPath(alloc, .{
+        .pr_id = "cpr-1",
+        .target_kind = .context,
+        .ws_id = "",
+    }));
+    try std.testing.expectError(error.MissingWorkspaceId, submitCommentPath(alloc, .{
+        .pr_id = "cpr-1",
+        .target_kind = .context,
+        .body = "Looks good.",
+    }));
+    try std.testing.expectError(error.MissingWorkspaceId, prActionPath(alloc, .{
+        .pr_id = "cpr-1",
+        .target_kind = .context,
+        .action = "accept",
+    }));
+}
+
+test "context PR paths include workspace id when present" {
+    const alloc = std.testing.allocator;
+    const path = try prDetailPath(alloc, .{
+        .pr_id = "cpr-1",
+        .target_kind = .context,
+        .ws_id = "ws-1",
+    });
+    defer alloc.free(path);
+    try std.testing.expectEqualStrings("/api/workspaces/ws-1/context/prs/cpr-1", path);
 }
 
 /// Wrap the existing `parse.parseRulePrs` into the payload shape that

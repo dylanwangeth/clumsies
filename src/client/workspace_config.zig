@@ -45,6 +45,10 @@ pub fn resolveWorkspace(allocator: std.mem.Allocator, cwd: []const u8) !Workspac
 }
 
 /// Return every workspace bound in ~/.clumsies/config.toml.
+///
+/// Caller owns the returned slice and each entry's `ws_id` and `name`.
+/// Use `deinitWorkspaceList` when the allocator is not an arena with a
+/// bounded lifetime.
 pub fn listWorkspaces(allocator: std.mem.Allocator) ![]WorkspaceListEntry {
     var parsed = try loadConfig(allocator);
     defer parsed.deinit();
@@ -72,6 +76,14 @@ pub fn listWorkspaces(allocator: std.mem.Allocator) ![]WorkspaceListEntry {
     }
 
     return try list.toOwnedSlice(allocator);
+}
+
+pub fn deinitWorkspaceList(allocator: std.mem.Allocator, list: []WorkspaceListEntry) void {
+    for (list) |entry| {
+        allocator.free(entry.ws_id);
+        allocator.free(entry.name);
+    }
+    allocator.free(list);
 }
 
 /// Resolve the current workspace root for local client operations.
