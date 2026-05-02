@@ -1,3 +1,7 @@
+//! View-model adapters for TUI rendering. Functions in this module translate
+//! parsed API/state data into compact display entries used by feature panels,
+//! keeping formatting and display defaults out of the transport layer.
+
 const std = @import("std");
 const data = @import("../models/view_types.zig");
 const attestation_reader = @import("../runtime/attestation_reader.zig");

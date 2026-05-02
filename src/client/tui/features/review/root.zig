@@ -160,7 +160,7 @@ pub fn handleEmbeddedPaneEvent(
                 ctx.consumeAndRedraw();
                 return;
             }
-            if (key.matches('D', .{ .shift = true })) {
+            if (key.matches('D', .{}) or key.matches('d', .{ .shift = true })) {
                 self.requestDiscardSelectedDraft();
                 ctx.consumeAndRedraw();
                 return;
@@ -481,35 +481,48 @@ pub fn syncContentWidgetBytes(
     self.review.content_view.syncBytes(self.viewAllocator(), cache_content, draft_content);
 }
 
-/// Workspace-side entrypoint: render the working copy for a
-/// workspace context file at `path`. Pulls cache bytes from the
-/// ws_context_content cache and overlays the local context draft
-/// if one exists. Safe to call with empty bytes (e.g. pure
-/// create-op draft with no cache backing) — renders a flat view of
-/// whatever the draft file contains.
+/// Workspace-side entrypoint: render a workspace context file at
+/// `path`. Pulls cache bytes from the ws_context_content cache and
+/// overlays the local context draft if one exists. Normal mode renders
+/// the current working copy as flat text; diff mode compares cached
+/// content against the draft. Empty cache bytes are valid for pure
+/// create-op drafts with no cache backing.
 pub fn syncWsContextContentWidget(
     self: anytype,
     ws_id: []const u8,
     path: []const u8,
+    show_diff: bool,
 ) void {
     const cache_content: []const u8 = self.cachedWorkspaceContextBody(ws_id, path) orelse "";
     const draft_content: ?[]const u8 = self.draftContentForView(.context, path);
-    syncContentWidgetBytes(self, cache_content, draft_content);
+    const visible_content = draft_content orelse cache_content;
+    if (show_diff) {
+        syncContentWidgetBytes(self, cache_content, draft_content);
+    } else {
+        syncContentWidgetBytes(self, visible_content, null);
+    }
 }
 
-/// Workspace-side entrypoint mirroring syncWsContextContentWidget
-/// for the Rules tab. Workspace rule bodies come from the same
-/// org-wide rule_content cache that Library reads, but the draft
-/// overlay is keyed by rule path so this helper threads both
-/// into the shared renderer.
+/// Workspace-side entrypoint mirroring syncWsContextContentWidget for
+/// the Rules tab. Workspace rule bodies come from the same org-wide
+/// rule_content cache that Library reads, but the draft overlay is
+/// keyed by rule path. Normal mode renders the working copy as flat
+/// text; diff mode threads both cache and draft bytes into the shared
+/// renderer.
 pub fn syncWsRuleContentWidget(
     self: anytype,
     path: []const u8,
+    show_diff: bool,
 ) void {
     const category = self.libraryCategoryForPath(path);
     const cache_content: []const u8 = self.cachedLibraryRuleBody(category, path) orelse "";
     const draft_content: ?[]const u8 = self.draftContentForView(category, path);
-    syncContentWidgetBytes(self, cache_content, draft_content);
+    const visible_content = draft_content orelse cache_content;
+    if (show_diff) {
+        syncContentWidgetBytes(self, cache_content, draft_content);
+    } else {
+        syncContentWidgetBytes(self, visible_content, null);
+    }
 }
 
 /// Build the scrollable content surface against the current

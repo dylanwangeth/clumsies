@@ -1,3 +1,7 @@
+//! Parsers that convert Hub JSON responses into TUI API models. Parsing is
+//! centralized here so fetch and endpoint dispatch code can stay focused on
+//! transport, request routing, and error classification.
+
 const std = @import("std");
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 const collab_api = @import("clumsies_lib").protocol.collab_api;

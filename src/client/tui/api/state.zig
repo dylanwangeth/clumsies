@@ -1,3 +1,7 @@
+//! Shared TUI API state. This module defines the long-lived caches, pending
+//! request slots, local runtime snapshots, and helper accessors that connect
+//! asynchronous Hub fetches to synchronous draw code.
+
 const std = @import("std");
 const collab_api = @import("clumsies_lib").protocol.collab_api;
 const library_api = @import("clumsies_lib").protocol.library_api;
