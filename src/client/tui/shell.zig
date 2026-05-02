@@ -62,7 +62,6 @@ const TopModule = enum(u8) {
 
 const top_tabs = [_]TopModule{ .dashboard, .workspace, .library, .analysis };
 
-const FOOTER_STATUS_TICKS = 60;
 const WORKSPACE_METADATA_REFRESH_TICKS = 600;
 const GLOBAL_METADATA_REFRESH_TICKS = 3000;
 const PathTreeState = workspace_panel.PathTreeState;
@@ -84,9 +83,6 @@ pub const Shell = struct {
     show_confirm: bool = false,
     confirm_message: []const u8 = "",
     confirm_action: ConfirmAction = .none,
-    status_line: []const u8 = "Ready.",
-    last_status_line: []const u8 = "Ready.",
-    status_line_since_tick: u64 = 0,
     last_safe_layout_size: vxfw.Size = .{},
     system_notices: w.SystemNoticeQueue = .{},
     view_arena: std.heap.ArenaAllocator,
@@ -187,13 +183,13 @@ pub const Shell = struct {
                     if (key.matches('y', .{})) {
                         switch (self.confirm_action) {
                             .remove_member => {
-                                self.status_line = "Member removed (not yet implemented)";
+                                self.notifyOp(.info, "Member removed (not yet implemented)");
                             },
                             .delete_bundle => {
-                                self.status_line = "Bundle deleted (not yet implemented)";
+                                self.notifyOp(.info, "Bundle deleted (not yet implemented)");
                             },
                             .delete_workspace => {
-                                self.status_line = "Workspace deleted (not yet implemented)";
+                                self.notifyOp(.info, "Workspace deleted (not yet implemented)");
                             },
                             .revoke_token => {
                                 api.specs.dispatchFromState(
@@ -204,7 +200,7 @@ pub const Shell = struct {
                                     self.api_state,
                                     .{},
                                 );
-                                self.status_line = "Revoking token...";
+                                self.notifyOp(.loading, "Revoking token...");
                             },
                             .discard_draft => self.commitDiscardDraft(),
                             .quit => {
@@ -225,7 +221,7 @@ pub const Shell = struct {
                         self.releasePendingDiscardTarget();
                         self.show_confirm = false;
                         self.confirm_action = .none;
-                        self.status_line = "Cancelled.";
+                        self.notifyOp(.warning, "Cancelled.");
                         ctx.consumeAndRedraw();
                     }
                     return;
@@ -261,7 +257,7 @@ pub const Shell = struct {
                         if (self.review.comment_input_len > 0) {
                             self.submitComment();
                         } else {
-                            self.status_line = "Empty comment discarded.";
+                            self.notifyOp(.warning, "Empty comment discarded.");
                         }
                         self.review.show_comment_editor = false;
                         self.review.comment_input_len = 0;
@@ -622,16 +618,6 @@ pub const Shell = struct {
         w.fillSurface(&surface, theme.PANEL);
 
         var shortcuts_max_col = surface.size.width;
-        if (self.visibleFooterStatus()) |label| {
-            const sw: u16 = @intCast(ctx.stringWidth(label));
-            if (ctx.max.width) |max_w| {
-                if (sw + 2 < max_w) {
-                    const status_col = max_w - sw - 1;
-                    shortcuts_max_col = @min(shortcuts_max_col, status_col -| 2);
-                    w.writeText(&surface, ctx, status_col, 0, label, theme.fg(theme.ACCENT_SOFT));
-                }
-            }
-        }
 
         if (self.drafts.total > 0) {
             const counter = std.fmt.allocPrint(
@@ -728,22 +714,8 @@ pub const Shell = struct {
             std.mem.eql(u8, key, "q");
     }
 
-    fn visibleFooterStatus(self: *Shell) ?[]const u8 {
-        if (std.mem.eql(u8, self.status_line, "Ready.")) {
-            self.last_status_line = "Ready.";
-            self.status_line_since_tick = self.system_notices.now();
-            return null;
-        }
-        if (!std.mem.eql(u8, self.status_line, self.last_status_line)) {
-            self.last_status_line = self.status_line;
-            self.status_line_since_tick = self.system_notices.now();
-        }
-        if (self.system_notices.now() -| self.status_line_since_tick >= FOOTER_STATUS_TICKS) {
-            self.status_line = "Ready.";
-            self.last_status_line = "Ready.";
-            return null;
-        }
-        return self.status_line;
+    pub fn notifyOp(self: *Shell, kind: w.SystemNoticeKind, text: []const u8) void {
+        self.system_notices.push(.operation, kind, .transient, text);
     }
 
     // Library: master-detail. Left panel carries a Files / Pull Requests
@@ -1273,18 +1245,18 @@ pub const Shell = struct {
 
     pub fn pullSelectedWorkspaceContent(self: *Shell) void {
         const ws_id = self.activeWsId() orelse {
-            self.status_line = "No workspace selected.";
+            self.notifyOp(.warning, "No workspace selected.");
             return;
         };
         const ws_d = self.workspaceDetailForView(ws_id) orelse {
             self.ensureActiveWorkspaceDetailRequested();
-            self.status_line = "Workspace metadata is still loading.";
+            self.notifyOp(.loading, "Workspace metadata is still loading.");
             return;
         };
 
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch {
-            self.status_line = "Pull failed: local workspace path unavailable.";
+            self.notifyOp(.failure, "Pull failed: local workspace path unavailable.");
             return;
         };
 
@@ -1292,63 +1264,104 @@ pub const Shell = struct {
         switch (self.workspace.tab) {
             .context => {
                 const context = switch (selection orelse {
-                    self.status_line = "Select a context file to pull.";
+                    self.notifyOp(.warning, "Select a context file to pull.");
                     return;
                 }) {
                     .context => |c| c,
                     .rule => {
-                        self.status_line = "Select a context file to pull.";
+                        self.notifyOp(.warning, "Select a context file to pull.");
                         return;
                     },
                 };
                 if (context.is_create_draft) {
-                    self.status_line = "Select a synced context file to pull.";
+                    self.notifyOp(.warning, "Select a synced context file to pull.");
                     return;
                 }
                 const body = self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_d.ws_id, .path = context.path }) orelse {
                     self.requestWorkspaceSelectionContent(&ws_d);
-                    self.status_line = "Fetching selected content; pull again after it loads.";
+                    self.notifyOp(.loading, "Fetching selected content; pull again after it loads.");
                     return;
                 };
                 local_content.write(arena, ws_dir, .context, context.path, body) catch {
-                    self.status_line = "Pull failed: could not write local context.";
+                    self.notifyOp(.failure, "Pull failed: could not write local context.");
                     return;
                 };
             },
             .rules => {
                 const rule = switch (selection orelse {
-                    self.status_line = "Select a rule to pull.";
+                    self.notifyOp(.warning, "Select a rule to pull.");
                     return;
                 }) {
                     .context => {
-                        self.status_line = "Select a rule to pull.";
+                        self.notifyOp(.warning, "Select a rule to pull.");
                         return;
                     },
                     .rule => |r| r,
                 };
                 if (rule.is_create_draft) {
-                    self.status_line = "Select a synced rule to pull.";
+                    self.notifyOp(.warning, "Select a synced rule to pull.");
                     return;
                 }
                 const resp = self.api_state.rule_content_cache.lookup(.{ .value = rule.path }) orelse {
                     self.requestWorkspaceSelectionContent(&ws_d);
-                    self.status_line = "Fetching selected content; pull again after it loads.";
+                    self.notifyOp(.loading, "Fetching selected content; pull again after it loads.");
                     return;
                 };
                 local_content.write(arena, ws_dir, rule.category, rule.path, resp.body) catch {
-                    self.status_line = "Pull failed: could not write local rule.";
+                    self.notifyOp(.failure, "Pull failed: could not write local rule.");
                     return;
                 };
             },
         }
 
         self.writeRemoteManifestSnapshot(ws_dir, ws_d) catch {
-            self.status_line = "Pulled content; manifest update failed.";
+            self.notifyOp(.warning, "Pulled content; manifest update failed.");
             self.resetLocalWorkspaceDetail();
             return;
         };
         self.resetLocalWorkspaceDetail();
-        self.status_line = "Pulled selected content.";
+        self.notifyOp(.success, "Pulled selected content.");
+    }
+
+    pub fn pullSelectedLibraryContent(self: *Shell) void {
+        const ws_id = self.activeWsId() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        const rules = self.getRules();
+        if (self.library.selected_rule >= rules.len) {
+            self.notifyOp(.warning, "Select a synced rule to pull.");
+            return;
+        }
+
+        const rule = rules[self.library.selected_rule];
+        const rule_id = self.lookupRuleId(rule.path) orelse {
+            self.notifyOp(.warning, "Selected rule id is not loaded yet.");
+            return;
+        };
+        const arena = self.viewAllocator();
+        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch {
+            self.notifyOp(.failure, "Pull failed: local workspace path unavailable.");
+            return;
+        };
+
+        const resp = self.api_state.rule_content_cache.lookup(.{ .value = rule.path }) orelse {
+            self.requestSelectedRuleDetail();
+            self.notifyOp(.loading, "Fetching selected content; pull again after it loads.");
+            return;
+        };
+        const category = self.libraryCategoryForPath(rule.path);
+        local_content.write(arena, ws_dir, category, rule.path, resp.body) catch {
+            self.notifyOp(.failure, "Pull failed: could not write local rule.");
+            return;
+        };
+        self.writeLocalManifestRule(ws_dir, rule_id, rule.path, rule.content_hash) catch {
+            self.notifyOp(.warning, "Pulled content; manifest update failed.");
+            self.resetLocalWorkspaceDetail();
+            return;
+        };
+        self.resetLocalWorkspaceDetail();
+        self.notifyOp(.success, "Pulled selected content.");
     }
 
     fn writeRemoteManifestSnapshot(
@@ -1385,6 +1398,74 @@ pub const Shell = struct {
             .revision = 0,
             .rules = .{ .items = rule_items },
             .context = .{ .items = context_items },
+        }, .{ .whitespace = .indent_2 });
+
+        const manifest_path = try std.fs.path.join(arena, &.{ ws_dir, "manifest.json" });
+        const file = try std.fs.createFileAbsolute(manifest_path, .{ .truncate = true, .mode = 0o600 });
+        defer file.close();
+        var write_buf: [8192]u8 = undefined;
+        var writer = std.fs.File.Writer.init(file, &write_buf);
+        try writer.interface.writeAll(body);
+        try writer.interface.flush();
+    }
+
+    fn writeLocalManifestRule(
+        self: *Shell,
+        ws_dir: []const u8,
+        rule_id: []const u8,
+        path: []const u8,
+        hash: []const u8,
+    ) !void {
+        const arena = self.viewAllocator();
+        var manifest = try workspace_rule.loadManifest(arena, ws_dir);
+        defer manifest.deinit(arena);
+
+        const extra_rule: usize = if (manifest.rules.contains(rule_id)) 0 else 1;
+        const rule_items = try arena.alloc(manifest_protocol.ManifestItem, manifest.rules.count() + extra_rule);
+        var rule_i: usize = 0;
+        var rule_it = manifest.rules.iterator();
+        while (rule_it.next()) |entry| {
+            const is_selected = std.mem.eql(u8, entry.key_ptr.*, rule_id);
+            rule_items[rule_i] = .{
+                .key = if (is_selected) rule_id else entry.key_ptr.*,
+                .value = .{
+                    .path = if (is_selected) path else entry.value_ptr.path,
+                    .hash = if (is_selected) hash else entry.value_ptr.hash,
+                },
+            };
+            rule_i += 1;
+        }
+        if (extra_rule == 1) {
+            rule_items[rule_i] = .{
+                .key = rule_id,
+                .value = .{
+                    .path = path,
+                    .hash = hash,
+                },
+            };
+            rule_i += 1;
+        }
+
+        const context_items = try arena.alloc(manifest_protocol.ManifestItem, manifest.context.count());
+        var context_i: usize = 0;
+        var context_it = manifest.context.iterator();
+        while (context_it.next()) |entry| {
+            context_items[context_i] = .{
+                .key = entry.key_ptr.*,
+                .value = .{
+                    .path = entry.value_ptr.path,
+                    .hash = entry.value_ptr.hash,
+                },
+            };
+            context_i += 1;
+        }
+
+        const body = try std.json.Stringify.valueAlloc(arena, workspace_api.WorkspaceManifestResponse{
+            .ws_id = self.activeWsId() orelse "",
+            .name = self.activeWorkspaceName(),
+            .revision = 0,
+            .rules = .{ .items = rule_items[0..rule_i] },
+            .context = .{ .items = context_items[0..context_i] },
         }, .{ .whitespace = .indent_2 });
 
         const manifest_path = try std.fs.path.join(arena, &.{ ws_dir, "manifest.json" });
@@ -1881,37 +1962,37 @@ pub const Shell = struct {
     }
 
     /// Pump the three write-path pending slots. Each surfaces the
-    /// outcome on status_line so the user sees the deferred result of
-    /// their action; body payloads are void so the Result carries only
-    /// ok / api_error / network_error / invalid_response.
+    /// outcome as an operation toast; body payloads are void so the
+    /// Result carries only ok / api_error / network_error /
+    /// invalid_response.
     fn consumeSignOutResult(self: *Shell) void {
         const result = self.api_state.sign_out_pending.consume() orelse return;
-        self.status_line = switch (result) {
-            .ok => "Token revoked. Please re-login.",
-            .api_error => |e| writeErrorStatus(self, "Token revoke failed", e),
-            .network_error => "Token revoke failed: network error.",
-            .invalid_response => "Token revoke failed: malformed response.",
-        };
+        switch (result) {
+            .ok => self.notifyOp(.success, "Token revoked. Please re-login."),
+            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "Token revoke failed", e)),
+            .network_error => self.notifyOp(.failure, "Token revoke failed: network error."),
+            .invalid_response => self.notifyOp(.failure, "Token revoke failed: malformed response."),
+        }
     }
 
     fn consumeSubmitCommentResult(self: *Shell) void {
         const result = self.api_state.submit_comment_pending.consume() orelse return;
-        self.status_line = switch (result) {
-            .ok => "Comment submitted.",
-            .api_error => |e| writeErrorStatus(self, "Comment submission failed", e),
-            .network_error => "Comment submission failed: network error.",
-            .invalid_response => "Comment submission failed: malformed response.",
-        };
+        switch (result) {
+            .ok => self.notifyOp(.success, "Comment submitted."),
+            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "Comment submission failed", e)),
+            .network_error => self.notifyOp(.failure, "Comment submission failed: network error."),
+            .invalid_response => self.notifyOp(.failure, "Comment submission failed: malformed response."),
+        }
     }
 
     fn consumePrActionResult(self: *Shell) void {
         const result = self.api_state.pr_action_pending.consume() orelse return;
-        self.status_line = switch (result) {
-            .ok => "PR action applied.",
-            .api_error => |e| writeErrorStatus(self, "PR action failed", e),
-            .network_error => "PR action failed: network error.",
-            .invalid_response => "PR action failed: malformed response.",
-        };
+        switch (result) {
+            .ok => self.notifyOp(.success, "PR action applied."),
+            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR action failed", e)),
+            .network_error => self.notifyOp(.failure, "PR action failed: network error."),
+            .invalid_response => self.notifyOp(.failure, "PR action failed: malformed response."),
+        }
     }
 
     fn consumeAttestationUploadResult(self: *Shell) void {
@@ -1942,9 +2023,8 @@ pub const Shell = struct {
         }
     }
 
-    /// Format `context: <server message> (CODE)` into the Shell's
-    /// owned status_line buffer-via-arena. Returns a slice valid until
-    /// the next status_line update.
+    /// Format `context: <server message> (CODE)` into a Shell-owned
+    /// message buffer suitable for a toast.
     fn writeErrorStatus(self: *Shell, context: []const u8, err: api.request.ApiErrorPayload) []const u8 {
         const alloc = self.api_state.allocator();
         return std.fmt.allocPrint(alloc, "{s}: {s} ({s})", .{ context, err.message, err.code }) catch context;
@@ -2000,7 +2080,7 @@ pub const Shell = struct {
             self.api_state,
             .{ .pr_id = prs_for[pri].id, .body = comment_text },
         );
-        self.status_line = "Submitting comment...";
+        self.notifyOp(.loading, "Submitting comment...");
     }
 
     pub fn doPrAction(self: *Shell, action: []const u8) void {
@@ -2019,7 +2099,7 @@ pub const Shell = struct {
             self.api_state,
             .{ .pr_id = prs_for[pri].id, .action = action },
         );
-        self.status_line = if (std.mem.eql(u8, action, "accept")) "Accepting PR..." else "Rejecting PR...";
+        self.notifyOp(.loading, if (std.mem.eql(u8, action, "accept")) "Accepting PR..." else "Rejecting PR...");
     }
 
     pub fn wsCount(self: *Shell) usize {
@@ -2626,7 +2706,7 @@ pub const Shell = struct {
     pub fn copySelectedContentId(self: *Shell) bool {
         const id = self.selectedContentId() orelse return false;
         workspace_panel.copyTextToClipboard(self.api_state.backing_allocator, id);
-        self.status_line = "Copied id to clipboard.";
+        self.notifyOp(.success, "Copied id to clipboard.");
         return true;
     }
 
@@ -2643,7 +2723,7 @@ pub const Shell = struct {
         // draft handler below.
         self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse {
-            self.status_line = "No editable selection.";
+            self.notifyOp(.warning, "No editable selection.");
             return;
         };
         self.editDraft(target);
@@ -2652,7 +2732,7 @@ pub const Shell = struct {
     fn editDraft(self: *Shell, target: DraftTarget) void {
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch {
-            self.status_line = "Could not resolve workspace directory.";
+            self.notifyOp(.failure, "Could not resolve workspace directory.");
             return;
         };
         defer alloc.free(ws_dir);
@@ -2676,7 +2756,7 @@ pub const Shell = struct {
                 // open it instead of aborting.
                 error.DraftAlreadyExists => {},
                 else => {
-                    self.status_line = @errorName(err);
+                    self.notifyOp(.failure, @errorName(err));
                     return;
                 },
             };
@@ -2695,15 +2775,15 @@ pub const Shell = struct {
             self.env_map,
             draft_abs,
         ) catch |err| {
-            self.status_line = @errorName(err);
+            self.notifyOp(.failure, @errorName(err));
             return;
         };
-        self.status_line = switch (result) {
-            .completed => "Draft saved.",
-            .failed => "Editor exited non-zero.",
-            .editor_not_found => "No $EDITOR resolved.",
-            .spawn_failed => "Editor spawn failed.",
-        };
+        switch (result) {
+            .completed => self.notifyOp(.success, "Draft saved."),
+            .failed => self.notifyOp(.failure, "Editor exited non-zero."),
+            .editor_not_found => self.notifyOp(.failure, "No $EDITOR resolved."),
+            .spawn_failed => self.notifyOp(.failure, "Editor spawn failed."),
+        }
         self.refreshDraftsCache();
     }
 
@@ -2725,14 +2805,14 @@ pub const Shell = struct {
         self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse return;
         const current = self.draftStatusFor(target.category, target.path) orelse {
-            self.status_line = "No draft to mark ready.";
+            self.notifyOp(.warning, "No draft to mark ready.");
             return;
         };
         const next_status: drafts_mod.DraftStatus = switch (current) {
             .editing => .ready,
             .ready => .editing,
             else => {
-                self.status_line = "Draft status is locked.";
+                self.notifyOp(.warning, "Draft status is locked.");
                 return;
             },
         };
@@ -2741,10 +2821,10 @@ pub const Shell = struct {
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
         defer alloc.free(ws_dir);
         drafts_mod.setDraftStatus(alloc, ws_dir, target.category, target.path, next_status) catch |err| {
-            self.status_line = @errorName(err);
+            self.notifyOp(.failure, @errorName(err));
             return;
         };
-        self.status_line = if (next_status == .ready) "Draft marked ready." else "Draft marked editing.";
+        self.notifyOp(.success, if (next_status == .ready) "Draft marked ready." else "Draft marked editing.");
         self.refreshDraftsCache();
     }
 
@@ -2754,11 +2834,11 @@ pub const Shell = struct {
     pub fn requestDiscardSelectedDraft(self: *Shell) void {
         self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse {
-            self.status_line = "No draft to discard.";
+            self.notifyOp(.warning, "No draft to discard.");
             return;
         };
         if (self.draftStatusFor(target.category, target.path) == null) {
-            self.status_line = "No draft to discard.";
+            self.notifyOp(.warning, "No draft to discard.");
             return;
         }
         // Target may have been captured from drafts_arena (virtual
@@ -2767,7 +2847,7 @@ pub const Shell = struct {
         // without reading freed memory.
         self.releasePendingDiscardTarget();
         const path_copy = self.api_state.allocator().dupe(u8, target.path) catch {
-            self.status_line = "Out of memory capturing draft target.";
+            self.notifyOp(.failure, "Out of memory capturing draft target.");
             return;
         };
         self.drafts.pending_discard_target = .{
@@ -2799,10 +2879,10 @@ pub const Shell = struct {
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
         defer alloc.free(ws_dir);
         drafts_mod.discardDraft(alloc, ws_dir, target.category, target.path) catch |err| {
-            self.status_line = @errorName(err);
+            self.notifyOp(.failure, @errorName(err));
             return;
         };
-        self.status_line = "Draft discarded.";
+        self.notifyOp(.success, "Draft discarded.");
         self.releasePendingDiscardTarget();
         self.refreshDraftsCache();
         if (self.selected_module == .workspace) {
@@ -2817,15 +2897,15 @@ pub const Shell = struct {
     pub fn openPrComposer(self: *Shell) void {
         self.refreshDraftsCache();
         const target = self.selectedDraftTarget() orelse {
-            self.status_line = "No editable selection.";
+            self.notifyOp(.warning, "No editable selection.");
             return;
         };
         const status = self.draftStatusFor(target.category, target.path) orelse {
-            self.status_line = "No draft for this selection.";
+            self.notifyOp(.warning, "No draft for this selection.");
             return;
         };
         if (status != .ready) {
-            self.status_line = "Draft must be marked ready (m) before submit.";
+            self.notifyOp(.warning, "Draft must be marked ready (m) before submit.");
             return;
         }
         // Composer state persists across frames while the overlay is
@@ -2835,7 +2915,7 @@ pub const Shell = struct {
         // overlay draw and submit paths cannot read freed bytes.
         self.releaseComposerTarget();
         const path_copy = self.api_state.allocator().dupe(u8, target.path) catch {
-            self.status_line = "Out of memory opening composer.";
+            self.notifyOp(.failure, "Out of memory opening composer.");
             return;
         };
         self.drafts.pr_composer_target = .{
@@ -2891,11 +2971,11 @@ pub const Shell = struct {
     pub fn submitPrComposer(self: *Shell) void {
         if (self.drafts.pr_composer_submitting) return;
         if (self.drafts.pr_composer_desc_len == 0) {
-            self.status_line = "Description is required.";
+            self.notifyOp(.warning, "Description is required.");
             return;
         }
         const target = self.drafts.pr_composer_target orelse {
-            self.status_line = "No composer target set.";
+            self.notifyOp(.warning, "No composer target set.");
             return;
         };
         switch (target.category) {
@@ -2915,19 +2995,19 @@ pub const Shell = struct {
         entry: ?DraftSubmitEntry,
     } {
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch {
-            self.status_line = "Could not resolve workspace directory.";
+            self.notifyOp(.failure, "Could not resolve workspace directory.");
             return null;
         };
         errdefer alloc.free(ws_dir);
 
         const content = drafts_mod.readDraftFile(alloc, ws_dir, target.category, target.path) catch |err| {
-            self.status_line = @errorName(err);
+            self.notifyOp(.failure, @errorName(err));
             return null;
         };
         errdefer alloc.free(content);
 
         var index = drafts_mod.loadIndex(alloc, ws_dir) catch |err| {
-            self.status_line = @errorName(err);
+            self.notifyOp(.failure, @errorName(err));
             return null;
         };
         defer index.deinit(alloc);
@@ -2961,7 +3041,7 @@ pub const Shell = struct {
         };
 
         const entry = read.entry orelse {
-            self.status_line = "Draft entry missing; try again.";
+            self.notifyOp(.warning, "Draft entry missing; try again.");
             return;
         };
         // Spec s1-5 §2.2: modify/rename/delete must carry rule_id +
@@ -2990,7 +3070,7 @@ pub const Shell = struct {
             null
         else blk: {
             const pid = target.rule_id orelse self.lookupRuleId(target.path) orelse {
-                self.status_line = "Unknown rule id for this draft.";
+                self.notifyOp(.warning, "Unknown rule id for this draft.");
                 return;
             };
             break :blk (alloc.dupe(u8, pid) catch return);
@@ -3011,7 +3091,7 @@ pub const Shell = struct {
 
         if (entry.operation == .modify or entry.operation == .rename) {
             if (base_hash_copy_opt == null) {
-                self.status_line = "Missing base_hash for modify/rename draft.";
+                self.notifyOp(.warning, "Missing base_hash for modify/rename draft.");
                 return;
             }
         }
@@ -3032,7 +3112,7 @@ pub const Shell = struct {
             },
         );
         self.drafts.pr_composer_submitting = true;
-        self.status_line = "Submitting PR...";
+        self.notifyOp(.loading, "Submitting PR...");
     }
 
     fn submitContextPr(self: *Shell, target: DraftTarget) void {
@@ -3045,7 +3125,7 @@ pub const Shell = struct {
         };
 
         const entry = read.entry orelse {
-            self.status_line = "Draft entry missing; try again.";
+            self.notifyOp(.warning, "Draft entry missing; try again.");
             return;
         };
         const operation_type: []const u8 = switch (entry.operation) {
@@ -3078,7 +3158,7 @@ pub const Shell = struct {
         defer if (base_hash_copy_opt) |h| alloc.free(h);
 
         if (entry.operation != .create and context_id_copy_opt == null) {
-            self.status_line = "Missing context_id for modify/rename/delete.";
+            self.notifyOp(.warning, "Missing context_id for modify/rename/delete.");
             return;
         }
 
@@ -3099,7 +3179,7 @@ pub const Shell = struct {
             },
         );
         self.drafts.pr_composer_submitting = true;
-        self.status_line = "Submitting PR...";
+        self.notifyOp(.loading, "Submitting PR...");
     }
 
     fn handlePrComposerKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
@@ -3198,7 +3278,7 @@ pub const Shell = struct {
 
     pub fn openNewDraftForm(self: *Shell, category: drafts_mod.DraftCategory) void {
         if (self.activeWsId() == null) {
-            self.status_line = "No workspace loaded yet; wait for bootstrap.";
+            self.notifyOp(.warning, "No workspace loaded yet; wait for bootstrap.");
             return;
         }
         self.drafts.new_draft_path_len = 0;
@@ -3213,14 +3293,14 @@ pub const Shell = struct {
 
     pub fn submitNewDraftForm(self: *Shell) void {
         if (self.drafts.new_draft_path_len == 0) {
-            self.status_line = "Path is required.";
+            self.notifyOp(.warning, "Path is required.");
             return;
         }
         const ws_id = self.activeWsId() orelse return;
         const path = self.drafts.new_draft_path_buf[0..self.drafts.new_draft_path_len];
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
-            self.status_line = "Could not resolve workspace directory.";
+            self.notifyOp(.failure, "Could not resolve workspace directory.");
             return;
         };
         defer alloc.free(ws_dir);
@@ -3234,7 +3314,7 @@ pub const Shell = struct {
             .operation = .create,
             .draft_path = path_copy,
         }, "") catch |err| {
-            self.status_line = @errorName(err);
+            self.notifyOp(.failure, @errorName(err));
             return;
         };
 
@@ -3252,15 +3332,15 @@ pub const Shell = struct {
             self.env_map,
             draft_abs,
         ) catch |err| {
-            self.status_line = @errorName(err);
+            self.notifyOp(.failure, @errorName(err));
             return;
         };
-        self.status_line = switch (result) {
-            .completed => "New draft saved.",
-            .failed => "Editor exited non-zero.",
-            .editor_not_found => "No $EDITOR resolved.",
-            .spawn_failed => "Editor spawn failed.",
-        };
+        switch (result) {
+            .completed => self.notifyOp(.success, "New draft saved."),
+            .failed => self.notifyOp(.failure, "Editor exited non-zero."),
+            .editor_not_found => self.notifyOp(.failure, "No $EDITOR resolved."),
+            .spawn_failed => self.notifyOp(.failure, "Editor spawn failed."),
+        }
         self.refreshDraftsCache();
     }
 
@@ -3343,9 +3423,9 @@ pub const Shell = struct {
             .ok => |resp| {
                 self.markComposerSubmitted(resp.pr_id, resp.status);
             },
-            .api_error => |e| self.status_line = writeErrorStatus(self, "PR submit failed", e),
-            .network_error => self.status_line = "PR submit failed: network error.",
-            .invalid_response => self.status_line = "PR submit failed: malformed response.",
+            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", e)),
+            .network_error => self.notifyOp(.failure, "PR submit failed: network error."),
+            .invalid_response => self.notifyOp(.failure, "PR submit failed: malformed response."),
         }
     }
 
@@ -3356,9 +3436,9 @@ pub const Shell = struct {
             .ok => |resp| {
                 self.markComposerSubmitted(resp.pr_id, resp.status);
             },
-            .api_error => |e| self.status_line = writeErrorStatus(self, "PR submit failed", e),
-            .network_error => self.status_line = "PR submit failed: network error.",
-            .invalid_response => self.status_line = "PR submit failed: malformed response.",
+            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", e)),
+            .network_error => self.notifyOp(.failure, "PR submit failed: network error."),
+            .invalid_response => self.notifyOp(.failure, "PR submit failed: malformed response."),
         }
     }
 
@@ -3380,11 +3460,12 @@ pub const Shell = struct {
         self.drafts.show_pr_composer = false;
         self.drafts.pr_composer_desc_len = 0;
         self.releaseComposerTarget();
-        self.status_line = std.fmt.allocPrint(
+        const message = std.fmt.allocPrint(
             self.api_state.allocator(),
             "PR {s} submitted ({s}).",
             .{ pr_id, status },
         ) catch "PR submitted.";
+        self.notifyOp(.success, message);
     }
 
     fn selectTab(self: *Shell, ctx: *vxfw.EventContext, tab: TopModule) void {
@@ -3407,7 +3488,6 @@ pub const Shell = struct {
             },
             else => {},
         }
-        self.status_line = "Ready.";
         ctx.consumeAndRedraw();
     }
 

@@ -121,7 +121,7 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
             .{ .key = "j/k", .label = "move" },
             .{ .key = "Enter", .label = "open" },
             .{ .key = "Tab", .label = "switch focus" },
-            .{ .key = "r", .label = "refresh" },
+            .{ .key = "r", .label = "rotate token" },
             .{ .key = "x", .label = "revoke" },
             .{ .key = "Esc", .label = "back" },
         },
@@ -143,14 +143,14 @@ fn handlePageAction(
                 return true;
             }
             if (key.matches('c', .{})) {
-                self.status_line = "Password change (requires input dialog)";
+                self.notifyOp(.info, "Password change (requires input dialog)");
                 ctx.consumeAndRedraw();
                 return true;
             }
         },
         .organization => {
             if (key.matches('r', .{})) {
-                self.status_line = "Role change (requires input dialog)";
+                self.notifyOp(.info, "Role change (requires input dialog)");
                 ctx.consumeAndRedraw();
                 return true;
             }
@@ -162,14 +162,14 @@ fn handlePageAction(
                 return true;
             }
             if (key.matches('a', .{})) {
-                self.status_line = "Invite member (requires input dialog)";
+                self.notifyOp(.info, "Invite member (requires input dialog)");
                 ctx.consumeAndRedraw();
                 return true;
             }
         },
         .token => {
             if (key.matches('r', .{})) {
-                self.status_line = "Token refresh (not yet implemented)";
+                self.notifyOp(.info, "Token rotation (not yet implemented)");
                 ctx.consumeAndRedraw();
                 return true;
             }
@@ -295,7 +295,7 @@ fn handleAccountAction(
         return;
     }
     if (key.matches('c', .{})) {
-        self.status_line = "Password change (requires input dialog)";
+        self.notifyOp(.info, "Password change (requires input dialog)");
         ctx.consumeAndRedraw();
     }
 }
@@ -306,7 +306,7 @@ fn handleOrganizationAction(
     key: vaxis.Key,
 ) void {
     if (key.matches('r', .{})) {
-        self.status_line = "Role change (requires input dialog)";
+        self.notifyOp(.info, "Role change (requires input dialog)");
         ctx.consumeAndRedraw();
         return;
     }
@@ -318,7 +318,7 @@ fn handleOrganizationAction(
         return;
     }
     if (key.matches('a', .{})) {
-        self.status_line = "Invite member (requires input dialog)";
+        self.notifyOp(.info, "Invite member (requires input dialog)");
         ctx.consumeAndRedraw();
     }
 }
@@ -329,7 +329,7 @@ fn handleTokenAction(
     key: vaxis.Key,
 ) void {
     if (key.matches('r', .{})) {
-        self.status_line = "Token refresh (not yet implemented)";
+        self.notifyOp(.info, "Token rotation (not yet implemented)");
         ctx.consumeAndRedraw();
         return;
     }

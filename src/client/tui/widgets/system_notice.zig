@@ -26,6 +26,7 @@ pub const Persistence = enum {
 
 pub const Key = enum {
     connection,
+    operation,
     workspace_context_files,
     workspace_manifest,
     workspace_context_content,
@@ -68,10 +69,12 @@ pub const Queue = struct {
             .text = text,
             .created_tick = self.current_tick,
         };
-        for (0..self.count) |i| {
-            if (self.notices[i].key == key) {
-                self.notices[i] = notice;
-                return;
+        if (coalescesByKey(key)) {
+            for (0..self.count) |i| {
+                if (self.notices[i].key == key) {
+                    self.notices[i] = notice;
+                    return;
+                }
             }
         }
         if (self.count < self.notices.len) {
@@ -157,6 +160,10 @@ pub const Queue = struct {
         return surface;
     }
 };
+
+fn coalescesByKey(key: Key) bool {
+    return key != .operation;
+}
 
 pub fn headerStyle(kind: Kind) vaxis.Style {
     return switch (kind) {
@@ -307,4 +314,43 @@ fn wrapBytesForWidth(ctx: vxfw.DrawContext, text: []const u8, max_width: u16) us
         last_end += grapheme.len;
     }
     return text.len;
+}
+
+test "system notices coalesce keyed status updates" {
+    var queue: Queue = .{};
+
+    queue.push(.workspace_manifest, .loading, .persistent, "Loading manifest");
+    queue.push(.workspace_manifest, .failure, .persistent, "Manifest failed");
+
+    try std.testing.expectEqual(@as(usize, 1), queue.count);
+    try std.testing.expectEqual(Key.workspace_manifest, queue.notices[0].key);
+    try std.testing.expectEqual(Kind.failure, queue.notices[0].kind);
+    try std.testing.expectEqualStrings("Manifest failed", queue.notices[0].text);
+}
+
+test "operation notices preserve repeated events" {
+    var queue: Queue = .{};
+
+    queue.push(.operation, .warning, .transient, "Draft must be marked ready.");
+    queue.push(.operation, .warning, .transient, "Draft must be marked ready.");
+
+    try std.testing.expectEqual(@as(usize, 2), queue.count);
+    try std.testing.expectEqualStrings("Draft must be marked ready.", queue.notices[0].text);
+    try std.testing.expectEqualStrings("Draft must be marked ready.", queue.notices[1].text);
+}
+
+test "operation notices drop oldest event at capacity" {
+    var queue: Queue = .{};
+    const labels = [_][]const u8{ "0", "1", "2", "3", "4", "5", "6", "7" };
+
+    var i: usize = 0;
+    while (i < CAPACITY) : (i += 1) {
+        queue.push(.operation, .info, .transient, labels[i]);
+    }
+    queue.push(.operation, .success, .transient, "new");
+
+    try std.testing.expectEqual(@as(usize, CAPACITY), queue.count);
+    try std.testing.expectEqualStrings("1", queue.notices[0].text);
+    try std.testing.expectEqualStrings("new", queue.notices[CAPACITY - 1].text);
+    try std.testing.expectEqual(Kind.success, queue.notices[CAPACITY - 1].kind);
 }

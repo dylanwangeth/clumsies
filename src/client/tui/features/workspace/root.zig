@@ -673,7 +673,7 @@ pub fn handleModuleEvent(
         if (self.copySelectedContentId()) {
             ctx.consumeAndRedraw();
         } else {
-            self.status_line = "No id to copy.";
+            self.notifyOp(.warning, "No id to copy.");
             ctx.consumeAndRedraw();
         }
         return;
@@ -727,7 +727,6 @@ pub fn handleModuleEvent(
 pub fn shortcuts(self: anytype) []const w.Shortcut {
     return if (self.workspace.tab == .context) &.{
         .{ .key = "j/k", .label = "move/scroll" },
-        .{ .key = "Enter", .label = "open" },
         .{ .key = "h/l", .label = "switch tab" },
         .{ .key = "n", .label = "new context" },
         .{ .key = "c", .label = "create ws" },
@@ -742,7 +741,6 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
         .{ .key = "?", .label = "help" },
     } else &.{
         .{ .key = "j/k", .label = "move/scroll" },
-        .{ .key = "Enter", .label = "open" },
         .{ .key = "h/l", .label = "switch tab" },
         .{ .key = "c", .label = "create ws" },
         .{ .key = "w", .label = "workspaces" },
@@ -779,9 +777,7 @@ fn handleListFocusEvent(
             ctx.consumeAndRedraw();
             return;
         }
-        self.workspace.focus = .content;
-        self.workspace.show_diff = false;
-        ctx.consumeAndRedraw();
+        ctx.consumeEvent();
         return;
     }
     if (key.matches(vaxis.Key.escape, .{})) {
@@ -1168,7 +1164,7 @@ fn handleCreateSuccessKey(
     }
     if (key.matches('c', .{})) {
         copyCreateInitCommand(self);
-        self.status_line = "Copied clumsies init command to clipboard.";
+        self.notifyOp(.success, "Copied clumsies init command to clipboard.");
         ctx.consumeAndRedraw();
         return;
     }

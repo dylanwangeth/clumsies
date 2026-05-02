@@ -150,7 +150,7 @@ pub fn handleEmbeddedPaneEvent(
                 if (self.copySelectedContentId()) {
                     ctx.consumeAndRedraw();
                 } else {
-                    self.status_line = "No id to copy.";
+                    self.notifyOp(.warning, "No id to copy.");
                     ctx.consumeAndRedraw();
                 }
                 return;

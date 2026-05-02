@@ -72,14 +72,6 @@ pub fn drawRules(
 
     if (!available) {
         w.writeText(&surface, ctx, 2, 2, "Remote analysis unavailable.", theme.fg(theme.MUTED));
-        w.writeText(
-            &surface,
-            ctx,
-            2,
-            3,
-            "Analysis now uses hub stats only. Press r to refresh after /api/stats loads.",
-            theme.fg(theme.DIM),
-        );
         return surface;
     }
 
