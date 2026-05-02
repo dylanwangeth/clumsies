@@ -3499,6 +3499,7 @@ pub const Shell = struct {
         self.review.show_comment_editor = false;
         self.review.pr_filter = .open;
         self.review.selected_pr_idx = 0;
+        self.review.show_diff = false;
         self.review.pr_scroll_bars.scroll_view.cursor = 0;
     }
 

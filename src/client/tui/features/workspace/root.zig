@@ -10,6 +10,7 @@ const data = @import("../../models/view_types.zig");
 const api = @import("../../api.zig");
 const drafts_mod = @import("../../../drafts.zig");
 const rule_detail = @import("../review/root.zig");
+const content_actions = @import("../content_actions.zig");
 const Modal = w.Modal;
 const TextInput = w.TextInput;
 
@@ -334,12 +335,6 @@ fn drawContextFileDetail(
     ws_d: ?api.model.WsDetail,
     path: []const u8,
 ) !void {
-    if (self.workspace.show_diff) {
-        if (self.draftContentForView(.context, path) == null) {
-            w.writeText(surface, ctx, 2, start_row, "No draft diff available.", theme.fg(theme.MUTED));
-            return;
-        }
-    }
     const ws_id = if (ws_d) |live| live.ws_id else self.activeWsId() orelse return;
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
         .context = .{ .ws_id = ws_id, .path = path },
@@ -354,13 +349,6 @@ fn drawRuleFileDetail(
     max_row: u16,
     rule_path: []const u8,
 ) !void {
-    if (self.workspace.show_diff) {
-        const category = self.libraryCategoryForPath(rule_path);
-        if (self.draftContentForView(category, rule_path) == null) {
-            w.writeText(surface, ctx, 2, start_row, "No draft diff available.", theme.fg(theme.MUTED));
-            return;
-        }
-    }
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
         .rule = .{ .path = rule_path },
     }, self.workspace.show_diff);
@@ -669,45 +657,7 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('y', .{})) {
-        if (self.copySelectedContentId()) {
-            ctx.consumeAndRedraw();
-        } else {
-            self.notifyOp(.warning, "No id to copy.");
-            ctx.consumeAndRedraw();
-        }
-        return;
-    }
-    if (key.matches('e', .{})) {
-        self.editSelectedDraft();
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('D', .{}) or key.matches('d', .{ .shift = true })) {
-        self.requestDiscardSelectedDraft();
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('d', .{})) {
-        self.workspace.show_diff = !self.workspace.show_diff;
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('m', .{})) {
-        self.toggleSelectedDraftReady();
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('p', .{})) {
-        self.openPrComposer();
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('u', .{})) {
-        self.pullSelectedWorkspaceContent();
-        ctx.consumeAndRedraw();
-        return;
-    }
+    if (content_actions.handle(self, ctx, key, .workspace)) return;
 
     switch (self.workspace.focus) {
         .list => try handleListFocusEvent(self, ctx, key),
@@ -725,34 +675,7 @@ pub fn handleModuleEvent(
 }
 
 pub fn shortcuts(self: anytype) []const w.Shortcut {
-    return if (self.workspace.tab == .context) &.{
-        .{ .key = "j/k", .label = "move/scroll" },
-        .{ .key = "h/l", .label = "switch tab" },
-        .{ .key = "n", .label = "new context" },
-        .{ .key = "c", .label = "create ws" },
-        .{ .key = "w", .label = "workspaces" },
-        .{ .key = "y", .label = "copy id" },
-        .{ .key = "e", .label = "edit" },
-        .{ .key = "p", .label = "submit" },
-        .{ .key = "u", .label = "pull" },
-        .{ .key = "d", .label = "toggle diff" },
-        .{ .key = "D", .label = "discard draft" },
-        .{ .key = "m", .label = "mark ready" },
-        .{ .key = "?", .label = "help" },
-    } else &.{
-        .{ .key = "j/k", .label = "move/scroll" },
-        .{ .key = "h/l", .label = "switch tab" },
-        .{ .key = "c", .label = "create ws" },
-        .{ .key = "w", .label = "workspaces" },
-        .{ .key = "y", .label = "copy id" },
-        .{ .key = "e", .label = "edit" },
-        .{ .key = "p", .label = "submit" },
-        .{ .key = "u", .label = "pull" },
-        .{ .key = "d", .label = "toggle diff" },
-        .{ .key = "D", .label = "discard draft" },
-        .{ .key = "m", .label = "mark ready" },
-        .{ .key = "?", .label = "help" },
-    };
+    return content_actions.workspaceShortcuts(self.workspace.tab == .context);
 }
 
 fn wsTabLabel(tab: anytype) []const u8 {
