@@ -23,6 +23,9 @@ pub const State = struct {
     ready: usize = 0,
     cache_ws_id: ?[]const u8 = null,
     cache_seeded: bool = false,
+    index_size: u64 = 0,
+    index_mtime: i128 = 0,
+    last_index_check_tick: u64 = 0,
     pending_discard_target: ?DraftTarget = null,
     pending_discard_path_owned: ?[]const u8 = null,
 
