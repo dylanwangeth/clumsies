@@ -13,8 +13,7 @@ The current implementation exposes these MCP tools:
 | Tool family | Tools |
 | --- | --- |
 | session and attestation | `memory.setup`, `memory.discover`, `memory.load`, `memory.refer`, `memory.submit`, `memory.reject` |
-| workspace context proposals | `context.propose_create`, `context.propose_update`, `context.propose_rename`, `context.propose_delete` |
-| Library rule proposals | `rule.propose_create`, `rule.propose_update`, `rule.propose_rename`, `rule.propose_delete` |
+| draft mutations | `draft` |
 
 This is the real protocol surface in the running code. The server test suite explicitly asserts that `memory.begin`, `memory.complete`, `memory.startup`, `memory.list`, and `memory.activate` are not part of the public tool list.
 
@@ -27,7 +26,7 @@ The stable mental model now matches the current `META_PROMPT` very closely:
 3. load only the content the task actually needs with `memory.load`
 4. apply the loaded rules in the work
 5. declare applied constraints with `memory.refer`
-6. use proposal tools when the task is to refine rules or context
+6. use `draft` when the task is to refine rules, context, or MPF
 7. close the turn with `memory.submit` or `memory.reject`
 
 That cycle is the runtime expression of the whole product:
@@ -68,6 +67,7 @@ This detail matters because the protocol is not only human-readable. Agents are 
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
+| `session_id` | string | yes | host-agent session or thread id |
 | `knownHash` | string | no | lets the client ask for delta behavior if it already knows the last meta-prompt hash |
 
 ### Structured result
@@ -140,7 +140,8 @@ Each item can include:
 | `hash` | current content hash |
 | `description` | optional metadata description when present |
 
-Search is inventory, not content delivery. Its job is to let the agent choose what is relevant before spending context window on full content.
+Discover is inventory, not content delivery. Its job is to let the agent
+choose what is relevant before spending context window on full content.
 
 ## `memory.load`
 
@@ -313,23 +314,39 @@ In the current implementation, this records an `.agent_report` attestation event
 
 In the current implementation, this records a `.reject` attestation event.
 
-## Proposal tools
+## `draft`
 
-The proposal tools are the editing side of the protocol. They let an agent stage changes as drafts instead of mutating Library or workspace context directly.
+`draft` stages local drafts instead of mutating Library rules, workspace
+context, or MPF.
 
-The split is intentional:
+The input is a tagged command object:
 
-- `context.propose_*` operates on workspace-owned context
-- `rule.propose_*` operates on Library-owned rules
+```json
+{
+  "resource": "context",
+  "op": {
+    "update": {
+      "id": "ctx-123",
+      "body": "# New content\n",
+      "description": "Clarify setup notes"
+    }
+  }
+}
+```
 
-### Create
+`op` must contain exactly one key. The protocol has one public MCP tool,
+and payloads stay typed.
 
-These tools create a new draft file:
+### Top-level input
 
-- `context.propose_create`
-- `rule.propose_create`
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `resource` | string enum | yes | one of `context`, `rule`, or `mpf` |
+| `op` | tagged object | yes | tagged operation |
 
-#### Input
+### `create`
+
+Creates a new draft file.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
@@ -346,69 +363,50 @@ These tools create a new draft file:
 }
 ```
 
-### Update
+### `update`
 
-These tools create a modify draft against an existing object:
-
-- `context.propose_update`
-- `rule.propose_update`
-
-#### Input
-
-| Tool | Required ID field |
-| --- | --- |
-| `context.propose_update` | `context_id` |
-| `rule.propose_update` | `rule_id` |
-
-Additional fields:
+Creates a modify draft against an existing object. For `context` and
+`rule`, the implementation resolves `id` through the manifest, reads the
+current cached file, computes a base hash, and creates a draft. For MPF,
+`id` should be `META_PROMPT.md`.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
+| `id` | string | yes | context id, rule id, or `META_PROMPT.md` |
 | `body` | string | yes | replacement draft body |
 | `description` | string | no | optional summary |
 
-The implementation resolves the object through the current manifest, reads the current cached file, computes a base hash, and creates a modify draft from that state.
+### `rename`
 
-### Rename
-
-These tools create a rename draft:
-
-- `context.propose_rename`
-- `rule.propose_rename`
-
-#### Input
-
-| Tool | Required ID field |
-| --- | --- |
-| `context.propose_rename` | `context_id` |
-| `rule.propose_rename` | `rule_id` |
-
-Additional fields:
+Creates a rename draft. `rename` is valid for `context` and `rule`; MPF
+has the reserved path `META_PROMPT.md` and cannot be renamed.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
+| `id` | string | yes | context id or rule id |
 | `new_path` | string | yes | proposed new path |
 | `description` | string | no | optional summary |
 
-### Delete
+### `delete`
 
-These tools create a delete draft:
-
-- `context.propose_delete`
-- `rule.propose_delete`
-
-#### Input
-
-| Tool | Required ID field |
-| --- | --- |
-| `context.propose_delete` | `context_id` |
-| `rule.propose_delete` | `rule_id` |
-
-Additional fields:
+Creates a delete draft for an existing resource. If `delete` targets a
+create-only draft with no manifest entry, the client treats the call as
+discarding that create draft.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
+| `id` | string | yes | resource id, draft path, temp id, or MPF |
 | `description` | string | no | optional summary |
+
+### `discard`
+
+Discards an existing draft object. This is different from `delete`:
+`delete` proposes deletion of a real resource. `discard` removes an
+unsubmitted draft.
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `id` | string | yes | any draft or resource identifier |
 
 ## Current error behavior
 
@@ -421,9 +419,9 @@ Several validation and runtime errors are already stable enough to document:
 | `memory.load` receives an unknown rule ID | `Unknown rule id` |
 | `memory.refer` receives an unknown rule/workflow ID | structured `code: "unknown_rule_or_workflow"`, `retryable: true`, `retryAction: "rediscover_and_reload"` |
 | `memory.refer` receives an invalid constraint ID | structured `code: "unknown_constraint"`, `retryable: true`, `retryAction: "retry_with_valid_constraint"`, optional `validConstraints` |
-| propose tool path is unsafe | `unsafe path` |
-| propose tool target file is missing from current cache/manifest | `file not found in cache` |
-| propose create collides with an existing draft | `draft already exists for this path` |
+| draft path is unsafe | `unsafe path` |
+| draft target is missing | `file not found in cache` |
+| create collides with an existing draft | `draft already exists` |
 
 For `memory.submit`, validation is slightly stricter than the schema summary alone suggests. `summary` is required, must be a string, and must not be empty.
 
@@ -431,6 +429,9 @@ For `memory.submit`, validation is slightly stricter than the schema summary alo
 
 The protocol is tightly coupled to attestation, but not in a noisy way.
 
-Each meaningful runtime action records structured local evidence. `memory.discover`, `memory.load`, `memory.refer`, `memory.submit`, `memory.reject`, and all proposal tools generate attestation events that later feed Hub-side aggregation.
+Each meaningful runtime action records structured local evidence.
+`memory.discover`, `memory.load`, `memory.refer`, `memory.submit`,
+`memory.reject`, and `draft` operations generate attestation events that
+later feed Hub-side aggregation.
 
 This is one reason clumsies is different from plain prompt storage. The protocol is not there only to serve content. It is there to make rule use and content-change proposals legible.

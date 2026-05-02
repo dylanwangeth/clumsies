@@ -1486,12 +1486,14 @@ fn toolExpandedText(tool: attestation_reader.RoundTool) ?[]const u8 {
 
 fn isProposeTool(kind: []const u8) bool {
     return std.mem.startsWith(u8, kind, "context_propose_") or
-        std.mem.startsWith(u8, kind, "rule_propose_");
+        std.mem.startsWith(u8, kind, "rule_propose_") or
+        std.mem.startsWith(u8, kind, "mpf_propose_");
 }
 
 fn proposeCategory(kind: []const u8) []const u8 {
     if (std.mem.startsWith(u8, kind, "context_propose_")) return "context";
     if (std.mem.startsWith(u8, kind, "rule_propose_")) return "rule";
+    if (std.mem.startsWith(u8, kind, "mpf_propose_")) return "mpf";
     return "draft";
 }
 
@@ -1548,6 +1550,7 @@ fn proposeId(tool: attestation_reader.RoundTool) ?[]const u8 {
 fn proposeEntityLabel(kind: []const u8) []const u8 {
     if (std.mem.startsWith(u8, kind, "context_propose_")) return "context";
     if (std.mem.startsWith(u8, kind, "rule_propose_")) return "rule";
+    if (std.mem.startsWith(u8, kind, "mpf_propose_")) return "mpf";
     return "draft";
 }
 
@@ -1641,6 +1644,7 @@ fn proposeDraftCategory(tool: attestation_reader.RoundTool) drafts_mod.DraftCate
         if (std.mem.eql(u8, path, "META_PROMPT.md")) return .meta_prompt;
     }
     if (std.mem.startsWith(u8, tool.kind, "context_propose_")) return .context;
+    if (std.mem.startsWith(u8, tool.kind, "mpf_propose_")) return .meta_prompt;
     return .rule;
 }
 

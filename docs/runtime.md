@@ -218,7 +218,7 @@ MCP is the runtime surface agents actually talk to. Its job is to expose workspa
 The current runtime path looks like this:
 
 1. bootstrap the session
-2. search the available items
+2. discover the available items
 3. load the items needed for the current task
 4. refer to the constraints actually applied
 5. submit or reject the turn result
@@ -269,7 +269,7 @@ The current TUI reads from both Hub-backed APIs and selected local runtime files
 | Runtime input | Why TUI uses it |
 | --- | --- |
 | Hub APIs | workspace state, Library state, PR detail, stats, membership |
-| local attestation reader | recent input feed and live dashboard updates |
+| local attestation reader | recent inputs and dashboard state |
 | local drafts and editor host state | editing and review flows |
 
 The current repo also ships working captures of two real TUI screens:
@@ -299,7 +299,9 @@ That gives the system two useful properties:
 - runtime stays responsive during normal agent work
 - Hub still receives durable evidence for later analysis
 
-The current codebase is still in a terminology transition from trace to attestation. The runtime idea is the same either way: search, load, refer, and related session signals should leave evidence.
+The current codebase is still in a terminology transition from trace to
+attestation. The runtime idea is unchanged: discover, load, refer, and
+related session signals leave evidence.
 
 ## Where to inspect when something feels wrong
 

@@ -813,7 +813,11 @@ fn isProtocolToolEvent(kind: []const u8) bool {
         std.mem.eql(u8, kind, "rule_propose_create") or
         std.mem.eql(u8, kind, "rule_propose_update") or
         std.mem.eql(u8, kind, "rule_propose_rename") or
-        std.mem.eql(u8, kind, "rule_propose_delete");
+        std.mem.eql(u8, kind, "rule_propose_delete") or
+        std.mem.eql(u8, kind, "mpf_propose_create") or
+        std.mem.eql(u8, kind, "mpf_propose_update") or
+        std.mem.eql(u8, kind, "mpf_propose_delete") or
+        std.mem.eql(u8, kind, "draft_discard");
 }
 
 test "computeStats uses rule totals to derive non-100 signal ratios" {

@@ -33,8 +33,10 @@ In the current implementation, the MCP tool surface is:
 - `memory.refer`
 - `memory.submit`
 - `memory.reject`
+- `draft`
 
-That is the runtime path for loading rules and context, recording what was applied, and closing a turn with an attestation trail.
+That path loads rules and context, records applied constraints, stages
+drafts, and closes the turn with an attestation trail.
 
 The runtime shape is easier to understand as a sequence:
 
@@ -42,13 +44,17 @@ The runtime shape is easier to understand as a sequence:
 agent host
   -> MCP stdio server (`clumsies mcp serve`)
   -> local workspace manifest + cache
-  -> attestation.jsonl
-  -> TUI startup background upload to Hub
+  -> logs/attestation/{session_id}.jsonl
+  -> TUI background upload to Hub
 ```
 
 That path is why MCP should be described as a local runtime surface rather than as a direct Hub API wrapper. It serves the synchronized local workspace state first, and only later do attestation events move back up to Hub.
 
-One important bootstrap detail sits between step 2 and step 3: the agent re-imports `META_PROMPT.md` from the workspace cache. That file is what tells the runtime to search first, load intentionally, and declare real constraint usage through `memory.refer`. In other words, the host does not just start an MCP server. It starts an MCP server plus a workspace-scoped bootstrap contract.
+One bootstrap detail sits between step 2 and step 3: the agent imports
+`META_PROMPT.md` from the cache. That file tells the runtime to discover
+first, load intentionally, and declare real constraint usage through
+`memory.refer`. The host starts an MCP server and a workspace-scoped
+bootstrap contract.
 
 ## What state the runtime depends on
 
@@ -59,7 +65,7 @@ The host runtime depends on several local files under `~/.clumsies`:
 | `config.toml` | resolves which workspace is bound to the current repo path |
 | `workspaces/{ws_id}/manifest.json` | gives the current workspace snapshot and revision |
 | `workspaces/{ws_id}/cache/` | stores materialized rules, context, and `META_PROMPT` |
-| `workspaces/{ws_id}/attestation.jsonl` | stores the local event stream |
+| `workspaces/{ws_id}/logs/attestation/` | session logs and cursors |
 | `adapters/installs/{install_id}/manifest.json` | records what an adapter installation owns |
 | `adapters/installs/{install_id}/wal.jsonl` | supports safe update and remove behavior |
 

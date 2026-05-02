@@ -40,6 +40,10 @@ pub const AttestationEvent = struct {
         rule_propose_update: ProposeUpdatePayload,
         rule_propose_rename: ProposeRenamePayload,
         rule_propose_delete: ProposeDeletePayload,
+        mpf_propose_create: ProposeCreatePayload,
+        mpf_propose_update: ProposeUpdatePayload,
+        mpf_propose_delete: ProposeDeletePayload,
+        draft_discard: DraftDiscardPayload,
     };
 
     pub const SetupPayload = struct {
@@ -103,6 +107,12 @@ pub const AttestationEvent = struct {
         id: []const u8,
         path: []const u8,
     };
+
+    pub const DraftDiscardPayload = struct {
+        resource: []const u8,
+        id: []const u8,
+        path: []const u8,
+    };
 };
 
 /// Generate an opaque idempotency key for local attestation uploads.
@@ -130,6 +140,10 @@ pub fn payloadTypeTag(payload: AttestationEvent.Payload) []const u8 {
         .rule_propose_update => "rule_propose_update",
         .rule_propose_rename => "rule_propose_rename",
         .rule_propose_delete => "rule_propose_delete",
+        .mpf_propose_create => "mpf_propose_create",
+        .mpf_propose_update => "mpf_propose_update",
+        .mpf_propose_delete => "mpf_propose_delete",
+        .draft_discard => "draft_discard",
     };
 }
 
@@ -337,6 +351,22 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
         },
         .rule_propose_delete => |p| {
             try writeOptionalString(allocator, &buf, "rule_id", p.id);
+            try writeOptionalString(allocator, &buf, "path", p.path);
+        },
+        .mpf_propose_create => |p| {
+            try writeOptionalString(allocator, &buf, "path", p.path);
+        },
+        .mpf_propose_update => |p| {
+            try writeOptionalString(allocator, &buf, "mpf_id", p.id);
+            try writeOptionalString(allocator, &buf, "path", p.path);
+        },
+        .mpf_propose_delete => |p| {
+            try writeOptionalString(allocator, &buf, "mpf_id", p.id);
+            try writeOptionalString(allocator, &buf, "path", p.path);
+        },
+        .draft_discard => |p| {
+            try writeOptionalString(allocator, &buf, "resource", p.resource);
+            try writeOptionalString(allocator, &buf, "id", p.id);
             try writeOptionalString(allocator, &buf, "path", p.path);
         },
     }
