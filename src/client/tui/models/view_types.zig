@@ -31,8 +31,27 @@ pub const CommentEntry = struct {
     created: []const u8,
 };
 
+pub const PrTargetKind = enum {
+    context,
+    rule,
+    bundle,
+    mpf,
+
+    pub fn label(self: PrTargetKind) []const u8 {
+        return switch (self) {
+            .context => "context",
+            .rule => "rule",
+            .bundle => "bundle",
+            .mpf => "mpf",
+        };
+    }
+};
+
 pub const PullRequestEntry = struct {
     id: []const u8,
+    target_kind: PrTargetKind = .rule,
+    target_path: []const u8 = "",
+    workspace_id: ?[]const u8 = null,
     rule_name: []const u8,
     status: []const u8,
     author: []const u8,

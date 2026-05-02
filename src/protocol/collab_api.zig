@@ -51,3 +51,19 @@ pub const RulePrComment = struct {
 pub const RulePrCommentsResponse = struct {
     comments: []const RulePrComment = &.{},
 };
+
+pub const ReviewPrListItem = struct {
+    pr_id: []const u8,
+    target_kind: []const u8,
+    target_path: []const u8,
+    ws_id: ?[]const u8 = null,
+    status: []const u8,
+    description: []const u8,
+    created_at: []const u8,
+    author: []const u8 = "",
+    operation_count: i64 = 0,
+};
+
+pub const ReviewPrListResponse = struct {
+    prs: []const ReviewPrListItem = &.{},
+};

@@ -41,6 +41,29 @@ pub const PrFilter = enum {
     }
 };
 
+pub const ReviewMode = enum { list, detail };
+
+pub const ReviewFocus = enum { filters, queue, detail };
+
+pub const ReviewDetailPane = enum { diff, comments };
+
+pub const PrSort = enum {
+    updated,
+    created,
+
+    pub fn label(self: PrSort) []const u8 {
+        return switch (self) {
+            .updated => "updated",
+            .created => "created",
+        };
+    }
+};
+
+pub const FilterCursor = struct {
+    group_idx: usize = 0,
+    chip_idx: usize = 0,
+};
+
 pub const DetailTab = enum(u8) {
     content,
     pull_requests,
@@ -60,20 +83,32 @@ pub const State = struct {
     detail_focus_content: bool = false,
     hide_diff: bool = false,
     content_view: w.ContentView,
+    mode: ReviewMode = .list,
+    focus: ReviewFocus = .queue,
+    detail_pane: ReviewDetailPane = .diff,
+    filter_cursor: FilterCursor = .{},
+    sort: PrSort = .updated,
     pr_filter: PrFilter = .open,
+    target_filter: ?data.PrTargetKind = null,
     pr_scroll_bars: vxfw.ScrollBars,
     pr_widgets: [64 * 2]vxfw.Widget = undefined,
     pr_table_rows: [64]w.TableRow = undefined,
-    pr_table_cols: [64][4]w.Column = undefined,
+    pr_table_cols: [64][5]w.Column = undefined,
     pr_text_rows: [64]vxfw.Text = undefined,
     pr_indices: [64 * 2]?usize = .{null} ** (64 * 2),
     pr_desc_bufs: [64][160]u8 = undefined,
     pr_row_count: usize = 0,
+    filtered_pr_count: usize = 0,
+    total_pr_count: usize = 0,
     selected_pr_idx: usize = 0,
     pr_diff_scroll_bars: vxfw.ScrollBars,
     pr_diff_widgets: [32]vxfw.Widget = undefined,
     pr_diff_rows: [32]vxfw.Text = undefined,
     pr_diff_count: usize = 0,
+    pr_comment_scroll_bars: vxfw.ScrollBars,
+    pr_comment_widgets: [64]vxfw.Widget = undefined,
+    pr_comment_rows: [64]vxfw.Text = undefined,
+    pr_comment_count: usize = 0,
     show_comment_editor: bool = false,
     comment_input_buf: [256]u8 = .{0} ** 256,
     comment_input_len: usize = 0,
@@ -83,6 +118,7 @@ pub const State = struct {
             .content_view = w.ContentView.init(),
             .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
+            .pr_comment_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
         };
     }
 };
@@ -389,6 +425,556 @@ fn handlePrDiffEvent(
     try self.review.pr_diff_scroll_bars.scroll_view.handleEvent(ctx, event);
 }
 
+fn handleReviewDetailEvent(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    event: vxfw.Event,
+    key: vaxis.Key,
+) anyerror!void {
+    if (key.matches('a', .{})) {
+        self.doPrAction("accept");
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('x', .{})) {
+        self.doPrAction("reject");
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('c', .{})) {
+        self.review.show_comment_editor = true;
+        self.review.comment_input_len = 0;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches(vaxis.Key.tab, .{})) {
+        self.review.detail_pane = if (self.review.detail_pane == .diff) .comments else .diff;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    switch (self.review.detail_pane) {
+        .diff => {
+            if (self.review.pr_diff_count == 0) return;
+            try self.review.pr_diff_scroll_bars.scroll_view.handleEvent(ctx, event);
+        },
+        .comments => {
+            if (self.review.pr_comment_count == 0) return;
+            try self.review.pr_comment_scroll_bars.scroll_view.handleEvent(ctx, event);
+        },
+    }
+}
+
+pub fn drawRoot(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+) std.mem.Allocator.Error!vxfw.Surface {
+    syncReviewPrWidgets(self);
+
+    const size = ctx.max.size();
+    if (self.review.mode == .detail) return drawReviewDetailPanel(self, ctx);
+
+    const filter_w = reviewFilterPanelWidth(size.width);
+    const queue_w: u16 = size.width - filter_w -| 1;
+    const filter_ctx = ctx.withConstraints(.{ .width = filter_w, .height = size.height }, .{ .width = filter_w, .height = size.height });
+    const queue_ctx = ctx.withConstraints(.{ .width = queue_w, .height = size.height }, .{ .width = queue_w, .height = size.height });
+    const filter_surface = try drawReviewFilterPanel(self, filter_ctx);
+    const queue_surface = try drawReviewListPanel(self, queue_ctx);
+    return w.splitHorizontal(ctx, self.widget(), theme.PANEL, filter_surface, queue_surface, filter_w);
+}
+
+fn reviewFilterPanelWidth(total_width: u16) u16 {
+    if (total_width < 4) return 1;
+    if (total_width < 70) return @min(@as(u16, 28), total_width / 2);
+    return @min(@as(u16, 34), @max(@as(u16, 28), total_width / 4));
+}
+
+fn drawReviewFilterPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(self.review.focus == .filters), theme.PANEL);
+    w.writeText(&surface, ctx, 2, 0, "Filters", theme.boldOn(theme.PANEL, theme.TEXT));
+
+    var row: u16 = 2;
+    row = try drawActiveFilterChips(self, &surface, ctx, row);
+    row += 1;
+    row = drawFilterGroup(self, &surface, ctx, row, 0, "Status", &status_chips);
+    row += 1;
+    row = drawFilterGroup(self, &surface, ctx, row, 1, "Target", &target_chips);
+    row += 1;
+    _ = drawFilterGroup(self, &surface, ctx, row, 2, "Sort", &sort_chips);
+    return surface;
+}
+
+fn drawActiveFilterChips(self: anytype, surface: *vxfw.Surface, ctx: vxfw.DrawContext, start_row: u16) std.mem.Allocator.Error!u16 {
+    var row = start_row;
+    const default_filters = self.review.pr_filter == .open and self.review.target_filter == null and self.review.sort == .updated;
+    if (default_filters) {
+        w.writeText(surface, ctx, 2, row, "All open review items", theme.fg(theme.MUTED));
+        return row + 1;
+    }
+    w.writeText(surface, ctx, 2, row, "Active", theme.fgBold(theme.TEXT_SOFT));
+    row += 1;
+    var labels: [3][]const u8 = undefined;
+    labels[0] = try std.fmt.allocPrint(ctx.arena, "status:{s}", .{self.review.pr_filter.label()});
+    labels[1] = if (self.review.target_filter) |target|
+        try std.fmt.allocPrint(ctx.arena, "target:{s}", .{target.label()})
+    else
+        "target:all";
+    labels[2] = try std.fmt.allocPrint(ctx.arena, "sort:{s}", .{self.review.sort.label()});
+    return drawChipLine(surface, ctx, row, 2, surface.size.width -| 4, labels[0..], null, false);
+}
+
+const FilterChip = struct {
+    label: []const u8,
+    status: ?PrFilter = null,
+    target: ?data.PrTargetKind = null,
+    target_all: bool = false,
+    sort: ?PrSort = null,
+};
+
+const status_chips = [_]FilterChip{
+    .{ .label = "Open", .status = .open },
+    .{ .label = "Closed", .status = .closed },
+    .{ .label = "All", .status = .all },
+};
+
+const target_chips = [_]FilterChip{
+    .{ .label = "All", .target_all = true },
+    .{ .label = "Context", .target = .context },
+    .{ .label = "Rule", .target = .rule },
+    .{ .label = "MPF", .target = .mpf },
+};
+
+const sort_chips = [_]FilterChip{
+    .{ .label = "Updated", .sort = .updated },
+    .{ .label = "Created", .sort = .created },
+};
+
+fn chipsForGroup(group_idx: usize) []const FilterChip {
+    return switch (group_idx) {
+        0 => &status_chips,
+        1 => &target_chips,
+        else => &sort_chips,
+    };
+}
+
+fn drawFilterGroup(
+    self: anytype,
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    start_row: u16,
+    group_idx: usize,
+    title: []const u8,
+    chips: []const FilterChip,
+) u16 {
+    var row = start_row;
+    w.writeText(surface, ctx, 2, row, title, theme.fgBold(theme.TEXT_SOFT));
+    row += 1;
+    var col: u16 = 2;
+    const max_w: u16 = surface.size.width -| 4;
+    for (chips, 0..) |chip, chip_idx| {
+        const label_w: u16 = @intCast(ctx.stringWidth(chip.label));
+        const chip_w = label_w + 4;
+        if (col > 2 and col + chip_w > max_w + 2) {
+            row += 1;
+            col = 2;
+        }
+        const focused = self.review.focus == .filters and self.review.filter_cursor.group_idx == group_idx and self.review.filter_cursor.chip_idx == chip_idx;
+        const selected = chipSelected(self, chip);
+        const style = chipStyle(selected, focused);
+        const text = std.fmt.allocPrint(ctx.arena, "[ {s} ]", .{chip.label}) catch chip.label;
+        w.writeText(surface, ctx, col, row, text, style);
+        col += chip_w + 1;
+    }
+    return row + 1;
+}
+
+fn drawChipLine(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    start_row: u16,
+    start_col: u16,
+    max_w: u16,
+    labels: []const []const u8,
+    selected_idx: ?usize,
+    focus: bool,
+) u16 {
+    var row = start_row;
+    var col = start_col;
+    for (labels, 0..) |label, idx| {
+        const label_w: u16 = @intCast(ctx.stringWidth(label));
+        const chip_w = label_w + 4;
+        if (col > start_col and col + chip_w > start_col + max_w) {
+            row += 1;
+            col = start_col;
+        }
+        const selected = if (selected_idx) |sel| sel == idx else false;
+        const text = std.fmt.allocPrint(ctx.arena, "[ {s} ]", .{label}) catch label;
+        w.writeText(surface, ctx, col, row, text, chipStyle(selected, focus and selected));
+        col += chip_w + 1;
+    }
+    return row + 1;
+}
+
+fn chipWrapRowCount(width: u16, labels: []const []const u8) u16 {
+    if (labels.len == 0) return 0;
+    const max_w = @max(@as(u16, 1), width);
+    var rows: u16 = 1;
+    var col: u16 = 0;
+    for (labels) |label| {
+        const chip_w: u16 = @intCast(label.len + 4);
+        if (col > 0 and col + chip_w > max_w) {
+            rows += 1;
+            col = 0;
+        }
+        col += chip_w + 1;
+    }
+    return rows;
+}
+
+fn chipStyle(selected: bool, focused: bool) vaxis.Style {
+    if (focused) return theme.boldOn(theme.ACCENT, theme.CANVAS);
+    if (selected) return theme.boldOn(theme.PANEL_SOFT, theme.ACCENT_SOFT);
+    return theme.textOn(theme.PANEL, theme.TEXT_SOFT);
+}
+
+fn chipSelected(self: anytype, chip: FilterChip) bool {
+    if (chip.status) |status| return self.review.pr_filter == status;
+    if (chip.sort) |sort| return self.review.sort == sort;
+    if (chip.target_all) return self.review.target_filter == null;
+    if (chip.target) |target| return self.review.target_filter != null and self.review.target_filter.? == target;
+    return false;
+}
+
+fn drawReviewListPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(self.review.focus == .queue), theme.PANEL);
+    w.writeText(&surface, ctx, 2, 0, "Review queue", theme.boldOn(theme.PANEL, theme.TEXT));
+    const count = std.fmt.allocPrint(ctx.arena, "{d}/{d}", .{ self.review.filtered_pr_count, self.review.total_pr_count }) catch "";
+    if (count.len > 0) w.writeRightText(&surface, ctx, 0, count, theme.textOn(theme.PANEL, theme.MUTED));
+
+    const body_origin_row: u16 = 1;
+    const body_origin_col: u16 = 2;
+    const body_h: u16 = size.height -| body_origin_row -| 1;
+    const body_w: u16 = size.width -| body_origin_col -| 1;
+    if (self.review.pr_row_count == 0) {
+        const empty = if (self.review.total_pr_count == 0) "No review requests." else "No PRs match current filters.";
+        w.writeText(&surface, ctx, body_origin_col, body_origin_row + 1, empty, theme.fg(theme.MUTED));
+        return surface;
+    }
+
+    const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
+    self.review.pr_scroll_bars.scroll_view.draw_cursor = false;
+    defer self.review.pr_scroll_bars.scroll_view.draw_cursor = true;
+    const body = try self.review.pr_scroll_bars.widget().draw(body_ctx);
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+    children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
+    surface.children = children;
+    writeReviewCursorBar(&surface, &self.review.pr_scroll_bars.scroll_view, body_origin_row, body_h);
+    return surface;
+}
+
+fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    const prs = self.getReviewPrs();
+    const size = ctx.max.size();
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    w.fillSurface(&surface, theme.PANEL);
+    if (prs.len == 0) {
+        w.drawBorder(&surface, theme.focusBorder(self.review.focus == .detail), theme.PANEL);
+        w.writeText(&surface, ctx, 2, 0, "Review", theme.boldOn(theme.PANEL, theme.TEXT));
+        w.writeText(&surface, ctx, 2, 2, "Select a pull request to review.", theme.fg(theme.MUTED));
+        return surface;
+    }
+
+    const pr = &prs[@min(self.review.selected_pr_idx, prs.len - 1)];
+    const created_short = w.formatShortTimestamp(ctx.arena, pr.created) catch pr.created;
+    const title = try std.fmt.allocPrint(
+        ctx.arena,
+        "{s}:{s}",
+        .{ pr.target_kind.label(), pr.target_path },
+    );
+    const subtitle = try std.fmt.allocPrint(
+        ctx.arena,
+        "{s} · {s} · {s} · {s}",
+        .{ pr.status, pr.author, pr.id, created_short },
+    );
+
+    syncReviewPrDiffAndComments(self, ctx.arena);
+    const body_h: u16 = size.height;
+    const body_w: u16 = size.width;
+
+    const comment_w = reviewCommentPanelWidth(body_w);
+    const diff_w: u16 = body_w - comment_w -| 1;
+    const diff_ctx = ctx.withConstraints(.{ .width = diff_w, .height = body_h }, .{ .width = diff_w, .height = body_h });
+    const comment_ctx = ctx.withConstraints(.{ .width = comment_w, .height = body_h }, .{ .width = comment_w, .height = body_h });
+    const diff_panel = try drawReviewDiffPanel(self, diff_ctx, title, subtitle);
+    const comment_panel = try drawReviewCommentPanel(self, comment_ctx, pr);
+
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+    children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = diff_panel };
+    children[1] = .{ .origin = .{ .row = 0, .col = @as(i17, @intCast(diff_w + 1)) }, .surface = comment_panel };
+    surface.children = children;
+    return surface;
+}
+
+fn reviewCommentPanelWidth(body_w: u16) u16 {
+    if (body_w < 72) return @min(@as(u16, 28), body_w / 2);
+    return @min(@as(u16, 44), @max(@as(u16, 32), body_w / 3));
+}
+
+fn drawReviewDiffPanel(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+    title: []const u8,
+    subtitle: []const u8,
+) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(self.review.detail_pane == .diff), theme.PANEL);
+    w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
+    const meta_min_col: u16 = @intCast(2 + ctx.stringWidth(title) + 2);
+    if (subtitle.len > 0) {
+        _ = w.writeHeaderRightIfFits(&surface, ctx, 0, meta_min_col, subtitle, theme.fg(theme.MUTED));
+    }
+    if (self.review.pr_diff_count == 0) {
+        w.writeText(&surface, ctx, 2, 2, "No diff loaded.", theme.fg(theme.MUTED));
+        return surface;
+    }
+    const body_h = size.height -| 3;
+    const body_w = size.width -| 4;
+    const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
+    const body = try self.review.pr_diff_scroll_bars.widget().draw(body_ctx);
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+    children[0] = .{ .origin = .{ .row = 2, .col = 2 }, .surface = body };
+    surface.children = children;
+    return surface;
+}
+
+fn drawReviewCommentPanel(self: anytype, ctx: vxfw.DrawContext, pr: *const data.PullRequestEntry) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(self.review.detail_pane == .comments), theme.PANEL);
+    const title = try std.fmt.allocPrint(ctx.arena, "Comments ({d})", .{pr.comments.len});
+    w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
+    if (pr.comments.len == 0) {
+        w.writeText(&surface, ctx, 2, 2, "No comments yet.", theme.fg(theme.MUTED));
+        return surface;
+    }
+    const body_h = size.height -| 2;
+    const body_w = size.width -| 4;
+    const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
+    const body = try self.review.pr_comment_scroll_bars.widget().draw(body_ctx);
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+    children[0] = .{ .origin = .{ .row = 1, .col = 2 }, .surface = body };
+    surface.children = children;
+    return surface;
+}
+
+fn writeReviewCursorBar(
+    surface: *vxfw.Surface,
+    scroll_view: *const vxfw.ScrollView,
+    body_origin_row: u16,
+    body_h: u16,
+) void {
+    const cursor_pos = scroll_view.cursor;
+    const scroll_top = scroll_view.scroll.top;
+    if (cursor_pos < scroll_top) return;
+    const visible_row = cursor_pos - scroll_top;
+    if (visible_row >= body_h) return;
+    const row = body_origin_row + @as(u16, @intCast(visible_row));
+    surface.writeCell(1, row, .{
+        .char = .{ .grapheme = "\xe2\x96\x8c", .width = 1 },
+        .style = .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL },
+    });
+}
+
+pub fn handleModuleEvent(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    event: vxfw.Event,
+    key: vaxis.Key,
+) anyerror!void {
+    switch (self.review.mode) {
+        .detail => {
+            if (key.matches(vaxis.Key.escape, .{}) or key.matches(vaxis.Key.backspace, .{})) {
+                self.review.mode = .list;
+                self.review.focus = .queue;
+                ctx.consumeAndRedraw();
+                return;
+            }
+            try handleReviewDetailEvent(self, ctx, event, key);
+            return;
+        },
+        .list => {},
+    }
+
+    if (key.matches(vaxis.Key.tab, .{})) {
+        self.review.focus = if (self.review.focus == .filters) .queue else .filters;
+        ctx.consumeAndRedraw();
+        return;
+    }
+
+    if (self.review.focus == .filters) {
+        handleReviewFilterEvent(self, ctx, key);
+        return;
+    }
+    try handleReviewPrListEvent(self, ctx, event, key);
+}
+
+pub fn shortcuts(self: anytype) []const w.Shortcut {
+    if (self.review.mode == .detail) return &.{
+        .{ .key = "Esc", .label = "back" },
+        .{ .key = "j/k", .label = "scroll" },
+        .{ .key = "Tab", .label = "pane" },
+        .{ .key = "a", .label = "accept" },
+        .{ .key = "x", .label = "reject" },
+        .{ .key = "c", .label = "comment" },
+        .{ .key = "q", .label = "quit" },
+    };
+    if (self.review.focus == .filters) return &.{
+        .{ .key = "h/l", .label = "chip" },
+        .{ .key = "j/k", .label = "group" },
+        .{ .key = "Enter", .label = "select" },
+        .{ .key = "x", .label = "clear" },
+        .{ .key = "Tab", .label = "queue" },
+        .{ .key = "q", .label = "quit" },
+    };
+    return &.{
+        .{ .key = "j/k", .label = "move" },
+        .{ .key = "Enter", .label = "open" },
+        .{ .key = "Tab", .label = "filters" },
+        .{ .key = "q", .label = "quit" },
+    };
+}
+
+fn handleReviewFilterEvent(self: anytype, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+        moveFilterGroup(&self.review.filter_cursor, 1);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+        moveFilterGroup(&self.review.filter_cursor, -1);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
+        moveFilterChip(&self.review.filter_cursor, 1);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
+        moveFilterChip(&self.review.filter_cursor, -1);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches(vaxis.Key.enter, .{}) or key.matches(' ', .{})) {
+        applyFocusedFilterChip(self);
+        resetReviewSelection(self);
+        syncReviewPrWidgets(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('x', .{})) {
+        clearFocusedFilterFacet(self);
+        resetReviewSelection(self);
+        syncReviewPrWidgets(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    ctx.consumeEvent();
+}
+
+fn moveFilterGroup(cursor: *FilterCursor, delta: i8) void {
+    const group_count: usize = 3;
+    const current: i16 = @intCast(cursor.group_idx);
+    const next = std.math.clamp(current + delta, 0, @as(i16, @intCast(group_count - 1)));
+    cursor.group_idx = @intCast(next);
+    cursor.chip_idx = @min(cursor.chip_idx, chipsForGroup(cursor.group_idx).len - 1);
+}
+
+fn moveFilterChip(cursor: *FilterCursor, delta: i8) void {
+    const chips = chipsForGroup(cursor.group_idx);
+    const current: i16 = @intCast(cursor.chip_idx);
+    const next = std.math.clamp(current + delta, 0, @as(i16, @intCast(chips.len - 1)));
+    cursor.chip_idx = @intCast(next);
+}
+
+fn applyFocusedFilterChip(self: anytype) void {
+    const chips = chipsForGroup(self.review.filter_cursor.group_idx);
+    const chip = chips[@min(self.review.filter_cursor.chip_idx, chips.len - 1)];
+    if (chip.status) |status| self.review.pr_filter = status;
+    if (chip.sort) |sort| self.review.sort = sort;
+    if (chip.target_all) self.review.target_filter = null;
+    if (chip.target) |target| self.review.target_filter = target;
+}
+
+fn clearFocusedFilterFacet(self: anytype) void {
+    switch (self.review.filter_cursor.group_idx) {
+        0 => self.review.pr_filter = .open,
+        1 => self.review.target_filter = null,
+        2 => self.review.sort = .updated,
+        else => {},
+    }
+}
+
+fn resetReviewSelection(self: anytype) void {
+    self.review.selected_pr_idx = 0;
+    self.review.pr_scroll_bars.scroll_view.cursor = 0;
+    self.review.pr_diff_scroll_bars.scroll_view.cursor = 0;
+    self.review.pr_comment_scroll_bars.scroll_view.cursor = 0;
+}
+
+fn handleReviewPrListEvent(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    event: vxfw.Event,
+    key: vaxis.Key,
+) anyerror!void {
+    syncReviewPrWidgets(self);
+    if (self.review.pr_row_count == 0) {
+        ctx.consumeEvent();
+        return;
+    }
+    if (key.matches(vaxis.Key.enter, .{})) {
+        self.review.mode = .detail;
+        self.review.focus = .detail;
+        self.review.detail_pane = .diff;
+        self.review.pr_diff_scroll_bars.scroll_view.cursor = 0;
+        self.review.pr_comment_scroll_bars.scroll_view.cursor = 0;
+        fetchSelectedReviewPrDetail(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    const prev = self.review.pr_scroll_bars.scroll_view.cursor;
+    try self.review.pr_scroll_bars.scroll_view.handleEvent(ctx, event);
+
+    var pos = @as(usize, @intCast(self.review.pr_scroll_bars.scroll_view.cursor));
+    if (pos >= self.review.pr_row_count) pos = self.review.pr_row_count - 1;
+    if (self.review.pr_indices[pos] == null) {
+        const moving_down = self.review.pr_scroll_bars.scroll_view.cursor > prev;
+        if (moving_down and pos + 1 < self.review.pr_row_count and self.review.pr_indices[pos + 1] != null) {
+            pos += 1;
+        } else if (!moving_down and pos > 0 and self.review.pr_indices[pos - 1] != null) {
+            pos -= 1;
+        } else {
+            pos = @intCast(prev);
+        }
+    }
+    self.review.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
+    if (self.review.pr_indices[pos]) |idx| {
+        if (self.review.selected_pr_idx != idx) {
+            self.review.selected_pr_idx = idx;
+            fetchSelectedReviewPrDetail(self);
+        }
+    }
+}
+
 pub fn fetchSelectedPrDetail(self: anytype) void {
     const rules = self.getRules();
     const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
@@ -417,6 +1003,33 @@ pub fn fetchSelectedPrDetail(self: anytype) void {
             &self.api_state.pr_comments_pending,
             self.api_state,
             .{ .pr_id = pr_id },
+        );
+    }
+}
+
+pub fn fetchSelectedReviewPrDetail(self: anytype) void {
+    const prs = self.getReviewPrs();
+    if (prs.len == 0) return;
+    const pr = prs[@min(self.review.selected_pr_idx, prs.len - 1)];
+    if (pr.target_kind == .bundle) return;
+    if (self.api_state.pr_detail_cache.shouldDispatch(.{ .value = pr.id })) {
+        api.specs.dispatchFromState(
+            api.specs.PrIdParams,
+            @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
+            api.specs.pr_detail,
+            &self.api_state.pr_detail_pending,
+            self.api_state,
+            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
+        );
+    }
+    if (self.api_state.pr_comments_cache.shouldDispatch(.{ .value = pr.id })) {
+        api.specs.dispatchFromState(
+            api.specs.PrIdParams,
+            api.specs.PrCommentsPayload,
+            api.specs.pr_comments,
+            &self.api_state.pr_comments_pending,
+            self.api_state,
+            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
         );
     }
 }
@@ -565,9 +1178,10 @@ pub fn syncPrWidgets(self: anytype) void {
             .{ .text = pr.status, .flex = 0 },
             .{ .text = pr.author, .flex = 0 },
             .{ .text = created_short, .flex = 1, .alignment = .right },
+            .{ .text = "", .flex = 0 },
         };
         self.review.pr_table_rows[pi] = .{
-            .columns = &self.review.pr_table_cols[pi],
+            .columns = self.review.pr_table_cols[pi][0..4],
             .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
             .gap = 2,
             .padding_left = 0,
@@ -604,6 +1218,122 @@ pub fn syncPrWidgets(self: anytype) void {
     // user to move the cursor or press Enter. shouldDispatch de-dupes
     // concurrent requests, so this is cheap on re-renders.
     if (row_idx > 0) fetchSelectedPrDetail(self);
+}
+
+pub fn syncReviewPrWidgets(self: anytype) void {
+    const prs = self.getReviewPrs();
+    self.review.total_pr_count = prs.len;
+    if (prs.len == 0) {
+        self.review.filtered_pr_count = 0;
+        self.review.pr_row_count = 0;
+        self.review.pr_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_widgets[0..0] };
+        self.review.pr_scroll_bars.estimated_content_height = 0;
+        return;
+    }
+
+    var filtered_indices: [64]usize = undefined;
+    var filtered_count: usize = 0;
+    for (prs, 0..) |pr, pi| {
+        if (filtered_count >= filtered_indices.len) break;
+        if (!reviewPrMatchesFilters(self.review.pr_filter, self.review.target_filter, pr)) continue;
+        filtered_indices[filtered_count] = pi;
+        filtered_count += 1;
+    }
+    self.review.filtered_pr_count = filtered_count;
+    sortReviewPrIndices(prs, filtered_indices[0..filtered_count], self.review.sort);
+
+    var row_idx: usize = 0;
+    for (filtered_indices[0..filtered_count]) |pi| {
+        const pr = prs[pi];
+        if (row_idx + 1 >= self.review.pr_widgets.len) break;
+        const sel = pi == self.review.selected_pr_idx;
+        const created_short = w.formatShortTimestamp(self.viewAllocator(), pr.created) catch pr.created;
+        const comments = std.fmt.allocPrint(self.viewAllocator(), "{d} comments", .{pr.comments.len}) catch "";
+        const ops = std.fmt.allocPrint(self.viewAllocator(), "{d} ops", .{pr.operation_count}) catch "";
+        const anchor = std.fmt.allocPrint(
+            self.viewAllocator(),
+            "[{s}] {s}",
+            .{ pr.target_kind.label(), pr.description },
+        ) catch pr.description;
+        self.review.pr_table_cols[pi] = .{
+            .{ .text = anchor, .flex = 1, .min_width = 12 },
+            .{ .text = pr.status, .flex = 0 },
+            .{ .text = comments, .flex = 0 },
+            .{ .text = ops, .flex = 0 },
+            .{ .text = created_short, .flex = 0, .alignment = .right },
+        };
+        self.review.pr_table_rows[pi] = .{
+            .columns = &self.review.pr_table_cols[pi],
+            .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
+            .gap = 2,
+            .padding_left = 0,
+        };
+        self.review.pr_widgets[row_idx] = self.review.pr_table_rows[pi].widget();
+        self.review.pr_indices[row_idx] = pi;
+        row_idx += 1;
+
+        const desc_text = std.fmt.bufPrint(
+            &self.review.pr_desc_bufs[pi],
+            "{s} · {s} · {s}{s}{s}",
+            .{
+                pr.target_path,
+                pr.author,
+                pr.id,
+                if (pr.workspace_id) |_| " · " else "",
+                pr.workspace_id orelse "",
+            },
+        ) catch pr.target_path;
+        self.review.pr_text_rows[pi] = .{
+            .text = desc_text,
+            .style = theme.textOn(theme.PANEL, theme.MUTED),
+        };
+        self.review.pr_widgets[row_idx] = self.review.pr_text_rows[pi].widget();
+        self.review.pr_indices[row_idx] = null;
+        row_idx += 1;
+    }
+
+    self.review.pr_row_count = row_idx;
+    self.review.pr_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_widgets[0..row_idx] };
+    self.review.pr_scroll_bars.estimated_content_height = @intCast(row_idx);
+    var cur = @as(usize, @intCast(self.review.pr_scroll_bars.scroll_view.cursor));
+    while (cur < row_idx and self.review.pr_indices[cur] == null) cur += 1;
+    self.review.pr_scroll_bars.scroll_view.cursor = @intCast(cur);
+    if (cur < row_idx) {
+        if (self.review.pr_indices[cur]) |pi| self.review.selected_pr_idx = pi;
+    }
+    if (row_idx == 0) {
+        self.review.pr_scroll_bars.scroll_view.cursor = 0;
+    }
+}
+
+fn reviewPrMatchesFilters(
+    status_filter: PrFilter,
+    target_filter: ?data.PrTargetKind,
+    pr: data.PullRequestEntry,
+) bool {
+    const status_ok = switch (status_filter) {
+        .open => std.mem.eql(u8, pr.status, "open"),
+        .closed => !std.mem.eql(u8, pr.status, "open"),
+        .all => true,
+    };
+    if (!status_ok) return false;
+    if (target_filter) |target| return pr.target_kind == target;
+    return true;
+}
+
+fn sortReviewPrIndices(prs: []const data.PullRequestEntry, indices: []usize, sort: PrSort) void {
+    const Ctx = struct {
+        prs: []const data.PullRequestEntry,
+        sort: PrSort,
+
+        fn lessThan(ctx: @This(), a_idx: usize, b_idx: usize) bool {
+            const a = ctx.prs[a_idx];
+            const b = ctx.prs[b_idx];
+            _ = ctx.sort;
+            return std.mem.order(u8, a.created, b.created) == .gt;
+        }
+    };
+    std.mem.sort(usize, indices, Ctx{ .prs = prs, .sort = sort }, Ctx.lessThan);
 }
 
 pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
@@ -678,4 +1408,224 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
     self.review.pr_diff_count = count;
     self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_diff_widgets[0..count] };
     self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
+}
+
+pub fn syncReviewPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
+    const prs = self.getReviewPrs();
+    if (prs.len == 0) {
+        self.review.pr_diff_count = 0;
+        self.review.pr_comment_count = 0;
+        return;
+    }
+    const pr = &prs[@min(self.review.selected_pr_idx, prs.len - 1)];
+    syncReviewDetailRows(self, allocator, pr);
+}
+
+fn syncPrDiffRows(self: anytype, allocator: std.mem.Allocator, pr: *const data.PullRequestEntry) void {
+    var count: usize = 0;
+    for (pr.diff) |line| {
+        if (count >= self.review.pr_diff_rows.len) break;
+        self.review.pr_diff_rows[count] = .{
+            .text = line,
+            .style = diff_viewer.styleLine(line),
+        };
+        self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
+        count += 1;
+    }
+    if (pr.comments.len > 0) {
+        if (count < self.review.pr_diff_rows.len) {
+            self.review.pr_diff_rows[count] = .{
+                .text = "Comments",
+                .style = theme.fg(theme.MUTED),
+            };
+            self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
+            count += 1;
+        }
+        for (pr.comments) |comment| {
+            if (count < self.review.pr_diff_rows.len) {
+                const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
+                const header = std.fmt.allocPrint(allocator, "{s} - {s}", .{ comment.author, created_short }) catch comment.author;
+                self.review.pr_diff_rows[count] = .{
+                    .text = header,
+                    .style = theme.fgBold(theme.TEXT_SOFT),
+                };
+                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
+                count += 1;
+            }
+            if (count < self.review.pr_diff_rows.len) {
+                self.review.pr_diff_rows[count] = .{
+                    .text = comment.body,
+                    .style = theme.fg(theme.TEXT_SOFT),
+                };
+                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
+                count += 1;
+            }
+        }
+    }
+    self.review.pr_diff_count = count;
+    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_diff_widgets[0..count] };
+    self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
+}
+
+fn syncReviewDetailRows(self: anytype, allocator: std.mem.Allocator, pr: *const data.PullRequestEntry) void {
+    var diff_count: usize = 0;
+    for (pr.diff) |line| {
+        if (diff_count >= self.review.pr_diff_rows.len) break;
+        self.review.pr_diff_rows[diff_count] = .{
+            .text = line,
+            .style = diff_viewer.styleLine(line),
+        };
+        self.review.pr_diff_widgets[diff_count] = self.review.pr_diff_rows[diff_count].widget();
+        diff_count += 1;
+    }
+    self.review.pr_diff_count = diff_count;
+    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_diff_widgets[0..diff_count] };
+    self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(diff_count);
+
+    var comment_count: usize = 0;
+    for (pr.comments) |comment| {
+        if (comment_count >= self.review.pr_comment_rows.len) break;
+        const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
+        const header = std.fmt.allocPrint(allocator, "o {s} · {s}", .{ comment.author, created_short }) catch comment.author;
+        self.review.pr_comment_rows[comment_count] = .{
+            .text = header,
+            .style = theme.fgBold(theme.TEXT_SOFT),
+        };
+        self.review.pr_comment_widgets[comment_count] = self.review.pr_comment_rows[comment_count].widget();
+        comment_count += 1;
+
+        if (comment_count >= self.review.pr_comment_rows.len) break;
+        const body = std.fmt.allocPrint(allocator, "  {s}", .{comment.body}) catch comment.body;
+        self.review.pr_comment_rows[comment_count] = .{
+            .text = body,
+            .style = theme.fg(theme.TEXT_SOFT),
+        };
+        self.review.pr_comment_widgets[comment_count] = self.review.pr_comment_rows[comment_count].widget();
+        comment_count += 1;
+
+        if (comment_count >= self.review.pr_comment_rows.len) break;
+        self.review.pr_comment_rows[comment_count] = .{
+            .text = "  |",
+            .style = theme.fg(theme.MUTED),
+        };
+        self.review.pr_comment_widgets[comment_count] = self.review.pr_comment_rows[comment_count].widget();
+        comment_count += 1;
+    }
+    self.review.pr_comment_count = comment_count;
+    self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_comment_widgets[0..comment_count] };
+    self.review.pr_comment_scroll_bars.estimated_content_height = @intCast(comment_count);
+}
+
+test "review filter predicate handles status and target facets" {
+    const testing = std.testing;
+    const open_rule = data.PullRequestEntry{
+        .id = "pr_1",
+        .target_kind = .rule,
+        .target_path = "rule/a.md",
+        .rule_name = "rule/a.md",
+        .status = "open",
+        .author = "alice",
+        .created = "2026-01-03T00:00:00Z",
+        .description = "Update rule",
+        .base_hash = "",
+        .diff = &.{},
+        .attestation_refers = 0,
+        .attestation_sessions = 0,
+    };
+    const closed_context = data.PullRequestEntry{
+        .id = "pr_2",
+        .target_kind = .context,
+        .target_path = "research/a.md",
+        .rule_name = "research/a.md",
+        .status = "closed",
+        .author = "bob",
+        .created = "2026-01-02T00:00:00Z",
+        .description = "Close context",
+        .base_hash = "",
+        .diff = &.{},
+        .attestation_refers = 0,
+        .attestation_sessions = 0,
+    };
+
+    try testing.expect(reviewPrMatchesFilters(.open, null, open_rule));
+    try testing.expect(!reviewPrMatchesFilters(.closed, null, open_rule));
+    try testing.expect(reviewPrMatchesFilters(.all, .rule, open_rule));
+    try testing.expect(!reviewPrMatchesFilters(.all, .mpf, open_rule));
+    try testing.expect(reviewPrMatchesFilters(.closed, .context, closed_context));
+}
+
+test "review sort orders newest timestamps first" {
+    const testing = std.testing;
+    const prs = [_]data.PullRequestEntry{
+        .{
+            .id = "old",
+            .target_kind = .rule,
+            .target_path = "a",
+            .rule_name = "a",
+            .status = "open",
+            .author = "alice",
+            .created = "2026-01-01T00:00:00Z",
+            .description = "old",
+            .base_hash = "",
+            .diff = &.{},
+            .attestation_refers = 0,
+            .attestation_sessions = 0,
+        },
+        .{
+            .id = "new",
+            .target_kind = .rule,
+            .target_path = "b",
+            .rule_name = "b",
+            .status = "open",
+            .author = "alice",
+            .created = "2026-01-03T00:00:00Z",
+            .description = "new",
+            .base_hash = "",
+            .diff = &.{},
+            .attestation_refers = 0,
+            .attestation_sessions = 0,
+        },
+        .{
+            .id = "mid",
+            .target_kind = .rule,
+            .target_path = "c",
+            .rule_name = "c",
+            .status = "open",
+            .author = "alice",
+            .created = "2026-01-02T00:00:00Z",
+            .description = "mid",
+            .base_hash = "",
+            .diff = &.{},
+            .attestation_refers = 0,
+            .attestation_sessions = 0,
+        },
+    };
+    var indices = [_]usize{ 0, 1, 2 };
+    sortReviewPrIndices(&prs, &indices, .updated);
+    try testing.expectEqualSlices(usize, &.{ 1, 2, 0 }, &indices);
+}
+
+test "review chips wrap for narrow and medium widths" {
+    const testing = std.testing;
+    const labels = [_][]const u8{ "All", "Context", "Rule", "MPF" };
+    try testing.expectEqual(@as(u16, 4), chipWrapRowCount(10, &labels));
+    try testing.expectEqual(@as(u16, 2), chipWrapRowCount(22, &labels));
+}
+
+test "review filter cursor navigation clamps across groups and chips" {
+    const testing = std.testing;
+    var cursor = FilterCursor{};
+    moveFilterChip(&cursor, 10);
+    try testing.expectEqual(@as(usize, 2), cursor.chip_idx);
+    moveFilterGroup(&cursor, 1);
+    try testing.expectEqual(@as(usize, 1), cursor.group_idx);
+    try testing.expectEqual(@as(usize, 2), cursor.chip_idx);
+    moveFilterChip(&cursor, 10);
+    try testing.expectEqual(@as(usize, 3), cursor.chip_idx);
+    moveFilterGroup(&cursor, 1);
+    try testing.expectEqual(@as(usize, 2), cursor.group_idx);
+    try testing.expectEqual(@as(usize, 1), cursor.chip_idx);
+    moveFilterGroup(&cursor, -10);
+    try testing.expectEqual(@as(usize, 0), cursor.group_idx);
+    try testing.expectEqual(@as(usize, 1), cursor.chip_idx);
 }

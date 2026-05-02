@@ -47,6 +47,9 @@ pub const BundleData = struct {
 
 pub const RulePr = struct {
     pr_id: []const u8,
+    target_kind: []const u8 = "rule",
+    target_path: []const u8 = "",
+    ws_id: ?[]const u8 = null,
     status: []const u8,
     description: []const u8,
     created_at: []const u8,

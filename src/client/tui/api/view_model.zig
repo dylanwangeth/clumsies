@@ -83,6 +83,9 @@ pub fn toPrEntries(
 
         list.append(alloc, .{
             .id = pr.pr_id,
+            .target_kind = parseTargetKind(pr.target_kind),
+            .target_path = if (pr.target_path.len > 0) pr.target_path else rule_path,
+            .workspace_id = pr.ws_id,
             .rule_name = rule_path,
             .status = pr.status,
             .author = pr.author,
@@ -101,6 +104,67 @@ pub fn toPrEntries(
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch &.{};
+}
+
+pub fn toReviewPrEntries(
+    alloc: std.mem.Allocator,
+    prs: []const model.RulePr,
+    api_state: *state.ApiState,
+) []const data.PullRequestEntry {
+    var list: std.ArrayList(data.PullRequestEntry) = .empty;
+    for (prs) |pr| {
+        var diff: []const []const u8 = &.{};
+        var comments: []const data.CommentEntry = &.{};
+        var op_type: []const u8 = "";
+        var op_current_path: []const u8 = "";
+        var op_new_path: []const u8 = "";
+        var op_base_hash: []const u8 = "";
+        var op_index: u16 = 0;
+        if (api_state.pr_detail_id) |cached_id| {
+            if (std.mem.eql(u8, cached_id, pr.pr_id)) {
+                diff = api_state.pr_detail_diff orelse &.{};
+                op_type = api_state.pr_detail_op_type orelse "";
+                op_current_path = api_state.pr_detail_op_current_path orelse "";
+                op_new_path = api_state.pr_detail_op_new_path orelse "";
+                op_base_hash = api_state.pr_detail_op_base_hash orelse "";
+                op_index = api_state.pr_detail_op_index;
+            }
+        }
+        if (api_state.pr_comments_cache.lookup(.{ .value = pr.pr_id })) |c| {
+            comments = c;
+        }
+
+        const target_path = if (pr.target_path.len > 0) pr.target_path else pr.pr_id;
+        list.append(alloc, .{
+            .id = pr.pr_id,
+            .target_kind = parseTargetKind(pr.target_kind),
+            .target_path = target_path,
+            .workspace_id = pr.ws_id,
+            .rule_name = target_path,
+            .status = pr.status,
+            .author = pr.author,
+            .created = pr.created_at,
+            .description = pr.description,
+            .base_hash = op_base_hash,
+            .diff = diff,
+            .comments = comments,
+            .attestation_refers = 0,
+            .attestation_sessions = 0,
+            .operation_count = @intCast(@max(pr.operation_count, 0)),
+            .op_type = op_type,
+            .op_current_path = op_current_path,
+            .op_new_path = op_new_path,
+            .op_index = op_index,
+        }) catch continue;
+    }
+    return list.toOwnedSlice(alloc) catch &.{};
+}
+
+pub fn parseTargetKind(raw: []const u8) data.PrTargetKind {
+    if (std.mem.eql(u8, raw, "context")) return .context;
+    if (std.mem.eql(u8, raw, "bundle")) return .bundle;
+    if (std.mem.eql(u8, raw, "mpf")) return .mpf;
+    return .rule;
 }
 
 pub fn analysisFromStats(

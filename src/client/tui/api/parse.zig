@@ -253,6 +253,30 @@ pub fn parseRulePrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model.R
     return list.toOwnedSlice(alloc) catch return null;
 }
 
+pub fn parseReviewPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model.RulePr {
+    const parsed = std.json.parseFromSlice(collab_api.ReviewPrListResponse, alloc, body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch return null;
+    defer parsed.deinit();
+
+    var list: std.ArrayList(model.RulePr) = .empty;
+    for (parsed.value.prs) |pr| {
+        list.append(alloc, .{
+            .pr_id = alloc.dupe(u8, pr.pr_id) catch continue,
+            .target_kind = alloc.dupe(u8, pr.target_kind) catch continue,
+            .target_path = alloc.dupe(u8, pr.target_path) catch continue,
+            .ws_id = if (pr.ws_id) |ws| alloc.dupe(u8, ws) catch null else null,
+            .status = alloc.dupe(u8, pr.status) catch continue,
+            .description = alloc.dupe(u8, pr.description) catch continue,
+            .created_at = alloc.dupe(u8, pr.created_at) catch continue,
+            .author = alloc.dupe(u8, pr.author) catch continue,
+            .operation_count = @intCast(@min(pr.operation_count, std.math.maxInt(i32))),
+        }) catch continue;
+    }
+    return list.toOwnedSlice(alloc) catch return null;
+}
+
 test "parseContextFiles accepts content_hash from hub response" {
     const testing = std.testing;
     const body =
@@ -333,6 +357,34 @@ test "parseComments reads wrapped comments response" {
     try testing.expectEqual(@as(usize, 1), comments.len);
     try testing.expectEqualStrings("alice", comments[0].author);
     try testing.expectEqualStrings("looks good", comments[0].body);
+}
+
+test "parseReviewPrs reads target-aware review list" {
+    const testing = std.testing;
+    const body =
+        \\{"prs":[{"pr_id":"pr-1","target_kind":"mpf","target_path":"META_PROMPT.md","status":"open","description":"update bootstrap","created_at":"2026-05-02T00:00:00Z","author":"alice","operation_count":1},{"pr_id":"pr-2","target_kind":"context","target_path":"spec/s1.md","ws_id":"ws-1","status":"merged","description":"merge spec","created_at":"2026-05-01T00:00:00Z","author":"bob","operation_count":2}]}
+    ;
+
+    const prs = parseReviewPrs(testing.allocator, body) orelse return error.TestUnexpectedResult;
+    defer {
+        for (prs) |pr| {
+            testing.allocator.free(pr.pr_id);
+            testing.allocator.free(pr.target_kind);
+            testing.allocator.free(pr.target_path);
+            if (pr.ws_id) |ws_id| testing.allocator.free(ws_id);
+            testing.allocator.free(pr.status);
+            testing.allocator.free(pr.description);
+            testing.allocator.free(pr.created_at);
+            testing.allocator.free(pr.author);
+        }
+        testing.allocator.free(prs);
+    }
+
+    try testing.expectEqual(@as(usize, 2), prs.len);
+    try testing.expectEqualStrings("mpf", prs[0].target_kind);
+    try testing.expectEqualStrings("META_PROMPT.md", prs[0].target_path);
+    try testing.expectEqualStrings("context", prs[1].target_kind);
+    try testing.expectEqualStrings("ws-1", prs[1].ws_id.?);
 }
 
 test "parseBundles uses rule_count when server provides it" {

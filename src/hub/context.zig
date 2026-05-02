@@ -970,3 +970,67 @@ pub fn handleAddPrComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         .author = user.username,
     }, .{});
 }
+
+pub fn handleListPrComments(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = auth.authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
+
+    const ws_id = req.param("ws_id") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
+    };
+    const pr_id = req.param("pr_id") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "pr_id is required");
+    };
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
+
+    var pr_check = conn.row(
+        "SELECT 1 FROM context_prs WHERE pr_id = $1 AND ws_id = $2",
+        .{ pr_id, ws_id },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 404, "NOT_FOUND", "PR not found");
+    };
+    pr_check.deinit() catch {};
+
+    const Comment = struct {
+        comment_id: []const u8 = "",
+        author_id: []const u8 = "",
+        author: []const u8 = "",
+        body: []const u8 = "",
+        created_at: []const u8 = "",
+    };
+    var result = conn.query(
+        \\SELECT comment_id, author, body, created_at::text
+        \\FROM context_pr_comments
+        \\WHERE pr_id = $1
+        \\ORDER BY created_at
+    , .{pr_id}) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
+    defer result.deinit();
+
+    var list: std.ArrayList(Comment) = .empty;
+    while (try result.next()) |row| {
+        const author = try req.arena.dupe(u8, try row.get([]const u8, 1));
+        try list.append(req.arena, .{
+            .comment_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .author_id = author,
+            .author = author,
+            .body = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+        });
+    }
+
+    try res.json(.{ .comments = list.items }, .{});
+}

@@ -34,7 +34,8 @@ pub const PathParams = struct { path: []const u8 };
 pub const RulePrsParams = struct { rule_id: []const u8 };
 pub const WsContextContentParams = struct { ws_id: []const u8, path: []const u8 };
 pub const WsIdParams = struct { ws_id: []const u8 };
-pub const PrIdParams = struct { pr_id: []const u8 };
+pub const PrIdParams = struct { pr_id: []const u8, target_kind: data.PrTargetKind = .rule, ws_id: ?[]const u8 = null };
+pub const ReviewPrsParams = struct { target_kind: ?data.PrTargetKind = null, status: []const u8 = "open" };
 
 pub const RulePrsPayload = state.RulePrsPayload;
 pub const WsContextFilesPayload = state.WsContextFilesPayload;
@@ -93,6 +94,15 @@ pub const library_rule_prs = dispatcher.RequestSpec(
     .parse_ok = parseRulePrsPayload,
 };
 
+pub const review_prs = dispatcher.RequestSpec(
+    ReviewPrsParams,
+    []const model.RulePr,
+){
+    .method = .GET,
+    .path_builder = reviewPrsPath,
+    .parse_ok = parseReviewPrsPayload,
+};
+
 pub const workspace_context_content = dispatcher.RequestSpec(
     WsContextContentParams,
     WsContextContentPayload,
@@ -142,11 +152,15 @@ pub const EmptyParams = struct {};
 
 pub const SubmitCommentParams = struct {
     pr_id: []const u8,
+    target_kind: data.PrTargetKind = .rule,
+    ws_id: ?[]const u8 = null,
     body: []const u8,
 };
 
 pub const PrActionParams = struct {
     pr_id: []const u8,
+    target_kind: data.PrTargetKind = .rule,
+    ws_id: ?[]const u8 = null,
     action: []const u8,
 };
 
@@ -248,6 +262,9 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
 }
 
 fn submitCommentPath(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror![]const u8 {
+    if (p.target_kind == .context) {
+        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}/comments", .{ p.ws_id orelse "", p.pr_id });
+    }
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}/comments", .{p.pr_id});
 }
 
@@ -257,12 +274,16 @@ fn submitCommentBody(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror!
 }
 
 fn prActionPath(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8 {
+    if (p.target_kind == .context) {
+        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}", .{ p.ws_id orelse "", p.pr_id });
+    }
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}", .{p.pr_id});
 }
 
 fn prActionBody(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8 {
     const Payload = struct { action: []const u8 };
-    return std.json.Stringify.valueAlloc(alloc, Payload{ .action = p.action }, .{});
+    const action = if (p.target_kind == .context and std.mem.eql(u8, p.action, "accept")) "merge" else p.action;
+    return std.json.Stringify.valueAlloc(alloc, Payload{ .action = action }, .{});
 }
 
 fn ruleContentPath(alloc: std.mem.Allocator, p: PathParams) anyerror![]const u8 {
@@ -275,6 +296,11 @@ fn ruleContentPath(alloc: std.mem.Allocator, p: PathParams) anyerror![]const u8 
 
 fn rulePrsPath(alloc: std.mem.Allocator, p: RulePrsParams) anyerror![]const u8 {
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs?rule_id={s}", .{p.rule_id});
+}
+
+fn reviewPrsPath(alloc: std.mem.Allocator, p: ReviewPrsParams) anyerror![]const u8 {
+    const target = if (p.target_kind) |kind| kind.label() else "";
+    return std.fmt.allocPrint(alloc, "/api/org/review/prs?target={s}&status={s}", .{ target, p.status });
 }
 
 fn wsContextContentPath(alloc: std.mem.Allocator, p: WsContextContentParams) anyerror![]const u8 {
@@ -294,10 +320,16 @@ fn wsManifestPath(alloc: std.mem.Allocator, p: WsIdParams) anyerror![]const u8 {
 }
 
 fn prDetailPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
+    if (p.target_kind == .context) {
+        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}", .{ p.ws_id orelse "", p.pr_id });
+    }
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}", .{p.pr_id});
 }
 
 fn prCommentsPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
+    if (p.target_kind == .context) {
+        return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}/comments", .{ p.ws_id orelse "", p.pr_id });
+    }
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}/comments", .{p.pr_id});
 }
 
@@ -315,6 +347,15 @@ fn parseRulePrsPayload(
         .rule_id = try alloc.dupe(u8, req.rule_id),
         .prs = prs,
     };
+}
+
+fn parseReviewPrsPayload(
+    alloc: std.mem.Allocator,
+    req: ReviewPrsParams,
+    body: []const u8,
+) anyerror![]const model.RulePr {
+    _ = req;
+    return parse.parseReviewPrs(alloc, body) orelse error.ParseFailed;
 }
 
 fn parseWsContextFilesPayload(

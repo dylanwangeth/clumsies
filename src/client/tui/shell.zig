@@ -13,6 +13,7 @@ const features = @import("features.zig");
 const analysis_panel = features.analysis;
 const dashboard_panel = features.dashboard;
 const library_panel = features.library;
+const review_panel = features.review;
 const rule_detail_panel = features.review;
 const settings_panel = features.settings;
 const workspace_panel = features.workspace;
@@ -48,6 +49,7 @@ const TopModule = enum(u8) {
     dashboard,
     workspace,
     library,
+    review,
     analysis,
 
     fn label(self: TopModule) []const u8 {
@@ -55,12 +57,13 @@ const TopModule = enum(u8) {
             .dashboard => "Dashboard",
             .workspace => "Workspace",
             .library => "Library",
+            .review => "Review",
             .analysis => "Analysis",
         };
     }
 };
 
-const top_tabs = [_]TopModule{ .dashboard, .workspace, .library, .analysis };
+const top_tabs = [_]TopModule{ .dashboard, .workspace, .library, .review, .analysis };
 
 const WORKSPACE_METADATA_REFRESH_TICKS = 600;
 const GLOBAL_METADATA_REFRESH_TICKS = 3000;
@@ -328,11 +331,13 @@ pub const Shell = struct {
                 if (key.matches('1', .{})) return self.selectTab(ctx, .dashboard);
                 if (key.matches('2', .{})) return self.selectTab(ctx, .workspace);
                 if (key.matches('3', .{})) return self.selectTab(ctx, .library);
-                if (key.matches('4', .{})) return self.selectTab(ctx, .analysis);
+                if (key.matches('4', .{})) return self.selectTab(ctx, .review);
+                if (key.matches('5', .{})) return self.selectTab(ctx, .analysis);
 
                 // Module-specific input
                 switch (self.selected_module) {
                     .library => try library_panel.handleModuleEvent(self, ctx, event, key),
+                    .review => try review_panel.handleModuleEvent(self, ctx, event, key),
                     .workspace => try workspace_panel.handleModuleEvent(self, ctx, key),
                     .dashboard => try dashboard_panel.handleModuleEvent(self, ctx, key, self.getAnalysisCounts().input_count),
                     .analysis => {
@@ -370,6 +375,7 @@ pub const Shell = struct {
                 _ = workspace_panel.consumeCreateResult(self);
                 self.consumeRuleContentResult();
                 self.consumeRulePrsResult();
+                self.consumeReviewPrsResult();
                 self.consumeWsContextContentResult();
                 self.consumeWsContextFilesResult();
                 self.consumeWsManifestResult();
@@ -608,6 +614,7 @@ pub const Shell = struct {
         return switch (self.selected_module) {
             .dashboard => self.drawDashboard(ctx),
             .library => self.drawLibrary(ctx),
+            .review => self.drawReview(ctx),
             .workspace => self.drawWorkspaceStatus(ctx),
             .analysis => self.drawAnalysis(ctx),
         };
@@ -670,6 +677,7 @@ pub const Shell = struct {
         return switch (self.selected_module) {
             .dashboard => dashboard_panel.shortcuts(self),
             .library => library_panel.shortcuts(self),
+            .review => review_panel.shortcuts(self),
             .workspace => workspace_panel.shortcuts(self),
             .analysis => analysis_panel.shortcuts(self),
         };
@@ -772,6 +780,11 @@ pub const Shell = struct {
         else
             try rule_detail_panel.drawEmbeddedEmpty(self, detail_ctx);
         return library_panel.drawRoot(self, ctx, list_surface, detail_surface);
+    }
+
+    fn drawReview(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        self.ensureReviewPrsRequested();
+        return review_panel.drawRoot(self, ctx);
     }
 
     fn drawListPanel(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -1488,6 +1501,9 @@ pub const Shell = struct {
     pub fn invalidateRemoteDetailRequests(self: *Shell) void {
         self.api_state.rule_content_cache.invalidate();
         self.api_state.rule_prs_cache.invalidate();
+        self.api_state.review_prs_cache.invalidate();
+        self.api_state.pr_detail_cache.invalidate();
+        self.api_state.pr_comments_cache.invalidate();
         self.api_state.ws_context_content_cache.invalidate();
     }
 
@@ -1747,6 +1763,28 @@ pub const Shell = struct {
         return api.view_model.toPrEntries(self.viewAllocator(), prs, rule_path, self.api_state);
     }
 
+    pub fn getReviewPrs(self: *Shell) []const data.PullRequestEntry {
+        const prs = self.api_state.review_prs_cache.lookup(.{ .value = "review" }) orelse return &.{};
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        return api.view_model.toReviewPrEntries(self.viewAllocator(), prs, self.api_state);
+    }
+
+    fn ensureReviewPrsRequested(self: *Shell) void {
+        if (!self.api_state.review_prs_cache.shouldDispatch(.{ .value = "review" })) return;
+        api.specs.dispatchFromState(
+            api.specs.ReviewPrsParams,
+            []const api.model.RulePr,
+            api.specs.review_prs,
+            &self.api_state.review_prs_pending,
+            self.api_state,
+            .{
+                .target_kind = null,
+                .status = "all",
+            },
+        );
+    }
+
     pub fn getRules(self: *Shell) []const data.RuleEntry {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
@@ -1802,6 +1840,18 @@ pub const Shell = struct {
                 if (self.selectedRulePath()) |path| {
                     self.api_state.rule_prs_cache.markFailed(.{ .value = path });
                 }
+            },
+        }
+    }
+
+    fn consumeReviewPrsResult(self: *Shell) void {
+        const result = self.api_state.review_prs_pending.consume() orelse return;
+        switch (result) {
+            .ok => |prs| {
+                self.api_state.review_prs_cache.store(.{ .value = "review" }, prs);
+            },
+            else => {
+                self.api_state.review_prs_cache.markFailed(.{ .value = "review" });
             },
         }
     }
@@ -1886,6 +1936,12 @@ pub const Shell = struct {
     /// pr_id of the currently-selected PR in the rule-detail drill-
     /// down, or null when nothing is selected.
     fn activePrId(self: *Shell) ?[]const u8 {
+        if (self.selected_module == .review) {
+            const prs = self.getReviewPrs();
+            if (prs.len == 0) return null;
+            const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
+            return prs[pr_idx].id;
+        }
         const rules = self.getRules();
         const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
         if (rules.len == 0) return null;
@@ -1906,12 +1962,14 @@ pub const Shell = struct {
     ) void {
         const alloc = self.api_state.allocator();
 
-        const rules = self.getRules();
-        const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
-        const target_rule_id: ?[]const u8 = if (rules.len > 0)
-            self.lookupRuleId(rules[rule_idx].path)
-        else
-            null;
+        const target_rule_id: ?[]const u8 = if (self.selected_module == .review) null else blk: {
+            const rules = self.getRules();
+            const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+            break :blk if (rules.len > 0)
+                self.lookupRuleId(rules[rule_idx].path)
+            else
+                null;
+        };
 
         var pick_idx: ?usize = null;
         if (target_rule_id) |tid| {
@@ -1978,7 +2036,10 @@ pub const Shell = struct {
     fn consumeSubmitCommentResult(self: *Shell) void {
         const result = self.api_state.submit_comment_pending.consume() orelse return;
         switch (result) {
-            .ok => self.notifyOp(.success, "Comment submitted."),
+            .ok => {
+                self.invalidateRemoteDetailRequests();
+                self.notifyOp(.success, "Comment submitted.");
+            },
             .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "Comment submission failed", e)),
             .network_error => self.notifyOp(.failure, "Comment submission failed: network error."),
             .invalid_response => self.notifyOp(.failure, "Comment submission failed: malformed response."),
@@ -1988,7 +2049,10 @@ pub const Shell = struct {
     fn consumePrActionResult(self: *Shell) void {
         const result = self.api_state.pr_action_pending.consume() orelse return;
         switch (result) {
-            .ok => self.notifyOp(.success, "PR action applied."),
+            .ok => {
+                self.invalidateRemoteDetailRequests();
+                self.notifyOp(.success, "PR action applied.");
+            },
             .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR action failed", e)),
             .network_error => self.notifyOp(.failure, "PR action failed: network error."),
             .invalid_response => self.notifyOp(.failure, "PR action failed: malformed response."),
@@ -2064,12 +2128,8 @@ pub const Shell = struct {
     }
 
     fn submitComment(self: *Shell) void {
-        const all_p = self.getRules();
-        const si = @min(self.library.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
-        if (all_p.len == 0) return;
-        const prs_for = self.getPrsForRule(all_p[si].path);
-        const pri = @min(self.review.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
-        if (prs_for.len == 0) return;
+        const pr = self.selectedPr() orelse return;
+        if (pr.target_kind == .bundle) return;
 
         const comment_text = self.review.comment_input_buf[0..self.review.comment_input_len];
         api.specs.dispatchFromState(
@@ -2078,18 +2138,14 @@ pub const Shell = struct {
             api.specs.submit_comment,
             &self.api_state.submit_comment_pending,
             self.api_state,
-            .{ .pr_id = prs_for[pri].id, .body = comment_text },
+            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id, .body = comment_text },
         );
         self.notifyOp(.loading, "Submitting comment...");
     }
 
     pub fn doPrAction(self: *Shell, action: []const u8) void {
-        const all_p = self.getRules();
-        const si = @min(self.library.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
-        if (all_p.len == 0) return;
-        const prs_for = self.getPrsForRule(all_p[si].path);
-        const pri = @min(self.review.selected_pr_idx, if (prs_for.len > 0) prs_for.len - 1 else 0);
-        if (prs_for.len == 0) return;
+        const pr = self.selectedPr() orelse return;
+        if (pr.target_kind == .bundle) return;
 
         api.specs.dispatchFromState(
             api.specs.PrActionParams,
@@ -2097,9 +2153,23 @@ pub const Shell = struct {
             api.specs.pr_action,
             &self.api_state.pr_action_pending,
             self.api_state,
-            .{ .pr_id = prs_for[pri].id, .action = action },
+            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id, .action = action },
         );
         self.notifyOp(.loading, if (std.mem.eql(u8, action, "accept")) "Accepting PR..." else "Rejecting PR...");
+    }
+
+    fn selectedPr(self: *Shell) ?data.PullRequestEntry {
+        if (self.selected_module == .review) {
+            const prs = self.getReviewPrs();
+            if (prs.len == 0) return null;
+            return prs[@min(self.review.selected_pr_idx, prs.len - 1)];
+        }
+        const all_p = self.getRules();
+        const si = @min(self.library.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
+        if (all_p.len == 0) return null;
+        const prs_for = self.getPrsForRule(all_p[si].path);
+        if (prs_for.len == 0) return null;
+        return prs_for[@min(self.review.selected_pr_idx, prs_for.len - 1)];
     }
 
     pub fn wsCount(self: *Shell) usize {
@@ -2416,17 +2486,10 @@ pub const Shell = struct {
     fn drawCommentEditorOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
 
-        // Title: show reply context or "New Comment"
-        const all_rules = self.getRules();
-        const sel_idx = @min(self.library.selected_rule, if (all_rules.len > 0) all_rules.len - 1 else 0);
-        const title = if (all_rules.len > 0) blk: {
-            const p = &all_rules[sel_idx];
-            const prs = self.getPrsForRule(p.path);
-            break :blk if (prs.len > 0 and self.review.selected_pr_idx < prs.len)
-                try std.fmt.allocPrint(ctx.arena, "Comment on {s}", .{prs[self.review.selected_pr_idx].id})
-            else
-                @as([]const u8, "New Comment");
-        } else @as([]const u8, "New Comment");
+        const title = if (self.selectedPr()) |pr|
+            try std.fmt.allocPrint(ctx.arena, "Comment on {s}", .{pr.id})
+        else
+            @as([]const u8, "New Comment");
 
         const box_w = @min(size.width -| 4, 60);
         const box_h: u16 = 8;
@@ -2466,6 +2529,7 @@ pub const Shell = struct {
             .dashboard => "Live interaction rounds and attestation closure.",
             .library => "Bundle facet, rule list, and passive preview.",
             .workspace => "Workspace list and sync status detail.",
+            .review => "Pull request review queue.",
             .analysis => "Rule and member aggregates.",
         };
     }
@@ -3486,6 +3550,9 @@ pub const Shell = struct {
             },
             .workspace => {
                 self.ensureActiveWorkspaceDetailRequested();
+            },
+            .review => {
+                self.ensureReviewPrsRequested();
             },
             else => {},
         }
