@@ -110,6 +110,8 @@ pub const ApiState = struct {
     // cache key even if the UI's rule selection changed mid-flight.
     rule_prs_pending: request.PendingRequest(dispatcher.Result(RulePrsPayload)) = .{},
     rule_prs_cache: cache.CacheSlot(cache.StringKey, []const model.RulePr) = .{},
+    review_prs_pending: request.PendingRequest(dispatcher.Result([]const model.RulePr)) = .{},
+    review_prs_cache: cache.CacheSlot(cache.StringKey, []const model.RulePr) = .{},
 
     // Workspace context file content, keyed by (ws_id, path). Payload
     // includes both halves of the key so the consumer routes the body
@@ -215,6 +217,7 @@ pub fn refreshLocalState(api_state: *ApiState) void {
 
 pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
     api_state.rule_prs_cache.invalidate();
+    api_state.review_prs_cache.invalidate();
     api_state.rule_content_cache.invalidate();
     api_state.ws_context_content_cache.invalidate();
     api_state.ws_context_files_cache.invalidate();
@@ -227,6 +230,7 @@ pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
     // value or a remembered failure) for data the caller explicitly
     // declared stale.
     api_state.rule_prs_pending.cancel();
+    api_state.review_prs_pending.cancel();
     api_state.rule_content_pending.cancel();
     api_state.ws_context_content_pending.cancel();
     api_state.ws_context_files_pending.cancel();

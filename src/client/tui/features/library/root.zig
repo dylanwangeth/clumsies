@@ -53,37 +53,14 @@ pub fn drawListPanel(
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
 
-    // Inner tab strip sits on the top border line (row 0), the same
-    // shape the right panel uses for its section badges. The subtitle
-    // goes on row 0 top-right only if what's left after the tab strip
-    // has room for it — otherwise drop it rather than stomp the tabs.
-    var tab_col: u16 = 2;
-    const tabs = [_]@TypeOf(self.review.detail_tab){ .content, .pull_requests };
-    for (tabs) |tab| {
-        tab_col = w.drawInnerTabBadge(&surface, ctx, 0, tab_col, listTabLabel(tab), tab == self.review.detail_tab);
-        tab_col +|= 1;
-    }
-
-    const hint = switch (self.review.detail_tab) {
-        .content => try std.fmt.allocPrint(
-            ctx.arena,
-            "{d} rules  bundle: {s}  / search  b filter",
-            .{ rule_count, bundle_label },
-        ),
-        .pull_requests => blk: {
-            const rules = self.getRules();
-            const sel_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
-            if (rules.len == 0) break :blk @as([]const u8, "no rules");
-            const prs = self.getPrsForRule(rules[sel_idx].path);
-            break :blk try std.fmt.allocPrint(
-                ctx.arena,
-                "{d} PRs  filter:{s}  f cycle",
-                .{ prs.len, @tagName(self.review.pr_filter) },
-            );
-        },
-    };
+    w.writeText(&surface, ctx, 2, 0, "Files", theme.boldOn(theme.PANEL, theme.TEXT));
+    const hint = try std.fmt.allocPrint(
+        ctx.arena,
+        "{d} rules  bundle: {s}  / search  b filter",
+        .{ rule_count, bundle_label },
+    );
     const hint_w: u16 = @intCast(ctx.stringWidth(hint));
-    if (hint_w > 0 and hint_w < size.width -| tab_col -| 2) {
+    if (hint_w > 0 and hint_w < size.width -| 10) {
         w.writeRightText(&surface, ctx, 0, hint, theme.textOn(theme.PANEL, theme.MUTED));
     }
 
@@ -100,42 +77,21 @@ pub fn drawListPanel(
         .{ .width = body_w, .height = body_h },
     );
 
-    switch (self.review.detail_tab) {
-        .content => {
-            if (self.library.tree.rowCount() == 0) {
-                const status = blk: {
-                    self.api_state.mutex.lock();
-                    defer self.api_state.mutex.unlock();
-                    break :blk self.api_state.status;
-                };
-                // Write on the outer panel surface: the ScrollBars
-                // composite returns a buffer-less surface whose
-                // writeCell would trip the vxfw assert.
-                w.drawEmptyState(&surface, ctx, body_origin_col, body_origin_row, status, "rules");
-            } else {
-                self.library.scroll_bars.scroll_view.draw_cursor = false;
-                defer self.library.scroll_bars.scroll_view.draw_cursor = true;
-                const body = try self.library.scroll_bars.widget().draw(body_ctx);
-                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
-                surface.children = children;
-                writeCursorBar(&surface, &self.library.scroll_bars.scroll_view, body_origin_row, body_h);
-            }
-        },
-        .pull_requests => {
-            rule_detail_panel.syncPrWidgets(self);
-            if (self.review.pr_row_count == 0) {
-                w.writeText(&surface, ctx, body_origin_col, body_origin_row, "No pull requests for this rule.", theme.fg(theme.MUTED));
-            } else {
-                self.review.pr_scroll_bars.scroll_view.draw_cursor = false;
-                defer self.review.pr_scroll_bars.scroll_view.draw_cursor = true;
-                const body = try self.review.pr_scroll_bars.widget().draw(body_ctx);
-                const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-                children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
-                surface.children = children;
-                writeCursorBar(&surface, &self.review.pr_scroll_bars.scroll_view, body_origin_row, body_h);
-            }
-        },
+    if (self.library.tree.rowCount() == 0) {
+        const status = blk: {
+            self.api_state.mutex.lock();
+            defer self.api_state.mutex.unlock();
+            break :blk self.api_state.status;
+        };
+        w.drawEmptyState(&surface, ctx, body_origin_col, body_origin_row, status, "rules");
+    } else {
+        self.library.scroll_bars.scroll_view.draw_cursor = false;
+        defer self.library.scroll_bars.scroll_view.draw_cursor = true;
+        const body = try self.library.scroll_bars.widget().draw(body_ctx);
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+        children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
+        surface.children = children;
+        writeCursorBar(&surface, &self.library.scroll_bars.scroll_view, body_origin_row, body_h);
     }
     return surface;
 }
@@ -163,19 +119,13 @@ fn writeCursorBar(
     });
 }
 
-fn listTabLabel(tab: anytype) []const u8 {
-    return switch (tab) {
-        .content => "Files",
-        .pull_requests => "Pull Requests",
-    };
-}
-
 pub fn handleModuleEvent(
     self: anytype,
     ctx: *vxfw.EventContext,
     event: vxfw.Event,
     key: vaxis.Key,
 ) anyerror!void {
+    self.review.detail_tab = .content;
     if (key.matches('r', .{})) {
         api.state.invalidateOnDemandCaches(self.api_state);
         self.invalidateRemoteDetailRequests();
@@ -184,7 +134,7 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('b', .{}) and self.review.detail_tab == .content) {
+    if (key.matches('b', .{})) {
         const bundle_count = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
@@ -196,45 +146,16 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (!self.review.detail_focus_content and key.matches('l', .{})) {
-        self.shiftDetailTab(1);
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (!self.review.detail_focus_content and key.matches('h', .{})) {
-        self.shiftDetailTab(-1);
-        ctx.consumeAndRedraw();
-        return;
-    }
-    if (key.matches('n', .{}) and self.review.detail_tab == .content) {
+    if (key.matches('n', .{})) {
         self.openNewDraftForm(.rule);
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('y', .{}) and self.review.detail_tab == .content) {
+    if (key.matches('y', .{})) {
         _ = content_actions.handle(self, ctx, key, .library);
         return;
     }
-    if (self.review.detail_tab == .content) {
-        if (content_actions.handle(self, ctx, key, .library)) return;
-    } else {
-        if (key.matches('a', .{})) {
-            self.doPrAction("accept");
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches('x', .{})) {
-            self.doPrAction("reject");
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches('c', .{})) {
-            self.review.show_comment_editor = true;
-            self.review.comment_input_len = 0;
-            ctx.consumeAndRedraw();
-            return;
-        }
-    }
+    if (content_actions.handle(self, ctx, key, .library)) return;
     if (key.matches(vaxis.Key.tab, .{})) {
         self.review.detail_focus_content = !self.review.detail_focus_content;
         ctx.consumeAndRedraw();
@@ -245,24 +166,11 @@ pub fn handleModuleEvent(
         try rule_detail_panel.handleEmbeddedPaneEvent(self, ctx, event, key);
         return;
     }
-    switch (self.review.detail_tab) {
-        .content => try handleFileListEvent(self, ctx, event, key),
-        .pull_requests => try handlePrListEvent(self, ctx, event, key),
-    }
+    try handleFileListEvent(self, ctx, event, key);
 }
 
 pub fn shortcuts(self: anytype) []const w.Shortcut {
-    if (self.review.detail_tab == .pull_requests) return &.{
-        .{ .key = "j/k", .label = "move/scroll" },
-        .{ .key = "f", .label = "filter" },
-        .{ .key = "a", .label = "accept" },
-        .{ .key = "x", .label = "reject" },
-        .{ .key = "c", .label = "comment" },
-        .{ .key = "h/l", .label = "switch tab" },
-        .{ .key = "Tab", .label = "switch focus" },
-        .{ .key = "?", .label = "help" },
-        .{ .key = "q", .label = "quit" },
-    };
+    _ = self;
     return content_actions.libraryContentShortcuts();
 }
 

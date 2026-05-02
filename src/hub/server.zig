@@ -9,6 +9,7 @@ const context_handler = @import("context.zig");
 const library_handler = @import("library.zig");
 const attestation_handler = @import("attestation.zig");
 const collab_handler = @import("collab.zig");
+const review_handler = @import("review.zig");
 const RateLimiter = @import("rate_limit.zig");
 const Config = @import("config.zig");
 
@@ -61,6 +62,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.delete("/api/org/members/:user_id", auth.handleRemoveMember, .{});
     router.post("/api/org/members/:user_id/reissue-invite", auth.handleReissueInvite, .{});
     router.get("/api/org/directory", auth.handleDirectory, .{});
+    router.get("/api/org/review/prs", review_handler.handleListPrs, .{});
 
     // Workspaces
     router.post("/api/workspaces", workspace_handler.handleCreate, .{});
@@ -79,6 +81,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.get("/api/workspaces/:ws_id/context/prs/:pr_id", context_handler.handleGetPr, .{});
     router.put("/api/workspaces/:ws_id/context/prs/:pr_id", context_handler.handleUpdatePr, .{});
     router.post("/api/workspaces/:ws_id/context/prs/:pr_id/comments", context_handler.handleAddPrComment, .{});
+    router.get("/api/workspaces/:ws_id/context/prs/:pr_id/comments", context_handler.handleListPrComments, .{});
 
     // Workspace Members
     router.get("/api/workspaces/:ws_id/members", workspace_handler.handleListMembers, .{});
