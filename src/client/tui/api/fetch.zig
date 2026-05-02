@@ -1,3 +1,8 @@
+//! Bootstrap and warmup fetch loop for the TUI. This module owns the
+//! coarse-grained authenticated fetch that seeds `/api/auth/me` first,
+//! then fills slower module metadata such as directory, rules, bundles,
+//! and org stats without blocking workspace selection.
+
 const std = @import("std");
 const HubClient = @import("../../hub_client.zig").HubClient;
 const model = @import("model.zig");
@@ -114,6 +119,11 @@ fn fetchAll(
         return;
     };
 
+    api_state.mutex.lock();
+    api_state.current_user = user;
+    api_state.status = .connected;
+    api_state.mutex.unlock();
+
     const directory = doFetchParse(
         &client,
         alloc,
@@ -144,12 +154,10 @@ fn fetchAll(
     );
 
     api_state.mutex.lock();
-    api_state.current_user = user;
     api_state.directory = directory;
     api_state.rules = rules_list;
     api_state.bundles = bundles;
     api_state.org_stats = org_stats;
-    api_state.status = .connected;
     api_state.mutex.unlock();
 }
 

@@ -219,6 +219,7 @@ test {
     _ = @import("drafts.zig");
     _ = @import("flags.zig");
     _ = @import("host_session.zig");
+    _ = @import("local_content.zig");
     _ = @import("rule.zig");
     _ = @import("attestation.zig");
     _ = @import("workspace_config.zig");
@@ -249,6 +250,7 @@ test {
     _ = @import("tui/main.zig");
     _ = @import("tui/models.zig");
     _ = @import("tui/models/view_types.zig");
+    _ = @import("tui/prefs.zig");
     _ = @import("tui/runtime.zig");
     _ = @import("tui/runtime/drafts_reader.zig");
     _ = @import("tui/runtime/editor_host.zig");

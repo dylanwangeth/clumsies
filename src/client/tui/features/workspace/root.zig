@@ -181,13 +181,13 @@ pub fn drawList(
             .context => if (self.api_state.ws_context_files_pending.isInflight())
                 "Loading context files..."
             else if (self.api_state.ws_context_files_cache.isFailed(.{ .value = ws_id }))
-                "Context failed to load. Press r to retry."
+                "Context failed to load."
             else
                 "No context files.",
             .rules => if (self.api_state.ws_manifest_pending.isInflight())
                 "Loading workspace rules..."
             else if (self.api_state.ws_manifest_cache.isFailed(.{ .value = ws_id }))
-                "Workspace rules failed to load. Press r to retry."
+                "Workspace rules failed to load."
             else
                 "No workspace rules.",
         } else switch (self.workspace.tab) {
@@ -336,13 +336,15 @@ fn drawContextFileDetail(
     path: []const u8,
 ) !void {
     if (self.workspace.show_diff) {
-        w.writeText(surface, ctx, 2, start_row, "No diff available", theme.fg(theme.MUTED));
-        return;
+        if (self.draftContentForView(.context, path) == null) {
+            w.writeText(surface, ctx, 2, start_row, "No draft diff available.", theme.fg(theme.MUTED));
+            return;
+        }
     }
     const ws_id = if (ws_d) |live| live.ws_id else self.activeWsId() orelse return;
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
         .context = .{ .ws_id = ws_id, .path = path },
-    });
+    }, self.workspace.show_diff);
 }
 
 fn drawRuleFileDetail(
@@ -354,12 +356,15 @@ fn drawRuleFileDetail(
     rule_path: []const u8,
 ) !void {
     if (self.workspace.show_diff) {
-        w.writeText(surface, ctx, 2, start_row, "No diff available", theme.fg(theme.MUTED));
-        return;
+        const category = self.libraryCategoryForPath(rule_path);
+        if (self.draftContentForView(category, rule_path) == null) {
+            w.writeText(surface, ctx, 2, start_row, "No draft diff available.", theme.fg(theme.MUTED));
+            return;
+        }
     }
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
         .rule = .{ .path = rule_path },
-    });
+    }, self.workspace.show_diff);
 }
 
 const ContentSource = union(enum) {
@@ -367,11 +372,12 @@ const ContentSource = union(enum) {
     rule: struct { path: []const u8 },
 };
 
-/// Seed the shared content_scroll_bars with working-copy bytes for
-/// the source and attach the scroll view as a child surface below
-/// the metadata rows. Library's rule_detail path uses the same
-/// scroll bars, so switching modules redraws content into the same
-/// widget state — no per-module scroll state today.
+/// Seed the shared content_scroll_bars for the source and attach it
+/// below the metadata rows. Normal mode renders the draft working copy
+/// as flat text; diff mode renders cache-vs-draft with gutters.
+/// Library's rule_detail path uses the same scroll bars, so switching
+/// modules redraws content into the same widget state — no per-module
+/// scroll state today.
 fn attachContentSurface(
     self: anytype,
     surface: *vxfw.Surface,
@@ -379,10 +385,11 @@ fn attachContentSurface(
     start_row: u16,
     max_row: u16,
     source: ContentSource,
+    show_diff: bool,
 ) !void {
     switch (source) {
-        .context => |c| rule_detail.syncWsContextContentWidget(self, c.ws_id, c.path),
-        .rule => |p| rule_detail.syncWsRuleContentWidget(self, p.path),
+        .context => |c| rule_detail.syncWsContextContentWidget(self, c.ws_id, c.path, show_diff),
+        .rule => |p| rule_detail.syncWsRuleContentWidget(self, p.path, show_diff),
     }
     const content_h: u16 = if (max_row > start_row) max_row - start_row else 0;
     if (content_h == 0) return;
@@ -418,7 +425,8 @@ fn syncListWidgets(
         } else {
             const draft_status = draftStatusForRow(self, ws_tree, r, live_ws, lib_rules);
             const row_style = w.draftRowStyle(sel, draft_status);
-            const text = if (draft_status != null)
+            const is_stale = isStaleRow(self, ws_tree, r, live_ws, lib_rules);
+            const text = if (is_stale)
                 std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{rendered}) catch rendered
             else
                 rendered;
@@ -441,6 +449,36 @@ fn syncListWidgets(
     self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(cur);
     clampScrollTop(&self.workspace.list_scroll_bars.scroll_view, row_count);
     self.workspace.list_sel = cur;
+}
+
+fn isStaleRow(
+    self: anytype,
+    ws_tree: anytype,
+    row: usize,
+    live_ws: ?api.model.WsDetail,
+    lib_rules: []const data.RuleEntry,
+) bool {
+    const leaf = ws_tree.leafIndexAt(row) orelse return false;
+    switch (self.workspace.tab) {
+        .context => {
+            const ws_d = live_ws orelse return false;
+            if (leaf >= ws_d.context_files.len) return false;
+            const file = ws_d.context_files[leaf];
+            return !self.isLocalContentFresh(.context, file.path, file.hash);
+        },
+        .rules => {
+            const ws_d = live_ws orelse return false;
+            if (leaf >= ws_d.ws_rules.len) return false;
+            const wp = ws_d.ws_rules[leaf];
+            const rule_path = if (wp.path.len > 0)
+                wp.path
+            else for (lib_rules) |lp| {
+                if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) break lp.path;
+            } else wp.rule_id;
+            const category: drafts_mod.DraftCategory = if (std.mem.eql(u8, rule_path, "META_PROMPT.md")) .meta_prompt else .rule;
+            return !self.isLocalContentFresh(category, rule_path, wp.content_hash);
+        },
+    }
 }
 
 fn draftStatusForRow(
@@ -700,7 +738,6 @@ pub fn handleModuleEvent(
         self.resetLocalWorkspaceDetail();
         self.ensureActiveWorkspaceDetailRequested();
         api.fetch.refetchAllAsync(self.api_state);
-        self.status_line = "Refreshing data...";
         ctx.consumeAndRedraw();
     }
 }
@@ -714,7 +751,6 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
             .{ .key = "n", .label = "new context" },
             .{ .key = "c", .label = "create ws" },
             .{ .key = "w", .label = "workspaces" },
-            .{ .key = "r", .label = "refresh" },
             .{ .key = "y", .label = "copy id" },
             .{ .key = "?", .label = "help" },
         } else &.{
@@ -723,7 +759,6 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
             .{ .key = "h/l", .label = "switch tab" },
             .{ .key = "c", .label = "create ws" },
             .{ .key = "w", .label = "workspaces" },
-            .{ .key = "r", .label = "refresh" },
             .{ .key = "y", .label = "copy id" },
             .{ .key = "?", .label = "help" },
         },
@@ -732,11 +767,11 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
             .{ .key = "j/k", .label = "scroll" },
             .{ .key = "e", .label = "edit" },
             .{ .key = "p", .label = "submit" },
-            .{ .key = "d", .label = "show diff" },
+            .{ .key = "u", .label = "pull" },
+            .{ .key = "d", .label = "toggle diff" },
             .{ .key = "D", .label = "discard draft" },
             .{ .key = "w", .label = "workspaces" },
             .{ .key = "m", .label = "mark ready" },
-            .{ .key = "r", .label = "refresh" },
             .{ .key = "Esc", .label = "back" },
             .{ .key = "?", .label = "help" },
         },
@@ -799,18 +834,18 @@ fn handleContentFocusEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('d', .{})) {
-        self.workspace.show_diff = !self.workspace.show_diff;
-        ctx.consumeAndRedraw();
-        return;
-    }
     if (key.matches('e', .{})) {
         self.editSelectedDraft();
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('D', .{ .shift = true })) {
+    if (key.matches('D', .{}) or key.matches('d', .{ .shift = true })) {
         self.requestDiscardSelectedDraft();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('d', .{})) {
+        self.workspace.show_diff = !self.workspace.show_diff;
         ctx.consumeAndRedraw();
         return;
     }
@@ -821,6 +856,11 @@ fn handleContentFocusEvent(
     }
     if (key.matches('p', .{})) {
         self.openPrComposer();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('u', .{})) {
+        self.pullSelectedWorkspaceContent();
         ctx.consumeAndRedraw();
         return;
     }
@@ -840,7 +880,6 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
     if (self.api_state.ws_context_files_cache.shouldDispatch(.{ .value = ws_id }) and
         !self.api_state.ws_context_files_pending.isInflight())
     {
-        self.system_notices.push(.workspace_context_files, .loading, .persistent, "Loading workspace context...");
         api.specs.dispatchFromState(
             api.specs.WsIdParams,
             api.specs.WsContextFilesPayload,
@@ -853,7 +892,6 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
     if (self.api_state.ws_manifest_cache.shouldDispatch(.{ .value = ws_id }) and
         !self.api_state.ws_manifest_pending.isInflight())
     {
-        self.system_notices.push(.workspace_manifest, .loading, .persistent, "Loading workspace manifest...");
         api.specs.dispatchFromState(
             api.specs.WsIdParams,
             api.specs.WsManifestPayload,

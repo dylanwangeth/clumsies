@@ -1,3 +1,7 @@
+//! Long-lived API data shapes held in `ApiState`. These structs are the
+//! TUI-owned representation of parsed Hub responses before they are
+//! transformed into display-oriented view models.
+
 pub const UserData = struct {
     user_id: []const u8,
     username: []const u8,

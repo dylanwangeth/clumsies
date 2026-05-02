@@ -19,8 +19,12 @@ const workspace_panel = features.workspace;
 const drafts_mod = @import("../drafts.zig");
 const workspace_rule = @import("../rule.zig");
 const workspace_config = @import("../workspace_config.zig");
+const local_content = @import("../local_content.zig");
 const runtime = @import("runtime.zig");
 const util_hash = @import("clumsies_lib").util.hash;
+const tui_prefs = @import("prefs.zig");
+const manifest_protocol = @import("clumsies_lib").protocol.manifest;
+const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 
 const editor_host = runtime.editor_host;
 const attestation_reader = runtime.attestation_reader;
@@ -59,6 +63,8 @@ const TopModule = enum(u8) {
 const top_tabs = [_]TopModule{ .dashboard, .workspace, .library, .analysis };
 
 const FOOTER_STATUS_TICKS = 60;
+const WORKSPACE_METADATA_REFRESH_TICKS = 600;
+const GLOBAL_METADATA_REFRESH_TICKS = 3000;
 const PathTreeState = workspace_panel.PathTreeState;
 
 const DraftTarget = features.drafts.DraftTarget;
@@ -84,6 +90,9 @@ pub const Shell = struct {
     last_safe_layout_size: vxfw.Size = .{},
     system_notices: w.SystemNoticeQueue = .{},
     view_arena: std.heap.ArenaAllocator,
+    last_workspace_id: ?[]const u8 = null,
+    workspace_pref_applied: bool = false,
+    tick_count: u64 = 0,
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
     // main.zig for the lifetime of the Shell. Active workspace is
@@ -97,6 +106,12 @@ pub const Shell = struct {
         app: *vxfw.App,
         env_map: *const std.process.EnvMap,
     ) Shell {
+        const prefs = tui_prefs.load(api_state.backing_allocator) catch tui_prefs.Prefs{};
+        defer prefs.deinit(api_state.backing_allocator);
+        const last_workspace_id = if (prefs.last_workspace_id) |id|
+            api_state.backing_allocator.dupe(u8, id) catch null
+        else
+            null;
         return .{
             .api_state = api_state,
             .library = library_panel.State.init(),
@@ -105,6 +120,7 @@ pub const Shell = struct {
             .dashboard = dashboard_panel.State.init(),
             .drafts = features.drafts.State.init(api_state.backing_allocator),
             .view_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
+            .last_workspace_id = last_workspace_id,
             .app = app,
             .env_map = env_map,
         };
@@ -117,6 +133,7 @@ pub const Shell = struct {
         self.workspace.deinit(alloc);
         self.library.deinit(alloc);
         self.drafts.deinit();
+        if (self.last_workspace_id) |id| self.api_state.backing_allocator.free(id);
         self.view_arena.deinit();
     }
 
@@ -336,8 +353,10 @@ pub const Shell = struct {
             },
             .tick => {
                 // Advance breathing cycle: 0→20→0 (2 seconds at 100ms intervals)
+                self.tick_count +%= 1;
                 self.analysis.breathing_phase = (self.analysis.breathing_phase + 1) % 21;
                 self.system_notices.tick();
+                self.reconcileWorkspaceSelection();
                 if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.analysis.breathing_phase == 0 or self.analysis.breathing_phase == 10)) {
                     api.state.refreshLocalState(self.api_state);
                 }
@@ -365,6 +384,7 @@ pub const Shell = struct {
                 self.consumeCreateRulePrResult();
                 self.consumeCreateContextPrResult();
                 self.consumeAttestationUploadResult();
+                self.maybeRefreshMetadata();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
             },
@@ -842,6 +862,39 @@ pub const Shell = struct {
         return user.workspaces[idx].name;
     }
 
+    fn reconcileWorkspaceSelection(self: *Shell) void {
+        var next_idx: ?usize = null;
+        self.api_state.mutex.lock();
+        if (self.api_state.current_user) |user| {
+            if (user.workspaces.len == 0) {
+                self.workspace.sel = 0;
+                self.workspace_pref_applied = true;
+            } else if (!self.workspace_pref_applied) {
+                next_idx = tui_prefs.selectWorkspaceIndex(user.workspaces, self.last_workspace_id);
+            } else if (self.workspace.sel >= user.workspaces.len) {
+                next_idx = 0;
+            }
+        }
+        self.api_state.mutex.unlock();
+
+        if (next_idx) |idx| {
+            self.workspace_pref_applied = true;
+            self.selectWorkspaceIndex(idx);
+        }
+    }
+
+    fn rememberWorkspaceId(self: *Shell, ws_id: []const u8) void {
+        if (self.last_workspace_id) |old| {
+            if (std.mem.eql(u8, old, ws_id)) {
+                tui_prefs.saveLastWorkspaceId(self.api_state.backing_allocator, ws_id) catch {};
+                return;
+            }
+            self.api_state.backing_allocator.free(old);
+        }
+        self.last_workspace_id = self.api_state.backing_allocator.dupe(u8, ws_id) catch null;
+        tui_prefs.saveLastWorkspaceId(self.api_state.backing_allocator, ws_id) catch {};
+    }
+
     pub fn resetLocalWorkspaceDetail(self: *Shell) void {
         _ = self.workspace.local_arena.reset(.retain_capacity);
         self.workspace.local_cache_id = null;
@@ -958,7 +1011,20 @@ pub const Shell = struct {
         self.resetLocalWorkspaceDetail();
         self.ensureDraftsCacheForActiveWorkspace();
         if (selected_ws_id) |ws_id| {
+            self.rememberWorkspaceId(ws_id);
             self.ensureLocalWorkspaceDetail(ws_id);
+            workspace_panel.requestWorkspaceDetail(self, ws_id);
+        }
+    }
+
+    fn maybeRefreshMetadata(self: *Shell) void {
+        if (self.tick_count > 0 and self.tick_count % GLOBAL_METADATA_REFRESH_TICKS == 0) {
+            api.fetch.refetchAllAsync(self.api_state);
+        }
+        if (self.tick_count > 0 and self.tick_count % WORKSPACE_METADATA_REFRESH_TICKS == 0) {
+            const ws_id = self.activeWsId() orelse return;
+            self.api_state.ws_context_files_cache.invalidate();
+            self.api_state.ws_manifest_cache.invalidate();
             workspace_panel.requestWorkspaceDetail(self, ws_id);
         }
     }
@@ -1031,6 +1097,132 @@ pub const Shell = struct {
         var read_buf: [4096]u8 = undefined;
         var fr = std.fs.File.Reader.init(file, &read_buf);
         return fr.interface.allocRemaining(arena, std.io.Limit.limited(10 * 1024 * 1024)) catch null;
+    }
+
+    pub fn isLocalContentFresh(
+        self: *Shell,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+        remote_hash: []const u8,
+    ) bool {
+        const ws_id = self.activeWsId() orelse return false;
+        const arena = self.viewAllocator();
+        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return false;
+        return local_content.freshness(arena, ws_dir, category, path, remote_hash) == .fresh;
+    }
+
+    pub fn pullSelectedWorkspaceContent(self: *Shell) void {
+        const ws_id = self.activeWsId() orelse {
+            self.status_line = "No workspace selected.";
+            return;
+        };
+        const ws_d = api.state.wsDetail(self.api_state, ws_id) orelse {
+            self.ensureActiveWorkspaceDetailRequested();
+            self.status_line = "Workspace metadata is still loading.";
+            return;
+        };
+
+        const arena = self.viewAllocator();
+        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch {
+            self.status_line = "Pull failed: local workspace path unavailable.";
+            return;
+        };
+
+        switch (self.workspace.tab) {
+            .context => {
+                if (self.currentWsDirSelection() != null) {
+                    self.status_line = "Select a file to pull.";
+                    return;
+                }
+                const idx = self.resolveWsContextSelection(&ws_d) orelse {
+                    self.status_line = "Select a context file to pull.";
+                    return;
+                };
+                const file = ws_d.context_files[idx];
+                const body = self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_d.ws_id, .path = file.path }) orelse {
+                    self.requestWorkspaceSelectionContent(&ws_d);
+                    self.status_line = "Fetching selected content; pull again after it loads.";
+                    return;
+                };
+                local_content.write(arena, ws_dir, .context, file.path, body) catch {
+                    self.status_line = "Pull failed: could not write local context.";
+                    return;
+                };
+            },
+            .rules => {
+                if (self.currentWsDirSelection() != null) {
+                    self.status_line = "Select a rule to pull.";
+                    return;
+                }
+                const rule = self.resolveWsRuleSelection(&ws_d) orelse {
+                    self.status_line = "Select a rule to pull.";
+                    return;
+                };
+                const resp = self.api_state.rule_content_cache.lookup(.{ .value = rule.path }) orelse {
+                    self.requestWorkspaceSelectionContent(&ws_d);
+                    self.status_line = "Fetching selected content; pull again after it loads.";
+                    return;
+                };
+                const category = self.libraryCategoryForPath(rule.path);
+                local_content.write(arena, ws_dir, category, rule.path, resp.body) catch {
+                    self.status_line = "Pull failed: could not write local rule.";
+                    return;
+                };
+            },
+        }
+
+        self.writeRemoteManifestSnapshot(ws_dir, ws_d) catch {
+            self.status_line = "Pulled content; manifest update failed.";
+            self.resetLocalWorkspaceDetail();
+            return;
+        };
+        self.resetLocalWorkspaceDetail();
+        self.status_line = "Pulled selected content.";
+    }
+
+    fn writeRemoteManifestSnapshot(
+        self: *Shell,
+        ws_dir: []const u8,
+        ws_d: api.model.WsDetail,
+    ) !void {
+        const arena = self.viewAllocator();
+        const rule_items = try arena.alloc(manifest_protocol.ManifestItem, ws_d.ws_rules.len);
+        for (ws_d.ws_rules, 0..) |rule, i| {
+            rule_items[i] = .{
+                .key = rule.rule_id,
+                .value = .{
+                    .path = rule.path,
+                    .hash = rule.content_hash,
+                },
+            };
+        }
+
+        const context_items = try arena.alloc(manifest_protocol.ManifestItem, ws_d.context_files.len);
+        for (ws_d.context_files, 0..) |file, i| {
+            context_items[i] = .{
+                .key = file.context_id,
+                .value = .{
+                    .path = file.path,
+                    .hash = file.hash,
+                },
+            };
+        }
+
+        const body = try std.json.Stringify.valueAlloc(arena, workspace_api.WorkspaceManifestResponse{
+            .ws_id = ws_d.ws_id,
+            .name = self.activeWorkspaceName(),
+            .revision = 0,
+            .rules = .{ .items = rule_items },
+            .context = .{ .items = context_items },
+        }, .{ .whitespace = .indent_2 });
+
+        const manifest_path = try std.fs.path.join(arena, &.{ ws_dir, "manifest.json" });
+        const file = try std.fs.createFileAbsolute(manifest_path, .{ .truncate = true, .mode = 0o600 });
+        defer file.close();
+        var write_buf: [8192]u8 = undefined;
+        var writer = std.fs.File.Writer.init(file, &write_buf);
+        try writer.interface.writeAll(body);
+        try writer.interface.flush();
     }
 
     pub fn libraryCategoryForPath(
@@ -1391,20 +1583,14 @@ pub const Shell = struct {
             .ok => |payload| {
                 self.api_state.ws_context_files_cache.store(.{ .value = payload.ws_id }, payload.files);
                 self.system_notices.clear(.workspace_context_files);
-                const message = std.fmt.allocPrint(
-                    self.api_state.allocator(),
-                    "Workspace context loaded: {d} files.",
-                    .{payload.files.len},
-                ) catch "Workspace context loaded.";
-                self.system_notices.push(.workspace_context_files, .success, .transient, message);
             },
             else => {
                 if (self.activeWsId()) |ws_id| {
                     self.api_state.ws_context_files_cache.markFailed(.{ .value = ws_id });
                     const text: []const u8 = if (self.hasLocalWorkspaceDetail(ws_id))
-                        "Workspace context failed; showing local cache; press r to retry."
+                        "Workspace context failed; showing local cache."
                     else
-                        "Workspace context failed; press r to retry.";
+                        "Workspace context failed.";
                     self.system_notices.push(.workspace_context_files, .failure, .persistent, text);
                 }
             },
@@ -1417,20 +1603,14 @@ pub const Shell = struct {
             .ok => |payload| {
                 self.api_state.ws_manifest_cache.store(.{ .value = payload.ws_id }, payload.rules);
                 self.system_notices.clear(.workspace_manifest);
-                const message = std.fmt.allocPrint(
-                    self.api_state.allocator(),
-                    "Workspace manifest loaded: {d} rules.",
-                    .{payload.rules.len},
-                ) catch "Workspace manifest loaded.";
-                self.system_notices.push(.workspace_manifest, .success, .transient, message);
             },
             else => {
                 if (self.activeWsId()) |ws_id| {
                     self.api_state.ws_manifest_cache.markFailed(.{ .value = ws_id });
                     const text: []const u8 = if (self.hasLocalWorkspaceDetail(ws_id))
-                        "Workspace manifest failed; showing local cache; press r to retry."
+                        "Workspace manifest failed; showing local cache."
                     else
-                        "Workspace manifest failed; press r to retry.";
+                        "Workspace manifest failed.";
                     self.system_notices.push(.workspace_manifest, .failure, .persistent, text);
                 }
             },
@@ -2407,7 +2587,10 @@ pub const Shell = struct {
     /// destructive-operation UX.
     pub fn requestDiscardSelectedDraft(self: *Shell) void {
         self.refreshDraftsCache();
-        const target = self.selectedDraftTarget() orelse return;
+        const target = self.selectedDraftTarget() orelse {
+            self.status_line = "No draft to discard.";
+            return;
+        };
         if (self.draftStatusFor(target.category, target.path) == null) {
             self.status_line = "No draft to discard.";
             return;
@@ -2456,6 +2639,9 @@ pub const Shell = struct {
         self.status_line = "Draft discarded.";
         self.releasePendingDiscardTarget();
         self.refreshDraftsCache();
+        if (self.selected_module == .workspace) {
+            self.workspace.show_diff = false;
+        }
     }
 
     /// Handler for the `p` key. Opens the PR Composer when the
