@@ -58,6 +58,7 @@ pub const detail_tabs = [_]DetailTab{ .content, .pull_requests };
 pub const State = struct {
     detail_tab: DetailTab = .content,
     detail_focus_content: bool = false,
+    show_diff: bool = false,
     content_view: w.ContentView,
     pr_filter: PrFilter = .open,
     pr_scroll_bars: vxfw.ScrollBars,
@@ -146,35 +147,7 @@ pub fn handleEmbeddedPaneEvent(
     }
     switch (self.review.detail_tab) {
         .content => {
-            if (key.matches('y', .{})) {
-                if (self.copySelectedContentId()) {
-                    ctx.consumeAndRedraw();
-                } else {
-                    self.notifyOp(.warning, "No id to copy.");
-                    ctx.consumeAndRedraw();
-                }
-                return;
-            }
-            if (key.matches('e', .{})) {
-                self.editSelectedDraft();
-                ctx.consumeAndRedraw();
-                return;
-            }
-            if (key.matches('D', .{}) or key.matches('d', .{ .shift = true })) {
-                self.requestDiscardSelectedDraft();
-                ctx.consumeAndRedraw();
-                return;
-            }
-            if (key.matches('m', .{})) {
-                self.toggleSelectedDraftReady();
-                ctx.consumeAndRedraw();
-                return;
-            }
-            if (key.matches('p', .{})) {
-                self.openPrComposer();
-                ctx.consumeAndRedraw();
-                return;
-            }
+            if (@import("../content_actions.zig").handle(self, ctx, key, .library)) return;
             try self.review.content_view.handleEvent(ctx, event);
         },
         .pull_requests => try handlePrDiffEvent(self, ctx, event, key),
@@ -301,7 +274,12 @@ fn fillRuleDetailSurface(
         .content => |content_surface| {
             const title = self.lookupRuleId(rule.path) orelse "(new)";
             w.writeText(surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
-            try writeRuleMetaOnPanelChrome(surface, ctx, @intCast(2 + ctx.stringWidth(title) + 2), rule);
+            const meta_min_col: u16 = @intCast(2 + ctx.stringWidth(title) + 2);
+            if (self.review.show_diff) {
+                w.writeText(surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
+            } else {
+                try writeRuleMetaOnPanelChrome(surface, ctx, meta_min_col, rule);
+            }
             const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
             children[0] = .{
                 .origin = .{
@@ -444,26 +422,38 @@ pub fn fetchSelectedPrDetail(self: anytype) void {
 }
 
 pub fn syncContentWidget(self: anytype) void {
-    const rules = self.getRules();
-    // Virtual rows (create-op drafts) land at indices past
-    // rules.len and have no server-side entry — their path lives
-    // in drafts_create_rule_paths. Without this branch the
-    // content panel renders empty for any draft created via `n`.
-    const selected_path: ?[]const u8 = if (self.library.selected_rule < rules.len)
-        rules[self.library.selected_rule].path
-    else blk: {
-        const k = self.library.selected_rule - rules.len;
-        if (k >= self.drafts.create_rule_paths.len) break :blk null;
-        break :blk self.drafts.create_rule_paths[k];
-    };
+    syncContentWidgetForMode(self, self.review.show_diff);
+    self.requestSelectedRuleDetail();
+}
+
+pub fn syncContentWidgetForMode(self: anytype, show_diff: bool) void {
+    const selected_path = selectedLibraryRulePath(self);
     const category = if (selected_path) |path| self.libraryCategoryForPath(path) else .rule;
     const cache_content: []const u8 = if (selected_path) |path|
         self.cachedLibraryRuleBody(category, path) orelse ""
     else
         "";
     const draft_content: ?[]const u8 = if (selected_path) |path| self.draftContentForView(category, path) else null;
-    syncContentWidgetBytes(self, cache_content, draft_content);
-    self.requestSelectedRuleDetail();
+    const visible_content = draft_content orelse cache_content;
+    if (show_diff) {
+        syncContentWidgetBytes(self, cache_content, draft_content);
+    } else {
+        syncContentWidgetBytes(self, visible_content, null);
+    }
+}
+
+fn selectedLibraryRulePath(self: anytype) ?[]const u8 {
+    const rules = self.getRules();
+    // Virtual rows (create-op drafts) land at indices past
+    // rules.len and have no server-side entry — their path lives
+    // in drafts_create_rule_paths. Without this branch the
+    // content panel renders empty for any draft created via `n`.
+    if (self.library.selected_rule < rules.len) {
+        return rules[self.library.selected_rule].path;
+    }
+    const k = self.library.selected_rule - rules.len;
+    if (k >= self.drafts.create_rule_paths.len) return null;
+    return self.drafts.create_rule_paths[k];
 }
 
 /// Render the working-copy view for an arbitrary (cache, draft)

@@ -11,6 +11,7 @@ const data = @import("../../models/view_types.zig");
 const TableRow = w.TableRow;
 const Column = w.Column;
 const rule_detail_panel = @import("../review/root.zig");
+const content_actions = @import("../content_actions.zig");
 
 const MAX_TREE_ROWS = 128;
 const PathTreeState = @import("../../models.zig").path_tree.State(MAX_TREE_ROWS, 96);
@@ -211,40 +212,11 @@ pub fn handleModuleEvent(
         return;
     }
     if (key.matches('y', .{}) and self.review.detail_tab == .content) {
-        if (self.copySelectedContentId()) {
-            ctx.consumeAndRedraw();
-        } else {
-            self.notifyOp(.warning, "No id to copy.");
-            ctx.consumeAndRedraw();
-        }
+        _ = content_actions.handle(self, ctx, key, .library);
         return;
     }
     if (self.review.detail_tab == .content) {
-        if (key.matches('e', .{})) {
-            self.editSelectedDraft();
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches('D', .{}) or key.matches('d', .{ .shift = true })) {
-            self.requestDiscardSelectedDraft();
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches('m', .{})) {
-            self.toggleSelectedDraftReady();
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches('p', .{})) {
-            self.openPrComposer();
-            ctx.consumeAndRedraw();
-            return;
-        }
-        if (key.matches('u', .{})) {
-            self.pullSelectedLibraryContent();
-            ctx.consumeAndRedraw();
-            return;
-        }
+        if (content_actions.handle(self, ctx, key, .library)) return;
     } else {
         if (key.matches('a', .{})) {
             self.doPrAction("accept");
@@ -291,21 +263,7 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
         .{ .key = "?", .label = "help" },
         .{ .key = "q", .label = "quit" },
     };
-    return &.{
-        .{ .key = "j/k", .label = "move/scroll" },
-        .{ .key = "Enter", .label = "open" },
-        .{ .key = "h/l", .label = "switch tab" },
-        .{ .key = "y", .label = "copy id" },
-        .{ .key = "n", .label = "new rule" },
-        .{ .key = "e", .label = "edit" },
-        .{ .key = "p", .label = "submit" },
-        .{ .key = "u", .label = "pull" },
-        .{ .key = "D", .label = "discard" },
-        .{ .key = "m", .label = "mark ready" },
-        .{ .key = "b", .label = "bundle filter" },
-        .{ .key = "?", .label = "help" },
-        .{ .key = "q", .label = "quit" },
-    };
+    return content_actions.libraryContentShortcuts();
 }
 
 fn handleFileListEvent(
@@ -342,6 +300,7 @@ fn handleFileListEvent(
             self.review.selected_pr_idx = 0;
             self.review.pr_scroll_bars.scroll_view.cursor = 0;
             self.review.pr_filter = .open;
+            self.review.show_diff = false;
         }
     }
 }
@@ -507,7 +466,10 @@ pub fn syncLibraryWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
     clampScrollTop(&self.library.scroll_bars.scroll_view, row_count);
     if (cur < row_count) {
         if (self.library.tree.leafIndexAt(cur)) |pi| {
-            self.library.selected_rule = pi;
+            if (self.library.selected_rule != pi) {
+                self.library.selected_rule = pi;
+                self.review.show_diff = false;
+            }
         }
     }
 }
