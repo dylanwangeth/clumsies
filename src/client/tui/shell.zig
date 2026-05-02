@@ -368,6 +368,7 @@ pub const Shell = struct {
                     self.refreshDraftsCache();
                     self.ensureActiveWorkspaceDetailRequested();
                 } else if (self.selected_module == .workspace) {
+                    self.refreshDraftsCacheIfChanged();
                     self.ensureActiveWorkspaceDetailRequested();
                 }
                 _ = workspace_panel.consumeCreateResult(self);
@@ -2267,6 +2268,8 @@ pub const Shell = struct {
         self.drafts.total = 0;
         self.drafts.ready = 0;
         self.drafts.cache_ws_id = null;
+        self.drafts.index_size = 0;
+        self.drafts.index_mtime = 0;
         const ws_id = self.activeWsId() orelse return;
         self.drafts.cache_seeded = true;
         _ = self.drafts.arena.reset(.retain_capacity);
@@ -2275,6 +2278,9 @@ pub const Shell = struct {
         self.drafts.cache_ws_id = api_alloc.dupe(u8, ws_id) catch ws_id;
 
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return;
+        const signature = draftIndexSignature(arena, ws_dir);
+        self.drafts.index_size = signature.size;
+        self.drafts.index_mtime = signature.mtime;
         var index = drafts_mod.loadIndex(arena, ws_dir) catch return;
         defer index.deinit(arena);
 
@@ -2317,6 +2323,42 @@ pub const Shell = struct {
 
         self.drafts.create_rule_paths = create_rules.toOwnedSlice(api_alloc) catch &.{};
         self.drafts.create_context_paths = create_contexts.toOwnedSlice(api_alloc) catch &.{};
+    }
+
+    fn refreshDraftsCacheIfChanged(self: *Shell) void {
+        if (self.tick_count -% self.drafts.last_index_check_tick < 10) return;
+        self.drafts.last_index_check_tick = self.tick_count;
+
+        const ws_id = self.activeWsId() orelse return;
+        const alloc = self.api_state.backing_allocator;
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return;
+        defer alloc.free(ws_dir);
+        const signature = draftIndexSignature(alloc, ws_dir);
+        if (signature.size == self.drafts.index_size and
+            signature.mtime == self.drafts.index_mtime)
+        {
+            return;
+        }
+
+        self.refreshDraftsCache();
+        workspace_panel.syncWsRows(self);
+        library_panel.syncLibraryWidgets(self);
+    }
+
+    const DraftIndexSignature = struct {
+        size: u64 = 0,
+        mtime: i128 = 0,
+    };
+
+    fn draftIndexSignature(allocator: std.mem.Allocator, ws_dir: []const u8) DraftIndexSignature {
+        const index_path = std.fs.path.join(allocator, &.{ ws_dir, "drafts", "index.json" }) catch return .{};
+        defer allocator.free(index_path);
+
+        const file = std.fs.openFileAbsolute(index_path, .{}) catch return .{};
+        defer file.close();
+
+        const stat = file.stat() catch return .{};
+        return .{ .size = stat.size, .mtime = stat.mtime };
     }
 
     pub fn draftStatusFor(

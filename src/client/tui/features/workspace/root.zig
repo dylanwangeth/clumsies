@@ -197,7 +197,7 @@ pub fn drawList(
         w.writeText(&surface, ctx, row_col, 1, empty_msg, theme.fg(theme.MUTED));
         return surface;
     }
-    syncListWidgets(self, ws_tree, live_ws, lib_rules);
+    try syncListWidgets(self, ctx, ws_tree, live_ws, lib_rules);
     self.workspace.list_scroll_bars.scroll_view.draw_cursor = false;
     defer self.workspace.list_scroll_bars.scroll_view.draw_cursor = true;
     const body_ctx = ctx.withConstraints(
@@ -408,16 +408,19 @@ fn attachContentSurface(
 
 fn syncListWidgets(
     self: anytype,
+    ctx: vxfw.DrawContext,
     ws_tree: anytype,
     live_ws: ?api.model.WsDetail,
     lib_rules: []const data.RuleEntry,
-) void {
-    const row_count = @min(ws_tree.rowCount(), MAX_TREE_ROWS);
+) std.mem.Allocator.Error!void {
+    const row_count = ws_tree.rowCount();
+    const list_rows = try ctx.arena.alloc(vxfw.Text, row_count);
+    const list_widgets = try ctx.arena.alloc(vxfw.Widget, row_count);
     for (0..row_count) |r| {
         const sel = r == self.workspace.list_sel;
         const rendered = ws_tree.rowText(r);
         if (ws_tree.dirPathAt(r) != null) {
-            self.workspace.list_rows[r] = .{
+            list_rows[r] = .{
                 .text = rendered,
                 .style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.boldOn(theme.PANEL, theme.TEXT_SOFT),
                 .softwrap = false,
@@ -430,15 +433,15 @@ fn syncListWidgets(
                 std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{rendered}) catch rendered
             else
                 rendered;
-            self.workspace.list_rows[r] = .{
+            list_rows[r] = .{
                 .text = text,
                 .style = row_style,
                 .softwrap = false,
             };
         }
-        self.workspace.list_widgets[r] = self.workspace.list_rows[r].widget();
+        list_widgets[r] = list_rows[r].widget();
     }
-    self.workspace.list_scroll_bars.scroll_view.children = .{ .slice = self.workspace.list_widgets[0..row_count] };
+    self.workspace.list_scroll_bars.scroll_view.children = .{ .slice = list_widgets };
     self.workspace.list_scroll_bars.estimated_content_height = @intCast(row_count);
     var cur = @as(usize, @intCast(self.workspace.list_scroll_bars.scroll_view.cursor));
     if (row_count == 0) {
@@ -909,13 +912,23 @@ pub fn syncWsRows(self: anytype) void {
     else
         null;
 
-    var paths_buf: [MAX_TREE_ROWS][]const u8 = undefined;
-    var orig_idx: [MAX_TREE_ROWS]usize = undefined;
+    const allocator = self.api_state.allocator();
+    const path_capacity = switch (self.workspace.tab) {
+        .context => blk: {
+            const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
+            break :blk context_count + self.drafts.create_context_paths.len;
+        },
+        .rules => if (live_ws) |ws_d| ws_d.ws_rules.len else 0,
+    };
+    const paths_buf = allocator.alloc([]const u8, path_capacity) catch return;
+    defer allocator.free(paths_buf);
+    const orig_idx = allocator.alloc(usize, path_capacity) catch return;
+    defer allocator.free(orig_idx);
     var item_count: usize = 0;
 
     switch (self.workspace.tab) {
         .context => {
-            const context_count = if (live_ws) |ws_d| @min(ws_d.context_files.len, MAX_TREE_ROWS) else 0;
+            const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
             item_count = context_count;
             if (live_ws) |ws_d| {
                 for (0..item_count) |i| {
@@ -928,9 +941,8 @@ pub fn syncWsRows(self: anytype) void {
             // selectedDraftTarget can distinguish server rows from
             // create-only drafts.
             const create_paths = self.drafts.create_context_paths;
-            var k: usize = 0;
-            while (k < create_paths.len and item_count < MAX_TREE_ROWS) : (k += 1) {
-                paths_buf[item_count] = create_paths[k];
+            for (create_paths, 0..) |path, k| {
+                paths_buf[item_count] = path;
                 orig_idx[item_count] = context_count + k;
                 item_count += 1;
             }
@@ -938,7 +950,7 @@ pub fn syncWsRows(self: anytype) void {
         .rules => {
             if (live_ws) |ws_d| {
                 const lib_rules = self.getRules();
-                item_count = @min(ws_d.ws_rules.len, MAX_TREE_ROWS);
+                item_count = ws_d.ws_rules.len;
                 for (0..item_count) |i| {
                     const wp = ws_d.ws_rules[i];
                     paths_buf[i] = if (wp.path.len > 0)

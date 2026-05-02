@@ -150,6 +150,123 @@ pub fn flatten(
     return row_count;
 }
 
+fn flattenDynamic(
+    allocator: std.mem.Allocator,
+    paths: []const []const u8,
+    expanded: ?*const std.StringHashMapUnmanaged(void),
+    out: *std.ArrayListUnmanaged(Row),
+) !void {
+    var stack: [MAX_DEPTH][]const u8 = undefined;
+    var stack_len: usize = 0;
+
+    for (paths, 0..) |path, idx| {
+        var parents: [MAX_DEPTH][]const u8 = undefined;
+        var parents_len: usize = 0;
+        {
+            var scan: usize = 0;
+            while (std.mem.indexOfScalarPos(u8, path, scan, '/')) |slash| {
+                if (parents_len >= MAX_DEPTH) break;
+                parents[parents_len] = path[0 .. slash + 1];
+                parents_len += 1;
+                scan = slash + 1;
+            }
+        }
+
+        var common: usize = 0;
+        while (common < stack_len and common < parents_len and std.mem.eql(u8, stack[common], parents[common])) : (common += 1) {}
+        stack_len = common;
+
+        while (stack_len < parents_len) {
+            const depth: usize = stack_len;
+            const this_prefix = parents[depth];
+            stack[stack_len] = this_prefix;
+            stack_len += 1;
+
+            var ancestors_open = true;
+            var j: usize = 0;
+            while (j < depth) : (j += 1) {
+                if (!isExpanded(expanded, stack[j])) {
+                    ancestors_open = false;
+                    break;
+                }
+            }
+            if (!ancestors_open) continue;
+
+            const without_slash = this_prefix[0 .. this_prefix.len - 1];
+            const label_start: usize = if (std.mem.lastIndexOfScalar(u8, without_slash, '/')) |s| s + 1 else 0;
+            try out.append(allocator, .{
+                .depth = @intCast(depth),
+                .ancestor_mask = 0,
+                .is_last = false,
+                .kind = .dir,
+                .label = without_slash[label_start..],
+                .dir_prefix = this_prefix,
+                .leaf_idx = 0,
+            });
+        }
+
+        var leaf_visible = true;
+        var k: usize = 0;
+        while (k < parents_len) : (k += 1) {
+            if (!isExpanded(expanded, parents[k])) {
+                leaf_visible = false;
+                break;
+            }
+        }
+        if (!leaf_visible) continue;
+
+        try out.append(allocator, .{
+            .depth = @intCast(parents_len),
+            .ancestor_mask = 0,
+            .is_last = false,
+            .kind = .leaf,
+            .label = basename(path),
+            .dir_prefix = "",
+            .leaf_idx = idx,
+        });
+    }
+
+    var r: usize = 0;
+    while (r < out.items.len) : (r += 1) {
+        const d = out.items[r].depth;
+        var last = true;
+        var s: usize = r + 1;
+        while (s < out.items.len) : (s += 1) {
+            const d2 = out.items[s].depth;
+            if (d2 < d) break;
+            if (d2 == d) {
+                last = false;
+                break;
+            }
+        }
+        out.items[r].is_last = last;
+    }
+
+    var ancestor_last: [MAX_DEPTH]bool = .{true} ** MAX_DEPTH;
+    var ancestor_len: usize = 0;
+    r = 0;
+    while (r < out.items.len) : (r += 1) {
+        const d = out.items[r].depth;
+        while (ancestor_len > d) {
+            ancestor_len -= 1;
+        }
+
+        var mask: u16 = 0;
+        var level: usize = 0;
+        while (level < d) : (level += 1) {
+            if (!ancestor_last[level]) {
+                mask |= @as(u16, 1) << @intCast(level);
+            }
+        }
+        out.items[r].ancestor_mask = mask;
+
+        if (d < MAX_DEPTH) {
+            ancestor_last[d] = out.items[r].is_last;
+            ancestor_len = d + 1;
+        }
+    }
+}
+
 fn isExpanded(set: ?*const std.StringHashMapUnmanaged(void), key: []const u8) bool {
     const s = set orelse return true;
     return s.contains(key);
@@ -220,18 +337,23 @@ pub fn appendText(buf: []u8, start: usize, text: []const u8) usize {
 pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
     return struct {
         const Self = @This();
+        const _max_rows_compat = max_rows;
 
-        row_count: usize = 0,
-        leaf_indices: [max_rows]?usize = .{null} ** max_rows,
-        dir_paths: [max_rows]?[]const u8 = .{null} ** max_rows,
-        depths: [max_rows]u8 = .{0} ** max_rows,
-        text_lens: [max_rows]usize = .{0} ** max_rows,
-        text_bufs: [max_rows][text_buf_len]u8 = undefined,
+        leaf_indices: std.ArrayListUnmanaged(?usize) = .empty,
+        dir_paths: std.ArrayListUnmanaged(?[]const u8) = .empty,
+        depths: std.ArrayListUnmanaged(u8) = .empty,
+        text_lens: std.ArrayListUnmanaged(usize) = .empty,
+        text_bufs: std.ArrayListUnmanaged([text_buf_len]u8) = .empty,
         expanded: std.StringHashMapUnmanaged(void) = .empty,
         seen_top_level: std.StringHashMapUnmanaged(void) = .empty,
         initialized: bool = false,
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            self.leaf_indices.deinit(allocator);
+            self.dir_paths.deinit(allocator);
+            self.depths.deinit(allocator);
+            self.text_lens.deinit(allocator);
+            self.text_bufs.deinit(allocator);
             self.expanded.deinit(allocator);
             self.seen_top_level.deinit(allocator);
         }
@@ -244,31 +366,31 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
         }
 
         pub fn rowCount(self: *const Self) usize {
-            return self.row_count;
+            return self.text_lens.items.len;
         }
 
         pub fn rowText(self: *const Self, row: usize) []const u8 {
-            if (row >= self.row_count) return "";
-            return self.text_bufs[row][0..self.text_lens[row]];
+            if (row >= self.rowCount()) return "";
+            return self.text_bufs.items[row][0..self.text_lens.items[row]];
         }
 
         pub fn dirPathAt(self: *const Self, row: usize) ?[]const u8 {
-            if (row >= self.row_count) return null;
-            return self.dir_paths[row];
+            if (row >= self.rowCount()) return null;
+            return self.dir_paths.items[row];
         }
 
         pub fn leafIndexAt(self: *const Self, row: usize) ?usize {
-            if (row >= self.row_count) return null;
-            return self.leaf_indices[row];
+            if (row >= self.rowCount()) return null;
+            return self.leaf_indices.items[row];
         }
 
         pub fn depthAt(self: *const Self, row: usize) u8 {
-            if (row >= self.row_count) return 0;
-            return self.depths[row];
+            if (row >= self.rowCount()) return 0;
+            return self.depths.items[row];
         }
 
         pub fn parentRow(self: *const Self, row: usize) ?usize {
-            if (row >= self.row_count or row == 0) return null;
+            if (row >= self.rowCount() or row == 0) return null;
             const cur_depth = self.depthAt(row);
             if (cur_depth == 0) return null;
 
@@ -305,7 +427,7 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             paths: []const []const u8,
             original_leaf_indices: []const usize,
         ) void {
-            const item_count = @min(paths.len, @min(original_leaf_indices.len, max_rows));
+            const item_count = @min(paths.len, original_leaf_indices.len);
             if (item_count == 0) {
                 self.clearRows();
                 return;
@@ -314,59 +436,70 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             self.expandNewTopLevelPrefixes(allocator, paths[0..item_count]);
             self.initialized = true;
 
-            var sort_idx: [max_rows]usize = undefined;
-            sortPathIndices(paths[0..item_count], sort_idx[0..item_count]);
+            const sort_idx = allocator.alloc(usize, item_count) catch {
+                self.clearRows();
+                return;
+            };
+            defer allocator.free(sort_idx);
+            sortPathIndices(paths[0..item_count], sort_idx);
 
-            var sorted_paths: [max_rows][]const u8 = undefined;
-            var sorted_orig: [max_rows]usize = undefined;
+            const sorted_paths = allocator.alloc([]const u8, item_count) catch {
+                self.clearRows();
+                return;
+            };
+            defer allocator.free(sorted_paths);
+            const sorted_orig = allocator.alloc(usize, item_count) catch {
+                self.clearRows();
+                return;
+            };
+            defer allocator.free(sorted_orig);
             for (0..item_count) |i| {
                 sorted_paths[i] = paths[sort_idx[i]];
                 sorted_orig[i] = original_leaf_indices[sort_idx[i]];
             }
 
-            var rows_buf: [max_rows]Row = undefined;
-            const visible_count = flatten(sorted_paths[0..item_count], &self.expanded, &rows_buf);
+            var rows_buf: std.ArrayListUnmanaged(Row) = .empty;
+            defer rows_buf.deinit(allocator);
+            flattenDynamic(allocator, sorted_paths[0..item_count], &self.expanded, &rows_buf) catch {
+                self.clearRows();
+                return;
+            };
 
+            self.clearRows();
             var i: usize = 0;
-            while (i < visible_count) : (i += 1) {
-                const tr = rows_buf[i];
-                const buf = &self.text_bufs[i];
+            while (i < rows_buf.items.len) : (i += 1) {
+                const tr = rows_buf.items[i];
+                var buf: [text_buf_len]u8 = undefined;
 
-                self.leaf_indices[i] = null;
-                self.dir_paths[i] = null;
-                self.depths[i] = tr.depth;
-
-                var len = renderPrefix(buf, tr.depth, tr.ancestor_mask, tr.is_last, null);
-                len = appendText(buf, len, tr.label);
+                var len = renderPrefix(&buf, tr.depth, tr.ancestor_mask, tr.is_last, null);
+                len = appendText(&buf, len, tr.label);
                 if (tr.kind == .dir and len < buf.len) {
                     buf[len] = '/';
                     len += 1;
                 }
-                self.text_lens[i] = len;
 
                 switch (tr.kind) {
-                    .dir => self.dir_paths[i] = tr.dir_prefix,
-                    .leaf => self.leaf_indices[i] = sorted_orig[tr.leaf_idx],
+                    .dir => {
+                        self.leaf_indices.append(allocator, null) catch return;
+                        self.dir_paths.append(allocator, tr.dir_prefix) catch return;
+                    },
+                    .leaf => {
+                        self.leaf_indices.append(allocator, sorted_orig[tr.leaf_idx]) catch return;
+                        self.dir_paths.append(allocator, null) catch return;
+                    },
                 }
+                self.depths.append(allocator, tr.depth) catch return;
+                self.text_lens.append(allocator, len) catch return;
+                self.text_bufs.append(allocator, buf) catch return;
             }
-
-            self.clearTrailingRows(visible_count);
-            self.row_count = visible_count;
         }
 
         fn clearRows(self: *Self) void {
-            self.row_count = 0;
-            self.clearTrailingRows(0);
-        }
-
-        fn clearTrailingRows(self: *Self, from: usize) void {
-            var i = from;
-            while (i < max_rows) : (i += 1) {
-                self.leaf_indices[i] = null;
-                self.dir_paths[i] = null;
-                self.depths[i] = 0;
-                self.text_lens[i] = 0;
-            }
+            self.leaf_indices.clearRetainingCapacity();
+            self.dir_paths.clearRetainingCapacity();
+            self.depths.clearRetainingCapacity();
+            self.text_lens.clearRetainingCapacity();
+            self.text_bufs.clearRetainingCapacity();
         }
 
         fn expandNewTopLevelPrefixes(self: *Self, allocator: std.mem.Allocator, paths: []const []const u8) void {
@@ -514,6 +647,28 @@ test "State sync default-expands top level prefixes and maps leaf indices" {
     try std.testing.expectEqual(@as(?usize, 30), state.leafIndexAt(4));
     try std.testing.expect(state.isExpanded("rule/"));
     try std.testing.expect(state.isExpanded("workflow/"));
+}
+
+test "State sync keeps rows beyond legacy fixed capacity" {
+    const TreeState = State(2, 64);
+    var state: TreeState = .{};
+    defer state.deinit(std.testing.allocator);
+
+    const paths = [_][]const u8{
+        "adr/ADR-001.md",
+        "research/R1.md",
+        "spec/s1.md",
+        "todo/A.md",
+        "todo/B.md",
+        "todo/C.md",
+    };
+    const orig = [_]usize{ 0, 1, 2, 3, 4, 5 };
+
+    state.sync(std.testing.allocator, paths[0..], orig[0..]);
+
+    try std.testing.expect(state.rowCount() > 2);
+    try std.testing.expectEqual(@as(?usize, 5), state.leafIndexAt(state.rowCount() - 1));
+    try std.testing.expect(std.mem.endsWith(u8, state.rowText(state.rowCount() - 1), "C"));
 }
 
 test "State sync expands top level prefixes that appear after first sync" {
