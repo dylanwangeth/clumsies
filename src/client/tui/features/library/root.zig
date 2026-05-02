@@ -179,7 +179,7 @@ pub fn handleModuleEvent(
         api.state.invalidateOnDemandCaches(self.api_state);
         self.invalidateRemoteDetailRequests();
         api.fetch.refetchAllAsync(self.api_state);
-        self.status_line = "Refreshing data...";
+        self.notifyOp(.loading, "Reloading remote metadata...");
         ctx.consumeAndRedraw();
         return;
     }
@@ -214,7 +214,7 @@ pub fn handleModuleEvent(
         if (self.copySelectedContentId()) {
             ctx.consumeAndRedraw();
         } else {
-            self.status_line = "No id to copy.";
+            self.notifyOp(.warning, "No id to copy.");
             ctx.consumeAndRedraw();
         }
         return;
@@ -237,6 +237,11 @@ pub fn handleModuleEvent(
         }
         if (key.matches('p', .{})) {
             self.openPrComposer();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches('u', .{})) {
+            self.pullSelectedLibraryContent();
             ctx.consumeAndRedraw();
             return;
         }
@@ -283,7 +288,6 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
         .{ .key = "c", .label = "comment" },
         .{ .key = "h/l", .label = "switch tab" },
         .{ .key = "Tab", .label = "switch focus" },
-        .{ .key = "r", .label = "refresh" },
         .{ .key = "?", .label = "help" },
         .{ .key = "q", .label = "quit" },
     };
@@ -295,9 +299,9 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
         .{ .key = "n", .label = "new rule" },
         .{ .key = "e", .label = "edit" },
         .{ .key = "p", .label = "submit" },
+        .{ .key = "u", .label = "pull" },
         .{ .key = "D", .label = "discard" },
         .{ .key = "m", .label = "mark ready" },
-        .{ .key = "r", .label = "refresh" },
         .{ .key = "b", .label = "bundle filter" },
         .{ .key = "?", .label = "help" },
         .{ .key = "q", .label = "quit" },
@@ -473,8 +477,10 @@ pub fn syncLibraryWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
                 else => "\xe2\x80\xa2+",
             };
             const row_sel = i == selected_row;
-            const draft_status_opt = self.draftStatusFor(self.libraryCategoryForPath(row_path), row_path);
-            const labeled_text = if (draft_status_opt != null)
+            const category = self.libraryCategoryForPath(row_path);
+            const draft_status_opt = self.draftStatusFor(category, row_path);
+            const is_stale = !is_virtual and !self.isLocalContentFresh(category, row_path, rules[orig_pidx].content_hash);
+            const labeled_text = if (is_stale)
                 (std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{row_text}) catch row_text)
             else
                 row_text;
