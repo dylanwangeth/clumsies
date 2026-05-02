@@ -69,18 +69,11 @@ pub fn libraryContentShortcuts() []const w.Shortcut {
     return &library_content_shortcuts;
 }
 
-pub fn resetDiff(self: anytype, surface: Surface) void {
+pub fn resetHideDiff(self: anytype, surface: Surface) void {
     switch (surface) {
-        .workspace => self.workspace.show_diff = false,
-        .library => self.review.show_diff = false,
+        .workspace => self.workspace.hide_diff = false,
+        .library => self.review.hide_diff = false,
     }
-}
-
-pub fn showDiff(self: anytype, surface: Surface) bool {
-    return switch (surface) {
-        .workspace => self.workspace.show_diff,
-        .library => self.review.show_diff,
-    };
 }
 
 pub fn handle(
@@ -107,24 +100,19 @@ pub fn handle(
         return true;
     }
     if (key.matches('d', .{})) {
-        if (showDiff(self, surface)) {
-            resetDiff(self, surface);
-            ctx.consumeAndRedraw();
-            return true;
-        }
         const target = self.selectedDraftTarget() orelse {
-            self.notifyOp(.warning, "No draft diff available.");
+            resetHideDiff(self, surface);
             ctx.consumeAndRedraw();
             return true;
         };
         if (self.draftContentForView(target.category, target.path) == null) {
-            self.notifyOp(.warning, "No draft diff available.");
+            resetHideDiff(self, surface);
             ctx.consumeAndRedraw();
             return true;
         }
         switch (surface) {
-            .workspace => self.workspace.show_diff = true,
-            .library => self.review.show_diff = true,
+            .workspace => self.workspace.hide_diff = !self.workspace.hide_diff,
+            .library => self.review.hide_diff = !self.review.hide_diff,
         }
         ctx.consumeAndRedraw();
         return true;

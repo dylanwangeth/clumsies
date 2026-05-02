@@ -300,7 +300,7 @@ fn handleFileListEvent(
             self.review.selected_pr_idx = 0;
             self.review.pr_scroll_bars.scroll_view.cursor = 0;
             self.review.pr_filter = .open;
-            self.review.show_diff = false;
+            self.review.hide_diff = false;
         }
     }
 }
@@ -468,7 +468,7 @@ pub fn syncLibraryWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
         if (self.library.tree.leafIndexAt(cur)) |pi| {
             if (self.library.selected_rule != pi) {
                 self.library.selected_rule = pi;
-                self.review.show_diff = false;
+                self.review.hide_diff = false;
             }
         }
     }

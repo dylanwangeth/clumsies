@@ -1050,7 +1050,7 @@ pub const Shell = struct {
         self.api_state.mutex.unlock();
 
         self.workspace.list_sel = 0;
-        self.workspace.show_diff = false;
+        self.workspace.hide_diff = false;
         self.resetWorkspaceTrees();
         self.workspace.list_scroll_bars.scroll_view.cursor = 0;
         self.workspace.list_scroll_bars.scroll_view.scroll.top = 0;
@@ -2887,7 +2887,7 @@ pub const Shell = struct {
         self.releasePendingDiscardTarget();
         self.refreshDraftsCache();
         if (self.selected_module == .workspace) {
-            self.workspace.show_diff = false;
+            self.workspace.hide_diff = false;
         }
     }
 
@@ -3500,7 +3500,7 @@ pub const Shell = struct {
         self.review.show_comment_editor = false;
         self.review.pr_filter = .open;
         self.review.selected_pr_idx = 0;
-        self.review.show_diff = false;
+        self.review.hide_diff = false;
         self.review.pr_scroll_bars.scroll_view.cursor = 0;
     }
 
