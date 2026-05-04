@@ -43,7 +43,8 @@ if session_id:
         f"Use exactly this session_id value: {session_id}. "
         "During host agent startup, before calling any other clumsies MCP "
         "tool, call "
-        f'memory.setup({{"session_id":"{session_id}"}}). '
+        f'memory.setup({{"session_id":"{session_id}",'
+        '"knownHashes":{"META_PROMPT.md":""}}). '
         "Call memory.setup only once for this host session. Do not call it "
         "again later unless the user explicitly invokes the setup skill. "
         "Pass that exact value as the memory.setup session_id argument. "

@@ -15,8 +15,8 @@ const DISCOVER_RESULT_NAMES_MAX_COUNT = 20;
 const DISCOVER_RESULT_NAMES_MAX_BYTES = 1024;
 
 const setup_schema =
-    "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bind this MCP connection to the host agent session, then bootstrap the protocol. Pass the host session/thread id as session_id.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},\"knownHash\":{\"type\":\"string\"}},\"required\":[\"session_id\"],\"additionalProperties\":false}}";
+    "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bind this MCP connection to the host agent session, then bootstrap the protocol. Pass the host session/thread id as session_id and knownHashes with a META_PROMPT.md entry. Use an empty hash when the meta-prompt hash is unknown.\"," ++
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"session_id\",\"knownHashes\"],\"additionalProperties\":false}}";
 
 const discover_schema =
     "{\"name\":\"" ++ tool_names.discover ++ "\",\"title\":\"Discover\",\"description\":\"Discover available rules, workflows, and context files. Returns fresh metadata from the workspace.\"," ++
@@ -153,10 +153,7 @@ fn handleSetup(
         else => return err,
     };
 
-    const known_hash: ?[]const u8 = if (args_obj.get("knownHash")) |value| switch (value) {
-        .string => |s| s,
-        else => null,
-    } else null;
+    const known_hash = try parseSetupKnownHash(args_obj.get("knownHashes"));
 
     var mpf = try workspace_rule.loadMpf(allocator, workspace_root, known_hash);
     defer mpf.deinit(allocator);
@@ -203,6 +200,20 @@ fn handleSetup(
         defer allocator.free(structured);
         return try tool_result.buildSuccessResult(allocator, structured);
     }
+}
+
+fn parseSetupKnownHash(value_opt: ?std.json.Value) !?[]const u8 {
+    const value = value_opt orelse return error.InvalidParams;
+    const obj = switch (value) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    const value_for_mpf = obj.get("META_PROMPT.md") orelse return error.InvalidParams;
+    const hash = switch (value_for_mpf) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    };
+    return if (hash.len == 0) null else hash;
 }
 
 fn handleDiscover(
@@ -1115,6 +1126,8 @@ test "buildListResult: exposes memory tools and unified artifact tool" {
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.refer ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.submit ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.artifact ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"required\":[\"session_id\",\"knownHashes\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "META_PROMPT.md") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"required\":[\"ids\",\"knownHashes\"]") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_create\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_update\"") == null);
@@ -1130,6 +1143,43 @@ test "buildListResult: exposes memory tools and unified artifact tool" {
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.list\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
+}
+
+test "parseSetupKnownHash requires explicit META_PROMPT entry" {
+    try testing.expectError(error.InvalidParams, parseSetupKnownHash(null));
+
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"OTHER.md":"sha256:abc"}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    try testing.expectError(error.InvalidParams, parseSetupKnownHash(parsed.value));
+}
+
+test "parseSetupKnownHash accepts empty or remembered mpf hash" {
+    const unknown = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"META_PROMPT.md":""}
+    ,
+        .{},
+    );
+    defer unknown.deinit();
+    try testing.expect((try parseSetupKnownHash(unknown.value)) == null);
+
+    const remembered = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"META_PROMPT.md":"sha256:abc"}
+    ,
+        .{},
+    );
+    defer remembered.deinit();
+    try testing.expectEqualStrings("sha256:abc", (try parseSetupKnownHash(remembered.value)).?);
 }
 
 test "parseKnownHashes requires explicit map" {

@@ -68,7 +68,7 @@ This detail matters because the protocol is not only human-readable. Agents are 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `session_id` | string | yes | host-agent session or thread id |
-| `knownHash` | string | no | lets the client ask for delta behavior if it already knows the last meta-prompt hash |
+| `knownHashes` | object map | yes | must include `META_PROMPT.md`; pass the remembered hash, or `""` when unknown |
 
 ### Structured result
 
@@ -319,10 +319,10 @@ In the current implementation, this records an `.agent_report` attestation event
 
 In the current implementation, this records a `.reject` attestation event.
 
-## `draft`
+## `artifact`
 
-`draft` stages local drafts instead of mutating Library rules, workspace
-context, or MPF.
+`artifact` stages local changes for Library rules, workspace context, or MPF.
+Those local changes are stored as drafts until they enter review.
 
 The input is a tagged command object:
 
@@ -351,7 +351,7 @@ and payloads stay typed.
 
 ### `create`
 
-Creates a new draft file.
+Creates a new local artifact change.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
@@ -370,10 +370,10 @@ Creates a new draft file.
 
 ### `update`
 
-Creates a modify draft against an existing object. For `context` and
+Creates or updates a modify change against an existing object. For `context` and
 `rule`, the implementation resolves `id` through the manifest, reads the
-current cached file, computes a base hash, and creates a draft. For MPF,
-`id` should be `META_PROMPT.md`.
+current cached file, computes a base hash, and writes the local draft form. For
+MPF, `id` should be `META_PROMPT.md`.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
@@ -383,7 +383,7 @@ current cached file, computes a base hash, and creates a draft. For MPF,
 
 ### `rename`
 
-Creates a rename draft. `rename` is valid for `context` and `rule`; MPF
+Creates a rename change. `rename` is valid for `context` and `rule`; MPF
 has the reserved path `META_PROMPT.md` and cannot be renamed.
 
 | Field | Type | Required | Meaning |
