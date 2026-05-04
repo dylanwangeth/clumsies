@@ -7,10 +7,10 @@ pub const UserData = struct {
     username: []const u8,
     role: []const u8,
     scopes: []const u8,
-    workspaces: []const WsData,
+    workspaces: []const WorkspaceData,
 };
 
-pub const WsData = struct {
+pub const WorkspaceData = struct {
     ws_id: []const u8,
     name: []const u8,
     role: []const u8 = "",
@@ -27,7 +27,7 @@ pub const DirectoryData = struct {
     members: []const DirectoryMember,
 };
 
-pub const LibraryRule = struct {
+pub const ArtifactRule = struct {
     rule_id: []const u8,
     path: []const u8,
     content_hash: []const u8,
@@ -55,6 +55,8 @@ pub const RulePr = struct {
     created_at: []const u8,
     author: []const u8,
     operation_count: i32 = 0,
+    op_type: []const u8 = "",
+    comment_count: i32 = 0,
 };
 
 pub const RuleStats = struct {
@@ -102,13 +104,13 @@ pub const TrendPoint = struct {
     refer_count: i64,
 };
 
-pub const WsDetail = struct {
+pub const WorkspaceDetail = struct {
     ws_id: []const u8,
-    context_files: []const ContextFileData,
-    ws_rules: []const WsRuleData,
+    workspace_context: []const WorkspaceContextData,
+    workspace_rules: []const WorkspaceRuleData,
 };
 
-pub const ContextFileData = struct {
+pub const WorkspaceContextData = struct {
     context_id: []const u8,
     path: []const u8,
     hash: []const u8,
@@ -117,7 +119,7 @@ pub const ContextFileData = struct {
     updated_at: []const u8 = "",
 };
 
-pub const WsRuleData = struct {
+pub const WorkspaceRuleData = struct {
     rule_id: []const u8,
     content_hash: []const u8,
     path: []const u8 = "",

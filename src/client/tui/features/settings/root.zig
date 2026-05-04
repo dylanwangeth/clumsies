@@ -356,7 +356,7 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
         user_id: []const u8,
         username: []const u8,
         role: []const u8,
-        workspaces: []const data.WsAccess,
+        workspaces: []const data.WorkspaceAccess,
     };
 
     const user: UserView = blk: {

@@ -129,11 +129,10 @@ pub fn contentRowStyle(selected: bool, draft_status: anytype, pull_available: bo
 
 pub fn draftStatusLabel(status: anytype) []const u8 {
     return switch (status) {
-        .editing => "editing",
-        .ready => "ready",
-        .submitted => "submitted",
-        .merged => "merged",
-        .rejected => "rejected",
+        .draft => "draft",
+        .in_review => "in review",
+        .applied => "applied",
+        .declined => "declined",
         .conflicted => "conflicted",
     };
 }
@@ -165,7 +164,7 @@ test "focusBorder returns ACCENT when focused" {
 
 test "draftRowStyle uses draft color when draft present" {
     const DraftStatus = @import("../drafts.zig").DraftStatus;
-    const style = draftRowStyle(true, @as(?DraftStatus, .editing));
+    const style = draftRowStyle(true, @as(?DraftStatus, .draft));
     try std.testing.expectEqual(theme.WARN, style.fg);
     try std.testing.expectEqual(theme.PANEL, style.bg);
     try std.testing.expect(style.bold);
@@ -191,14 +190,14 @@ test "contentRowStyle uses INFO when pull is available without draft" {
 
 test "contentRowStyle lets draft status win over pull marker" {
     const DraftStatus = @import("../drafts.zig").DraftStatus;
-    const style = contentRowStyle(false, @as(?DraftStatus, .ready), true);
-    try std.testing.expectEqual(theme.OK, style.fg);
+    const style = contentRowStyle(false, @as(?DraftStatus, .in_review), true);
+    try std.testing.expectEqual(theme.ACCENT, style.fg);
 }
 
 test "draftStatusLabel maps draft states" {
     const DraftStatus = @import("../drafts.zig").DraftStatus;
-    try std.testing.expectEqualStrings("editing", draftStatusLabel(DraftStatus.editing));
-    try std.testing.expectEqualStrings("submitted", draftStatusLabel(DraftStatus.submitted));
+    try std.testing.expectEqualStrings("draft", draftStatusLabel(DraftStatus.draft));
+    try std.testing.expectEqualStrings("in review", draftStatusLabel(DraftStatus.in_review));
     try std.testing.expectEqualStrings("conflicted", draftStatusLabel(DraftStatus.conflicted));
 }
 

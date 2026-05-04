@@ -243,7 +243,7 @@ test {
     _ = @import("tui/features/analysis/root.zig");
     _ = @import("tui/features/dashboard/root.zig");
     _ = @import("tui/features/drafts/root.zig");
-    _ = @import("tui/features/library/root.zig");
+    _ = @import("tui/features/artifact/root.zig");
     _ = @import("tui/features/review/root.zig");
     _ = @import("tui/features/settings/root.zig");
     _ = @import("tui/features/workspace/root.zig");

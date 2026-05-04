@@ -793,7 +793,7 @@ fn computeTextHash(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
     return try allocator.dupe(u8, &hex);
 }
 
-/// Parse constraints from rule content according to s2 format standard.
+/// Parse constraints from rule content headings and list items.
 /// Rules: # = title (skip), ## = constraint region. A whole region uses the
 /// H2 title as its stable id; list items within a region use H2/ordinal ids.
 pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !ValidateResult {
@@ -1313,7 +1313,7 @@ test "loadRules: draft content overrides cache when indexed" {
         \\      "draft_path": "coding/STYLE.md",
         \\      "operation": "modify",
         \\      "base_hash": "sha256:original",
-        \\      "status": "editing"
+        \\      "status": "draft"
         \\    }
         \\  ]
         \\}
@@ -1359,7 +1359,7 @@ test "loadRules: rule draft change ignores matching manifest known hash" {
         \\      "draft_path": "coding/STYLE.md",
         \\      "operation": "modify",
         \\      "base_hash": "sha256:manifest",
-        \\      "status": "editing"
+        \\      "status": "draft"
         \\    }
         \\  ]
         \\}
@@ -1413,7 +1413,7 @@ test "loadRules: context draft change ignores matching manifest known hash" {
         \\      "draft_path": "spec/API.md",
         \\      "operation": "modify",
         \\      "base_hash": "sha256:manifest",
-        \\      "status": "editing"
+        \\      "status": "draft"
         \\    }
         \\  ]
         \\}
@@ -1460,7 +1460,7 @@ test "loadRules: draft marked delete behaves as UnknownRuleId" {
         \\      "draft_path": "coding/STYLE.md",
         \\      "operation": "delete",
         \\      "base_hash": "sha256:original",
-        \\      "status": "editing"
+        \\      "status": "draft"
         \\    }
         \\  ]
         \\}
@@ -1552,7 +1552,7 @@ test "loadMpf: draft content overrides cache" {
         \\      "current_path": "META_PROMPT.md",
         \\      "draft_path": "META_PROMPT.md",
         \\      "operation": "modify",
-        \\      "status": "editing"
+        \\      "status": "draft"
         \\    }
         \\  ]
         \\}
@@ -1585,7 +1585,7 @@ test "loadMpf: delete draft makes mpf appear absent" {
         \\      "current_path": "META_PROMPT.md",
         \\      "draft_path": "META_PROMPT.md",
         \\      "operation": "delete",
-        \\      "status": "editing"
+        \\      "status": "draft"
         \\    }
         \\  ]
         \\}
@@ -1619,7 +1619,7 @@ test "loadMpf: delta works with draft content" {
         \\      "current_path": "META_PROMPT.md",
         \\      "draft_path": "META_PROMPT.md",
         \\      "operation": "modify",
-        \\      "status": "editing"
+        \\      "status": "draft"
         \\    }
         \\  ]
         \\}

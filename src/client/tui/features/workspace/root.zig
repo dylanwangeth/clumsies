@@ -50,7 +50,7 @@ pub const State = struct {
     list_rows: [MAX_TREE_ROWS]vxfw.Text = undefined,
     local_arena: std.heap.ArenaAllocator,
     local_cache_id: ?[]const u8 = null,
-    local_detail: ?api.model.WsDetail = null,
+    local_detail: ?api.model.WorkspaceDetail = null,
     local_load_failed: bool = false,
 
     show_create: bool = false,
@@ -120,8 +120,8 @@ pub const CreateWsErrorKind = enum {
 };
 
 pub const DetailArgs = struct {
-    live_ws: ?api.model.WsDetail,
-    /// Server-side index into `live_ws.context_files`. Null when
+    live_ws: ?api.model.WorkspaceDetail,
+    /// Server-side index into `live_ws.workspace_context`. Null when
     /// the selection is a virtual (create-op) draft.
     context_sel: ?usize,
     context_sel_id: ?[]const u8,
@@ -130,9 +130,13 @@ pub const DetailArgs = struct {
     /// the primary identity and only uses `context_sel` to pull
     /// hub-side metadata (hash / author / updated_at).
     context_sel_path: ?[]const u8,
+    context_sel_hash: ?[]const u8,
+    context_local_path: ?[]const u8,
     rule_sel_idx: ?usize,
     rule_sel_id: ?[]const u8,
     rule_sel_path: ?[]const u8,
+    rule_sel_hash: ?[]const u8,
+    rule_local_path: ?[]const u8,
 };
 
 pub fn drawStatus(
@@ -157,7 +161,7 @@ pub fn drawList(
     self: anytype,
     ctx: vxfw.DrawContext,
     ws_tree: anytype,
-    live_ws: ?api.model.WsDetail,
+    live_ws: ?api.model.WorkspaceDetail,
 ) std.mem.Allocator.Error!vxfw.Surface {
     const list_border = theme.focusBorder(self.workspace.focus == .list);
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
@@ -179,15 +183,15 @@ pub fn drawList(
     const body_w: u16 = ctx.max.width.? -| body_origin_col -| 1;
     if (ws_tree.rowCount() == 0) {
         const empty_msg = if (self.activeWsId()) |ws_id| switch (self.workspace.tab) {
-            .context => if (self.api_state.ws_context_files_pending.isInflight())
+            .context => if (self.api_state.workspace_context_pending.isInflight())
                 "Loading context files..."
-            else if (self.api_state.ws_context_files_cache.isFailed(.{ .value = ws_id }))
+            else if (self.api_state.workspace_context_cache.isFailed(.{ .value = ws_id }))
                 "Context failed to load."
             else
                 "No context files.",
-            .rules => if (self.api_state.ws_manifest_pending.isInflight())
+            .rules => if (self.api_state.workspace_manifest_pending.isInflight())
                 "Loading workspace rules..."
-            else if (self.api_state.ws_manifest_cache.isFailed(.{ .value = ws_id }))
+            else if (self.api_state.workspace_manifest_cache.isFailed(.{ .value = ws_id }))
                 "Workspace rules failed to load."
             else
                 "No workspace rules.",
@@ -239,13 +243,23 @@ pub fn drawDetail(
     const title_w: u16 = @intCast(ctx.stringWidth(title));
     const meta_min_col: u16 = 2 + title_w + 2;
     if (workspaceDetailDraftStatus(self, args)) |status| {
+        const label = try workspaceDetailDraftLabel(self, ctx.arena, args, status);
         _ = w.writeHeaderRightIfFits(
             &surface,
             ctx,
             0,
             meta_min_col,
-            w.draftStatusLabel(status),
+            label,
             w.draftStatusHeaderStyle(status),
+        );
+    } else if (workspaceDetailPullLabel(self, ctx.arena, args)) |label| {
+        _ = w.writeHeaderRightIfFits(
+            &surface,
+            ctx,
+            0,
+            meta_min_col,
+            label,
+            theme.boldOn(theme.PANEL, theme.INFO),
         );
     } else if (args.live_ws) |ws_d| {
         try writeWsMetaOnHeader(&surface, ctx, meta_min_col, self, ws_d, args);
@@ -257,14 +271,14 @@ pub fn drawDetail(
     switch (self.workspace.tab) {
         .context => {
             if (args.context_sel_path) |sel_path| {
-                try drawContextFileDetail(self, &surface, ctx, kv_row, max_row, args.live_ws, sel_path);
+                try drawContextFileDetail(self, &surface, ctx, kv_row, max_row, args.live_ws, sel_path, args.context_local_path, args.context_sel_hash);
             } else {
                 w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
             }
         },
         .rules => {
             if (args.rule_sel_path) |p| {
-                try drawRuleFileDetail(self, &surface, ctx, kv_row, max_row, p);
+                try drawRuleFileDetail(self, &surface, ctx, kv_row, max_row, p, args.rule_local_path, args.rule_sel_hash);
             } else {
                 w.writeText(&surface, ctx, 2, kv_row, "No workspace rules.", theme.fg(theme.MUTED));
             }
@@ -274,23 +288,22 @@ pub fn drawDetail(
     return surface;
 }
 
-/// Render a one-line metadata badge at the top-right of the header,
-/// mirroring Library's `rev{N} pr{N} c{N} {updated}` convention. For
-/// context files we render `hash7 author updated`; for workspace
-/// rules the hash is all we have from the manifest.
+/// Render a one-line metadata badge at the top-right of the header.
+/// Workspace content details keep this compact and consistent across
+/// Context and Rules; org-level revision/review counts stay in Artifact.
 fn writeWsMetaOnHeader(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
     min_col: u16,
     self: anytype,
-    ws_d: api.model.WsDetail,
+    ws_d: api.model.WorkspaceDetail,
     args: DetailArgs,
 ) !void {
     switch (self.workspace.tab) {
         .context => {
             if (args.context_sel) |idx| {
-                if (idx >= ws_d.context_files.len) return;
-                const f = &ws_d.context_files[idx];
+                if (idx >= ws_d.workspace_context.len) return;
+                const f = &ws_d.workspace_context[idx];
                 const updated_short = try w.formatShortTimestamp(ctx.arena, f.updated_at);
                 const meta = if (updated_short.len > 0)
                     try std.fmt.allocPrint(ctx.arena, "updated {s}", .{updated_short})
@@ -319,12 +332,14 @@ fn drawContextFileDetail(
     ctx: vxfw.DrawContext,
     start_row: u16,
     max_row: u16,
-    ws_d: ?api.model.WsDetail,
+    ws_d: ?api.model.WorkspaceDetail,
     path: []const u8,
+    local_path: ?[]const u8,
+    remote_hash: ?[]const u8,
 ) !void {
     const ws_id = if (ws_d) |live| live.ws_id else self.activeWsId() orelse return;
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
-        .context = .{ .ws_id = ws_id, .path = path },
+        .context = .{ .ws_id = ws_id, .path = path, .local_path = local_path, .remote_hash = remote_hash },
     }, !self.workspace.hide_diff);
 }
 
@@ -335,9 +350,11 @@ fn drawRuleFileDetail(
     start_row: u16,
     max_row: u16,
     rule_path: []const u8,
+    local_path: ?[]const u8,
+    remote_hash: ?[]const u8,
 ) !void {
     try attachContentSurface(self, surface, ctx, start_row, max_row, .{
-        .rule = .{ .path = rule_path },
+        .rule = .{ .path = rule_path, .local_path = local_path, .remote_hash = remote_hash },
     }, !self.workspace.hide_diff);
 }
 
@@ -348,21 +365,74 @@ fn workspaceDetailDraftStatus(self: anytype, args: DetailArgs) ?drafts_mod.Draft
         else
             null,
         .rules => if (args.rule_sel_path) |path|
-            self.draftStatusFor(self.libraryCategoryForPath(path), path)
+            self.draftStatusFor(self.artifactCategoryForPath(path), path)
         else
             null,
     };
 }
 
+fn workspaceDetailPullLabel(self: anytype, arena: std.mem.Allocator, args: DetailArgs) ?[]const u8 {
+    return switch (self.workspace.tab) {
+        .context => if (args.context_sel_path) |path|
+            self.workspaceSelectionPullLabel(arena, .{ .context = .{
+                .path = path,
+                .context_id = args.context_sel_id,
+                .idx = args.context_sel,
+                .hash = args.context_sel_hash,
+            } }) catch "pull available"
+        else
+            null,
+        .rules => if (args.rule_sel_path) |path|
+            self.workspaceSelectionPullLabel(arena, .{ .rule = .{
+                .path = path,
+                .rule_id = args.rule_sel_id,
+                .idx = args.rule_sel_idx,
+                .hash = args.rule_sel_hash,
+                .category = self.artifactCategoryForPath(path),
+            } }) catch "pull available"
+        else
+            null,
+    };
+}
+
+fn workspaceDetailDraftLabel(
+    self: anytype,
+    arena: std.mem.Allocator,
+    args: DetailArgs,
+    status: drafts_mod.DraftStatus,
+) std.mem.Allocator.Error![]const u8 {
+    const status_label = w.draftStatusLabel(status);
+    const op = switch (self.workspace.tab) {
+        .context => if (args.context_sel_path) |path|
+            self.draftOperationForView(.context, path)
+        else
+            null,
+        .rules => if (args.rule_sel_path) |path|
+            self.draftOperationForView(self.artifactCategoryForPath(path), path)
+        else
+            null,
+    } orelse return status_label;
+    return std.fmt.allocPrint(arena, "{s} [op:{s}]", .{ status_label, draftOperationLabel(op) });
+}
+
+fn draftOperationLabel(op: drafts_mod.DraftOperation) []const u8 {
+    return switch (op) {
+        .create => "create",
+        .modify => "modify",
+        .rename => "rename",
+        .delete => "delete",
+    };
+}
+
 const ContentSource = union(enum) {
-    context: struct { ws_id: []const u8, path: []const u8 },
-    rule: struct { path: []const u8 },
+    context: struct { ws_id: []const u8, path: []const u8, local_path: ?[]const u8, remote_hash: ?[]const u8 },
+    rule: struct { path: []const u8, local_path: ?[]const u8, remote_hash: ?[]const u8 },
 };
 
 /// Seed the shared content_scroll_bars for the source and attach it
 /// below the metadata rows. Normal mode renders the draft working copy
 /// as flat text; diff mode renders cache-vs-draft with gutters.
-/// Library's rule_detail path uses the same scroll bars, so switching
+/// Artifact's rule_detail path uses the same scroll bars, so switching
 /// modules redraws content into the same widget state — no per-module
 /// scroll state today.
 fn attachContentSurface(
@@ -375,8 +445,8 @@ fn attachContentSurface(
     show_diff: bool,
 ) !void {
     switch (source) {
-        .context => |c| rule_detail.syncWsContextContentWidget(self, c.ws_id, c.path, show_diff),
-        .rule => |p| rule_detail.syncWsRuleContentWidget(self, p.path, show_diff),
+        .context => |c| rule_detail.syncWsContextContentWidget(self, c.ws_id, c.path, c.local_path, c.remote_hash, show_diff),
+        .rule => |p| rule_detail.syncWsRuleContentWidget(self, p.path, p.local_path, p.remote_hash, show_diff),
     }
     const content_h: u16 = if (max_row > start_row) max_row - start_row else 0;
     if (content_h == 0) return;
@@ -397,7 +467,7 @@ fn syncListWidgets(
     self: anytype,
     ctx: vxfw.DrawContext,
     ws_tree: anytype,
-    live_ws: ?api.model.WsDetail,
+    live_ws: ?api.model.WorkspaceDetail,
 ) std.mem.Allocator.Error!void {
     const row_count = ws_tree.rowCount();
     const list_rows = try ctx.arena.alloc(vxfw.Text, row_count);
@@ -413,7 +483,7 @@ fn syncListWidgets(
             };
         } else {
             const draft_status = draftStatusForRow(self, ws_tree, r, live_ws);
-            const is_stale = isStaleRow(self, ws_tree, r, live_ws);
+            const is_stale = draft_status == null and isStaleRow(self, ws_tree, r, live_ws);
             const row_style = w.contentRowStyle(sel, draft_status, is_stale);
             const text = if (is_stale)
                 std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{rendered}) catch rendered
@@ -429,37 +499,28 @@ fn syncListWidgets(
     }
     self.workspace.list_scroll_bars.scroll_view.children = .{ .slice = list_widgets };
     self.workspace.list_scroll_bars.estimated_content_height = @intCast(row_count);
-    var cur = @as(usize, @intCast(self.workspace.list_scroll_bars.scroll_view.cursor));
-    if (row_count == 0) {
-        cur = 0;
-    } else if (cur >= row_count) {
-        cur = row_count - 1;
-    }
+    const cur = if (row_count == 0) 0 else @min(self.workspace.list_sel, row_count - 1);
+    self.workspace.list_sel = cur;
     self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(cur);
     clampScrollTop(&self.workspace.list_scroll_bars.scroll_view, row_count);
-    self.workspace.list_sel = cur;
 }
 
 fn isStaleRow(
     self: anytype,
     ws_tree: anytype,
     row: usize,
-    live_ws: ?api.model.WsDetail,
+    live_ws: ?api.model.WorkspaceDetail,
 ) bool {
     _ = ws_tree;
     const selection = self.workspaceFileAtRow(row, live_ws) orelse return false;
-    const hash = switch (selection) {
-        .context => |c| c.hash,
-        .rule => |r| r.hash,
-    } orelse return false;
-    return !self.isLocalContentFresh(selection.draftCategory(), selection.path(), hash);
+    return self.workspaceSelectionHasPullAvailable(selection);
 }
 
 fn draftStatusForRow(
     self: anytype,
     ws_tree: anytype,
     row: usize,
-    live_ws: ?api.model.WsDetail,
+    live_ws: ?api.model.WorkspaceDetail,
 ) ?drafts_mod.DraftStatus {
     _ = ws_tree;
     const selection = self.workspaceFileAtRow(row, live_ws) orelse return null;
@@ -492,17 +553,9 @@ fn writeRuleMetaOnHeader(
 ) !void {
     const updated = try w.formatShortTimestamp(ctx.arena, rule.updated);
     const meta = if (updated.len > 0)
-        try std.fmt.allocPrint(
-            ctx.arena,
-            "rev{d} pr{d} c{d} {s}",
-            .{ rule.revision, rule.open_pr_count, rule.constraint_count, updated },
-        )
+        try std.fmt.allocPrint(ctx.arena, "updated {s}", .{updated})
     else
-        try std.fmt.allocPrint(
-            ctx.arena,
-            "rev{d} pr{d} c{d}",
-            .{ rule.revision, rule.open_pr_count, rule.constraint_count },
-        );
+        "";
     _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
 }
 
@@ -522,11 +575,11 @@ pub fn drawWorkspaceDrawer(
     var body = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = body_w, .height = body_h });
     w.fillSurface(&body, theme.PANEL_SOFT);
 
-    const workspaces: []const api.model.WsData = blk: {
+    const workspaces: []const api.model.WorkspaceData = blk: {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const user = self.api_state.current_user orelse break :blk &.{};
-        const snapshot = try ctx.arena.alloc(api.model.WsData, user.workspaces.len);
+        const snapshot = try ctx.arena.alloc(api.model.WorkspaceData, user.workspaces.len);
         @memcpy(snapshot, user.workspaces);
         break :blk snapshot;
     };
@@ -649,7 +702,7 @@ pub fn handleModuleEvent(
     }
 
     // `n` creates a new context-file draft. Bound at module level
-    // (like Library's `n`) so both workspace focus modes can reach it.
+    // (like Artifact's `n`) so both workspace focus modes can reach it.
     // Rules are org-owned — workspace does not create them, so `n` is
     // gated on the Context tab.
     if (key.matches('n', .{}) and self.workspace.tab == .context) {
@@ -665,10 +718,12 @@ pub fn handleModuleEvent(
     }
 
     if (key.matches('r', .{})) {
-        api.state.invalidateOnDemandCaches(self.api_state);
         self.invalidateRemoteDetailRequests();
         self.resetLocalWorkspaceDetail();
-        self.ensureActiveWorkspaceDetailRequested();
+        if (self.activeWsId()) |ws_id| {
+            self.ensureActiveWorkspaceDetailRequested();
+            refreshWorkspaceDetail(self, ws_id);
+        }
         api.fetch.refetchAllAsync(self.api_state);
         ctx.consumeAndRedraw();
     }
@@ -741,7 +796,7 @@ fn handleContentFocusEvent(
     }
     // Forward scroll keys to the shared content_view so j/k,
     // arrow keys, PgUp/PgDn, g/G drive the content panel identically
-    // to the Library rule-detail pane. vxfw's ScrollView consumes
+    // to the Artifact rule-detail pane. vxfw's ScrollView consumes
     // the ones it knows and ignores the rest, so this is safe as a
     // catch-all.
     try self.review.content_view.handleEvent(ctx, .{ .key_press = key });
@@ -752,26 +807,49 @@ fn handleContentFocusEvent(
 /// respective PendingRequest slots; `syncWsRows` composes them once
 /// both caches are populated via `state.wsDetail`.
 pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
-    if (self.api_state.ws_context_files_cache.shouldDispatch(.{ .value = ws_id }) and
-        !self.api_state.ws_context_files_pending.isInflight())
+    if (self.api_state.workspace_context_cache.shouldDispatch(.{ .value = ws_id }) and
+        !self.api_state.workspace_context_pending.isInflight())
     {
         api.specs.dispatchFromState(
-            api.specs.WsIdParams,
-            api.specs.WsContextFilesPayload,
-            api.specs.workspace_context_files,
-            &self.api_state.ws_context_files_pending,
+            api.specs.WorkspaceIdParams,
+            api.specs.WorkspaceContextPayload,
+            api.specs.workspace_context,
+            &self.api_state.workspace_context_pending,
             self.api_state,
             .{ .ws_id = ws_id },
         );
     }
-    if (self.api_state.ws_manifest_cache.shouldDispatch(.{ .value = ws_id }) and
-        !self.api_state.ws_manifest_pending.isInflight())
+    if (self.api_state.workspace_manifest_cache.shouldDispatch(.{ .value = ws_id }) and
+        !self.api_state.workspace_manifest_pending.isInflight())
     {
         api.specs.dispatchFromState(
-            api.specs.WsIdParams,
-            api.specs.WsManifestPayload,
+            api.specs.WorkspaceIdParams,
+            api.specs.WorkspaceManifestPayload,
             api.specs.workspace_manifest,
-            &self.api_state.ws_manifest_pending,
+            &self.api_state.workspace_manifest_pending,
+            self.api_state,
+            .{ .ws_id = ws_id },
+        );
+    }
+}
+
+pub fn refreshWorkspaceDetail(self: anytype, ws_id: []const u8) void {
+    if (!self.api_state.workspace_context_pending.isInflight()) {
+        api.specs.dispatchFromState(
+            api.specs.WorkspaceIdParams,
+            api.specs.WorkspaceContextPayload,
+            api.specs.workspace_context,
+            &self.api_state.workspace_context_pending,
+            self.api_state,
+            .{ .ws_id = ws_id },
+        );
+    }
+    if (!self.api_state.workspace_manifest_pending.isInflight()) {
+        api.specs.dispatchFromState(
+            api.specs.WorkspaceIdParams,
+            api.specs.WorkspaceManifestPayload,
+            api.specs.workspace_manifest,
+            &self.api_state.workspace_manifest_pending,
             self.api_state,
             .{ .ws_id = ws_id },
         );
@@ -787,11 +865,11 @@ pub fn syncWsRows(self: anytype) void {
     const allocator = self.api_state.allocator();
     const path_capacity = switch (self.workspace.tab) {
         .context => blk: {
-            const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
+            const context_count = if (live_ws) |ws_d| ws_d.workspace_context.len else 0;
             break :blk context_count + self.drafts.create_context_paths.len;
         },
         .rules => blk: {
-            const rule_count = if (live_ws) |ws_d| ws_d.ws_rules.len else 0;
+            const rule_count = if (live_ws) |ws_d| ws_d.workspace_rules.len else 0;
             break :blk rule_count + self.drafts.create_rule_paths.len;
         },
     };
@@ -803,11 +881,11 @@ pub fn syncWsRows(self: anytype) void {
 
     switch (self.workspace.tab) {
         .context => {
-            const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
+            const context_count = if (live_ws) |ws_d| ws_d.workspace_context.len else 0;
             item_count = context_count;
             if (live_ws) |ws_d| {
                 for (0..item_count) |i| {
-                    paths_buf[i] = ws_d.context_files[i].path;
+                    paths_buf[i] = ws_d.workspace_context[i].path;
                     orig_idx[i] = i;
                 }
             }
@@ -823,11 +901,11 @@ pub fn syncWsRows(self: anytype) void {
             }
         },
         .rules => {
-            const rule_count = if (live_ws) |ws_d| ws_d.ws_rules.len else 0;
+            const rule_count = if (live_ws) |ws_d| ws_d.workspace_rules.len else 0;
             if (live_ws) |ws_d| {
                 item_count = rule_count;
                 for (0..item_count) |i| {
-                    const wp = ws_d.ws_rules[i];
+                    const wp = ws_d.workspace_rules[i];
                     paths_buf[i] = self.pathForWorkspaceRule(wp);
                     orig_idx[i] = i;
                 }

@@ -1,6 +1,6 @@
 //! Shared content-row actions for master-detail TUI surfaces.
 //!
-//! Workspace and Library both expose editable content rows backed by the
+//! Workspace and Artifact both expose editable content rows backed by the
 //! same draft/cache model. Keeping their operation keys here prevents the
 //! two tabs from drifting when actions such as pull or diff are added.
 
@@ -10,7 +10,7 @@ const w = @import("../widgets.zig");
 
 pub const Surface = enum {
     workspace,
-    library,
+    artifact,
 };
 
 const workspace_context_shortcuts = [_]w.Shortcut{
@@ -26,7 +26,6 @@ const workspace_context_shortcuts = [_]w.Shortcut{
     .{ .key = "u", .label = "pull" },
     .{ .key = "d", .label = "toggle diff" },
     .{ .key = "D", .label = "discard draft" },
-    .{ .key = "m", .label = "mark ready" },
     .{ .key = "?", .label = "help" },
 };
 
@@ -42,11 +41,10 @@ const workspace_rule_shortcuts = [_]w.Shortcut{
     .{ .key = "u", .label = "pull" },
     .{ .key = "d", .label = "toggle diff" },
     .{ .key = "D", .label = "discard draft" },
-    .{ .key = "m", .label = "mark ready" },
     .{ .key = "?", .label = "help" },
 };
 
-const library_content_shortcuts = [_]w.Shortcut{
+const artifact_content_shortcuts = [_]w.Shortcut{
     .{ .key = "j/k", .label = "move/scroll" },
     .{ .key = "z", .label = "tree" },
     .{ .key = "Enter", .label = "open" },
@@ -58,7 +56,6 @@ const library_content_shortcuts = [_]w.Shortcut{
     .{ .key = "u", .label = "pull" },
     .{ .key = "d", .label = "toggle diff" },
     .{ .key = "D", .label = "discard" },
-    .{ .key = "m", .label = "mark ready" },
     .{ .key = "b", .label = "bundle filter" },
     .{ .key = "?", .label = "help" },
     .{ .key = "q", .label = "quit" },
@@ -68,14 +65,14 @@ pub fn workspaceShortcuts(is_context_tab: bool) []const w.Shortcut {
     return if (is_context_tab) &workspace_context_shortcuts else &workspace_rule_shortcuts;
 }
 
-pub fn libraryContentShortcuts() []const w.Shortcut {
-    return &library_content_shortcuts;
+pub fn artifactContentShortcuts() []const w.Shortcut {
+    return &artifact_content_shortcuts;
 }
 
 pub fn resetHideDiff(self: anytype, surface: Surface) void {
     switch (surface) {
         .workspace => self.workspace.hide_diff = false,
-        .library => self.review.hide_diff = false,
+        .artifact => self.review.hide_diff = false,
     }
 }
 
@@ -115,13 +112,8 @@ pub fn handle(
         }
         switch (surface) {
             .workspace => self.workspace.hide_diff = !self.workspace.hide_diff,
-            .library => self.review.hide_diff = !self.review.hide_diff,
+            .artifact => self.review.hide_diff = !self.review.hide_diff,
         }
-        ctx.consumeAndRedraw();
-        return true;
-    }
-    if (key.matches('m', .{})) {
-        self.toggleSelectedDraftReady();
         ctx.consumeAndRedraw();
         return true;
     }
@@ -133,7 +125,7 @@ pub fn handle(
     if (key.matches('u', .{})) {
         switch (surface) {
             .workspace => self.pullSelectedWorkspaceContent(),
-            .library => self.pullSelectedLibraryContent(),
+            .artifact => self.pullSelectedArtifactContent(),
         }
         ctx.consumeAndRedraw();
         return true;

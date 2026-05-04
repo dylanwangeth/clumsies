@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const collab_api = @import("clumsies_lib").protocol.collab_api;
-const library_api = @import("clumsies_lib").protocol.library_api;
+const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const data = @import("../models/view_types.zig");
 const drafts_reader = @import("../runtime/drafts_reader.zig");
@@ -17,11 +17,11 @@ const request = @import("request.zig");
 /// Composite cache key for endpoints scoped to (workspace, path), used
 /// by workspace context file content. `cache.StringKey` would not fit:
 /// pointer equality on two `[]const u8` fields is wrong.
-pub const WsPathKey = struct {
+pub const WorkspacePathKey = struct {
     ws_id: []const u8,
     path: []const u8,
 
-    pub fn eql(self: WsPathKey, other: WsPathKey) bool {
+    pub fn eql(self: WorkspacePathKey, other: WorkspacePathKey) bool {
         return std.mem.eql(u8, self.ws_id, other.ws_id) and std.mem.eql(u8, self.path, other.path);
     }
 };
@@ -37,17 +37,17 @@ pub const RulePrsPayload = struct {
     prs: []const model.RulePr,
 };
 
-pub const WsContextFilesPayload = struct {
+pub const WorkspaceContextPayload = struct {
     ws_id: []const u8,
-    files: []const model.ContextFileData,
+    files: []const model.WorkspaceContextData,
 };
 
-pub const WsManifestPayload = struct {
+pub const WorkspaceManifestPayload = struct {
     ws_id: []const u8,
-    rules: []const model.WsRuleData,
+    rules: []const model.WorkspaceRuleData,
 };
 
-pub const WsContextContentPayload = struct {
+pub const WorkspaceContextContentPayload = struct {
     ws_id: []const u8,
     path: []const u8,
     body: []const u8,
@@ -95,17 +95,17 @@ pub const ApiState = struct {
     status: ConnectionStatus = .disconnected,
     current_user: ?model.UserData = null,
     directory: ?model.DirectoryData = null,
-    rules: ?[]const model.LibraryRule = null,
+    rules: ?[]const model.ArtifactRule = null,
     bundles: ?[]const model.BundleData = null,
     org_stats: ?model.OrgStats = null,
     local_stats: ?attestation_reader.LocalStats = null,
     drafts: ?[]const DraftEntry = null,
 
-    // Library rule content, keyed by rule path.
-    rule_content_pending: request.PendingRequest(dispatcher.Result(library_api.RuleContentResponse)) = .{},
-    rule_content_cache: cache.CacheSlot(cache.StringKey, library_api.RuleContentResponse) = .{},
+    // Artifact rule content, keyed by rule path.
+    rule_content_pending: request.PendingRequest(dispatcher.Result(artifact_api.RuleContentResponse)) = .{},
+    rule_content_cache: cache.CacheSlot(cache.StringKey, artifact_api.RuleContentResponse) = .{},
 
-    // Library rule PR list. Pending result carries the rule_id the
+    // Artifact rule PR list. Pending result carries the rule_id the
     // request was issued for so the consumer stores under the correct
     // cache key even if the UI's rule selection changed mid-flight.
     rule_prs_pending: request.PendingRequest(dispatcher.Result(RulePrsPayload)) = .{},
@@ -116,16 +116,16 @@ pub const ApiState = struct {
     // Workspace context file content, keyed by (ws_id, path). Payload
     // includes both halves of the key so the consumer routes the body
     // to the exact request that produced it.
-    ws_context_content_pending: request.PendingRequest(dispatcher.Result(WsContextContentPayload)) = .{},
-    ws_context_content_cache: cache.CacheSlot(WsPathKey, []const u8) = .{},
+    workspace_context_content_pending: request.PendingRequest(dispatcher.Result(WorkspaceContextContentPayload)) = .{},
+    workspace_context_content_cache: cache.CacheSlot(WorkspacePathKey, []const u8) = .{},
 
     // Workspace detail (compound): two independent fetches keyed by ws_id,
-    // combined on read via `wsDetail(ws_id)`. Each pending payload carries
+    // combined on read via `workspaceDetail(ws_id)`. Each pending payload carries
     // its ws_id so a workspace switch mid-flight cannot mis-associate.
-    ws_context_files_pending: request.PendingRequest(dispatcher.Result(WsContextFilesPayload)) = .{},
-    ws_context_files_cache: cache.CacheSlot(cache.StringKey, []const model.ContextFileData) = .{},
-    ws_manifest_pending: request.PendingRequest(dispatcher.Result(WsManifestPayload)) = .{},
-    ws_manifest_cache: cache.CacheSlot(cache.StringKey, []const model.WsRuleData) = .{},
+    workspace_context_pending: request.PendingRequest(dispatcher.Result(WorkspaceContextPayload)) = .{},
+    workspace_context_cache: cache.CacheSlot(cache.StringKey, []const model.WorkspaceContextData) = .{},
+    workspace_manifest_pending: request.PendingRequest(dispatcher.Result(WorkspaceManifestPayload)) = .{},
+    workspace_manifest_cache: cache.CacheSlot(cache.StringKey, []const model.WorkspaceRuleData) = .{},
 
     // Pr detail (compound): detail response + comments keyed by pr_id.
     // The detail response carries operations + attestation_summary; the consumer
@@ -215,29 +215,63 @@ pub fn refreshLocalState(api_state: *ApiState) void {
     api_state.drafts = drafts_reader.readAllDrafts(alloc);
 }
 
-pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
+pub const RemoteCacheScope = enum {
+    pr_lifecycle,
+    artifact_detail,
+    workspace_detail,
+    all_on_demand,
+};
+
+pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) void {
+    switch (scope) {
+        .pr_lifecycle => {
+            invalidatePrLifecycle(api_state);
+            resetPrDetailState(api_state);
+        },
+        .artifact_detail => {
+            api_state.rule_content_cache.invalidate();
+            api_state.rule_content_pending.cancel();
+        },
+        .workspace_detail => {
+            invalidateWorkspaceDetail(api_state);
+        },
+        .all_on_demand => {
+            invalidatePrLifecycle(api_state);
+            api_state.rule_content_cache.invalidate();
+            invalidateWorkspaceDetail(api_state);
+            api_state.rule_content_pending.cancel();
+            resetPrDetailState(api_state);
+        },
+    }
+}
+
+fn invalidatePrLifecycle(api_state: *ApiState) void {
     api_state.rule_prs_cache.invalidate();
     api_state.review_prs_cache.invalidate();
-    api_state.rule_content_cache.invalidate();
-    api_state.ws_context_content_cache.invalidate();
-    api_state.ws_context_files_cache.invalidate();
-    api_state.ws_manifest_cache.invalidate();
     api_state.pr_detail_cache.invalidate();
     api_state.pr_comments_cache.invalidate();
 
-    // Cancel in-flight on-demand requests so a worker completing after
-    // invalidation cannot repopulate the cache (with either a fresh
-    // value or a remembered failure) for data the caller explicitly
-    // declared stale.
     api_state.rule_prs_pending.cancel();
     api_state.review_prs_pending.cancel();
-    api_state.rule_content_pending.cancel();
-    api_state.ws_context_content_pending.cancel();
-    api_state.ws_context_files_pending.cancel();
-    api_state.ws_manifest_pending.cancel();
     api_state.pr_detail_pending.cancel();
     api_state.pr_comments_pending.cancel();
+}
 
+fn invalidateWorkspaceDetail(api_state: *ApiState) void {
+    // Workspace manifest/context caches are the TUI's last successful
+    // remote authority snapshot. Refresh must not drop them: pull
+    // availability is computed by comparing that snapshot against the
+    // materialized local manifest, and falling back to local data during
+    // a failed tick would make tree rows appear to rename themselves.
+    api_state.workspace_context_content_cache.invalidate();
+    api_state.workspace_context_cache.clearFailure();
+    api_state.workspace_manifest_cache.clearFailure();
+    api_state.workspace_context_content_pending.cancel();
+    api_state.workspace_context_pending.cancel();
+    api_state.workspace_manifest_pending.cancel();
+}
+
+fn resetPrDetailState(api_state: *ApiState) void {
     api_state.mutex.lock();
     defer api_state.mutex.unlock();
 
@@ -252,16 +286,16 @@ pub fn invalidateOnDemandCaches(api_state: *ApiState) void {
     api_state.pr_detail_op_total = 0;
 }
 
-/// Combine the two independently-fetched halves into a WsDetail view.
+/// Combine the two independently-fetched halves into a WorkspaceDetail view.
 /// Returns null when either half is not yet cached or they are stale
 /// relative to `ws_id`.
-pub fn wsDetail(api_state: *ApiState, ws_id: []const u8) ?model.WsDetail {
-    const files = api_state.ws_context_files_cache.lookup(.{ .value = ws_id }) orelse return null;
-    const rules = api_state.ws_manifest_cache.lookup(.{ .value = ws_id }) orelse return null;
+pub fn workspaceDetail(api_state: *ApiState, ws_id: []const u8) ?model.WorkspaceDetail {
+    const files = api_state.workspace_context_cache.lookup(.{ .value = ws_id }) orelse return null;
+    const rules = api_state.workspace_manifest_cache.lookup(.{ .value = ws_id }) orelse return null;
     return .{
         .ws_id = ws_id,
-        .context_files = files,
-        .ws_rules = rules,
+        .workspace_context = files,
+        .workspace_rules = rules,
     };
 }
 

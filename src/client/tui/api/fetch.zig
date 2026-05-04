@@ -134,9 +134,9 @@ fn fetchAll(
     const rules_list = doFetchParse(
         &client,
         alloc,
-        "/api/org/library/rules",
-        []const model.LibraryRule,
-        parse.parseLibraryRules,
+        "/api/org/artifact/rules",
+        []const model.ArtifactRule,
+        parse.parseArtifactRules,
     );
     const org_stats = doFetchParse(
         &client,
@@ -154,10 +154,10 @@ fn fetchAll(
     );
 
     api_state.mutex.lock();
-    api_state.directory = directory;
-    api_state.rules = rules_list;
-    api_state.bundles = bundles;
-    api_state.org_stats = org_stats;
+    if (directory) |value| api_state.directory = value;
+    if (rules_list) |value| api_state.rules = value;
+    if (bundles) |value| api_state.bundles = value;
+    if (org_stats) |value| api_state.org_stats = value;
     api_state.mutex.unlock();
 }
 

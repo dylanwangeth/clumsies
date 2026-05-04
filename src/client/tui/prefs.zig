@@ -67,7 +67,7 @@ pub fn saveLastWorkspaceId(allocator: std.mem.Allocator, ws_id: []const u8) !voi
 }
 
 pub fn selectWorkspaceIndex(
-    workspaces: []const model.WsData,
+    workspaces: []const model.WorkspaceData,
     preferred_id: ?[]const u8,
 ) usize {
     if (preferred_id) |id| {
@@ -89,7 +89,7 @@ fn prefsPathFromBase(allocator: std.mem.Allocator, base: []const u8) ![]const u8
 }
 
 test "selectWorkspaceIndex matches saved workspace id" {
-    const workspaces = [_]model.WsData{
+    const workspaces = [_]model.WorkspaceData{
         .{ .ws_id = "ws-1", .name = "One" },
         .{ .ws_id = "ws-2", .name = "Two" },
     };
@@ -97,7 +97,7 @@ test "selectWorkspaceIndex matches saved workspace id" {
 }
 
 test "selectWorkspaceIndex falls back to first when saved workspace is stale" {
-    const workspaces = [_]model.WsData{
+    const workspaces = [_]model.WorkspaceData{
         .{ .ws_id = "ws-1", .name = "One" },
         .{ .ws_id = "ws-2", .name = "Two" },
     };
