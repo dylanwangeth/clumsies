@@ -446,8 +446,7 @@ pub fn discoverSearchable(
             if (kf != kind) continue;
         }
 
-        // Use local_temp_id if available, otherwise fall back to draft_path as a stable identifier.
-        const effective_id = de.local_temp_id orelse de.draft_path;
+        const effective_id = de.local_temp_id orelse continue;
 
         const group_slice = groupFromPath(de.draft_path);
         if (group_filter) |gf| {
@@ -617,10 +616,7 @@ pub fn loadRules(
                 .draft_base_hash = draft_base,
             });
         } else {
-            // Fallback: try loading a create-draft by local_temp_id or draft_path
-            const draft_entry = draft_index.findByLocalTempId(id) orelse
-                draft_index.findCreateByDraftPath(id) orelse
-                return error.UnknownRuleId;
+            const draft_entry = draft_index.findByLocalTempId(id) orelse return error.UnknownRuleId;
             if (draft_entry.operation != .create) return error.UnknownRuleId;
 
             switch (draft_entry.category) {

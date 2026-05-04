@@ -229,8 +229,8 @@ pub fn drawDetail(
     }
 
     const title: []const u8 = switch (self.workspace.tab) {
-        .context => if (args.dir_sel != null) "Directory" else if (args.context_sel_id) |id| id else if (args.context_sel_path != null) "(new)" else "No context selected",
-        .rules => if (args.dir_sel != null) "Directory" else if (args.rule_sel_id) |id| id else if (args.rule_sel_path != null) "(new)" else "No rule selected",
+        .context => if (args.dir_sel != null) "Directory" else if (args.context_sel_id) |id| id else if (args.context_sel_path) |path| draftIdentity(self, .context, path) else "No context selected",
+        .rules => if (args.dir_sel != null) "Directory" else if (args.rule_sel_id) |id| id else if (args.rule_sel_path) |path| draftIdentity(self, .rule, path) else "No rule selected",
     };
     w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
     // Reserve min_col past the title (plus one space) so the
@@ -241,8 +241,6 @@ pub fn drawDetail(
         w.writeText(&surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
     } else if (args.dir_sel == null) if (args.live_ws) |ws_d| {
         try writeWsMetaOnHeader(&surface, ctx, meta_min_col, self, ws_d, args);
-    } else if (args.context_sel_path != null or args.rule_sel_path != null) {
-        _ = w.writeHeaderRightIfFits(&surface, ctx, 0, meta_min_col, "(new)", theme.fg(theme.ACCENT));
     };
 
     const kv_row: u16 = 2;
@@ -275,9 +273,7 @@ pub fn drawDetail(
 /// Render a one-line metadata badge at the top-right of the header,
 /// mirroring Library's `rev{N} pr{N} c{N} {updated}` convention. For
 /// context files we render `hash7 author updated`; for workspace
-/// rules the hash is all we have from the manifest; for virtual
-/// (create-op) drafts we render an accent-colored `(new)` banner so
-/// the user knows the file is unsubmitted.
+/// rules the hash is all we have from the manifest.
 fn writeWsMetaOnHeader(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
@@ -297,9 +293,6 @@ fn writeWsMetaOnHeader(
                 else
                     "";
                 _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
-            } else if (args.context_sel_path != null) {
-                // Virtual row: local create-op draft, no hub metadata.
-                _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
             }
         },
         .rules => {
@@ -310,6 +303,10 @@ fn writeWsMetaOnHeader(
             }
         },
     }
+}
+
+fn draftIdentity(self: anytype, category: drafts_mod.DraftCategory, path: []const u8) []const u8 {
+    return self.draftLocalIdFor(category, path).?;
 }
 
 fn drawDirSelected(

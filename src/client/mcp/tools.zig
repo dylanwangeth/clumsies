@@ -1417,7 +1417,7 @@ test "artifact update overwrites existing context modify draft" {
     try testing.expectEqualStrings("second", entry.description.?);
 }
 
-test "context propose delete discards create-only draft by path id" {
+test "context propose delete discards create-only draft by local temp id" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1432,12 +1432,21 @@ test "context propose delete discards create-only draft by path id" {
         .description = "bad context",
     }, "draft body");
 
+    var before_index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer before_index.deinit(testing.allocator);
+    const local_temp_id = before_index.findCreateByDraftPath(draft_path).?.local_temp_id.?;
+
     const args_json =
-        \\{
-        \\  "context_id": "projects/eth-p2p-z/project-context.md",
-        \\  "description": "discard bad draft"
-        \\}
-    ;
+        try std.fmt.allocPrint(
+            testing.allocator,
+            \\{{
+            \\  "context_id": "{s}",
+            \\  "description": "discard bad draft"
+            \\}}
+        ,
+            .{local_temp_id},
+        );
+    defer testing.allocator.free(args_json);
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
     defer parsed.deinit();
 
