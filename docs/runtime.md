@@ -197,7 +197,7 @@ This explains several behaviors that would otherwise look arbitrary.
 
 `clumsies sync` can skip unchanged content because it compares manifest entries to the files already present in cache. MCP can serve quickly because it reads local files from cache rather than re-fetching from Hub for every tool call. Agent bootstrap can be deterministic because `META_PROMPT.md` comes from the workspace cache path, not from a random repo file somebody happened to create.
 
-`META_PROMPT.md` also deserves to be read as a first-class runtime artifact. It is the bootstrap frame that tells the agent to discover constraints through `memory.discover`, load them through `memory.load`, and declare actual usage through `memory.refer`. The full current workspace copy is documented on the dedicated [META_PROMPT](/meta-prompt) page because it is stable enough to matter, but specific enough that it should not be duplicated across every runtime section.
+`META_PROMPT.md` also deserves to be read as a first-class runtime artifact. It is the bootstrap frame that tells the agent to discover constraints through `memdisc`, load them through `memload`, and declare actual usage through `memref`. The full current workspace copy is documented on the dedicated [META_PROMPT](/meta-prompt) page because it is stable enough to matter, but specific enough that it should not be duplicated across every runtime section.
 
 ## How sync actually uses manifest and cache
 
@@ -223,14 +223,14 @@ The current runtime path looks like this:
 4. refer to the constraints actually applied
 5. submit or reject the turn result
 
-The current implementation exposes the `memory.*` tool family:
+The current implementation exposes the memory runtime tool surface:
 
-- `memory.setup`
-- `memory.discover`
-- `memory.load`
-- `memory.refer`
-- `memory.submit`
-- `memory.reject`
+- `memsetup`
+- `memdisc`
+- `memload`
+- `memref`
+- `agentreport`
+- `agentrejected`
 
 That distinction is exactly the sort of detail users need when reading docs and code side by side.
 

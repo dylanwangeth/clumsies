@@ -27,12 +27,12 @@ So the practical order is:
 
 In the current implementation, the MCP tool surface is:
 
-- `memory.setup`
-- `memory.discover`
-- `memory.load`
-- `memory.refer`
-- `memory.submit`
-- `memory.reject`
+- `memsetup`
+- `memdisc`
+- `memload`
+- `memref`
+- `agentreport`
+- `agentrejected`
 - `artifact`
 
 That path loads rules and context, records applied constraints, stages
@@ -53,7 +53,7 @@ That path is why MCP should be described as a local runtime surface rather than 
 One bootstrap detail sits between step 2 and step 3: the agent imports
 `META_PROMPT.md` from the cache. That file tells the runtime to discover
 first, load intentionally, and declare real constraint usage through
-`memory.refer`. The host starts an MCP server and a workspace-scoped
+`memref`. The host starts an MCP server and a workspace-scoped
 bootstrap contract.
 
 ## What state the runtime depends on

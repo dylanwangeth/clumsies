@@ -18,9 +18,9 @@ That path matters because the file is part of the workspace cache, not a random 
 
 The current file establishes four ideas.
 
-First, rules and workflows are not supposed to be discovered by crawling local files. The agent is supposed to use `memory.discover` and `memory.load`.
+First, rules and workflows are not supposed to be discovered by crawling local files. The agent is supposed to use `memdisc` and `memload`.
 
-Second, applying a constraint is not silent. The agent is supposed to call `memory.refer` when a loaded constraint actually shaped the turn.
+Second, applying a constraint is not silent. The agent is supposed to call `memref` when a loaded constraint actually shaped the turn.
 
 Third, the adapter owns part of the protocol lifecycle. Session bootstrap and stop-time reminders are injected by the installed host adapter rather than being left to the model to remember ad hoc.
 
@@ -41,19 +41,19 @@ but take priority when they conflict.
 
 Follow this loop every turn:
 
-1. **Discover.** Call `memory.discover()` to list all available rules,
+1. **Discover.** Call `memdisc()` to list all available rules,
    workflows, and context. Read their descriptions to decide what is relevant.
-2. **Load.** Call `memory.load()` with the ids you need and a `knownHashes`
+2. **Load.** Call `memload()` with the ids you need and a `knownHashes`
    entry for every id. Use a remembered hash when available, otherwise pass an
    empty string. Loaded content includes parsed rule ids.
 3. **Apply.** Follow loaded rules in your work. Rules override your defaults.
-4. **Refer.** Call `memory.refer()` for each rule you applied. This is
+4. **Refer.** Call `memref()` for each rule you applied. This is
    not optional — it is how the system measures rule effectiveness.
 5. **Refine.** When the user asks you to create, update, rename,
-   delete, or discard draft changes for rules, context, or MPF.
-   Use the `draft` tool with a `resource` value and exactly one
+   delete, or discard local changes for rule, context, or MPF artifacts.
+   Use the `artifact` tool with a `resource` value and exactly one
    tagged `op` object.
-6. **Submit.** Call `memory.submit()` with a short summary of your work before
+6. **Submit.** Call `agentreport()` with a short summary of your work before
    finishing every response. The stop hook will block if you forget.
 
 ## Resource types
@@ -66,7 +66,7 @@ Follow this loop every turn:
 
 Categories are organizational only (e.g. `coding/`, `zig/`, `writing/`).
 
-Filter with `memory.discover({kind: "rule"})` or `memory.discover({group: "zig"})`.
+Filter with `memdisc({kind: "rule"})` or `memdisc({group: "zig"})`.
 
 ## Priority
 

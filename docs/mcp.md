@@ -12,8 +12,8 @@ The current implementation exposes these MCP tools:
 
 | Tool family | Tools |
 | --- | --- |
-| session and attestation | `memory.setup`, `memory.discover`, `memory.load`, `memory.refer`, `memory.submit`, `memory.reject` |
-| draft mutations | `draft` |
+| session and attestation | `memsetup`, `memdisc`, `memload`, `memref`, `agentreport`, `agentrejected` |
+| artifact mutations | `artifact` |
 
 This is the real protocol surface in the running code. The server test suite explicitly asserts that `memory.begin`, `memory.complete`, `memory.startup`, `memory.list`, and `memory.activate` are not part of the public tool list.
 
@@ -21,13 +21,13 @@ This is the real protocol surface in the running code. The server test suite exp
 
 The stable mental model now matches the current `META_PROMPT` very closely:
 
-1. bootstrap the session with `memory.setup`
-2. discover relevant material with `memory.discover`
-3. load only the content the task actually needs with `memory.load`
+1. bootstrap the session with `memsetup`
+2. discover relevant material with `memdisc`
+3. load only the content the task actually needs with `memload`
 4. apply the loaded rules in the work
-5. declare applied constraints with `memory.refer`
-6. use `draft` when the task is to refine rules, context, or MPF
-7. close the turn with `memory.submit` or `memory.reject`
+5. declare applied constraints with `memref`
+6. use `artifact` when the task is to refine rules, context, or MPF
+7. close the turn with `agentreport` or `agentrejected`
 
 That cycle is the runtime expression of the whole product:
 
@@ -59,9 +59,9 @@ Error results use the same outer shape, but set `isError` to `true` and place an
 
 This detail matters because the protocol is not only human-readable. Agents are expected to consume the machine-readable `structuredContent` payload directly.
 
-## `memory.setup`
+## `memsetup`
 
-`memory.setup` bootstraps the session. It returns the current workspace identity, the current session ID, and the current `META_PROMPT` frame.
+`memsetup` bootstraps the session. It returns the current workspace identity, the current session ID, and the current `META_PROMPT` frame.
 
 ### Input
 
@@ -97,9 +97,9 @@ In the current runtime, that meta-prompt frame comes from the workspace-scoped [
 
 The current bootstrap content is intentionally simpler than earlier revisions. It now frames the protocol as `discover -> load -> apply -> refer -> refine -> submit`, and its priority model is `loaded rules > this meta-prompt > your defaults`.
 
-## `memory.discover`
+## `memdisc`
 
-`memory.discover` discovers available rules, workflows, and context files without loading their full content.
+`memdisc` discovers available rules, workflows, and context files without loading their full content.
 
 ### Input
 
@@ -143,9 +143,9 @@ Each item can include:
 Discover is inventory, not content delivery. Its job is to let the agent
 choose what is relevant before spending context window on full content.
 
-## `memory.load`
+## `memload`
 
-`memory.load` resolves full content for the selected IDs. This is where protocol flow stops being inventory and becomes working task context.
+`memload` resolves full content for the selected IDs. This is where protocol flow stops being inventory and becomes working task context.
 
 ### Input
 
@@ -204,7 +204,7 @@ For rules and workflows, the returned content includes the refer reminder footer
 Delta loading only suppresses repeated content text. For rule and workflow
 items, `constraints` are still returned when `changed` is `false` and
 `content` is `null`, because agents need those stable entries to call
-`memory.refer` without guessing from markdown.
+`memref` without guessing from markdown.
 
 In this protocol, a constraint is a referable semantic markdown section in a
 rule or workflow file. It is either a whole H2 section, or one list item inside
@@ -212,11 +212,11 @@ an H2 section. A whole H2 section uses the H2 title as its stable returned
 `id`. A list item uses `H2 title/ordinal`, such as `Steps/1` and `Steps/2`.
 The `name` field is the H2 title used for display/grouping, and `text` is the
 H2 body or list item content. Agents must copy the returned `id` exactly into
-the `constraintId` wire field in `memory.refer`; they must not invent IDs.
+the `constraintId` wire field in `memref`; they must not invent IDs.
 
-## `memory.refer`
+## `memref`
 
-`memory.refer` is the strongest usage signal in the model. It is the point where the agent claims that one of the `constraints` entries returned by `memory.load` for a rule or workflow actually shaped the turn.
+`memref` is the strongest usage signal in the model. It is the point where the agent claims that one of the `constraints` entries returned by `memload` for a rule or workflow actually shaped the turn.
 
 Context files are reference material, not refer targets. A context ID supplied as `ruleId` is rejected.
 
@@ -248,7 +248,7 @@ Each ref object can contain:
 
 ### Retryable errors
 
-`memory.refer` validation errors are structured so agents can retry instead
+`memref` validation errors are structured so agents can retry instead
 of treating the text message as opaque. Unknown rule/workflow IDs tell the
 agent to rediscover and reload. Unknown constraint IDs include the valid
 constraint candidates for that rule/workflow when available.
@@ -257,7 +257,7 @@ Example invalid constraint response:
 
 ```json
 {
-  "error": "memory.refer constraintId 'Step' is not valid for ruleId 'p-...'; retry with one of: Steps",
+  "error": "memref constraintId 'Step' is not valid for ruleId 'p-...'; retry with one of: Steps",
   "code": "unknown_constraint",
   "retryable": true,
   "retryAction": "retry_with_valid_constraint",
@@ -273,9 +273,9 @@ Example invalid constraint response:
 
 Agents should use `validConstraints[].id` exactly.
 
-## `memory.submit`
+## `agentreport`
 
-`memory.submit` closes a successful turn by recording the agent summary.
+`agentreport` closes a successful turn by recording the agent summary.
 
 ### Input
 
@@ -299,9 +299,9 @@ Agents should use `validConstraints[].id` exactly.
 
 In the current implementation, this records an `.agent_report` attestation event.
 
-## `memory.reject`
+## `agentrejected`
 
-`memory.reject` closes an unsatisfactory turn when the output did not follow loaded constraints.
+`agentrejected` closes an unsatisfactory turn when the output did not follow loaded constraints.
 
 ### Input
 
@@ -421,22 +421,22 @@ Several validation and runtime errors are already stable enough to document:
 | --- | --- |
 | invalid argument types or missing required fields | `isError: true` with an error message |
 | unknown tool name | `Unknown tool` |
-| `memory.load` receives an unknown rule ID | `Unknown rule id` |
-| `memory.refer` receives an unknown rule/workflow ID | structured `code: "unknown_rule_or_workflow"`, `retryable: true`, `retryAction: "rediscover_and_reload"` |
-| `memory.refer` receives an invalid constraint ID | structured `code: "unknown_constraint"`, `retryable: true`, `retryAction: "retry_with_valid_constraint"`, optional `validConstraints` |
-| draft path is unsafe | `unsafe path` |
-| draft target is missing | `file not found in cache` |
+| `memload` receives an unknown rule ID | `Unknown rule id` |
+| `memref` receives an unknown rule/workflow ID | structured `code: "unknown_rule_or_workflow"`, `retryable: true`, `retryAction: "rediscover_and_reload"` |
+| `memref` receives an invalid constraint ID | structured `code: "unknown_constraint"`, `retryable: true`, `retryAction: "retry_with_valid_constraint"`, optional `validConstraints` |
+| artifact path is unsafe | `unsafe path` |
+| artifact target is missing | `file not found in cache` |
 | create collides with an existing draft | `draft already exists` |
 
-For `memory.submit`, validation is slightly stricter than the schema summary alone suggests. `summary` is required, must be a string, and must not be empty.
+For `agentreport`, validation is slightly stricter than the schema summary alone suggests. `summary` is required, must be a string, and must not be empty.
 
 ## MCP and attestation
 
 The protocol is tightly coupled to attestation, but not in a noisy way.
 
 Each meaningful runtime action records structured local evidence.
-`memory.discover`, `memory.load`, `memory.refer`, `memory.submit`,
-`memory.reject`, and `draft` operations generate attestation events that
+`memdisc`, `memload`, `memref`, `agentreport`,
+`agentrejected`, and `artifact` operations generate attestation events that
 later feed Hub-side aggregation.
 
 This is one reason clumsies is different from plain prompt storage. The protocol is not there only to serve content. It is there to make rule use and content-change proposals legible.
