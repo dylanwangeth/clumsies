@@ -2544,6 +2544,9 @@ pub const Shell = struct {
         self.drafts.by_rule_path = .{};
         self.drafts.by_context_path = .{};
         self.drafts.by_meta_prompt_path = .{};
+        self.drafts.by_rule_local_id = .{};
+        self.drafts.by_context_local_id = .{};
+        self.drafts.by_meta_prompt_local_id = .{};
         // drafts_create_*_paths are handed to the file tree, which
         // stores them in its `expanded` StringHashMap and `dir_paths`
         // array without duping. Both the hashmap key and the dir
@@ -2598,8 +2601,17 @@ pub const Shell = struct {
                 .meta_prompt => &self.drafts.by_meta_prompt_path,
             };
             target_map.put(arena, key, entry.status) catch {};
-
             if (entry.operation == .create and entry.category != .meta_prompt) {
+                const local_id = entry.local_temp_id orelse continue;
+                const local_key = arena.dupe(u8, key_src) catch continue;
+                const local_value = arena.dupe(u8, local_id) catch continue;
+                const local_map = switch (entry.category) {
+                    .rule => &self.drafts.by_rule_local_id,
+                    .context => &self.drafts.by_context_local_id,
+                    .meta_prompt => unreachable,
+                };
+                local_map.put(arena, local_key, local_value) catch {};
+
                 // Long-lived dup — see the note at the top of this
                 // function. The tree borrows these slices beyond a
                 // single refresh so drafts_arena is unsafe.
@@ -2662,6 +2674,18 @@ pub const Shell = struct {
             .rule => self.drafts.by_rule_path.get(path),
             .context => self.drafts.by_context_path.get(path),
             .meta_prompt => self.drafts.by_meta_prompt_path.get(path),
+        };
+    }
+
+    pub fn draftLocalIdFor(
+        self: *const Shell,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    ) ?[]const u8 {
+        return switch (category) {
+            .rule => self.drafts.by_rule_local_id.get(path),
+            .context => self.drafts.by_context_local_id.get(path),
+            .meta_prompt => self.drafts.by_meta_prompt_local_id.get(path),
         };
     }
 

@@ -8,6 +8,7 @@ const theme = @import("../../theme.zig");
 const w = @import("../../widgets.zig");
 const api = @import("../../api.zig");
 const data = @import("../../models/view_types.zig");
+const drafts_mod = @import("../../../drafts.zig");
 const diff_viewer = @import("../../widgets/diff_viewer.zig");
 
 const RuleDetailLayout = struct {
@@ -308,7 +309,8 @@ fn fillRuleDetailSurface(
 ) std.mem.Allocator.Error!void {
     switch (body) {
         .content => |content_surface| {
-            const title = self.lookupRuleId(rule.path) orelse "(new)";
+            const category = self.libraryCategoryForPath(rule.path);
+            const title = self.lookupRuleId(rule.path) orelse draftIdentity(self, category, rule.path);
             w.writeText(surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
             const meta_min_col: u16 = @intCast(2 + ctx.stringWidth(title) + 2);
             if (!self.review.hide_diff and selectedLibraryRuleHasDraft(self)) {
@@ -355,13 +357,10 @@ fn writeRuleMetaOnPanelChrome(
     min_col: u16,
     rule: *const data.RuleEntry,
 ) std.mem.Allocator.Error!void {
-    // Virtual row (local create-op draft not yet submitted) has
-    // zero revision / prs / constraints / updated. Rendering
-    // `rev0 pr0 c0` would be technically accurate but misleading
-    // beside a file that is genuinely new. Show `(new)` instead,
-    // mirroring the workspace context panel convention.
+    // Virtual row (local create-op draft not yet submitted) has no
+    // hub metadata yet. Its local identity is already shown in the
+    // title, so leave the right side empty.
     if (rule.revision == 0 and rule.content_hash.len == 0 and rule.updated.len == 0) {
-        _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, "(new)", theme.fg(theme.ACCENT));
         return;
     }
 
@@ -370,6 +369,10 @@ fn writeRuleMetaOnPanelChrome(
 
     const compact = try formatRuleMeta(ctx.arena, rule, false);
     _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, compact, theme.fg(theme.MUTED));
+}
+
+fn draftIdentity(self: anytype, category: drafts_mod.DraftCategory, path: []const u8) []const u8 {
+    return self.draftLocalIdFor(category, path).?;
 }
 
 fn formatRuleMeta(

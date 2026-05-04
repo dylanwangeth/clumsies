@@ -254,6 +254,31 @@ pub const CreateDraftParams = struct {
     description: ?[]const u8 = null,
 };
 
+pub fn createDraftLocalTempId(
+    allocator: std.mem.Allocator,
+    category: DraftCategory,
+    draft_path: []const u8,
+) ![]const u8 {
+    const seed = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ category.toString(), draft_path });
+    defer allocator.free(seed);
+
+    const hash = util_hash.contentHash(seed);
+    const digest = hash["sha256:".len..];
+    return std.fmt.allocPrint(
+        allocator,
+        "tmp-{s}-{s}",
+        .{ localTempIdPrefix(category), digest[0..12] },
+    );
+}
+
+fn localTempIdPrefix(category: DraftCategory) []const u8 {
+    return switch (category) {
+        .rule => "rule",
+        .context => "context",
+        .meta_prompt => "mpf",
+    };
+}
+
 /// Create a new draft entry and write its initial content file. Fails
 /// if a draft for the same (category, draft_path) already exists —
 /// callers should use `saveDraftContent` to update an existing draft.
@@ -281,11 +306,17 @@ pub fn createDraft(
         try writeDraftFileAbs(allocator, ws_dir, params.category, params.draft_path, initial_content);
     }
 
+    const arena = index.arena_state.allocator();
+    const local_temp_id = params.local_temp_id orelse if (params.operation == .create)
+        try createDraftLocalTempId(arena, params.category, params.draft_path)
+    else
+        null;
+
     const new_entry = DraftEntry{
         .category = params.category,
         .rule_id = params.rule_id,
         .context_id = params.context_id,
-        .local_temp_id = params.local_temp_id,
+        .local_temp_id = local_temp_id,
         .current_path = params.current_path,
         .draft_path = params.draft_path,
         .operation = params.operation,
@@ -294,7 +325,7 @@ pub fn createDraft(
         .description = params.description,
     };
 
-    try index.entries.append(index.arena_state.allocator(), new_entry);
+    try index.entries.append(arena, new_entry);
     try writeIndexAtomic(allocator, ws_dir, index.entries.items);
 }
 
@@ -398,9 +429,8 @@ pub fn discardDraftById(
 }
 
 /// Discard a create-only draft addressed by the identity exposed through
-/// discovery. Create drafts use `local_temp_id` when available and
-/// otherwise fall back to `draft_path`, while `discardDraft` itself is
-/// intentionally keyed by `draft_path`.
+/// discovery. Create drafts must have `local_temp_id`; `discardDraft`
+/// itself remains intentionally keyed by `draft_path`.
 pub fn discardCreateDraftById(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
@@ -410,9 +440,7 @@ pub fn discardCreateDraftById(
     var index = try loadIndex(allocator, ws_dir);
     defer index.deinit(allocator);
 
-    const entry = index.findByLocalTempId(id) orelse
-        index.findCreateByDraftPath(id) orelse
-        return null;
+    const entry = index.findByLocalTempId(id) orelse return null;
     if (entry.category != category or entry.operation != .create) return null;
 
     const draft_path = try allocator.dupe(u8, entry.draft_path);
@@ -784,6 +812,27 @@ test "findByLocalTempId: returns entry matching temp_id" {
     try testing.expect(index.findByLocalTempId("nonexistent") == null);
 }
 
+test "createDraft: generates local temp id for create operation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "research/NEW.md",
+    }, "# NEW\n");
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+
+    const entry = index.findCreateByDraftPath("research/NEW.md").?;
+    try testing.expect(entry.local_temp_id != null);
+    try testing.expect(std.mem.startsWith(u8, entry.local_temp_id.?, "tmp-context-"));
+}
+
 test "findCreateByDraftPath: only matches create operation" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1031,7 +1080,7 @@ test "discardCreateDraftById: accepts local temp id and returns draft path" {
     try testing.expect(index.findByLocalTempId("tmp-context-1") == null);
 }
 
-test "discardCreateDraftById: accepts draft path fallback" {
+test "discardCreateDraftById: rejects draft path identity" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1045,12 +1094,11 @@ test "discardCreateDraftById: accepts draft path fallback" {
         .draft_path = path,
     }, "draft body");
 
-    const draft_path = try discardCreateDraftById(testing.allocator, root, .rule, path) orelse
-        return error.TestExpectedEqual;
-    defer testing.allocator.free(draft_path);
+    try testing.expect(try discardCreateDraftById(testing.allocator, root, .rule, path) == null);
 
-    try testing.expectEqualStrings(path, draft_path);
-    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .rule, path));
+    const content = try readDraftFile(testing.allocator, root, .rule, path);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("draft body", content);
 }
 
 test "discardCreateDraftById: ignores non-create drafts" {
