@@ -167,7 +167,7 @@ fn renderSkillContent(
             \\  short-description: Follow {s}
             \\---
             \\
-            \\Call the `memory.load` MCP tool with ids: ["{s}"] and
+            \\Call the `memload` MCP tool with ids: ["{s}"] and
             \\knownHashes: {{"{s}": ""}}.
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
@@ -183,7 +183,7 @@ fn renderSkillContent(
             \\argument-hint: "[task description]"
             \\user-invocable: true
             \\---
-            \\Call the `memory.load` MCP tool with ids: ["{s}"] and
+            \\Call the `memload` MCP tool with ids: ["{s}"] and
             \\knownHashes: {{"{s}": ""}}
             \\
             \\$ARGUMENTS
@@ -197,7 +197,7 @@ fn renderSkillContent(
             \\description: Run {s} workflow
             \\---
             \\
-            \\Call the `memory.load` MCP tool with ids: ["{s}"] and
+            \\Call the `memload` MCP tool with ids: ["{s}"] and
             \\knownHashes: {{"{s}": ""}}.
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
@@ -232,7 +232,7 @@ test "skillAlreadyInstalled detects existing absolute skill paths" {
     try std.testing.expect(!skillAlreadyInstalled("/tmp/clumsies-skill-does-not-exist"));
 }
 
-test "renderSkillContent uses stable rule ids for memory.load" {
+test "renderSkillContent uses stable rule ids for memload" {
     const content = try renderSkillContent(std.testing.allocator, .codex, "gen-commit-msg", "GEN_COMMIT_MSG.md", "p-commit");
     defer std.testing.allocator.free(content);
 

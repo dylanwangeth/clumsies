@@ -5,23 +5,23 @@ codex_hooks = true
 command = "clumsies"
 args = ["mcp", "serve"]
 
-[mcp_servers.clumsies.tools."memory.setup"]
+[mcp_servers.clumsies.tools."memsetup"]
 approval_mode = "approve"
 
-[mcp_servers.clumsies.tools."memory.discover"]
+[mcp_servers.clumsies.tools."memdisc"]
 approval_mode = "approve"
 
-[mcp_servers.clumsies.tools."memory.load"]
+[mcp_servers.clumsies.tools."memload"]
 approval_mode = "approve"
 
-[mcp_servers.clumsies.tools."memory.refer"]
+[mcp_servers.clumsies.tools."memref"]
 approval_mode = "approve"
 
-[mcp_servers.clumsies.tools."memory.submit"]
+[mcp_servers.clumsies.tools."agentreport"]
 approval_mode = "approve"
 
-[mcp_servers.clumsies.tools."memory.reject"]
+[mcp_servers.clumsies.tools."agentrejected"]
 approval_mode = "approve"
 
-[mcp_servers.clumsies.tools."draft"]
+[mcp_servers.clumsies.tools."artifact"]
 approval_mode = "approve"

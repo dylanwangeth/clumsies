@@ -3,7 +3,7 @@ name: setup
 description: Bootstrap the clumsies protocol and re-import META_PROMPT
 user-invocable: true
 ---
-Call the `memory.setup` MCP tool once for the current host session to bootstrap
+Call the `memsetup` MCP tool once for the current host session to bootstrap
 the protocol. Pass the exact host session id and an explicit META_PROMPT hash
 entry:
 

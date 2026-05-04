@@ -385,15 +385,15 @@ test "renderSessionStartHook does not import workflow skills" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "WORKFLOW_SKILLS_DIR") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "_agent setup") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "hookSpecificOutput") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "memory.setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "memsetup") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "session_id") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "knownHashes") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "META_PROMPT.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Use exactly this session_id value") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "During host agent startup") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Call memory.setup only once for this host session") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Call memsetup only once for this host session") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "unless the user explicitly invokes the setup skill") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Pass that exact value as the memory.setup session_id argument") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Pass that exact value as the memsetup session_id argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Do not invent, shorten, replace, or default the session_id") != null);
 }
 

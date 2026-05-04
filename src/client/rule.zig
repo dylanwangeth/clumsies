@@ -294,7 +294,7 @@ fn matchesQuery(haystack: []const u8, query: []const u8) bool {
     return false;
 }
 
-/// Discover rules and context available for memory.discover. Iterates the
+/// Discover rules and context available for memdisc. Iterates the
 /// local manifest, classifies each entry by path prefix or category, and
 /// applies optional kind/group filters. Reserved paths (META_PROMPT.md) are
 /// excluded. Context entries have kind = .context and group derived from
