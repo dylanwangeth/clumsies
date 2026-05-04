@@ -101,6 +101,18 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
             self.state = .empty;
         }
 
+        /// Clear a remembered failure while preserving an ok value.
+        /// Refresh flows that keep the last successful snapshot use this
+        /// to allow a retry without dropping the drawable data.
+        pub fn clearFailure(self: *Self) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            switch (self.state) {
+                .failed => self.state = .empty,
+                else => {},
+            }
+        }
+
         /// Whether the slot currently holds any entry — value or
         /// failure.
         pub fn isPopulated(self: *Self) bool {
@@ -221,4 +233,16 @@ test "CacheSlot store clears a prior failure for the same key" {
     try std.testing.expect(!cache.isFailed(1));
     try std.testing.expectEqual(@as(u32, 100), cache.lookup(1).?);
     try std.testing.expect(!cache.shouldDispatch(1));
+}
+
+test "CacheSlot clearFailure preserves ok values" {
+    var cache: CacheSlot(u32, u32) = .{};
+    cache.store(1, 100);
+    cache.clearFailure();
+    try std.testing.expectEqual(@as(u32, 100), cache.lookup(1).?);
+
+    cache.markFailed(1);
+    cache.clearFailure();
+    try std.testing.expect(cache.lookup(1) == null);
+    try std.testing.expect(cache.shouldDispatch(1));
 }

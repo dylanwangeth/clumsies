@@ -1,5 +1,5 @@
 //! Draft feature state. Tracks local rule/context draft metadata and PR
-//! composer form state shared by workspace and library interactions.
+//! composer form state shared by workspace and artifact interactions.
 
 const std = @import("std");
 const drafts_mod = @import("../../../drafts.zig");
@@ -12,18 +12,25 @@ pub const DraftTarget = struct {
     context_id: ?[]const u8 = null,
 };
 
+pub const PendingPrAction = struct {
+    target: DraftTarget,
+    status_on_success: drafts_mod.DraftStatus,
+};
+
 pub const State = struct {
     arena: std.heap.ArenaAllocator,
     by_rule_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
     by_context_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
     by_meta_prompt_path: std.StringHashMapUnmanaged(drafts_mod.DraftStatus) = .{},
+    by_rule_draft_path: std.StringHashMapUnmanaged([]const u8) = .{},
+    by_context_draft_path: std.StringHashMapUnmanaged([]const u8) = .{},
+    by_meta_prompt_draft_path: std.StringHashMapUnmanaged([]const u8) = .{},
     by_rule_local_id: std.StringHashMapUnmanaged([]const u8) = .{},
     by_context_local_id: std.StringHashMapUnmanaged([]const u8) = .{},
     by_meta_prompt_local_id: std.StringHashMapUnmanaged([]const u8) = .{},
     create_rule_paths: []const []const u8 = &.{},
     create_context_paths: []const []const u8 = &.{},
     total: usize = 0,
-    ready: usize = 0,
     cache_ws_id: ?[]const u8 = null,
     cache_seeded: bool = false,
     index_size: u64 = 0,
@@ -31,6 +38,9 @@ pub const State = struct {
     last_index_check_tick: u64 = 0,
     pending_discard_target: ?DraftTarget = null,
     pending_discard_path_owned: ?[]const u8 = null,
+    pending_pr_action: ?PendingPrAction = null,
+    pending_pr_action_ws_id_owned: ?[]const u8 = null,
+    pending_pr_action_path_owned: ?[]const u8 = null,
 
     show_pr_composer: bool = false,
     pr_composer_desc_buf: [256]u8 = .{0} ** 256,

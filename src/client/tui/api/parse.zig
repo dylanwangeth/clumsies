@@ -5,7 +5,7 @@
 const std = @import("std");
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 const collab_api = @import("clumsies_lib").protocol.collab_api;
-const library_api = @import("clumsies_lib").protocol.library_api;
+const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const stats_api = @import("clumsies_lib").protocol.stats_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const data = @import("../models/view_types.zig");
@@ -31,14 +31,14 @@ pub fn parseComments(alloc: std.mem.Allocator, body: []const u8) ?[]const data.C
     return list.toOwnedSlice(alloc) catch return null;
 }
 
-pub fn parseContextFiles(alloc: std.mem.Allocator, body: []const u8) ?[]const model.ContextFileData {
+pub fn parseWorkspaceContext(alloc: std.mem.Allocator, body: []const u8) ?[]const model.WorkspaceContextData {
     const parsed = std.json.parseFromSlice(workspace_api.ContextFilesResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return null;
     defer parsed.deinit();
 
-    var list: std.ArrayList(model.ContextFileData) = .empty;
+    var list: std.ArrayList(model.WorkspaceContextData) = .empty;
     for (parsed.value.files) |f| {
         list.append(alloc, .{
             .context_id = alloc.dupe(u8, f.context_id) catch continue,
@@ -52,14 +52,14 @@ pub fn parseContextFiles(alloc: std.mem.Allocator, body: []const u8) ?[]const mo
     return list.toOwnedSlice(alloc) catch return null;
 }
 
-pub fn parseManifestRules(alloc: std.mem.Allocator, body: []const u8) ?[]const model.WsRuleData {
+pub fn parseManifestRules(alloc: std.mem.Allocator, body: []const u8) ?[]const model.WorkspaceRuleData {
     const parsed = std.json.parseFromSlice(workspace_api.WorkspaceManifestResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return null;
     defer parsed.deinit();
 
-    var list: std.ArrayList(model.WsRuleData) = .empty;
+    var list: std.ArrayList(model.WorkspaceRuleData) = .empty;
     for (parsed.value.rules.items) |entry| {
         list.append(alloc, .{
             .rule_id = alloc.dupe(u8, entry.key) catch continue,
@@ -78,7 +78,7 @@ pub fn parseUser(alloc: std.mem.Allocator, body: []const u8) ?model.UserData {
     defer parsed.deinit();
     const v = parsed.value;
 
-    var ws_list: std.ArrayList(model.WsData) = .empty;
+    var ws_list: std.ArrayList(model.WorkspaceData) = .empty;
     for (v.workspaces) |ws| {
         ws_list.append(alloc, .{
             .ws_id = alloc.dupe(u8, ws.ws_id) catch continue,
@@ -116,14 +116,14 @@ pub fn parseDirectory(alloc: std.mem.Allocator, body: []const u8) ?model.Directo
     return .{ .members = members.items };
 }
 
-pub fn parseLibraryRules(alloc: std.mem.Allocator, body: []const u8) ?[]const model.LibraryRule {
-    const parsed = std.json.parseFromSlice(library_api.RuleListResponse, alloc, body, .{
+pub fn parseArtifactRules(alloc: std.mem.Allocator, body: []const u8) ?[]const model.ArtifactRule {
+    const parsed = std.json.parseFromSlice(artifact_api.RuleListResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return null;
     defer parsed.deinit();
 
-    var list: std.ArrayList(model.LibraryRule) = .empty;
+    var list: std.ArrayList(model.ArtifactRule) = .empty;
     for (parsed.value.rules) |p| {
         list.append(alloc, .{
             .rule_id = alloc.dupe(u8, p.rule_id) catch continue,
@@ -211,7 +211,7 @@ pub fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?model.OrgStats
 }
 
 pub fn parseBundles(alloc: std.mem.Allocator, body: []const u8) ?[]const model.BundleData {
-    const parsed = std.json.parseFromSlice(library_api.BundleListResponse, alloc, body, .{
+    const parsed = std.json.parseFromSlice(artifact_api.BundleListResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return null;
@@ -248,6 +248,8 @@ pub fn parseRulePrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model.R
             .created_at = alloc.dupe(u8, pr.created_at) catch continue,
             .author = alloc.dupe(u8, pr.author) catch continue,
             .operation_count = @intCast(@min(pr.operation_count, std.math.maxInt(i32))),
+            .op_type = alloc.dupe(u8, pr.op_type) catch "",
+            .comment_count = @intCast(@min(pr.comment_count, std.math.maxInt(i32))),
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch return null;
@@ -272,18 +274,20 @@ pub fn parseReviewPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model
             .created_at = alloc.dupe(u8, pr.created_at) catch continue,
             .author = alloc.dupe(u8, pr.author) catch continue,
             .operation_count = @intCast(@min(pr.operation_count, std.math.maxInt(i32))),
+            .op_type = alloc.dupe(u8, pr.op_type) catch "",
+            .comment_count = @intCast(@min(pr.comment_count, std.math.maxInt(i32))),
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch return null;
 }
 
-test "parseContextFiles accepts content_hash from hub response" {
+test "parseWorkspaceContext accepts content_hash from hub response" {
     const testing = std.testing;
     const body =
         \\{"files":[{"context_id":"ctx-1","path":"spec/ARCHITECTURE.md","content_hash":"sha256:abc","size":123,"author":"admin","updated_at":"2026-04-14T00:00:00Z"}]}
     ;
 
-    const files = parseContextFiles(testing.allocator, body) orelse return error.TestUnexpectedResult;
+    const files = parseWorkspaceContext(testing.allocator, body) orelse return error.TestUnexpectedResult;
     defer {
         for (files) |file| {
             testing.allocator.free(file.context_id);
@@ -306,7 +310,7 @@ test "rule content response parsing ignores extra fields" {
         \\{"rule_id":"p-1","path":"rule/architecture/HUB_SINGLE_SOURCE.md","content_hash":"sha256:def","body":"hello"}
     ;
 
-    const parsed = try std.json.parseFromSlice(library_api.RuleContentResponse, testing.allocator, body, .{
+    const parsed = try std.json.parseFromSlice(artifact_api.RuleContentResponse, testing.allocator, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     });
@@ -362,7 +366,7 @@ test "parseComments reads wrapped comments response" {
 test "parseReviewPrs reads target-aware review list" {
     const testing = std.testing;
     const body =
-        \\{"prs":[{"pr_id":"pr-1","target_kind":"mpf","target_path":"META_PROMPT.md","status":"open","description":"update bootstrap","created_at":"2026-05-02T00:00:00Z","author":"alice","operation_count":1},{"pr_id":"pr-2","target_kind":"context","target_path":"spec/s1.md","ws_id":"ws-1","status":"merged","description":"merge spec","created_at":"2026-05-01T00:00:00Z","author":"bob","operation_count":2}]}
+        \\{"prs":[{"pr_id":"pr-1","target_kind":"mpf","target_path":"META_PROMPT.md","status":"open","description":"update bootstrap","created_at":"2026-05-02T00:00:00Z","author":"alice","operation_count":1,"op_type":"update","comment_count":3},{"pr_id":"pr-2","target_kind":"context","target_path":"spec/s1.md","ws_id":"ws-1","status":"merged","description":"merge spec","created_at":"2026-05-01T00:00:00Z","author":"bob","operation_count":2,"op_type":"rename","comment_count":0}]}
     ;
 
     const prs = parseReviewPrs(testing.allocator, body) orelse return error.TestUnexpectedResult;
@@ -376,6 +380,7 @@ test "parseReviewPrs reads target-aware review list" {
             testing.allocator.free(pr.description);
             testing.allocator.free(pr.created_at);
             testing.allocator.free(pr.author);
+            testing.allocator.free(pr.op_type);
         }
         testing.allocator.free(prs);
     }
@@ -383,8 +388,12 @@ test "parseReviewPrs reads target-aware review list" {
     try testing.expectEqual(@as(usize, 2), prs.len);
     try testing.expectEqualStrings("mpf", prs[0].target_kind);
     try testing.expectEqualStrings("META_PROMPT.md", prs[0].target_path);
+    try testing.expectEqualStrings("update", prs[0].op_type);
+    try testing.expectEqual(@as(i32, 3), prs[0].comment_count);
     try testing.expectEqualStrings("context", prs[1].target_kind);
     try testing.expectEqualStrings("ws-1", prs[1].ws_id.?);
+    try testing.expectEqualStrings("rename", prs[1].op_type);
+    try testing.expectEqual(@as(i32, 0), prs[1].comment_count);
 }
 
 test "parseBundles uses rule_count when server provides it" {

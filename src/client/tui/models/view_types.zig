@@ -60,6 +60,7 @@ pub const PullRequestEntry = struct {
     base_hash: []const u8,
     diff: []const []const u8,
     comments: []const CommentEntry = &.{},
+    comment_count: u16 = 0,
     attestation_refers: u16,
     attestation_sessions: u8,
     operation_count: u16 = 0,
@@ -170,7 +171,7 @@ pub const ContextFile = struct {
     branch_diff: []const []const u8,
 };
 
-pub const WsRuleEntry = struct {
+pub const WorkspaceRuleEntry = struct {
     name: []const u8,
     kind: []const u8,
     hash: []const u8,
@@ -184,7 +185,7 @@ pub const MemberEntry = struct {
     joined: []const u8,
 };
 
-pub const WsAccess = struct {
+pub const WorkspaceAccess = struct {
     name: []const u8,
     role: AccessLevel,
     paths: []const []const u8,
@@ -202,7 +203,7 @@ pub const CurrentUser = struct {
     username: []const u8,
     role: []const u8,
     scopes: []const []const u8,
-    workspaces: []const WsAccess,
+    workspaces: []const WorkspaceAccess,
 };
 
 pub const TokenInfo = struct {
@@ -212,8 +213,8 @@ pub const TokenInfo = struct {
 
 // Token scope definitions
 pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
-    .{ .name = "library:read", .description = "Read rules and bundles" },
-    .{ .name = "library:write", .description = "Create pull requests" },
+    .{ .name = "artifact:read", .description = "Read rules and bundles" },
+    .{ .name = "artifact:write", .description = "Create pull requests" },
     .{ .name = "bundle:write", .description = "Bundle CRUD" },
     .{ .name = "workspace:read", .description = "Read workspace manifest/files" },
     .{ .name = "workspace:write", .description = "Write context, create local edits" },

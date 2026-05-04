@@ -12,7 +12,7 @@ const api = @import("api.zig");
 const features = @import("features.zig");
 const analysis_panel = features.analysis;
 const dashboard_panel = features.dashboard;
-const library_panel = features.library;
+const artifact_panel = features.artifact;
 const review_panel = features.review;
 const rule_detail_panel = features.review;
 const settings_panel = features.settings;
@@ -24,8 +24,6 @@ const local_content = @import("../local_content.zig");
 const runtime = @import("runtime.zig");
 const util_hash = @import("clumsies_lib").util.hash;
 const tui_prefs = @import("prefs.zig");
-const manifest_protocol = @import("clumsies_lib").protocol.manifest;
-const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 
 const editor_host = runtime.editor_host;
 const attestation_reader = runtime.attestation_reader;
@@ -48,7 +46,7 @@ const ConfirmAction = enum {
 const TopModule = enum(u8) {
     dashboard,
     workspace,
-    library,
+    artifact,
     review,
     analysis,
 
@@ -56,25 +54,26 @@ const TopModule = enum(u8) {
         return switch (self) {
             .dashboard => "Dashboard",
             .workspace => "Workspace",
-            .library => "Artifact",
+            .artifact => "Artifact",
             .review => "Review",
             .analysis => "Analysis",
         };
     }
 };
 
-const top_tabs = [_]TopModule{ .dashboard, .workspace, .library, .review, .analysis };
+const top_tabs = [_]TopModule{ .dashboard, .workspace, .artifact, .review, .analysis };
 
 const WORKSPACE_METADATA_REFRESH_TICKS = 600;
 const GLOBAL_METADATA_REFRESH_TICKS = 3000;
 const PathTreeState = workspace_panel.PathTreeState;
 
 const DraftTarget = features.drafts.DraftTarget;
+const PendingPrAction = features.drafts.PendingPrAction;
 
 pub const Shell = struct {
     api_state: *api.state.ApiState,
     selected_module: TopModule = .dashboard,
-    library: library_panel.State,
+    artifact: artifact_panel.State,
     review: rule_detail_panel.State,
     workspace: workspace_panel.State,
     dashboard: dashboard_panel.State,
@@ -113,7 +112,7 @@ pub const Shell = struct {
             null;
         return .{
             .api_state = api_state,
-            .library = library_panel.State.init(),
+            .artifact = artifact_panel.State.init(),
             .review = rule_detail_panel.State.init(),
             .workspace = workspace_panel.State.init(api_state.backing_allocator),
             .dashboard = dashboard_panel.State.init(),
@@ -128,9 +127,10 @@ pub const Shell = struct {
     pub fn deinit(self: *Shell) void {
         self.releaseComposerTarget();
         self.releasePendingDiscardTarget();
+        self.releasePendingPrAction();
         const alloc = self.api_state.allocator();
         self.workspace.deinit(alloc);
-        self.library.deinit(alloc);
+        self.artifact.deinit(alloc);
         self.drafts.deinit();
         if (self.last_workspace_id) |id| self.api_state.backing_allocator.free(id);
         self.view_arena.deinit();
@@ -330,13 +330,13 @@ pub const Shell = struct {
                 // Top-level tab switching
                 if (key.matches('1', .{})) return self.selectTab(ctx, .dashboard);
                 if (key.matches('2', .{})) return self.selectTab(ctx, .workspace);
-                if (key.matches('3', .{})) return self.selectTab(ctx, .library);
+                if (key.matches('3', .{})) return self.selectTab(ctx, .artifact);
                 if (key.matches('4', .{})) return self.selectTab(ctx, .review);
                 if (key.matches('5', .{})) return self.selectTab(ctx, .analysis);
 
                 // Module-specific input
                 switch (self.selected_module) {
-                    .library => try library_panel.handleModuleEvent(self, ctx, event, key),
+                    .artifact => try artifact_panel.handleModuleEvent(self, ctx, event, key),
                     .review => try review_panel.handleModuleEvent(self, ctx, event, key),
                     .workspace => try workspace_panel.handleModuleEvent(self, ctx, key),
                     .dashboard => try dashboard_panel.handleModuleEvent(self, ctx, key, self.getAnalysisCounts().input_count),
@@ -377,7 +377,7 @@ pub const Shell = struct {
                 self.consumeRulePrsResult();
                 self.consumeReviewPrsResult();
                 self.consumeWsContextContentResult();
-                self.consumeWsContextFilesResult();
+                self.consumeWorkspaceContextResult();
                 self.consumeWsManifestResult();
                 self.consumePrDetailResult();
                 self.consumePrCommentsResult();
@@ -619,7 +619,7 @@ pub const Shell = struct {
         if (self.show_settings) return settings_panel.drawSettings(self, ctx);
         return switch (self.selected_module) {
             .dashboard => self.drawDashboard(ctx),
-            .library => self.drawLibrary(ctx),
+            .artifact => self.drawArtifact(ctx),
             .review => self.drawReview(ctx),
             .workspace => self.drawWorkspaceStatus(ctx),
             .analysis => self.drawAnalysis(ctx),
@@ -667,7 +667,7 @@ pub const Shell = struct {
 
         return switch (self.selected_module) {
             .dashboard => dashboard_panel.shortcuts(self),
-            .library => library_panel.shortcuts(self),
+            .artifact => artifact_panel.shortcuts(self),
             .review => review_panel.shortcuts(self),
             .workspace => workspace_panel.shortcuts(self),
             .analysis => analysis_panel.shortcuts(self),
@@ -717,13 +717,13 @@ pub const Shell = struct {
         self.system_notices.push(.operation, kind, .transient, text);
     }
 
-    // Library: master-detail. Left panel carries a Files / Pull Requests
+    // Artifact: master-detail. Left panel carries a Files / Pull Requests
     // inner tab strip; right panel is a single detail surface that
     // follows whichever item the left panel has selected.
-    fn drawLibrary(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawArtifact(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         self.ensureDraftsCacheForActiveWorkspace();
         self.refreshDraftsCacheIfChanged();
-        try library_panel.syncLibraryWidgets(self, ctx);
+        try artifact_panel.syncArtifactWidgets(self, ctx);
 
         const size = ctx.max.size();
         const list_w: u16 = size.width / 3;
@@ -743,8 +743,8 @@ pub const Shell = struct {
         // the header stays in sync with the content.
         var virtual_entry: data.RuleEntry = undefined;
         const selected_entry: ?*const data.RuleEntry = blk: {
-            if (self.library.selected_rule < rules.len) break :blk &rules[self.library.selected_rule];
-            const k = self.library.selected_rule - rules.len;
+            if (self.artifact.selected_rule < rules.len) break :blk &rules[self.artifact.selected_rule];
+            const k = self.artifact.selected_rule - rules.len;
             if (k >= create_paths.len) break :blk null;
             if (self.draftLocalIdFor(.rule, create_paths[k]) == null) break :blk null;
             virtual_entry = .{
@@ -771,7 +771,7 @@ pub const Shell = struct {
             try rule_detail_panel.drawEmbedded(self, detail_ctx, entry)
         else
             try rule_detail_panel.drawEmbeddedEmpty(self, detail_ctx);
-        return library_panel.drawRoot(self, ctx, list_surface, detail_surface);
+        return artifact_panel.drawRoot(self, ctx, list_surface, detail_surface);
     }
 
     fn drawReview(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -780,13 +780,15 @@ pub const Shell = struct {
     }
 
     fn drawListPanel(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        return library_panel.drawListPanel(self, ctx);
+        return artifact_panel.drawListPanel(self, ctx);
     }
 
     // Workspace: master-detail content with a command drawer for switching
     // workspaces. Tab cycles focus between list and content.
     fn drawWorkspaceStatus(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        self.ensureActiveWorkspaceDetailRequested();
         self.ensureDraftsCacheForActiveWorkspace();
+        self.refreshDraftsCacheIfChanged();
         const size = ctx.max.size();
         const list_w: u16 = size.width / 3;
         const detail_w: u16 = size.width - list_w - 1;
@@ -891,14 +893,14 @@ pub const Shell = struct {
         };
         defer manifest.deinit(arena);
 
-        const context_files = arena.alloc(api.model.ContextFileData, manifest.context.count()) catch {
+        const workspace_context = arena.alloc(api.model.WorkspaceContextData, manifest.context.count()) catch {
             self.workspace.local_load_failed = true;
             return;
         };
         var context_i: usize = 0;
         var context_it = manifest.context.iterator();
         while (context_it.next()) |entry| {
-            context_files[context_i] = .{
+            workspace_context[context_i] = .{
                 .context_id = arena.dupe(u8, entry.key_ptr.*) catch "",
                 .path = arena.dupe(u8, entry.value_ptr.path) catch "",
                 .hash = arena.dupe(u8, entry.value_ptr.hash) catch "",
@@ -909,14 +911,14 @@ pub const Shell = struct {
             context_i += 1;
         }
 
-        const ws_rules = arena.alloc(api.model.WsRuleData, manifest.rules.count()) catch {
+        const workspace_rules = arena.alloc(api.model.WorkspaceRuleData, manifest.rules.count()) catch {
             self.workspace.local_load_failed = true;
             return;
         };
         var rule_i: usize = 0;
         var rule_it = manifest.rules.iterator();
         while (rule_it.next()) |entry| {
-            ws_rules[rule_i] = .{
+            workspace_rules[rule_i] = .{
                 .rule_id = arena.dupe(u8, entry.key_ptr.*) catch "",
                 .content_hash = arena.dupe(u8, entry.value_ptr.hash) catch "",
                 .path = arena.dupe(u8, entry.value_ptr.path) catch "",
@@ -926,97 +928,51 @@ pub const Shell = struct {
 
         self.workspace.local_detail = .{
             .ws_id = ws_id_copy,
-            .context_files = context_files[0..context_i],
-            .ws_rules = ws_rules[0..rule_i],
+            .workspace_context = workspace_context[0..context_i],
+            .workspace_rules = workspace_rules[0..rule_i],
         };
     }
 
-    pub fn workspaceDetailForView(self: *Shell, ws_id: []const u8) ?api.model.WsDetail {
+    pub fn workspaceDetailForView(self: *Shell, ws_id: []const u8) ?api.model.WorkspaceDetail {
         self.ensureLocalWorkspaceDetail(ws_id);
         const local = self.workspace.local_detail;
-        const remote_context = self.api_state.ws_context_files_cache.lookup(.{ .value = ws_id });
-        const remote_rules = self.api_state.ws_manifest_cache.lookup(.{ .value = ws_id });
-        const local_context = if (local) |l| l.context_files else null;
-        const local_rules = if (local) |l| l.ws_rules else null;
-        const context_files = self.mergeContextFilesForView(local_context, remote_context) orelse &.{};
-        const ws_rules = self.mergeWorkspaceRulesForView(local_rules, remote_rules) orelse &.{};
+        const remote_context = self.api_state.workspace_context_cache.lookup(.{ .value = ws_id });
+        const remote_rules = self.api_state.workspace_manifest_cache.lookup(.{ .value = ws_id });
+        const local_context = if (local) |l| l.workspace_context else null;
+        const local_rules = if (local) |l| l.workspace_rules else null;
+        const workspace_context = self.mergeWorkspaceContextForView(local_context, remote_context) orelse &.{};
+        const workspace_rules = self.mergeWorkspaceRulesForView(local_rules, remote_rules) orelse &.{};
 
-        if (context_files.len == 0 and ws_rules.len == 0 and local == null and remote_context == null and remote_rules == null) return null;
+        if (workspace_context.len == 0 and workspace_rules.len == 0 and local == null and remote_context == null and remote_rules == null) return null;
         return .{
             .ws_id = ws_id,
-            .context_files = context_files,
-            .ws_rules = ws_rules,
+            .workspace_context = workspace_context,
+            .workspace_rules = workspace_rules,
         };
     }
 
-    fn mergeContextFilesForView(
+    fn mergeWorkspaceContextForView(
         self: *Shell,
-        local: ?[]const api.model.ContextFileData,
-        remote: ?[]const api.model.ContextFileData,
-    ) ?[]const api.model.ContextFileData {
-        const local_items = local orelse &.{};
-        const remote_items = remote orelse &.{};
-        if (local_items.len == 0) return if (remote != null) remote_items else null;
-        if (remote_items.len == 0) return local_items;
-
-        const arena = self.viewAllocator();
-        var merged = arena.alloc(api.model.ContextFileData, remote_items.len + local_items.len) catch return local_items;
-        var len: usize = 0;
-        for (remote_items) |item| {
-            merged[len] = item;
-            len += 1;
-        }
-        for (local_items) |item| {
-            if (contextPathIn(remote_items, item.path)) continue;
-            merged[len] = item;
-            len += 1;
-        }
-        return merged[0..len];
+        local: ?[]const api.model.WorkspaceContextData,
+        remote: ?[]const api.model.WorkspaceContextData,
+    ) ?[]const api.model.WorkspaceContextData {
+        _ = self;
+        return remote orelse local;
     }
 
     fn mergeWorkspaceRulesForView(
         self: *Shell,
-        local: ?[]const api.model.WsRuleData,
-        remote: ?[]const api.model.WsRuleData,
-    ) ?[]const api.model.WsRuleData {
-        const local_items = local orelse &.{};
-        const remote_items = remote orelse &.{};
-        if (local_items.len == 0) return if (remote != null) remote_items else null;
-        if (remote_items.len == 0) return local_items;
-
-        const arena = self.viewAllocator();
-        var merged = arena.alloc(api.model.WsRuleData, remote_items.len + local_items.len) catch return local_items;
-        var len: usize = 0;
-        for (remote_items) |item| {
-            merged[len] = item;
-            len += 1;
-        }
-        for (local_items) |item| {
-            if (self.rulePathIn(remote_items, item.path)) continue;
-            merged[len] = item;
-            len += 1;
-        }
-        return merged[0..len];
-    }
-
-    fn contextPathIn(items: []const api.model.ContextFileData, path: []const u8) bool {
-        for (items) |item| {
-            if (std.mem.eql(u8, item.path, path)) return true;
-        }
-        return false;
-    }
-
-    fn rulePathIn(self: *Shell, items: []const api.model.WsRuleData, path: []const u8) bool {
-        for (items) |item| {
-            if (std.mem.eql(u8, self.pathForWorkspaceRule(item), path)) return true;
-        }
-        return false;
+        local: ?[]const api.model.WorkspaceRuleData,
+        remote: ?[]const api.model.WorkspaceRuleData,
+    ) ?[]const api.model.WorkspaceRuleData {
+        _ = self;
+        return remote orelse local;
     }
 
     fn hasLocalWorkspaceDetail(self: *Shell, ws_id: []const u8) bool {
         self.ensureLocalWorkspaceDetail(ws_id);
         const local = self.workspace.local_detail orelse return false;
-        return local.context_files.len > 0 or local.ws_rules.len > 0;
+        return local.workspace_context.len > 0 or local.workspace_rules.len > 0;
     }
 
     pub fn ensureActiveWorkspaceDetailRequested(self: *Shell) void {
@@ -1059,19 +1015,24 @@ pub const Shell = struct {
 
     fn maybeRefreshMetadata(self: *Shell) void {
         if (self.tick_count > 0 and self.tick_count % GLOBAL_METADATA_REFRESH_TICKS == 0) {
+            self.invalidateRemoteDetailRequests();
             api.fetch.refetchAllAsync(self.api_state);
+        }
+        if (self.selected_module == .review and self.tick_count > 0 and self.tick_count % WORKSPACE_METADATA_REFRESH_TICKS == 0) {
+            api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
+            self.ensureReviewPrsRequested();
         }
         if (self.tick_count > 0 and self.tick_count % WORKSPACE_METADATA_REFRESH_TICKS == 0) {
             const ws_id = self.activeWsId() orelse return;
-            self.api_state.ws_context_files_cache.invalidate();
-            self.api_state.ws_manifest_cache.invalidate();
-            workspace_panel.requestWorkspaceDetail(self, ws_id);
+            api.state.invalidateRemoteCaches(self.api_state, .workspace_detail);
+            workspace_panel.refreshWorkspaceDetail(self, ws_id);
         }
     }
 
     pub fn resetWorkspaceTrees(self: *Shell) void {
-        self.workspace.context_tree.reset();
-        self.workspace.rules_tree.reset();
+        const allocator = self.api_state.allocator();
+        self.workspace.context_tree.reset(allocator);
+        self.workspace.rules_tree.reset(allocator);
         self.workspace.list_sel = 0;
     }
 
@@ -1111,28 +1072,199 @@ pub const Shell = struct {
         }
     };
 
-    pub fn cachedWorkspaceContextBody(self: *Shell, ws_id: []const u8, path: []const u8) ?[]const u8 {
-        if (self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_id, .path = path })) |body| {
+    const PullDelta = union(enum) {
+        none,
+        upsert_context: api.model.WorkspaceContextData,
+        upsert_rule: api.model.WorkspaceRuleData,
+        remove_context: api.model.WorkspaceContextData,
+        remove_rule: api.model.WorkspaceRuleData,
+    };
+
+    pub fn workspaceSelectionHasPullAvailable(self: *Shell, selection: WorkspaceFileSelection) bool {
+        return switch (self.workspaceSelectionPullDelta(selection)) {
+            .none => false,
+            else => true,
+        };
+    }
+
+    pub fn workspaceSelectionPullLabel(
+        self: *Shell,
+        arena: std.mem.Allocator,
+        selection: WorkspaceFileSelection,
+    ) std.mem.Allocator.Error!?[]const u8 {
+        const op = switch (self.workspaceSelectionPullDelta(selection)) {
+            .none => return null,
+            .upsert_context => |remote| blk: {
+                const local = self.localContextEntryFor(remote.path, remote.context_id) orelse break :blk "create";
+                if (!std.mem.eql(u8, local.path, remote.path)) break :blk "rename";
+                break :blk "update";
+            },
+            .upsert_rule => |remote| blk: {
+                const remote_path = self.pathForWorkspaceRule(remote);
+                const local = self.localRuleEntryFor(remote_path, remote.rule_id) orelse break :blk "create";
+                if (!std.mem.eql(u8, local.path, remote_path)) break :blk "rename";
+                break :blk "update";
+            },
+            .remove_context, .remove_rule => "delete",
+        };
+        const label = try std.fmt.allocPrint(arena, "pull available [op:{s}]", .{op});
+        return label;
+    }
+
+    pub fn artifactRuleHasPullAvailable(self: *Shell, rule: *const data.RuleEntry) bool {
+        if (rule.content_hash.len == 0) return false;
+        const ws_id = self.activeWsId() orelse return false;
+        self.ensureLocalWorkspaceDetail(ws_id);
+        const rule_id = self.lookupRuleId(rule.path);
+        const local = self.localRuleEntryFor(rule.path, rule_id) orelse return true;
+        if (!std.mem.eql(u8, local.path, rule.path)) return true;
+        return !local_content.hashesEqual(local.content_hash, rule.content_hash);
+    }
+
+    fn workspaceSelectionPullDelta(self: *Shell, selection: WorkspaceFileSelection) PullDelta {
+        const ws_id = self.activeWsId() orelse return .none;
+        self.ensureLocalWorkspaceDetail(ws_id);
+        switch (selection) {
+            .context => |context| {
+                if (context.is_create_draft) return .none;
+                const remote_items = self.api_state.workspace_context_cache.lookup(.{ .value = ws_id }) orelse return .none;
+                const remote = findContextByPath(remote_items, context.path);
+                const local = self.localContextEntryFor(context.path, context.context_id);
+                if (remote) |remote_item| {
+                    const local_item = local orelse return .{ .upsert_context = remote_item };
+                    if (local_content.hashesEqual(local_item.hash, remote_item.hash)) return .none;
+                    return .{ .upsert_context = remote_item };
+                }
+                if (local) |local_item| return .{ .remove_context = local_item };
+                return .none;
+            },
+            .rule => |rule| {
+                if (rule.is_create_draft) return .none;
+                const remote_items = self.api_state.workspace_manifest_cache.lookup(.{ .value = ws_id }) orelse return .none;
+                const remote = self.findRuleFor(remote_items, rule.path, rule.rule_id);
+                const local = self.localRuleEntryFor(rule.path, rule.rule_id);
+                if (remote) |remote_item| {
+                    const remote_path = self.pathForWorkspaceRule(remote_item);
+                    const local_item = local orelse return .{ .upsert_rule = remote_item };
+                    if (std.mem.eql(u8, local_item.path, remote_path) and
+                        local_content.hashesEqual(local_item.content_hash, remote_item.content_hash))
+                    {
+                        return .none;
+                    }
+                    return .{ .upsert_rule = remote_item };
+                }
+                if (local) |local_item| return .{ .remove_rule = local_item };
+                return .none;
+            },
+        }
+    }
+
+    fn findContextByPath(items: []const api.model.WorkspaceContextData, path: []const u8) ?api.model.WorkspaceContextData {
+        for (items) |item| {
+            if (std.mem.eql(u8, item.path, path)) return item;
+        }
+        return null;
+    }
+
+    fn localContextEntryFor(
+        self: *Shell,
+        path: []const u8,
+        context_id: ?[]const u8,
+    ) ?api.model.WorkspaceContextData {
+        const local = self.workspace.local_detail orelse return null;
+        for (local.workspace_context) |item| {
+            if (context_id) |id| {
+                if (item.context_id.len > 0 and std.mem.eql(u8, item.context_id, id)) return item;
+            }
+            if (std.mem.eql(u8, item.path, path)) return item;
+        }
+        return null;
+    }
+
+    pub fn workspaceLocalContextPathForView(
+        self: *Shell,
+        path: []const u8,
+        context_id: ?[]const u8,
+    ) ?[]const u8 {
+        const local = self.localContextEntryFor(path, context_id) orelse return null;
+        return local.path;
+    }
+
+    fn findRuleFor(
+        self: *Shell,
+        items: []const api.model.WorkspaceRuleData,
+        path: []const u8,
+        rule_id: ?[]const u8,
+    ) ?api.model.WorkspaceRuleData {
+        for (items) |item| {
+            if (rule_id) |id| {
+                if (item.rule_id.len > 0 and std.mem.eql(u8, item.rule_id, id)) return item;
+            }
+            if (std.mem.eql(u8, self.pathForWorkspaceRule(item), path)) return item;
+        }
+        return null;
+    }
+
+    fn localRuleEntryFor(
+        self: *Shell,
+        path: []const u8,
+        rule_id: ?[]const u8,
+    ) ?api.model.WorkspaceRuleData {
+        const local = self.workspace.local_detail orelse return null;
+        return self.findRuleFor(local.workspace_rules, path, rule_id);
+    }
+
+    pub fn workspaceLocalRulePathForView(
+        self: *Shell,
+        path: []const u8,
+        rule_id: ?[]const u8,
+    ) ?[]const u8 {
+        const local = self.localRuleEntryFor(path, rule_id) orelse return null;
+        return local.path;
+    }
+
+    pub fn remoteWorkspaceContextBody(self: *Shell, ws_id: []const u8, path: []const u8) ?[]const u8 {
+        if (self.api_state.workspace_context_content_cache.lookup(.{ .ws_id = ws_id, .path = path })) |body| {
             return body;
         }
+        return null;
+    }
+
+    pub fn remoteWorkspaceContextBodyForHash(
+        self: *Shell,
+        ws_id: []const u8,
+        path: []const u8,
+        remote_hash: []const u8,
+    ) ?[]const u8 {
+        const body = self.remoteWorkspaceContextBody(ws_id, path) orelse return null;
+        const body_hash = util_hash.contentHash(body);
+        if (!local_content.hashesEqual(body_hash[0..], remote_hash)) return null;
+        return body;
+    }
+
+    pub fn localWorkspaceContextBody(self: *Shell, ws_id: []const u8, path: []const u8) ?[]const u8 {
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
         return workspace_rule.readContextCacheFile(arena, ws_dir, path) catch null;
     }
 
+    pub fn cachedWorkspaceContextBody(self: *Shell, ws_id: []const u8, path: []const u8) ?[]const u8 {
+        return self.remoteWorkspaceContextBody(ws_id, path) orelse self.localWorkspaceContextBody(ws_id, path);
+    }
+
     pub fn workspaceFileAtRow(
         self: *Shell,
         row: usize,
-        live_ws: ?api.model.WsDetail,
+        live_ws: ?api.model.WorkspaceDetail,
     ) ?WorkspaceFileSelection {
         const ws_tree = self.currentWsTree();
         if (ws_tree.dirPathAt(row) != null) return null;
         const leaf = ws_tree.leafIndexAt(row) orelse return null;
         switch (self.workspace.tab) {
             .context => {
-                const context_count = if (live_ws) |ws_d| ws_d.context_files.len else 0;
-                if (live_ws) |ws_d| if (leaf < ws_d.context_files.len) {
-                    const file = ws_d.context_files[leaf];
+                const context_count = if (live_ws) |ws_d| ws_d.workspace_context.len else 0;
+                if (live_ws) |ws_d| if (leaf < ws_d.workspace_context.len) {
+                    const file = ws_d.workspace_context[leaf];
                     return .{ .context = .{
                         .path = file.path,
                         .context_id = file.context_id,
@@ -1150,26 +1282,26 @@ pub const Shell = struct {
                 } };
             },
             .rules => {
-                const rule_count = if (live_ws) |ws_d| ws_d.ws_rules.len else 0;
-                if (live_ws) |ws_d| if (leaf < ws_d.ws_rules.len) {
-                    const wp = ws_d.ws_rules[leaf];
+                const rule_count = if (live_ws) |ws_d| ws_d.workspace_rules.len else 0;
+                if (live_ws) |ws_d| if (leaf < ws_d.workspace_rules.len) {
+                    const wp = ws_d.workspace_rules[leaf];
                     const path = self.pathForWorkspaceRule(wp);
                     return .{ .rule = .{
                         .path = path,
                         .rule_id = wp.rule_id,
                         .idx = leaf,
                         .hash = wp.content_hash,
-                        .category = self.libraryCategoryForPath(path),
+                        .category = self.artifactCategoryForPath(path),
                     } };
                 };
                 if (leaf < rule_count) return null;
                 const k = leaf - rule_count;
                 if (k >= self.drafts.create_rule_paths.len) return null;
                 const path = self.drafts.create_rule_paths[k];
-                if (self.draftLocalIdFor(self.libraryCategoryForPath(path), path) == null) return null;
+                if (self.draftLocalIdFor(self.artifactCategoryForPath(path), path) == null) return null;
                 return .{ .rule = .{
                     .path = path,
-                    .category = self.libraryCategoryForPath(path),
+                    .category = self.artifactCategoryForPath(path),
                     .is_create_draft = true,
                 } };
             },
@@ -1178,12 +1310,12 @@ pub const Shell = struct {
 
     pub fn currentWorkspaceFileSelection(
         self: *Shell,
-        live_ws: ?api.model.WsDetail,
+        live_ws: ?api.model.WorkspaceDetail,
     ) ?WorkspaceFileSelection {
         return self.workspaceFileAtRow(self.workspace.list_sel, live_ws);
     }
 
-    pub fn pathForWorkspaceRule(self: *Shell, wp: api.model.WsRuleData) []const u8 {
+    pub fn pathForWorkspaceRule(self: *Shell, wp: api.model.WorkspaceRuleData) []const u8 {
         if (wp.path.len > 0) return wp.path;
         for (self.getRules()) |lp| {
             if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) return lp.path;
@@ -1191,29 +1323,68 @@ pub const Shell = struct {
         return wp.rule_id;
     }
 
-    pub fn cachedRuleBody(self: *Shell, path: []const u8) ?[]const u8 {
+    pub fn remoteRuleBody(self: *Shell, path: []const u8) ?[]const u8 {
         if (self.api_state.rule_content_cache.lookup(.{ .value = path })) |resp| {
             return resp.body;
         }
+        return null;
+    }
+
+    pub fn localRuleBody(self: *Shell, path: []const u8) ?[]const u8 {
         const ws_id = self.activeWsId() orelse return null;
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
         return workspace_rule.readRuleCacheFile(arena, ws_dir, path) catch null;
     }
 
-    pub fn cachedLibraryRuleBody(
+    pub fn cachedRuleBody(self: *Shell, path: []const u8) ?[]const u8 {
+        return self.remoteRuleBody(path) orelse self.localRuleBody(path);
+    }
+
+    pub fn remoteArtifactRuleBody(
         self: *Shell,
         category: drafts_mod.DraftCategory,
         path: []const u8,
     ) ?[]const u8 {
         return switch (category) {
-            .rule => self.cachedRuleBody(path),
+            .rule, .meta_prompt => self.remoteRuleBody(path),
             .context => null,
-            .meta_prompt => self.cachedMetaPromptBody(),
         };
     }
 
-    pub fn cachedMetaPromptBody(self: *Shell) ?[]const u8 {
+    pub fn remoteArtifactRuleBodyForHash(
+        self: *Shell,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+        remote_hash: []const u8,
+    ) ?[]const u8 {
+        const body = self.remoteArtifactRuleBody(category, path) orelse return null;
+        const body_hash = util_hash.contentHash(body);
+        if (!local_content.hashesEqual(body_hash[0..], remote_hash)) return null;
+        return body;
+    }
+
+    pub fn localArtifactRuleBody(
+        self: *Shell,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    ) ?[]const u8 {
+        return switch (category) {
+            .rule => self.localRuleBody(path),
+            .context => null,
+            .meta_prompt => self.localMetaPromptBody(),
+        };
+    }
+
+    pub fn cachedArtifactRuleBody(
+        self: *Shell,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    ) ?[]const u8 {
+        return self.remoteArtifactRuleBody(category, path) orelse self.localArtifactRuleBody(category, path);
+    }
+
+    pub fn localMetaPromptBody(self: *Shell) ?[]const u8 {
         const ws_id = self.activeWsId() orelse return null;
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
@@ -1257,10 +1428,11 @@ pub const Shell = struct {
         const selection = self.currentWorkspaceFileSelection(ws_d);
         switch (self.workspace.tab) {
             .context => {
-                const context = switch (selection orelse {
+                const selected = selection orelse {
                     self.notifyOp(.warning, "Select a context file to pull.");
                     return;
-                }) {
+                };
+                const context = switch (selected) {
                     .context => |c| c,
                     .rule => {
                         self.notifyOp(.warning, "Select a context file to pull.");
@@ -1271,21 +1443,43 @@ pub const Shell = struct {
                     self.notifyOp(.warning, "Select a synced context file to pull.");
                     return;
                 }
-                const body = self.api_state.ws_context_content_cache.lookup(.{ .ws_id = ws_d.ws_id, .path = context.path }) orelse {
-                    self.requestWorkspaceSelectionContent(&ws_d);
-                    self.notifyOp(.loading, "Fetching selected content; pull again after it loads.");
-                    return;
-                };
-                local_content.write(arena, ws_dir, .context, context.path, body) catch {
-                    self.notifyOp(.failure, "Pull failed: could not write local context.");
-                    return;
-                };
+                switch (self.workspaceSelectionPullDelta(selected)) {
+                    .none => {
+                        self.notifyOp(.success, "Selected content is already current.");
+                        return;
+                    },
+                    .upsert_context => |remote| {
+                        const body = self.api_state.workspace_context_content_cache.lookup(.{ .ws_id = ws_d.ws_id, .path = remote.path }) orelse {
+                            self.requestWorkspaceSelectionContent(&ws_d, selected);
+                            self.notifyOp(.loading, "Fetching selected content; pull again after it loads.");
+                            return;
+                        };
+                        local_content.write(arena, ws_dir, .context, remote.path, body) catch {
+                            self.notifyOp(.failure, "Pull failed: could not write local context.");
+                            return;
+                        };
+                        local_content.writeManifestContextEntry(arena, ws_dir, ws_id, self.activeWorkspaceName(), remote.context_id, remote.path, remote.hash) catch {
+                            self.notifyOp(.warning, "Pulled content; manifest update failed.");
+                            self.resetLocalWorkspaceDetail();
+                            return;
+                        };
+                    },
+                    .remove_context => |local| {
+                        local_content.removeManifestContextEntry(arena, ws_dir, ws_id, self.activeWorkspaceName(), local.context_id, local.path) catch {
+                            self.notifyOp(.warning, "Pull failed: could not remove local context.");
+                            self.resetLocalWorkspaceDetail();
+                            return;
+                        };
+                    },
+                    .upsert_rule, .remove_rule => unreachable,
+                }
             },
             .rules => {
-                const rule = switch (selection orelse {
+                const selected = selection orelse {
                     self.notifyOp(.warning, "Select a rule to pull.");
                     return;
-                }) {
+                };
+                const rule = switch (selected) {
                     .context => {
                         self.notifyOp(.warning, "Select a rule to pull.");
                         return;
@@ -1296,39 +1490,57 @@ pub const Shell = struct {
                     self.notifyOp(.warning, "Select a synced rule to pull.");
                     return;
                 }
-                const resp = self.api_state.rule_content_cache.lookup(.{ .value = rule.path }) orelse {
-                    self.requestWorkspaceSelectionContent(&ws_d);
-                    self.notifyOp(.loading, "Fetching selected content; pull again after it loads.");
-                    return;
-                };
-                local_content.write(arena, ws_dir, rule.category, rule.path, resp.body) catch {
-                    self.notifyOp(.failure, "Pull failed: could not write local rule.");
-                    return;
-                };
+                switch (self.workspaceSelectionPullDelta(selected)) {
+                    .none => {
+                        self.notifyOp(.success, "Selected content is already current.");
+                        return;
+                    },
+                    .upsert_rule => |remote| {
+                        const remote_path = self.pathForWorkspaceRule(remote);
+                        const resp = self.api_state.rule_content_cache.lookup(.{ .value = remote_path }) orelse {
+                            self.requestWorkspaceSelectionContent(&ws_d, selected);
+                            self.notifyOp(.loading, "Fetching selected content; pull again after it loads.");
+                            return;
+                        };
+                        const category = self.artifactCategoryForPath(remote_path);
+                        local_content.write(arena, ws_dir, category, remote_path, resp.body) catch {
+                            self.notifyOp(.failure, "Pull failed: could not write local rule.");
+                            return;
+                        };
+                        local_content.writeManifestRuleEntry(arena, ws_dir, ws_id, self.activeWorkspaceName(), remote.rule_id, remote_path, remote.content_hash) catch {
+                            self.notifyOp(.warning, "Pulled content; manifest update failed.");
+                            self.resetLocalWorkspaceDetail();
+                            return;
+                        };
+                    },
+                    .remove_rule => |local| {
+                        local_content.removeManifestRuleEntry(arena, ws_dir, ws_id, self.activeWorkspaceName(), local.rule_id, local.path) catch {
+                            self.notifyOp(.warning, "Pull failed: could not remove local rule.");
+                            self.resetLocalWorkspaceDetail();
+                            return;
+                        };
+                    },
+                    .upsert_context, .remove_context => unreachable,
+                }
             },
         }
 
-        self.writeRemoteManifestSnapshot(ws_dir, ws_d) catch {
-            self.notifyOp(.warning, "Pulled content; manifest update failed.");
-            self.resetLocalWorkspaceDetail();
-            return;
-        };
         self.resetLocalWorkspaceDetail();
         self.notifyOp(.success, "Pulled selected content.");
     }
 
-    pub fn pullSelectedLibraryContent(self: *Shell) void {
+    pub fn pullSelectedArtifactContent(self: *Shell) void {
         const ws_id = self.activeWsId() orelse {
             self.notifyOp(.warning, "No workspace selected.");
             return;
         };
         const rules = self.getRules();
-        if (self.library.selected_rule >= rules.len) {
+        if (self.artifact.selected_rule >= rules.len) {
             self.notifyOp(.warning, "Select a synced rule to pull.");
             return;
         }
 
-        const rule = rules[self.library.selected_rule];
+        const rule = rules[self.artifact.selected_rule];
         const rule_id = self.lookupRuleId(rule.path) orelse {
             self.notifyOp(.warning, "Selected rule id is not loaded yet.");
             return;
@@ -1344,12 +1556,12 @@ pub const Shell = struct {
             self.notifyOp(.loading, "Fetching selected content; pull again after it loads.");
             return;
         };
-        const category = self.libraryCategoryForPath(rule.path);
+        const category = self.artifactCategoryForPath(rule.path);
         local_content.write(arena, ws_dir, category, rule.path, resp.body) catch {
             self.notifyOp(.failure, "Pull failed: could not write local rule.");
             return;
         };
-        self.writeLocalManifestRule(ws_dir, rule_id, rule.path, rule.content_hash) catch {
+        local_content.writeManifestRuleEntry(arena, ws_dir, ws_id, self.activeWorkspaceName(), rule_id, rule.path, rule.content_hash) catch {
             self.notifyOp(.warning, "Pulled content; manifest update failed.");
             self.resetLocalWorkspaceDetail();
             return;
@@ -1358,120 +1570,7 @@ pub const Shell = struct {
         self.notifyOp(.success, "Pulled selected content.");
     }
 
-    fn writeRemoteManifestSnapshot(
-        self: *Shell,
-        ws_dir: []const u8,
-        ws_d: api.model.WsDetail,
-    ) !void {
-        const arena = self.viewAllocator();
-        const rule_items = try arena.alloc(manifest_protocol.ManifestItem, ws_d.ws_rules.len);
-        for (ws_d.ws_rules, 0..) |rule, i| {
-            rule_items[i] = .{
-                .key = rule.rule_id,
-                .value = .{
-                    .path = rule.path,
-                    .hash = rule.content_hash,
-                },
-            };
-        }
-
-        const context_items = try arena.alloc(manifest_protocol.ManifestItem, ws_d.context_files.len);
-        for (ws_d.context_files, 0..) |file, i| {
-            context_items[i] = .{
-                .key = file.context_id,
-                .value = .{
-                    .path = file.path,
-                    .hash = file.hash,
-                },
-            };
-        }
-
-        const body = try std.json.Stringify.valueAlloc(arena, workspace_api.WorkspaceManifestResponse{
-            .ws_id = ws_d.ws_id,
-            .name = self.activeWorkspaceName(),
-            .revision = 0,
-            .rules = .{ .items = rule_items },
-            .context = .{ .items = context_items },
-        }, .{ .whitespace = .indent_2 });
-
-        const manifest_path = try std.fs.path.join(arena, &.{ ws_dir, "manifest.json" });
-        const file = try std.fs.createFileAbsolute(manifest_path, .{ .truncate = true, .mode = 0o600 });
-        defer file.close();
-        var write_buf: [8192]u8 = undefined;
-        var writer = std.fs.File.Writer.init(file, &write_buf);
-        try writer.interface.writeAll(body);
-        try writer.interface.flush();
-    }
-
-    fn writeLocalManifestRule(
-        self: *Shell,
-        ws_dir: []const u8,
-        rule_id: []const u8,
-        path: []const u8,
-        hash: []const u8,
-    ) !void {
-        const arena = self.viewAllocator();
-        var manifest = try workspace_rule.loadManifest(arena, ws_dir);
-        defer manifest.deinit(arena);
-
-        const extra_rule: usize = if (manifest.rules.contains(rule_id)) 0 else 1;
-        const rule_items = try arena.alloc(manifest_protocol.ManifestItem, manifest.rules.count() + extra_rule);
-        var rule_i: usize = 0;
-        var rule_it = manifest.rules.iterator();
-        while (rule_it.next()) |entry| {
-            const is_selected = std.mem.eql(u8, entry.key_ptr.*, rule_id);
-            rule_items[rule_i] = .{
-                .key = if (is_selected) rule_id else entry.key_ptr.*,
-                .value = .{
-                    .path = if (is_selected) path else entry.value_ptr.path,
-                    .hash = if (is_selected) hash else entry.value_ptr.hash,
-                },
-            };
-            rule_i += 1;
-        }
-        if (extra_rule == 1) {
-            rule_items[rule_i] = .{
-                .key = rule_id,
-                .value = .{
-                    .path = path,
-                    .hash = hash,
-                },
-            };
-            rule_i += 1;
-        }
-
-        const context_items = try arena.alloc(manifest_protocol.ManifestItem, manifest.context.count());
-        var context_i: usize = 0;
-        var context_it = manifest.context.iterator();
-        while (context_it.next()) |entry| {
-            context_items[context_i] = .{
-                .key = entry.key_ptr.*,
-                .value = .{
-                    .path = entry.value_ptr.path,
-                    .hash = entry.value_ptr.hash,
-                },
-            };
-            context_i += 1;
-        }
-
-        const body = try std.json.Stringify.valueAlloc(arena, workspace_api.WorkspaceManifestResponse{
-            .ws_id = self.activeWsId() orelse "",
-            .name = self.activeWorkspaceName(),
-            .revision = 0,
-            .rules = .{ .items = rule_items[0..rule_i] },
-            .context = .{ .items = context_items[0..context_i] },
-        }, .{ .whitespace = .indent_2 });
-
-        const manifest_path = try std.fs.path.join(arena, &.{ ws_dir, "manifest.json" });
-        const file = try std.fs.createFileAbsolute(manifest_path, .{ .truncate = true, .mode = 0o600 });
-        defer file.close();
-        var write_buf: [8192]u8 = undefined;
-        var writer = std.fs.File.Writer.init(file, &write_buf);
-        try writer.interface.writeAll(body);
-        try writer.interface.flush();
-    }
-
-    pub fn libraryCategoryForPath(
+    pub fn artifactCategoryForPath(
         self: *const Shell,
         path: []const u8,
     ) drafts_mod.DraftCategory {
@@ -1480,29 +1579,24 @@ pub const Shell = struct {
     }
 
     pub fn invalidateRemoteDetailRequests(self: *Shell) void {
-        self.api_state.rule_content_cache.invalidate();
-        self.api_state.rule_prs_cache.invalidate();
-        self.api_state.review_prs_cache.invalidate();
-        self.api_state.pr_detail_cache.invalidate();
-        self.api_state.pr_comments_cache.invalidate();
-        self.api_state.ws_context_content_cache.invalidate();
+        api.state.invalidateRemoteCaches(self.api_state, .all_on_demand);
     }
 
     pub fn requestSelectedRuleDetail(self: *Shell) void {
         const rules = self.getRules();
-        if (self.library.selected_rule >= rules.len) return;
+        if (self.artifact.selected_rule >= rules.len) return;
 
-        const sel_path = rules[self.library.selected_rule].path;
+        const sel_path = rules[self.artifact.selected_rule].path;
         const key = api.cache.StringKey{ .value = sel_path };
 
         if (self.api_state.rule_content_cache.shouldDispatch(key)) {
             api.specs.dispatchFromState(
-                api.specs.PathParams,
-                @import("clumsies_lib").protocol.library_api.RuleContentResponse,
-                api.specs.library_rule_content,
+                api.specs.RuleContentParams,
+                @import("clumsies_lib").protocol.artifact_api.RuleContentResponse,
+                api.specs.artifact_rule_content,
                 &self.api_state.rule_content_pending,
                 self.api_state,
-                .{ .path = sel_path },
+                .{ .path = sel_path, .rule_id = self.lookupRuleId(sel_path) },
             );
         }
 
@@ -1511,7 +1605,7 @@ pub const Shell = struct {
             api.specs.dispatchFromState(
                 api.specs.RulePrsParams,
                 api.specs.RulePrsPayload,
-                api.specs.library_rule_prs,
+                api.specs.artifact_rule_prs,
                 &self.api_state.rule_prs_pending,
                 self.api_state,
                 .{ .rule_id = rule_id },
@@ -1520,7 +1614,7 @@ pub const Shell = struct {
     }
 
     /// Look up the rule_id that corresponds to `path` in the cached
-    /// library rule list. Returns null if the library has not loaded
+    /// artifact rule list. Returns null if the artifact has not loaded
     /// yet or the path is unknown.
     pub fn lookupRuleId(self: *Shell, path: []const u8) ?[]const u8 {
         self.api_state.mutex.lock();
@@ -1554,19 +1648,18 @@ pub const Shell = struct {
         return null;
     }
 
-    /// Path of the currently selected library rule, or null when no
+    /// Path of the currently selected artifact rule, or null when no
     /// rule is in focus. Used by failure-caching in the on-demand
     /// consumers, which do not have a request-scoped key to attribute
     /// the failure to and fall back to the current UI selection.
     fn selectedRulePath(self: *Shell) ?[]const u8 {
         const rules = self.getRules();
         if (rules.len == 0) return null;
-        const idx = @min(self.library.selected_rule, rules.len - 1);
+        const idx = @min(self.artifact.selected_rule, rules.len - 1);
         return rules[idx].path;
     }
 
-    fn requestWorkspaceSelectionContent(self: *Shell, ws_d: *const api.model.WsDetail) void {
-        const selection = self.currentWorkspaceFileSelection(ws_d.*) orelse return;
+    fn requestWorkspaceSelectionContent(self: *Shell, ws_d: *const api.model.WorkspaceDetail, selection: WorkspaceFileSelection) void {
         switch (self.workspace.tab) {
             .context => {
                 const context = switch (selection) {
@@ -1574,14 +1667,24 @@ pub const Shell = struct {
                     .rule => return,
                 };
                 if (context.is_create_draft) return;
-                const key = api.state.WsPathKey{ .ws_id = ws_d.ws_id, .path = context.path };
-                if (!self.api_state.ws_context_content_cache.shouldDispatch(key)) return;
+                const remote_items = self.api_state.workspace_context_cache.lookup(.{ .value = ws_d.ws_id }) orelse return;
+                const remote = findContextByPath(remote_items, context.path) orelse return;
+                const key = api.state.WorkspacePathKey{ .ws_id = ws_d.ws_id, .path = context.path };
+                if (remote.hash.len > 0) {
+                    if (self.remoteWorkspaceContextBody(ws_d.ws_id, context.path)) |body| {
+                        const body_hash = util_hash.contentHash(body);
+                        if (local_content.hashesEqual(body_hash[0..], remote.hash)) return;
+                        self.api_state.workspace_context_content_cache.invalidate();
+                        self.api_state.workspace_context_content_pending.cancel();
+                    }
+                }
+                if (!self.api_state.workspace_context_content_cache.shouldDispatch(key)) return;
 
                 api.specs.dispatchFromState(
-                    api.specs.WsContextContentParams,
-                    api.specs.WsContextContentPayload,
+                    api.specs.WorkspaceContextContentParams,
+                    api.specs.WorkspaceContextContentPayload,
                     api.specs.workspace_context_content,
-                    &self.api_state.ws_context_content_pending,
+                    &self.api_state.workspace_context_content_pending,
                     self.api_state,
                     .{ .ws_id = ws_d.ws_id, .path = context.path },
                 );
@@ -1592,16 +1695,27 @@ pub const Shell = struct {
                     .rule => |r| r,
                 };
                 if (rule.is_create_draft) return;
-                const key = api.cache.StringKey{ .value = rule.path };
+                const remote_items = self.api_state.workspace_manifest_cache.lookup(.{ .value = ws_d.ws_id }) orelse return;
+                const remote = self.findRuleFor(remote_items, rule.path, rule.rule_id) orelse return;
+                const remote_path = self.pathForWorkspaceRule(remote);
+                const key = api.cache.StringKey{ .value = remote_path };
+                if (remote.content_hash.len > 0) {
+                    if (self.remoteArtifactRuleBody(self.artifactCategoryForPath(remote_path), remote_path)) |body| {
+                        const body_hash = util_hash.contentHash(body);
+                        if (local_content.hashesEqual(body_hash[0..], remote.content_hash)) return;
+                        self.api_state.rule_content_cache.invalidate();
+                        self.api_state.rule_content_pending.cancel();
+                    }
+                }
                 if (!self.api_state.rule_content_cache.shouldDispatch(key)) return;
 
                 api.specs.dispatchFromState(
-                    api.specs.PathParams,
-                    @import("clumsies_lib").protocol.library_api.RuleContentResponse,
-                    api.specs.library_rule_content,
+                    api.specs.RuleContentParams,
+                    @import("clumsies_lib").protocol.artifact_api.RuleContentResponse,
+                    api.specs.artifact_rule_content,
                     &self.api_state.rule_content_pending,
                     self.api_state,
-                    .{ .path = rule.path },
+                    .{ .path = remote_path, .rule_id = remote.rule_id },
                 );
             },
         }
@@ -1615,11 +1729,11 @@ pub const Shell = struct {
         else
             null;
         workspace_panel.syncWsRows(self);
-        if (live_ws) |ws_d| {
-            self.requestWorkspaceSelectionContent(&ws_d);
-        }
         const current_file_sel = self.currentWorkspaceFileSelection(live_ws);
         const file_sel = current_file_sel orelse self.lastWorkspaceFileSelection(live_ws);
+        if (live_ws) |ws_d| {
+            if (file_sel) |selection| self.requestWorkspaceSelectionContent(&ws_d, selection);
+        }
         if (current_file_sel != null) {
             switch (self.workspace.tab) {
                 .context => self.workspace.last_context_file_row = self.workspace.list_sel,
@@ -1629,19 +1743,27 @@ pub const Shell = struct {
         var context_sel: ?usize = null;
         var context_sel_id: ?[]const u8 = null;
         var context_sel_path: ?[]const u8 = null;
+        var context_sel_hash: ?[]const u8 = null;
+        var context_local_path: ?[]const u8 = null;
         var rule_sel_idx: ?usize = null;
         var rule_sel_id: ?[]const u8 = null;
         var rule_sel_path: ?[]const u8 = null;
+        var rule_sel_hash: ?[]const u8 = null;
+        var rule_local_path: ?[]const u8 = null;
         if (file_sel) |selection| switch (selection) {
             .context => |c| {
                 context_sel = c.idx;
                 context_sel_id = c.context_id;
                 context_sel_path = c.path;
+                context_sel_hash = c.hash;
+                context_local_path = self.workspaceLocalContextPathForView(c.path, c.context_id);
             },
             .rule => |r| {
                 rule_sel_idx = r.idx;
                 rule_sel_id = r.rule_id;
                 rule_sel_path = r.path;
+                rule_sel_hash = r.hash;
+                rule_local_path = self.workspaceLocalRulePathForView(r.path, r.rule_id);
             },
         };
         return workspace_panel.drawDetail(self, ctx, .{
@@ -1649,13 +1771,17 @@ pub const Shell = struct {
             .context_sel = context_sel,
             .context_sel_id = context_sel_id,
             .context_sel_path = context_sel_path,
+            .context_sel_hash = context_sel_hash,
+            .context_local_path = context_local_path,
             .rule_sel_idx = rule_sel_idx,
             .rule_sel_id = rule_sel_id,
             .rule_sel_path = rule_sel_path,
+            .rule_sel_hash = rule_sel_hash,
+            .rule_local_path = rule_local_path,
         });
     }
 
-    fn lastWorkspaceFileSelection(self: *Shell, live_ws: ?api.model.WsDetail) ?WorkspaceFileSelection {
+    fn lastWorkspaceFileSelection(self: *Shell, live_ws: ?api.model.WorkspaceDetail) ?WorkspaceFileSelection {
         const row = switch (self.workspace.tab) {
             .context => self.workspace.last_context_file_row,
             .rules => self.workspace.last_rule_file_row,
@@ -1737,14 +1863,14 @@ pub const Shell = struct {
         return analysis_panel.drawRoot(self, ctx, ins, analysis_available);
     }
 
-    // Count active drafts (status != "merged") across all categories.
+    // Count active drafts across all categories; terminal states are hidden.
     fn draftCount(self: *Shell) usize {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const drafts = self.api_state.drafts orelse return 0;
         var count: usize = 0;
         for (drafts) |d| {
-            if (!std.mem.eql(u8, d.status, "merged")) count += 1;
+            if (!std.mem.eql(u8, d.status, "applied") and !std.mem.eql(u8, d.status, "declined")) count += 1;
         }
         return count;
     }
@@ -1796,11 +1922,11 @@ pub const Shell = struct {
         return &.{};
     }
 
-    /// Pump the library rule content pending slot: on .ok, stash the
+    /// Pump the artifact rule content pending slot: on .ok, stash the
     /// response in the cache keyed by path so subsequent draws can
     /// retrieve it synchronously. On any error outcome, record the
     /// failure against the selected path so widget sync does not
-    /// re-dispatch on every tick; the next `invalidateOnDemandCaches`
+    /// re-dispatch on every tick; the next remote cache invalidation
     /// or a navigation to a different rule clears the marker.
     fn consumeRuleContentResult(self: *Shell) void {
         const result = self.api_state.rule_content_pending.consume() orelse return;
@@ -1816,7 +1942,7 @@ pub const Shell = struct {
         }
     }
 
-    /// Pump the library rule PR list pending slot. Routes the cache
+    /// Pump the artifact rule PR list pending slot. Routes the cache
     /// write against `payload.rule_id` — the id the request was
     /// issued for — rather than the current UI selection, so a rule
     /// switch mid-flight cannot store the list under the wrong path.
@@ -1842,6 +1968,7 @@ pub const Shell = struct {
         switch (result) {
             .ok => |prs| {
                 self.api_state.review_prs_cache.store(.{ .value = "review" }, prs);
+                self.reconcileTerminalPrDrafts(prs);
             },
             else => {
                 self.api_state.review_prs_cache.markFailed(.{ .value = "review" });
@@ -1849,40 +1976,100 @@ pub const Shell = struct {
         }
     }
 
+    fn reconcileTerminalPrDrafts(self: *Shell, prs: []const api.model.RulePr) void {
+        const active_ws_id = self.activeWsId();
+        var changed = false;
+        for (prs) |pr| {
+            const next_status = draftStatusForTerminalPr(pr.status) orelse continue;
+            const category = draftCategoryForPrTargetKind(pr.target_kind) orelse continue;
+            if (pr.ws_id) |ws_id| {
+                changed = self.reconcileTerminalPrDraftInWorkspace(ws_id, category, pr.target_path, next_status) or changed;
+            } else if (active_ws_id) |ws_id| {
+                changed = self.reconcileTerminalPrDraftInWorkspace(ws_id, category, pr.target_path, next_status) or changed;
+            }
+        }
+        if (!changed) return;
+        self.refreshDraftsCache();
+        workspace_panel.syncWsRows(self);
+        artifact_panel.syncArtifactTree(self);
+    }
+
+    fn reconcileTerminalPrDraftInWorkspace(
+        self: *Shell,
+        ws_id: []const u8,
+        category: drafts_mod.DraftCategory,
+        target_path: []const u8,
+        next_status: drafts_mod.DraftStatus,
+    ) bool {
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return false;
+        defer alloc.free(ws_dir);
+        return drafts_mod.transitionDraftStatus(
+            alloc,
+            ws_dir,
+            category,
+            target_path,
+            .in_review,
+            next_status,
+        ) catch false;
+    }
+
+    fn draftStatusForTerminalPr(status: []const u8) ?drafts_mod.DraftStatus {
+        if (std.mem.eql(u8, status, "accepted") or std.mem.eql(u8, status, "merged")) {
+            return .applied;
+        }
+        if (std.mem.eql(u8, status, "rejected")) return .declined;
+        return null;
+    }
+
+    fn draftCategoryForPrTargetKind(target_kind: []const u8) ?drafts_mod.DraftCategory {
+        if (std.mem.eql(u8, target_kind, "context")) return .context;
+        if (std.mem.eql(u8, target_kind, "rule")) return .rule;
+        if (std.mem.eql(u8, target_kind, "mpf")) return .meta_prompt;
+        return null;
+    }
+
     /// Pump the workspace context files pending slot. Stores under the
     /// ws_id the request was issued for; `state.wsDetail` combines it
     /// with the manifest half to form the view.
-    fn consumeWsContextFilesResult(self: *Shell) void {
-        const result = self.api_state.ws_context_files_pending.consume() orelse return;
+    fn consumeWorkspaceContextResult(self: *Shell) void {
+        const result = self.api_state.workspace_context_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
-                self.api_state.ws_context_files_cache.store(.{ .value = payload.ws_id }, payload.files);
-                self.system_notices.clear(.workspace_context_files);
+                self.api_state.workspace_context_cache.store(.{ .value = payload.ws_id }, payload.files);
+                self.settlePendingWorkspacePrAction(payload.ws_id);
+                self.system_notices.clear(.workspace_context);
             },
             else => {
                 if (self.activeWsId()) |ws_id| {
-                    self.api_state.ws_context_files_cache.markFailed(.{ .value = ws_id });
-                    const text: []const u8 = if (self.hasLocalWorkspaceDetail(ws_id))
+                    const has_remote_snapshot = self.api_state.workspace_context_cache.lookup(.{ .value = ws_id }) != null;
+                    if (!has_remote_snapshot) self.api_state.workspace_context_cache.markFailed(.{ .value = ws_id });
+                    const text: []const u8 = if (has_remote_snapshot)
+                        "Workspace context refresh failed; showing latest remote snapshot."
+                    else if (self.hasLocalWorkspaceDetail(ws_id))
                         "Workspace context failed; showing local cache."
                     else
                         "Workspace context failed.";
-                    self.system_notices.push(.workspace_context_files, .failure, .persistent, text);
+                    self.system_notices.push(.workspace_context, .failure, .persistent, text);
                 }
             },
         }
     }
 
     fn consumeWsManifestResult(self: *Shell) void {
-        const result = self.api_state.ws_manifest_pending.consume() orelse return;
+        const result = self.api_state.workspace_manifest_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
-                self.api_state.ws_manifest_cache.store(.{ .value = payload.ws_id }, payload.rules);
+                self.api_state.workspace_manifest_cache.store(.{ .value = payload.ws_id }, payload.rules);
                 self.system_notices.clear(.workspace_manifest);
             },
             else => {
                 if (self.activeWsId()) |ws_id| {
-                    self.api_state.ws_manifest_cache.markFailed(.{ .value = ws_id });
-                    const text: []const u8 = if (self.hasLocalWorkspaceDetail(ws_id))
+                    const has_remote_snapshot = self.api_state.workspace_manifest_cache.lookup(.{ .value = ws_id }) != null;
+                    if (!has_remote_snapshot) self.api_state.workspace_manifest_cache.markFailed(.{ .value = ws_id });
+                    const text: []const u8 = if (has_remote_snapshot)
+                        "Workspace manifest refresh failed; showing latest remote snapshot."
+                    else if (self.hasLocalWorkspaceDetail(ws_id))
                         "Workspace manifest failed; showing local cache."
                     else
                         "Workspace manifest failed.";
@@ -1936,7 +2123,7 @@ pub const Shell = struct {
             return prs[pr_idx].id;
         }
         const rules = self.getRules();
-        const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+        const rule_idx = @min(self.artifact.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
         if (rules.len == 0) return null;
         const prs = self.getPrsForRule(rules[rule_idx].path);
         if (prs.len == 0) return null;
@@ -1946,7 +2133,7 @@ pub const Shell = struct {
 
     /// Recompute the 8 derived pr_detail_* fields from the just-fetched
     /// response. Picking the active operation requires the currently
-    /// cached library PR list so the op matching the selected rule
+    /// cached artifact PR list so the op matching the selected rule
     /// is surfaced first.
     fn refreshPrDetailDerivedFields(
         self: *Shell,
@@ -1957,7 +2144,7 @@ pub const Shell = struct {
 
         const target_rule_id: ?[]const u8 = if (self.selected_module == .review) null else blk: {
             const rules = self.getRules();
-            const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+            const rule_idx = @min(self.artifact.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
             break :blk if (rules.len > 0)
                 self.lookupRuleId(rules[rule_idx].path)
             else
@@ -2043,12 +2230,29 @@ pub const Shell = struct {
         const result = self.api_state.pr_action_pending.consume() orelse return;
         switch (result) {
             .ok => {
+                const wait_for_workspace = self.shouldSettlePrActionAfterWorkspaceRefresh();
+                if (!wait_for_workspace) self.settlePendingPrActionDraft();
                 self.invalidateRemoteDetailRequests();
+                self.returnReviewDetailToListAfterPrAction();
+                if (wait_for_workspace) {
+                    if (self.drafts.pending_pr_action) |pending| {
+                        workspace_panel.refreshWorkspaceDetail(self, pending.target.ws_id);
+                    }
+                }
                 self.notifyOp(.success, "PR action applied.");
             },
-            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR action failed", e)),
-            .network_error => self.notifyOp(.failure, "PR action failed: network error."),
-            .invalid_response => self.notifyOp(.failure, "PR action failed: malformed response."),
+            .api_error => |e| {
+                self.releasePendingPrAction();
+                self.notifyOp(.failure, writeErrorStatus(self, "PR action failed", e));
+            },
+            .network_error => {
+                self.releasePendingPrAction();
+                self.notifyOp(.failure, "PR action failed: network error.");
+            },
+            .invalid_response => {
+                self.releasePendingPrAction();
+                self.notifyOp(.failure, "PR action failed: malformed response.");
+            },
         }
     }
 
@@ -2094,10 +2298,10 @@ pub const Shell = struct {
     /// mark the currently selected (ws_id, path) as failed to stop the
     /// widget loop from re-dispatching on every tick.
     fn consumeWsContextContentResult(self: *Shell) void {
-        const result = self.api_state.ws_context_content_pending.consume() orelse return;
+        const result = self.api_state.workspace_context_content_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
-                self.api_state.ws_context_content_cache.store(
+                self.api_state.workspace_context_content_cache.store(
                     .{ .ws_id = payload.ws_id, .path = payload.path },
                     payload.body,
                 );
@@ -2112,7 +2316,7 @@ pub const Shell = struct {
                     .rule => return,
                 };
                 if (context.is_create_draft) return;
-                self.api_state.ws_context_content_cache.markFailed(
+                self.api_state.workspace_context_content_cache.markFailed(
                     .{ .ws_id = ws_d.ws_id, .path = context.path },
                 );
                 self.system_notices.push(.workspace_context_content, .failure, .persistent, "Workspace context content failed; showing local cache when available.");
@@ -2139,6 +2343,7 @@ pub const Shell = struct {
     pub fn doPrAction(self: *Shell, action: []const u8) void {
         const pr = self.selectedPr() orelse return;
         if (pr.target_kind == .bundle) return;
+        if (!self.capturePendingPrAction(pr, action)) return;
 
         api.specs.dispatchFromState(
             api.specs.PrActionParams,
@@ -2158,7 +2363,7 @@ pub const Shell = struct {
             return prs[@min(self.review.selected_pr_idx, prs.len - 1)];
         }
         const all_p = self.getRules();
-        const si = @min(self.library.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
+        const si = @min(self.artifact.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
         if (all_p.len == 0) return null;
         const prs_for = self.getPrsForRule(all_p[si].path);
         if (prs_for.len == 0) return null;
@@ -2197,14 +2402,14 @@ pub const Shell = struct {
     fn wsContextCount(self: *Shell) usize {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        if (self.api_state.ws_detail) |ws_d| return ws_d.context_files.len;
+        if (self.api_state.ws_detail) |ws_d| return ws_d.workspace_context.len;
         return 0;
     }
 
     fn wsRulesCount(self: *Shell) usize {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        if (self.api_state.ws_detail) |ws_d| return ws_d.ws_rules.len;
+        if (self.api_state.ws_detail) |ws_d| return ws_d.workspace_rules.len;
         return 0;
     }
 
@@ -2523,7 +2728,7 @@ pub const Shell = struct {
         if (self.show_help) return "Keyboard reference drawer.";
         return switch (self.selected_module) {
             .dashboard => "Live interaction rounds and attestation closure.",
-            .library => "Bundle facet, rule list, and passive preview.",
+            .artifact => "Bundle facet, rule list, and passive preview.",
             .workspace => "Workspace list and sync status detail.",
             .review => "Pull request review queue.",
             .analysis => "Rule and member aggregates.",
@@ -2547,6 +2752,9 @@ pub const Shell = struct {
         self.drafts.by_rule_path = .{};
         self.drafts.by_context_path = .{};
         self.drafts.by_meta_prompt_path = .{};
+        self.drafts.by_rule_draft_path = .{};
+        self.drafts.by_context_draft_path = .{};
+        self.drafts.by_meta_prompt_draft_path = .{};
         self.drafts.by_rule_local_id = .{};
         self.drafts.by_context_local_id = .{};
         self.drafts.by_meta_prompt_local_id = .{};
@@ -2564,7 +2772,6 @@ pub const Shell = struct {
         self.drafts.create_rule_paths = &.{};
         self.drafts.create_context_paths = &.{};
         self.drafts.total = 0;
-        self.drafts.ready = 0;
         self.drafts.cache_ws_id = null;
         self.drafts.index_size = 0;
         self.drafts.index_mtime = 0;
@@ -2587,11 +2794,10 @@ pub const Shell = struct {
 
         for (index.entries.items) |entry| {
             switch (entry.status) {
-                .merged, .rejected => continue,
+                .applied, .declined => continue,
                 else => {},
             }
             self.drafts.total += 1;
-            if (entry.status == .ready) self.drafts.ready += 1;
 
             // Lookup map keys can live in drafts_arena: the maps are
             // rebuilt from scratch on every refresh, so no key is
@@ -2604,6 +2810,13 @@ pub const Shell = struct {
                 .meta_prompt => &self.drafts.by_meta_prompt_path,
             };
             target_map.put(arena, key, entry.status) catch {};
+            const draft_path = arena.dupe(u8, entry.draft_path) catch continue;
+            const draft_path_map = switch (entry.category) {
+                .rule => &self.drafts.by_rule_draft_path,
+                .context => &self.drafts.by_context_draft_path,
+                .meta_prompt => &self.drafts.by_meta_prompt_draft_path,
+            };
+            draft_path_map.put(arena, key, draft_path) catch {};
             if (entry.operation == .create and entry.category != .meta_prompt) {
                 const local_id = entry.local_temp_id orelse continue;
                 const local_key = arena.dupe(u8, key_src) catch continue;
@@ -2649,7 +2862,7 @@ pub const Shell = struct {
 
         self.refreshDraftsCache();
         workspace_panel.syncWsRows(self);
-        library_panel.syncLibraryTree(self);
+        artifact_panel.syncArtifactTree(self);
     }
 
     const DraftIndexSignature = struct {
@@ -2692,10 +2905,22 @@ pub const Shell = struct {
         };
     }
 
+    fn draftPathForSelection(
+        self: *const Shell,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    ) []const u8 {
+        return switch (category) {
+            .rule => self.drafts.by_rule_draft_path.get(path),
+            .context => self.drafts.by_context_draft_path.get(path),
+            .meta_prompt => self.drafts.by_meta_prompt_draft_path.get(path),
+        } orelse path;
+    }
+
     /// Read the current draft bytes for a file, allocated in
     /// view_arena so the caller can use the slice for the remainder of
     /// the current frame. Returns null when no draft is tracked or
-    /// the file is missing / unreadable. Both Library and Workspace
+    /// the file is missing / unreadable. Both Artifact and Workspace
     /// content panels call this to overlay the working copy on top of
     /// the authoritative cache.
     pub fn draftContentForView(
@@ -2710,9 +2935,10 @@ pub const Shell = struct {
             .meta_prompt => self.drafts.by_meta_prompt_path.contains(path),
         };
         if (!has_draft) return null;
+        const draft_path = self.draftPathForSelection(category, path);
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
-        return drafts_mod.readDraftFile(arena, ws_dir, category, path) catch null;
+        return drafts_mod.readDraftFile(arena, ws_dir, category, draft_path) catch null;
     }
 
     /// Derive the draft target from the currently focused module and
@@ -2723,13 +2949,13 @@ pub const Shell = struct {
     pub fn selectedDraftTarget(self: *Shell) ?DraftTarget {
         const ws_id = self.activeWsId() orelse return null;
         switch (self.selected_module) {
-            .library => {
+            .artifact => {
                 const rules = self.getRules();
-                if (self.library.selected_rule < rules.len) {
-                    const rule = &rules[self.library.selected_rule];
+                if (self.artifact.selected_rule < rules.len) {
+                    const rule = &rules[self.artifact.selected_rule];
                     return .{
                         .ws_id = ws_id,
-                        .category = self.libraryCategoryForPath(rule.path),
+                        .category = self.artifactCategoryForPath(rule.path),
                         .path = rule.path,
                         .rule_id = self.lookupRuleId(rule.path),
                     };
@@ -2738,7 +2964,7 @@ pub const Shell = struct {
                 // server-side rule yet. The index is offset by
                 // `rules.len` so we can recover the create-draft
                 // path from drafts_create_rule_paths.
-                const k = self.library.selected_rule - rules.len;
+                const k = self.artifact.selected_rule - rules.len;
                 if (k >= self.drafts.create_rule_paths.len) return null;
                 return .{
                     .ws_id = ws_id,
@@ -2770,10 +2996,10 @@ pub const Shell = struct {
 
     pub fn selectedContentId(self: *Shell) ?[]const u8 {
         switch (self.selected_module) {
-            .library => {
+            .artifact => {
                 const rules = self.getRules();
-                if (self.library.selected_rule >= rules.len) return null;
-                return self.lookupRuleId(rules[self.library.selected_rule].path);
+                if (self.artifact.selected_rule >= rules.len) return null;
+                return self.lookupRuleId(rules[self.artifact.selected_rule].path);
             },
             .workspace => {
                 const ws_id = self.activeWsId() orelse return null;
@@ -2847,9 +3073,10 @@ pub const Shell = struct {
             };
         }
 
+        const draft_path = self.draftPathForSelection(target.category, target.path);
         const draft_abs = std.fs.path.join(
             alloc,
-            &.{ ws_dir, "drafts", @tagName(target.category), target.path },
+            &.{ ws_dir, "drafts", @tagName(target.category), draft_path },
         ) catch return;
         defer alloc.free(draft_abs);
 
@@ -2872,45 +3099,21 @@ pub const Shell = struct {
         self.refreshDraftsCache();
     }
 
-    /// Pull the authoritative bytes for a file so a new modify-draft
-    /// can seed its copy. Rules pull from the library cache; context
-    /// files from the workspace context content cache.
+    /// Seed a modify draft from the base bytes used by the active
+    /// editing surface. Workspace edits use the materialized local
+    /// cache so remote awareness does not silently rebase a draft.
     fn seedContentForTarget(self: *Shell, target: DraftTarget) ?[]const u8 {
+        if (self.selected_module == .workspace) {
+            return switch (target.category) {
+                .rule, .meta_prompt => self.localArtifactRuleBody(target.category, target.path),
+                .context => self.localWorkspaceContextBody(target.ws_id, target.path),
+            };
+        }
         return switch (target.category) {
             .rule => self.cachedRuleBody(target.path),
             .context => self.cachedWorkspaceContextBody(target.ws_id, target.path),
-            .meta_prompt => self.cachedMetaPromptBody(),
+            .meta_prompt => self.cachedArtifactRuleBody(.meta_prompt, target.path),
         };
-    }
-
-    /// Handler for the `m` key. Flips between `editing` and `ready`.
-    /// Submitted / merged / rejected / conflicted drafts are not
-    /// toggled — they represent terminal or pending-review state.
-    pub fn toggleSelectedDraftReady(self: *Shell) void {
-        self.refreshDraftsCache();
-        const target = self.selectedDraftTarget() orelse return;
-        const current = self.draftStatusFor(target.category, target.path) orelse {
-            self.notifyOp(.warning, "No draft to mark ready.");
-            return;
-        };
-        const next_status: drafts_mod.DraftStatus = switch (current) {
-            .editing => .ready,
-            .ready => .editing,
-            else => {
-                self.notifyOp(.warning, "Draft status is locked.");
-                return;
-            },
-        };
-
-        const alloc = self.api_state.allocator();
-        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
-        defer alloc.free(ws_dir);
-        drafts_mod.setDraftStatus(alloc, ws_dir, target.category, target.path, next_status) catch |err| {
-            self.notifyOp(.failure, @errorName(err));
-            return;
-        };
-        self.notifyOp(.success, if (next_status == .ready) "Draft marked ready." else "Draft marked editing.");
-        self.refreshDraftsCache();
     }
 
     /// Arms the confirm overlay for a discard. The actual discard runs
@@ -2931,7 +3134,8 @@ pub const Shell = struct {
         // confirm overlay can outlive any subsequent refresh call
         // without reading freed memory.
         self.releasePendingDiscardTarget();
-        const path_copy = self.api_state.allocator().dupe(u8, target.path) catch {
+        const draft_path = self.draftPathForSelection(target.category, target.path);
+        const path_copy = self.api_state.allocator().dupe(u8, draft_path) catch {
             self.notifyOp(.failure, "Out of memory capturing draft target.");
             return;
         };
@@ -2958,6 +3162,103 @@ pub const Shell = struct {
         self.drafts.pending_discard_target = null;
     }
 
+    fn releasePendingPrAction(self: *Shell) void {
+        const alloc = self.api_state.allocator();
+        if (self.drafts.pending_pr_action_path_owned) |p| {
+            alloc.free(p);
+            self.drafts.pending_pr_action_path_owned = null;
+        }
+        if (self.drafts.pending_pr_action_ws_id_owned) |ws_id| {
+            alloc.free(ws_id);
+            self.drafts.pending_pr_action_ws_id_owned = null;
+        }
+        self.drafts.pending_pr_action = null;
+    }
+
+    fn capturePendingPrAction(self: *Shell, pr: data.PullRequestEntry, action: []const u8) bool {
+        const ws_id_src = pr.workspace_id orelse self.activeWsId() orelse {
+            self.releasePendingPrAction();
+            return true;
+        };
+        const status_on_success: drafts_mod.DraftStatus = if (std.mem.eql(u8, action, "reject"))
+            .declined
+        else
+            .applied;
+        const category: drafts_mod.DraftCategory = switch (pr.target_kind) {
+            .context => .context,
+            .rule => .rule,
+            .mpf => .meta_prompt,
+            .bundle => return false,
+        };
+
+        self.releasePendingPrAction();
+        const alloc = self.api_state.allocator();
+        const ws_id_copy = alloc.dupe(u8, ws_id_src) catch {
+            self.notifyOp(.failure, "Out of memory capturing PR action.");
+            return false;
+        };
+        const path_copy = alloc.dupe(u8, pr.target_path) catch {
+            alloc.free(ws_id_copy);
+            self.notifyOp(.failure, "Out of memory capturing PR action.");
+            return false;
+        };
+
+        self.drafts.pending_pr_action_ws_id_owned = ws_id_copy;
+        self.drafts.pending_pr_action_path_owned = path_copy;
+        self.drafts.pending_pr_action = PendingPrAction{
+            .target = .{
+                .ws_id = ws_id_copy,
+                .category = category,
+                .path = path_copy,
+            },
+            .status_on_success = status_on_success,
+        };
+        return true;
+    }
+
+    fn shouldSettlePrActionAfterWorkspaceRefresh(self: *const Shell) bool {
+        const pending = self.drafts.pending_pr_action orelse return false;
+        return pending.target.category == .context and pending.status_on_success == .applied;
+    }
+
+    fn settlePendingWorkspacePrAction(self: *Shell, ws_id: []const u8) void {
+        const pending = self.drafts.pending_pr_action orelse return;
+        if (pending.target.category != .context) return;
+        if (pending.status_on_success != .applied) return;
+        if (!std.mem.eql(u8, pending.target.ws_id, ws_id)) return;
+        self.settlePendingPrActionDraft();
+    }
+
+    fn returnReviewDetailToListAfterPrAction(self: *Shell) void {
+        if (self.selected_module != .review) return;
+        if (self.review.mode != .detail) return;
+        self.review.mode = .list;
+        self.review.focus = .queue;
+    }
+
+    fn settlePendingPrActionDraft(self: *Shell) void {
+        const pending = self.drafts.pending_pr_action orelse return;
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, pending.target.ws_id) catch {
+            self.releasePendingPrAction();
+            return;
+        };
+        defer alloc.free(ws_dir);
+
+        _ = drafts_mod.transitionDraftStatus(
+            alloc,
+            ws_dir,
+            pending.target.category,
+            self.draftPathForSelection(pending.target.category, pending.target.path),
+            .in_review,
+            pending.status_on_success,
+        ) catch {};
+        self.releasePendingPrAction();
+        self.refreshDraftsCache();
+        workspace_panel.syncWsRows(self);
+        artifact_panel.syncArtifactTree(self);
+    }
+
     fn commitDiscardDraft(self: *Shell) void {
         const target = self.drafts.pending_discard_target orelse return;
         const alloc = self.api_state.allocator();
@@ -2976,7 +3277,7 @@ pub const Shell = struct {
     }
 
     /// Handler for the `p` key. Opens the PR Composer when the
-    /// selected file has a ready draft. The composer is intentionally
+    /// selected file has a local draft. The composer is intentionally
     /// single-op for the initial cut — multi-draft select is deferred
     /// to a follow-up.
     pub fn openPrComposer(self: *Shell) void {
@@ -2989,8 +3290,8 @@ pub const Shell = struct {
             self.notifyOp(.warning, "No draft for this selection.");
             return;
         };
-        if (status != .ready) {
-            self.notifyOp(.warning, "Draft must be marked ready (m) before submit.");
+        if (status != .draft) {
+            self.notifyOp(.warning, "Draft is not editable.");
             return;
         }
         // Composer state persists across frames while the overlay is
@@ -3023,17 +3324,31 @@ pub const Shell = struct {
     }
 
     fn lookupDraftOperation(self: *Shell, target: DraftTarget) ?drafts_mod.DraftOperation {
+        return self.draftOperationForWorkspace(target.ws_id, target.category, target.path);
+    }
+
+    pub fn draftOperationForView(
+        self: *Shell,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    ) ?drafts_mod.DraftOperation {
+        const ws_id = self.activeWsId() orelse return null;
+        return self.draftOperationForWorkspace(ws_id, category, path);
+    }
+
+    fn draftOperationForWorkspace(
+        self: *Shell,
+        ws_id: []const u8,
+        category: drafts_mod.DraftCategory,
+        path: []const u8,
+    ) ?drafts_mod.DraftOperation {
         const alloc = self.api_state.allocator();
-        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return null;
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return null;
         defer alloc.free(ws_dir);
         var index = drafts_mod.loadIndex(alloc, ws_dir) catch return null;
         defer index.deinit(alloc);
-        for (index.entries.items) |entry| {
-            if (entry.category != target.category) continue;
-            if (!std.mem.eql(u8, entry.draft_path, target.path)) continue;
-            return entry.operation;
-        }
-        return null;
+        const entry = index.findDraftById(category, path) orelse return null;
+        return entry.operation;
     }
 
     /// Free the duped strings backing pr_composer_target, if any.
@@ -3085,34 +3400,35 @@ pub const Shell = struct {
         };
         errdefer alloc.free(ws_dir);
 
-        const content = drafts_mod.readDraftFile(alloc, ws_dir, target.category, target.path) catch |err| {
-            self.notifyOp(.failure, @errorName(err));
-            return null;
-        };
-        errdefer alloc.free(content);
-
         var index = drafts_mod.loadIndex(alloc, ws_dir) catch |err| {
             self.notifyOp(.failure, @errorName(err));
             return null;
         };
         defer index.deinit(alloc);
 
-        var entry_out: ?DraftSubmitEntry = null;
-        for (index.entries.items) |e| {
-            if (e.category != target.category) continue;
-            if (!std.mem.eql(u8, e.draft_path, target.path)) continue;
-            entry_out = .{
-                .operation = e.operation,
-                .base_hash = if (e.base_hash) |h| (alloc.dupe(u8, h) catch null) else null,
-            };
-            break;
-        }
+        const draft_entry = index.findDraftById(target.category, target.path) orelse {
+            self.notifyOp(.warning, "Draft entry missing; try again.");
+            return null;
+        };
+        const draft_path = alloc.dupe(u8, draft_entry.draft_path) catch return null;
+        errdefer alloc.free(draft_path);
+        const content = drafts_mod.readDraftFile(alloc, ws_dir, target.category, draft_path) catch |err| {
+            self.notifyOp(.failure, @errorName(err));
+            return null;
+        };
+        errdefer alloc.free(content);
+        const entry_out = DraftSubmitEntry{
+            .operation = draft_entry.operation,
+            .draft_path = draft_path,
+            .base_hash = if (draft_entry.base_hash) |h| (alloc.dupe(u8, h) catch null) else null,
+        };
 
         return .{ .ws_dir = ws_dir, .content = content, .entry = entry_out };
     }
 
     const DraftSubmitEntry = struct {
         operation: drafts_mod.DraftOperation,
+        draft_path: []const u8,
         base_hash: ?[]const u8,
     };
 
@@ -3122,6 +3438,7 @@ pub const Shell = struct {
         defer alloc.free(read.ws_dir);
         defer alloc.free(read.content);
         defer if (read.entry) |e| {
+            alloc.free(e.draft_path);
             if (e.base_hash) |h| alloc.free(h);
         };
 
@@ -3129,9 +3446,8 @@ pub const Shell = struct {
             self.notifyOp(.warning, "Draft entry missing; try again.");
             return;
         };
-        // Spec s1-5 §2.2: modify/rename/delete must carry rule_id +
-        // base_hash; create must carry path + content. The hub
-        // rejects any operation that is missing a required field.
+        // Existing-rule operations need identity and base metadata;
+        // create operations carry the new path and content.
         const operation_type: []const u8 = switch (entry.operation) {
             .create => "create",
             .modify => "modify",
@@ -3148,7 +3464,7 @@ pub const Shell = struct {
         defer if (content_copy) |c| alloc.free(c);
 
         // Modify/rename/delete need rule_id; resolve from the draft
-        // target first (authoritative) then fall back to a library
+        // target first (authoritative) then fall back to an artifact
         // lookup by path. Create drafts have neither — that's the
         // expected missing rule_id, not an error.
         const rule_id_copy_opt: ?[]const u8 = if (entry.operation == .create)
@@ -3162,11 +3478,16 @@ pub const Shell = struct {
         };
         defer if (rule_id_copy_opt) |pid| alloc.free(pid);
 
-        const path_copy_opt: ?[]const u8 = if (entry.operation == .create)
-            (alloc.dupe(u8, target.path) catch return)
-        else
-            null;
+        const path_copy_opt: ?[]const u8 = switch (entry.operation) {
+            .create => alloc.dupe(u8, entry.draft_path) catch return,
+            else => null,
+        };
         defer if (path_copy_opt) |p| alloc.free(p);
+        const new_path_copy_opt: ?[]const u8 = switch (entry.operation) {
+            .rename => alloc.dupe(u8, entry.draft_path) catch return,
+            else => null,
+        };
+        defer if (new_path_copy_opt) |p| alloc.free(p);
 
         const base_hash_copy_opt: ?[]const u8 = if (entry.base_hash) |h|
             (alloc.dupe(u8, h) catch return)
@@ -3192,6 +3513,7 @@ pub const Shell = struct {
                 .operation_type = operation_type,
                 .rule_id = rule_id_copy_opt,
                 .path = path_copy_opt,
+                .new_path = new_path_copy_opt,
                 .content = content_copy,
                 .base_hash = base_hash_copy_opt,
             },
@@ -3206,6 +3528,7 @@ pub const Shell = struct {
         defer alloc.free(read.ws_dir);
         defer alloc.free(read.content);
         defer if (read.entry) |e| {
+            alloc.free(e.draft_path);
             if (e.base_hash) |h| alloc.free(h);
         };
 
@@ -3226,11 +3549,16 @@ pub const Shell = struct {
         defer alloc.free(content_copy);
         const ws_id_copy = alloc.dupe(u8, target.ws_id) catch return;
         defer alloc.free(ws_id_copy);
-        const path_copy_opt: ?[]const u8 = if (entry.operation == .create)
-            (alloc.dupe(u8, target.path) catch return)
-        else
-            null;
+        const path_copy_opt: ?[]const u8 = switch (entry.operation) {
+            .create => alloc.dupe(u8, entry.draft_path) catch return,
+            else => null,
+        };
         defer if (path_copy_opt) |p| alloc.free(p);
+        const new_path_copy_opt: ?[]const u8 = switch (entry.operation) {
+            .rename => alloc.dupe(u8, entry.draft_path) catch return,
+            else => null,
+        };
+        defer if (new_path_copy_opt) |p| alloc.free(p);
         const context_id_copy_opt: ?[]const u8 = if (entry.operation != .create)
             if (target.context_id) |cid| (alloc.dupe(u8, cid) catch return) else null
         else
@@ -3259,6 +3587,7 @@ pub const Shell = struct {
                 .operation_type = operation_type,
                 .context_id = context_id_copy_opt,
                 .path = path_copy_opt,
+                .new_path = new_path_copy_opt,
                 .content = content_copy,
                 .base_hash = base_hash_copy_opt,
             },
@@ -3506,7 +3835,7 @@ pub const Shell = struct {
         self.drafts.pr_composer_submitting = false;
         switch (result) {
             .ok => |resp| {
-                self.markComposerSubmitted(resp.pr_id, resp.status);
+                self.markComposerInReview(resp.pr_id, resp.status);
             },
             .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", e)),
             .network_error => self.notifyOp(.failure, "PR submit failed: network error."),
@@ -3519,7 +3848,7 @@ pub const Shell = struct {
         self.drafts.pr_composer_submitting = false;
         switch (result) {
             .ok => |resp| {
-                self.markComposerSubmitted(resp.pr_id, resp.status);
+                self.markComposerInReview(resp.pr_id, resp.status);
             },
             .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", e)),
             .network_error => self.notifyOp(.failure, "PR submit failed: network error."),
@@ -3528,14 +3857,20 @@ pub const Shell = struct {
     }
 
     /// Shared post-submit path for both rule and context PRs. Marks
-    /// the draft as submitted against disk, refreshes the in-memory
+    /// the draft as in review against disk, refreshes the in-memory
     /// cache, closes the composer, and posts a user-facing confirmation.
-    fn markComposerSubmitted(self: *Shell, pr_id: []const u8, status: []const u8) void {
+    fn markComposerInReview(self: *Shell, pr_id: []const u8, status: []const u8) void {
         const target = self.drafts.pr_composer_target orelse return;
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
         defer alloc.free(ws_dir);
-        drafts_mod.setDraftStatus(alloc, ws_dir, target.category, target.path, .submitted) catch {};
+        drafts_mod.setDraftStatus(
+            alloc,
+            ws_dir,
+            target.category,
+            self.draftPathForSelection(target.category, target.path),
+            .in_review,
+        ) catch {};
         self.refreshDraftsCache();
         // A new PR exists on the hub, but rule_prs_cache still
         // holds the pre-submit snapshot — the Pull Requests tab
@@ -3547,9 +3882,9 @@ pub const Shell = struct {
         self.releaseComposerTarget();
         const message = std.fmt.allocPrint(
             self.api_state.allocator(),
-            "PR {s} submitted ({s}).",
+            "PR {s} opened ({s}).",
             .{ pr_id, status },
-        ) catch "PR submitted.";
+        ) catch "PR opened.";
         self.notifyOp(.success, message);
     }
 
@@ -3572,6 +3907,7 @@ pub const Shell = struct {
                 self.ensureActiveWorkspaceDetailRequested();
             },
             .review => {
+                api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
                 self.ensureReviewPrsRequested();
             },
             else => {},

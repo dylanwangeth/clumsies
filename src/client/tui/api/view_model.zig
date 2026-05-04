@@ -10,7 +10,7 @@ const state = @import("state.zig");
 
 pub fn toRuleEntries(
     alloc: std.mem.Allocator,
-    rules: []const model.LibraryRule,
+    rules: []const model.ArtifactRule,
 ) []const data.RuleEntry {
     var list: std.ArrayList(data.RuleEntry) = .empty;
     for (rules) |p| {
@@ -61,7 +61,7 @@ pub fn toPrEntries(
         var diff: []const []const u8 = &.{};
         var comments: []const data.CommentEntry = &.{};
         var attestation_refers: u16 = 0;
-        var op_type: []const u8 = "";
+        var op_type: []const u8 = pr.op_type;
         var op_current_path: []const u8 = "";
         var op_new_path: []const u8 = "";
         var op_base_hash: []const u8 = "";
@@ -80,6 +80,10 @@ pub fn toPrEntries(
         if (api_state.pr_comments_cache.lookup(.{ .value = pr.pr_id })) |c| {
             comments = c;
         }
+        const comment_count: u16 = if (comments.len > 0)
+            @intCast(@min(comments.len, std.math.maxInt(u16)))
+        else
+            @intCast(@min(@max(pr.comment_count, 0), std.math.maxInt(u16)));
 
         list.append(alloc, .{
             .id = pr.pr_id,
@@ -94,6 +98,7 @@ pub fn toPrEntries(
             .base_hash = op_base_hash,
             .diff = diff,
             .comments = comments,
+            .comment_count = comment_count,
             .attestation_refers = attestation_refers,
             .attestation_sessions = 0,
             .operation_count = @intCast(@max(pr.operation_count, 0)),
@@ -115,7 +120,7 @@ pub fn toReviewPrEntries(
     for (prs) |pr| {
         var diff: []const []const u8 = &.{};
         var comments: []const data.CommentEntry = &.{};
-        var op_type: []const u8 = "";
+        var op_type: []const u8 = pr.op_type;
         var op_current_path: []const u8 = "";
         var op_new_path: []const u8 = "";
         var op_base_hash: []const u8 = "";
@@ -133,6 +138,10 @@ pub fn toReviewPrEntries(
         if (api_state.pr_comments_cache.lookup(.{ .value = pr.pr_id })) |c| {
             comments = c;
         }
+        const comment_count: u16 = if (comments.len > 0)
+            @intCast(@min(comments.len, std.math.maxInt(u16)))
+        else
+            @intCast(@min(@max(pr.comment_count, 0), std.math.maxInt(u16)));
 
         const target_path = if (pr.target_path.len > 0) pr.target_path else pr.pr_id;
         list.append(alloc, .{
@@ -148,6 +157,7 @@ pub fn toReviewPrEntries(
             .base_hash = op_base_hash,
             .diff = diff,
             .comments = comments,
+            .comment_count = comment_count,
             .attestation_refers = 0,
             .attestation_sessions = 0,
             .operation_count = @intCast(@max(pr.operation_count, 0)),
@@ -170,7 +180,7 @@ pub fn parseTargetKind(raw: []const u8) data.PrTargetKind {
 pub fn analysisFromStats(
     alloc: std.mem.Allocator,
     stats: model.OrgStats,
-    library: ?[]const model.LibraryRule,
+    artifact: ?[]const model.ArtifactRule,
     local: ?attestation_reader.LocalStats,
 ) data.AnalysisData {
     var trend: [30]u16 = .{0} ** 30;
@@ -193,7 +203,7 @@ pub fn analysisFromStats(
 
     var rules_list: std.ArrayList(data.AnalysisRule) = .empty;
     for (stats.rules) |ps| {
-        const name = if (library) |lib| blk: {
+        const name = if (artifact) |lib| blk: {
             for (lib) |lp| {
                 if (std.mem.eql(u8, lp.rule_id, ps.rule_id))
                     break :blk lp.path;
@@ -229,7 +239,7 @@ pub fn analysisFromStats(
     }
 
     if (local) |l| {
-        const remapped_rules: []const data.AnalysisRule = if (library) |lib| blk: {
+        const remapped_rules: []const data.AnalysisRule = if (artifact) |lib| blk: {
             var remapped: std.ArrayList(data.AnalysisRule) = .empty;
             for (l.rules) |p| {
                 var copy = p;
@@ -262,7 +272,7 @@ pub fn analysisFromStats(
             .last_event_minutes_ago = 0,
             .refer_trend = l.refer_trend,
             .rules = remapped_rules,
-            .members = toMemberStatss(alloc, stats.users, library),
+            .members = toMemberStatss(alloc, stats.users, artifact),
             .models = &.{},
             .alerts = &.{},
             .inputs = inputs_list.items,
@@ -279,7 +289,7 @@ pub fn analysisFromStats(
         .last_event_minutes_ago = 0,
         .refer_trend = trend,
         .rules = rules_list.items,
-        .members = toMemberStatss(alloc, stats.users, library),
+        .members = toMemberStatss(alloc, stats.users, artifact),
         .models = &.{},
         .alerts = &.{},
     };
@@ -311,9 +321,9 @@ fn trend30FromBuckets(source: []const i64) [30]u16 {
     return trend30;
 }
 
-test "toRuleEntries maps library rules to view entries" {
+test "toRuleEntries maps artifact rules to view entries" {
     const alloc = std.testing.allocator;
-    const rules = [_]model.LibraryRule{
+    const rules = [_]model.ArtifactRule{
         .{ .rule_id = "p1", .path = "rule/STYLE.md", .content_hash = "abc", .updated_at = "2025-01-01" },
         .{ .rule_id = "p2", .path = "workflow/COMMIT.md", .content_hash = "def", .updated_at = "2025-01-02", .refer_count = 1500 },
     };
@@ -375,8 +385,8 @@ test "trend30FromBuckets truncates long source to last 30" {
     try std.testing.expectEqual(@as(u16, 34), result[29]);
 }
 
-fn ruleNameForId(library: ?[]const model.LibraryRule, rule_id: []const u8) []const u8 {
-    if (library) |lib| {
+fn ruleNameForId(artifact: ?[]const model.ArtifactRule, rule_id: []const u8) []const u8 {
+    if (artifact) |lib| {
         for (lib) |lp| {
             if (std.mem.eql(u8, lp.rule_id, rule_id)) return lp.path;
         }
@@ -387,14 +397,14 @@ fn ruleNameForId(library: ?[]const model.LibraryRule, rule_id: []const u8) []con
 fn toMemberStatss(
     alloc: std.mem.Allocator,
     members: []const model.UserStats,
-    library: ?[]const model.LibraryRule,
+    artifact: ?[]const model.ArtifactRule,
 ) []const data.MemberStats {
     var list: std.ArrayList(data.MemberStats) = .empty;
     for (members) |m| {
         var top_rules: std.ArrayList(data.MemberRuleStat) = .empty;
         for (m.top_rules) |tp| {
             top_rules.append(alloc, .{
-                .name = ruleNameForId(library, tp.rule_id),
+                .name = ruleNameForId(artifact, tp.rule_id),
                 .refer_count = @intCast(@min(tp.refer_count, std.math.maxInt(u32))),
             }) catch continue;
         }

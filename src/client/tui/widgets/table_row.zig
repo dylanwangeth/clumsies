@@ -19,6 +19,8 @@ pub const Column = struct {
     flex: u16 = 0,
     min_width: u16 = 0,
     alignment: enum { left, right } = .left,
+    style: ?vaxis.Style = null,
+    gap_after: ?u16 = null,
 };
 
 pub const TableRow = struct {
@@ -54,7 +56,7 @@ pub const TableRow = struct {
                 fixed_total += @max(text_w, col.min_width);
             }
             total_flex += col.flex;
-            if (i < self.columns.len - 1) fixed_total += self.gap;
+            if (i < self.columns.len - 1) fixed_total += col.gap_after orelse self.gap;
         }
 
         const content_width = total_width -| self.padding_left;
@@ -96,12 +98,12 @@ pub const TableRow = struct {
                 if (gwidth == 0 or cursor + gwidth > col_x + col_width) break;
                 surface.writeCell(cursor, 0, .{
                     .char = .{ .grapheme = bytes, .width = @intCast(gwidth) },
-                    .style = self.style,
+                    .style = col.style orelse self.style,
                 });
                 cursor += gwidth;
             }
 
-            col_x += col_width + if (i < self.columns.len - 1) self.gap else 0;
+            col_x += col_width + if (i < self.columns.len - 1) col.gap_after orelse self.gap else 0;
         }
 
         return surface;

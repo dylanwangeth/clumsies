@@ -27,7 +27,7 @@ pub const Persistence = enum {
 pub const Key = enum {
     connection,
     operation,
-    workspace_context_files,
+    workspace_context,
     workspace_manifest,
     workspace_context_content,
     workspace_local_cache,
@@ -331,12 +331,12 @@ test "system notices coalesce keyed status updates" {
 test "operation notices preserve repeated events" {
     var queue: Queue = .{};
 
-    queue.push(.operation, .warning, .transient, "Draft must be marked ready.");
-    queue.push(.operation, .warning, .transient, "Draft must be marked ready.");
+    queue.push(.operation, .warning, .transient, "Draft is not editable.");
+    queue.push(.operation, .warning, .transient, "Draft is not editable.");
 
     try std.testing.expectEqual(@as(usize, 2), queue.count);
-    try std.testing.expectEqualStrings("Draft must be marked ready.", queue.notices[0].text);
-    try std.testing.expectEqualStrings("Draft must be marked ready.", queue.notices[1].text);
+    try std.testing.expectEqualStrings("Draft is not editable.", queue.notices[0].text);
+    try std.testing.expectEqualStrings("Draft is not editable.", queue.notices[1].text);
 }
 
 test "operation notices drop oldest event at capacity" {

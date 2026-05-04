@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const collab_api = @import("clumsies_lib").protocol.collab_api;
-const library_api = @import("clumsies_lib").protocol.library_api;
+const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 
 const data = @import("../models/view_types.zig");
@@ -31,16 +31,17 @@ pub const create_workspace = dispatcher.RequestSpec(
 };
 
 pub const PathParams = struct { path: []const u8 };
+pub const RuleContentParams = struct { path: []const u8, rule_id: ?[]const u8 = null };
 pub const RulePrsParams = struct { rule_id: []const u8 };
-pub const WsContextContentParams = struct { ws_id: []const u8, path: []const u8 };
-pub const WsIdParams = struct { ws_id: []const u8 };
+pub const WorkspaceContextContentParams = struct { ws_id: []const u8, path: []const u8 };
+pub const WorkspaceIdParams = struct { ws_id: []const u8 };
 pub const PrIdParams = struct { pr_id: []const u8, target_kind: data.PrTargetKind = .rule, ws_id: ?[]const u8 = null };
 pub const ReviewPrsParams = struct { target_kind: ?data.PrTargetKind = null, status: []const u8 = "open" };
 
 pub const RulePrsPayload = state.RulePrsPayload;
-pub const WsContextFilesPayload = state.WsContextFilesPayload;
-pub const WsManifestPayload = state.WsManifestPayload;
-pub const WsContextContentPayload = state.WsContextContentPayload;
+pub const WorkspaceContextPayload = state.WorkspaceContextPayload;
+pub const WorkspaceManifestPayload = state.WorkspaceManifestPayload;
+pub const WorkspaceContextContentPayload = state.WorkspaceContextContentPayload;
 pub const PrCommentsPayload = state.PrCommentsPayload;
 pub const CreateRulePrResponse = state.CreateRulePrResponse;
 pub const CreateContextPrResponse = state.CreateContextPrResponse;
@@ -49,15 +50,15 @@ pub const CreateContextPrResponse = state.CreateContextPrResponse;
 /// Mirrors CreateContextPrParams so the composer submit path is
 /// symmetric across the two categories. Multi-op PRs remain a
 /// follow-up; the composer UI submits one draft at a time. Which
-/// fields must be non-null depends on `operation_type` (per
-/// s1-5 §2.2): modify/rename/delete carry `rule_id`, create
-/// carries `path`, only modify/rename carry `base_hash`. The body
-/// builder enforces this and omits fields the hub does not want.
+/// fields must be non-null depends on `operation_type`: modify,
+/// rename, and delete carry `rule_id`; create carries `path`; rename
+/// carries `new_path`; modify and rename carry `base_hash`.
 pub const CreateRulePrParams = struct {
     description: []const u8,
     operation_type: []const u8,
     rule_id: ?[]const u8 = null,
     path: ?[]const u8 = null,
+    new_path: ?[]const u8 = null,
     content: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
 };
@@ -65,27 +66,28 @@ pub const CreateRulePrParams = struct {
 /// Parameters for creating a context PR. Mirrors the rule PR shape
 /// but against a workspace-scoped endpoint. `context_id` identifies
 /// an existing file (modify/rename/delete); create-ops leave it null
-/// and populate `path` instead.
+/// and populate `path` instead. Rename ops populate `new_path`.
 pub const CreateContextPrParams = struct {
     ws_id: []const u8,
     description: []const u8,
     operation_type: []const u8,
     context_id: ?[]const u8 = null,
     path: ?[]const u8 = null,
+    new_path: ?[]const u8 = null,
     content: []const u8,
     base_hash: ?[]const u8 = null,
 };
 
-pub const library_rule_content = dispatcher.RequestSpec(
-    PathParams,
-    library_api.RuleContentResponse,
+pub const artifact_rule_content = dispatcher.RequestSpec(
+    RuleContentParams,
+    artifact_api.RuleContentResponse,
 ){
     .method = .GET,
     .path_builder = ruleContentPath,
-    .parse_ok = dispatcher.jsonParser(PathParams, library_api.RuleContentResponse),
+    .parse_ok = dispatcher.jsonParser(RuleContentParams, artifact_api.RuleContentResponse),
 };
 
-pub const library_rule_prs = dispatcher.RequestSpec(
+pub const artifact_rule_prs = dispatcher.RequestSpec(
     RulePrsParams,
     RulePrsPayload,
 ){
@@ -104,30 +106,30 @@ pub const review_prs = dispatcher.RequestSpec(
 };
 
 pub const workspace_context_content = dispatcher.RequestSpec(
-    WsContextContentParams,
-    WsContextContentPayload,
+    WorkspaceContextContentParams,
+    WorkspaceContextContentPayload,
 ){
     .method = .GET,
-    .path_builder = wsContextContentPath,
-    .parse_ok = parseWsContextContentPayload,
+    .path_builder = workspaceContextContentPath,
+    .parse_ok = parseWorkspaceContextContentPayload,
 };
 
-pub const workspace_context_files = dispatcher.RequestSpec(
-    WsIdParams,
-    WsContextFilesPayload,
+pub const workspace_context = dispatcher.RequestSpec(
+    WorkspaceIdParams,
+    WorkspaceContextPayload,
 ){
     .method = .GET,
-    .path_builder = wsContextFilesPath,
-    .parse_ok = parseWsContextFilesPayload,
+    .path_builder = workspaceContextFilesPath,
+    .parse_ok = parseWorkspaceContextPayload,
 };
 
 pub const workspace_manifest = dispatcher.RequestSpec(
-    WsIdParams,
-    WsManifestPayload,
+    WorkspaceIdParams,
+    WorkspaceManifestPayload,
 ){
     .method = .GET,
-    .path_builder = wsManifestPath,
-    .parse_ok = parseWsManifestPayload,
+    .path_builder = workspaceManifestPath,
+    .parse_ok = parseWorkspaceManifestPayload,
 };
 
 pub const pr_detail = dispatcher.RequestSpec(
@@ -225,6 +227,7 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         .base_hash = p.base_hash,
         .content = p.content,
         .path = p.path,
+        .new_path = p.new_path,
     }};
     return std.json.Stringify.valueAlloc(alloc, Body{
         .description = p.description,
@@ -243,6 +246,7 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         base_hash: ?[]const u8,
         content: []const u8,
         path: ?[]const u8,
+        new_path: ?[]const u8,
     };
     const Body = struct {
         description: []const u8,
@@ -254,6 +258,7 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         .base_hash = p.base_hash,
         .content = p.content,
         .path = p.path,
+        .new_path = p.new_path,
     }};
     return std.json.Stringify.valueAlloc(alloc, Body{
         .description = p.description,
@@ -286,12 +291,19 @@ fn prActionBody(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8
     return std.json.Stringify.valueAlloc(alloc, Payload{ .action = action }, .{});
 }
 
-fn ruleContentPath(alloc: std.mem.Allocator, p: PathParams) anyerror![]const u8 {
+fn ruleContentPath(alloc: std.mem.Allocator, p: RuleContentParams) anyerror![]const u8 {
+    if (p.rule_id) |rule_id| {
+        const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
+            std.fmt.alt(std.Uri.Component{ .raw = rule_id }, .formatQuery),
+        });
+        defer alloc.free(encoded);
+        return std.fmt.allocPrint(alloc, "/api/org/artifact/rule/content?rule_id={s}", .{encoded});
+    }
     const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
         std.fmt.alt(std.Uri.Component{ .raw = p.path }, .formatQuery),
     });
     defer alloc.free(encoded);
-    return std.fmt.allocPrint(alloc, "/api/org/library/rule/content?path={s}", .{encoded});
+    return std.fmt.allocPrint(alloc, "/api/org/artifact/rule/content?path={s}", .{encoded});
 }
 
 fn rulePrsPath(alloc: std.mem.Allocator, p: RulePrsParams) anyerror![]const u8 {
@@ -303,7 +315,7 @@ fn reviewPrsPath(alloc: std.mem.Allocator, p: ReviewPrsParams) anyerror![]const 
     return std.fmt.allocPrint(alloc, "/api/org/review/prs?target={s}&status={s}", .{ target, p.status });
 }
 
-fn wsContextContentPath(alloc: std.mem.Allocator, p: WsContextContentParams) anyerror![]const u8 {
+fn workspaceContextContentPath(alloc: std.mem.Allocator, p: WorkspaceContextContentParams) anyerror![]const u8 {
     const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
         std.fmt.alt(std.Uri.Component{ .raw = p.path }, .formatQuery),
     });
@@ -311,11 +323,11 @@ fn wsContextContentPath(alloc: std.mem.Allocator, p: WsContextContentParams) any
     return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/file/content?path={s}", .{ p.ws_id, encoded });
 }
 
-fn wsContextFilesPath(alloc: std.mem.Allocator, p: WsIdParams) anyerror![]const u8 {
+fn workspaceContextFilesPath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror![]const u8 {
     return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/files", .{p.ws_id});
 }
 
-fn wsManifestPath(alloc: std.mem.Allocator, p: WsIdParams) anyerror![]const u8 {
+fn workspaceManifestPath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror![]const u8 {
     return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/manifest", .{p.ws_id});
 }
 
@@ -374,6 +386,33 @@ test "context PR paths include workspace id when present" {
     try std.testing.expectEqualStrings("/api/workspaces/ws-1/context/prs/cpr-1", path);
 }
 
+test "rename PR bodies include new_path" {
+    const alloc = std.testing.allocator;
+
+    const rule_body = try createRulePrBody(alloc, .{
+        .description = "rename rule",
+        .operation_type = "rename",
+        .rule_id = "p-1",
+        .new_path = "new/RULE.md",
+        .content = "# Rule\n\nBody.\n",
+        .base_hash = "sha256:abc",
+    });
+    defer alloc.free(rule_body);
+    try std.testing.expect(std.mem.indexOf(u8, rule_body, "\"new_path\":\"new/RULE.md\"") != null);
+
+    const context_body = try createContextPrBody(alloc, .{
+        .ws_id = "ws-1",
+        .description = "rename context",
+        .operation_type = "rename",
+        .context_id = "c-1",
+        .new_path = "new/context.md",
+        .content = "# Context\n\nBody.\n",
+        .base_hash = "sha256:def",
+    });
+    defer alloc.free(context_body);
+    try std.testing.expect(std.mem.indexOf(u8, context_body, "\"new_path\":\"new/context.md\"") != null);
+}
+
 /// Wrap the existing `parse.parseRulePrs` into the payload shape that
 /// carries the requested `rule_id` alongside the parsed list. The
 /// server response is a bare array, so the key is duped out of the
@@ -399,23 +438,23 @@ fn parseReviewPrsPayload(
     return parse.parseReviewPrs(alloc, body) orelse error.ParseFailed;
 }
 
-fn parseWsContextFilesPayload(
+fn parseWorkspaceContextPayload(
     alloc: std.mem.Allocator,
-    req: WsIdParams,
+    req: WorkspaceIdParams,
     body: []const u8,
-) anyerror!WsContextFilesPayload {
-    const files = parse.parseContextFiles(alloc, body) orelse return error.ParseFailed;
+) anyerror!WorkspaceContextPayload {
+    const files = parse.parseWorkspaceContext(alloc, body) orelse return error.ParseFailed;
     return .{
         .ws_id = try alloc.dupe(u8, req.ws_id),
         .files = files,
     };
 }
 
-fn parseWsManifestPayload(
+fn parseWorkspaceManifestPayload(
     alloc: std.mem.Allocator,
-    req: WsIdParams,
+    req: WorkspaceIdParams,
     body: []const u8,
-) anyerror!WsManifestPayload {
+) anyerror!WorkspaceManifestPayload {
     const rules = parse.parseManifestRules(alloc, body) orelse return error.ParseFailed;
     return .{
         .ws_id = try alloc.dupe(u8, req.ws_id),
@@ -423,11 +462,11 @@ fn parseWsManifestPayload(
     };
 }
 
-fn parseWsContextContentPayload(
+fn parseWorkspaceContextContentPayload(
     alloc: std.mem.Allocator,
-    req: WsContextContentParams,
+    req: WorkspaceContextContentParams,
     body: []const u8,
-) anyerror!WsContextContentPayload {
+) anyerror!WorkspaceContextContentPayload {
     return .{
         .ws_id = try alloc.dupe(u8, req.ws_id),
         .path = try alloc.dupe(u8, req.path),

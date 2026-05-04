@@ -1,4 +1,4 @@
-//! Library feature container. Owns rule/bundle navigation state and syncs
+//! Artifact feature container. Owns rule/bundle navigation state and syncs
 //! list widgets for the organization rule collection.
 
 const std = @import("std");
@@ -66,7 +66,7 @@ pub fn drawListPanel(
         .{ .width = body_w, .height = body_h },
     );
 
-    if (self.library.tree.rowCount() == 0) {
+    if (self.artifact.tree.rowCount() == 0) {
         const status = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
@@ -74,11 +74,11 @@ pub fn drawListPanel(
         };
         w.drawEmptyState(&surface, ctx, body_origin_col, body_origin_row, status, "rules");
     } else {
-        const body = try self.library.scroll_bars.widget().draw(body_ctx);
+        const body = try self.artifact.scroll_bars.widget().draw(body_ctx);
         const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
         children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
         surface.children = children;
-        writeCursorBar(&surface, &self.library.scroll_bars.scroll_view, body_origin_row, body_h);
+        writeCursorBar(&surface, &self.artifact.scroll_bars.scroll_view, body_origin_row, body_h);
     }
     return surface;
 }
@@ -114,7 +114,6 @@ pub fn handleModuleEvent(
 ) anyerror!void {
     self.review.detail_tab = .content;
     if (key.matches('r', .{})) {
-        api.state.invalidateOnDemandCaches(self.api_state);
         self.invalidateRemoteDetailRequests();
         api.fetch.refetchAllAsync(self.api_state);
         self.notifyOp(.loading, "Reloading remote metadata...");
@@ -128,8 +127,8 @@ pub fn handleModuleEvent(
             if (self.api_state.bundles) |bundles| break :blk bundles.len;
             break :blk 0;
         };
-        self.library.bundle_filter = (self.library.bundle_filter + 1) % (bundle_count + 1);
-        resetScrollView(&self.library.scroll_bars.scroll_view);
+        self.artifact.bundle_filter = (self.artifact.bundle_filter + 1) % (bundle_count + 1);
+        resetScrollView(&self.artifact.scroll_bars.scroll_view);
         ctx.consumeAndRedraw();
         return;
     }
@@ -139,10 +138,10 @@ pub fn handleModuleEvent(
         return;
     }
     if (key.matches('y', .{})) {
-        _ = content_actions.handle(self, ctx, key, .library);
+        _ = content_actions.handle(self, ctx, key, .artifact);
         return;
     }
-    if (content_actions.handle(self, ctx, key, .library)) return;
+    if (content_actions.handle(self, ctx, key, .artifact)) return;
     if (key.matches(vaxis.Key.tab, .{})) {
         self.review.detail_focus_content = !self.review.detail_focus_content;
         ctx.consumeAndRedraw();
@@ -158,7 +157,7 @@ pub fn handleModuleEvent(
 
 pub fn shortcuts(self: anytype) []const w.Shortcut {
     _ = self;
-    return content_actions.libraryContentShortcuts();
+    return content_actions.artifactContentShortcuts();
 }
 
 fn handleFileListEvent(
@@ -169,10 +168,10 @@ fn handleFileListEvent(
 ) anyerror!void {
     _ = event;
     if (key.matches(vaxis.Key.enter, .{})) {
-        syncLibraryTree(self);
-        const pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
-        if (self.library.tree.dirPathAt(pos)) |dir| {
-            self.library.tree.toggleDir(self.api_state.allocator(), dir);
+        syncArtifactTree(self);
+        const pos = @as(usize, @intCast(self.artifact.scroll_bars.scroll_view.cursor));
+        if (self.artifact.tree.dirPathAt(pos)) |dir| {
+            self.artifact.tree.toggleDir(self.api_state.allocator(), dir);
             ctx.consumeAndRedraw();
             return;
         }
@@ -180,28 +179,28 @@ fn handleFileListEvent(
         return;
     }
     if (key.matches('z', .{})) {
-        syncLibraryTree(self);
-        self.library.tree.toggleAll(self.api_state.allocator());
-        syncLibraryTree(self);
+        syncArtifactTree(self);
+        self.artifact.tree.toggleAll(self.api_state.allocator());
+        syncArtifactTree(self);
         ctx.consumeAndRedraw();
         return;
     }
 
-    if (self.library.tree.rowCount() == 0) {
+    if (self.artifact.tree.rowCount() == 0) {
         ctx.consumeEvent();
         return;
     }
-    const count = self.library.tree.rowCount();
-    const step = w.stepForKey(key, &self.library.scroll_bars.scroll_view) orelse return;
+    const count = self.artifact.tree.rowCount();
+    const step = w.stepForKey(key, &self.artifact.scroll_bars.scroll_view) orelse return;
 
-    var pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
+    var pos = @as(usize, @intCast(self.artifact.scroll_bars.scroll_view.cursor));
     _ = w.moveCursorBy(&pos, count, step);
-    self.library.scroll_bars.scroll_view.cursor = @intCast(pos);
-    w.scrollCursorIntoView(&self.library.scroll_bars.scroll_view, count);
+    self.artifact.scroll_bars.scroll_view.cursor = @intCast(pos);
+    w.scrollCursorIntoView(&self.artifact.scroll_bars.scroll_view, count);
 
-    if (self.library.tree.leafIndexAt(pos)) |rule_idx| {
-        if (self.library.selected_rule != rule_idx) {
-            self.library.selected_rule = rule_idx;
+    if (self.artifact.tree.leafIndexAt(pos)) |rule_idx| {
+        if (self.artifact.selected_rule != rule_idx) {
+            self.artifact.selected_rule = rule_idx;
             self.review.selected_pr_idx = 0;
             self.review.pr_scroll_bars.scroll_view.cursor = 0;
             self.review.pr_filter = .open;
@@ -254,14 +253,14 @@ fn handlePrListEvent(
     ctx.consumeAndRedraw();
 }
 
-pub fn syncLibraryTree(self: anytype) void {
+pub fn syncArtifactTree(self: anytype) void {
     const rules = self.getRules();
     const bundles = self.getBundles();
     const create_paths = self.drafts.create_rule_paths;
-    const filter_name: ?[]const u8 = if (self.library.bundle_filter == 0)
+    const filter_name: ?[]const u8 = if (self.artifact.bundle_filter == 0)
         null
-    else if (self.library.bundle_filter - 1 < bundles.len)
-        bundles[self.library.bundle_filter - 1].name
+    else if (self.artifact.bundle_filter - 1 < bundles.len)
+        bundles[self.artifact.bundle_filter - 1].name
     else
         null;
 
@@ -292,28 +291,28 @@ pub fn syncLibraryTree(self: anytype) void {
         filtered_len += 1;
     }
 
-    self.library.tree.sync(allocator, filtered_paths[0..filtered_len], filtered_orig[0..filtered_len]);
+    self.artifact.tree.sync(allocator, filtered_paths[0..filtered_len], filtered_orig[0..filtered_len]);
 }
 
-pub fn syncLibraryWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!void {
-    syncLibraryTree(self);
+pub fn syncArtifactWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!void {
+    syncArtifactTree(self);
 
     const rules = self.getRules();
     const create_paths = self.drafts.create_rule_paths;
-    const row_count = self.library.tree.rowCount();
+    const row_count = self.artifact.tree.rowCount();
     const widgets = try ctx.arena.alloc(vxfw.Widget, row_count);
     const text_rows = try ctx.arena.alloc(vxfw.Text, row_count);
     const table_rows = try ctx.arena.alloc(TableRow, row_count);
     const table_cols = try ctx.arena.alloc([2]Column, row_count);
     const selected_row: usize = if (row_count > 0)
-        @min(@as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor)), row_count - 1)
+        @min(@as(usize, @intCast(self.artifact.scroll_bars.scroll_view.cursor)), row_count - 1)
     else
         0;
 
     var i: usize = 0;
     while (i < row_count) : (i += 1) {
-        const row_text = self.library.tree.rowText(i);
-        if (self.library.tree.dirPathAt(i) != null) {
+        const row_text = self.artifact.tree.rowText(i);
+        if (self.artifact.tree.dirPathAt(i) != null) {
             const row_sel = i == selected_row;
             text_rows[i] = .{
                 .text = row_text,
@@ -321,7 +320,7 @@ pub fn syncLibraryWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
             };
             widgets[i] = text_rows[i].widget();
         } else {
-            const orig_pidx = self.library.tree.leafIndexAt(i) orelse continue;
+            const orig_pidx = self.artifact.tree.leafIndexAt(i) orelse continue;
             const is_virtual = orig_pidx >= rules.len;
             const row_path: []const u8 = if (is_virtual) blk: {
                 const k = orig_pidx - rules.len;
@@ -336,7 +335,7 @@ pub fn syncLibraryWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
                 else => "\xe2\x80\xa2+",
             };
             const row_sel = i == selected_row;
-            const category = self.libraryCategoryForPath(row_path);
+            const category = self.artifactCategoryForPath(row_path);
             const draft_status_opt = self.draftStatusFor(category, row_path);
             const row_style = w.draftRowStyle(row_sel, draft_status_opt);
             table_cols[i] = .{
@@ -352,17 +351,17 @@ pub fn syncLibraryWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
             widgets[i] = table_rows[i].widget();
         }
     }
-    self.library.scroll_bars.scroll_view.children = .{ .slice = widgets };
-    self.library.scroll_bars.estimated_content_height = @intCast(row_count);
+    self.artifact.scroll_bars.scroll_view.children = .{ .slice = widgets };
+    self.artifact.scroll_bars.estimated_content_height = @intCast(row_count);
 
-    var cur = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
+    var cur = @as(usize, @intCast(self.artifact.scroll_bars.scroll_view.cursor));
     if (cur >= row_count) cur = if (row_count > 0) row_count - 1 else 0;
-    self.library.scroll_bars.scroll_view.cursor = @intCast(cur);
-    clampScrollTop(&self.library.scroll_bars.scroll_view, row_count);
+    self.artifact.scroll_bars.scroll_view.cursor = @intCast(cur);
+    clampScrollTop(&self.artifact.scroll_bars.scroll_view, row_count);
     if (cur < row_count) {
-        if (self.library.tree.leafIndexAt(cur)) |pi| {
-            if (self.library.selected_rule != pi) {
-                self.library.selected_rule = pi;
+        if (self.artifact.tree.leafIndexAt(cur)) |pi| {
+            if (self.artifact.selected_rule != pi) {
+                self.artifact.selected_rule = pi;
                 self.review.hide_diff = false;
             }
         }

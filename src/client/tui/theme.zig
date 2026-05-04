@@ -61,17 +61,17 @@ pub const OK = rgb(0xa9bf6f);
 pub const WARN = rgb(0xe0b14b);
 pub const DANGER = rgb(0xd3745a);
 pub const INFO = rgb(0xe7b868);
+pub const MERGED = rgb(0x8957e5);
 
 /// Foreground color for a draft marker (and the row name when a row
 /// has a draft), keyed by draft status. Kept in this file so every
-/// renderer — Library Files rows, Workspace list rows — maps the
+/// renderer — Artifact Files rows, Workspace list rows — maps the
 /// same status onto the same hue. See `design/12_CONTENT_EDITING.md`
 /// for the spec.
 pub fn draftStatusColor(status: anytype) vaxis.Color {
     return switch (status) {
-        .editing => WARN,
-        .ready => OK,
-        .submitted => ACCENT,
+        .draft => WARN,
+        .in_review => ACCENT,
         .conflicted => DANGER,
         else => MUTED,
     };

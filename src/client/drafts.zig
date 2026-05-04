@@ -1,5 +1,5 @@
 //! Local drafts: tracks in-progress edits to rules and context files per workspace. When a
-//! user modifies a Library rule locally (creating a "local edit"), the draft is stored under
+//! user modifies a Artifact rule locally (creating a "local edit"), the draft is stored under
 //! ~/.clumsies/workspaces/{ws_id}/drafts/ with an index mapping original paths to draft files.
 const std = @import("std");
 const testing = std.testing;
@@ -28,11 +28,10 @@ pub const DraftOperation = enum {
 };
 
 pub const DraftStatus = enum {
-    editing,
-    ready,
-    submitted,
-    merged,
-    rejected,
+    draft,
+    in_review,
+    applied,
+    declined,
     conflicted,
 };
 
@@ -180,16 +179,14 @@ fn parseEntry(obj: std.json.ObjectMap) ?DraftEntry {
         return null;
 
     const status_str = stringField(obj, "status") orelse return null;
-    const status: DraftStatus = if (std.mem.eql(u8, status_str, "editing"))
-        .editing
-    else if (std.mem.eql(u8, status_str, "ready"))
-        .ready
-    else if (std.mem.eql(u8, status_str, "submitted"))
-        .submitted
-    else if (std.mem.eql(u8, status_str, "merged"))
-        .merged
-    else if (std.mem.eql(u8, status_str, "rejected"))
-        .rejected
+    const status: DraftStatus = if (std.mem.eql(u8, status_str, "draft"))
+        .draft
+    else if (std.mem.eql(u8, status_str, "in_review"))
+        .in_review
+    else if (std.mem.eql(u8, status_str, "applied"))
+        .applied
+    else if (std.mem.eql(u8, status_str, "declined"))
+        .declined
     else if (std.mem.eql(u8, status_str, "conflicted"))
         .conflicted
     else
@@ -321,7 +318,7 @@ pub fn createDraft(
         .draft_path = params.draft_path,
         .operation = params.operation,
         .base_hash = params.base_hash,
-        .status = .editing,
+        .status = .draft,
         .description = params.description,
     };
 
@@ -367,7 +364,7 @@ pub fn updateModifyDraftContent(
 
         try writeDraftFileAbs(allocator, ws_dir, category, draft_path, content);
         if (description) |desc| entry.description = desc;
-        entry.status = .editing;
+        entry.status = .draft;
         try writeIndexAtomic(allocator, ws_dir, index.entries.items);
         return true;
     }
@@ -458,12 +455,8 @@ pub const ReconcileSummary = struct {
 /// `base_hash` no longer matches the current cache content at
 /// `current_path`, the entry is moved to `.conflicted`. Create-ops
 /// have no cache base to compare against and are skipped. Drafts
-/// already in `.merged`, `.rejected`, or `.conflicted` are left
+/// already in `.applied`, `.declined`, or `.conflicted` are left
 /// untouched — terminal and already-flagged states are sticky.
-///
-/// Hub-PR reconciliation (submitted → merged / rejected) needs the
-/// draft's pr_id, which is not tracked yet; that reconciliation is a
-/// follow-up. For now submitted drafts stay submitted.
 pub fn reconcileDrafts(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
@@ -476,7 +469,7 @@ pub fn reconcileDrafts(
     var changed = false;
     for (index.entries.items) |*entry| {
         switch (entry.status) {
-            .merged, .rejected, .conflicted => continue,
+            .applied, .declined, .conflicted => continue,
             else => {},
         }
         if (entry.operation == .create) continue;
@@ -540,6 +533,31 @@ pub fn setDraftStatus(
     if (!found) return error.DraftNotFound;
 
     try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+}
+
+pub fn transitionDraftStatus(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+    expected_status: DraftStatus,
+    new_status: DraftStatus,
+) !bool {
+    if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
+
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    for (index.entries.items) |*entry| {
+        if (entry.category == category and std.mem.eql(u8, entry.draft_path, draft_path)) {
+            if (entry.status != expected_status) return false;
+            if (entry.status == new_status) return true;
+            entry.status = new_status;
+            try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+            return true;
+        }
+    }
+    return error.DraftNotFound;
 }
 
 fn writeDraftFileAbs(
@@ -680,11 +698,10 @@ fn operationToString(op: DraftOperation) []const u8 {
 
 fn statusToString(status: DraftStatus) []const u8 {
     return switch (status) {
-        .editing => "editing",
-        .ready => "ready",
-        .submitted => "submitted",
-        .merged => "merged",
-        .rejected => "rejected",
+        .draft => "draft",
+        .in_review => "in_review",
+        .applied => "applied",
+        .declined => "declined",
         .conflicted => "conflicted",
     };
 }
@@ -730,7 +747,7 @@ test "loadIndex: parses rule and context entries" {
         \\      "draft_path": "coding/STYLE.md",
         \\      "operation": "modify",
         \\      "base_hash": "sha256:abc",
-        \\      "status": "editing"
+        \\      "status": "draft"
         \\    },
         \\    {
         \\      "category": "context",
@@ -739,7 +756,7 @@ test "loadIndex: parses rule and context entries" {
         \\      "draft_path": "spec/API.md",
         \\      "operation": "modify",
         \\      "base_hash": "sha256:xyz",
-        \\      "status": "editing"
+        \\      "status": "draft"
         \\    }
         \\  ]
         \\}
@@ -899,7 +916,7 @@ test "createDraft: writes file and index entry round-trip" {
     try testing.expectEqual(DraftOperation.modify, entry.operation);
     try testing.expectEqualStrings("p-style", entry.rule_id.?);
     try testing.expectEqualStrings("sha256:abc", entry.base_hash.?);
-    try testing.expectEqual(DraftStatus.editing, entry.status);
+    try testing.expectEqual(DraftStatus.draft, entry.status);
 }
 
 test "createDraft: rejects duplicate draft for same (category, draft_path)" {
@@ -980,7 +997,7 @@ test "updateModifyDraftContent: overwrites existing modify draft and metadata" {
         .current_path = "spec/API.md",
         .description = "first description",
     }, "first version\n");
-    try setDraftStatus(testing.allocator, root, .context, "spec/API.md", .ready);
+    try setDraftStatus(testing.allocator, root, .context, "spec/API.md", .conflicted);
 
     const updated = try updateModifyDraftContent(
         testing.allocator,
@@ -1001,7 +1018,7 @@ test "updateModifyDraftContent: overwrites existing modify draft and metadata" {
     try testing.expectEqual(@as(usize, 1), index.entries.items.len);
     const entry = index.findByCurrentPath(.context, "spec/API.md").?;
     try testing.expectEqual(DraftOperation.modify, entry.operation);
-    try testing.expectEqual(DraftStatus.editing, entry.status);
+    try testing.expectEqual(DraftStatus.draft, entry.status);
     try testing.expectEqualStrings("second description", entry.description.?);
 }
 
@@ -1154,7 +1171,7 @@ test "discardDraft: idempotent when draft is absent" {
     try discardDraft(testing.allocator, root, .rule, "never/existed.md");
 }
 
-test "setDraftStatus: transitions editing to ready and back" {
+test "setDraftStatus: transitions draft to in_review and back" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1169,21 +1186,21 @@ test "setDraftStatus: transitions editing to ready and back" {
         .rule_id = "p-y",
     }, "draft body\n");
 
-    try setDraftStatus(testing.allocator, root, .rule, "x/Y.md", .ready);
+    try setDraftStatus(testing.allocator, root, .rule, "x/Y.md", .in_review);
 
     {
         var index = try loadIndex(testing.allocator, root);
         defer index.deinit(testing.allocator);
         const entry = index.findByCurrentPath(.rule, "x/Y.md").?;
-        try testing.expectEqual(DraftStatus.ready, entry.status);
+        try testing.expectEqual(DraftStatus.in_review, entry.status);
     }
 
-    try setDraftStatus(testing.allocator, root, .rule, "x/Y.md", .editing);
+    try setDraftStatus(testing.allocator, root, .rule, "x/Y.md", .draft);
 
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
     const entry = index.findByCurrentPath(.rule, "x/Y.md").?;
-    try testing.expectEqual(DraftStatus.editing, entry.status);
+    try testing.expectEqual(DraftStatus.draft, entry.status);
 }
 
 test "setDraftStatus: returns DraftNotFound for missing draft" {
@@ -1193,7 +1210,32 @@ test "setDraftStatus: returns DraftNotFound for missing draft" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    try testing.expectError(error.DraftNotFound, setDraftStatus(testing.allocator, root, .rule, "nope.md", .ready));
+    try testing.expectError(error.DraftNotFound, setDraftStatus(testing.allocator, root, .rule, "nope.md", .in_review));
+}
+
+test "transitionDraftStatus: only updates expected status" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .modify,
+        .draft_path = "x/Y.md",
+        .current_path = "x/Y.md",
+        .rule_id = "p-y",
+    }, "draft body\n");
+
+    try testing.expect(!try transitionDraftStatus(testing.allocator, root, .rule, "x/Y.md", .in_review, .applied));
+    try setDraftStatus(testing.allocator, root, .rule, "x/Y.md", .in_review);
+    try testing.expect(try transitionDraftStatus(testing.allocator, root, .rule, "x/Y.md", .in_review, .applied));
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    const entry = index.findByCurrentPath(.rule, "x/Y.md").?;
+    try testing.expectEqual(DraftStatus.applied, entry.status);
 }
 
 test "reconcileDrafts: leaves matching base_hash untouched" {
@@ -1225,7 +1267,7 @@ test "reconcileDrafts: leaves matching base_hash untouched" {
 
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
-    try testing.expectEqual(DraftStatus.editing, index.entries.items[0].status);
+    try testing.expectEqual(DraftStatus.draft, index.entries.items[0].status);
 }
 
 test "reconcileDrafts: marks conflicted when cache drifted" {
@@ -1281,7 +1323,7 @@ test "reconcileDrafts: skips create-operation drafts" {
 
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
-    try testing.expectEqual(DraftStatus.editing, index.entries.items[0].status);
+    try testing.expectEqual(DraftStatus.draft, index.entries.items[0].status);
 }
 
 test "reconcileDrafts: leaves terminal states sticky" {
@@ -1301,7 +1343,7 @@ test "reconcileDrafts: leaves terminal states sticky" {
         .rule_id = "p-a",
         .base_hash = seed_hash[0..],
     }, seed);
-    try setDraftStatus(testing.allocator, root, .rule, "coding/A.md", .merged);
+    try setDraftStatus(testing.allocator, root, .rule, "coding/A.md", .applied);
 
     try tmp.dir.makePath("cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/A.md", "totally different body\n");
@@ -1314,7 +1356,7 @@ test "reconcileDrafts: leaves terminal states sticky" {
 
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
-    try testing.expectEqual(DraftStatus.merged, index.entries.items[0].status);
+    try testing.expectEqual(DraftStatus.applied, index.entries.items[0].status);
 }
 
 test "index serialization: multiple entries survive round-trip" {
