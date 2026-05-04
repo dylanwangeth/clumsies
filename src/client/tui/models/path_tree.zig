@@ -344,6 +344,7 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
         depths: std.ArrayListUnmanaged(u8) = .empty,
         text_lens: std.ArrayListUnmanaged(usize) = .empty,
         text_bufs: std.ArrayListUnmanaged([text_buf_len]u8) = .empty,
+        all_dir_paths: std.ArrayListUnmanaged([]const u8) = .empty,
         expanded: std.StringHashMapUnmanaged(void) = .empty,
         seen_top_level: std.StringHashMapUnmanaged(void) = .empty,
         initialized: bool = false,
@@ -354,6 +355,7 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             self.depths.deinit(allocator);
             self.text_lens.deinit(allocator);
             self.text_bufs.deinit(allocator);
+            self.all_dir_paths.deinit(allocator);
             self.expanded.deinit(allocator);
             self.seen_top_level.deinit(allocator);
         }
@@ -421,6 +423,26 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             _ = self.expandDir(allocator, prefix);
         }
 
+        pub fn toggleAll(self: *Self, allocator: std.mem.Allocator) void {
+            if (self.all_dir_paths.items.len == 0) return;
+            if (self.currentExpandedDirCount() < self.all_dir_paths.items.len) {
+                self.expanded.clearRetainingCapacity();
+                for (self.all_dir_paths.items) |path| {
+                    self.expanded.put(allocator, path, {}) catch return;
+                }
+            } else {
+                self.expanded.clearRetainingCapacity();
+            }
+        }
+
+        fn currentExpandedDirCount(self: *const Self) usize {
+            var count: usize = 0;
+            for (self.all_dir_paths.items) |path| {
+                if (self.expanded.contains(path)) count += 1;
+            }
+            return count;
+        }
+
         pub fn sync(
             self: *Self,
             allocator: std.mem.Allocator,
@@ -457,6 +479,7 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
                 sorted_paths[i] = paths[sort_idx[i]];
                 sorted_orig[i] = original_leaf_indices[sort_idx[i]];
             }
+            self.syncAllDirPaths(allocator, sorted_paths[0..item_count]);
 
             var rows_buf: std.ArrayListUnmanaged(Row) = .empty;
             defer rows_buf.deinit(allocator);
@@ -529,6 +552,27 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             self.depths.clearRetainingCapacity();
             self.text_lens.clearRetainingCapacity();
             self.text_bufs.clearRetainingCapacity();
+        }
+
+        fn syncAllDirPaths(self: *Self, allocator: std.mem.Allocator, paths: []const []const u8) void {
+            self.all_dir_paths.clearRetainingCapacity();
+            for (paths) |path| {
+                var scan: usize = 0;
+                while (std.mem.indexOfScalarPos(u8, path, scan, '/')) |slash| {
+                    const prefix = path[0 .. slash + 1];
+                    if (!self.hasDirPath(prefix)) {
+                        self.all_dir_paths.append(allocator, prefix) catch return;
+                    }
+                    scan = slash + 1;
+                }
+            }
+        }
+
+        fn hasDirPath(self: *const Self, prefix: []const u8) bool {
+            for (self.all_dir_paths.items) |path| {
+                if (std.mem.eql(u8, path, prefix)) return true;
+            }
+            return false;
         }
 
         fn expandNewTopLevelPrefixes(self: *Self, allocator: std.mem.Allocator, paths: []const []const u8) void {
@@ -747,6 +791,31 @@ test "State sync does not re-expand a top level prefix after user collapse" {
     state.sync(std.testing.allocator, next_paths[0..], next_orig[0..]);
 
     try std.testing.expect(!state.isExpanded("research/"));
+}
+
+test "State toggleAll expands and collapses every known directory" {
+    const TreeState = State(16, 64);
+    var state: TreeState = .{};
+    defer state.deinit(std.testing.allocator);
+
+    const paths = [_][]const u8{
+        "rule/api/NAMING.md",
+        "rule/db/E2E.md",
+        "workflow/release/SHIP.md",
+    };
+    const orig = [_]usize{ 0, 1, 2 };
+    state.sync(std.testing.allocator, paths[0..], orig[0..]);
+
+    state.toggleAll(std.testing.allocator);
+    try std.testing.expect(state.isExpanded("rule/"));
+    try std.testing.expect(state.isExpanded("rule/api/"));
+    try std.testing.expect(state.isExpanded("rule/db/"));
+    try std.testing.expect(state.isExpanded("workflow/"));
+    try std.testing.expect(state.isExpanded("workflow/release/"));
+
+    state.toggleAll(std.testing.allocator);
+    try std.testing.expect(!state.isExpanded("rule/"));
+    try std.testing.expect(!state.isExpanded("workflow/"));
 }
 
 test "State parentRow returns the nearest shallower visible ancestor" {

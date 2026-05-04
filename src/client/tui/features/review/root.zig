@@ -667,8 +667,6 @@ fn drawReviewListPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     }
 
     const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
-    self.review.pr_scroll_bars.scroll_view.draw_cursor = false;
-    defer self.review.pr_scroll_bars.scroll_view.draw_cursor = true;
     const body = try self.review.pr_scroll_bars.widget().draw(body_ctx);
     const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
     children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
@@ -936,6 +934,7 @@ fn handleReviewPrListEvent(
     event: vxfw.Event,
     key: vaxis.Key,
 ) anyerror!void {
+    _ = event;
     syncReviewPrWidgets(self);
     if (self.review.pr_row_count == 0) {
         ctx.consumeEvent();
@@ -951,28 +950,19 @@ fn handleReviewPrListEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    const prev = self.review.pr_scroll_bars.scroll_view.cursor;
-    try self.review.pr_scroll_bars.scroll_view.handleEvent(ctx, event);
-
     var pos = @as(usize, @intCast(self.review.pr_scroll_bars.scroll_view.cursor));
     if (pos >= self.review.pr_row_count) pos = self.review.pr_row_count - 1;
-    if (self.review.pr_indices[pos] == null) {
-        const moving_down = self.review.pr_scroll_bars.scroll_view.cursor > prev;
-        if (moving_down and pos + 1 < self.review.pr_row_count and self.review.pr_indices[pos + 1] != null) {
-            pos += 1;
-        } else if (!moving_down and pos > 0 and self.review.pr_indices[pos - 1] != null) {
-            pos -= 1;
-        } else {
-            pos = @intCast(prev);
-        }
-    }
+    const step = w.stepForKey(key, &self.review.pr_scroll_bars.scroll_view) orelse return;
+    pos = w.moveSelectableRowByVisualRows(pos, self.review.pr_row_count, self.review.pr_indices[0..self.review.pr_row_count], step);
     self.review.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
+    w.scrollCursorIntoView(&self.review.pr_scroll_bars.scroll_view, self.review.pr_row_count);
     if (self.review.pr_indices[pos]) |idx| {
         if (self.review.selected_pr_idx != idx) {
             self.review.selected_pr_idx = idx;
             fetchSelectedReviewPrDetail(self);
         }
     }
+    ctx.consumeAndRedraw();
 }
 
 pub fn fetchSelectedPrDetail(self: anytype) void {

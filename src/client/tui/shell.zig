@@ -364,7 +364,7 @@ pub const Shell = struct {
                 // First tick after current_user lands (the /me fetch
                 // completes asynchronously, so activeWsId() was null
                 // at .init). Seed the drafts map now so row markers
-                // and row markers come up populated.
+                // come up populated.
                 if (!self.drafts.cache_seeded and self.activeWsId() != null) {
                     self.refreshDraftsCache();
                     self.ensureActiveWorkspaceDetailRequested();
@@ -1687,7 +1687,6 @@ pub const Shell = struct {
         }
         const max_round_cursor = std.math.maxInt(u32) / dashboard_panel.ROUND_ROW_COUNT;
         self.dashboard.round_scroll_bars.scroll_view.cursor = @intCast(@min(self.analysis.input_cursor, max_round_cursor) * dashboard_panel.ROUND_ROW_COUNT);
-        self.dashboard.round_scroll_bars.scroll_view.ensureScroll();
         const selected_round = if (rounds.len > 0)
             rounds[@min(self.analysis.input_cursor, rounds.len - 1)]
         else
@@ -2323,15 +2322,18 @@ pub const Shell = struct {
         var row: u16 = 0;
         row = self.drawHelpSection(&body, ctx, row, "Navigation", &.{
             .{ .key = "j/k", .label = "move the active cursor or selection" },
+            .{ .key = "J/K", .label = "page the active panel down or up" },
+            .{ .key = "Ctrl-d/u", .label = "half-page the active panel down or up" },
             .{ .key = "\xe2\x86\x91/\xe2\x86\x93", .label = "same as j/k in lists and tables" },
             .{ .key = "h/l", .label = "switch inner tabs when a panel has them" },
             .{ .key = "Tab", .label = "switch focus between panels or regions" },
             .{ .key = "Enter", .label = "open, toggle, or confirm the selected item" },
+            .{ .key = "z", .label = "expand or collapse all rows in a tree list" },
             .{ .key = "Esc", .label = "go back, close a drawer, or leave detail focus" },
         });
         if (row < body_h) row += 1;
         row = self.drawHelpSection(&body, ctx, row, "Application", &.{
-            .{ .key = "1-4", .label = "switch the top-level module" },
+            .{ .key = "1-5", .label = "switch the top-level module" },
             .{ .key = "S", .label = "open settings" },
             .{ .key = "?", .label = "open or close this help drawer" },
             .{ .key = "q", .label = "open quit confirmation" },

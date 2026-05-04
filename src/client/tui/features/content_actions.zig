@@ -15,6 +15,7 @@ pub const Surface = enum {
 
 const workspace_context_shortcuts = [_]w.Shortcut{
     .{ .key = "j/k", .label = "move/scroll" },
+    .{ .key = "z", .label = "tree" },
     .{ .key = "h/l", .label = "switch tab" },
     .{ .key = "n", .label = "new context" },
     .{ .key = "c", .label = "create ws" },
@@ -31,6 +32,7 @@ const workspace_context_shortcuts = [_]w.Shortcut{
 
 const workspace_rule_shortcuts = [_]w.Shortcut{
     .{ .key = "j/k", .label = "move/scroll" },
+    .{ .key = "z", .label = "tree" },
     .{ .key = "h/l", .label = "switch tab" },
     .{ .key = "c", .label = "create ws" },
     .{ .key = "w", .label = "workspaces" },
@@ -46,6 +48,7 @@ const workspace_rule_shortcuts = [_]w.Shortcut{
 
 const library_content_shortcuts = [_]w.Shortcut{
     .{ .key = "j/k", .label = "move/scroll" },
+    .{ .key = "z", .label = "tree" },
     .{ .key = "Enter", .label = "open" },
     .{ .key = "h/l", .label = "switch tab" },
     .{ .key = "y", .label = "copy id" },
