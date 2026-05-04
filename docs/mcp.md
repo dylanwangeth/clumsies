@@ -16,6 +16,9 @@ The current implementation exposes these MCP tools:
 | artifact mutations | `artifact` |
 
 This is the real protocol surface in the running code. The server test suite explicitly asserts that `memory.begin`, `memory.complete`, `memory.startup`, `memory.list`, and `memory.activate` are not part of the public tool list.
+The older `context.propose_*`, `rule.propose_*`, and `draft` tool surfaces are
+also not public MCP tools anymore; local content changes go through
+`artifact`.
 
 ## The core runtime cycle
 
@@ -62,6 +65,11 @@ This detail matters because the protocol is not only human-readable. Agents are 
 ## `memsetup`
 
 `memsetup` bootstraps the session. It returns the current workspace identity, the current session ID, and the current `META_PROMPT` frame.
+
+`memsetup` is a binding operation. The caller must pass the real host session
+or thread ID supplied by the adapter. Agents should call it once at session
+startup, before any other clumsies MCP tool. Repeated calls are only for an
+explicit user-invoked setup flow.
 
 ### Input
 
@@ -139,9 +147,16 @@ Each item can include:
 | `group` | optional group value |
 | `hash` | current content hash |
 | `description` | optional metadata description when present |
+| `hasDraft` | whether the object currently has a local draft |
 
 Discover is inventory, not content delivery. Its job is to let the agent
 choose what is relevant before spending context window on full content.
+
+Create-only drafts have no Hub-issued object ID yet. The client assigns them a
+deterministic `tmp-*` ID when the draft is created, and `memdisc` exposes that
+temporary ID as the public `id`. Agents should use that ID for later
+`memload` calls or for `artifact` operations such as `delete` and `discard`.
+Draft paths are not a public identity for create-only drafts.
 
 ## `memload`
 
@@ -375,6 +390,10 @@ Creates or updates a modify change against an existing object. For `context` and
 current cached file, computes a base hash, and writes the local draft form. For
 MPF, `id` should be `META_PROMPT.md`.
 
+If a matching modify draft already exists, `update` replaces its content and
+keeps it in editing state. This is what allows agents to refine a local context
+or rule draft through MCP instead of writing draft files directly.
+
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `id` | string | yes | context id, rule id, or `META_PROMPT.md` |
@@ -396,11 +415,13 @@ has the reserved path `META_PROMPT.md` and cannot be renamed.
 
 Creates a delete draft for an existing resource. If `delete` targets a
 create-only draft with no manifest entry, the client treats the call as
-discarding that create draft.
+discarding that create draft. In that create-only case, `id` must be the
+`tmp-*` local ID returned by `memdisc`; draft paths are not accepted as public
+identity.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `id` | string | yes | resource id, draft path, temp id, or MPF |
+| `id` | string | yes | resource id, create-draft temp id, or MPF |
 | `description` | string | no | optional summary |
 
 ### `discard`
@@ -421,11 +442,15 @@ Several validation and runtime errors are already stable enough to document:
 | --- | --- |
 | invalid argument types or missing required fields | `isError: true` with an error message |
 | unknown tool name | `Unknown tool` |
+| `memsetup` omits `knownHashes.META_PROMPT.md` | `isError: true` with an invalid params error |
+| `memload` omits `knownHashes` or an entry for a requested ID | `isError: true` with an invalid params error |
 | `memload` receives an unknown rule ID | `Unknown rule id` |
 | `memref` receives an unknown rule/workflow ID | structured `code: "unknown_rule_or_workflow"`, `retryable: true`, `retryAction: "rediscover_and_reload"` |
 | `memref` receives an invalid constraint ID | structured `code: "unknown_constraint"`, `retryable: true`, `retryAction: "retry_with_valid_constraint"`, optional `validConstraints` |
 | artifact path is unsafe | `unsafe path` |
 | artifact target is missing | `file not found in cache` |
+| artifact update conflicts with a non-modify local draft | `artifact already has an incompatible local change` |
+| artifact delete targets a create-only draft by path | `file not found in cache` |
 | create collides with an existing draft | `draft already exists` |
 
 For `agentreport`, validation is slightly stricter than the schema summary alone suggests. `summary` is required, must be a string, and must not be empty.

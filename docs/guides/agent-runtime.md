@@ -82,7 +82,7 @@ clumsies adapt --agent codex --scope workspace --yes
 clumsies adapt --agent claude-code --scope user --yes
 ```
 
-That is still a user action. What changes after installation is the runtime behavior. The host can now start `clumsies mcp serve` and follow the structured `memory.*` flow instead of treating rule and context files as ad hoc local memory.
+That is still a user action. What changes after installation is the runtime behavior. The host can now start `clumsies mcp serve` and follow the structured `memsetup` → `memdisc` → `memload` → `memref` flow instead of treating rule and context files as ad hoc local memory.
 
 In the current implementation, the two built-in adapter packages are:
 
