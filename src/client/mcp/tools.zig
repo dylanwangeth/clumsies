@@ -736,6 +736,7 @@ fn proposeErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
         error.InvalidParams => "invalid parameters",
         error.FileNotFound => "file not found in cache",
         error.DraftAlreadyExists => "draft already exists for this path",
+        error.DraftOperationConflict => "artifact already has an incompatible local change",
         error.UnsafeDraftPath => "unsafe path",
         else => "internal error",
     }) catch @constCast("{\"error\":{\"code\":-32603,\"message\":\"internal error\"}}");
@@ -912,16 +913,26 @@ fn handleProposeUpdate(
 
     const base_hash = util_hash.contentHash(cache_content);
 
-    try drafts_mod.createDraft(allocator, workspace_root, .{
-        .category = draft_category,
-        .operation = .modify,
-        .draft_path = m_entry.path,
-        .current_path = m_entry.path,
-        .base_hash = base_hash[0..],
-        .rule_id = if (category == .rule and draft_category == .rule) id else null,
-        .context_id = if (category == .context) id else null,
-        .description = description,
-    }, body);
+    const updated = try drafts_mod.updateModifyDraftContent(
+        allocator,
+        workspace_root,
+        draft_category,
+        m_entry.path,
+        body,
+        description,
+    );
+    if (!updated) {
+        try drafts_mod.createDraft(allocator, workspace_root, .{
+            .category = draft_category,
+            .operation = .modify,
+            .draft_path = m_entry.path,
+            .current_path = m_entry.path,
+            .base_hash = base_hash[0..],
+            .rule_id = if (category == .rule and draft_category == .rule) id else null,
+            .context_id = if (category == .context) id else null,
+            .description = description,
+        }, body);
+    }
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_update = .{ .id = id, .path = m_entry.path } },
@@ -1282,6 +1293,78 @@ test "artifact tool updates MPF change" {
     defer index.deinit(testing.allocator);
     const entry = index.findByCurrentPath(.meta_prompt, "META_PROMPT.md") orelse return error.TestUnexpectedResult;
     try testing.expectEqual(drafts_mod.DraftOperation.modify, entry.operation);
+}
+
+test "artifact update overwrites existing context modify draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try tmp.dir.makePath("cache/context/spec");
+    try writeTestFile(tmp.dir, "cache/context/spec/API.md", "old api");
+    try writeTestFile(tmp.dir, "manifest.json",
+        \\{
+        \\  "rules": {},
+        \\  "context": {
+        \\    "c-api": {"path": "spec/API.md", "hash": "sha256:old"}
+        \\  }
+        \\}
+    );
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, root),
+    };
+    defer session.deinit(testing.allocator);
+
+    const first_json =
+        \\{
+        \\  "resource": "context",
+        \\  "op": {
+        \\    "update": {
+        \\      "id": "c-api",
+        \\      "body": "first api",
+        \\      "description": "first"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const first = try std.json.parseFromSlice(std.json.Value, testing.allocator, first_json, .{});
+    defer first.deinit();
+    const first_result = try handleArtifact(testing.allocator, root, &session, first.value.object);
+    defer testing.allocator.free(first_result);
+    try testing.expect(std.mem.indexOf(u8, first_result, "\"ok\":true") != null);
+
+    const second_json =
+        \\{
+        \\  "resource": "context",
+        \\  "op": {
+        \\    "update": {
+        \\      "id": "c-api",
+        \\      "body": "second api",
+        \\      "description": "second"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const second = try std.json.parseFromSlice(std.json.Value, testing.allocator, second_json, .{});
+    defer second.deinit();
+    const second_result = try handleArtifact(testing.allocator, root, &session, second.value.object);
+    defer testing.allocator.free(second_result);
+    try testing.expect(std.mem.indexOf(u8, second_result, "\"ok\":true") != null);
+
+    const content = try drafts_mod.readDraftFile(testing.allocator, root, .context, "spec/API.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("second api", content);
+
+    var index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.findByCurrentPath(.context, "spec/API.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(drafts_mod.DraftOperation.modify, entry.operation);
+    try testing.expectEqualStrings("second", entry.description.?);
 }
 
 test "context propose delete discards create-only draft by path id" {
