@@ -346,7 +346,7 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
         text_bufs: std.ArrayListUnmanaged([text_buf_len]u8) = .empty,
         all_dir_paths: std.ArrayListUnmanaged([]const u8) = .empty,
         expanded: std.StringHashMapUnmanaged(void) = .empty,
-        seen_top_level: std.StringHashMapUnmanaged(void) = .empty,
+        seen_dir_paths: std.StringHashMapUnmanaged(void) = .empty,
         initialized: bool = false,
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
@@ -355,14 +355,18 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             self.depths.deinit(allocator);
             self.text_lens.deinit(allocator);
             self.text_bufs.deinit(allocator);
+            self.freeAllDirPaths(allocator);
             self.all_dir_paths.deinit(allocator);
+            freeMapKeys(allocator, &self.expanded);
             self.expanded.deinit(allocator);
-            self.seen_top_level.deinit(allocator);
+            freeMapKeys(allocator, &self.seen_dir_paths);
+            self.seen_dir_paths.deinit(allocator);
         }
 
-        pub fn reset(self: *Self) void {
-            self.expanded.clearRetainingCapacity();
-            self.seen_top_level.clearRetainingCapacity();
+        pub fn reset(self: *Self, allocator: std.mem.Allocator) void {
+            self.freeAllDirPaths(allocator);
+            freeMapKeys(allocator, &self.expanded);
+            freeMapKeys(allocator, &self.seen_dir_paths);
             self.initialized = false;
             self.clearRows();
         }
@@ -410,28 +414,32 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
 
         pub fn expandDir(self: *Self, allocator: std.mem.Allocator, prefix: []const u8) bool {
             if (self.expanded.contains(prefix)) return false;
-            self.expanded.put(allocator, prefix, {}) catch return false;
+            putOwnedMapKey(allocator, &self.expanded, prefix) catch return false;
             return true;
         }
 
-        pub fn collapseDir(self: *Self, prefix: []const u8) bool {
-            return self.expanded.fetchRemove(prefix) != null;
+        pub fn collapseDir(self: *Self, allocator: std.mem.Allocator, prefix: []const u8) bool {
+            if (self.expanded.fetchRemove(prefix)) |kv| {
+                allocator.free(kv.key);
+                return true;
+            }
+            return false;
         }
 
         pub fn toggleDir(self: *Self, allocator: std.mem.Allocator, prefix: []const u8) void {
-            if (self.collapseDir(prefix)) return;
+            if (self.collapseDir(allocator, prefix)) return;
             _ = self.expandDir(allocator, prefix);
         }
 
         pub fn toggleAll(self: *Self, allocator: std.mem.Allocator) void {
             if (self.all_dir_paths.items.len == 0) return;
             if (self.currentExpandedDirCount() < self.all_dir_paths.items.len) {
-                self.expanded.clearRetainingCapacity();
+                freeMapKeys(allocator, &self.expanded);
                 for (self.all_dir_paths.items) |path| {
-                    self.expanded.put(allocator, path, {}) catch return;
+                    putOwnedMapKey(allocator, &self.expanded, path) catch return;
                 }
             } else {
-                self.expanded.clearRetainingCapacity();
+                freeMapKeys(allocator, &self.expanded);
             }
         }
 
@@ -455,7 +463,7 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
                 return;
             }
 
-            self.expandNewTopLevelPrefixes(allocator, paths[0..item_count]);
+            self.expandNewDirPrefixes(allocator, paths[0..item_count]);
             self.initialized = true;
 
             const sort_idx = allocator.alloc(usize, item_count) catch {
@@ -555,13 +563,17 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
         }
 
         fn syncAllDirPaths(self: *Self, allocator: std.mem.Allocator, paths: []const []const u8) void {
-            self.all_dir_paths.clearRetainingCapacity();
+            self.freeAllDirPaths(allocator);
             for (paths) |path| {
                 var scan: usize = 0;
                 while (std.mem.indexOfScalarPos(u8, path, scan, '/')) |slash| {
                     const prefix = path[0 .. slash + 1];
                     if (!self.hasDirPath(prefix)) {
-                        self.all_dir_paths.append(allocator, prefix) catch return;
+                        const owned = allocator.dupe(u8, prefix) catch return;
+                        self.all_dir_paths.append(allocator, owned) catch {
+                            allocator.free(owned);
+                            return;
+                        };
                     }
                     scan = slash + 1;
                 }
@@ -575,17 +587,44 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             return false;
         }
 
-        fn expandNewTopLevelPrefixes(self: *Self, allocator: std.mem.Allocator, paths: []const []const u8) void {
+        fn expandNewDirPrefixes(self: *Self, allocator: std.mem.Allocator, paths: []const []const u8) void {
             for (paths) |path| {
-                if (std.mem.indexOfScalar(u8, path, '/')) |slash| {
-                    const top = path[0 .. slash + 1];
-                    if (self.seen_top_level.contains(top)) continue;
-                    self.seen_top_level.put(allocator, top, {}) catch continue;
-                    self.expanded.put(allocator, top, {}) catch {};
+                var scan: usize = 0;
+                while (std.mem.indexOfScalarPos(u8, path, scan, '/')) |slash| {
+                    const prefix = path[0 .. slash + 1];
+                    scan = slash + 1;
+                    if (self.seen_dir_paths.contains(prefix)) continue;
+                    putOwnedMapKey(allocator, &self.seen_dir_paths, prefix) catch continue;
+                    putOwnedMapKey(allocator, &self.expanded, prefix) catch {};
                 }
             }
         }
+
+        fn freeAllDirPaths(self: *Self, allocator: std.mem.Allocator) void {
+            for (self.all_dir_paths.items) |path| allocator.free(path);
+            self.all_dir_paths.clearRetainingCapacity();
+        }
     };
+}
+
+fn putOwnedMapKey(
+    allocator: std.mem.Allocator,
+    map: *std.StringHashMapUnmanaged(void),
+    key: []const u8,
+) !void {
+    if (map.contains(key)) return;
+    const owned = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned);
+    try map.put(allocator, owned, {});
+}
+
+fn freeMapKeys(
+    allocator: std.mem.Allocator,
+    map: *std.StringHashMapUnmanaged(void),
+) void {
+    var it = map.keyIterator();
+    while (it.next()) |key| allocator.free(key.*);
+    map.clearRetainingCapacity();
 }
 
 fn sortPathIndices(paths: []const []const u8, out: []usize) void {
@@ -713,12 +752,15 @@ test "State sync default-expands top level prefixes and maps leaf indices" {
 
     state.sync(std.testing.allocator, paths[0..], orig[0..]);
 
-    try std.testing.expectEqual(@as(usize, 5), state.rowCount());
+    try std.testing.expectEqual(@as(usize, 7), state.rowCount());
     try std.testing.expectEqualStrings("rule/", state.rowText(0));
-    try std.testing.expectEqualStrings("workflow/", state.rowText(3));
-    try std.testing.expect(std.mem.endsWith(u8, state.rowText(4), "GEN_PR"));
-    try std.testing.expectEqual(@as(?usize, 30), state.leafIndexAt(4));
+    try std.testing.expect(std.mem.endsWith(u8, state.rowText(1), "api/"));
+    try std.testing.expectEqualStrings("workflow/", state.rowText(5));
+    try std.testing.expect(std.mem.endsWith(u8, state.rowText(6), "GEN_PR"));
+    try std.testing.expectEqual(@as(?usize, 30), state.leafIndexAt(6));
     try std.testing.expect(state.isExpanded("rule/"));
+    try std.testing.expect(state.isExpanded("rule/api/"));
+    try std.testing.expect(state.isExpanded("rule/db/"));
     try std.testing.expect(state.isExpanded("workflow/"));
 }
 
@@ -771,6 +813,39 @@ test "State sync expands top level prefixes that appear after first sync" {
     try std.testing.expect(state.isExpanded("todo/"));
 }
 
+test "State sync expands nested prefixes that appear after first sync" {
+    const TreeState = State(16, 64);
+    var state: TreeState = .{};
+    defer state.deinit(std.testing.allocator);
+
+    const initial_paths = [_][]const u8{
+        "research/R1.md",
+    };
+    const initial_orig = [_]usize{0};
+    state.sync(std.testing.allocator, initial_paths[0..], initial_orig[0..]);
+
+    const next_paths = [_][]const u8{
+        "research/R1.md",
+        "research/log/zig-std-log.md",
+        "vxfw/WIDGET_API.md",
+    };
+    const next_orig = [_]usize{ 0, 1, 2 };
+    state.sync(std.testing.allocator, next_paths[0..], next_orig[0..]);
+
+    try std.testing.expect(state.isExpanded("research/"));
+    try std.testing.expect(state.isExpanded("research/log/"));
+    try std.testing.expect(state.isExpanded("vxfw/"));
+    var found_log = false;
+    for (0..state.rowCount()) |row| {
+        if (state.dirPathAt(row)) |dir| {
+            if (!std.mem.eql(u8, dir, "research/log/")) continue;
+            found_log = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_log);
+}
+
 test "State sync does not re-expand a top level prefix after user collapse" {
     const TreeState = State(16, 64);
     var state: TreeState = .{};
@@ -781,7 +856,7 @@ test "State sync does not re-expand a top level prefix after user collapse" {
     };
     const first_orig = [_]usize{0};
     state.sync(std.testing.allocator, first_paths[0..], first_orig[0..]);
-    try std.testing.expect(state.collapseDir("research/"));
+    try std.testing.expect(state.collapseDir(std.testing.allocator, "research/"));
 
     const next_paths = [_][]const u8{
         "research/R1.md",
@@ -791,6 +866,30 @@ test "State sync does not re-expand a top level prefix after user collapse" {
     state.sync(std.testing.allocator, next_paths[0..], next_orig[0..]);
 
     try std.testing.expect(!state.isExpanded("research/"));
+}
+
+test "State owns expanded prefix keys across caller buffer reuse" {
+    const TreeState = State(16, 64);
+    var state: TreeState = .{};
+    defer state.deinit(std.testing.allocator);
+
+    var path_buf = [_]u8{ 'a', 'l', 'p', 'h', 'a', '/', 'A', '.', 'm', 'd' };
+    var paths = [_][]const u8{path_buf[0..]};
+    const orig = [_]usize{0};
+    state.sync(std.testing.allocator, paths[0..], orig[0..]);
+    try std.testing.expect(state.isExpanded("alpha/"));
+
+    @memcpy(path_buf[0..4], "beta");
+    path_buf[4] = '/';
+    path_buf[5] = 'B';
+    path_buf[6] = '.';
+    path_buf[7] = 'm';
+    path_buf[8] = 'd';
+    paths[0] = path_buf[0..9];
+    state.sync(std.testing.allocator, paths[0..], orig[0..]);
+
+    try std.testing.expect(state.isExpanded("alpha/"));
+    try std.testing.expect(state.isExpanded("beta/"));
 }
 
 test "State toggleAll expands and collapses every known directory" {
@@ -807,15 +906,15 @@ test "State toggleAll expands and collapses every known directory" {
     state.sync(std.testing.allocator, paths[0..], orig[0..]);
 
     state.toggleAll(std.testing.allocator);
+    try std.testing.expect(!state.isExpanded("rule/"));
+    try std.testing.expect(!state.isExpanded("workflow/"));
+
+    state.toggleAll(std.testing.allocator);
     try std.testing.expect(state.isExpanded("rule/"));
     try std.testing.expect(state.isExpanded("rule/api/"));
     try std.testing.expect(state.isExpanded("rule/db/"));
     try std.testing.expect(state.isExpanded("workflow/"));
     try std.testing.expect(state.isExpanded("workflow/release/"));
-
-    state.toggleAll(std.testing.allocator);
-    try std.testing.expect(!state.isExpanded("rule/"));
-    try std.testing.expect(!state.isExpanded("workflow/"));
 }
 
 test "State parentRow returns the nearest shallower visible ancestor" {
@@ -831,6 +930,6 @@ test "State parentRow returns the nearest shallower visible ancestor" {
 
     state.sync(std.testing.allocator, paths[0..], orig[0..]);
     try std.testing.expectEqual(@as(?usize, 0), state.parentRow(1));
-    try std.testing.expectEqual(@as(?usize, 0), state.parentRow(2));
-    try std.testing.expectEqual(@as(?usize, null), state.parentRow(3));
+    try std.testing.expectEqual(@as(?usize, 1), state.parentRow(2));
+    try std.testing.expectEqual(@as(?usize, 0), state.parentRow(3));
 }

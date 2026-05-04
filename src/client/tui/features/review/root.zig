@@ -94,7 +94,7 @@ pub const State = struct {
     pr_scroll_bars: vxfw.ScrollBars,
     pr_widgets: [64 * 2]vxfw.Widget = undefined,
     pr_table_rows: [64]w.TableRow = undefined,
-    pr_table_cols: [64][5]w.Column = undefined,
+    pr_table_cols: [64][6]w.Column = undefined,
     pr_text_rows: [64]vxfw.Text = undefined,
     pr_indices: [64 * 2]?usize = .{null} ** (64 * 2),
     pr_desc_bufs: [64][160]u8 = undefined,
@@ -184,7 +184,7 @@ pub fn handleEmbeddedPaneEvent(
     }
     switch (self.review.detail_tab) {
         .content => {
-            if (@import("../content_actions.zig").handle(self, ctx, key, .library)) return;
+            if (@import("../content_actions.zig").handle(self, ctx, key, .artifact)) return;
             try self.review.content_view.handleEvent(ctx, event);
         },
         .pull_requests => try handlePrDiffEvent(self, ctx, event, key),
@@ -312,7 +312,7 @@ fn fillRuleDetailSurface(
             const title = ruleDetailTitle(self, rule);
             w.writeText(surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
             const meta_min_col: u16 = @intCast(2 + ctx.stringWidth(title) + 2);
-            if (selectedLibraryRuleDraftStatus(self)) |status| {
+            if (selectedArtifactRuleDraftStatus(self)) |status| {
                 _ = w.writeHeaderRightIfFits(
                     surface,
                     ctx,
@@ -370,11 +370,8 @@ fn writeRuleMetaOnPanelChrome(
         return;
     }
 
-    const full = try formatRuleMeta(ctx.arena, rule, true);
-    if (w.writeHeaderRightIfFits(surface, ctx, 0, min_col, full, theme.fg(theme.MUTED))) return;
-
-    const compact = try formatRuleMeta(ctx.arena, rule, false);
-    _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, compact, theme.fg(theme.MUTED));
+    const meta = try formatRuleMeta(ctx.arena, rule);
+    _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, meta, theme.fg(theme.MUTED));
 }
 
 fn ruleDetailTitle(self: anytype, rule: *const data.RuleEntry) []const u8 {
@@ -390,28 +387,10 @@ fn isVirtualCreateRule(rule: *const data.RuleEntry) bool {
 fn formatRuleMeta(
     arena: std.mem.Allocator,
     rule: *const data.RuleEntry,
-    include_updated: bool,
 ) std.mem.Allocator.Error![]const u8 {
-    if (!include_updated) {
-        return std.fmt.allocPrint(
-            arena,
-            "rev{d} pr{d} c{d}",
-            .{ rule.revision, rule.open_pr_count, rule.constraint_count },
-        );
-    }
     const updated = try w.formatShortTimestamp(arena, rule.updated);
-    if (updated.len == 0) {
-        return std.fmt.allocPrint(
-            arena,
-            "rev{d} pr{d} c{d}",
-            .{ rule.revision, rule.open_pr_count, rule.constraint_count },
-        );
-    }
-    return std.fmt.allocPrint(
-        arena,
-        "rev{d} pr{d} c{d} {s}",
-        .{ rule.revision, rule.open_pr_count, rule.constraint_count, updated },
-    );
+    if (updated.len == 0) return "";
+    return std.fmt.allocPrint(arena, "updated {s}", .{updated});
 }
 
 fn handlePrDiffEvent(
@@ -510,34 +489,11 @@ fn drawReviewFilterPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator
     w.drawBorder(&surface, theme.focusBorder(self.review.focus == .filters), theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Filters", theme.boldOn(theme.PANEL, theme.TEXT));
 
-    var row: u16 = 2;
-    row = try drawActiveFilterChips(self, &surface, ctx, row);
-    row += 1;
+    var row: u16 = 1;
     row = drawFilterGroup(self, &surface, ctx, row, 0, "Status", &status_chips);
-    row += 1;
     row = drawFilterGroup(self, &surface, ctx, row, 1, "Target", &target_chips);
-    row += 1;
     _ = drawFilterGroup(self, &surface, ctx, row, 2, "Sort", &sort_chips);
     return surface;
-}
-
-fn drawActiveFilterChips(self: anytype, surface: *vxfw.Surface, ctx: vxfw.DrawContext, start_row: u16) std.mem.Allocator.Error!u16 {
-    var row = start_row;
-    const default_filters = self.review.pr_filter == .open and self.review.target_filter == null and self.review.sort == .updated;
-    if (default_filters) {
-        w.writeText(surface, ctx, 2, row, "All open review items", theme.fg(theme.MUTED));
-        return row + 1;
-    }
-    w.writeText(surface, ctx, 2, row, "Active", theme.fgBold(theme.TEXT_SOFT));
-    row += 1;
-    var labels: [3][]const u8 = undefined;
-    labels[0] = try std.fmt.allocPrint(ctx.arena, "status:{s}", .{self.review.pr_filter.label()});
-    labels[1] = if (self.review.target_filter) |target|
-        try std.fmt.allocPrint(ctx.arena, "target:{s}", .{target.label()})
-    else
-        "target:all";
-    labels[2] = try std.fmt.allocPrint(ctx.arena, "sort:{s}", .{self.review.sort.label()});
-    return drawChipLine(surface, ctx, row, 2, surface.size.width -| 4, labels[0..], null, false);
 }
 
 const FilterChip = struct {
@@ -605,33 +561,6 @@ fn drawFilterGroup(
     return row + 1;
 }
 
-fn drawChipLine(
-    surface: *vxfw.Surface,
-    ctx: vxfw.DrawContext,
-    start_row: u16,
-    start_col: u16,
-    max_w: u16,
-    labels: []const []const u8,
-    selected_idx: ?usize,
-    focus: bool,
-) u16 {
-    var row = start_row;
-    var col = start_col;
-    for (labels, 0..) |label, idx| {
-        const label_w: u16 = @intCast(ctx.stringWidth(label));
-        const chip_w = label_w + 4;
-        if (col > start_col and col + chip_w > start_col + max_w) {
-            row += 1;
-            col = start_col;
-        }
-        const selected = if (selected_idx) |sel| sel == idx else false;
-        const text = std.fmt.allocPrint(ctx.arena, "[ {s} ]", .{label}) catch label;
-        w.writeText(surface, ctx, col, row, text, chipStyle(selected, focus and selected));
-        col += chip_w + 1;
-    }
-    return row + 1;
-}
-
 fn chipWrapRowCount(width: u16, labels: []const []const u8) u16 {
     if (labels.len == 0) return 0;
     const max_w = @max(@as(u16, 1), width);
@@ -667,17 +596,21 @@ fn drawReviewListPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, theme.focusBorder(self.review.focus == .queue), theme.PANEL);
-    w.writeText(&surface, ctx, 2, 0, "Review queue", theme.boldOn(theme.PANEL, theme.TEXT));
-    const count = std.fmt.allocPrint(ctx.arena, "{d}/{d}", .{ self.review.filtered_pr_count, self.review.total_pr_count }) catch "";
-    if (count.len > 0) w.writeRightText(&surface, ctx, 0, count, theme.textOn(theme.PANEL, theme.MUTED));
+    const title = if (self.review.filtered_pr_count == self.review.total_pr_count)
+        "Review queue"
+    else
+        std.fmt.allocPrint(ctx.arena, "Review queue {d}/{d}", .{ self.review.filtered_pr_count, self.review.total_pr_count }) catch "Review queue";
+    w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
 
     const body_origin_row: u16 = 1;
     const body_origin_col: u16 = 2;
     const body_h: u16 = size.height -| body_origin_row -| 1;
     const body_w: u16 = size.width -| body_origin_col -| 1;
+    const row_w = body_w -| 1;
+    writeReviewQueueColumnHeader(&surface, ctx, body_origin_col, row_w);
     if (self.review.pr_row_count == 0) {
         const empty = if (self.review.total_pr_count == 0) "No review requests." else "No PRs match current filters.";
-        w.writeText(&surface, ctx, body_origin_col, body_origin_row + 1, empty, theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, body_origin_col, body_origin_row, empty, theme.fg(theme.MUTED));
         return surface;
     }
 
@@ -688,6 +621,28 @@ fn drawReviewListPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     surface.children = children;
     writeReviewCursorBar(&surface, &self.review.pr_scroll_bars.scroll_view, body_origin_row, body_h);
     return surface;
+}
+
+fn writeReviewQueueColumnHeader(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    origin_col: u16,
+    body_w: u16,
+) void {
+    const updated_w: u16 = 16;
+    const comments_w: u16 = 10;
+    const op_w: u16 = 10;
+    const status_w: u16 = 8;
+    const gap: u16 = 2;
+    const updated_col = origin_col + body_w -| updated_w;
+    const comments_col = updated_col -| gap -| comments_w;
+    const op_col = comments_col -| gap -| op_w;
+    const status_col = op_col -| gap -| status_w;
+
+    w.writeText(surface, ctx, status_col, 0, "status", theme.fg(theme.MUTED));
+    w.writeText(surface, ctx, op_col, 0, "op", theme.fg(theme.MUTED));
+    w.writeText(surface, ctx, comments_col, 0, "comments", theme.fg(theme.MUTED));
+    w.writeText(surface, ctx, updated_col, 0, "updated", theme.fg(theme.MUTED));
 }
 
 fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -757,12 +712,13 @@ fn drawReviewDiffPanel(
         w.writeText(&surface, ctx, 2, 1, "No diff loaded.", theme.fg(theme.MUTED));
         return surface;
     }
-    const body_h = size.height -| 2;
+    const body_origin_row: i17 = 1;
+    const body_h = size.height -| @as(u16, @intCast(body_origin_row)) -| 1;
     const body_w = size.width -| 4;
     const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
     const body = try self.review.pr_diff_scroll_bars.widget().draw(body_ctx);
     const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-    children[0] = .{ .origin = .{ .row = 1, .col = 2 }, .surface = body };
+    children[0] = .{ .origin = .{ .row = body_origin_row, .col = 2 }, .surface = body };
     surface.children = children;
     return surface;
 }
@@ -778,12 +734,13 @@ fn drawReviewCommentPanel(self: anytype, ctx: vxfw.DrawContext, pr: *const data.
         w.writeText(&surface, ctx, 2, 1, "No comments yet.", theme.fg(theme.MUTED));
         return surface;
     }
-    const body_h = size.height -| 2;
+    const body_origin_row: i17 = 1;
+    const body_h = size.height -| @as(u16, @intCast(body_origin_row)) -| 1;
     const body_w = size.width -| 4;
     const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
     const body = try self.review.pr_comment_scroll_bars.widget().draw(body_ctx);
     const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-    children[0] = .{ .origin = .{ .row = 1, .col = 2 }, .surface = body };
+    children[0] = .{ .origin = .{ .row = body_origin_row, .col = 2 }, .surface = body };
     surface.children = children;
     return surface;
 }
@@ -982,7 +939,7 @@ fn handleReviewPrListEvent(
 
 pub fn fetchSelectedPrDetail(self: anytype) void {
     const rules = self.getRules();
-    const rule_idx = @min(self.library.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
+    const rule_idx = @min(self.artifact.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
     if (rules.len == 0) return;
 
     const prs = self.getPrsForRule(rules[rule_idx].path);
@@ -1045,10 +1002,10 @@ pub fn syncContentWidget(self: anytype) void {
 }
 
 pub fn syncContentWidgetForMode(self: anytype, show_diff: bool) void {
-    const selected_path = selectedLibraryRulePath(self);
-    const category = if (selected_path) |path| self.libraryCategoryForPath(path) else .rule;
+    const selected_path = selectedArtifactRulePath(self);
+    const category = if (selected_path) |path| self.artifactCategoryForPath(path) else .rule;
     const cache_content: []const u8 = if (selected_path) |path|
-        self.cachedLibraryRuleBody(category, path) orelse ""
+        self.cachedArtifactRuleBody(category, path) orelse ""
     else
         "";
     const draft_content: ?[]const u8 = if (selected_path) |path| self.draftContentForView(category, path) else null;
@@ -1060,28 +1017,28 @@ pub fn syncContentWidgetForMode(self: anytype, show_diff: bool) void {
     }
 }
 
-fn selectedLibraryRulePath(self: anytype) ?[]const u8 {
+fn selectedArtifactRulePath(self: anytype) ?[]const u8 {
     const rules = self.getRules();
     // Virtual rows (create-op drafts) land at indices past
     // rules.len and have no server-side entry — their path lives
     // in drafts_create_rule_paths. Without this branch the
     // content panel renders empty for any draft created via `n`.
-    if (self.library.selected_rule < rules.len) {
-        return rules[self.library.selected_rule].path;
+    if (self.artifact.selected_rule < rules.len) {
+        return rules[self.artifact.selected_rule].path;
     }
-    const k = self.library.selected_rule - rules.len;
+    const k = self.artifact.selected_rule - rules.len;
     if (k >= self.drafts.create_rule_paths.len) return null;
     return self.drafts.create_rule_paths[k];
 }
 
-fn selectedLibraryRuleDraftStatus(self: anytype) ?drafts_mod.DraftStatus {
-    const path = selectedLibraryRulePath(self) orelse return null;
-    return self.draftStatusFor(self.libraryCategoryForPath(path), path);
+fn selectedArtifactRuleDraftStatus(self: anytype) ?drafts_mod.DraftStatus {
+    const path = selectedArtifactRulePath(self) orelse return null;
+    return self.draftStatusFor(self.artifactCategoryForPath(path), path);
 }
 
 /// Render the working-copy view for an arbitrary (cache, draft)
 /// byte pair into Shell.content_scroll_bars. Shared by the
-/// Library rule detail pane and the Workspace context / rules
+/// Artifact rule detail pane and the Workspace context / rules
 /// content panes so both surfaces scroll identically and use the
 /// same DiffViewer gutter formatter. When draft_content is null the
 /// cache bytes are rendered flat (no diff symbols); otherwise we
@@ -1095,18 +1052,22 @@ pub fn syncContentWidgetBytes(
 }
 
 /// Workspace-side entrypoint: render a workspace context file at
-/// `path`. Pulls cache bytes from the ws_context_content cache and
-/// overlays the local context draft if one exists. Normal mode renders
-/// the current working copy as flat text; diff mode compares cached
-/// content against the draft. Empty cache bytes are valid for pure
-/// create-op drafts with no cache backing.
+/// `path`. The base bytes come from the materialized local cache; the
+/// remote body cache is reserved for pull/download flows. Normal mode
+/// renders the current working copy as flat text; diff mode compares
+/// cached content against the draft. Empty cache bytes are valid for
+/// pure create-op drafts with no cache backing.
 pub fn syncWsContextContentWidget(
     self: anytype,
     ws_id: []const u8,
     path: []const u8,
+    local_path: ?[]const u8,
+    remote_hash: ?[]const u8,
     show_diff: bool,
 ) void {
-    const cache_content: []const u8 = self.cachedWorkspaceContextBody(ws_id, path) orelse "";
+    _ = remote_hash;
+    const cache_path = local_path orelse path;
+    const cache_content: []const u8 = self.localWorkspaceContextBody(ws_id, cache_path) orelse "";
     const draft_content: ?[]const u8 = self.draftContentForView(.context, path);
     const visible_content = draft_content orelse cache_content;
     if (show_diff) {
@@ -1117,18 +1078,22 @@ pub fn syncWsContextContentWidget(
 }
 
 /// Workspace-side entrypoint mirroring syncWsContextContentWidget for
-/// the Rules tab. Workspace rule bodies come from the same org-wide
-/// rule_content cache that Library reads, but the draft overlay is
-/// keyed by rule path. Normal mode renders the working copy as flat
-/// text; diff mode threads both cache and draft bytes into the shared
-/// renderer.
+/// the Rules tab. Workspace rule bodies come from the materialized
+/// local cache; remote artifact bodies are only used for pull/download
+/// flows. Normal mode renders the working copy as flat text; diff mode
+/// threads both cache and draft bytes into the shared renderer.
 pub fn syncWsRuleContentWidget(
     self: anytype,
     path: []const u8,
+    local_path: ?[]const u8,
+    remote_hash: ?[]const u8,
     show_diff: bool,
 ) void {
-    const category = self.libraryCategoryForPath(path);
-    const cache_content: []const u8 = self.cachedLibraryRuleBody(category, path) orelse "";
+    _ = remote_hash;
+    const category = self.artifactCategoryForPath(path);
+    const cache_path = local_path orelse path;
+    const cache_category = self.artifactCategoryForPath(cache_path);
+    const cache_content: []const u8 = self.localArtifactRuleBody(cache_category, cache_path) orelse "";
     const draft_content: ?[]const u8 = self.draftContentForView(category, path);
     const visible_content = draft_content orelse cache_content;
     if (show_diff) {
@@ -1160,7 +1125,7 @@ pub fn syncPrWidgets(self: anytype) void {
         self.review.pr_scroll_bars.estimated_content_height = 0;
         return;
     }
-    const sel_idx = @min(self.library.selected_rule, all_rules.len - 1);
+    const sel_idx = @min(self.artifact.selected_rule, all_rules.len - 1);
     const p = &all_rules[sel_idx];
     const prs = self.getPrsForRule(p.path);
     const view_alloc = self.viewAllocator();
@@ -1177,12 +1142,13 @@ pub fn syncPrWidgets(self: anytype) void {
         const created_short = w.formatShortTimestamp(view_alloc, pr.created) catch pr.created;
         // Row 1: id, status, author, created. padding_left = 0 so
         // the first cell of the row sits immediately to the right
-        // of the cursor bar, matching the Library file list.
+        // of the cursor bar, matching the Artifact file list.
         self.review.pr_table_cols[pi] = .{
             .{ .text = pr.id, .flex = 0 },
             .{ .text = pr.status, .flex = 0 },
             .{ .text = pr.author, .flex = 0 },
             .{ .text = created_short, .flex = 1, .alignment = .right },
+            .{ .text = "", .flex = 0 },
             .{ .text = "", .flex = 0 },
         };
         self.review.pr_table_rows[pi] = .{
@@ -1253,19 +1219,21 @@ pub fn syncReviewPrWidgets(self: anytype) void {
         if (row_idx + 1 >= self.review.pr_widgets.len) break;
         const sel = pi == self.review.selected_pr_idx;
         const created_short = w.formatShortTimestamp(self.viewAllocator(), pr.created) catch pr.created;
-        const comments = std.fmt.allocPrint(self.viewAllocator(), "{d} comments", .{pr.comments.len}) catch "";
-        const ops = std.fmt.allocPrint(self.viewAllocator(), "{d} ops", .{pr.operation_count}) catch "";
-        const anchor = std.fmt.allocPrint(
+        const status = reviewStatusLabel(pr.status);
+        const op_label = reviewOpLabel(self.viewAllocator(), pr) catch "";
+        const comments_label = std.fmt.allocPrint(self.viewAllocator(), "{d}", .{pr.comment_count}) catch "";
+        const target_label = std.fmt.allocPrint(
             self.viewAllocator(),
-            "[{s}] {s}",
-            .{ pr.target_kind.label(), pr.description },
-        ) catch pr.description;
+            "[{s}]",
+            .{pr.target_kind.label()},
+        ) catch pr.target_kind.label();
         self.review.pr_table_cols[pi] = .{
-            .{ .text = anchor, .flex = 1, .min_width = 12 },
-            .{ .text = pr.status, .flex = 0 },
-            .{ .text = comments, .flex = 0 },
-            .{ .text = ops, .flex = 0 },
-            .{ .text = created_short, .flex = 0, .alignment = .right },
+            .{ .text = target_label, .flex = 0, .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT), .gap_after = 0 },
+            .{ .text = pr.description, .flex = 1, .min_width = 12, .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT) },
+            .{ .text = status, .flex = 0, .min_width = 8, .style = reviewStatusStyle(pr.status) },
+            .{ .text = op_label, .flex = 0, .min_width = 10, .style = reviewOpStyle() },
+            .{ .text = comments_label, .flex = 0, .min_width = 10, .style = reviewCommentsStyle() },
+            .{ .text = created_short, .flex = 0, .min_width = 16, .style = theme.fg(theme.MUTED) },
         };
         self.review.pr_table_rows[pi] = .{
             .columns = &self.review.pr_table_cols[pi],
@@ -1311,6 +1279,37 @@ pub fn syncReviewPrWidgets(self: anytype) void {
     }
 }
 
+fn reviewStatusLabel(status: []const u8) []const u8 {
+    if (std.mem.eql(u8, status, "accepted")) return "merged";
+    return status;
+}
+
+fn reviewStatusStyle(status: []const u8) vaxis.Style {
+    if (std.mem.eql(u8, status, "open")) return theme.fgBold(theme.ACCENT);
+    if (std.mem.eql(u8, status, "merged")) return theme.fgBold(theme.MERGED);
+    if (std.mem.eql(u8, status, "accepted")) return theme.fgBold(theme.MERGED);
+    if (std.mem.eql(u8, status, "rejected")) return theme.fgBold(theme.DANGER);
+    return theme.fgBold(theme.MUTED);
+}
+
+fn reviewOpStyle() vaxis.Style {
+    return theme.fgBold(theme.ACCENT_PR);
+}
+
+fn reviewCommentsStyle() vaxis.Style {
+    return theme.fg(theme.INFO);
+}
+
+fn reviewOpLabel(allocator: std.mem.Allocator, pr: data.PullRequestEntry) std.mem.Allocator.Error![]const u8 {
+    if (pr.operation_count > 1) {
+        return std.fmt.allocPrint(allocator, "{d} ops", .{pr.operation_count});
+    }
+    if (pr.op_type.len > 0) {
+        return allocator.dupe(u8, pr.op_type);
+    }
+    return "";
+}
+
 fn reviewPrMatchesFilters(
     status_filter: PrFilter,
     target_filter: ?data.PrTargetKind,
@@ -1347,7 +1346,7 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
         self.review.pr_diff_count = 0;
         return;
     }
-    const sel_idx = @min(self.library.selected_rule, all_rules.len - 1);
+    const sel_idx = @min(self.artifact.selected_rule, all_rules.len - 1);
     const p = &all_rules[sel_idx];
     const prs = self.getPrsForRule(p.path);
     if (prs.len == 0) {
@@ -1615,6 +1614,31 @@ test "review chips wrap for narrow and medium widths" {
     const labels = [_][]const u8{ "All", "Context", "Rule", "MPF" };
     try testing.expectEqual(@as(u16, 4), chipWrapRowCount(10, &labels));
     try testing.expectEqual(@as(u16, 2), chipWrapRowCount(22, &labels));
+}
+
+test "review labels normalize terminal state and op display" {
+    const testing = std.testing;
+    try testing.expectEqualStrings("merged", reviewStatusLabel("accepted"));
+    try testing.expectEqualStrings("merged", reviewStatusLabel("merged"));
+    const rename = data.PullRequestEntry{
+        .id = "pr",
+        .target_kind = .context,
+        .target_path = "a",
+        .rule_name = "a",
+        .status = "open",
+        .author = "alice",
+        .created = "2026-01-01T00:00:00Z",
+        .description = "rename",
+        .base_hash = "",
+        .diff = &.{},
+        .attestation_refers = 0,
+        .attestation_sessions = 0,
+        .operation_count = 1,
+        .op_type = "rename",
+    };
+    const label = try reviewOpLabel(testing.allocator, rename);
+    defer testing.allocator.free(label);
+    try testing.expectEqualStrings("rename", label);
 }
 
 test "review filter cursor navigation clamps across groups and chips" {

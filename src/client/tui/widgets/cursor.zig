@@ -147,15 +147,13 @@ pub fn cursorUp(cursor: *usize, ctx: *vxfw.EventContext) bool {
 }
 
 pub fn clampScrollTop(scroll_view: *vxfw.ScrollView, row_count: usize) void {
-    const visible_rows = visibleRowCount(scroll_view);
-    if (row_count <= visible_rows) {
+    if (row_count == 0) {
         scroll_view.scroll.top = 0;
         scroll_view.scroll.vertical_offset = 0;
         return;
     }
-    const max_top = row_count - visible_rows;
-    if (scroll_view.scroll.top > max_top) {
-        scroll_view.scroll.top = @intCast(max_top);
+    if (scroll_view.scroll.top >= row_count) {
+        scroll_view.scroll.top = @intCast(row_count - 1);
         scroll_view.scroll.vertical_offset = 0;
     }
 }
@@ -356,20 +354,20 @@ test "moveCursorBy clamps to list bounds" {
     try std.testing.expectEqual(@as(usize, 0), cursor);
 }
 
-test "clampScrollTop clamps to the last full viewport" {
+test "clampScrollTop allows bottom anchoring inside content" {
     var scroll_view = vxfw.ScrollView{ .children = .{ .slice = &.{} } };
     scroll_view.last_height = 5;
-    scroll_view.scroll.top = 19;
+    scroll_view.scroll.top = 25;
     clampScrollTop(&scroll_view, 20);
-    try std.testing.expectEqual(@as(u32, 15), scroll_view.scroll.top);
+    try std.testing.expectEqual(@as(u32, 19), scroll_view.scroll.top);
 }
 
-test "clampScrollTop clamps short content to top" {
+test "clampScrollTop preserves valid short content position" {
     var scroll_view = vxfw.ScrollView{ .children = .{ .slice = &.{} } };
     scroll_view.last_height = 5;
     scroll_view.scroll.top = 2;
     clampScrollTop(&scroll_view, 3);
-    try std.testing.expectEqual(@as(u32, 0), scroll_view.scroll.top);
+    try std.testing.expectEqual(@as(u32, 2), scroll_view.scroll.top);
     try std.testing.expectEqual(@as(i17, 0), scroll_view.scroll.vertical_offset);
 }
 
