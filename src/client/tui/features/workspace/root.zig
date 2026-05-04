@@ -238,8 +238,15 @@ pub fn drawDetail(
     // right-aligned metadata badge never overlaps the path.
     const title_w: u16 = @intCast(ctx.stringWidth(title));
     const meta_min_col: u16 = 2 + title_w + 2;
-    if (workspaceDetailShowsDiff(self, args)) {
-        w.writeText(&surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
+    if (workspaceDetailDraftStatus(self, args)) |status| {
+        _ = w.writeHeaderRightIfFits(
+            &surface,
+            ctx,
+            0,
+            meta_min_col,
+            w.draftStatusLabel(status),
+            w.draftStatusHeaderStyle(status),
+        );
     } else if (args.live_ws) |ws_d| {
         try writeWsMetaOnHeader(&surface, ctx, meta_min_col, self, ws_d, args);
     }
@@ -334,17 +341,16 @@ fn drawRuleFileDetail(
     }, !self.workspace.hide_diff);
 }
 
-fn workspaceDetailShowsDiff(self: anytype, args: DetailArgs) bool {
-    if (self.workspace.hide_diff) return false;
+fn workspaceDetailDraftStatus(self: anytype, args: DetailArgs) ?drafts_mod.DraftStatus {
     return switch (self.workspace.tab) {
         .context => if (args.context_sel_path) |path|
-            self.draftContentForView(.context, path) != null
+            self.draftStatusFor(.context, path)
         else
-            false,
+            null,
         .rules => if (args.rule_sel_path) |path|
-            self.draftContentForView(self.libraryCategoryForPath(path), path) != null
+            self.draftStatusFor(self.libraryCategoryForPath(path), path)
         else
-            false,
+            null,
     };
 }
 

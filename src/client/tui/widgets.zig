@@ -127,6 +127,21 @@ pub fn contentRowStyle(selected: bool, draft_status: anytype, pull_available: bo
     return if (selected) theme.boldOn(theme.PANEL, fg) else theme.fg(fg);
 }
 
+pub fn draftStatusLabel(status: anytype) []const u8 {
+    return switch (status) {
+        .editing => "editing",
+        .ready => "ready",
+        .submitted => "submitted",
+        .merged => "merged",
+        .rejected => "rejected",
+        .conflicted => "conflicted",
+    };
+}
+
+pub fn draftStatusHeaderStyle(status: anytype) vaxis.Style {
+    return theme.boldOn(theme.PANEL, theme.draftStatusColor(status));
+}
+
 pub fn writeDraftMarker(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
@@ -178,6 +193,13 @@ test "contentRowStyle lets draft status win over pull marker" {
     const DraftStatus = @import("../drafts.zig").DraftStatus;
     const style = contentRowStyle(false, @as(?DraftStatus, .ready), true);
     try std.testing.expectEqual(theme.OK, style.fg);
+}
+
+test "draftStatusLabel maps draft states" {
+    const DraftStatus = @import("../drafts.zig").DraftStatus;
+    try std.testing.expectEqualStrings("editing", draftStatusLabel(DraftStatus.editing));
+    try std.testing.expectEqualStrings("submitted", draftStatusLabel(DraftStatus.submitted));
+    try std.testing.expectEqualStrings("conflicted", draftStatusLabel(DraftStatus.conflicted));
 }
 
 test {

@@ -8,6 +8,7 @@ const theme = @import("../../theme.zig");
 const w = @import("../../widgets.zig");
 const api = @import("../../api.zig");
 const data = @import("../../models/view_types.zig");
+const drafts_mod = @import("../../../drafts.zig");
 const diff_viewer = @import("../../widgets/diff_viewer.zig");
 
 const RuleDetailLayout = struct {
@@ -311,8 +312,15 @@ fn fillRuleDetailSurface(
             const title = ruleDetailTitle(self, rule);
             w.writeText(surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
             const meta_min_col: u16 = @intCast(2 + ctx.stringWidth(title) + 2);
-            if (!self.review.hide_diff and selectedLibraryRuleHasDraft(self)) {
-                w.writeText(surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
+            if (selectedLibraryRuleDraftStatus(self)) |status| {
+                _ = w.writeHeaderRightIfFits(
+                    surface,
+                    ctx,
+                    0,
+                    meta_min_col,
+                    w.draftStatusLabel(status),
+                    w.draftStatusHeaderStyle(status),
+                );
             } else {
                 try writeRuleMetaOnPanelChrome(surface, ctx, meta_min_col, rule);
             }
@@ -1066,9 +1074,9 @@ fn selectedLibraryRulePath(self: anytype) ?[]const u8 {
     return self.drafts.create_rule_paths[k];
 }
 
-fn selectedLibraryRuleHasDraft(self: anytype) bool {
-    const path = selectedLibraryRulePath(self) orelse return false;
-    return self.draftContentForView(self.libraryCategoryForPath(path), path) != null;
+fn selectedLibraryRuleDraftStatus(self: anytype) ?drafts_mod.DraftStatus {
+    const path = selectedLibraryRulePath(self) orelse return null;
+    return self.draftStatusFor(self.libraryCategoryForPath(path), path);
 }
 
 /// Render the working-copy view for an arbitrary (cache, draft)
