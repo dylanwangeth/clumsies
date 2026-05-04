@@ -8,4 +8,4 @@ pub const refer = "memory.refer";
 pub const submit = "memory.submit";
 pub const reject = "memory.reject";
 
-pub const draft = "draft";
+pub const artifact = "artifact";

@@ -1,4 +1,4 @@
-//! MCP tool definitions and dispatch. Exposes memory tools and the draft
+//! MCP tool definitions and dispatch. Exposes memory tools and the artifact
 //! mutation tool to the agent. Each call generates an attestation event.
 const std = @import("std");
 const testing = std.testing;
@@ -38,9 +38,9 @@ const reject_schema =
     "{\"name\":\"" ++ tool_names.reject ++ "\",\"title\":\"Reject\",\"description\":\"Mark the current turn as unsatisfactory. Call when the user indicates the output did not follow loaded rules.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
 
-const draft_schema =
-    "{\"name\":\"" ++ tool_names.draft ++ "\",\"title\":\"Draft\"," ++
-    "\"description\":\"Create, update, rename, delete, or discard a draft for context, rule, or MPF resources. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
+const artifact_schema =
+    "{\"name\":\"" ++ tool_names.artifact ++ "\",\"title\":\"Artifact\"," ++
+    "\"description\":\"Create, update, rename, delete, or discard a local change for context, rule, or MPF artifacts. Local changes are stored as drafts until they enter review. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"mpf\"]}," ++
     "\"op\":{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
@@ -62,7 +62,7 @@ pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
             refer_schema ++ "," ++
             submit_schema ++ "," ++
             reject_schema ++ "," ++
-            draft_schema ++
+            artifact_schema ++
             "]}",
     );
 }
@@ -121,8 +121,8 @@ pub fn handleCall(
     if (std.mem.eql(u8, name, tool_names.reject)) {
         return try handleReject(allocator, session, args_obj);
     }
-    if (std.mem.eql(u8, name, tool_names.draft)) {
-        return handleDraft(allocator, workspace_root, session, args_obj) catch |err| proposeErr(allocator, err);
+    if (std.mem.eql(u8, name, tool_names.artifact)) {
+        return handleArtifact(allocator, workspace_root, session, args_obj) catch |err| proposeErr(allocator, err);
     }
 
     return try tool_result.buildErrorResult(allocator, "Unknown tool");
@@ -749,7 +749,7 @@ const DraftOp = enum {
     discard,
 };
 
-fn handleDraft(
+fn handleArtifact(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     session: *session_mod.Session,
@@ -1094,7 +1094,7 @@ fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8)
     return tmp.dir.realpath(".", buf) catch "";
 }
 
-test "buildListResult: exposes memory tools and unified draft tool" {
+test "buildListResult: exposes memory tools and unified artifact tool" {
     const result = try buildListResult(testing.allocator);
     defer testing.allocator.free(result);
 
@@ -1103,7 +1103,7 @@ test "buildListResult: exposes memory tools and unified draft tool" {
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.load ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.refer ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.submit ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.draft ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.artifact ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"required\":[\"ids\",\"knownHashes\"]") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_create\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_update\"") == null);
@@ -1162,7 +1162,7 @@ test "parseKnownHashes accepts empty hash as explicit unknown" {
     try testing.expectEqualStrings("", known.items[0].hash);
 }
 
-test "draft tool creates context draft through tagged op" {
+test "artifact tool creates context change through tagged op" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1190,7 +1190,7 @@ test "draft tool creates context draft through tagged op" {
     };
     defer session.deinit(testing.allocator);
 
-    const result = try handleDraft(testing.allocator, root, &session, parsed.value.object);
+    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
@@ -1201,7 +1201,7 @@ test "draft tool creates context draft through tagged op" {
     try testing.expectEqual(drafts_mod.DraftCategory.context, entry.category);
 }
 
-test "draft tool discards rule draft by local temp id" {
+test "artifact tool discards rule change by local temp id" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1234,7 +1234,7 @@ test "draft tool discards rule draft by local temp id" {
     };
     defer session.deinit(testing.allocator);
 
-    const result = try handleDraft(testing.allocator, root, &session, parsed.value.object);
+    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
@@ -1244,7 +1244,7 @@ test "draft tool discards rule draft by local temp id" {
     try testing.expect(index.findByLocalTempId("tmp-rule-1") == null);
 }
 
-test "draft tool updates MPF draft" {
+test "artifact tool updates MPF change" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1273,7 +1273,7 @@ test "draft tool updates MPF draft" {
     };
     defer session.deinit(testing.allocator);
 
-    const result = try handleDraft(testing.allocator, root, &session, parsed.value.object);
+    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
