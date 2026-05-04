@@ -1,4 +1,4 @@
-//! Hub workspace endpoints. A workspace is a project's working environment: a subset of Library
+//! Hub workspace endpoints. A workspace is a project's working environment: a subset of Artifact
 //! rules plus its own context. These endpoints handle workspace CRUD and serve the manifest
 //! that drives the client sync protocol.
 const std = @import("std");
@@ -208,7 +208,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 
     const rules = try collectManifestMap(req.arena, conn, "SELECT wp.rule_id, p.path, p.content_hash, p.description FROM workspace_rules wp JOIN rules p ON p.rule_id = wp.rule_id WHERE wp.ws_id = $1", .{ws_id});
 
-    const context = try collectManifestMap(req.arena, conn, "SELECT context_id, path, content_hash, description FROM context_files WHERE ws_id = $1", .{ws_id});
+    const context = try collectManifestMap(req.arena, conn, "SELECT context_id, path, content_hash, description FROM workspace_context WHERE ws_id = $1", .{ws_id});
 
     var etag_buf: [32]u8 = undefined;
     const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
@@ -422,7 +422,7 @@ pub fn handleDelete(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     _ = conn.exec("DELETE FROM context_pr_comments WHERE pr_id IN (SELECT pr_id FROM context_prs WHERE ws_id = $1)", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_pr_files WHERE pr_id IN (SELECT pr_id FROM context_prs WHERE ws_id = $1)", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_prs WHERE ws_id = $1", .{ws_id}) catch {};
-    _ = conn.exec("DELETE FROM context_files WHERE ws_id = $1", .{ws_id}) catch {};
+    _ = conn.exec("DELETE FROM workspace_context WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM context_branches WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM workspace_members WHERE ws_id = $1", .{ws_id}) catch {};
     _ = conn.exec("DELETE FROM workspace_rules WHERE ws_id = $1", .{ws_id}) catch {};

@@ -35,7 +35,7 @@ fn fixturesHealthy(conn: *pg.Conn) !bool {
 
     if (!try intColumnMatches(
         conn,
-        "SELECT revision FROM library_manifest WHERE org_id = $1::uuid",
+        "SELECT revision FROM artifact_manifest WHERE org_id = $1::uuid",
         .{data.ORG_ID},
         data.FIXTURE_VERSION,
     )) return false;
@@ -81,7 +81,7 @@ fn fixturesHealthy(conn: *pg.Conn) !bool {
     for (data.CONTEXTS) |context| {
         if (!try stringColumnMatches(
             conn,
-            "SELECT path FROM context_files WHERE context_id = $1",
+            "SELECT path FROM workspace_context WHERE context_id = $1",
             .{context.id},
             context.path,
         )) return false;

@@ -22,9 +22,9 @@ pub fn rebuild(conn: *pg.Conn) !void {
 
     _ = conn.exec(
         \\TRUNCATE orgs, users, tokens, workspaces, workspace_members, rules, workspace_rules,
-        \\  context_files, context_prs, context_pr_operations, context_pr_comments,
+        \\  workspace_context, context_prs, context_pr_operations, context_pr_comments,
         \\  bundles, bundle_rules, rule_prs, rule_pr_operations, rule_pr_comments,
-        \\  attestation_events, library_manifest, rule_history
+        \\  attestation_events, artifact_manifest, rule_history
         \\CASCADE
     , .{}) catch |err| {
         log.err("truncate failed: {}", .{err});
@@ -63,7 +63,7 @@ fn seedOrg(conn: *pg.Conn) !void {
     );
 
     _ = try conn.exec(
-        "INSERT INTO library_manifest (org_id, revision) VALUES ($1::uuid, $2)",
+        "INSERT INTO artifact_manifest (org_id, revision) VALUES ($1::uuid, $2)",
         .{ data.ORG_ID, data.FIXTURE_VERSION },
     );
 }
@@ -121,7 +121,7 @@ fn seedContexts(conn: *pg.Conn) !void {
     for (data.CONTEXTS) |context| {
         const content_hash = util_hash.contentHash(context.content);
         _ = try conn.exec(
-            \\INSERT INTO context_files (context_id, ws_id, path, content, content_hash, author)
+            \\INSERT INTO workspace_context (context_id, ws_id, path, content, content_hash, author)
             \\VALUES ($1, $2, $3, $4, $5, $6)
         , .{ context.id, context.ws_id, context.path, context.content, content_hash[0..], context.author });
     }

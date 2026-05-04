@@ -12,6 +12,7 @@ pub fn initPool(allocator: std.mem.Allocator, config: Config) !*Pool {
         .connect = .{
             .host = config.db_host,
             .port = config.db_port,
+            .read_buffer = std.math.maxInt(u16),
         },
         .auth = .{
             .username = config.db_user,
@@ -196,9 +197,9 @@ pub fn bootstrap(pool: *Pool) !void {
         return;
     };
 
-    // Create library manifest
+    // Create artifact manifest
     _ = conn.exec(
-        "INSERT INTO library_manifest (org_id, revision) VALUES ($1::uuid, 0) ON CONFLICT DO NOTHING",
+        "INSERT INTO artifact_manifest (org_id, revision) VALUES ($1::uuid, 0) ON CONFLICT DO NOTHING",
         .{org_id},
     ) catch {};
 
@@ -273,7 +274,7 @@ const migration_sql =
     \\    PRIMARY KEY (ws_id, rule_id)
     \\);
     \\
-    \\CREATE TABLE IF NOT EXISTS context_files (
+    \\CREATE TABLE IF NOT EXISTS workspace_context (
     \\    context_id TEXT PRIMARY KEY,
     \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
     \\    path TEXT NOT NULL,
@@ -284,8 +285,8 @@ const migration_sql =
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    UNIQUE(ws_id, path)
     \\);
-    \\CREATE INDEX IF NOT EXISTS context_files_ws_idx
-    \\    ON context_files(ws_id);
+    \\CREATE INDEX IF NOT EXISTS workspace_context_ws_idx
+    \\    ON workspace_context(ws_id);
     \\
     \\CREATE TABLE IF NOT EXISTS context_prs (
     \\    pr_id TEXT PRIMARY KEY,
@@ -394,7 +395,7 @@ const migration_sql =
     \\CREATE INDEX IF NOT EXISTS attestation_events_rule_ts_idx
     \\    ON attestation_events(rule_id, timestamp DESC);
     \\
-    \\CREATE TABLE IF NOT EXISTS library_manifest (
+    \\CREATE TABLE IF NOT EXISTS artifact_manifest (
     \\    org_id UUID PRIMARY KEY REFERENCES orgs(org_id),
     \\    revision INTEGER NOT NULL DEFAULT 0
     \\);
