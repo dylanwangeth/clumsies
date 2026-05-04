@@ -1,6 +1,6 @@
 //! Shortcut hint renderer for footer bars and compact overlay footers.
-//! The component keeps shortcut data structured and hides later hints first
-//! when the available width is too small.
+//! The component keeps shortcut data structured and wraps hints before hiding
+//! them, so key commands are not replaced by ambiguous truncation markers.
 
 const std = @import("std");
 const vaxis = @import("vaxis");
@@ -20,11 +20,13 @@ pub const Options = struct {
     /// this column, which lets callers reserve the footer's right side
     /// for status text.
     max_col: ?u16 = null,
+    max_rows: u16 = 2,
 };
 
 pub const DrawResult = struct {
     next_col: u16,
     hidden_count: usize,
+    rows_used: u16 = 0,
 };
 
 pub fn sortedCopy(
@@ -49,29 +51,76 @@ pub fn drawInline(
     if (options.row >= surface.size.height) return .{
         .next_col = options.col,
         .hidden_count = shortcuts.len,
+        .rows_used = 0,
     };
 
     const limit = @min(options.max_col orelse surface.size.width, surface.size.width);
+    const row_limit = @min(surface.size.height, options.row +| @max(options.max_rows, 1));
+    if (options.col >= limit or options.row >= row_limit) return .{
+        .next_col = options.col,
+        .hidden_count = shortcuts.len,
+        .rows_used = 0,
+    };
     var col = options.col;
+    var row = options.row;
     var hidden: usize = 0;
+    var rows_used: u16 = 1;
 
     for (shortcuts, 0..) |shortcut, index| {
         const width = shortcutWidth(ctx, shortcut);
         if (width == 0) continue;
         if (col + width > limit) {
-            hidden = shortcuts.len - index;
-            break;
+            if (col > options.col and row + 1 < row_limit) {
+                row += 1;
+                rows_used += 1;
+                col = options.col;
+            } else {
+                hidden = shortcuts.len - index;
+                break;
+            }
         }
-        drawShortcut(surface, ctx, options.row, col, shortcut);
+        drawShortcut(surface, ctx, row, col, shortcut);
         col += width;
     }
 
-    if (hidden > 0 and col + 3 <= limit) {
-        d.writeText(surface, ctx, col, options.row, "...", theme.fg(theme.MUTED));
-        col += 3;
-    }
+    return .{ .next_col = col, .hidden_count = hidden, .rows_used = rows_used };
+}
 
-    return .{ .next_col = col, .hidden_count = hidden };
+pub fn requiredRows(
+    ctx: vxfw.DrawContext,
+    shortcuts: []const Shortcut,
+    options: Options,
+) u16 {
+    const limit = options.max_col orelse return 1;
+    var widths: [64]u16 = undefined;
+    var width_count: usize = 0;
+    for (shortcuts) |shortcut| {
+        if (width_count >= widths.len) break;
+        const width = shortcutWidth(ctx, shortcut);
+        widths[width_count] = width;
+        width_count += 1;
+    }
+    return requiredRowsForWidths(widths[0..width_count], options.col, limit, options.max_rows);
+}
+
+fn requiredRowsForWidths(widths: []const u16, start_col: u16, limit: u16, max_rows_option: u16) u16 {
+    if (start_col >= limit) return 1;
+    const max_rows = @max(max_rows_option, 1);
+    var row: u16 = 1;
+    var col = start_col;
+    for (widths) |width| {
+        if (width == 0) continue;
+        if (col + width > limit) {
+            if (col > start_col and row < max_rows) {
+                row += 1;
+                col = start_col;
+            } else {
+                return row;
+            }
+        }
+        col += width;
+    }
+    return row;
 }
 
 pub fn shortcutWidth(ctx: vxfw.DrawContext, shortcut: Shortcut) u16 {
@@ -226,4 +275,19 @@ test "itemWidth handles key-only shortcuts" {
 
 test "itemWidth ignores empty keys" {
     try std.testing.expectEqual(@as(u16, 0), itemWidth(0, 4));
+}
+
+test "requiredRowsForWidths wraps to a second row" {
+    const widths = [_]u16{ 12, 12, 12 };
+    try std.testing.expectEqual(@as(u16, 2), requiredRowsForWidths(&widths, 1, 28, 2));
+}
+
+test "requiredRowsForWidths respects max rows" {
+    const widths = [_]u16{ 12, 12, 12, 12, 12 };
+    try std.testing.expectEqual(@as(u16, 2), requiredRowsForWidths(&widths, 1, 28, 2));
+}
+
+test "requiredRowsForWidths stays single row when content fits" {
+    const widths = [_]u16{ 7, 9, 10 };
+    try std.testing.expectEqual(@as(u16, 1), requiredRowsForWidths(&widths, 1, 32, 2));
 }
