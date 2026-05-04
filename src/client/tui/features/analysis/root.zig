@@ -71,12 +71,12 @@ pub fn drawRules(
     w.writeText(&surface, ctx, col_last, 0, "last", theme.fg(theme.MUTED));
 
     if (!available) {
-        w.writeText(&surface, ctx, 2, 2, "Remote analysis unavailable.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "Remote analysis unavailable.", theme.fg(theme.MUTED));
         return surface;
     }
 
     if (insights.rules.len == 0) {
-        w.writeText(&surface, ctx, 2, 2, "No rule analysis data returned by the hub.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "No rule analysis data returned by the hub.", theme.fg(theme.MUTED));
         return surface;
     }
 
@@ -234,14 +234,14 @@ pub fn drawMembers(
     w.writeText(&surface, ctx, 2, 0, "User Activity", theme.boldOn(theme.PANEL, theme.TEXT));
 
     if (!available) {
-        w.writeText(&surface, ctx, 2, 2, "No", theme.fg(theme.MUTED));
-        w.writeText(&surface, ctx, 2, 3, "stats", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "No", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 2, "stats", theme.fg(theme.MUTED));
         return surface;
     }
 
     if (insights.members.len == 0) {
-        w.writeText(&surface, ctx, 2, 2, "No", theme.fg(theme.MUTED));
-        w.writeText(&surface, ctx, 2, 3, "users", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "No", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 2, "users", theme.fg(theme.MUTED));
         return surface;
     }
 
@@ -306,7 +306,7 @@ pub fn drawMemberDetail(
         var empty_surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
         w.fillSurface(&empty_surface, theme.PANEL);
         w.drawBorder(&empty_surface, theme.BORDER, theme.PANEL);
-        w.writeText(&empty_surface, ctx, 2, 2, "No member data available.", theme.fg(theme.MUTED));
+        w.writeText(&empty_surface, ctx, 2, 1, "No member data available.", theme.fg(theme.MUTED));
         return empty_surface;
     }
 

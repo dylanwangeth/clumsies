@@ -56,7 +56,7 @@ const TopModule = enum(u8) {
         return switch (self) {
             .dashboard => "Dashboard",
             .workspace => "Workspace",
-            .library => "Library",
+            .library => "Artifact",
             .review => "Review",
             .analysis => "Analysis",
         };
@@ -780,20 +780,7 @@ pub const Shell = struct {
     }
 
     fn drawListPanel(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const bundles_list = self.getBundles();
-        const bundle_label: []const u8 = if (self.library.bundle_filter == 0)
-            "All"
-        else if (self.library.bundle_filter - 1 < bundles_list.len)
-            bundles_list[self.library.bundle_filter - 1].name
-        else
-            "All";
-        const rule_count: usize = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            if (self.api_state.rules) |p| break :blk p.len;
-            break :blk 0;
-        };
-        return library_panel.drawListPanel(self, ctx, bundle_label, rule_count);
+        return library_panel.drawListPanel(self, ctx);
     }
 
     // Workspace: master-detail content with a command drawer for switching
@@ -1631,8 +1618,14 @@ pub const Shell = struct {
         if (live_ws) |ws_d| {
             self.requestWorkspaceSelectionContent(&ws_d);
         }
-        const dir_sel = self.currentWsDirSelection();
-        const file_sel = self.currentWorkspaceFileSelection(live_ws);
+        const current_file_sel = self.currentWorkspaceFileSelection(live_ws);
+        const file_sel = current_file_sel orelse self.lastWorkspaceFileSelection(live_ws);
+        if (current_file_sel != null) {
+            switch (self.workspace.tab) {
+                .context => self.workspace.last_context_file_row = self.workspace.list_sel,
+                .rules => self.workspace.last_rule_file_row = self.workspace.list_sel,
+            }
+        }
         var context_sel: ?usize = null;
         var context_sel_id: ?[]const u8 = null;
         var context_sel_path: ?[]const u8 = null;
@@ -1653,7 +1646,6 @@ pub const Shell = struct {
         };
         return workspace_panel.drawDetail(self, ctx, .{
             .live_ws = live_ws,
-            .dir_sel = dir_sel,
             .context_sel = context_sel,
             .context_sel_id = context_sel_id,
             .context_sel_path = context_sel_path,
@@ -1661,6 +1653,14 @@ pub const Shell = struct {
             .rule_sel_id = rule_sel_id,
             .rule_sel_path = rule_sel_path,
         });
+    }
+
+    fn lastWorkspaceFileSelection(self: *Shell, live_ws: ?api.model.WsDetail) ?WorkspaceFileSelection {
+        const row = switch (self.workspace.tab) {
+            .context => self.workspace.last_context_file_row,
+            .rules => self.workspace.last_rule_file_row,
+        } orelse return null;
+        return self.workspaceFileAtRow(row, live_ws);
     }
 
     fn loadAnalysisData(self: *Shell, arena: std.mem.Allocator) ?data.AnalysisData {

@@ -44,8 +44,6 @@ pub fn drawRoot(
 pub fn drawListPanel(
     self: anytype,
     ctx: vxfw.DrawContext,
-    bundle_label: []const u8,
-    rule_count: usize,
 ) std.mem.Allocator.Error!vxfw.Surface {
     const size = ctx.max.size();
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
@@ -53,16 +51,7 @@ pub fn drawListPanel(
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
 
-    w.writeText(&surface, ctx, 2, 0, "Files", theme.boldOn(theme.PANEL, theme.TEXT));
-    const hint = try std.fmt.allocPrint(
-        ctx.arena,
-        "{d} rules  bundle: {s}  / search  b filter",
-        .{ rule_count, bundle_label },
-    );
-    const hint_w: u16 = @intCast(ctx.stringWidth(hint));
-    if (hint_w > 0 and hint_w < size.width -| 10) {
-        w.writeRightText(&surface, ctx, 0, hint, theme.textOn(theme.PANEL, theme.MUTED));
-    }
+    w.writeText(&surface, ctx, 2, 0, "Rules", theme.boldOn(theme.PANEL, theme.TEXT));
 
     // Body sits one row below the top border (row 1) and two
     // columns in (col=2). The cursor bar is written directly onto
