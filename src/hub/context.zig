@@ -36,7 +36,7 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     }
 
     var result = conn.query(
-        "SELECT context_id, path, content_hash, length(content)::bigint, author, updated_at::text FROM context_files WHERE ws_id = $1 ORDER BY path",
+        "SELECT context_id, path, content_hash, length(content)::bigint, author, updated_at::text FROM workspace_context WHERE ws_id = $1 ORDER BY path",
         .{ws_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -87,10 +87,10 @@ pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *htt
     }
 
     var row = (if (context_id_q) |cid| conn.row(
-        "SELECT content FROM context_files WHERE ws_id = $1 AND context_id = $2",
+        "SELECT content FROM workspace_context WHERE ws_id = $1 AND context_id = $2",
         .{ ws_id, cid },
     ) else conn.row(
-        "SELECT content FROM context_files WHERE ws_id = $1 AND path = $2",
+        "SELECT content FROM workspace_context WHERE ws_id = $1 AND path = $2",
         .{ ws_id, path_q.? },
     )) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -106,7 +106,7 @@ pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *htt
 }
 
 /// Batch context content fetch. Paths are scoped to the caller's
-/// workspace membership; same-per-item error model as the library
+/// workspace membership; same-per-item error model as the artifact
 /// batch endpoint. Replaces the N-GET pattern used by `clumsies
 /// sync` for context files.
 pub fn handleBatchFileContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -140,12 +140,12 @@ pub fn handleBatchFileContent(ctx: *Server.Context, req: *httpz.Request, res: *h
 
     var items: std.ArrayList(BatchContextItem) = .empty;
     for (body.paths) |path| {
-        // Same split as the library batch handler: a real DB error
+        // Same split as the artifact batch handler: a real DB error
         // reports INTERNAL_ERROR, a missing row reports NOT_FOUND.
         // Collapsing both into NOT_FOUND masked transient outages as
         // "every file is missing".
         const row_result = conn.row(
-            "SELECT content_hash, content FROM context_files WHERE ws_id = $1 AND path = $2",
+            "SELECT content_hash, content FROM workspace_context WHERE ws_id = $1 AND path = $2",
             .{ ws_id, path },
         ) catch {
             try items.append(req.arena, .{
@@ -337,7 +337,7 @@ fn validateOperation(conn: anytype, ws_id: []const u8, op: Operation, res: *http
             return false;
         };
         var row = conn.row(
-            "SELECT 1 FROM context_files WHERE ws_id = $1 AND context_id = $2",
+            "SELECT 1 FROM workspace_context WHERE ws_id = $1 AND context_id = $2",
             .{ ws_id, cid },
         ) catch {
             try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -355,7 +355,7 @@ fn validateOperation(conn: anytype, ws_id: []const u8, op: Operation, res: *http
 
 fn verifyContextBaseHash(conn: anytype, ws_id: []const u8, context_id: []const u8, base_hash: []const u8, res: *httpz.Response) !bool {
     var row = conn.row(
-        "SELECT content_hash FROM context_files WHERE ws_id = $1 AND context_id = $2",
+        "SELECT content_hash FROM workspace_context WHERE ws_id = $1 AND context_id = $2",
         .{ ws_id, context_id },
     ) catch {
         try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -382,7 +382,7 @@ fn verifyContextBaseHash(conn: anytype, ws_id: []const u8, context_id: []const u
 
 fn verifyPathAvailable(conn: anytype, ws_id: []const u8, path: []const u8, allow_context_id: ?[]const u8, res: *httpz.Response) !bool {
     var row = conn.row(
-        "SELECT context_id FROM context_files WHERE ws_id = $1 AND path = $2",
+        "SELECT context_id FROM workspace_context WHERE ws_id = $1 AND path = $2",
         .{ ws_id, path },
     ) catch {
         try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -583,7 +583,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
         var current_path: ?[]const u8 = null;
         if (op_context_id) |cid| {
             var cr = conn.row(
-                "SELECT content, path FROM context_files WHERE ws_id = $1 AND context_id = $2",
+                "SELECT content, path FROM workspace_context WHERE ws_id = $1 AND context_id = $2",
                 .{ ws_id, cid },
             ) catch null;
             if (cr) |*br| {
@@ -676,15 +676,6 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         }
         if (!try applyPr(conn, req.arena, ws_id, pr_id, user.username, res)) return;
 
-        _ = conn.exec(
-            "UPDATE context_prs SET status = 'merged' WHERE pr_id = $1",
-            .{pr_id},
-        ) catch {};
-        _ = conn.exec(
-            "UPDATE workspaces SET revision = revision + 1 WHERE ws_id = $1",
-            .{ws_id},
-        ) catch {};
-
         try res.json(.{ .pr_id = pr_id, .status = "merged" }, .{});
     } else {
         _ = conn.exec(
@@ -708,41 +699,43 @@ const LoadedOp = struct {
 
 fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []const u8, author: []const u8, res: *httpz.Response) !bool {
     var ops: std.ArrayList(LoadedOp) = .empty;
-    var op_result = conn.query(
-        "SELECT op_index, type, context_id, base_hash, content, path FROM context_pr_operations WHERE pr_id = $1 ORDER BY op_index",
-        .{pr_id},
-    ) catch {
-        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        return false;
-    };
-    defer op_result.deinit();
-    while (try op_result.next()) |r| {
-        const op_index = r.get(i32, 0) catch continue;
-        const t = arena.dupe(u8, r.get([]const u8, 1) catch "") catch continue;
-        const cid: ?[]const u8 = if (r.get([]const u8, 2)) |v|
-            arena.dupe(u8, v) catch null
-        else |_|
-            null;
-        const bh: ?[]const u8 = if (r.get([]const u8, 3)) |v|
-            arena.dupe(u8, v) catch null
-        else |_|
-            null;
-        const c: ?[]const u8 = if (r.get([]const u8, 4)) |v|
-            arena.dupe(u8, v) catch null
-        else |_|
-            null;
-        const p: ?[]const u8 = if (r.get([]const u8, 5)) |v|
-            arena.dupe(u8, v) catch null
-        else |_|
-            null;
-        try ops.append(arena, .{
-            .op_index = op_index,
-            .type = t,
-            .context_id = cid,
-            .base_hash = bh,
-            .content = c,
-            .path = p,
-        });
+    {
+        var op_result = conn.query(
+            "SELECT op_index, type, context_id, base_hash, content, path FROM context_pr_operations WHERE pr_id = $1 ORDER BY op_index",
+            .{pr_id},
+        ) catch {
+            try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            return false;
+        };
+        defer op_result.deinit();
+        while (try op_result.next()) |r| {
+            const op_index = r.get(i32, 0) catch continue;
+            const t = arena.dupe(u8, r.get([]const u8, 1) catch "") catch continue;
+            const cid: ?[]const u8 = if (r.get([]const u8, 2)) |v|
+                arena.dupe(u8, v) catch null
+            else |_|
+                null;
+            const bh: ?[]const u8 = if (r.get([]const u8, 3)) |v|
+                arena.dupe(u8, v) catch null
+            else |_|
+                null;
+            const c: ?[]const u8 = if (r.get([]const u8, 4)) |v|
+                arena.dupe(u8, v) catch null
+            else |_|
+                null;
+            const p: ?[]const u8 = if (r.get([]const u8, 5)) |v|
+                arena.dupe(u8, v) catch null
+            else |_|
+                null;
+            try ops.append(arena, .{
+                .op_index = op_index,
+                .type = t,
+                .context_id = cid,
+                .base_hash = bh,
+                .content = c,
+                .path = p,
+            });
+        }
     }
 
     conn.begin() catch {
@@ -761,7 +754,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 return false;
             };
             var row = conn.row(
-                "SELECT content_hash FROM context_files WHERE ws_id = $1 AND context_id = $2",
+                "SELECT content_hash FROM workspace_context WHERE ws_id = $1 AND context_id = $2",
                 .{ ws_id, cid },
             ) catch {
                 conn.rollback() catch {};
@@ -787,7 +780,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 return false;
             };
             _ = conn.exec(
-                "UPDATE context_files SET content = $1, content_hash = $2, description = $3, author = $4, updated_at = now() WHERE ws_id = $5 AND context_id = $6",
+                "UPDATE workspace_context SET content = $1, content_hash = $2, description = $3, author = $4, updated_at = now() WHERE ws_id = $5 AND context_id = $6",
                 .{ new_content, hash_slice, db_mod.extractDescription(new_content), author, ws_id, cid },
             ) catch {
                 conn.rollback() catch {};
@@ -799,7 +792,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
             const bh = op.base_hash.?;
             const new_path = op.path.?;
             var row = conn.row(
-                "SELECT content_hash FROM context_files WHERE ws_id = $1 AND context_id = $2",
+                "SELECT content_hash FROM workspace_context WHERE ws_id = $1 AND context_id = $2",
                 .{ ws_id, cid },
             ) catch {
                 conn.rollback() catch {};
@@ -831,7 +824,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                     return false;
                 };
                 _ = conn.exec(
-                    "UPDATE context_files SET path = $1, content = $2, content_hash = $3, description = $4, author = $5, updated_at = now() WHERE ws_id = $6 AND context_id = $7",
+                    "UPDATE workspace_context SET path = $1, content = $2, content_hash = $3, description = $4, author = $5, updated_at = now() WHERE ws_id = $6 AND context_id = $7",
                     .{ new_path, new_content, hash_slice, db_mod.extractDescription(new_content), author, ws_id, cid },
                 ) catch {
                     conn.rollback() catch {};
@@ -840,7 +833,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 };
             } else {
                 _ = conn.exec(
-                    "UPDATE context_files SET path = $1, author = $2, updated_at = now() WHERE ws_id = $3 AND context_id = $4",
+                    "UPDATE workspace_context SET path = $1, author = $2, updated_at = now() WHERE ws_id = $3 AND context_id = $4",
                     .{ new_path, author, ws_id, cid },
                 ) catch {
                     conn.rollback() catch {};
@@ -877,7 +870,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 return false;
             };
             _ = conn.exec(
-                "INSERT INTO context_files (context_id, ws_id, path, content, content_hash, author, description) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                "INSERT INTO workspace_context (context_id, ws_id, path, content, content_hash, author, description) VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 .{ new_cid, ws_id, path, new_content, hash_slice, author, db_mod.extractDescription(new_content) },
             ) catch {
                 conn.rollback() catch {};
@@ -887,7 +880,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
         } else if (std.mem.eql(u8, op.type, "delete")) {
             const cid = op.context_id.?;
             _ = conn.exec(
-                "DELETE FROM context_files WHERE ws_id = $1 AND context_id = $2",
+                "DELETE FROM workspace_context WHERE ws_id = $1 AND context_id = $2",
                 .{ ws_id, cid },
             ) catch {
                 conn.rollback() catch {};
@@ -896,6 +889,29 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
             };
         }
     }
+
+    const updated = conn.exec(
+        "UPDATE context_prs SET status = 'merged' WHERE pr_id = $1 AND status = 'open'",
+        .{pr_id},
+    ) catch {
+        conn.rollback() catch {};
+        try apiError(res, 500, "INTERNAL_ERROR", "failed to update PR");
+        return false;
+    };
+    if (updated == null or updated.? == 0) {
+        conn.rollback() catch {};
+        try apiError(res, 400, "BAD_REQUEST", "PR is not open");
+        return false;
+    }
+
+    _ = conn.exec(
+        "UPDATE workspaces SET revision = revision + 1 WHERE ws_id = $1",
+        .{ws_id},
+    ) catch {
+        conn.rollback() catch {};
+        try apiError(res, 500, "INTERNAL_ERROR", "failed to update workspace revision");
+        return false;
+    };
 
     conn.commit() catch {
         conn.rollback() catch {};

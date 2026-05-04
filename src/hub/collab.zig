@@ -1,6 +1,6 @@
 //! Hub collaboration endpoints. Implements the Pull Request lifecycle: create PR from workspace
 //! local edit, list/get PR details, add review comments, accept/reject, and track PR operations
-//! (add/modify/delete rules). PRs are the only path for changes to enter the Library.
+//! (add/modify/delete rules). PRs are the only path for changes to enter the Artifact.
 const std = @import("std");
 const httpz = @import("httpz");
 const collab_api = @import("clumsies_lib").protocol.collab_api;
@@ -207,7 +207,7 @@ fn verifyPromptBaseHash(conn: anytype, org_id: []const u8, rule_id: []const u8, 
     @memcpy(buf[0..len], current_hash_raw[0..len]);
     row.deinit() catch {};
     if (!std.mem.eql(u8, buf[0..len], base_hash)) {
-        try apiError(res, 409, "CONFLICT", "base_hash does not match current Library version");
+        try apiError(res, 409, "CONFLICT", "base_hash does not match current Artifact version");
         return false;
     }
     return true;
@@ -227,7 +227,7 @@ fn verifyPathAvailable(conn: anytype, org_id: []const u8, path: []const u8, allo
         if (allow_rule_id) |allowed| {
             if (std.mem.eql(u8, existing_pid, allowed)) return true;
         }
-        try apiError(res, 409, "CONFLICT", "target path already exists in Library");
+        try apiError(res, 409, "CONFLICT", "target path already exists in Artifact");
         return false;
     }
     return true;
@@ -275,7 +275,15 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
 
     const base_sql =
         \\SELECT pp.pr_id, pp.status, pp.description, pp.created_at::text, u.username,
-        \\  (SELECT count(*) FROM rule_pr_operations op WHERE op.pr_id = pp.pr_id) as op_count
+        \\  (SELECT count(*) FROM rule_pr_operations op WHERE op.pr_id = pp.pr_id) as op_count,
+        \\  COALESCE((
+        \\    SELECT op.type
+        \\    FROM rule_pr_operations op
+        \\    WHERE op.pr_id = pp.pr_id
+        \\    ORDER BY op.op_index
+        \\    LIMIT 1
+        \\  ), '') as op_type,
+        \\  (SELECT count(*) FROM rule_pr_comments c WHERE c.pr_id = pp.pr_id) as comment_count
         \\FROM rule_prs pp JOIN users u ON u.user_id = pp.author_id
     ;
 
@@ -296,6 +304,8 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                 .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
                 .author = try req.arena.dupe(u8, try row.get([]const u8, 4)),
                 .operation_count = try row.get(i64, 5),
+                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 6)),
+                .comment_count = try row.get(i64, 7),
             });
         }
     } else if (status_filter) |sf| {
@@ -314,6 +324,8 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                 .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
                 .author = try req.arena.dupe(u8, try row.get([]const u8, 4)),
                 .operation_count = try row.get(i64, 5),
+                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 6)),
+                .comment_count = try row.get(i64, 7),
             });
         }
     } else if (rule_filter) |pf| {
@@ -333,6 +345,8 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                 .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
                 .author = try req.arena.dupe(u8, try row.get([]const u8, 4)),
                 .operation_count = try row.get(i64, 5),
+                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 6)),
+                .comment_count = try row.get(i64, 7),
             });
         }
     } else {
@@ -351,6 +365,8 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                 .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
                 .author = try req.arena.dupe(u8, try row.get([]const u8, 4)),
                 .operation_count = try row.get(i64, 5),
+                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 6)),
+                .comment_count = try row.get(i64, 7),
             });
         }
     }
@@ -538,14 +554,14 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 
     if (is_accept) {
         if (!try applyPr(conn, req.arena, user.org_id, id, res)) return;
+    } else {
+        _ = conn.exec(
+            "UPDATE rule_prs SET status = 'rejected', updated_at = now() WHERE pr_id = $1",
+            .{id},
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "failed to update rule PR");
+        };
     }
-
-    _ = conn.exec(
-        "UPDATE rule_prs SET status = $1, updated_at = now() WHERE pr_id = $2",
-        .{ if (is_accept) @as([]const u8, "accepted") else @as([]const u8, "rejected"), id },
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to update rule PR");
-    };
 
     try res.json(.{
         .pr_id = id,
@@ -564,41 +580,43 @@ const LoadedOp = struct {
 
 fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: []const u8, res: *httpz.Response) !bool {
     var ops: std.ArrayList(LoadedOp) = .empty;
-    var op_result = conn.query(
-        "SELECT op_index, type, rule_id, base_hash, content, path FROM rule_pr_operations WHERE pr_id = $1 ORDER BY op_index",
-        .{pr_id},
-    ) catch {
-        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        return false;
-    };
-    defer op_result.deinit();
-    while (try op_result.next()) |r| {
-        const op_index = r.get(i32, 0) catch continue;
-        const t = arena.dupe(u8, r.get([]const u8, 1) catch "") catch continue;
-        const pid: ?[]const u8 = if (r.get([]const u8, 2)) |v|
-            arena.dupe(u8, v) catch null
-        else |_|
-            null;
-        const bh: ?[]const u8 = if (r.get([]const u8, 3)) |v|
-            arena.dupe(u8, v) catch null
-        else |_|
-            null;
-        const c: ?[]const u8 = if (r.get([]const u8, 4)) |v|
-            arena.dupe(u8, v) catch null
-        else |_|
-            null;
-        const p: ?[]const u8 = if (r.get([]const u8, 5)) |v|
-            arena.dupe(u8, v) catch null
-        else |_|
-            null;
-        try ops.append(arena, .{
-            .op_index = op_index,
-            .type = t,
-            .rule_id = pid,
-            .base_hash = bh,
-            .content = c,
-            .path = p,
-        });
+    {
+        var op_result = conn.query(
+            "SELECT op_index, type, rule_id, base_hash, content, path FROM rule_pr_operations WHERE pr_id = $1 ORDER BY op_index",
+            .{pr_id},
+        ) catch {
+            try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            return false;
+        };
+        defer op_result.deinit();
+        while (try op_result.next()) |r| {
+            const op_index = r.get(i32, 0) catch continue;
+            const t = arena.dupe(u8, r.get([]const u8, 1) catch "") catch continue;
+            const pid: ?[]const u8 = if (r.get([]const u8, 2)) |v|
+                arena.dupe(u8, v) catch null
+            else |_|
+                null;
+            const bh: ?[]const u8 = if (r.get([]const u8, 3)) |v|
+                arena.dupe(u8, v) catch null
+            else |_|
+                null;
+            const c: ?[]const u8 = if (r.get([]const u8, 4)) |v|
+                arena.dupe(u8, v) catch null
+            else |_|
+                null;
+            const p: ?[]const u8 = if (r.get([]const u8, 5)) |v|
+                arena.dupe(u8, v) catch null
+            else |_|
+                null;
+            try ops.append(arena, .{
+                .op_index = op_index,
+                .type = t,
+                .rule_id = pid,
+                .base_hash = bh,
+                .content = c,
+                .path = p,
+            });
+        }
     }
 
     conn.begin() catch {
@@ -642,7 +660,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
             row.deinit() catch {};
             if (!matches) {
                 conn.rollback() catch {};
-                try apiError(res, 409, "CONFLICT", "Library has changed since PR was created");
+                try apiError(res, 409, "CONFLICT", "Artifact has changed since PR was created");
                 return false;
             }
             const new_hash = util_hash.contentHash(new_content);
@@ -685,7 +703,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
             row.deinit() catch {};
             if (!matches) {
                 conn.rollback() catch {};
-                try apiError(res, 409, "CONFLICT", "Library has changed since PR was created");
+                try apiError(res, 409, "CONFLICT", "Artifact has changed since PR was created");
                 return false;
             }
             if (op.content) |new_content| {
@@ -776,9 +794,23 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
     }
 
     _ = conn.exec(
-        "UPDATE library_manifest SET revision = revision + 1 WHERE org_id = $1::uuid",
+        "UPDATE artifact_manifest SET revision = revision + 1 WHERE org_id = $1::uuid",
         .{org_id},
     ) catch {};
+
+    const updated = conn.exec(
+        "UPDATE rule_prs SET status = 'accepted', updated_at = now() WHERE pr_id = $1 AND status = 'open'",
+        .{pr_id},
+    ) catch {
+        conn.rollback() catch {};
+        try apiError(res, 500, "INTERNAL_ERROR", "failed to update rule PR");
+        return false;
+    };
+    if (updated == null or updated.? == 0) {
+        conn.rollback() catch {};
+        try apiError(res, 400, "BAD_REQUEST", "rule PR is not open");
+        return false;
+    }
 
     conn.commit() catch {
         conn.rollback() catch {};

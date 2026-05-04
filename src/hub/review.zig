@@ -94,6 +94,14 @@ fn appendRulePrs(
         \\SELECT pp.pr_id, pp.status, pp.description, pp.created_at::text, u.username,
         \\  (SELECT count(*) FROM rule_pr_operations op WHERE op.pr_id = pp.pr_id) as op_count,
         \\  COALESCE((
+        \\    SELECT op.type
+        \\    FROM rule_pr_operations op
+        \\    WHERE op.pr_id = pp.pr_id
+        \\    ORDER BY op.op_index
+        \\    LIMIT 1
+        \\  ), '') as op_type,
+        \\  (SELECT count(*) FROM rule_pr_comments c WHERE c.pr_id = pp.pr_id) as comment_count,
+        \\  COALESCE((
         \\    SELECT COALESCE(r.path, op.path, '')
         \\    FROM rule_pr_operations op
         \\    LEFT JOIN rules r ON r.rule_id = op.rule_id
@@ -111,7 +119,7 @@ fn appendRulePrs(
     while (try result.next()) |row| {
         const status = try arena.dupe(u8, try row.get([]const u8, 1));
         if (!statusMatches(status_filter, status)) continue;
-        const target_path = try arena.dupe(u8, try row.get([]const u8, 6));
+        const target_path = try arena.dupe(u8, try row.get([]const u8, 8));
         const target_kind = if (std.mem.eql(u8, target_path, "META_PROMPT.md")) "mpf" else "rule";
         if (target_filter) |tf| {
             if (tf.len > 0 and !std.mem.eql(u8, tf, target_kind)) continue;
@@ -125,6 +133,8 @@ fn appendRulePrs(
             .created_at = try arena.dupe(u8, try row.get([]const u8, 3)),
             .author = try arena.dupe(u8, try row.get([]const u8, 4)),
             .operation_count = try row.get(i64, 5),
+            .op_type = try arena.dupe(u8, try row.get([]const u8, 6)),
+            .comment_count = try row.get(i64, 7),
         });
     }
 }
@@ -140,9 +150,17 @@ fn appendContextPrs(
         \\SELECT cp.pr_id, cp.ws_id, cp.author, cp.status, cp.description, cp.created_at::text,
         \\  (SELECT count(*) FROM context_pr_operations op WHERE op.pr_id = cp.pr_id) as op_count,
         \\  COALESCE((
+        \\    SELECT op.type
+        \\    FROM context_pr_operations op
+        \\    WHERE op.pr_id = cp.pr_id
+        \\    ORDER BY op.op_index
+        \\    LIMIT 1
+        \\  ), '') as op_type,
+        \\  (SELECT count(*) FROM context_pr_comments c WHERE c.pr_id = cp.pr_id) as comment_count,
+        \\  COALESCE((
         \\    SELECT COALESCE(op.path, cf.path, '')
         \\    FROM context_pr_operations op
-        \\    LEFT JOIN context_files cf ON cf.context_id = op.context_id AND cf.ws_id = cp.ws_id
+        \\    LEFT JOIN workspace_context cf ON cf.context_id = op.context_id AND cf.ws_id = cp.ws_id
         \\    WHERE op.pr_id = cp.pr_id
         \\    ORDER BY op.op_index
         \\    LIMIT 1
@@ -159,13 +177,15 @@ fn appendContextPrs(
         try list.append(arena, .{
             .pr_id = try arena.dupe(u8, try row.get([]const u8, 0)),
             .target_kind = "context",
-            .target_path = try arena.dupe(u8, try row.get([]const u8, 7)),
+            .target_path = try arena.dupe(u8, try row.get([]const u8, 9)),
             .ws_id = try arena.dupe(u8, try row.get([]const u8, 1)),
             .status = status,
             .description = try arena.dupe(u8, try row.get([]const u8, 4)),
             .created_at = try arena.dupe(u8, try row.get([]const u8, 5)),
             .author = try arena.dupe(u8, try row.get([]const u8, 2)),
             .operation_count = try row.get(i64, 6),
+            .op_type = try arena.dupe(u8, try row.get([]const u8, 7)),
+            .comment_count = try row.get(i64, 8),
         });
     }
 }
