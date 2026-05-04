@@ -1,7 +1,7 @@
 pub const auth = @import("auth.zig");
 pub const db = @import("db.zig");
 pub const workspace = @import("workspace.zig");
-pub const library = @import("library.zig");
+pub const artifact = @import("artifact.zig");
 pub const attestation = @import("attestation.zig");
 pub const collab = @import("collab.zig");
 pub const Config = @import("config.zig");
@@ -13,7 +13,7 @@ test {
     _ = auth;
     _ = db;
     _ = workspace;
-    _ = library;
+    _ = artifact;
     _ = attestation;
     _ = collab;
     _ = Config;

@@ -60,17 +60,26 @@ INSERT INTO users (user_id, org_id, username, password_hash, role, status) VALUE
 INSERT INTO users (user_id, org_id, username, password_hash, role, status) VALUES
   ('usr-member-001', 'a0000000-0000-0000-0000-000000000001', 'bob', 'testpass', 'member', 'active')
   ON CONFLICT DO NOTHING;
-INSERT INTO library_manifest (org_id, revision) VALUES ('a0000000-0000-0000-0000-000000000001', 0)
+INSERT INTO artifact_manifest (org_id, revision) VALUES ('a0000000-0000-0000-0000-000000000001', 0)
   ON CONFLICT DO NOTHING;
 INSERT INTO rules (rule_id, org_id, path, content, content_hash) VALUES
   ('p-test-001', 'a0000000-0000-0000-0000-000000000001', 'rule/coding/STYLE.md', '# STYLE', 'sha256:abc123')
-  ON CONFLICT DO NOTHING;
+  ON CONFLICT (rule_id) DO UPDATE SET
+    path = EXCLUDED.path,
+    content = EXCLUDED.content,
+    content_hash = EXCLUDED.content_hash;
 INSERT INTO rules (rule_id, org_id, path, content, content_hash) VALUES
   ('p-test-002', 'a0000000-0000-0000-0000-000000000001', 'workflow/cmd/COMMIT.md', '# COMMIT', 'sha256:def456')
-  ON CONFLICT DO NOTHING;
+  ON CONFLICT (rule_id) DO UPDATE SET
+    path = EXCLUDED.path,
+    content = EXCLUDED.content,
+    content_hash = EXCLUDED.content_hash;
 INSERT INTO rules (rule_id, org_id, path, content, content_hash) VALUES
   ('p-test-mpf', 'a0000000-0000-0000-0000-000000000001', 'META_PROMPT.md', '# clumsies Protocol Bootstrap', 'sha256:mpf001')
-  ON CONFLICT DO NOTHING;
+  ON CONFLICT (rule_id) DO UPDATE SET
+    path = EXCLUDED.path,
+    content = EXCLUDED.content,
+    content_hash = EXCLUDED.content_hash;
 SQL
 }
 
@@ -207,34 +216,34 @@ RAW=$(call DELETE "/api/org/members/$CAROL_ID")
 parse_response "$RAW"
 assert_status "remove member" "204" "$STATUS"
 
-# Library
-step "Library: list rules"
-RAW=$(call GET "/api/org/library/rules")
+# Artifact
+step "Artifact: list rules"
+RAW=$(call GET "/api/org/artifact/rules")
 parse_response "$RAW"
 assert_status "list rules" "200" "$STATUS"
 assert_json "contains STYLE path" "rule/coding/STYLE.md" "$BODY"
 assert_json "returns path field" '"path":' "$BODY"
 
-step "Library: get rule by rule_id"
-RAW=$(call GET "/api/org/library/rule?rule_id=p-test-001")
+step "Artifact: get rule by rule_id"
+RAW=$(call GET "/api/org/artifact/rule?rule_id=p-test-001")
 parse_response "$RAW"
 assert_status "get by rule_id" "200" "$STATUS"
 assert_json "contains path" "rule/coding/STYLE.md" "$BODY"
 
-step "Library: get rule by path"
-RAW=$(call GET "/api/org/library/rule?path=rule/coding/STYLE.md")
+step "Artifact: get rule by path"
+RAW=$(call GET "/api/org/artifact/rule?path=rule/coding/STYLE.md")
 parse_response "$RAW"
 assert_status "get by path" "200" "$STATUS"
 assert_json "contains rule_id" "p-test-001" "$BODY"
 
-step "Library: get rule content by rule_id"
-RAW=$(call GET "/api/org/library/rule/content?rule_id=p-test-001")
+step "Artifact: get rule content by rule_id"
+RAW=$(call GET "/api/org/artifact/rule/content?rule_id=p-test-001")
 parse_response "$RAW"
 assert_status "get content" "200" "$STATUS"
 assert_json "contains body" "STYLE" "$BODY"
 
-step "Library: manifest"
-RAW=$(call GET "/api/org/library/manifest")
+step "Artifact: manifest"
+RAW=$(call GET "/api/org/artifact/manifest")
 parse_response "$RAW"
 assert_status "get manifest" "200" "$STATUS"
 assert_json "contains revision" "revision" "$BODY"
@@ -280,15 +289,15 @@ parse_response "$RAW"
 assert_status "accept rule PR" "200" "$STATUS"
 assert_json "status accepted" "accepted" "$BODY"
 
-step "Rule PR: library now reflects merged content"
-RAW=$(call GET "/api/org/library/rule/content?rule_id=p-test-001")
+step "Rule PR: artifact now reflects accepted content"
+RAW=$(call GET "/api/org/artifact/rule/content?rule_id=p-test-001")
 parse_response "$RAW"
 assert_status "get updated content" "200" "$STATUS"
 assert_json "contains Tightened" "Tightened" "$BODY"
 
 step "Rule PR: create with rename operation"
 # First get current hash of p-test-002
-RAW=$(call GET "/api/org/library/rule?rule_id=p-test-002")
+RAW=$(call GET "/api/org/artifact/rule?rule_id=p-test-002")
 parse_response "$RAW"
 P002_HASH=$(echo "$BODY" | grep -o '"content_hash":"[^"]*"' | cut -d'"' -f4)
 RAW=$(call POST "/api/org/rule-prs" "{\"description\":\"Relocate COMMIT\",\"operations\":[{\"type\":\"rename\",\"rule_id\":\"p-test-002\",\"base_hash\":\"$P002_HASH\",\"new_path\":\"workflow/git/COMMIT.md\"}]}")
@@ -302,7 +311,7 @@ parse_response "$RAW"
 assert_status "accept rename" "200" "$STATUS"
 
 step "Rule PR: path updated, rule_id preserved"
-RAW=$(call GET "/api/org/library/rule?rule_id=p-test-002")
+RAW=$(call GET "/api/org/artifact/rule?rule_id=p-test-002")
 parse_response "$RAW"
 assert_status "get by id after rename" "200" "$STATUS"
 assert_json "path is new" "workflow/git/COMMIT.md" "$BODY"
@@ -445,7 +454,7 @@ assert_status "member cannot delete bundle" "403" "$STATUS"
 
 # Scope enforcement tests
 step "Scope: login with limited scopes"
-RAW=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass","scopes":"library:read,stats:read"}')
+RAW=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass","scopes":"artifact:read,stats:read"}')
 parse_response "$RAW"
 assert_status "limited scope login" "200" "$STATUS"
 LIMITED_TOKEN=$(echo "$BODY" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
@@ -455,7 +464,7 @@ TOKEN="$LIMITED_TOKEN"
 RAW=$(call GET "/api/auth/me")
 parse_response "$RAW"
 assert_status "me with scopes" "200" "$STATUS"
-assert_json "scopes field present" "library:read" "$BODY"
+assert_json "scopes field present" "artifact:read" "$BODY"
 
 step "Scope: limited token cannot create bundle"
 RAW=$(call POST "/api/org/bundles" '{"name":"scope-test","description":"test","rule_ids":[]}')

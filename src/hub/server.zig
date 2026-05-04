@@ -1,4 +1,4 @@
-//! Hub HTTP server setup. Configures routes for all API endpoints (auth, library, workspace,
+//! Hub HTTP server setup. Configures routes for all API endpoints (auth, artifact, workspace,
 //! context, collab, attestation, stats), applies CORS and rate limiting, and starts listening.
 const std = @import("std");
 const httpz = @import("httpz");
@@ -6,7 +6,7 @@ const pg = @import("pg");
 const auth = @import("auth.zig");
 const workspace_handler = @import("workspace.zig");
 const context_handler = @import("context.zig");
-const library_handler = @import("library.zig");
+const artifact_handler = @import("artifact.zig");
 const attestation_handler = @import("attestation.zig");
 const collab_handler = @import("collab.zig");
 const review_handler = @import("review.zig");
@@ -89,17 +89,17 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.patch("/api/workspaces/:ws_id/members/:user_id", workspace_handler.handleChangeMemberRole, .{});
     router.delete("/api/workspaces/:ws_id/members/:user_id", workspace_handler.handleRemoveWsMember, .{});
 
-    // Library
-    router.get("/api/org/library/manifest", library_handler.handleGetManifest, .{});
-    router.get("/api/org/library/rules", library_handler.handleListRules, .{});
-    router.get("/api/org/library/rule", library_handler.handleGetRule, .{});
-    router.get("/api/org/library/rule/content", library_handler.handleGetRuleContent, .{});
-    router.post("/api/org/library/rules/content", library_handler.handleBatchRuleContent, .{});
-    router.get("/api/org/bundles", library_handler.handleListBundles, .{});
-    router.get("/api/org/bundles/:name", library_handler.handleGetBundle, .{});
-    router.post("/api/org/bundles", library_handler.handleCreateBundle, .{});
-    router.put("/api/org/bundles/:name", library_handler.handleUpdateBundle, .{});
-    router.delete("/api/org/bundles/:name", library_handler.handleDeleteBundle, .{});
+    // Artifact
+    router.get("/api/org/artifact/manifest", artifact_handler.handleGetManifest, .{});
+    router.get("/api/org/artifact/rules", artifact_handler.handleListRules, .{});
+    router.get("/api/org/artifact/rule", artifact_handler.handleGetRule, .{});
+    router.get("/api/org/artifact/rule/content", artifact_handler.handleGetRuleContent, .{});
+    router.post("/api/org/artifact/rules/content", artifact_handler.handleBatchRuleContent, .{});
+    router.get("/api/org/bundles", artifact_handler.handleListBundles, .{});
+    router.get("/api/org/bundles/:name", artifact_handler.handleGetBundle, .{});
+    router.post("/api/org/bundles", artifact_handler.handleCreateBundle, .{});
+    router.put("/api/org/bundles/:name", artifact_handler.handleUpdateBundle, .{});
+    router.delete("/api/org/bundles/:name", artifact_handler.handleDeleteBundle, .{});
 
     // Attestation & Stats
     router.post("/api/attestations", attestation_handler.handleUpload, .{});
