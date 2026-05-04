@@ -1,6 +1,6 @@
 //! MCP tool response formatting. Builds the content envelope agents consume: success results
 //! include human-readable text + machine-readable structuredContent; loaded rules/workflows
-//! include parsed constraint IDs for the agent to reference in memory.refer calls.
+//! include parsed constraint IDs for the agent to reference in memref calls.
 const std = @import("std");
 const encoding = @import("clumsies_lib").util.encoding;
 const workspace_rule = @import("../rule.zig");

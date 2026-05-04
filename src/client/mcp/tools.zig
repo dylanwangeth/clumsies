@@ -27,7 +27,7 @@ const load_schema =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\",\"knownHashes\"],\"additionalProperties\":false}}";
 
 const refer_schema =
-    "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare applied rule/workflow constraints. A constraint is one semantic markdown section returned in memory.load constraints: either a whole H2 section or one list item inside an H2 section. The constraintId wire field must be copied exactly from a returned constraint id: H2 title for a whole-section constraint, or H2/ordinal for a list-item constraint. ruleId must identify that rule/workflow, not context.\"," ++
+    "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare applied rule/workflow constraints. A constraint is one semantic markdown section returned in memload constraints: either a whole H2 section or one list item inside an H2 section. The constraintId wire field must be copied exactly from a returned constraint id: H2 title for a whole-section constraint, or H2/ordinal for a list-item constraint. ruleId must identify that rule/workflow, not context.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"ruleId\":{\"type\":\"string\"},\"ruleHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"ruleId\",\"constraintId\"]}}},\"required\":[\"refs\"],\"additionalProperties\":false}}";
 
 const submit_schema =
@@ -97,7 +97,7 @@ pub fn handleCall(
     if (session.session_id == null) {
         return try tool_result.buildErrorResult(
             allocator,
-            "memory.setup with the exact host session_id is required before other clumsies tools; do not invent a session_id",
+            "memsetup with the exact host session_id is required before other clumsies tools; do not invent a session_id",
         );
     }
     if (std.mem.eql(u8, name, tool_names.discover)) {
@@ -460,7 +460,7 @@ fn referValidationError(
         error.UnknownRuleId => try buildReferErrorResult(
             allocator,
             "unknown_rule_or_workflow",
-            "memory.refer ruleId must identify an existing rule or workflow; retry after memory.discover and memory.load with the exact id",
+            "memref ruleId must identify an existing rule or workflow; retry after memdisc and memload with the exact id",
             true,
             "rediscover_and_reload",
             null,
@@ -468,7 +468,7 @@ fn referValidationError(
         error.InvalidReferTargetKind => try buildReferErrorResult(
             allocator,
             "invalid_target_kind",
-            "memory.refer ruleId must identify a rule or workflow; context ids cannot be referenced",
+            "memref ruleId must identify a rule or workflow; context ids cannot be referenced",
             false,
             "use_rule_or_workflow_id",
             null,
@@ -484,7 +484,7 @@ fn referValidationError(
 
             const fallback_message = try std.fmt.allocPrint(
                 allocator,
-                "memory.refer constraintId '{s}' is not valid for ruleId '{s}'; reload the rule/workflow and use one of the returned constraints",
+                "memref constraintId '{s}' is not valid for ruleId '{s}'; reload the rule/workflow and use one of the returned constraints",
                 .{ constraint_id, rule_id },
             );
             defer allocator.free(fallback_message);
@@ -501,7 +501,7 @@ fn referValidationError(
         else => try buildReferErrorResult(
             allocator,
             "validation_error",
-            "memory.refer could not validate the referenced constraint; retry after reloading the rule/workflow",
+            "memref could not validate the referenced constraint; retry after reloading the rule/workflow",
             true,
             "reload_and_retry",
             null,
@@ -570,7 +570,7 @@ fn buildUnknownConstraintDetails(
     return .{
         .message = try std.fmt.allocPrint(
             allocator,
-            "memory.refer constraintId '{s}' is not valid for ruleId '{s}'; retry with one of: {s}",
+            "memref constraintId '{s}' is not valid for ruleId '{s}'; retry with one of: {s}",
             .{ constraint_id, rule_id, option_text },
         ),
         .constraints_json = try constraints_json.toOwnedSlice(allocator),
@@ -1744,14 +1744,14 @@ test "handleRefer resolves constraints from current workspace root" {
 // format. Skipping them keeps CI honest while the mismatch is
 // resolved; they should be re-enabled once the MCP discover / load /
 // setup contract is re-audited.
-test "handleCall: memory.discover returns rule metadata" {
+test "handleCall: memdisc returns rule metadata" {
     return error.SkipZigTest;
 }
 
-test "handleCall: memory.load returns content" {
+test "handleCall: memload returns content" {
     return error.SkipZigTest;
 }
 
-test "handleCall: memory.setup returns structured error when no workspace binding" {
+test "handleCall: memsetup returns structured error when no workspace binding" {
     return error.SkipZigTest;
 }

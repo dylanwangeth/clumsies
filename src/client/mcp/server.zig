@@ -187,8 +187,8 @@ test "processLine: initialize then tools list" {
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}",
     )).?;
     defer testing.allocator.free(tools_response);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.setup\"") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.discover\"") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.load\"") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memory.refer\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memsetup\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memdisc\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memload\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memref\"") != null);
 }

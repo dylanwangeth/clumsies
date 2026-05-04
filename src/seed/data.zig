@@ -78,19 +78,19 @@ pub const META_PROMPT_CONTENT =
     \\
     \\Follow this loop every turn:
     \\
-    \\1. **Discover.** Call `memory.discover()` to list all available rules,
+    \\1. **Discover.** Call `memdisc()` to list all available rules,
     \\   workflows, and context. Read their descriptions to decide what is relevant.
-    \\2. **Load.** Call `memory.load()` with the ids you need and a `knownHashes`
+    \\2. **Load.** Call `memload()` with the ids you need and a `knownHashes`
     \\   entry for every id. Use a remembered hash when available, otherwise pass an
     \\   empty string. Loaded content includes parsed rule ids.
     \\3. **Apply.** Follow loaded rules in your work. Rules override your defaults.
-    \\4. **Refer.** Call `memory.refer()` for each rule you applied. This is
+    \\4. **Refer.** Call `memref()` for each rule you applied. This is
     \\   not optional — it is how the system measures rule effectiveness.
     \\5. **Refine.** When the user asks you to create, update, rename,
     \\   delete, or discard local changes for rule, context, or MPF artifacts.
     \\   Use the `artifact` tool with a `resource` value and exactly one
     \\   tagged `op` object.
-    \\6. **Submit.** Call `memory.submit()` with a short summary of your work before
+    \\6. **Submit.** Call `agentreport()` with a short summary of your work before
     \\   finishing every response. The stop hook will block if you forget.
     \\
     \\## Resource types
@@ -103,12 +103,12 @@ pub const META_PROMPT_CONTENT =
     \\
     \\Categories are organizational only (e.g. `coding/`, `zig/`, `writing/`).
     \\
-    \\Filter with `memory.discover({kind: "rule"})` or `memory.discover({group: "zig"})`.
+    \\Filter with `memdisc({kind: "rule"})` or `memdisc({group: "zig"})`.
     \\
     \\## Accountability
     \\
     \\If you fail to follow loaded rules, the user may call `/ntmd` to reject the turn.
-    \\This records a `memory.reject()` event. When this happens, review which rules you
+    \\This records a `agentrejected()` event. When this happens, review which rules you
     \\missed and correct your approach.
     \\
     \\## Priority
@@ -125,7 +125,7 @@ pub const CODING_WORKFLOW_CONTENT =
     \\
     \\## Steps
     \\
-    \\1. **Load relevant rules.** Before writing any code, search and load all applicable coding rules via `memory.discover` + `memory.load`. This includes language-specific rules, general coding rules, and any domain-specific rules relevant to the task.
+    \\1. **Load relevant rules.** Before writing any code, search and load all applicable coding rules via `memdisc` + `memload`. This includes language-specific rules, general coding rules, and any domain-specific rules relevant to the task.
     \\2. **Assess complexity.** For non-trivial tasks, design the approach before writing code.
     \\3. Ensure you are on `main` and up to date.
     \\4. Create a feature branch.

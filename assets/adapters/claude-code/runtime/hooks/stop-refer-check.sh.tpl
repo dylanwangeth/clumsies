@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop hook: remind agent to submit turn summary via memory.submit.
+# Stop hook: remind agent to submit turn summary via agentreport.
 
 set -euo pipefail
 
@@ -27,6 +27,6 @@ fi
 cat <<'EOF'
 {
   "decision": "block",
-  "reason": "Before finishing, call memory.submit with a summary of your work this turn."
+  "reason": "Before finishing, call agentreport with a summary of your work this turn."
 }
 EOF

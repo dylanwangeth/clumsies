@@ -4,7 +4,7 @@ description: Load and follow the clumsies setup protocol to re-import META_PROMP
 metadata:
   short-description: Re-import META_PROMPT
 ---
-Call the `memory.setup` MCP tool with the Codex session id from the
+Call the `memsetup` MCP tool with the Codex session id from the
 SessionStart hook context once for the current host session:
 
 ```json
