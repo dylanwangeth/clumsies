@@ -312,6 +312,38 @@ pub fn saveDraftContent(
     try writeDraftFileAbs(allocator, ws_dir, category, draft_path, content);
 }
 
+/// Overwrite an existing modify draft and refresh its index metadata.
+/// Returns false when no matching draft exists. Other draft operations
+/// are intentionally rejected so create/rename/delete semantics remain
+/// explicit.
+pub fn updateModifyDraftContent(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+    content: []const u8,
+    description: ?[]const u8,
+) !bool {
+    if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
+
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    for (index.entries.items) |*entry| {
+        if (entry.category != category) continue;
+        if (!std.mem.eql(u8, entry.draft_path, draft_path)) continue;
+        if (entry.operation != .modify) return error.DraftOperationConflict;
+
+        try writeDraftFileAbs(allocator, ws_dir, category, draft_path, content);
+        if (description) |desc| entry.description = desc;
+        entry.status = .editing;
+        try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+        return true;
+    }
+
+    return false;
+}
+
 /// Remove a draft: delete its content file (if any) and drop its entry
 /// from the index. Idempotent when the entry is already absent.
 pub fn discardDraft(
@@ -883,6 +915,71 @@ test "saveDraftContent: overwrites existing draft file" {
     const content = try readDraftFile(testing.allocator, root, .context, "spec/API.md");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("second version\n", content);
+}
+
+test "updateModifyDraftContent: overwrites existing modify draft and metadata" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .modify,
+        .draft_path = "spec/API.md",
+        .current_path = "spec/API.md",
+        .description = "first description",
+    }, "first version\n");
+    try setDraftStatus(testing.allocator, root, .context, "spec/API.md", .ready);
+
+    const updated = try updateModifyDraftContent(
+        testing.allocator,
+        root,
+        .context,
+        "spec/API.md",
+        "second version\n",
+        "second description",
+    );
+    try testing.expect(updated);
+
+    const content = try readDraftFile(testing.allocator, root, .context, "spec/API.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("second version\n", content);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.findByCurrentPath(.context, "spec/API.md").?;
+    try testing.expectEqual(DraftOperation.modify, entry.operation);
+    try testing.expectEqual(DraftStatus.editing, entry.status);
+    try testing.expectEqualStrings("second description", entry.description.?);
+}
+
+test "updateModifyDraftContent: rejects non-modify draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "spec/API.md",
+    }, "first version\n");
+
+    try testing.expectError(
+        error.DraftOperationConflict,
+        updateModifyDraftContent(
+            testing.allocator,
+            root,
+            .context,
+            "spec/API.md",
+            "second version\n",
+            null,
+        ),
+    );
 }
 
 test "discardDraft: removes entry and file" {
