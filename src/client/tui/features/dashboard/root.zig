@@ -39,6 +39,9 @@ pub const State = struct {
     chain_rows: [MAX_CHAIN_ROWS]vxfw.Text = undefined,
     chain_rich_rows: [MAX_CHAIN_ROWS]vxfw.RichText = undefined,
     chain_cursor: usize = 0,
+    chain_item_count: usize = 0,
+    chain_row_count: usize = 0,
+    chain_item_rows: [MAX_CHAIN_ROWS]usize = .{0} ** MAX_CHAIN_ROWS,
     chain_expanded_items: [MAX_CHAIN_ROWS]bool = .{false} ** MAX_CHAIN_ROWS,
 
     pub fn init() State {
@@ -394,8 +397,6 @@ pub fn drawRounds(
     const body_h: u16 = height -| body_origin_row -| 1;
     const body_w: u16 = width -| body_origin_col -| 1;
     try syncRoundWidgets(self, ctx, rounds, body_w);
-    self.dashboard.round_scroll_bars.scroll_view.draw_cursor = false;
-    defer self.dashboard.round_scroll_bars.scroll_view.draw_cursor = true;
     const body_ctx = ctx.withConstraints(
         .{ .width = body_w, .height = body_h },
         .{ .width = body_w, .height = body_h },
@@ -470,37 +471,70 @@ pub fn handleModuleEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+    const page_delta: ?isize = if (w.isJumpDownKey(key))
+        @intCast(w.pageStepRows(focusedScrollView(self)))
+    else if (w.isJumpUpKey(key))
+        -@as(isize, @intCast(w.pageStepRows(focusedScrollView(self))))
+    else if (w.isHalfPageDownKey(key))
+        @intCast(w.halfPageStepRows(focusedScrollView(self)))
+    else if (w.isHalfPageUpKey(key))
+        -@as(isize, @intCast(w.halfPageStepRows(focusedScrollView(self))))
+    else
+        null;
+    if (page_delta) |delta| {
         if (self.analysis.focus == .inputs) {
-            if (round_count > 0 and self.analysis.input_cursor < round_count - 1) {
-                self.analysis.input_cursor += 1;
+            const step = roundStepFromRows(delta);
+            if (w.moveCursorBy(&self.analysis.input_cursor, round_count, step)) {
                 self.dashboard.chain_cursor = 0;
                 resetChainExpansion(self);
                 resetScrollView(&self.dashboard.chain_scroll_bars.scroll_view);
+                w.syncScrollCursor(&self.dashboard.round_scroll_bars.scroll_view, self.analysis.input_cursor * ROUND_ROW_COUNT, round_count * ROUND_ROW_COUNT);
+                w.scrollCursorIntoView(&self.dashboard.round_scroll_bars.scroll_view, round_count * ROUND_ROW_COUNT);
             }
             ctx.consumeAndRedraw();
             return;
         }
         if (self.analysis.focus == .chart) {
-            self.dashboard.chain_cursor += 1;
+            moveChainCursorByRows(self, delta);
+            scrollChainCursorIntoView(self);
+            ctx.consumeAndRedraw();
+            return;
+        }
+    }
+    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+        if (self.analysis.focus == .inputs) {
+            if (w.moveCursorBy(&self.analysis.input_cursor, round_count, 1)) {
+                self.dashboard.chain_cursor = 0;
+                resetChainExpansion(self);
+                resetScrollView(&self.dashboard.chain_scroll_bars.scroll_view);
+                w.syncScrollCursor(&self.dashboard.round_scroll_bars.scroll_view, self.analysis.input_cursor * ROUND_ROW_COUNT, round_count * ROUND_ROW_COUNT);
+                w.scrollCursorIntoView(&self.dashboard.round_scroll_bars.scroll_view, round_count * ROUND_ROW_COUNT);
+            }
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (self.analysis.focus == .chart) {
+            _ = w.moveCursorBy(&self.dashboard.chain_cursor, self.dashboard.chain_item_count, 1);
+            scrollChainCursorIntoView(self);
             ctx.consumeAndRedraw();
             return;
         }
     }
     if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
         if (self.analysis.focus == .inputs) {
-            const old_cursor = self.analysis.input_cursor;
-            self.analysis.input_cursor -|= 1;
-            if (self.analysis.input_cursor != old_cursor) {
+            if (w.moveCursorBy(&self.analysis.input_cursor, round_count, -1)) {
                 self.dashboard.chain_cursor = 0;
                 resetChainExpansion(self);
                 resetScrollView(&self.dashboard.chain_scroll_bars.scroll_view);
+                w.syncScrollCursor(&self.dashboard.round_scroll_bars.scroll_view, self.analysis.input_cursor * ROUND_ROW_COUNT, round_count * ROUND_ROW_COUNT);
+                w.scrollCursorIntoView(&self.dashboard.round_scroll_bars.scroll_view, round_count * ROUND_ROW_COUNT);
             }
             ctx.consumeAndRedraw();
             return;
         }
         if (self.analysis.focus == .chart) {
-            self.dashboard.chain_cursor -|= 1;
+            _ = w.moveCursorBy(&self.dashboard.chain_cursor, self.dashboard.chain_item_count, -1);
+            scrollChainCursorIntoView(self);
             ctx.consumeAndRedraw();
             return;
         }
@@ -554,17 +588,51 @@ fn resetScrollView(scroll_view: *vxfw.ScrollView) void {
 }
 
 fn clampScrollTop(scroll_view: *vxfw.ScrollView, row_count: usize) void {
-    const visible_rows: usize = @max(@as(usize, scroll_view.last_height), 1);
-    const max_top: usize = if (row_count > visible_rows) row_count - visible_rows else 0;
-    if (max_top == 0) {
-        scroll_view.scroll.top = 0;
-        scroll_view.scroll.vertical_offset = 0;
+    w.clampScrollTop(scroll_view, row_count);
+}
+
+fn focusedScrollView(self: anytype) *const vxfw.ScrollView {
+    return switch (self.analysis.focus) {
+        .inputs => &self.dashboard.round_scroll_bars.scroll_view,
+        .chart => &self.dashboard.chain_scroll_bars.scroll_view,
+        else => &self.dashboard.round_scroll_bars.scroll_view,
+    };
+}
+
+fn roundStepFromRows(row_delta: isize) isize {
+    const abs_rows: usize = if (row_delta < 0) @intCast(-row_delta) else @intCast(row_delta);
+    const step: isize = @intCast(@max(@as(usize, 1), abs_rows / ROUND_ROW_COUNT));
+    return if (row_delta < 0) -step else step;
+}
+
+fn scrollChainCursorIntoView(self: anytype) void {
+    const item_idx = @min(self.dashboard.chain_cursor, self.dashboard.chain_item_rows.len - 1);
+    const row = self.dashboard.chain_item_rows[item_idx];
+    self.dashboard.chain_scroll_bars.scroll_view.cursor = @intCast(@min(row, @as(usize, std.math.maxInt(u32))));
+    w.scrollCursorIntoView(&self.dashboard.chain_scroll_bars.scroll_view, self.dashboard.chain_row_count);
+}
+
+fn moveChainCursorByRows(self: anytype, row_delta: isize) void {
+    const item_count = @min(self.dashboard.chain_item_count, self.dashboard.chain_item_rows.len);
+    if (item_count == 0) {
+        self.dashboard.chain_cursor = 0;
         return;
     }
-    if (scroll_view.scroll.top > max_top) {
-        scroll_view.scroll.top = @intCast(max_top);
-        scroll_view.scroll.vertical_offset = 0;
+
+    const current_idx = @min(self.dashboard.chain_cursor, item_count - 1);
+    const current_row = self.dashboard.chain_item_rows[current_idx];
+    const target_row = if (row_delta < 0)
+        current_row -| @as(usize, @intCast(-row_delta))
+    else
+        @min(self.dashboard.chain_row_count, current_row + @as(usize, @intCast(row_delta)));
+
+    var next_idx: usize = 0;
+    var i: usize = 0;
+    while (i < item_count) : (i += 1) {
+        if (self.dashboard.chain_item_rows[i] > target_row) break;
+        next_idx = i;
     }
+    self.dashboard.chain_cursor = next_idx;
 }
 
 fn syncRoundWidgets(
@@ -695,6 +763,7 @@ fn syncChainWidgets(
     var item_index: usize = 0;
 
     if (self.analysis.focus == .chart and self.dashboard.chain_cursor == item_index) selected_row = out;
+    self.dashboard.chain_item_rows[item_index] = out;
     try appendUserPromptTool(self, ctx, &out, width, round, item_index);
     item_index += 1;
 
@@ -704,6 +773,7 @@ fn syncChainWidgets(
             if (out >= self.dashboard.chain_rows.len) break;
             const tool = round.tools[idx];
             if (self.analysis.focus == .chart and item_index == self.dashboard.chain_cursor) selected_row = out;
+            self.dashboard.chain_item_rows[item_index] = out;
             if (std.mem.eql(u8, tool.kind, "load")) {
                 idx = try appendLoadGroup(self, ctx, &out, width, round.ws_id, round.tools, idx, item_index);
             } else {
@@ -713,9 +783,11 @@ fn syncChainWidgets(
             item_index += 1;
         }
     }
+    self.dashboard.chain_item_count = item_index;
+    if (self.dashboard.chain_cursor >= item_index) self.dashboard.chain_cursor = item_index - 1;
     self.dashboard.chain_scroll_bars.scroll_view.cursor = @intCast(@min(selected_row, @as(usize, std.math.maxInt(u32))));
-    self.dashboard.chain_scroll_bars.scroll_view.ensureScroll();
     if (out == 0) appendChainLine(self, &out, "", theme.fg(theme.MUTED), false);
+    self.dashboard.chain_row_count = out;
     self.dashboard.chain_scroll_bars.scroll_view.children = .{ .slice = self.dashboard.chain_widgets[0..out] };
     self.dashboard.chain_scroll_bars.estimated_content_height = @intCast(out);
     self.dashboard.chain_scroll_bars.estimated_content_width = null;

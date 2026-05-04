@@ -85,8 +85,6 @@ pub fn drawListPanel(
         };
         w.drawEmptyState(&surface, ctx, body_origin_col, body_origin_row, status, "rules");
     } else {
-        self.library.scroll_bars.scroll_view.draw_cursor = false;
-        defer self.library.scroll_bars.scroll_view.draw_cursor = true;
         const body = try self.library.scroll_bars.widget().draw(body_ctx);
         const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
         children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
@@ -180,6 +178,7 @@ fn handleFileListEvent(
     event: vxfw.Event,
     key: vaxis.Key,
 ) anyerror!void {
+    _ = event;
     if (key.matches(vaxis.Key.enter, .{})) {
         syncLibraryTree(self);
         const pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
@@ -191,16 +190,25 @@ fn handleFileListEvent(
         ctx.consumeAndRedraw();
         return;
     }
+    if (key.matches('z', .{})) {
+        syncLibraryTree(self);
+        self.library.tree.toggleAll(self.api_state.allocator());
+        syncLibraryTree(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
 
     if (self.library.tree.rowCount() == 0) {
         ctx.consumeEvent();
         return;
     }
-    try self.library.scroll_bars.scroll_view.handleEvent(ctx, event);
+    const count = self.library.tree.rowCount();
+    const step = w.stepForKey(key, &self.library.scroll_bars.scroll_view) orelse return;
 
     var pos = @as(usize, @intCast(self.library.scroll_bars.scroll_view.cursor));
-    if (pos >= self.library.tree.rowCount()) pos = self.library.tree.rowCount() - 1;
+    _ = w.moveCursorBy(&pos, count, step);
     self.library.scroll_bars.scroll_view.cursor = @intCast(pos);
+    w.scrollCursorIntoView(&self.library.scroll_bars.scroll_view, count);
 
     if (self.library.tree.leafIndexAt(pos)) |rule_idx| {
         if (self.library.selected_rule != rule_idx) {
@@ -211,6 +219,7 @@ fn handleFileListEvent(
             self.review.hide_diff = false;
         }
     }
+    ctx.consumeAndRedraw();
 }
 
 fn handlePrListEvent(
@@ -219,6 +228,7 @@ fn handlePrListEvent(
     event: vxfw.Event,
     key: vaxis.Key,
 ) anyerror!void {
+    _ = event;
     if (key.matches('f', .{})) {
         self.review.pr_filter = switch (self.review.pr_filter) {
             .open => .all,
@@ -238,20 +248,12 @@ fn handlePrListEvent(
         return;
     }
 
-    const prev = self.review.pr_scroll_bars.scroll_view.cursor;
-    try self.review.pr_scroll_bars.scroll_view.handleEvent(ctx, event);
-
     var pos = @as(usize, @intCast(self.review.pr_scroll_bars.scroll_view.cursor));
     if (pos >= self.review.pr_row_count) pos = if (self.review.pr_row_count > 0) self.review.pr_row_count - 1 else 0;
-    if (pos < self.review.pr_row_count and self.review.pr_indices[pos] == null) {
-        const moving_down = self.review.pr_scroll_bars.scroll_view.cursor > prev;
-        if (moving_down and pos + 1 < self.review.pr_row_count and self.review.pr_indices[pos + 1] != null) {
-            pos += 1;
-        } else {
-            pos = @intCast(prev);
-        }
-    }
+    const step = w.stepForKey(key, &self.review.pr_scroll_bars.scroll_view) orelse return;
+    pos = w.moveSelectableRowByVisualRows(pos, self.review.pr_row_count, self.review.pr_indices[0..self.review.pr_row_count], step);
     self.review.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
+    w.scrollCursorIntoView(&self.review.pr_scroll_bars.scroll_view, self.review.pr_row_count);
     if (pos < self.review.pr_row_count) {
         if (self.review.pr_indices[pos]) |pr_idx| {
             if (self.review.selected_pr_idx != pr_idx) {
@@ -260,6 +262,7 @@ fn handlePrListEvent(
             }
         }
     }
+    ctx.consumeAndRedraw();
 }
 
 pub fn syncLibraryTree(self: anytype) void {
@@ -390,15 +393,5 @@ fn resetScrollView(scroll_view: *vxfw.ScrollView) void {
 }
 
 fn clampScrollTop(scroll_view: *vxfw.ScrollView, row_count: usize) void {
-    const visible_rows: usize = @max(@as(usize, scroll_view.last_height), 1);
-    const max_top: usize = if (row_count > visible_rows) row_count - visible_rows else 0;
-    if (max_top == 0) {
-        scroll_view.scroll.top = 0;
-        scroll_view.scroll.vertical_offset = 0;
-        return;
-    }
-    if (scroll_view.scroll.top > max_top) {
-        scroll_view.scroll.top = @intCast(max_top);
-        scroll_view.scroll.vertical_offset = 0;
-    }
+    w.clampScrollTop(scroll_view, row_count);
 }

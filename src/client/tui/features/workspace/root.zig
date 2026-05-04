@@ -198,8 +198,6 @@ pub fn drawList(
         return surface;
     }
     try syncListWidgets(self, ctx, ws_tree, live_ws);
-    self.workspace.list_scroll_bars.scroll_view.draw_cursor = false;
-    defer self.workspace.list_scroll_bars.scroll_view.draw_cursor = true;
     const body_ctx = ctx.withConstraints(
         .{ .width = body_w, .height = body_h },
         .{ .width = body_w, .height = body_h },
@@ -717,6 +715,13 @@ fn handleListFocusEvent(
         ctx.consumeEvent();
         return;
     }
+    if (key.matches('z', .{})) {
+        ws_tree.toggleAll(self.api_state.allocator());
+        self.workspace.hide_diff = false;
+        syncWsRows(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
     if (key.matches(vaxis.Key.escape, .{})) {
         self.workspace.drawer_cursor = self.workspace.sel;
         self.workspace.show_drawer = true;
@@ -727,13 +732,13 @@ fn handleListFocusEvent(
         ctx.consumeEvent();
         return;
     }
-    try self.workspace.list_scroll_bars.scroll_view.handleEvent(ctx, .{ .key_press = key });
-    var pos = @as(usize, @intCast(self.workspace.list_scroll_bars.scroll_view.cursor));
-    if (pos >= ws_tree.rowCount()) pos = ws_tree.rowCount() - 1;
-    self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(pos);
-    self.workspace.list_scroll_bars.scroll_view.ensureScroll();
-    self.workspace.list_sel = pos;
+    const count = ws_tree.rowCount();
+    const step = w.stepForKey(key, &self.workspace.list_scroll_bars.scroll_view) orelse return;
+    _ = w.moveCursorBy(&self.workspace.list_sel, count, step);
+    w.syncScrollCursor(&self.workspace.list_scroll_bars.scroll_view, self.workspace.list_sel, count);
+    w.scrollCursorIntoView(&self.workspace.list_scroll_bars.scroll_view, count);
     self.workspace.hide_diff = false;
+    ctx.consumeAndRedraw();
 }
 
 fn handleContentFocusEvent(
@@ -859,7 +864,7 @@ pub fn syncWsRows(self: anytype) void {
     } else if (self.workspace.list_sel >= ws_tree.rowCount()) {
         self.workspace.list_sel = ws_tree.rowCount() - 1;
         self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(self.workspace.list_sel);
-        self.workspace.list_scroll_bars.scroll_view.ensureScroll();
+        w.scrollCursorIntoView(&self.workspace.list_scroll_bars.scroll_view, ws_tree.rowCount());
     }
 }
 
@@ -871,17 +876,7 @@ fn resetScrollView(scroll_view: *vxfw.ScrollView) void {
 }
 
 fn clampScrollTop(scroll_view: *vxfw.ScrollView, row_count: usize) void {
-    const visible_rows: usize = @max(@as(usize, scroll_view.last_height), 1);
-    const max_top: usize = if (row_count > visible_rows) row_count - visible_rows else 0;
-    if (max_top == 0) {
-        scroll_view.scroll.top = 0;
-        scroll_view.scroll.vertical_offset = 0;
-        return;
-    }
-    if (scroll_view.scroll.top > max_top) {
-        scroll_view.scroll.top = @intCast(max_top);
-        scroll_view.scroll.vertical_offset = 0;
-    }
+    w.clampScrollTop(scroll_view, row_count);
 }
 
 const CREATE_BOX_W: u16 = 76;
