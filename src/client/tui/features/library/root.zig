@@ -349,14 +349,9 @@ pub fn syncLibraryWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
             const row_sel = i == selected_row;
             const category = self.libraryCategoryForPath(row_path);
             const draft_status_opt = self.draftStatusFor(category, row_path);
-            const is_stale = !is_virtual and !self.isLocalContentFresh(category, row_path, rules[orig_pidx].content_hash);
-            const labeled_text = if (is_stale)
-                (std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{row_text}) catch row_text)
-            else
-                row_text;
             const row_style = w.draftRowStyle(row_sel, draft_status_opt);
             table_cols[i] = .{
-                .{ .text = labeled_text, .flex = 1 },
+                .{ .text = row_text, .flex = 1 },
                 .{ .text = pr_label, .flex = 0, .min_width = 2, .alignment = .right },
             };
             table_rows[i] = .{

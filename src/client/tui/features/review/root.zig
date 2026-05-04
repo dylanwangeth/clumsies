@@ -8,7 +8,6 @@ const theme = @import("../../theme.zig");
 const w = @import("../../widgets.zig");
 const api = @import("../../api.zig");
 const data = @import("../../models/view_types.zig");
-const drafts_mod = @import("../../../drafts.zig");
 const diff_viewer = @import("../../widgets/diff_viewer.zig");
 
 const RuleDetailLayout = struct {
@@ -309,8 +308,7 @@ fn fillRuleDetailSurface(
 ) std.mem.Allocator.Error!void {
     switch (body) {
         .content => |content_surface| {
-            const category = self.libraryCategoryForPath(rule.path);
-            const title = self.lookupRuleId(rule.path) orelse draftIdentity(self, category, rule.path);
+            const title = ruleDetailTitle(self, rule);
             w.writeText(surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
             const meta_min_col: u16 = @intCast(2 + ctx.stringWidth(title) + 2);
             if (!self.review.hide_diff and selectedLibraryRuleHasDraft(self)) {
@@ -371,8 +369,14 @@ fn writeRuleMetaOnPanelChrome(
     _ = w.writeHeaderRightIfFits(surface, ctx, 0, min_col, compact, theme.fg(theme.MUTED));
 }
 
-fn draftIdentity(self: anytype, category: drafts_mod.DraftCategory, path: []const u8) []const u8 {
-    return self.draftLocalIdFor(category, path).?;
+fn ruleDetailTitle(self: anytype, rule: *const data.RuleEntry) []const u8 {
+    if (self.lookupRuleId(rule.path)) |rule_id| return rule_id;
+    if (isVirtualCreateRule(rule)) return self.draftLocalIdFor(.rule, rule.path) orelse "No rule selected";
+    return rule.path;
+}
+
+fn isVirtualCreateRule(rule: *const data.RuleEntry) bool {
+    return rule.revision == 0 and rule.content_hash.len == 0 and rule.updated.len == 0;
 }
 
 fn formatRuleMeta(

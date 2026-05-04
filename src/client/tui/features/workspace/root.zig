@@ -229,8 +229,8 @@ pub fn drawDetail(
     }
 
     const title: []const u8 = switch (self.workspace.tab) {
-        .context => if (args.dir_sel != null) "Directory" else if (args.context_sel_id) |id| id else if (args.context_sel_path) |path| draftIdentity(self, .context, path) else "No context selected",
-        .rules => if (args.dir_sel != null) "Directory" else if (args.rule_sel_id) |id| id else if (args.rule_sel_path) |path| draftIdentity(self, .rule, path) else "No rule selected",
+        .context => if (args.dir_sel != null) "Directory" else if (args.context_sel_id) |id| id else if (args.context_sel_path) |path| draftIdentity(self, .context, path) orelse "No context selected" else "No context selected",
+        .rules => if (args.dir_sel != null) "Directory" else if (args.rule_sel_id) |id| id else if (args.rule_sel_path) |path| draftIdentity(self, .rule, path) orelse "No rule selected" else "No rule selected",
     };
     w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
     // Reserve min_col past the title (plus one space) so the
@@ -305,8 +305,8 @@ fn writeWsMetaOnHeader(
     }
 }
 
-fn draftIdentity(self: anytype, category: drafts_mod.DraftCategory, path: []const u8) []const u8 {
-    return self.draftLocalIdFor(category, path).?;
+fn draftIdentity(self: anytype, category: drafts_mod.DraftCategory, path: []const u8) ?[]const u8 {
+    return self.draftLocalIdFor(category, path);
 }
 
 fn drawDirSelected(
@@ -422,8 +422,8 @@ fn syncListWidgets(
             };
         } else {
             const draft_status = draftStatusForRow(self, ws_tree, r, live_ws);
-            const row_style = w.draftRowStyle(sel, draft_status);
             const is_stale = isStaleRow(self, ws_tree, r, live_ws);
+            const row_style = w.contentRowStyle(sel, draft_status, is_stale);
             const text = if (is_stale)
                 std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{rendered}) catch rendered
             else

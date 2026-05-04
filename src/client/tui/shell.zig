@@ -746,6 +746,7 @@ pub const Shell = struct {
             if (self.library.selected_rule < rules.len) break :blk &rules[self.library.selected_rule];
             const k = self.library.selected_rule - rules.len;
             if (k >= create_paths.len) break :blk null;
+            if (self.draftLocalIdFor(.rule, create_paths[k]) == null) break :blk null;
             virtual_entry = .{
                 .path = create_paths[k],
                 .kind = "",
@@ -1155,6 +1156,7 @@ pub const Shell = struct {
                 if (leaf < context_count) return null;
                 const k = leaf - context_count;
                 if (k >= self.drafts.create_context_paths.len) return null;
+                if (self.draftLocalIdFor(.context, self.drafts.create_context_paths[k]) == null) return null;
                 return .{ .context = .{
                     .path = self.drafts.create_context_paths[k],
                     .is_create_draft = true,
@@ -1177,6 +1179,7 @@ pub const Shell = struct {
                 const k = leaf - rule_count;
                 if (k >= self.drafts.create_rule_paths.len) return null;
                 const path = self.drafts.create_rule_paths[k];
+                if (self.draftLocalIdFor(self.libraryCategoryForPath(path), path) == null) return null;
                 return .{ .rule = .{
                     .path = path,
                     .category = self.libraryCategoryForPath(path),
