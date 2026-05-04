@@ -75,7 +75,7 @@ This pulls workspace rules and context into the local runtime cache. It is the s
 
 Use the CLI when the job is explicit and short-lived.
 
-Use the TUI when the job is state-heavy. That usually means browsing the Library, inspecting Workspace status, reading a denser analysis view, or staying inside review work longer than one command at a time.
+Use the TUI when the job is state-heavy. That usually means browsing the Artifact, inspecting Workspace status, reading a denser analysis view, or staying inside review work longer than one command at a time.
 
 Launch the TUI with:
 

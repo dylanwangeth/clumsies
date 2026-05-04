@@ -23,7 +23,7 @@ That produces four structural problems:
 3. local improvements have no clean path back to shared infrastructure
 4. attestation data stays trapped inside per-project islands
 
-clumsies exists to turn that into a managed system. Library owns shared rule truth. Workspace binds that truth to a project. Context carries project knowledge. Attestation makes the runtime legible enough to support review and refinement.
+clumsies exists to turn that into a managed system. Artifact owns shared rule truth. Workspace binds that truth to a project. Context carries project knowledge. Attestation makes the runtime legible enough to support review and refinement.
 
 ## The stable object model
 
@@ -32,9 +32,9 @@ The clearest way to understand clumsies is through eight core objects:
 | Object | Role |
 | --- | --- |
 | Hub | the authority layer that owns server-side state and coordination |
-| Library | the organization-level source of rules, workflows, and bundles |
+| Artifact | the organization-level source of rules, workflows, and bundles |
 | Rule | the basic behavioral asset that the rest of the lifecycle is built around |
-| Workspace | the project boundary that selects Library content and owns context |
+| Workspace | the project boundary that selects Artifact content and owns context |
 | Context | project facts such as specs, ADRs, and research |
 | Attestation | usage signals from discover, load, and refer |
 | Draft | local in-progress work before review or merge |
@@ -44,7 +44,7 @@ Everything else in the system exists to serve those objects. CLI, MCP, TUI, adap
 
 ## The authority model
 
-Hub is the authority layer. It owns library state, workspace manifests, collaboration flow, and aggregated attestation data. CLI, MCP, TUI, and adapters are client or integration surfaces around that authority.
+Hub is the authority layer. It owns artifact state, workspace manifests, collaboration flow, and aggregated attestation data. CLI, MCP, TUI, and adapters are client or integration surfaces around that authority.
 
 That distinction matters because the repository already contains a lot of local runtime code. Public docs should not describe those surfaces as separate truth sources. They are execution layers built around the Hub-centered model.
 
@@ -56,18 +56,18 @@ The specs make one boundary explicit: a workspace is not "a repo with rules in i
 
 It contains:
 
-- rule, workflow, and bundle selections from Library
+- rule, workflow, and bundle selections from Artifact
 - workspace-owned context files
 - a Hub-maintained manifest that indexes current rule, workflow, and context hashes
 - local drafts used for in-progress editing before review or merge
 
-That model is what keeps shared policy and project-specific knowledge from collapsing into one bucket. Library content stays organization-owned. Context stays workspace-owned. The workspace binds them together for actual work.
+That model is what keeps shared policy and project-specific knowledge from collapsing into one bucket. Artifact content stays organization-owned. Context stays workspace-owned. The workspace binds them together for actual work.
 
 ## The collaboration split
 
 clumsies has two different collaboration models, and the docs need to preserve that distinction.
 
-Library content moves through proposal and review flow before it becomes shared truth again. Workspace context uses workspace-scoped collaboration and PR flow because it is project knowledge rather than cross-org policy.
+Artifact content moves through proposal and review flow before it becomes shared truth again. Workspace context uses workspace-scoped collaboration and PR flow because it is project knowledge rather than cross-org policy.
 
 If docs flatten those two workflows into one vague "edit and sync" story, the system becomes much harder to reason about than it actually is.
 

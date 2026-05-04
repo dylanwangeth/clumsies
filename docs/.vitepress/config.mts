@@ -77,7 +77,7 @@ export default withMermaid(
               text: "Core model",
               items: [
                 { text: "Hub", link: "/hub" },
-                { text: "Library", link: "/library" },
+                { text: "Artifact", link: "/artifact" },
                 { text: "Workspace", link: "/workspace" },
                 { text: "Attestation", link: "/attestation" }
               ]

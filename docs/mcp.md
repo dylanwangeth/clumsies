@@ -336,7 +336,7 @@ In the current implementation, this records a `.reject` attestation event.
 
 ## `artifact`
 
-`artifact` stages local changes for Library rules, workspace context, or MPF.
+`artifact` stages local changes for Artifact rules, workspace context, or MPF.
 Those local changes are stored as drafts until they enter review.
 
 The input is a tagged command object:
@@ -391,7 +391,7 @@ current cached file, computes a base hash, and writes the local draft form. For
 MPF, `id` should be `META_PROMPT.md`.
 
 If a matching modify draft already exists, `update` replaces its content and
-keeps it in editing state. This is what allows agents to refine a local context
+keeps it in draft state. This is what allows agents to refine a local context
 or rule draft through MCP instead of writing draft files directly.
 
 | Field | Type | Required | Meaning |
