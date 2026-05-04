@@ -40,6 +40,8 @@ pub const State = struct {
     show_drawer: bool = false,
     drawer_cursor: usize = 0,
     list_sel: usize = 0,
+    last_context_file_row: ?usize = null,
+    last_rule_file_row: ?usize = null,
     hide_diff: bool = false,
     list_scroll_bars: vxfw.ScrollBars,
     context_tree: PathTreeState = .{},
@@ -119,7 +121,6 @@ pub const CreateWsErrorKind = enum {
 
 pub const DetailArgs = struct {
     live_ws: ?api.model.WsDetail,
-    dir_sel: ?[]const u8,
     /// Server-side index into `live_ws.context_files`. Null when
     /// the selection is a virtual (create-op) draft.
     context_sel: ?usize,
@@ -221,16 +222,16 @@ pub fn drawDetail(
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, content_border, theme.PANEL);
 
-    const has_local_selection = args.dir_sel != null or args.context_sel_path != null or args.rule_sel_path != null;
+    const has_local_selection = args.context_sel_path != null or args.rule_sel_path != null;
     if (args.live_ws == null and !has_local_selection) {
         w.writeText(&surface, ctx, 2, 0, "Content", theme.boldOn(theme.PANEL, theme.TEXT));
-        w.writeText(&surface, ctx, 2, 2, "No workspace data loaded.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "No workspace data loaded.", theme.fg(theme.MUTED));
         return surface;
     }
 
     const title: []const u8 = switch (self.workspace.tab) {
-        .context => if (args.dir_sel != null) "Directory" else if (args.context_sel_id) |id| id else if (args.context_sel_path) |path| draftIdentity(self, .context, path) orelse "No context selected" else "No context selected",
-        .rules => if (args.dir_sel != null) "Directory" else if (args.rule_sel_id) |id| id else if (args.rule_sel_path) |path| draftIdentity(self, .rule, path) orelse "No rule selected" else "No rule selected",
+        .context => if (args.context_sel_id) |id| id else if (args.context_sel_path) |path| draftIdentity(self, .context, path) orelse "No context selected" else "No context selected",
+        .rules => if (args.rule_sel_id) |id| id else if (args.rule_sel_path) |path| draftIdentity(self, .rule, path) orelse "No rule selected" else "No rule selected",
     };
     w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
     // Reserve min_col past the title (plus one space) so the
@@ -239,27 +240,23 @@ pub fn drawDetail(
     const meta_min_col: u16 = 2 + title_w + 2;
     if (workspaceDetailShowsDiff(self, args)) {
         w.writeText(&surface, ctx, meta_min_col, 0, "diff", theme.boldOn(theme.PANEL, theme.ACCENT));
-    } else if (args.dir_sel == null) if (args.live_ws) |ws_d| {
+    } else if (args.live_ws) |ws_d| {
         try writeWsMetaOnHeader(&surface, ctx, meta_min_col, self, ws_d, args);
-    };
+    }
 
-    const kv_row: u16 = 2;
+    const kv_row: u16 = 1;
     const max_row = ctx.max.height.? -| 1;
 
     switch (self.workspace.tab) {
         .context => {
-            if (args.dir_sel != null) {
-                try drawDirSelected(&surface, ctx, kv_row, max_row);
-            } else if (args.context_sel_path) |sel_path| {
+            if (args.context_sel_path) |sel_path| {
                 try drawContextFileDetail(self, &surface, ctx, kv_row, max_row, args.live_ws, sel_path);
             } else {
                 w.writeText(&surface, ctx, 2, kv_row, "No context files.", theme.fg(theme.MUTED));
             }
         },
         .rules => {
-            if (args.dir_sel != null) {
-                try drawDirSelected(&surface, ctx, kv_row, max_row);
-            } else if (args.rule_sel_path) |p| {
+            if (args.rule_sel_path) |p| {
                 try drawRuleFileDetail(self, &surface, ctx, kv_row, max_row, p);
             } else {
                 w.writeText(&surface, ctx, 2, kv_row, "No workspace rules.", theme.fg(theme.MUTED));
@@ -309,18 +306,6 @@ fn draftIdentity(self: anytype, category: drafts_mod.DraftCategory, path: []cons
     return self.draftLocalIdFor(category, path);
 }
 
-fn drawDirSelected(
-    surface: *vxfw.Surface,
-    ctx: vxfw.DrawContext,
-    start_row: u16,
-    max_row: u16,
-) !void {
-    w.writeText(surface, ctx, 2, start_row, "Directory selected.", theme.fg(theme.TEXT_SOFT));
-    if (start_row + 1 < max_row) {
-        w.writeText(surface, ctx, 2, start_row + 1, "Enter toggles expansion. Left collapses or jumps to parent. Right expands.", theme.fg(theme.MUTED));
-    }
-}
-
 fn drawContextFileDetail(
     self: anytype,
     surface: *vxfw.Surface,
@@ -350,7 +335,7 @@ fn drawRuleFileDetail(
 }
 
 fn workspaceDetailShowsDiff(self: anytype, args: DetailArgs) bool {
-    if (self.workspace.hide_diff or args.dir_sel != null) return false;
+    if (self.workspace.hide_diff) return false;
     return switch (self.workspace.tab) {
         .context => if (args.context_sel_path) |path|
             self.draftContentForView(.context, path) != null

@@ -129,7 +129,7 @@ const embedded_layout: RuleDetailLayout = .{
     .content_origin_col = 2,
     .content_origin_row = 1,
     .pr_diff_origin_col = 2,
-    .pr_diff_origin_row = 3,
+    .pr_diff_origin_row = 2,
 };
 
 const DetailBody = union(enum) {
@@ -151,7 +151,7 @@ pub fn drawEmbeddedEmpty(
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Detail", theme.boldOn(theme.PANEL, theme.TEXT));
-    w.writeText(&surface, ctx, 2, 2, "No rules loaded.", theme.fg(theme.MUTED));
+    w.writeText(&surface, ctx, 2, 1, "No rules loaded.", theme.fg(theme.MUTED));
     return surface;
 }
 
@@ -328,7 +328,7 @@ fn fillRuleDetailSurface(
         },
         .pull_request_empty => {
             w.writeText(surface, ctx, 2, 0, "Pull Requests", theme.boldOn(theme.PANEL, theme.TEXT));
-            w.writeText(surface, ctx, 2, 2, "No pull requests for this rule.", theme.fg(theme.MUTED));
+            w.writeText(surface, ctx, 2, 1, "No pull requests for this rule.", theme.fg(theme.MUTED));
         },
         .pull_request_diff => |diff| {
             w.writeText(surface, ctx, 2, 0, diff.title, theme.boldOn(theme.PANEL, theme.TEXT));
@@ -690,7 +690,7 @@ fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator
     if (prs.len == 0) {
         w.drawBorder(&surface, theme.focusBorder(self.review.focus == .detail), theme.PANEL);
         w.writeText(&surface, ctx, 2, 0, "Review", theme.boldOn(theme.PANEL, theme.TEXT));
-        w.writeText(&surface, ctx, 2, 2, "Select a pull request to review.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "Select a pull request to review.", theme.fg(theme.MUTED));
         return surface;
     }
 
@@ -746,15 +746,15 @@ fn drawReviewDiffPanel(
         _ = w.writeHeaderRightIfFits(&surface, ctx, 0, meta_min_col, subtitle, theme.fg(theme.MUTED));
     }
     if (self.review.pr_diff_count == 0) {
-        w.writeText(&surface, ctx, 2, 2, "No diff loaded.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "No diff loaded.", theme.fg(theme.MUTED));
         return surface;
     }
-    const body_h = size.height -| 3;
+    const body_h = size.height -| 2;
     const body_w = size.width -| 4;
     const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
     const body = try self.review.pr_diff_scroll_bars.widget().draw(body_ctx);
     const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-    children[0] = .{ .origin = .{ .row = 2, .col = 2 }, .surface = body };
+    children[0] = .{ .origin = .{ .row = 1, .col = 2 }, .surface = body };
     surface.children = children;
     return surface;
 }
@@ -767,7 +767,7 @@ fn drawReviewCommentPanel(self: anytype, ctx: vxfw.DrawContext, pr: *const data.
     const title = try std.fmt.allocPrint(ctx.arena, "Comments ({d})", .{pr.comments.len});
     w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
     if (pr.comments.len == 0) {
-        w.writeText(&surface, ctx, 2, 2, "No comments yet.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "No comments yet.", theme.fg(theme.MUTED));
         return surface;
     }
     const body_h = size.height -| 2;

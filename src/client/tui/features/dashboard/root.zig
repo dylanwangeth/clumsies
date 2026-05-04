@@ -388,7 +388,7 @@ pub fn drawRounds(
     w.writeText(&surface, ctx, 2, 0, "Rounds", theme.boldOn(theme.PANEL, theme.TEXT));
 
     if (rounds.len == 0) {
-        w.writeText(&surface, ctx, 2, 2, "No interaction rounds captured.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "No interaction rounds captured.", theme.fg(theme.MUTED));
         return surface;
     }
 
@@ -436,7 +436,7 @@ pub fn drawProtocolTrace(
     w.drawBorder(&surface, border_color, theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Attestation Trail", theme.boldOn(theme.PANEL, theme.TEXT));
     const round = selected_round orelse {
-        w.writeText(&surface, ctx, 2, 2, "Select a round to inspect clumsies attestation.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "Select a round to inspect clumsies attestation.", theme.fg(theme.MUTED));
         return surface;
     };
 
