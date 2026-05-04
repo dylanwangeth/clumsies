@@ -87,8 +87,8 @@ pub const META_PROMPT_CONTENT =
     \\4. **Refer.** Call `memory.refer()` for each rule you applied. This is
     \\   not optional — it is how the system measures rule effectiveness.
     \\5. **Refine.** When the user asks you to create, update, rename,
-    \\   delete, or discard draft changes for rules, context, or MPF.
-    \\   Use the `draft` tool with a `resource` value and exactly one
+    \\   delete, or discard local changes for rule, context, or MPF artifacts.
+    \\   Use the `artifact` tool with a `resource` value and exactly one
     \\   tagged `op` object.
     \\6. **Submit.** Call `memory.submit()` with a short summary of your work before
     \\   finishing every response. The stop hook will block if you forget.
