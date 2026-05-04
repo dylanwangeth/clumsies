@@ -387,6 +387,8 @@ test "renderSessionStartHook does not import workflow skills" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "hookSpecificOutput") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "memory.setup") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "session_id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "knownHashes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "META_PROMPT.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Use exactly this session_id value") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "During host agent startup") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Call memory.setup only once for this host session") != null);

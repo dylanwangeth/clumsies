@@ -33,7 +33,7 @@ In the current implementation, the MCP tool surface is:
 - `memory.refer`
 - `memory.submit`
 - `memory.reject`
-- `draft`
+- `artifact`
 
 That path loads rules and context, records applied constraints, stages
 drafts, and closes the turn with an attestation trail.
