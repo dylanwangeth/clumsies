@@ -10,7 +10,7 @@ The point of this section is not to restate the architecture. It is to tell a re
 | --- | --- | --- |
 | bring up Hub and the database for a team | [Deployment](/guides/deploy-for-an-org) | covers local self-hosted bring-up, bootstrap identity, and what still remains manual |
 | use clumsies inside a repo as a normal member | [Member workflow](/guides/how-to-use-clumsies) | covers login, workspace binding, sync, TUI, and adapter installation from the human side |
-| wire an agent host into the local runtime | [Agent runtime](/guides/agent-runtime) | covers `clumsies mcp serve`, `memory.*`, attestation, and adapter/runtime boundaries |
+| wire an agent host into the local runtime | [Agent runtime](/guides/agent-runtime) | covers `clumsies mcp serve`, MCP tools, attestation, and adapter/runtime boundaries |
 | look up exact command and flag behavior | [CLI reference](/guides/cli-commands) | covers the current command surface without forcing you through a walkthrough |
 
 ## What guides should and should not do

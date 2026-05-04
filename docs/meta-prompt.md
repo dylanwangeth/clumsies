@@ -91,6 +91,6 @@ Most of the file still matches the current product model:
 
 For the current public contract, read:
 
-- [MCP](/mcp) for the `memory.*` tool surface
+- [MCP](/mcp) for the current `mem*`, `artifact`, and agent-reporting tool surface
 - [Runtime surfaces](/runtime) for the local file and cache model
 - [Agent runtime](/guides/agent-runtime) for the host-side execution path
