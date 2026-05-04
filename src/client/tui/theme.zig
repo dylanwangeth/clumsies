@@ -72,8 +72,9 @@ pub fn draftStatusColor(status: anytype) vaxis.Color {
     return switch (status) {
         .draft => WARN,
         .in_review => ACCENT,
+        .applied => MERGED,
+        .declined => DANGER,
         .conflicted => DANGER,
-        else => MUTED,
     };
 }
 
