@@ -116,6 +116,17 @@ pub fn draftRowStyle(selected: bool, draft_status: anytype) vaxis.Style {
     return if (selected) theme.boldOn(theme.PANEL, fg) else theme.fg(fg);
 }
 
+pub fn contentRowStyle(selected: bool, draft_status: anytype, pull_available: bool) vaxis.Style {
+    if (draft_status != null) return draftRowStyle(selected, draft_status);
+    const fg = if (pull_available)
+        theme.INFO
+    else if (selected)
+        theme.TEXT
+    else
+        theme.TEXT_SOFT;
+    return if (selected) theme.boldOn(theme.PANEL, fg) else theme.fg(fg);
+}
+
 pub fn writeDraftMarker(
     surface: *vxfw.Surface,
     ctx: vxfw.DrawContext,
@@ -155,6 +166,18 @@ test "draftRowStyle uses TEXT_SOFT when unselected without draft" {
     const style = draftRowStyle(false, @as(?@import("../drafts.zig").DraftStatus, null));
     try std.testing.expectEqual(theme.TEXT_SOFT, style.fg);
     try std.testing.expect(!style.bold);
+}
+
+test "contentRowStyle uses INFO when pull is available without draft" {
+    const style = contentRowStyle(false, @as(?@import("../drafts.zig").DraftStatus, null), true);
+    try std.testing.expectEqual(theme.INFO, style.fg);
+    try std.testing.expect(!style.bold);
+}
+
+test "contentRowStyle lets draft status win over pull marker" {
+    const DraftStatus = @import("../drafts.zig").DraftStatus;
+    const style = contentRowStyle(false, @as(?DraftStatus, .ready), true);
+    try std.testing.expectEqual(theme.OK, style.fg);
 }
 
 test {
