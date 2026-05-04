@@ -783,7 +783,7 @@ fn appendUserPromptTool(
         const spans = try ctx.arena.alloc(vaxis.Segment, 2);
         spans[0] = .{ .text = head_text, .style = traceHeaderStyle("user_prompt", is_selected) };
         spans[1] = .{ .text = model_trimmed, .style = traceDetailStyle() };
-        appendChainRichLine(self, ctx, out, spans, is_selected);
+        appendChainRichLine(self, ctx, out, width, spans, is_selected);
     } else {
         const head = try std.fmt.allocPrint(ctx.arena, "{s} {s} {s} TASK", .{ marker, time_txt, exp_icon });
         const head_text = firstLineTrimmed(head, width);
@@ -1341,7 +1341,7 @@ fn appendTraceChildColoredLine(
         @memset(padding, ' ');
         spans[2] = .{ .text = padding, .style = traceDetailStyle() };
     }
-    appendChainRichLine(self, ctx, out, spans, is_selected);
+    appendChainRichLine(self, ctx, out, width, spans, is_selected);
 }
 
 fn appendTraceGuideBlank(self: anytype, out: *usize, is_selected: bool) void {
@@ -1441,17 +1441,35 @@ fn appendChainRichLine(
     self: anytype,
     ctx: vxfw.DrawContext,
     out: *usize,
+    width: u16,
     spans: []const vaxis.Segment,
     is_selected: bool,
 ) void {
     if (out.* >= self.dashboard.chain_rich_rows.len) return;
-    const final_spans = ctx.arena.alloc(vaxis.Segment, spans.len) catch return;
+    const row_bg = if (is_selected) theme.PANEL_ALT else theme.PANEL;
+    var used_w: u16 = 0;
+    for (spans) |span| {
+        const span_w: u16 = @intCast(ctx.stringWidth(span.text));
+        used_w = @min(width, used_w +| span_w);
+    }
+    const pad_w = width -| used_w;
+    const final_len = spans.len + @as(usize, if (pad_w > 0) 1 else 0);
+    const final_spans = ctx.arena.alloc(vaxis.Segment, final_len) catch return;
     for (spans, 0..) |span, idx| {
         final_spans[idx] = span;
         if (is_selected) final_spans[idx].style.bg = theme.PANEL_ALT;
     }
+    if (pad_w > 0) {
+        const padding = ctx.arena.alloc(u8, pad_w) catch return;
+        @memset(padding, ' ');
+        final_spans[spans.len] = .{
+            .text = padding,
+            .style = theme.textOn(row_bg, theme.MUTED),
+        };
+    }
     self.dashboard.chain_rich_rows[out.*] = .{
         .text = final_spans,
+        .base_style = theme.textOn(row_bg, theme.MUTED),
         .softwrap = false,
         .overflow = .ellipsis,
         .width_basis = .longest_line,

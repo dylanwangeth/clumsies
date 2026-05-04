@@ -364,7 +364,7 @@ pub const Shell = struct {
                 // First tick after current_user lands (the /me fetch
                 // completes asynchronously, so activeWsId() was null
                 // at .init). Seed the drafts map now so row markers
-                // and the footer counter come up populated.
+                // and row markers come up populated.
                 if (!self.drafts.cache_seeded and self.activeWsId() != null) {
                     self.refreshDraftsCache();
                     self.ensureActiveWorkspaceDetailRequested();
@@ -407,7 +407,13 @@ pub const Shell = struct {
 
         const header_band_h: u16 = 1;
         const header_h: u16 = 4;
-        const footer_h: u16 = 1;
+        const footer_shortcuts = try self.footerShortcuts(ctx.arena);
+        const footer_h = w.shortcutBarRows(ctx, footer_shortcuts, .{
+            .row = 0,
+            .col = 1,
+            .max_col = size.width,
+            .max_rows = 2,
+        });
         const body_h = size.height - header_h - footer_h;
 
         const header_ctx = ctx.withConstraints(
@@ -437,7 +443,7 @@ pub const Shell = struct {
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawHeader(header_ctx) };
         children[1] = .{ .origin = .{ .row = header_h, .col = 0 }, .surface = try self.drawBody(body_ctx) };
-        children[2] = .{ .origin = .{ .row = header_h + body_h, .col = 0 }, .surface = try self.drawFooter(footer_ctx) };
+        children[2] = .{ .origin = .{ .row = header_h + body_h, .col = 0 }, .surface = try self.drawFooter(footer_ctx, footer_shortcuts) };
         var child_idx: usize = 3;
 
         if (self.show_help) {
@@ -620,30 +626,15 @@ pub const Shell = struct {
         };
     }
 
-    fn drawFooter(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    fn drawFooter(self: *Shell, ctx: vxfw.DrawContext, shortcuts: []const w.Shortcut) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
         w.fillSurface(&surface, theme.PANEL);
 
-        var shortcuts_max_col = surface.size.width;
-
-        if (self.drafts.total > 0) {
-            const counter = std.fmt.allocPrint(
-                ctx.arena,
-                "drafts: {d} ({d} ready)",
-                .{ self.drafts.total, self.drafts.ready },
-            ) catch "";
-            const counter_w: u16 = @intCast(ctx.stringWidth(counter));
-            if (counter.len > 0 and counter_w + 2 < shortcuts_max_col) {
-                const counter_col = shortcuts_max_col - counter_w - 1;
-                shortcuts_max_col = counter_col -| 2;
-                w.writeText(&surface, ctx, counter_col, 0, counter, theme.fg(theme.ACCENT));
-            }
-        }
-
-        _ = w.drawShortcutBar(&surface, ctx, try self.footerShortcuts(ctx.arena), .{
+        _ = w.drawShortcutBar(&surface, ctx, shortcuts, .{
             .row = 0,
             .col = 1,
-            .max_col = shortcuts_max_col,
+            .max_col = surface.size.width,
+            .max_rows = 2,
         });
 
         return surface;
