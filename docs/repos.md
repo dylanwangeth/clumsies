@@ -22,7 +22,7 @@ This directory is the authority layer. It contains the modules that back the ser
 | Module | Responsibility |
 | --- | --- |
 | `auth.zig` | identity, tokens, roles, workspace access |
-| `library.zig` | library manifest, prompt metadata, bundles |
+| `artifact.zig` | artifact manifest, prompt metadata, bundles |
 | `workspace.zig` | workspace CRUD and manifest state |
 | `context.zig` | workspace context files and context collaboration endpoints |
 | `collab.zig` | PR and review flows |

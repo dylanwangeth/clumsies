@@ -2,7 +2,7 @@
 
 ## What Hub is
 
-Hub is the authority layer of clumsies. It is the server-side system that owns Library, workspace manifests, context collaboration state, authentication, and aggregated attestation data.
+Hub is the authority layer of clumsies. It is the server-side system that owns Artifact, workspace manifests, context collaboration state, authentication, and aggregated attestation data.
 
 If you only remember one sentence from this page, it should be this: Hub is the only place in the architecture that is supposed to own business truth.
 
@@ -19,7 +19,7 @@ The top-level architecture and Hub specs break Hub into several server-side doma
 | Domain | Responsibility |
 | --- | --- |
 | Auth | identities, tokens, roles, and effective access |
-| Library | rule truth, rule metadata, bundle views, review flow |
+| Artifact | rule truth, rule metadata, bundle views, review flow |
 | Workspace | workspace lifecycle, manifest, rule membership |
 | Context | workspace-owned knowledge and context collaboration |
 | Collaboration | PR-style review and merge paths |
@@ -33,13 +33,13 @@ The current HTTP server wiring in `src/hub/server.zig` makes that split concrete
 - `/api/org/members*` and `/api/org/directory`
 - `/api/workspaces/*`
 - `/api/workspaces/:ws_id/context/*`
-- `/api/org/library/*`
+- `/api/org/artifact/*`
 - `/api/org/bundles*`
 - `/api/attestations`
 - `/api/stats*`
 - `/api/org/rule-prs*`
 
-That list matters because it shows what Hub really is in the current implementation: not just a login endpoint and a manifest service, but the place where identities, library state, workspace state, review state, and attestation ingestion are all coordinated.
+That list matters because it shows what Hub really is in the current implementation: not just a login endpoint and a manifest service, but the place where identities, artifact state, workspace state, review state, and attestation ingestion are all coordinated.
 
 ## The actual API surface
 
@@ -53,7 +53,7 @@ These are the route families that matter most in the current implementation:
 | org membership | `/api/org/members*`, `/api/org/directory` | org administration, TUI |
 | workspace | `/api/workspaces/*` | CLI init, sync, TUI |
 | workspace context | `/api/workspaces/:ws_id/context/*` | sync, TUI, agent proposals |
-| Library | `/api/org/library/*`, `/api/org/bundles*` | sync, TUI, CLI |
+| Artifact | `/api/org/artifact/*`, `/api/org/bundles*` | sync, TUI, CLI |
 | rule review | `/api/org/rule-prs*` | TUI, collaboration flow |
 | attestation and stats | `/api/attestations`, `/api/stats*` | TUI startup upload, TUI analysis |
 
@@ -124,9 +124,9 @@ Two details matter here:
 
 That is why `manifest.json` in local runtime should be understood as a cached Hub snapshot, not as a source of truth invented on the machine.
 
-### `GET /api/org/library/manifest`
+### `GET /api/org/artifact/manifest`
 
-Hub also exposes the Library-level content index:
+Hub also exposes the Artifact-level content index:
 
 ```json
 {
@@ -140,26 +140,26 @@ Hub also exposes the Library-level content index:
 }
 ```
 
-This endpoint mirrors the same revision-and-hash model as workspace manifest, but at org Library scope. It is the backend surface that lets Library stay authoritative without forcing every runtime path to fetch individual rule objects one by one.
+This endpoint mirrors the same revision-and-hash model as workspace manifest, but at org Artifact scope. It is the backend surface that lets Artifact stay authoritative without forcing every runtime path to fetch individual rule objects one by one.
 
 ## Hub and content retrieval
 
 Manifest answers "what exists." The content endpoints answer "what does it contain."
 
-### Library content endpoints
+### Artifact content endpoints
 
-The current Library endpoints separate metadata from full content:
+The current Artifact endpoints separate metadata from full content:
 
 | Endpoint | What it returns |
 | --- | --- |
-| `GET /api/org/library/rules` | metadata list for Library rules |
-| `GET /api/org/library/rule` | one rule with history metadata |
-| `GET /api/org/library/rule/content` | one rule body |
-| `POST /api/org/library/rules/content` | batch rule content fetch |
+| `GET /api/org/artifact/rules` | metadata list for Artifact rules |
+| `GET /api/org/artifact/rule` | one rule with history metadata |
+| `GET /api/org/artifact/rule/content` | one rule body |
+| `POST /api/org/artifact/rules/content` | batch rule content fetch |
 
 The split is intentional. TUI often wants metadata-first browsing. `sync` wants batch content delivery.
 
-A simplified `GET /api/org/library/rules` response looks like:
+A simplified `GET /api/org/artifact/rules` response looks like:
 
 ```json
 {
@@ -215,17 +215,17 @@ A simplified `GET /api/workspaces/:ws_id/context/files` response looks like:
 }
 ```
 
-This is one of the cleanest examples of the product boundary. Rules live in org Library. Context lives in a workspace. Hub exposes both through similar shapes without flattening them into the same domain.
+This is one of the cleanest examples of the product boundary. Rules live in org Artifact. Context lives in a workspace. Hub exposes both through similar shapes without flattening them into the same domain.
 
 ## Hub and collaboration
 
 Hub is also where collaboration becomes a product feature rather than a side effect of editing files.
 
-Two review paths matter. Rule-oriented work flows back toward Library. Context-oriented work flows into workspace-owned context mainline.
+Two review paths matter. Rule-oriented work flows back toward Artifact. Context-oriented work flows into workspace-owned context mainline.
 
 The current route split reflects that design:
 
-- Library-side review goes through `/api/org/rule-prs*`
+- Artifact-side review goes through `/api/org/rule-prs*`
 - workspace context review goes through `/api/workspaces/:ws_id/context/prs*`
 
 That separation is one of the most important boundaries in the product. Rules are shared organizational behavior assets. Context is workspace-owned project knowledge. Both need review semantics, but they do not belong to the same authority domain.
@@ -258,7 +258,7 @@ with an operation-based body:
 }
 ```
 
-The operation types are `modify`, `rename`, `create`, and `delete`. Validation is hash-bound. If `base_hash` no longer matches current Library state, Hub returns `409`.
+The operation types are `modify`, `rename`, `create`, and `delete`. Validation is hash-bound. If `base_hash` no longer matches current Artifact state, Hub returns `409`.
 
 Context PR creation follows the same operation model, but at workspace scope:
 

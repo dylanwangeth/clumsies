@@ -160,7 +160,7 @@ The top-level fields are doing real work.
 | `ws_id` | stable workspace identity |
 | `name` | display label for humans and tooling |
 | `revision` | monotonic snapshot version used by sync logic |
-| `rules` | Library-backed runtime behavior selected by the workspace |
+| `rules` | Artifact-backed runtime behavior selected by the workspace |
 | `context` | workspace-owned runtime knowledge |
 
 The map entries also matter.
@@ -189,7 +189,7 @@ The current implementation writes at least these categories there:
 
 | Path under cache | Meaning |
 | --- | --- |
-| `rule/` | synced Library behavior content |
+| `rule/` | synced Artifact behavior content |
 | `context/` | synced workspace context files |
 | `META_PROMPT.md` | meta-prompt used by agent bootstrap |
 
@@ -268,13 +268,13 @@ The current TUI reads from both Hub-backed APIs and selected local runtime files
 
 | Runtime input | Why TUI uses it |
 | --- | --- |
-| Hub APIs | workspace state, Library state, PR detail, stats, membership |
+| Hub APIs | workspace state, Artifact state, PR detail, stats, membership |
 | local attestation reader | recent inputs and dashboard state |
 | local drafts and editor host state | editing and review flows |
 
 The current repo also ships working captures of two real TUI screens:
 
-![TUI library view](/shots/dashboard-library.png)
+![TUI artifact view](/shots/dashboard-artifact.png)
 
 ![TUI insights view](/shots/dashboard-insights.png)
 

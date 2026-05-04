@@ -2,7 +2,7 @@
 
 ## Hub
 
-Hub is the authority layer. It owns the server-side state for Library, Workspace, context collaboration, and aggregated attestation data.
+Hub is the authority layer. It owns the server-side state for Artifact, Workspace, context collaboration, and aggregated attestation data.
 
 This is the architectural center of gravity for the whole project. If a page explains clumsies as a set of local files plus some helper commands, it is missing the point.
 
@@ -10,7 +10,7 @@ This is the architectural center of gravity for the whole project. If a page exp
 
 A rule is a behavioral instruction for an agent. It answers one question: how should the agent act?
 
-In clumsies, the behavioral layer in Library has two main forms:
+In clumsies, the behavioral layer in Artifact has two main forms:
 
 | Type | Meaning |
 | --- | --- |
@@ -31,7 +31,7 @@ That is why a workflow belongs in the same behavioral layer as rules, but it sho
 
 ## Bundle
 
-A bundle is a reusable selection unit inside Library. It packages rule or workflow choices so a workspace can adopt a coherent set rather than hand-picking everything one item at a time.
+A bundle is a reusable selection unit inside Artifact. It packages rule or workflow choices so a workspace can adopt a coherent set rather than hand-picking everything one item at a time.
 
 Bundles matter because they are the bridge between organization-level curation and workspace-level adoption.
 
@@ -41,21 +41,21 @@ Context is project knowledge owned by a workspace. It answers a different questi
 
 Specs, ADRs, research notes, and design material are all context. They give the agent evidence and background. They do not directly impose behavior.
 
-Context is not managed by Library. That boundary matters. If project knowledge were flattened into the shared behavioral layer, workspace ownership and collaboration would become much harder to reason about.
+Context is not managed by Artifact. That boundary matters. If project knowledge were flattened into the shared behavioral layer, workspace ownership and collaboration would become much harder to reason about.
 
-## Library
+## Artifact
 
-Library is the organization-level source of rules, workflows, and bundles. It is not a cache and not a loose pile of copies. It owns rule identity, current path, content hash, and review history.
+Artifact is the organization-level source of rules, workflows, and bundles. It is not a cache and not a loose pile of copies. It owns rule identity, current path, content hash, and review history.
 
-Once Library stops being authoritative, cross-workspace convergence becomes fragile. Rule history, rule review, and attestation aggregation all become harder to trust.
+Once Artifact stops being authoritative, cross-workspace convergence becomes fragile. Rule history, rule review, and attestation aggregation all become harder to trust.
 
 ## Workspace
 
-Workspace is the project boundary where rules, workflows, bundles, and context are combined for real work. A workspace does not own Library behavior content. It selects a subset from Library and combines it with workspace-owned context.
+Workspace is the project boundary where rules, workflows, bundles, and context are combined for real work. A workspace does not own Artifact behavior content. It selects a subset from Artifact and combines it with workspace-owned context.
 
 | Part of a workspace | Ownership |
 | --- | --- |
-| selected rules, workflows, and bundles | references to Library |
+| selected rules, workflows, and bundles | references to Artifact |
 | context files | workspace-owned |
 | local drafts | local working state |
 | manifest | Hub-maintained index of current state |
@@ -73,9 +73,9 @@ That matters because sync, cache refresh, rename handling, and non-blocking loca
 ## Attestation
 
 Attestation is the event stream produced when agents discover and load
-Library behavior, then refer to it during real work.
+Artifact behavior, then refer to it during real work.
 
-Attestation is not decorative analytics. It is the feedback signal for the rule lifecycle and the broader improvement loop around Library content. Without it, teams are left guessing which constraints actually mattered and which ones were only present in theory.
+Attestation is not decorative analytics. It is the feedback signal for the rule lifecycle and the broader improvement loop around Artifact content. Without it, teams are left guessing which constraints actually mattered and which ones were only present in theory.
 
 Older specs and pages may still call this layer `Trace`. The current codebase and newer docs are moving toward `Attestation`.
 
@@ -87,7 +87,7 @@ Adapter is not the Hub and not the MCP protocol itself. It is the layer that mak
 
 ## MCP
 
-MCP is the agent-facing protocol surface. It is the runtime path through which an agent discovers Library content and context, loads content, and declares the constraints it actually applied.
+MCP is the agent-facing protocol surface. It is the runtime path through which an agent discovers Artifact content and context, loads content, and declares the constraints it actually applied.
 
 MCP is not just a transport detail. It is the mechanism that turns rule and context management into a live runtime system with traceable usage.
 
@@ -97,8 +97,8 @@ The current implementation exposes concise tools such as `memsetup`,
 
 ## Draft and PR
 
-A draft is local in-progress work. It can target either a Library rule or workflow, or a workspace context file. A pull request is the collaboration object that moves those changes back to the authority layer.
+A draft is local in-progress work. It can target either a Artifact rule or workflow, or a workspace context file. A pull request is the collaboration object that moves those changes back to the authority layer.
 
 Draft is local state. PR is shared workflow.
 
-For Library content, PR is the path back into org-level shared truth. For workspace context, PR is the path back into workspace mainline knowledge. Those are related patterns, but not the same authority boundary.
+For Artifact content, PR is the path back into org-level shared truth. For workspace context, PR is the path back into workspace mainline knowledge. Those are related patterns, but not the same authority boundary.

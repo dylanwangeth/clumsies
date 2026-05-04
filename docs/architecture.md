@@ -75,7 +75,7 @@ If the short labels look too terse on their own, read them as:
 
 | Diagram label | Meaning |
 | --- | --- |
-| `Hub` | orgs, Library, workspaces, attestation ingest |
+| `Hub` | orgs, Artifact, workspaces, attestation ingest |
 | `manifest` | `manifest.json`, the current workspace snapshot |
 | `cache` | materialized local rules, context, and `META_PROMPT` |
 | `attestation log` | append-only local runtime events awaiting TUI upload |
@@ -88,7 +88,7 @@ The main design boundary is not "server versus client." It is "authority versus 
 
 | Layer | Owns | Does not own |
 | --- | --- | --- |
-| Hub | orgs, users, workspace identity, Library state, manifest revision, collaboration, attestation ingest | repo-local config, host-specific hook files, local cache layout |
+| Hub | orgs, users, workspace identity, Artifact state, manifest revision, collaboration, attestation ingest | repo-local config, host-specific hook files, local cache layout |
 | local runtime | synced snapshot of one workspace, materialized content, buffered runtime state | source-of-truth object identity, review state, server-side authorization |
 | CLI | human operational entry points such as login, init, sync, adapt | business truth beyond what Hub exposes |
 | MCP | agent-facing discovery and load path over local runtime | canonical server-side object model |
@@ -103,7 +103,7 @@ The architecture documents keep circling the same three pillars because they are
 
 | Pillar | Core objects | Why it exists |
 | --- | --- | --- |
-| rule lifecycle management | Library, rule, workflow, bundle, proposal, PR | shared behavior assets should be reviewable and reusable |
+| rule lifecycle management | Artifact, rule, workflow, bundle, proposal, PR | shared behavior assets should be reviewable and reusable |
 | context management | workspace, context, workspace membership | project knowledge should stay attached to the project boundary |
 | observability | attestation, stats | usage should produce evidence, not just folklore |
 
@@ -111,13 +111,13 @@ This is why clumsies is not just a prompt folder, and not just a local MCP cache
 
 ## Object model and ownership
 
-The important ownership split is between Library-backed behavior and workspace-owned knowledge.
+The important ownership split is between Artifact-backed behavior and workspace-owned knowledge.
 
 | Object | Authority | Runtime role |
 | --- | --- | --- |
-| rule | Library | behavioral instruction |
-| workflow | Library | reusable workflow asset |
-| bundle | Library | named selection unit for rules and workflows |
+| rule | Artifact | behavioral instruction |
+| workflow | Artifact | reusable workflow asset |
+| bundle | Artifact | named selection unit for rules and workflows |
 | workspace | Hub | project boundary |
 | context | workspace | project-specific factual knowledge |
 | manifest | Hub-generated for a workspace | local sync index |
@@ -125,7 +125,7 @@ The important ownership split is between Library-backed behavior and workspace-o
 
 Two consequences fall out of this immediately.
 
-First, context is not part of Library. It may look similar on disk because both rules and context become files inside cache, but they do not share an ownership model. A rule is an org-level behavioral asset. Context is workspace knowledge.
+First, context is not part of Artifact. It may look similar on disk because both rules and context become files inside cache, but they do not share an ownership model. A rule is an org-level behavioral asset. Context is workspace knowledge.
 
 Second, workspace is not just a local folder binding. A workspace can bind more than one local path. The server-side workspace ID is the identity; the local path is only a binding.
 
@@ -133,15 +133,15 @@ Second, workspace is not just a local folder binding. A workspace can bind more 
 
 The architecture keeps two collaboration routes separate on purpose.
 
-### Library collaboration
+### Artifact collaboration
 
-Rules, workflows, and bundles live in Library. They go through proposal, review, and merge flow because they are meant to become shared behavioral assets.
+Rules, workflows, and bundles live in Artifact. They go through proposal, review, and merge flow because they are meant to become shared behavioral assets.
 
 ### Workspace collaboration
 
-Context edits belong to the workspace side. They still need review and PR semantics, but they merge into workspace-owned mainline rather than back into Library.
+Context edits belong to the workspace side. They still need review and PR semantics, but they merge into workspace-owned mainline rather than back into Artifact.
 
-If public docs blur those two routes, users stop seeing why Library exists and why workspace context is not just "private rules."
+If public docs blur those two routes, users stop seeing why Artifact exists and why workspace context is not just "private rules."
 
 ## Why manifest exists
 
@@ -272,7 +272,7 @@ The docs need to be honest about the transition.
 The following boundaries are already stable enough to document as product truths:
 
 - Hub is the authority layer.
-- Library and workspace have different ownership models.
+- Artifact and workspace have different ownership models.
 - manifest drives sync.
 - local cache exists for non-blocking runtime.
 - adapter is a real host integration layer.

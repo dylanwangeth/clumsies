@@ -6,7 +6,7 @@ Workspace is the project boundary inside clumsies. It is where shared organizati
 
 That sentence hides three different responsibilities, so it is worth unpacking them.
 
-A workspace selects Library-backed behavior. It owns project context. It also acts as the server-side anchor for the manifest and cache that local runtime reads from.
+A workspace selects Artifact-backed behavior. It owns project context. It also acts as the server-side anchor for the manifest and cache that local runtime reads from.
 
 This is why workspace is more than a folder binding and more than a repo name.
 
@@ -16,11 +16,11 @@ A workspace combines several distinct object types that should not be collapsed 
 
 | Part | Ownership | What it is |
 | --- | --- | --- |
-| selected rules and workflows | reference to Library | shared behavioral assets chosen for this project |
-| selected bundles | reference to Library | named group selections that expand into behavior content |
+| selected rules and workflows | reference to Artifact | shared behavioral assets chosen for this project |
+| selected bundles | reference to Artifact | named group selections that expand into behavior content |
 | context files | workspace-owned | project knowledge such as specs, ADRs, research, design notes |
 | manifest | Hub-generated | current indexed snapshot of workspace runtime state |
-| local drafts | local in-progress work | edits not yet merged into Library or workspace mainline |
+| local drafts | local in-progress work | edits not yet merged into Artifact or workspace mainline |
 
 The first three rows are the most important. They explain why workspace exists as its own object rather than being implied by a local checkout path.
 
@@ -83,7 +83,7 @@ The current top-level schema is:
 | `ws_id` | workspace identity |
 | `name` | workspace name |
 | `revision` | current workspace snapshot revision |
-| `rules` | stable-ID keyed map of selected Library behavior |
+| `rules` | stable-ID keyed map of selected Artifact behavior |
 | `context` | stable-ID keyed map of workspace context |
 
 The current entry schema inside `rules` and `context` includes:
@@ -180,15 +180,15 @@ Context is where project-specific facts live. In the current design, that includ
 
 The important point is not the file type. The important point is ownership and role. Context is workspace knowledge.
 
-That means context should not be explained as a special kind of Library content. It may be rendered into cache in a similar way, but it has a different collaboration destination and a different authority model.
+That means context should not be explained as a special kind of Artifact content. It may be rendered into cache in a similar way, but it has a different collaboration destination and a different authority model.
 
-## Library selections stay Library selections
+## Artifact selections stay Artifact selections
 
-Rules, workflows, and bundles remain Library-backed even after a workspace selects them. The workspace does not become their new authority. It becomes the project boundary that selects which shared behavioral assets should be active for this project.
+Rules, workflows, and bundles remain Artifact-backed even after a workspace selects them. The workspace does not become their new authority. It becomes the project boundary that selects which shared behavioral assets should be active for this project.
 
 That distinction is what keeps the object model clean:
 
-- Library owns shared behavior
+- Artifact owns shared behavior
 - workspace owns project knowledge
 - manifest brings both into one runtime snapshot
 
@@ -200,7 +200,7 @@ A local draft is not the same thing as synced cache. Cache is pulled state. Draf
 
 The collaboration split stays important here:
 
-- rule-oriented edits move back toward Library proposal and review flow
+- rule-oriented edits move back toward Artifact proposal and review flow
 - context-oriented edits move toward workspace-owned mainline
 
 This is one of the reasons the workspace model exists at all. Without it, rule lifecycle and project-knowledge lifecycle would collapse into one ambiguous bucket.
@@ -213,4 +213,4 @@ That is why the server-side workspace object has to stay authoritative. If local
 
 ## Why Workspace matters in the docs
 
-If docs talk only about Library, the system looks too centralized. If docs talk only about local cache, the system looks too accidental. Workspace is the object that explains how shared behavior, project-specific knowledge, sync, and runtime all meet in one place.
+If docs talk only about Artifact, the system looks too centralized. If docs talk only about local cache, the system looks too accidental. Workspace is the object that explains how shared behavior, project-specific knowledge, sync, and runtime all meet in one place.

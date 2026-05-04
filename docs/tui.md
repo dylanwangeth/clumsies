@@ -4,15 +4,15 @@
 
 The TUI is clumsies' terminal dashboard. It is the human-facing visual client for the system, not a separate backend and not a decorative wrapper around the CLI.
 
-Its job is to give operators a denser view of the system than one-shot commands can provide. In practice that means library browsing, workspace status, review flows, and operational analysis in one terminal-native interface.
+Its job is to give operators a denser view of the system than one-shot commands can provide. In practice that means artifact browsing, workspace status, review flows, and operational analysis in one terminal-native interface.
 
 ## Current screenshots
 
 The current repo already has working TUI captures. They are useful because they show the product as it exists now, not as a future wireframe.
 
-![TUI library view](/shots/dashboard-library.png)
+![TUI artifact view](/shots/dashboard-artifact.png)
 
-The library view shows the browsing side of the product: list density, selection rhythm, and the kind of terminal-native reading flow the CLI does not handle well.
+The artifact view shows the browsing side of the product: list density, selection rhythm, and the kind of terminal-native reading flow the CLI does not handle well.
 
 ![TUI insights view](/shots/dashboard-insights.png)
 
@@ -24,7 +24,7 @@ CLI is good at discrete actions: login, init, sync, and adapter install. It is n
 
 The TUI exists because the product needs a place where a human can keep state in view and move through it without constantly reissuing commands. That is especially important for:
 
-- library browsing
+- artifact browsing
 - workspace status inspection
 - PR review
 - insights and usage analysis
@@ -36,7 +36,7 @@ This is why the TUI should be documented as a real client surface rather than tr
 The value of the TUI is not hypothetical. The current source tree already has dedicated modules for:
 
 - dashboard
-- library browsing
+- artifact browsing
 - rule detail and PR detail
 - workspace status
 - analysis
@@ -92,7 +92,7 @@ The dashboard spec describes the TUI as the place for several high-value operato
 
 | Area | What it is for |
 | --- | --- |
-| Library | browse shared rules, workflows, bundle composition, and usage distribution |
+| Artifact | browse shared rules, workflows, bundle composition, and usage distribution |
 | Rule detail | inspect usage, history, and related review flow |
 | Workspace status | see sync state, local draft state, and project-level composition |
 | Insights | analyze usage and activity patterns |
@@ -118,11 +118,11 @@ Current details from `src/client/tui/app/dashboard.zig` include:
 
 That tells you what the dashboard is trying to be: not a static summary page, but an operational screen for current signal and recent activity.
 
-### Library
+### Artifact
 
-The Library screen is a true split-pane browser, not a single scrolling list.
+The Artifact screen is a true split-pane browser, not a single scrolling list.
 
-Current behavior in `src/client/tui/app/library.zig` includes:
+Current behavior in `src/client/tui/app/artifact.zig` includes:
 
 - left list panel plus right detail panel
 - tab split between `Files` and `Pull Requests`
@@ -138,7 +138,7 @@ That is why the screenshot matters. It is showing a specific interaction model, 
 
 ### Workspace
 
-The workspace screen is not just another Library variant. It has its own status and creation flow.
+The workspace screen is not just another Artifact variant. It has its own status and creation flow.
 
 The current code already includes:
 
