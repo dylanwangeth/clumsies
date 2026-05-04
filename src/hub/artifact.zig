@@ -1,22 +1,22 @@
-//! Hub Library endpoints. The Library is the org's rule collection and single source of truth.
-//! Serves the library manifest (content index), rule metadata, rule content by hash, and
+//! Hub Artifact endpoints. The Artifact is the org's rule collection and single source of truth.
+//! Serves the artifact manifest (content index), rule metadata, rule content by hash, and
 //! bundle definitions.
 const std = @import("std");
 const httpz = @import("httpz");
-const library_api = @import("clumsies_lib").protocol.library_api;
+const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const manifest = @import("clumsies_lib").protocol.manifest;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("api_error.zig").send;
-const BundleListResponse = library_api.BundleListResponse;
-const BundleMeta = library_api.BundleMeta;
-const LibraryManifestResponse = library_api.LibraryManifestResponse;
-const RuleListResponse = library_api.RuleListResponse;
-const RuleMeta = library_api.RuleMeta;
-const RuleContentResponse = library_api.RuleContentResponse;
-const BatchRuleContentRequest = library_api.BatchRuleContentRequest;
-const BatchRuleContentResponse = library_api.BatchRuleContentResponse;
-const BatchRuleItem = library_api.BatchRuleItem;
+const BundleListResponse = artifact_api.BundleListResponse;
+const BundleMeta = artifact_api.BundleMeta;
+const ArtifactManifestResponse = artifact_api.ArtifactManifestResponse;
+const RuleListResponse = artifact_api.RuleListResponse;
+const RuleMeta = artifact_api.RuleMeta;
+const RuleContentResponse = artifact_api.RuleContentResponse;
+const BatchRuleContentRequest = artifact_api.BatchRuleContentRequest;
+const BatchRuleContentResponse = artifact_api.BatchRuleContentResponse;
+const BatchRuleItem = artifact_api.BatchRuleItem;
 const ManifestMap = manifest.ManifestMap;
 const ManifestItem = manifest.ManifestItem;
 
@@ -26,7 +26,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "library:read", res)) return;
+    if (!auth.requireScope(user, "artifact:read", res)) return;
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -34,12 +34,12 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer conn.release();
 
     var rev_row = conn.row(
-        "SELECT revision FROM library_manifest WHERE org_id = $1::uuid",
+        "SELECT revision FROM artifact_manifest WHERE org_id = $1::uuid",
         .{user.org_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
-        try res.json(LibraryManifestResponse{
+        try res.json(ArtifactManifestResponse{
             .revision = @as(i32, 0),
             .rules = ManifestMap{ .items = &.{} },
         }, .{});
@@ -81,7 +81,7 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
     res.header("ETag", try req.arena.dupe(u8, etag_slice));
 
-    try res.json(LibraryManifestResponse{
+    try res.json(ArtifactManifestResponse{
         .revision = revision,
         .rules = ManifestMap{ .items = items.items },
     }, .{});
@@ -91,7 +91,7 @@ pub fn handleListRules(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "library:read", res)) return;
+    if (!auth.requireScope(user, "artifact:read", res)) return;
 
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
@@ -144,7 +144,7 @@ pub fn handleGetRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "library:read", res)) return;
+    if (!auth.requireScope(user, "artifact:read", res)) return;
 
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
@@ -218,7 +218,7 @@ pub fn handleGetRuleContent(ctx: *Server.Context, req: *httpz.Request, res: *htt
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "library:read", res)) return;
+    if (!auth.requireScope(user, "artifact:read", res)) return;
 
     const qs = req.query() catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid query string");
@@ -279,7 +279,7 @@ pub fn handleBatchRuleContent(ctx: *Server.Context, req: *httpz.Request, res: *h
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "library:read", res)) return;
+    if (!auth.requireScope(user, "artifact:read", res)) return;
 
     const body = req.json(BatchRuleContentRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
@@ -343,7 +343,7 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "library:read", res)) return;
+    if (!auth.requireScope(user, "artifact:read", res)) return;
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -381,7 +381,7 @@ pub fn handleGetBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "library:read", res)) return;
+    if (!auth.requireScope(user, "artifact:read", res)) return;
 
     const name = req.param("name") orelse {
         return apiError(res, 400, "BAD_REQUEST", "name is required");
@@ -467,7 +467,7 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         if (exists) |*r| {
             r.deinit() catch {};
         } else {
-            return apiError(res, 400, "BAD_REQUEST", "rule_id not found in Library");
+            return apiError(res, 400, "BAD_REQUEST", "rule_id not found in Artifact");
         }
     }
 
@@ -576,7 +576,7 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
             if (exists2) |*r| {
                 r.deinit() catch {};
             } else {
-                return apiError(res, 400, "BAD_REQUEST", "rule_id not found in Library");
+                return apiError(res, 400, "BAD_REQUEST", "rule_id not found in Artifact");
             }
         }
 

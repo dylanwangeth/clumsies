@@ -158,9 +158,9 @@ pub const TRACE_DISCIPLINE_CONTENT =
 pub const HUB_SINGLE_SOURCE_CONTENT =
     \\# Hub Is The Single Source Of Truth
     \\
-    \\- The hub server owns business logic for auth, library, workspace, context, collaboration, and attestation stats.
+    \\- The hub server owns business logic for auth, artifact, workspace, context, collaboration, and attestation stats.
     \\- CLI, MCP, and TUI are clients. They should talk to the hub over REST instead of duplicating policy.
-    \\- Library rules are organization-wide. Workspace context stays local to a workspace.
+    \\- Artifact rules are organization-wide. Workspace context stays local to a workspace.
     \\- Attestation data is a signal for refinement. It should not trigger automatic edits on its own.
 ;
 
@@ -190,7 +190,7 @@ pub const ARCHITECTURE_CONTEXT =
     \\
     \\- The hub server is the only layer that owns business logic.
     \\- CLI, MCP, and TUI are clients that integrate over HTTP APIs.
-    \\- Library rules are shared at the organization level, while context is workspace-scoped.
+    \\- Artifact rules are shared at the organization level, while context is workspace-scoped.
     \\- Attestation data exists to support observability and rule refinement decisions.
 ;
 

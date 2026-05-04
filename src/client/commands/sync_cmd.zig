@@ -1,6 +1,6 @@
 const std = @import("std");
 const flag = @import("../flags.zig");
-const library_api = @import("clumsies_lib").protocol.library_api;
+const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const path_util = @import("clumsies_lib").util.path_util;
 const util_hash = @import("clumsies_lib").util.hash;
@@ -14,7 +14,7 @@ const Color = styles.Color;
 const P = styles.P;
 
 /// Must stay ≤ the hub-side cap (`BATCH_MAX_IDS` / `BATCH_MAX_PATHS`
-/// in src/hub/library.zig and context.zig). Oversized batches
+/// in src/hub/artifact.zig and context.zig). Oversized batches
 /// currently 400 with "too many rule_ids" / "too many paths";
 /// chunking here keeps sync working on workspaces with more than
 /// that many changed entries.
@@ -240,16 +240,16 @@ fn fetchRuleBatch(
 ) !usize {
     const body_json = try std.json.Stringify.valueAlloc(
         allocator,
-        library_api.BatchRuleContentRequest{ .rule_ids = rule_ids },
+        artifact_api.BatchRuleContentRequest{ .rule_ids = rule_ids },
         .{},
     );
     defer allocator.free(body_json);
 
-    const resp = try hub.post("/api/org/library/rules/content", body_json);
+    const resp = try hub.post("/api/org/artifact/rules/content", body_json);
     defer resp.deinit();
     if (resp.status != .ok) return error.BatchFetchFailed;
 
-    const parsed = try std.json.parseFromSlice(library_api.BatchRuleContentResponse, allocator, resp.body, .{
+    const parsed = try std.json.parseFromSlice(artifact_api.BatchRuleContentResponse, allocator, resp.body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     });
@@ -281,7 +281,7 @@ fn fetchRuleBatch(
     return written;
 }
 
-/// Decide the cache subdirectory a given library rule path writes
+/// Decide the cache subdirectory a given artifact rule path writes
 /// to. Reserved top-level names (`META_PROMPT.md`) land at the cache
 /// root so loaders can read them without knowing the rule
 /// namespace layout. Everything else lives under `cache/rule/` so
