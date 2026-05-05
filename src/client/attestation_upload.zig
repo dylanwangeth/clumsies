@@ -5,6 +5,8 @@ const upload_worker = @import("batch_upload.zig");
 const auth_mod = @import("auth.zig");
 const HubClient = @import("hub_client.zig").HubClient;
 
+const log = std.log.scoped(.attestation_upload);
+
 pub const FlushResult = upload_worker.FlushResult;
 
 pub const FlushOutcome = union(enum) {
@@ -21,7 +23,7 @@ const HubUploader = struct {
     fn post(ctx: *anyopaque, body: []const u8) !bool {
         const self: *HubUploader = @ptrCast(@alignCast(ctx));
         var response = self.client.post("/api/attestations", body) catch |err| {
-            std.log.warn("POST /api/attestations transport error: {}", .{err});
+            log.warn("POST /api/attestations transport error: {}", .{err});
             return err;
         };
         defer response.deinit();
@@ -29,7 +31,7 @@ const HubUploader = struct {
         if (@intFromEnum(response.status) >= 200 and @intFromEnum(response.status) < 300) {
             return true;
         }
-        std.log.warn(
+        log.warn(
             "POST /api/attestations rejected status={d} body={s}",
             .{ @intFromEnum(response.status), response.body },
         );

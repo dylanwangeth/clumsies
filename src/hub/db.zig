@@ -6,6 +6,8 @@ const bcrypt = std.crypto.pwhash.bcrypt;
 
 pub const Pool = pg.Pool;
 
+const db_log = std.log.scoped(.db);
+
 pub fn initPool(allocator: std.mem.Allocator, config: Config) !*Pool {
     return Pool.init(allocator, .{
         .size = 5,
@@ -28,12 +30,9 @@ pub fn migrate(pool: *Pool) !void {
     defer conn.release();
 
     _ = conn.exec(migration_sql, .{}) catch |err| {
-        var buf: [4096]u8 = undefined;
-        var w = std.fs.File.Writer.init(std.fs.File.stderr(), &buf);
-        defer w.interface.flush() catch {};
-        try w.interface.print("migration error: {}\n", .{err});
+        db_log.err("migration error: {}", .{err});
         if (conn.err) |pg_err| {
-            try w.interface.print("pg: {s}\n", .{pg_err.message});
+            db_log.err("pg: {s}", .{pg_err.message});
         }
         return err;
     };

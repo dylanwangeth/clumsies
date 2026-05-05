@@ -8,6 +8,7 @@ const styles = @import("../styles.zig");
 
 const Color = styles.Color;
 const P = styles.P;
+const log = std.log.scoped(.attestation_append);
 
 const ALLOWED_TYPES = [_][]const u8{ "setup", "user_prompt", "discover", "agent_report" };
 
@@ -107,7 +108,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         .ts = std.time.milliTimestamp(),
         .payload = payload,
     }) catch |err| {
-        std.log.warn("attestation append failed: {}", .{err});
+        log.warn("attestation append failed: {}", .{err});
         return;
     };
 }

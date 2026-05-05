@@ -12,6 +12,7 @@ const styles = @import("../styles.zig");
 
 const Color = styles.Color;
 const P = styles.P;
+const log = std.log.scoped(.sync);
 
 /// Must stay ≤ the hub-side cap (`BATCH_MAX_IDS` / `BATCH_MAX_PATHS`
 /// in src/hub/artifact.zig and context.zig). Oversized batches
@@ -381,7 +382,7 @@ fn stripHashPrefix(raw: []const u8) []const u8 {
 fn ensureDir(path: []const u8) void {
     std.fs.makeDirAbsolute(path) catch |err| {
         if (err != error.PathAlreadyExists) {
-            std.log.warn("failed to create directory {s}: {}", .{ path, err });
+            log.warn("failed to create directory {s}: {}", .{ path, err });
         }
     };
 }

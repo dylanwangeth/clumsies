@@ -6,6 +6,8 @@ const util_hash = @import("clumsies_lib").util.hash;
 const auth = @import("../auth.zig");
 const model = @import("model.zig");
 
+const log = std.log.scoped(.adapter_store);
+
 pub const LoadedManifest = struct {
     parsed: std.json.Parsed(model.InstallManifest),
 
@@ -172,13 +174,14 @@ pub fn appendWalEvent(allocator: std.mem.Allocator, event: model.WalEvent) !void
 
     var file = try std.fs.createFileAbsolute(path, .{ .truncate = false, .mode = 0o600 });
     defer file.close();
-    try file.seekFromEnd(0);
+    const end_pos = try file.getEndPos();
 
     const json = try std.json.Stringify.valueAlloc(allocator, event, .{});
     defer allocator.free(json);
 
     var buf: [4096]u8 = undefined;
-    var writer = std.fs.File.Writer.initStreaming(file, &buf);
+    var writer = std.fs.File.Writer.init(file, &buf);
+    try writer.seekTo(end_pos);
     try writer.interface.writeAll(json);
     try writer.interface.writeAll("\n");
     try writer.interface.flush();
@@ -192,7 +195,7 @@ pub fn fingerprintForContent(allocator: std.mem.Allocator, content: []const u8) 
 fn ensureDir(path: []const u8) void {
     std.fs.makeDirAbsolute(path) catch |err| {
         if (err != error.PathAlreadyExists) {
-            std.log.warn("failed to create directory {s}: {}", .{ path, err });
+            log.warn("failed to create directory {s}: {}", .{ path, err });
         }
     };
 }

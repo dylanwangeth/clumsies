@@ -5,6 +5,8 @@ const std = @import("std");
 const testing = std.testing;
 const attestation = @import("attestation.zig");
 
+const log = std.log.scoped(.attestation_upload);
+
 pub const FlushResult = struct {
     events_read: usize = 0,
     events_sent: usize = 0,
@@ -195,7 +197,7 @@ fn collectBatch(
         }
 
         if (trimmed.len > MAX_SINGLE_EVENT_BYTES) {
-            std.log.warn(
+            log.warn(
                 "dropping oversized attestation event at offset {d}: {d} bytes exceeds {d} limit",
                 .{ end_offset, trimmed.len, MAX_SINGLE_EVENT_BYTES },
             );
@@ -207,7 +209,7 @@ fn collectBatch(
         if (projected > MAX_BYTES_PER_BATCH) {
             if (lines.items.len > 0) break;
 
-            std.log.warn(
+            log.warn(
                 "dropping attestation event at offset {d}: {d} bytes exceeds {d} batch budget",
                 .{ end_offset, trimmed.len, MAX_BYTES_PER_BATCH },
             );

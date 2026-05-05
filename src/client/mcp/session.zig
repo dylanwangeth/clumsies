@@ -5,6 +5,8 @@ const attestation = @import("../attestation.zig");
 const host_session = @import("../host_session.zig");
 const workspace_config = @import("../workspace_config.zig");
 
+const log = std.log.scoped(.mcp_session);
+
 pub const Session = struct {
     ws_id: []const u8,
     workspace_root: []const u8,
@@ -32,7 +34,7 @@ pub const Session = struct {
         payload: attestation.AttestationEvent.Payload,
     ) void {
         const session_id = self.session_id orelse {
-            std.log.warn(
+            log.warn(
                 "ignored attestation event type='{s}' before memsetup bound a session",
                 .{attestation.payloadTypeTag(payload)},
             );
@@ -45,7 +47,7 @@ pub const Session = struct {
             .ts = std.time.milliTimestamp(),
             .payload = payload,
         }) catch |err| {
-            std.log.err(
+            log.err(
                 "failed to append attestation event type='{s}' session_id='{s}': {}",
                 .{ attestation.payloadTypeTag(payload), session_id, err },
             );
