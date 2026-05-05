@@ -6,6 +6,7 @@
 const std = @import("std");
 const auth_mod = @import("../../auth.zig");
 const HubClient = @import("../../hub_client.zig").HubClient;
+const logger = @import("clumsies_lib").logger;
 const model = @import("model.zig");
 const parse = @import("parse.zig");
 const state = @import("state.zig");
@@ -128,6 +129,7 @@ fn fetchAll(
         return;
     };
 
+
     const me_resp = client.get("/api/auth/me") catch {
         log.warn("bootstrap_auth_me network_error", .{});
         setStatus(api_state, .error_network);
@@ -211,9 +213,7 @@ fn updateRotatedTokens(api_state: *state.ApiState, client: *HubClient, previous_
 }
 
 fn setStatus(api_state: *state.ApiState, status: state.ConnectionStatus) void {
-    api_state.mutex.lock();
-    api_state.status = status;
-    api_state.mutex.unlock();
+    state.setConnectionStatus(api_state, status);
 }
 
 fn doFetchParse(
@@ -224,23 +224,18 @@ fn doFetchParse(
     comptime parseFn: *const fn (std.mem.Allocator, []const u8) ?T,
 ) ?T {
     const resp = client.get(path) catch {
-        log.warn("bootstrap_fetch_failed path={s} result=network_error", .{redactedPath(path)});
+        log.warn("bootstrap_fetch_failed path={s} result=network_error", .{logger.redactedPath(path)});
         return null;
     };
     defer resp.deinit();
     if (resp.status != .ok) {
-        log.warn("bootstrap_fetch_failed path={s} status={d}", .{ redactedPath(path), @intFromEnum(resp.status) });
+        log.warn("bootstrap_fetch_failed path={s} status={d}", .{ logger.redactedPath(path), @intFromEnum(resp.status) });
         return null;
     }
     const parsed = parseFn(alloc, resp.body) orelse {
-        log.warn("bootstrap_fetch_failed path={s} result=invalid_response", .{redactedPath(path)});
+        log.warn("bootstrap_fetch_failed path={s} result=invalid_response", .{logger.redactedPath(path)});
         return null;
     };
-    log.info("bootstrap_fetch_ok path={s}", .{redactedPath(path)});
+    log.info("bootstrap_fetch_ok path={s}", .{logger.redactedPath(path)});
     return parsed;
-}
-
-fn redactedPath(path: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, path, '?')) |idx| return path[0..idx];
-    return path;
 }

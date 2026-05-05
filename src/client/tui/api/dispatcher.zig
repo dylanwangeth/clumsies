@@ -18,6 +18,7 @@ const std = @import("std");
 const hub_client = @import("../../hub_client.zig");
 const HubClient = hub_client.HubClient;
 const api_error = @import("clumsies_lib").protocol.api_error;
+const logger = @import("clumsies_lib").logger;
 const request = @import("request.zig");
 
 const log = std.log.scoped(.tui_api);
@@ -283,7 +284,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
                 build_body(t_alloc, ctx.req) catch {
                     log.warn("dispatch_prepare_failed method={s} path={s} stage=body_build", .{
                         methodName(ctx.spec.method),
-                        redactedPath(path),
+                        logger.redactedPath(path),
                     });
                     ctx.pending.complete(ctx.generation, .network_error);
                     return;
@@ -291,7 +292,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
             else
                 null;
 
-            log.info("dispatch {s} {s}", .{ methodName(ctx.spec.method), redactedPath(path) });
+            log.info("dispatch {s} {s}", .{ methodName(ctx.spec.method), logger.redactedPath(path) });
 
             var client = HubClient.init(t_alloc, ctx.hub_url, ctx.access_token);
             defer client.deinit();
@@ -299,7 +300,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
                 client.enableRefresh(refresh_token, ctx.username.?, ctx.persist_fn.?) catch |err| {
                     log.warn("dispatch_prepare_failed method={s} path={s} stage=refresh_setup error={s}", .{
                         methodName(ctx.spec.method),
-                        redactedPath(path),
+                        logger.redactedPath(path),
                         @errorName(err),
                     });
                     ctx.pending.complete(ctx.generation, .network_error);
@@ -314,7 +315,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
                 .DELETE => client.delete(path),
                 else => unreachable,
             } catch {
-                log.warn("result network_error {s} {s}", .{ methodName(ctx.spec.method), redactedPath(path) });
+                log.warn("result network_error {s} {s}", .{ methodName(ctx.spec.method), logger.redactedPath(path) });
                 ctx.pending.complete(ctx.generation, .network_error);
                 return;
             };
@@ -434,26 +435,21 @@ fn freeDeepCopyField(comptime T: type, alloc: std.mem.Allocator, value: T) void 
     }
 }
 
-fn redactedPath(path: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, path, '?')) |idx| return path[0..idx];
-    return path;
-}
-
 fn methodName(method: std.http.Method) []const u8 {
     return @tagName(method);
 }
 
 fn logResult(comptime RespT: type, method: std.http.Method, path: []const u8, result: Result(RespT)) void {
     switch (result) {
-        .ok => log.info("result ok {s} {s}", .{ methodName(method), redactedPath(path) }),
+        .ok => log.info("result ok {s} {s}", .{ methodName(method), logger.redactedPath(path) }),
         .api_error => |err| log.warn("result api_error {s} {s} status={d} code={s}", .{
             methodName(method),
-            redactedPath(path),
+            logger.redactedPath(path),
             @intFromEnum(err.status),
             err.code,
         }),
-        .network_error => log.warn("result network_error {s} {s}", .{ methodName(method), redactedPath(path) }),
-        .invalid_response => log.warn("result invalid_response {s} {s}", .{ methodName(method), redactedPath(path) }),
+        .network_error => log.warn("result network_error {s} {s}", .{ methodName(method), logger.redactedPath(path) }),
+        .invalid_response => log.warn("result invalid_response {s} {s}", .{ methodName(method), logger.redactedPath(path) }),
     }
 }
 

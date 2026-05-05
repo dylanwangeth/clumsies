@@ -137,6 +137,32 @@ pub fn noteInvalidLevel(raw: []const u8) void {
     failure_reported = true;
 }
 
+pub fn redactedPath(path: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, path, '?')) |idx| return path[0..idx];
+    return path;
+}
+
+pub const EnvConfig = struct {
+    level: std.log.Level,
+    invalid_level: ?[]const u8,
+};
+
+pub fn configFromEnv(allocator: std.mem.Allocator) EnvConfig {
+    var log_level: std.log.Level = .info;
+    var invalid_level: ?[]u8 = null;
+
+    if (std.process.getEnvVarOwned(allocator, "CLUMSIES_LOG_LEVEL")) |raw| {
+        if (parseLevel(raw)) |parsed| {
+            log_level = parsed;
+            allocator.free(raw);
+        } else {
+            invalid_level = raw;
+        }
+    } else |_| {}
+
+    return .{ .level = log_level, .invalid_level = invalid_level };
+}
+
 fn deinitLocked() void {
     if (active_writer) |*writer| {
         writer.interface.flush() catch {};
