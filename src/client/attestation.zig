@@ -252,13 +252,14 @@ pub fn appendAttestationEvent(allocator: std.mem.Allocator, event: AttestationEv
 
     var file = try std.fs.createFileAbsolute(attestation_path, .{ .truncate = false });
     defer file.close();
-    try file.seekFromEnd(0);
+    const end_pos = try file.getEndPos();
 
     const line = try serializeAttestationEvent(allocator, event);
     defer allocator.free(line);
 
     var write_buf: [4096]u8 = undefined;
-    var fw = std.fs.File.Writer.initStreaming(file, &write_buf);
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    try fw.seekTo(end_pos);
     try fw.interface.writeAll(line);
     try fw.interface.flush();
 }

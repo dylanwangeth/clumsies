@@ -11,6 +11,7 @@ const apiError = @import("api_error.zig").send;
 const bcrypt = std.crypto.pwhash.bcrypt;
 const MeResponse = auth_api.MeResponse;
 const MeWorkspace = auth_api.MeWorkspace;
+const log = std.log.scoped(.hub_auth);
 
 pub const AuthUser = struct {
     user_id: []const u8,
@@ -326,9 +327,9 @@ fn generateToken(allocator: std.mem.Allocator, conn: *pg.Conn, user_id: []const 
         "INSERT INTO tokens (token_hash, user_id, kind, scopes, expires_at) VALUES ($1, $2, $3, $4, to_timestamp($5))",
         .{ hash_slice, user_id, kind, scopes, expires_epoch },
     ) catch |err| {
-        std.log.err("token insert failed: {}", .{err});
+        log.err("token insert failed: {}", .{err});
         if (conn.err) |pg_err| {
-            std.log.err("pg detail: {s}", .{pg_err.message});
+            log.err("pg detail: {s}", .{pg_err.message});
         }
         return error.TokenInsertFailed;
     };

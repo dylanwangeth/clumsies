@@ -1,15 +1,12 @@
 const std = @import("std");
 const testing = std.testing;
 const build_options = @import("build_options");
+const runtime_logger = @import("clumsies_lib").runtime_logger;
 const styles = @import("styles.zig");
 
-/// Raise the default log level so third-party debug traffic
-/// (libvaxis, etc.) does not print to stderr while the terminal is
-/// still in cooked mode before the TUI's alt-screen switch —
-/// otherwise lines like `debug (vaxis): enabling mouse mode` flash
-/// above the UI on launch. Warnings and errors still surface.
 pub const std_options: std.Options = .{
-    .log_level = .warn,
+    .log_level = .debug,
+    .logFn = runtime_logger.logFn,
 };
 
 fn recoverPanic(msg: []const u8, ra: ?usize) noreturn {
@@ -87,6 +84,9 @@ pub fn main() !void {
         debug_alloc.allocator()
     else
         std.heap.smp_allocator;
+
+    initClientLogger(allocator);
+    defer runtime_logger.deinit();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -168,6 +168,42 @@ pub fn main() !void {
 
 fn canLaunchTui() bool {
     return std.fs.File.stdin().isTty() and std.fs.File.stdout().isTty();
+}
+
+fn initClientLogger(allocator: std.mem.Allocator) void {
+    var log_level: std.log.Level = .warn;
+    var invalid_level: ?[]u8 = null;
+    defer if (invalid_level) |raw| allocator.free(raw);
+
+    if (std.process.getEnvVarOwned(allocator, "CLUMSIES_LOG_LEVEL")) |raw| {
+        if (runtime_logger.parseLevel(raw)) |parsed| {
+            log_level = parsed;
+            allocator.free(raw);
+        } else {
+            invalid_level = raw;
+        }
+    } else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => {},
+    }
+
+    const log_file_path = clientLogFilePath(allocator) catch {
+        runtime_logger.initBestEffort(.{ .level = log_level, .sink = .disabled });
+        return;
+    };
+    defer allocator.free(log_file_path);
+
+    runtime_logger.initBestEffort(.{ .level = log_level, .sink = .{ .file = log_file_path } });
+    if (invalid_level) |raw| runtime_logger.noteInvalidLevel(raw);
+}
+
+fn clientLogFilePath(allocator: std.mem.Allocator) ![]const u8 {
+    const env_path = std.process.getEnvVarOwned(allocator, "CLUMSIES_LOG_FILE") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return runtime_logger.clientDefaultLogPath(allocator),
+        else => return err,
+    };
+    defer allocator.free(env_path);
+    return runtime_logger.resolveLogFilePath(allocator, env_path);
 }
 
 test "command_map: all commands resolve" {
