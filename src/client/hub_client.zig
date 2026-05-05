@@ -126,6 +126,14 @@ pub const HubClient = struct {
         return self.access_token_rotated orelse self.access_token;
     }
 
+    pub fn currentAccessToken(self: *const HubClient) ?[]const u8 {
+        return self.effectiveToken();
+    }
+
+    pub fn currentRefreshToken(self: *const HubClient) ?[]const u8 {
+        return self.refresh_token;
+    }
+
     fn doFetch(self: *HubClient, method: http.Method, path: []const u8, payload: ?[]const u8) !Response {
         const first = try self.doFetchOnce(method, path, payload);
         // A 401 with no refresh plumbing is passed through unchanged

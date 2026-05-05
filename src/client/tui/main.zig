@@ -25,7 +25,7 @@ pub fn run() !void {
     // api_state.thread_registry, so joinAll above catches it on exit.
     if (auth_mod.loadAuth(allocator)) |auth_info| {
         defer auth_info.deinit(allocator);
-        api.fetch.startFetch(&api_state, auth_info.hub_url, auth_info.access_token) catch {};
+        api.fetch.startFetch(&api_state, auth_info.hub_url, auth_info.username, auth_info.access_token, auth_info.refresh_token) catch {};
         tasks.attestation_upload.start(&api_state) catch {};
     } else |_| {}
 

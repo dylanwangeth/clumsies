@@ -159,7 +159,9 @@ pub const ApiState = struct {
     pr_detail_op_index: u16 = 0,
     pr_detail_op_total: u16 = 0,
     hub_url: ?[]const u8 = null,
+    username: ?[]const u8 = null,
     access_token: ?[]const u8 = null,
+    refresh_token: ?[]const u8 = null,
     /// True while the compound bootstrap fetch (/me + directory + rules
     /// + bundles + stats) is running. Prevents overlapping bootstrap
     /// triggers; does not gate any other endpoint, which now run
@@ -201,6 +203,19 @@ pub const ApiState = struct {
 
     pub fn allocator(self: *ApiState) std.mem.Allocator {
         return self.ts_allocator.allocator();
+    }
+
+    pub fn updateAuthTokens(self: *ApiState, access_token: []const u8, refresh_token: []const u8) void {
+        const alloc = self.allocator();
+        const access_copy = alloc.dupe(u8, access_token) catch return;
+        const refresh_copy = alloc.dupe(u8, refresh_token) catch {
+            alloc.free(access_copy);
+            return;
+        };
+        self.mutex.lock();
+        self.access_token = access_copy;
+        self.refresh_token = refresh_copy;
+        self.mutex.unlock();
     }
 };
 

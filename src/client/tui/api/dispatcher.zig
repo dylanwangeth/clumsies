@@ -15,11 +15,22 @@
 //! the process tears down.
 
 const std = @import("std");
-const HubClient = @import("../../hub_client.zig").HubClient;
+const hub_client = @import("../../hub_client.zig");
+const HubClient = hub_client.HubClient;
 const api_error = @import("clumsies_lib").protocol.api_error;
 const request = @import("request.zig");
 
 const log = std.log.scoped(.tui_api);
+
+pub const TokenUpdateFn = *const fn (*anyopaque, []const u8, []const u8) void;
+
+pub const RefreshConfig = struct {
+    username: []const u8,
+    refresh_token: []const u8,
+    persist_fn: hub_client.PersistFn,
+    update_ctx: *anyopaque,
+    update_fn: TokenUpdateFn,
+};
 
 pub const Result = request.Result;
 pub const ApiErrorPayload = request.ApiErrorPayload;
@@ -117,6 +128,11 @@ fn WorkerContext(comptime ReqT: type, comptime RespT: type) type {
         generation: u64,
         hub_url: []const u8,
         access_token: []const u8,
+        username: ?[]const u8,
+        refresh_token: ?[]const u8,
+        persist_fn: ?hub_client.PersistFn,
+        update_ctx: ?*anyopaque,
+        update_fn: ?TokenUpdateFn,
         transient_parent: std.mem.Allocator,
         result_alloc: std.mem.Allocator,
     };
@@ -138,6 +154,7 @@ pub fn dispatch(
     registry_alloc: std.mem.Allocator,
     hub_url: []const u8,
     access_token: []const u8,
+    refresh_config: ?RefreshConfig,
     transient_parent: std.mem.Allocator,
     result_alloc: std.mem.Allocator,
     req: ReqT,
@@ -165,10 +182,35 @@ pub fn dispatch(
         pending.complete(gen, .network_error);
         return;
     };
+    const username_copy: ?[]const u8 = if (refresh_config) |refresh|
+        transient_parent.dupe(u8, refresh.username) catch {
+            log.warn("dispatch_prepare_failed method={s} stage=username_copy", .{methodName(spec.method)});
+            transient_parent.free(token_copy);
+            transient_parent.free(url_copy);
+            freeDeepCopy(ReqT, transient_parent, req_copy);
+            pending.complete(gen, .network_error);
+            return;
+        }
+    else
+        null;
+    const refresh_token_copy: ?[]const u8 = if (refresh_config) |refresh|
+        transient_parent.dupe(u8, refresh.refresh_token) catch {
+            log.warn("dispatch_prepare_failed method={s} stage=refresh_token_copy", .{methodName(spec.method)});
+            if (username_copy) |value| transient_parent.free(value);
+            transient_parent.free(token_copy);
+            transient_parent.free(url_copy);
+            freeDeepCopy(ReqT, transient_parent, req_copy);
+            pending.complete(gen, .network_error);
+            return;
+        }
+    else
+        null;
 
     const Ctx = WorkerContext(ReqT, RespT);
     const ctx_ptr = transient_parent.create(Ctx) catch {
         log.warn("dispatch_prepare_failed method={s} stage=context_alloc", .{methodName(spec.method)});
+        if (refresh_token_copy) |value| transient_parent.free(value);
+        if (username_copy) |value| transient_parent.free(value);
         transient_parent.free(token_copy);
         transient_parent.free(url_copy);
         freeDeepCopy(ReqT, transient_parent, req_copy);
@@ -182,6 +224,11 @@ pub fn dispatch(
         .generation = gen,
         .hub_url = url_copy,
         .access_token = token_copy,
+        .username = username_copy,
+        .refresh_token = refresh_token_copy,
+        .persist_fn = if (refresh_config) |refresh| refresh.persist_fn else null,
+        .update_ctx = if (refresh_config) |refresh| refresh.update_ctx else null,
+        .update_fn = if (refresh_config) |refresh| refresh.update_fn else null,
         .transient_parent = transient_parent,
         .result_alloc = result_alloc,
     };
@@ -189,6 +236,8 @@ pub fn dispatch(
     const thread = std.Thread.spawn(.{}, runWorker(ReqT, RespT), .{ctx_ptr}) catch {
         log.warn("dispatch_prepare_failed method={s} stage=thread_spawn", .{methodName(spec.method)});
         transient_parent.destroy(ctx_ptr);
+        if (refresh_token_copy) |value| transient_parent.free(value);
+        if (username_copy) |value| transient_parent.free(value);
         transient_parent.free(token_copy);
         transient_parent.free(url_copy);
         freeDeepCopy(ReqT, transient_parent, req_copy);
@@ -210,6 +259,8 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
             const result_alloc = ctx.result_alloc;
 
             defer transient_parent.destroy(ctx);
+            defer if (ctx.refresh_token) |value| transient_parent.free(value);
+            defer if (ctx.username) |value| transient_parent.free(value);
             defer transient_parent.free(ctx.access_token);
             defer transient_parent.free(ctx.hub_url);
             defer freeDeepCopy(ReqT, transient_parent, ctx.req);
@@ -244,6 +295,17 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
 
             var client = HubClient.init(t_alloc, ctx.hub_url, ctx.access_token);
             defer client.deinit();
+            if (ctx.refresh_token) |refresh_token| {
+                client.enableRefresh(refresh_token, ctx.username.?, ctx.persist_fn.?) catch |err| {
+                    log.warn("dispatch_prepare_failed method={s} path={s} stage=refresh_setup error={s}", .{
+                        methodName(ctx.spec.method),
+                        redactedPath(path),
+                        @errorName(err),
+                    });
+                    ctx.pending.complete(ctx.generation, .network_error);
+                    return;
+                };
+            }
             const resp = switch (ctx.spec.method) {
                 .GET => client.get(path),
                 .POST => client.post(path, body orelse "{}"),
@@ -259,6 +321,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
             defer resp.deinit();
 
             const result = classifyResponse(ReqT, RespT, ctx.spec, result_alloc, ctx.req, resp.status, resp.body);
+            updateRotatedTokens(&client, ctx.access_token, ctx.update_ctx, ctx.update_fn);
             logResult(RespT, ctx.spec.method, path, result);
             ctx.pending.complete(ctx.generation, result);
         }
@@ -314,6 +377,20 @@ fn parseApiError(
     const code = alloc.dupe(u8, parsed.value.@"error".code) catch return .invalid_response;
     const message = alloc.dupe(u8, parsed.value.@"error".message) catch return .invalid_response;
     return .{ .api_error = .{ .status = status, .code = code, .message = message } };
+}
+
+fn updateRotatedTokens(
+    client: *HubClient,
+    previous_access_token: []const u8,
+    update_ctx: ?*anyopaque,
+    update_fn: ?TokenUpdateFn,
+) void {
+    const ctx = update_ctx orelse return;
+    const update = update_fn orelse return;
+    const access_token = client.currentAccessToken() orelse return;
+    if (std.mem.eql(u8, access_token, previous_access_token)) return;
+    const refresh_token = client.currentRefreshToken() orelse return;
+    update(ctx, access_token, refresh_token);
 }
 
 /// Deep-copy a request payload so the worker thread is independent of
