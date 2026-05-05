@@ -19,6 +19,8 @@ const HubClient = @import("../../hub_client.zig").HubClient;
 const api_error = @import("clumsies_lib").protocol.api_error;
 const request = @import("request.zig");
 
+const log = std.log.scoped(.tui_api);
+
 pub const Result = request.Result;
 pub const ApiErrorPayload = request.ApiErrorPayload;
 pub const PendingRequest = request.PendingRequest;
@@ -140,18 +142,24 @@ pub fn dispatch(
     result_alloc: std.mem.Allocator,
     req: ReqT,
 ) void {
-    const gen = pending.tryBegin() orelse return;
+    const gen = pending.tryBegin() orelse {
+        log.info("dispatch_skip reason=inflight method={s}", .{methodName(spec.method)});
+        return;
+    };
 
     const req_copy = deepCopy(ReqT, transient_parent, req) catch {
+        log.warn("dispatch_prepare_failed method={s} stage=request_copy", .{methodName(spec.method)});
         pending.complete(gen, .network_error);
         return;
     };
     const url_copy = transient_parent.dupe(u8, hub_url) catch {
+        log.warn("dispatch_prepare_failed method={s} stage=hub_url_copy", .{methodName(spec.method)});
         freeDeepCopy(ReqT, transient_parent, req_copy);
         pending.complete(gen, .network_error);
         return;
     };
     const token_copy = transient_parent.dupe(u8, access_token) catch {
+        log.warn("dispatch_prepare_failed method={s} stage=token_copy", .{methodName(spec.method)});
         transient_parent.free(url_copy);
         freeDeepCopy(ReqT, transient_parent, req_copy);
         pending.complete(gen, .network_error);
@@ -160,6 +168,7 @@ pub fn dispatch(
 
     const Ctx = WorkerContext(ReqT, RespT);
     const ctx_ptr = transient_parent.create(Ctx) catch {
+        log.warn("dispatch_prepare_failed method={s} stage=context_alloc", .{methodName(spec.method)});
         transient_parent.free(token_copy);
         transient_parent.free(url_copy);
         freeDeepCopy(ReqT, transient_parent, req_copy);
@@ -178,6 +187,7 @@ pub fn dispatch(
     };
 
     const thread = std.Thread.spawn(.{}, runWorker(ReqT, RespT), .{ctx_ptr}) catch {
+        log.warn("dispatch_prepare_failed method={s} stage=thread_spawn", .{methodName(spec.method)});
         transient_parent.destroy(ctx_ptr);
         transient_parent.free(token_copy);
         transient_parent.free(url_copy);
@@ -213,17 +223,24 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
             const t_alloc = arena.allocator();
 
             const path = ctx.spec.path_builder(t_alloc, ctx.req) catch {
+                log.warn("dispatch_prepare_failed method={s} stage=path_build", .{methodName(ctx.spec.method)});
                 ctx.pending.complete(ctx.generation, .network_error);
                 return;
             };
 
             const body: ?[]const u8 = if (ctx.spec.body_builder) |build_body|
                 build_body(t_alloc, ctx.req) catch {
+                    log.warn("dispatch_prepare_failed method={s} path={s} stage=body_build", .{
+                        methodName(ctx.spec.method),
+                        redactedPath(path),
+                    });
                     ctx.pending.complete(ctx.generation, .network_error);
                     return;
                 }
             else
                 null;
+
+            log.info("dispatch {s} {s}", .{ methodName(ctx.spec.method), redactedPath(path) });
 
             var client = HubClient.init(t_alloc, ctx.hub_url, ctx.access_token);
             defer client.deinit();
@@ -235,12 +252,14 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
                 .DELETE => client.delete(path),
                 else => unreachable,
             } catch {
+                log.warn("result network_error {s} {s}", .{ methodName(ctx.spec.method), redactedPath(path) });
                 ctx.pending.complete(ctx.generation, .network_error);
                 return;
             };
             defer resp.deinit();
 
             const result = classifyResponse(ReqT, RespT, ctx.spec, result_alloc, ctx.req, resp.status, resp.body);
+            logResult(RespT, ctx.spec.method, path, result);
             ctx.pending.complete(ctx.generation, result);
         }
     }.run;
@@ -335,6 +354,29 @@ fn freeDeepCopyField(comptime T: type, alloc: std.mem.Allocator, value: T) void 
     if (T == []const u8) alloc.free(value);
     if (T == ?[]const u8) {
         if (value) |v| alloc.free(v);
+    }
+}
+
+fn redactedPath(path: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, path, '?')) |idx| return path[0..idx];
+    return path;
+}
+
+fn methodName(method: std.http.Method) []const u8 {
+    return @tagName(method);
+}
+
+fn logResult(comptime RespT: type, method: std.http.Method, path: []const u8, result: Result(RespT)) void {
+    switch (result) {
+        .ok => log.info("result ok {s} {s}", .{ methodName(method), redactedPath(path) }),
+        .api_error => |err| log.warn("result api_error {s} {s} status={d} code={s}", .{
+            methodName(method),
+            redactedPath(path),
+            @intFromEnum(err.status),
+            err.code,
+        }),
+        .network_error => log.warn("result network_error {s} {s}", .{ methodName(method), redactedPath(path) }),
+        .invalid_response => log.warn("result invalid_response {s} {s}", .{ methodName(method), redactedPath(path) }),
     }
 }
 

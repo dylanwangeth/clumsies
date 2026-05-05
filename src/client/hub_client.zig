@@ -5,6 +5,8 @@ const std = @import("std");
 const http = std.http;
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 
+const log = std.log.scoped(.hub_client);
+
 pub const Response = struct {
     status: http.Status,
     body: []const u8,
@@ -134,13 +136,16 @@ pub const HubClient = struct {
         if (self.refresh_token == null) return first;
 
         first.deinit();
+        log.info("refresh_token path={s}", .{redactedPath(path)});
         self.refreshAndPersist() catch |err| {
+            log.warn("refresh_token_failed path={s} error={s}", .{ redactedPath(path), @errorName(err) });
             // Surface the refresh failure rather than the stale 401
             // so the caller sees a recognisable error code. The most
             // common case is a server-revoked refresh token, which
             // this path maps to `error.NotAuthenticated`.
             return err;
         };
+        log.info("refresh_token_ok path={s}", .{redactedPath(path)});
         return self.doFetchOnce(method, path, payload);
     }
 
@@ -184,6 +189,7 @@ pub const HubClient = struct {
     }
 
     fn doFetchOnce(self: *HubClient, method: http.Method, path: []const u8, payload: ?[]const u8) !Response {
+        const started_us = std.time.microTimestamp();
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.hub_url, path });
         defer self.allocator.free(url);
 
@@ -205,15 +211,41 @@ pub const HubClient = struct {
         var response_writer = std.Io.Writer.Allocating.init(self.allocator);
         errdefer response_writer.deinit();
 
-        const result = try self.client.fetch(.{
+        const result = self.client.fetch(.{
             .location = .{ .url = url },
             .method = method,
             .payload = payload,
             .extra_headers = extra_headers[0..header_count],
             .response_writer = &response_writer.writer,
-        });
+        }) catch |err| {
+            log.warn("{s} {s} transport_error={s} elapsed_us={d}", .{
+                methodName(method),
+                redactedPath(path),
+                @errorName(err),
+                std.time.microTimestamp() - started_us,
+            });
+            return err;
+        };
 
-        const body = try response_writer.toOwnedSlice();
+        const body = response_writer.toOwnedSlice() catch |err| {
+            log.warn("{s} {s} body_error={s} status={d} elapsed_us={d}", .{
+                methodName(method),
+                redactedPath(path),
+                @errorName(err),
+                @intFromEnum(result.status),
+                std.time.microTimestamp() - started_us,
+            });
+            return err;
+        };
+        errdefer self.allocator.free(body);
+
+        log.info("{s} {s} status={d} elapsed_us={d} body_bytes={d}", .{
+            methodName(method),
+            redactedPath(path),
+            @intFromEnum(result.status),
+            std.time.microTimestamp() - started_us,
+            body.len,
+        });
 
         return .{
             .status = result.status,
@@ -222,3 +254,12 @@ pub const HubClient = struct {
         };
     }
 };
+
+fn redactedPath(path: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, path, '?')) |idx| return path[0..idx];
+    return path;
+}
+
+fn methodName(method: http.Method) []const u8 {
+    return @tagName(method);
+}
