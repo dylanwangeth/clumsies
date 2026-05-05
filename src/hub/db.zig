@@ -102,8 +102,7 @@ pub fn extractDescription(content: []const u8) []const u8 {
     return "";
 }
 
-pub fn bootstrap(pool: *Pool) !void {
-    const alloc = std.heap.page_allocator;
+pub fn bootstrap(pool: *Pool, env_map: *const std.process.EnvMap) !void {
     const log = std.log.scoped(.bootstrap);
 
     const conn = try pool.acquire();
@@ -114,35 +113,23 @@ pub fn bootstrap(pool: *Pool) !void {
     if (count_row) |*cr| {
         const count = cr.get(i64, 0) catch 0;
         cr.deinit() catch {};
-        if (count > 0) return;
+        if (count > 0) {
+            log.info("skipped, database already bootstrapped", .{});
+            return;
+        }
     }
 
-    const username_owned = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_USERNAME") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => blk: {
-            log.warn("HUB_BOOTSTRAP_USERNAME missing; defaulting to 'admin'", .{});
-            break :blk null;
-        },
-        else => return err,
+    const username = env_map.get("HUB_BOOTSTRAP_USERNAME") orelse blk: {
+        log.warn("HUB_BOOTSTRAP_USERNAME missing; defaulting to 'admin'", .{});
+        break :blk "admin";
     };
-    defer if (username_owned) |value| alloc.free(value);
-    const username = username_owned orelse "admin";
 
-    const password_owned = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_PASSWORD") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => blk: {
-            log.warn("HUB_BOOTSTRAP_PASSWORD missing; defaulting to 'admin'", .{});
-            break :blk null;
-        },
-        else => return err,
+    const password = env_map.get("HUB_BOOTSTRAP_PASSWORD") orelse blk: {
+        log.warn("HUB_BOOTSTRAP_PASSWORD missing; defaulting to 'admin'", .{});
+        break :blk "admin";
     };
-    defer if (password_owned) |value| alloc.free(value);
-    const password = password_owned orelse "admin";
 
-    const org_name_owned = std.process.getEnvVarOwned(alloc, "HUB_BOOTSTRAP_ORG") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => return err,
-    };
-    defer if (org_name_owned) |value| alloc.free(value);
-    const org_name = org_name_owned orelse "default";
+    const org_name = env_map.get("HUB_BOOTSTRAP_ORG") orelse "default";
 
     // Create org
     _ = conn.exec(

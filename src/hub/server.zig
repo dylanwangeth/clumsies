@@ -9,6 +9,7 @@ const context_handler = @import("context.zig");
 const artifact_handler = @import("artifact.zig");
 const attestation_handler = @import("attestation.zig");
 const collab_handler = @import("collab.zig");
+const health_handler = @import("health.zig");
 const review_handler = @import("review.zig");
 const request_logger = @import("request_logger.zig");
 const RateLimiter = @import("rate_limit.zig");
@@ -43,12 +44,16 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
         .auth_rate_limiter = auth_rl,
     };
 
+    const listen_address = std.net.Address.parseIp(config.host, config.port) catch
+        return error.InvalidHost;
     var server = try HttpServer.init(allocator, .{
-        .address = .all(config.port),
+        .address = .{ .addr = listen_address },
     }, ctx);
 
     const request_log_middleware = try server.middleware(request_logger, .{});
     const router = try server.router(.{ .middlewares = &.{request_log_middleware} });
+
+    router.get("/api/health", health_handler.handle, .{});
 
     // Auth
     router.post("/api/auth/login", auth.handleLogin, .{});

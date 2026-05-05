@@ -4,6 +4,7 @@
 const std = @import("std");
 const http = std.http;
 const auth_api = @import("clumsies_lib").protocol.auth_api;
+const logger = @import("clumsies_lib").logger;
 
 const log = std.log.scoped(.hub_client);
 
@@ -144,16 +145,16 @@ pub const HubClient = struct {
         if (self.refresh_token == null) return first;
 
         first.deinit();
-        log.info("refresh_token path={s}", .{redactedPath(path)});
+        log.info("refresh_token path={s}", .{logger.redactedPath(path)});
         self.refreshAndPersist() catch |err| {
-            log.warn("refresh_token_failed path={s} error={s}", .{ redactedPath(path), @errorName(err) });
+            log.warn("refresh_token_failed path={s} error={s}", .{ logger.redactedPath(path), @errorName(err) });
             // Surface the refresh failure rather than the stale 401
             // so the caller sees a recognisable error code. The most
             // common case is a server-revoked refresh token, which
             // this path maps to `error.NotAuthenticated`.
             return err;
         };
-        log.info("refresh_token_ok path={s}", .{redactedPath(path)});
+        log.info("refresh_token_ok path={s}", .{logger.redactedPath(path)});
         return self.doFetchOnce(method, path, payload);
     }
 
@@ -228,7 +229,7 @@ pub const HubClient = struct {
         }) catch |err| {
             log.warn("{s} {s} transport_error={s} elapsed_us={d}", .{
                 methodName(method),
-                redactedPath(path),
+                logger.redactedPath(path),
                 @errorName(err),
                 std.time.microTimestamp() - started_us,
             });
@@ -238,7 +239,7 @@ pub const HubClient = struct {
         const body = response_writer.toOwnedSlice() catch |err| {
             log.warn("{s} {s} body_error={s} status={d} elapsed_us={d}", .{
                 methodName(method),
-                redactedPath(path),
+                logger.redactedPath(path),
                 @errorName(err),
                 @intFromEnum(result.status),
                 std.time.microTimestamp() - started_us,
@@ -249,7 +250,7 @@ pub const HubClient = struct {
 
         log.info("{s} {s} status={d} elapsed_us={d} body_bytes={d}", .{
             methodName(method),
-            redactedPath(path),
+            logger.redactedPath(path),
             @intFromEnum(result.status),
             std.time.microTimestamp() - started_us,
             body.len,
@@ -262,11 +263,6 @@ pub const HubClient = struct {
         };
     }
 };
-
-fn redactedPath(path: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, path, '?')) |idx| return path[0..idx];
-    return path;
-}
 
 fn methodName(method: http.Method) []const u8 {
     return @tagName(method);

@@ -1,12 +1,16 @@
 const std = @import("std");
 const testing = std.testing;
 const build_options = @import("build_options");
-const runtime_logger = @import("clumsies_lib").runtime_logger;
+const logger = @import("clumsies_lib").logger;
 const styles = @import("styles.zig");
 
+// Compile-time filter set to .debug so logger.logFn controls
+// filtering. This suppresses third-party debug output (libvaxis, etc.)
+// at runtime rather than compile time, while keeping our own scoped
+// logs visible at the configured level.
 pub const std_options: std.Options = .{
     .log_level = .debug,
-    .logFn = runtime_logger.logFn,
+    .logFn = logger.logFn,
 };
 
 fn recoverPanic(msg: []const u8, ra: ?usize) noreturn {
@@ -86,7 +90,7 @@ pub fn main() !void {
         std.heap.smp_allocator;
 
     initClientLogger(allocator);
-    defer runtime_logger.deinit();
+    defer logger.deinit();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -171,39 +175,27 @@ fn canLaunchTui() bool {
 }
 
 fn initClientLogger(allocator: std.mem.Allocator) void {
-    var log_level: std.log.Level = .info;
-    var invalid_level: ?[]u8 = null;
-    defer if (invalid_level) |raw| allocator.free(raw);
-
-    if (std.process.getEnvVarOwned(allocator, "CLUMSIES_LOG_LEVEL")) |raw| {
-        if (runtime_logger.parseLevel(raw)) |parsed| {
-            log_level = parsed;
-            allocator.free(raw);
-        } else {
-            invalid_level = raw;
-        }
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => {},
-    }
+    const config = logger.configFromEnv(allocator);
+    defer if (config.invalid_level) |raw| allocator.free(raw);
 
     const log_file_path = clientLogFilePath(allocator) catch {
-        runtime_logger.initBestEffort(.{ .level = log_level, .sink = .disabled });
+        logger.initBestEffort(.{ .level = config.level, .sink = .disabled });
         return;
     };
     defer allocator.free(log_file_path);
 
-    runtime_logger.initBestEffort(.{ .level = log_level, .sink = .{ .file = log_file_path } });
-    if (invalid_level) |raw| runtime_logger.noteInvalidLevel(raw);
+    logger.initBestEffort(.{ .level = config.level, .sink = .{ .file = log_file_path } });
+    std.log.scoped(.client_logger).info("client log file={s}", .{log_file_path});
+    if (config.invalid_level) |raw| logger.noteInvalidLevel(raw);
 }
 
 fn clientLogFilePath(allocator: std.mem.Allocator) ![]const u8 {
     const env_path = std.process.getEnvVarOwned(allocator, "CLUMSIES_LOG_FILE") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => return runtime_logger.clientDefaultLogPath(allocator),
+        error.EnvironmentVariableNotFound => return logger.clientDefaultLogPath(allocator),
         else => return err,
     };
     defer allocator.free(env_path);
-    return runtime_logger.resolveLogFilePath(allocator, env_path);
+    return logger.resolveLogFilePath(allocator, env_path);
 }
 
 test "command_map: all commands resolve" {

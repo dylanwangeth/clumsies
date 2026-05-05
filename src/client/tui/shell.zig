@@ -114,6 +114,7 @@ const top_tabs = [_]TopModule{ .dashboard, .workspace, .artifact, .review, .anal
 
 const WORKSPACE_METADATA_REFRESH_TICKS = 600;
 const GLOBAL_METADATA_REFRESH_TICKS = 3000;
+const HEALTH_CHECK_TICKS = 300;
 const PathTreeState = workspace_panel.PathTreeState;
 
 const DraftTarget = features.drafts.DraftTarget;
@@ -222,7 +223,8 @@ pub const Shell = struct {
             .connected => null,
             .connecting => .{ .key = .connection, .kind = .loading, .persistence = .transient, .text = "\xe2\x86\xbb Connecting...", .created_tick = now },
             .disconnected => .{ .key = .connection, .kind = .warning, .persistence = .transient, .text = "Not connected", .created_tick = now },
-            .error_auth, .error_network => .{ .key = .connection, .kind = .failure, .persistence = .transient, .text = "\xe2\x9c\x97 Connection failed", .created_tick = now },
+            .error_auth => .{ .key = .connection, .kind = .failure, .persistence = .transient, .text = "Auth required", .created_tick = now },
+            .error_network => .{ .key = .connection, .kind = .failure, .persistence = .transient, .text = "Offline", .created_tick = now },
         };
     }
 
@@ -429,7 +431,6 @@ pub const Shell = struct {
                 // come up populated.
                 if (!self.drafts.cache_seeded and self.activeWsId() != null) {
                     self.refreshDraftsCache();
-                    self.ensureActiveWorkspaceDetailRequested();
                 } else if (self.selected_module == .workspace) {
                     self.refreshDraftsCacheIfChanged();
                     self.ensureActiveWorkspaceDetailRequested();
@@ -449,6 +450,7 @@ pub const Shell = struct {
                 self.consumeCreateRulePrResult();
                 self.consumeCreateContextPrResult();
                 self.consumeAttestationUploadResult();
+                self.consumeHealthResult();
                 self.maybeRefreshMetadata();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
@@ -1039,6 +1041,7 @@ pub const Shell = struct {
 
     pub fn ensureActiveWorkspaceDetailRequested(self: *Shell) void {
         const ws_id = self.activeWsId() orelse return;
+        log.info("ensureActiveWorkspaceDetailRequested module={s}", .{moduleName(self.selected_module)});
         self.ensureLocalWorkspaceDetail(ws_id);
         workspace_panel.requestWorkspaceDetail(self, ws_id);
     }
@@ -1079,6 +1082,9 @@ pub const Shell = struct {
         if (self.tick_count > 0 and self.tick_count % GLOBAL_METADATA_REFRESH_TICKS == 0) {
             self.invalidateRemoteDetailRequests();
             api.fetch.refetchAllAsync(self.api_state);
+        }
+        if (self.tick_count > 0 and self.tick_count % HEALTH_CHECK_TICKS == 0) {
+            api.specs.dispatchHealthCheck(self.api_state);
         }
         if (self.selected_module == .review and self.tick_count > 0 and self.tick_count % WORKSPACE_METADATA_REFRESH_TICKS == 0) {
             api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
@@ -2106,6 +2112,7 @@ pub const Shell = struct {
                 if (self.activeWsId()) |ws_id| {
                     const has_remote_snapshot = self.api_state.workspace_context_cache.lookup(.{ .value = ws_id }) != null;
                     if (!has_remote_snapshot) self.api_state.workspace_context_cache.markFailed(.{ .value = ws_id });
+                    if (!self.isHubConnected()) return;
                     const text: []const u8 = if (has_remote_snapshot)
                         "Workspace context refresh failed; showing latest remote snapshot."
                     else if (self.hasLocalWorkspaceDetail(ws_id))
@@ -2129,6 +2136,7 @@ pub const Shell = struct {
                 if (self.activeWsId()) |ws_id| {
                     const has_remote_snapshot = self.api_state.workspace_manifest_cache.lookup(.{ .value = ws_id }) != null;
                     if (!has_remote_snapshot) self.api_state.workspace_manifest_cache.markFailed(.{ .value = ws_id });
+                    if (!self.isHubConnected()) return;
                     const text: []const u8 = if (has_remote_snapshot)
                         "Workspace manifest refresh failed; showing latest remote snapshot."
                     else if (self.hasLocalWorkspaceDetail(ws_id))
@@ -2388,7 +2396,34 @@ pub const Shell = struct {
                 self.api_state.workspace_context_content_cache.markFailed(
                     .{ .ws_id = ws_d.ws_id, .path = context.path },
                 );
+                if (!self.isHubConnected()) return;
                 self.system_notices.push(.workspace_context_content, .failure, .persistent, "Workspace context content failed; showing local cache when available.");
+            },
+        }
+    }
+
+    fn isHubConnected(self: *Shell) bool {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        return self.api_state.status == .connected;
+    }
+
+    fn consumeHealthResult(self: *Shell) void {
+        const result = self.api_state.health_pending.consume() orelse return;
+        switch (result) {
+            .ok => {
+                self.api_state.mutex.lock();
+                const was_offline = self.api_state.status == .error_network;
+                self.api_state.status = .connected;
+                self.api_state.mutex.unlock();
+                if (was_offline) api.fetch.refetchAllAsync(self.api_state);
+            },
+            else => {
+                self.api_state.mutex.lock();
+                if (self.api_state.status != .connecting and self.api_state.status != .disconnected) {
+                    self.api_state.status = .error_network;
+                }
+                self.api_state.mutex.unlock();
             },
         }
     }

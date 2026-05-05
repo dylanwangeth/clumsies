@@ -544,3 +544,34 @@ fn updateAuthTokens(ctx: *anyopaque, access_token: []const u8, refresh_token: []
     const api_state: *state.ApiState = @ptrCast(@alignCast(ctx));
     api_state.updateAuthTokens(access_token, refresh_token);
 }
+
+pub const health = dispatcher.RequestSpec(EmptyParams, void){
+    .method = .GET,
+    .path_builder = dispatcher.staticPath(EmptyParams, "/api/health"),
+    .body_builder = null,
+    .parse_ok = dispatcher.parseVoid(EmptyParams),
+};
+
+pub fn dispatchHealthCheck(api_state: *state.ApiState) void {
+    api_state.mutex.lock();
+    const hub_url = api_state.hub_url orelse {
+        api_state.mutex.unlock();
+        return;
+    };
+    api_state.mutex.unlock();
+
+    dispatcher.dispatch(
+        EmptyParams,
+        void,
+        health,
+        &api_state.health_pending,
+        &api_state.thread_registry,
+        api_state.backing_allocator,
+        hub_url,
+        "",
+        null,
+        api_state.backing_allocator,
+        api_state.allocator(),
+        .{},
+    );
+}

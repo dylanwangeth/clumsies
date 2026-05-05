@@ -2,6 +2,7 @@
 //! address, and runtime settings.
 const std = @import("std");
 
+host: []const u8,
 port: u16,
 db_host: []const u8,
 db_port: u16,
@@ -12,23 +13,24 @@ token_ttl_seconds: u32,
 
 const Config = @This();
 
-pub fn fromEnv() Config {
+pub fn fromEnv(env_map: *const std.process.EnvMap) Config {
     return .{
-        .port = getEnvInt(u16, "HUB_PORT", 8400),
-        .db_host = getEnvStr("HUB_DB_HOST", "127.0.0.1"),
-        .db_port = getEnvInt(u16, "HUB_DB_PORT", 5432),
-        .db_name = getEnvStr("HUB_DB_NAME", "clumsies"),
-        .db_user = getEnvStr("HUB_DB_USER", "clumsies"),
-        .db_password = getEnvStr("HUB_DB_PASSWORD", "clumsies"),
-        .token_ttl_seconds = getEnvInt(u32, "HUB_TOKEN_TTL", 3600),
+        .host = getEnvStr(env_map, "HUB_HOST", "0.0.0.0"),
+        .port = getEnvInt(env_map, u16, "HUB_PORT", 8400),
+        .db_host = getEnvStr(env_map, "HUB_DB_HOST", "127.0.0.1"),
+        .db_port = getEnvInt(env_map, u16, "HUB_DB_PORT", 5432),
+        .db_name = getEnvStr(env_map, "HUB_DB_NAME", "clumsies"),
+        .db_user = getEnvStr(env_map, "HUB_DB_USER", "clumsies"),
+        .db_password = getEnvStr(env_map, "HUB_DB_PASSWORD", "clumsies"),
+        .token_ttl_seconds = getEnvInt(env_map, u32, "HUB_TOKEN_TTL", 3600),
     };
 }
 
-fn getEnvStr(key: []const u8, default: []const u8) []const u8 {
-    return std.process.getEnvVarOwned(std.heap.page_allocator, key) catch return default;
+fn getEnvStr(env_map: *const std.process.EnvMap, key: []const u8, default: []const u8) []const u8 {
+    return env_map.get(key) orelse default;
 }
 
-fn getEnvInt(comptime T: type, key: []const u8, default: T) T {
-    const val = std.process.getEnvVarOwned(std.heap.page_allocator, key) catch return default;
+fn getEnvInt(env_map: *const std.process.EnvMap, comptime T: type, key: []const u8, default: T) T {
+    const val = env_map.get(key) orelse return default;
     return std.fmt.parseInt(T, val, 10) catch default;
 }

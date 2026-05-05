@@ -140,6 +140,7 @@ pub const ApiState = struct {
     // Write endpoints. All three carry void payloads on success: the
     // consumer only cares about ok / api_error / network_error.
     sign_out_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
+    health_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     submit_comment_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     pr_action_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     create_rule_pr_pending: request.PendingRequest(dispatcher.Result(CreateRulePrResponse)) = .{},
@@ -218,6 +219,12 @@ pub const ApiState = struct {
         self.mutex.unlock();
     }
 };
+
+pub fn setConnectionStatus(api_state: *ApiState, status: ConnectionStatus) void {
+    api_state.mutex.lock();
+    api_state.status = status;
+    api_state.mutex.unlock();
+}
 
 pub fn refreshLocalState(api_state: *ApiState) void {
     api_state.mutex.lock();
