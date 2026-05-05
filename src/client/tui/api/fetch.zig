@@ -4,6 +4,7 @@
 //! and org stats without blocking workspace selection.
 
 const std = @import("std");
+const auth_mod = @import("../../auth.zig");
 const HubClient = @import("../../hub_client.zig").HubClient;
 const model = @import("model.zig");
 const parse = @import("parse.zig");
@@ -17,19 +18,25 @@ const log = std.log.scoped(.tui_api);
 pub fn startFetch(
     api_state: *state.ApiState,
     hub_url: []const u8,
+    username: []const u8,
     access_token: []const u8,
+    refresh_token: []const u8,
 ) !void {
     const alloc = api_state.allocator();
     const url_copy = try alloc.dupe(u8, hub_url);
+    const username_copy = try alloc.dupe(u8, username);
     const token_copy = try alloc.dupe(u8, access_token);
+    const refresh_copy = try alloc.dupe(u8, refresh_token);
     log.info("bootstrap_start", .{});
     api_state.mutex.lock();
     api_state.hub_url = url_copy;
+    api_state.username = username_copy;
     api_state.access_token = token_copy;
+    api_state.refresh_token = refresh_copy;
     api_state.bootstrap_inflight = true;
     api_state.mutex.unlock();
 
-    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, url_copy, token_copy }) catch |err| {
+    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, url_copy, username_copy, token_copy, refresh_copy }) catch |err| {
         log.warn("bootstrap_spawn_failed error={s}", .{@errorName(err)});
         api_state.mutex.lock();
         api_state.bootstrap_inflight = false;
@@ -41,7 +48,7 @@ pub fn startFetch(
 
 pub fn refetchAllAsync(api_state: *state.ApiState) void {
     api_state.mutex.lock();
-    if (api_state.hub_url == null or api_state.access_token == null) {
+    if (api_state.hub_url == null or api_state.username == null or api_state.access_token == null or api_state.refresh_token == null) {
         api_state.mutex.unlock();
         return;
     }
@@ -53,10 +60,12 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
     }
     api_state.bootstrap_inflight = true;
     const hub_url = api_state.hub_url.?;
+    const username = api_state.username.?;
     const access_token = api_state.access_token.?;
+    const refresh_token = api_state.refresh_token.?;
     api_state.mutex.unlock();
 
-    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, hub_url, access_token }) catch {
+    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, hub_url, username, access_token, refresh_token }) catch {
         log.warn("bootstrap_refetch_spawn_failed", .{});
         api_state.mutex.lock();
         api_state.bootstrap_inflight = false;
@@ -69,23 +78,31 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
 fn fetchAll(
     api_state: *state.ApiState,
     hub_url: []const u8,
+    username: []const u8,
     access_token: []const u8,
+    refresh_token: []const u8,
 ) void {
     defer {
         var next_hub_url: ?[]const u8 = null;
+        var next_username: ?[]const u8 = null;
         var next_access_token: ?[]const u8 = null;
+        var next_refresh_token: ?[]const u8 = null;
         api_state.mutex.lock();
-        api_state.bootstrap_inflight = false;
-        if (api_state.bootstrap_refetch_requested and api_state.hub_url != null and api_state.access_token != null) {
+        if (api_state.bootstrap_refetch_requested and api_state.hub_url != null and api_state.username != null and api_state.access_token != null and api_state.refresh_token != null) {
             api_state.bootstrap_refetch_requested = false;
-            api_state.bootstrap_inflight = true;
             next_hub_url = api_state.hub_url.?;
+            next_username = api_state.username.?;
             next_access_token = api_state.access_token.?;
+            next_refresh_token = api_state.refresh_token.?;
+        } else {
+            api_state.bootstrap_inflight = false;
         }
         api_state.mutex.unlock();
         if (next_hub_url) |url| {
+            const next_user = next_username.?;
             const token = next_access_token.?;
-            if (std.Thread.spawn(.{}, fetchAll, .{ api_state, url, token })) |thread| {
+            const refresh = next_refresh_token.?;
+            if (std.Thread.spawn(.{}, fetchAll, .{ api_state, url, next_user, token, refresh })) |thread| {
                 api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
             } else |_| {
                 api_state.mutex.lock();
@@ -105,6 +122,11 @@ fn fetchAll(
 
     var client = HubClient.init(alloc, hub_url, access_token);
     defer client.deinit();
+    client.enableRefresh(refresh_token, username, auth_mod.persistRotatedTokens) catch |err| {
+        log.warn("bootstrap_refresh_setup_failed error={s}", .{@errorName(err)});
+        setStatus(api_state, .error_network);
+        return;
+    };
 
     const me_resp = client.get("/api/auth/me") catch {
         log.warn("bootstrap_auth_me network_error", .{});
@@ -129,6 +151,7 @@ fn fetchAll(
         setStatus(api_state, .error_network);
         return;
     };
+    updateRotatedTokens(api_state, &client, access_token);
     log.info("bootstrap_auth_me ok", .{});
 
     api_state.mutex.lock();
@@ -171,12 +194,20 @@ fn fetchAll(
     if (bundles) |value| api_state.bundles = value;
     if (org_stats) |value| api_state.org_stats = value;
     api_state.mutex.unlock();
+    updateRotatedTokens(api_state, &client, access_token);
     log.info("bootstrap_complete directory={} rules={} bundles={} org_stats={}", .{
         directory != null,
         rules_list != null,
         bundles != null,
         org_stats != null,
     });
+}
+
+fn updateRotatedTokens(api_state: *state.ApiState, client: *HubClient, previous_access_token: []const u8) void {
+    const access_token = client.currentAccessToken() orelse return;
+    if (std.mem.eql(u8, access_token, previous_access_token)) return;
+    const refresh_token = client.currentRefreshToken() orelse return;
+    api_state.updateAuthTokens(access_token, refresh_token);
 }
 
 fn setStatus(api_state: *state.ApiState, status: state.ConnectionStatus) void {

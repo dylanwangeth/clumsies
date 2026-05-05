@@ -1084,7 +1084,7 @@ pub const Shell = struct {
             api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
             self.ensureReviewPrsRequested();
         }
-        if (self.tick_count > 0 and self.tick_count % WORKSPACE_METADATA_REFRESH_TICKS == 0) {
+        if (self.selected_module == .workspace and self.tick_count > 0 and self.tick_count % WORKSPACE_METADATA_REFRESH_TICKS == 0) {
             const ws_id = self.activeWsId() orelse return;
             api.state.invalidateRemoteCaches(self.api_state, .workspace_detail);
             workspace_panel.refreshWorkspaceDetail(self, ws_id);

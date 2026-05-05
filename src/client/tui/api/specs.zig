@@ -9,6 +9,7 @@
 //! no boilerplate.
 
 const std = @import("std");
+const auth_mod = @import("../../auth.zig");
 const collab_api = @import("clumsies_lib").protocol.collab_api;
 const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
@@ -506,7 +507,9 @@ pub fn dispatchFromState(
 ) void {
     api_state.mutex.lock();
     const hub_url = api_state.hub_url;
+    const username = api_state.username;
     const access_token = api_state.access_token;
+    const refresh_token = api_state.refresh_token;
     api_state.mutex.unlock();
 
     if (hub_url == null or access_token == null) {
@@ -524,8 +527,20 @@ pub fn dispatchFromState(
         api_state.backing_allocator,
         hub_url.?,
         access_token.?,
+        if (username != null and refresh_token != null) .{
+            .username = username.?,
+            .refresh_token = refresh_token.?,
+            .persist_fn = auth_mod.persistRotatedTokens,
+            .update_ctx = api_state,
+            .update_fn = updateAuthTokens,
+        } else null,
         api_state.backing_allocator,
         api_state.allocator(),
         req,
     );
+}
+
+fn updateAuthTokens(ctx: *anyopaque, access_token: []const u8, refresh_token: []const u8) void {
+    const api_state: *state.ApiState = @ptrCast(@alignCast(ctx));
+    api_state.updateAuthTokens(access_token, refresh_token);
 }
