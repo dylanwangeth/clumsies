@@ -9,6 +9,8 @@ const model = @import("model.zig");
 const parse = @import("parse.zig");
 const state = @import("state.zig");
 
+const log = std.log.scoped(.tui_api);
+
 /// Seed api_state with the auth credentials and kick off the initial
 /// compound bootstrap fetch. The spawned worker registers itself to
 /// the shared thread registry so main.zig's exit path joins it.
@@ -20,6 +22,7 @@ pub fn startFetch(
     const alloc = api_state.allocator();
     const url_copy = try alloc.dupe(u8, hub_url);
     const token_copy = try alloc.dupe(u8, access_token);
+    log.info("bootstrap_start", .{});
     api_state.mutex.lock();
     api_state.hub_url = url_copy;
     api_state.access_token = token_copy;
@@ -27,6 +30,7 @@ pub fn startFetch(
     api_state.mutex.unlock();
 
     const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, url_copy, token_copy }) catch |err| {
+        log.warn("bootstrap_spawn_failed error={s}", .{@errorName(err)});
         api_state.mutex.lock();
         api_state.bootstrap_inflight = false;
         api_state.mutex.unlock();
@@ -42,6 +46,7 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
         return;
     }
     if (api_state.bootstrap_inflight) {
+        log.info("bootstrap_refetch_queued", .{});
         api_state.bootstrap_refetch_requested = true;
         api_state.mutex.unlock();
         return;
@@ -52,6 +57,7 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
     api_state.mutex.unlock();
 
     const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, hub_url, access_token }) catch {
+        log.warn("bootstrap_refetch_spawn_failed", .{});
         api_state.mutex.lock();
         api_state.bootstrap_inflight = false;
         api_state.mutex.unlock();
@@ -95,29 +101,35 @@ fn fetchAll(
     const alloc = api_state.allocator();
 
     state.refreshLocalState(api_state);
+    log.info("bootstrap_local_state_refreshed", .{});
 
     var client = HubClient.init(alloc, hub_url, access_token);
     defer client.deinit();
 
     const me_resp = client.get("/api/auth/me") catch {
+        log.warn("bootstrap_auth_me network_error", .{});
         setStatus(api_state, .error_network);
         return;
     };
     defer me_resp.deinit();
 
     if (me_resp.status == .unauthorized) {
+        log.warn("bootstrap_auth_me unauthorized", .{});
         setStatus(api_state, .error_auth);
         return;
     }
     if (me_resp.status != .ok) {
+        log.warn("bootstrap_auth_me status={d}", .{@intFromEnum(me_resp.status)});
         setStatus(api_state, .error_network);
         return;
     }
 
     const user = parse.parseUser(alloc, me_resp.body) orelse {
+        log.warn("bootstrap_auth_me invalid_response", .{});
         setStatus(api_state, .error_network);
         return;
     };
+    log.info("bootstrap_auth_me ok", .{});
 
     api_state.mutex.lock();
     api_state.current_user = user;
@@ -159,6 +171,12 @@ fn fetchAll(
     if (bundles) |value| api_state.bundles = value;
     if (org_stats) |value| api_state.org_stats = value;
     api_state.mutex.unlock();
+    log.info("bootstrap_complete directory={} rules={} bundles={} org_stats={}", .{
+        directory != null,
+        rules_list != null,
+        bundles != null,
+        org_stats != null,
+    });
 }
 
 fn setStatus(api_state: *state.ApiState, status: state.ConnectionStatus) void {
@@ -174,8 +192,24 @@ fn doFetchParse(
     comptime T: type,
     comptime parseFn: *const fn (std.mem.Allocator, []const u8) ?T,
 ) ?T {
-    const resp = client.get(path) catch return null;
+    const resp = client.get(path) catch {
+        log.warn("bootstrap_fetch_failed path={s} result=network_error", .{redactedPath(path)});
+        return null;
+    };
     defer resp.deinit();
-    if (resp.status != .ok) return null;
-    return parseFn(alloc, resp.body);
+    if (resp.status != .ok) {
+        log.warn("bootstrap_fetch_failed path={s} status={d}", .{ redactedPath(path), @intFromEnum(resp.status) });
+        return null;
+    }
+    const parsed = parseFn(alloc, resp.body) orelse {
+        log.warn("bootstrap_fetch_failed path={s} result=invalid_response", .{redactedPath(path)});
+        return null;
+    };
+    log.info("bootstrap_fetch_ok path={s}", .{redactedPath(path)});
+    return parsed;
+}
+
+fn redactedPath(path: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, path, '?')) |idx| return path[0..idx];
+    return path;
 }

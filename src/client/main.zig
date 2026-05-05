@@ -171,7 +171,7 @@ fn canLaunchTui() bool {
 }
 
 fn initClientLogger(allocator: std.mem.Allocator) void {
-    var log_level: std.log.Level = .warn;
+    var log_level: std.log.Level = .info;
     var invalid_level: ?[]u8 = null;
     defer if (invalid_level) |raw| allocator.free(raw);
 

@@ -10,6 +10,7 @@ const artifact_handler = @import("artifact.zig");
 const attestation_handler = @import("attestation.zig");
 const collab_handler = @import("collab.zig");
 const review_handler = @import("review.zig");
+const request_logger = @import("request_logger.zig");
 const RateLimiter = @import("rate_limit.zig");
 const Config = @import("config.zig");
 
@@ -46,7 +47,8 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
         .address = .all(config.port),
     }, ctx);
 
-    const router = try server.router(.{});
+    const request_log_middleware = try server.middleware(request_logger, .{});
+    const router = try server.router(.{ .middlewares = &.{request_log_middleware} });
 
     // Auth
     router.post("/api/auth/login", auth.handleLogin, .{});

@@ -25,6 +25,8 @@ const runtime = @import("runtime.zig");
 const util_hash = @import("clumsies_lib").util.hash;
 const tui_prefs = @import("prefs.zig");
 
+const log = std.log.scoped(.tui_event);
+
 const editor_host = runtime.editor_host;
 const attestation_reader = runtime.attestation_reader;
 const Modal = w.Modal;
@@ -60,6 +62,53 @@ const TopModule = enum(u8) {
         };
     }
 };
+
+fn moduleName(module: TopModule) []const u8 {
+    return switch (module) {
+        .dashboard => "dashboard",
+        .workspace => "workspace",
+        .artifact => "artifact",
+        .review => "review",
+        .analysis => "analysis",
+    };
+}
+
+fn confirmActionName(action: ConfirmAction) []const u8 {
+    return switch (action) {
+        .none => "none",
+        .remove_member => "remove_member",
+        .delete_bundle => "delete_bundle",
+        .delete_workspace => "delete_workspace",
+        .revoke_token => "revoke_token",
+        .discard_draft => "discard_draft",
+        .quit => "quit",
+    };
+}
+
+fn keyName(key: vaxis.Key) []const u8 {
+    if (key.matches(vaxis.Key.escape, .{})) return "escape";
+    if (key.matches(vaxis.Key.enter, .{})) return "enter";
+    if (key.matches(vaxis.Key.backspace, .{})) return "backspace";
+    if (key.matches(vaxis.Key.tab, .{})) return "tab";
+    if (key.matches(vaxis.Key.up, .{})) return "up";
+    if (key.matches(vaxis.Key.down, .{})) return "down";
+    if (key.matches(vaxis.Key.left, .{})) return "left";
+    if (key.matches(vaxis.Key.right, .{})) return "right";
+    if (key.matches(vaxis.Key.page_up, .{})) return "page_up";
+    if (key.matches(vaxis.Key.page_down, .{})) return "page_down";
+    if (key.matches(vaxis.Key.home, .{})) return "home";
+    if (key.matches(vaxis.Key.end, .{})) return "end";
+    if (key.text) |text| {
+        if (text.len > 0) return "text_input";
+    }
+    if (key.mods.ctrl) return "ctrl_key";
+    return "key";
+}
+
+fn keyTextLen(key: vaxis.Key) usize {
+    if (key.text) |text| return text.len;
+    return 0;
+}
 
 const top_tabs = [_]TopModule{ .dashboard, .workspace, .artifact, .review, .analysis };
 
@@ -181,9 +230,11 @@ pub const Shell = struct {
         _ = self.view_arena.reset(.retain_capacity);
         switch (event) {
             .key_press => |key| {
+                self.logKeyEvent(self.activeInputLayer(), key);
                 // Confirm overlay absorbs all keys
                 if (self.show_confirm) {
                     if (key.matches('y', .{})) {
+                        log.info("confirm_accept action={s}", .{confirmActionName(self.confirm_action)});
                         switch (self.confirm_action) {
                             .remove_member => {
                                 self.notifyOp(.info, "Member removed (not yet implemented)");
@@ -218,6 +269,7 @@ pub const Shell = struct {
                         ctx.consumeAndRedraw();
                     }
                     if (key.matches('n', .{}) or key.matches(vaxis.Key.escape, .{})) {
+                        log.info("confirm_cancel action={s}", .{confirmActionName(self.confirm_action)});
                         // Releasing here keeps the pending-discard
                         // path owned slice from leaking when the
                         // user declines the confirm overlay.
@@ -233,6 +285,7 @@ pub const Shell = struct {
                 // Help drawer absorbs all keys
                 if (self.show_help) {
                     if (key.matches(vaxis.Key.escape, .{}) or key.matches('?', .{})) {
+                        log.info("help_close", .{});
                         self.show_help = false;
                         ctx.consumeAndRedraw();
                     }
@@ -253,10 +306,12 @@ pub const Shell = struct {
                 // Comment editor absorbs all keys
                 if (self.review.show_comment_editor) {
                     if (key.matches(vaxis.Key.escape, .{})) {
+                        log.info("comment_editor_cancel", .{});
                         self.review.show_comment_editor = false;
                         self.review.comment_input_len = 0;
                         ctx.consumeAndRedraw();
                     } else if (key.matches(vaxis.Key.enter, .{})) {
+                        log.info("comment_editor_submit bytes={d}", .{self.review.comment_input_len});
                         if (self.review.comment_input_len > 0) {
                             self.submitComment();
                         } else {
@@ -266,11 +321,13 @@ pub const Shell = struct {
                         self.review.comment_input_len = 0;
                         ctx.consumeAndRedraw();
                     } else if (key.matches(vaxis.Key.backspace, .{})) {
+                        log.info("comment_editor_backspace bytes={d}", .{self.review.comment_input_len});
                         if (self.review.comment_input_len > 0) {
                             self.review.comment_input_len -= 1;
                             ctx.consumeAndRedraw();
                         }
                     } else if (key.text) |text| {
+                        log.info("comment_editor_text bytes={d}", .{text.len});
                         const remaining = self.review.comment_input_buf.len - self.review.comment_input_len;
                         if (text.len > 0 and text.len <= remaining) {
                             @memcpy(self.review.comment_input_buf[self.review.comment_input_len .. self.review.comment_input_len + text.len], text);
@@ -295,11 +352,13 @@ pub const Shell = struct {
 
                 // Global quit
                 if (key.matches('c', .{ .ctrl = true })) {
+                    log.info("quit_direct", .{});
                     ctx.consumeEvent();
                     ctx.quit = true;
                     return;
                 }
                 if (key.matches('q', .{})) {
+                    log.info("quit_prompt", .{});
                     self.confirm_message = "";
                     self.confirm_action = .quit;
                     self.show_confirm = true;
@@ -309,6 +368,7 @@ pub const Shell = struct {
 
                 // Help toggle
                 if (key.matches('?', .{})) {
+                    log.info("help_open", .{});
                     self.show_help = true;
                     ctx.consumeAndRedraw();
                     return;
@@ -322,6 +382,7 @@ pub const Shell = struct {
 
                 // Settings toggle (S key)
                 if (key.matches('S', .{})) {
+                    log.info("settings_open", .{});
                     self.show_settings = true;
                     ctx.consumeAndRedraw();
                     return;
@@ -348,6 +409,7 @@ pub const Shell = struct {
                 return;
             },
             .init => {
+                log.info("init", .{});
                 self.refreshDraftsCache();
                 // Start breathing animation
                 try ctx.tick(100, self.widget());
@@ -2261,6 +2323,11 @@ pub const Shell = struct {
         switch (result) {
             .ok => |summary| {
                 self.system_notices.clear(.attestation_upload);
+                log.info("attestation_upload_ok workspaces={d} events={d} batches={d}", .{
+                    summary.workspace_count,
+                    summary.events_sent,
+                    summary.batches_sent,
+                });
                 if (summary.events_sent == 0) return;
                 const message = std.fmt.allocPrint(
                     self.api_state.allocator(),
@@ -2271,9 +2338,11 @@ pub const Shell = struct {
                 api.fetch.refetchAllAsync(self.api_state);
             },
             .not_authenticated => {
+                log.warn("attestation_upload_not_authenticated", .{});
                 self.system_notices.clear(.attestation_upload);
             },
             .failed => |name| {
+                log.warn("attestation_upload_failed error={s}", .{name});
                 const message = std.fmt.allocPrint(
                     self.api_state.allocator(),
                     "Attestation upload failed: {s}; restart TUI after fixing Hub or auth.",
@@ -3889,7 +3958,9 @@ pub const Shell = struct {
     }
 
     fn selectTab(self: *Shell, ctx: *vxfw.EventContext, tab: TopModule) void {
+        const previous = self.selected_module;
         self.selected_module = tab;
+        log.info("tab_select from={s} to={s}", .{ moduleName(previous), moduleName(tab) });
         self.analysis.show_member_detail = false;
         self.analysis.expanded_rule = null;
         switch (tab) {
@@ -3913,6 +3984,30 @@ pub const Shell = struct {
             else => {},
         }
         ctx.consumeAndRedraw();
+    }
+
+    fn activeInputLayer(self: *const Shell) []const u8 {
+        if (self.show_confirm) return "confirm";
+        if (self.show_help) return "help";
+        if (self.workspace.show_drawer) return "workspace_drawer";
+        if (self.workspace.show_create) return "workspace_create";
+        if (self.review.show_comment_editor) return "comment_editor";
+        if (self.drafts.show_pr_composer) return "pr_composer";
+        if (self.drafts.show_new_draft_form) return "new_draft_form";
+        if (self.show_settings) return "settings";
+        return "module";
+    }
+
+    fn logKeyEvent(self: *const Shell, layer: []const u8, key: vaxis.Key) void {
+        log.info("key module={s} layer={s} key={s} text_bytes={d} ctrl={} alt={} shift={}", .{
+            moduleName(self.selected_module),
+            layer,
+            keyName(key),
+            keyTextLen(key),
+            key.mods.ctrl,
+            key.mods.alt,
+            key.mods.shift,
+        });
     }
 
     pub fn shiftDetailTab(self: *Shell, delta: i8) void {
