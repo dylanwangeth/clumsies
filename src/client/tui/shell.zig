@@ -421,20 +421,10 @@ pub const Shell = struct {
                 self.tick_count +%= 1;
                 self.analysis.breathing_phase = (self.analysis.breathing_phase + 1) % 21;
                 self.system_notices.tick();
-                self.reconcileWorkspaceSelection();
-                if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.analysis.breathing_phase == 0 or self.analysis.breathing_phase == 10)) {
-                    api.state.refreshLocalState(self.api_state);
-                }
-                // First tick after current_user lands (the /me fetch
-                // completes asynchronously, so activeWsId() was null
-                // at .init). Seed the drafts map now so row markers
-                // come up populated.
-                if (!self.drafts.cache_seeded and self.activeWsId() != null) {
-                    self.refreshDraftsCache();
-                } else if (self.selected_module == .workspace) {
-                    self.refreshDraftsCacheIfChanged();
-                    self.ensureActiveWorkspaceDetailRequested();
-                }
+
+                // Drain completed results into caches BEFORE any
+                // dispatch checks so that a result landing between
+                // ticks doesn't trigger a redundant re-dispatch.
                 _ = workspace_panel.consumeCreateResult(self);
                 self.consumeRuleContentResult();
                 self.consumeRulePrsResult();
@@ -451,6 +441,17 @@ pub const Shell = struct {
                 self.consumeCreateContextPrResult();
                 self.consumeAttestationUploadResult();
                 self.consumeHealthResult();
+
+                self.reconcileWorkspaceSelection();
+                if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.analysis.breathing_phase == 0 or self.analysis.breathing_phase == 10)) {
+                    api.state.refreshLocalState(self.api_state);
+                }
+                if (!self.drafts.cache_seeded and self.activeWsId() != null) {
+                    self.refreshDraftsCache();
+                } else if (self.selected_module == .workspace) {
+                    self.refreshDraftsCacheIfChanged();
+                    self.ensureActiveWorkspaceDetailRequested();
+                }
                 self.maybeRefreshMetadata();
                 ctx.redraw = true;
                 try ctx.tick(100, self.widget());
