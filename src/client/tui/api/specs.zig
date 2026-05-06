@@ -527,6 +527,7 @@ pub fn dispatchFromState(
         api_state.backing_allocator,
         hub_url.?,
         access_token.?,
+        api_state.clientIdHex(),
         if (username != null and refresh_token != null) .{
             .username = username.?,
             .refresh_token = refresh_token.?,
@@ -569,6 +570,7 @@ pub fn dispatchHealthCheck(api_state: *state.ApiState) void {
         api_state.backing_allocator,
         hub_url,
         "",
+        api_state.clientIdHex(),
         null,
         api_state.backing_allocator,
         api_state.allocator(),

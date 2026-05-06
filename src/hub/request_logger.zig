@@ -14,9 +14,11 @@ pub fn execute(_: *const Middleware, req: *httpz.Request, res: *httpz.Response, 
     const start = std.time.microTimestamp();
     defer {
         const elapsed_us = std.time.microTimestamp() - start;
-        log.info("{s} {s} status={d} elapsed_us={d}", .{
+        const client_id = req.header("x-client-id") orelse "-";
+        log.info("{s} {s} client={s} status={d} elapsed_us={d}", .{
             methodText(req),
             req.url.path,
+            client_id,
             res.status,
             elapsed_us,
         });
