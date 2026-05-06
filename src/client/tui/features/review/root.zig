@@ -609,6 +609,7 @@ fn drawReviewListPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     const row_w = body_w -| 1;
     writeReviewQueueColumnHeader(&surface, ctx, body_origin_col, row_w);
     if (self.review.pr_row_count == 0) {
+        if (self.api_state.review_prs_pending.isInflight()) return surface;
         const empty = if (self.review.total_pr_count == 0) "No review requests." else "No PRs match current filters.";
         w.writeText(&surface, ctx, body_origin_col, body_origin_row, empty, theme.fg(theme.MUTED));
         return surface;
