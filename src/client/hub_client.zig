@@ -36,6 +36,7 @@ pub const HubClient = struct {
     allocator: std.mem.Allocator,
     hub_url: []const u8,
     access_token: ?[]const u8,
+    client_id: []const u8 = "",
     // Persistent std.http.Client lets sequential requests reuse the
     // underlying TCP/TLS connection via the client's internal
     // connection pool. Prior to this, every doFetch built and tore
@@ -202,11 +203,16 @@ pub const HubClient = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.hub_url, path });
         defer self.allocator.free(url);
 
-        var extra_headers: [2]http.Header = undefined;
+        var extra_headers: [3]http.Header = undefined;
         var header_count: usize = 0;
 
         extra_headers[header_count] = .{ .name = "content-type", .value = "application/json" };
         header_count += 1;
+
+        if (self.client_id.len > 0) {
+            extra_headers[header_count] = .{ .name = "x-client-id", .value = self.client_id };
+            header_count += 1;
+        }
 
         var auth_value: ?[]const u8 = null;
         if (self.effectiveToken()) |token| {

@@ -171,6 +171,8 @@ pub const ApiState = struct {
     bootstrap_refetch_requested: bool = false,
     create_ws_pending: request.PendingRequest(dispatcher.Result(workspace_api.CreateWorkspaceResponse)) = .{},
     thread_registry: dispatcher.ThreadRegistry = .{},
+    client_id: [16]u8,
+    _client_id_hex: ?[]const u8 = null,
     backing_allocator: std.mem.Allocator,
     arena: *std.heap.ArenaAllocator,
     local_arena: *std.heap.ArenaAllocator,
@@ -183,16 +185,33 @@ pub const ApiState = struct {
         const local_arena_ptr = base_allocator.create(std.heap.ArenaAllocator) catch
             @panic("ApiState.init: local arena allocation failed");
         local_arena_ptr.* = std.heap.ArenaAllocator.init(base_allocator);
+
+        var id_bytes: [16]u8 = undefined;
+        std.crypto.random.bytes(&id_bytes);
+
         return .{
             .backing_allocator = base_allocator,
             .arena = arena_ptr,
             .local_arena = local_arena_ptr,
+            .client_id = id_bytes,
             .ts_allocator = undefined,
         };
     }
 
     pub fn bindAllocator(self: *ApiState) void {
         self.ts_allocator = .{ .child_allocator = self.arena.allocator() };
+    }
+
+    pub fn clientIdHex(self: *ApiState) []const u8 {
+        if (self._client_id_hex) |cached| return cached;
+        var buf: [32]u8 = undefined;
+        const hex_chars = "0123456789abcdef";
+        for (self.client_id, 0..) |byte, i| {
+            buf[i * 2] = hex_chars[byte >> 4];
+            buf[i * 2 + 1] = hex_chars[byte & 0x0f];
+        }
+        self._client_id_hex = self.arena.allocator().dupe(u8, &buf) catch "";
+        return self._client_id_hex.?;
     }
 
     pub fn deinit(self: *ApiState) void {

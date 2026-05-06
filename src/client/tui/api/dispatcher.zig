@@ -129,6 +129,7 @@ fn WorkerContext(comptime ReqT: type, comptime RespT: type) type {
         generation: u64,
         hub_url: []const u8,
         access_token: []const u8,
+        client_id: []const u8,
         username: ?[]const u8,
         refresh_token: ?[]const u8,
         persist_fn: ?hub_client.PersistFn,
@@ -155,6 +156,7 @@ pub fn dispatch(
     registry_alloc: std.mem.Allocator,
     hub_url: []const u8,
     access_token: []const u8,
+    client_id: []const u8,
     refresh_config: ?RefreshConfig,
     transient_parent: std.mem.Allocator,
     result_alloc: std.mem.Allocator,
@@ -225,6 +227,7 @@ pub fn dispatch(
         .generation = gen,
         .hub_url = url_copy,
         .access_token = token_copy,
+        .client_id = client_id,
         .username = username_copy,
         .refresh_token = refresh_token_copy,
         .persist_fn = if (refresh_config) |refresh| refresh.persist_fn else null,
@@ -295,6 +298,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
             log.info("dispatch {s} {s}", .{ methodName(ctx.spec.method), logger.redactedPath(path) });
 
             var client = HubClient.init(t_alloc, ctx.hub_url, ctx.access_token);
+            client.client_id = ctx.client_id;
             defer client.deinit();
             if (ctx.refresh_token) |refresh_token| {
                 client.enableRefresh(refresh_token, ctx.username.?, ctx.persist_fn.?) catch |err| {
