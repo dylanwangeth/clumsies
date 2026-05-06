@@ -129,7 +129,6 @@ fn fetchAll(
         return;
     };
 
-
     const me_resp = client.get("/api/auth/me") catch {
         log.warn("bootstrap_auth_me network_error", .{});
         setStatus(api_state, .error_network);

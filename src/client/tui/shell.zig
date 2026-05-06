@@ -1074,7 +1074,9 @@ pub const Shell = struct {
         if (selected_ws_id) |ws_id| {
             self.rememberWorkspaceId(ws_id);
             self.ensureLocalWorkspaceDetail(ws_id);
-            workspace_panel.requestWorkspaceDetail(self, ws_id);
+            if (self.selected_module == .workspace) {
+                workspace_panel.requestWorkspaceDetail(self, ws_id);
+            }
         }
     }
 
