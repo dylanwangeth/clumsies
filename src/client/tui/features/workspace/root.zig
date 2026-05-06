@@ -13,6 +13,7 @@ const rule_detail = @import("../review/root.zig");
 const content_actions = @import("../content_actions.zig");
 const Modal = w.Modal;
 const TextInput = w.TextInput;
+const log = std.log.scoped(.tui_event);
 
 const MAX_TREE_ROWS = 128;
 pub const PathTreeState = @import("../../models.zig").path_tree.State(MAX_TREE_ROWS, 96);
@@ -807,9 +808,19 @@ fn handleContentFocusEvent(
 /// respective PendingRequest slots; `syncWsRows` composes them once
 /// both caches are populated via `state.wsDetail`.
 pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
-    if (self.api_state.workspace_context_cache.shouldDispatch(.{ .value = ws_id }) and
-        !self.api_state.workspace_context_pending.isInflight())
-    {
+    const dispatch_context =
+        self.api_state.workspace_context_cache.shouldDispatch(.{ .value = ws_id }) and
+        !self.api_state.workspace_context_pending.isInflight();
+    const dispatch_manifest =
+        self.api_state.workspace_manifest_cache.shouldDispatch(.{ .value = ws_id }) and
+        !self.api_state.workspace_manifest_pending.isInflight();
+    log.info("requestWorkspaceDetail module={s} ws_id={s} context={} manifest={}", .{
+        @tagName(self.selected_module),
+        ws_id,
+        dispatch_context,
+        dispatch_manifest,
+    });
+    if (dispatch_context) {
         api.specs.dispatchFromState(
             api.specs.WorkspaceIdParams,
             api.specs.WorkspaceContextPayload,
@@ -819,9 +830,7 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
             .{ .ws_id = ws_id },
         );
     }
-    if (self.api_state.workspace_manifest_cache.shouldDispatch(.{ .value = ws_id }) and
-        !self.api_state.workspace_manifest_pending.isInflight())
-    {
+    if (dispatch_manifest) {
         api.specs.dispatchFromState(
             api.specs.WorkspaceIdParams,
             api.specs.WorkspaceManifestPayload,
@@ -834,7 +843,15 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
 }
 
 pub fn refreshWorkspaceDetail(self: anytype, ws_id: []const u8) void {
-    if (!self.api_state.workspace_context_pending.isInflight()) {
+    const dispatch_context = !self.api_state.workspace_context_pending.isInflight();
+    const dispatch_manifest = !self.api_state.workspace_manifest_pending.isInflight();
+    log.info("refreshWorkspaceDetail module={s} ws_id={s} context={} manifest={}", .{
+        @tagName(self.selected_module),
+        ws_id,
+        dispatch_context,
+        dispatch_manifest,
+    });
+    if (dispatch_context) {
         api.specs.dispatchFromState(
             api.specs.WorkspaceIdParams,
             api.specs.WorkspaceContextPayload,
@@ -844,7 +861,7 @@ pub fn refreshWorkspaceDetail(self: anytype, ws_id: []const u8) void {
             .{ .ws_id = ws_id },
         );
     }
-    if (!self.api_state.workspace_manifest_pending.isInflight()) {
+    if (dispatch_manifest) {
         api.specs.dispatchFromState(
             api.specs.WorkspaceIdParams,
             api.specs.WorkspaceManifestPayload,
