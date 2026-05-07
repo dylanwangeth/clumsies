@@ -5,7 +5,8 @@ set -euo pipefail
 # Usage: ./test/hub-e2e.sh [hub-binary-path]
 
 HUB="${1:-./zig-out/bin/clumsies-hub}"
-BASE="http://127.0.0.1:8400"
+HUB_PORT="${HUB_E2E_PORT:-8400}"
+BASE="http://127.0.0.1:${HUB_PORT}"
 PASS=0
 FAIL=0
 
@@ -85,7 +86,7 @@ SQL
 
 # Start hub server in background
 start_hub() {
-    export HUB_PORT=8400
+    export HUB_PORT
     export HUB_DB_HOST=127.0.0.1
     export HUB_DB_PORT=5432
     export HUB_DB_NAME=clumsies

@@ -7,7 +7,7 @@ This page is the command surface in one place. Every command listed here is base
 | Command | Purpose |
 | --- | --- |
 | `clumsies` | launch the TUI |
-| `clumsies login` | authenticate with Hub |
+| `clumsies login` | authenticate with Hub or refresh local credentials |
 | `clumsies init` | bind the current directory to a workspace |
 | `clumsies sync` | sync local cache from Hub |
 | `clumsies adapt` | install or update an adapter |
@@ -26,6 +26,14 @@ clumsies login [--hub-url <url>] [--username <user>]
 | --- | --- |
 | `--hub-url <url>` | Hub URL. Default is `http://127.0.0.1:8400` |
 | `--username <user>` | username. Prompted if omitted |
+
+`clumsies login` is the CLI wrapper for the same auth capability the TUI uses.
+It is useful for scripting, setup, and users who prefer terminal prompts. The
+TUI remains the primary interactive entry point and should be able to enter a
+login state itself when credentials are missing.
+
+The credential store is selected with `CLUMSIES_AUTH_STORE=file|keychain|auto|memory`.
+The default is `file`, which stores credentials in `~/.clumsies/auth.json`.
 
 ## init
 

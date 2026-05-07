@@ -42,7 +42,7 @@ printf 'Starting clumsies-hub on port %s\n' "${HUB_PORT}"
 hub_pid=$!
 
 wait_for_hub
-printf 'Login from another terminal with: ./zig-out/bin/clumsies login --hub-url http://127.0.0.1:%s -u admin\n' "${HUB_PORT}"
+printf 'Open the TUI with ./zig-out/bin/clumsies and sign in, or run: ./zig-out/bin/clumsies login --hub-url http://127.0.0.1:%s -u admin\n' "${HUB_PORT}"
 
 printf 'Starting clumsies-seed with interval %sms\n' "${INTERVAL}"
 "${REPO_ROOT}/zig-out/bin/clumsies-seed" "--interval=${INTERVAL}" &

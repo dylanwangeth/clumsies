@@ -1319,28 +1319,34 @@ fn drawCreateForm(
     var row: u16 = r0;
     const label_w: u16 = 14;
 
-    row = w.writeKv(
+    w.writeText(&surface, ctx, c0, row, "Name *", theme.fg(theme.MUTED));
+    w.drawTextInputValue(
         &surface,
         ctx,
-        c0,
+        c0 + label_w + 1,
         row,
-        "Name *",
+        CREATE_BOX_W -| (label_w + 6),
         self.workspace.create_name_buf[0..self.workspace.create_name_len],
-        label_w,
+        bg,
+        theme.TEXT,
+        self.workspace.create_focus == .name,
     );
-    if (self.workspace.create_focus == .name) w.writeCursorMarker(&surface, c0 - 1, row - 1);
+    row += 1;
     row += 1;
 
-    row = w.writeKv(
+    w.writeText(&surface, ctx, c0, row, "Description", theme.fg(theme.MUTED));
+    w.drawTextInputValue(
         &surface,
         ctx,
-        c0,
+        c0 + label_w + 1,
         row,
-        "Description",
+        CREATE_BOX_W -| (label_w + 6),
         self.workspace.create_desc_buf[0..self.workspace.create_desc_len],
-        label_w,
+        bg,
+        theme.TEXT,
+        self.workspace.create_focus == .description,
     );
-    if (self.workspace.create_focus == .description) w.writeCursorMarker(&surface, c0 - 1, row - 1);
+    row += 1;
     row += 1;
 
     w.writeText(&surface, ctx, c0, row, "Bundle", theme.textOn(bg, theme.MUTED));

@@ -72,7 +72,7 @@ hero:
         <span class="home-terminal-host">lilhammer@longde</span>
         <span class="home-terminal-path">clumsies</span>
         <span class="home-terminal-prompt">%</span>
-        <span class="home-terminal-text">clumsies login --hub-url http://127.0.0.1:8400 --username admin</span>
+        <span class="home-terminal-text">clumsies</span>
       </div>
       <div class="home-terminal-line is-output">
         <span class="home-terminal-output is-dim">Password:</span>

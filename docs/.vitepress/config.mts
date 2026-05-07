@@ -99,6 +99,7 @@ export default withMermaid(
           text: "Reference",
           items: [
             { text: "Index", link: "/reference/" },
+            { text: "Auth and sessions", link: "/reference/auth" },
             { text: "Glossary", link: "/glossary" }
           ]
         }

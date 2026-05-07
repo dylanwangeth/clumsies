@@ -2,7 +2,8 @@
 
 This page is for the host runtime side. It is not the member quickstart.
 
-Members use `login`, `init`, `sync`, adapters, and the TUI. Agent hosts use the MCP server and the adapter layer.
+Members use the TUI or `login` to authenticate, then `init`, `sync`, and
+adapters. Agent hosts use the MCP server and the adapter layer.
 
 ## Where the agent path starts
 

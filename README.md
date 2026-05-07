@@ -80,7 +80,7 @@ Start the Hub:
 clumsies-hub
 ```
 
-Log in:
+Launch the TUI and sign in when prompted, or use the CLI login wrapper:
 
 ```bash
 clumsies login --hub-url http://127.0.0.1:8400 --username admin

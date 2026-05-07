@@ -17,11 +17,15 @@ const review_panel = features.review;
 const rule_detail_panel = features.review;
 const settings_panel = features.settings;
 const workspace_panel = features.workspace;
+const auth_mod = @import("../auth.zig");
+const auth_api = @import("clumsies_lib").protocol.auth_api;
+const HubClient = @import("../hub_client.zig").HubClient;
 const drafts_mod = @import("../drafts.zig");
 const workspace_rule = @import("../rule.zig");
 const workspace_config = @import("../workspace_config.zig");
 const local_content = @import("../local_content.zig");
 const runtime = @import("runtime.zig");
+const tasks = @import("tasks.zig");
 const util_hash = @import("clumsies_lib").util.hash;
 const tui_prefs = @import("prefs.zig");
 
@@ -119,6 +123,7 @@ const PathTreeState = workspace_panel.PathTreeState;
 
 const DraftTarget = features.drafts.DraftTarget;
 const PendingPrAction = features.drafts.PendingPrAction;
+const LoginFocus = enum { hub_url, username, password, submit };
 
 pub const Shell = struct {
     api_state: *api.state.ApiState,
@@ -141,6 +146,14 @@ pub const Shell = struct {
     last_workspace_id: ?[]const u8 = null,
     workspace_pref_applied: bool = false,
     tick_count: u64 = 0,
+    login_hub_url_buf: [160]u8 = .{0} ** 160,
+    login_hub_url_len: usize = 0,
+    login_username_buf: [80]u8 = .{0} ** 80,
+    login_username_len: usize = 0,
+    login_password_buf: [128]u8 = .{0} ** 128,
+    login_password_len: usize = 0,
+    login_focus: LoginFocus = .hub_url,
+    login_message: []const u8 = "",
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
     // main.zig for the lifetime of the Shell. Active workspace is
@@ -160,7 +173,7 @@ pub const Shell = struct {
             api_state.backing_allocator.dupe(u8, id) catch null
         else
             null;
-        return .{
+        var shell = Shell{
             .api_state = api_state,
             .artifact = artifact_panel.State.init(),
             .review = rule_detail_panel.State.init(),
@@ -172,6 +185,8 @@ pub const Shell = struct {
             .app = app,
             .env_map = env_map,
         };
+        shell.seedLoginDefaults();
+        return shell;
     }
 
     pub fn deinit(self: *Shell) void {
@@ -233,6 +248,17 @@ pub const Shell = struct {
         switch (event) {
             .key_press => |key| {
                 self.logKeyEvent(self.activeInputLayer(), key);
+                if (self.shouldShowLoginPanel()) {
+                    if (key.matches('c', .{ .ctrl = true })) {
+                        log.info("quit_direct", .{});
+                        ctx.consumeEvent();
+                        ctx.quit = true;
+                        return;
+                    }
+                    self.handleLoginKey(ctx, key);
+                    return;
+                }
+
                 // Confirm overlay absorbs all keys
                 if (self.show_confirm) {
                     if (key.matches('y', .{})) {
@@ -417,6 +443,8 @@ pub const Shell = struct {
                 try ctx.tick(100, self.widget());
             },
             .tick => {
+                const was_login_panel = self.shouldShowLoginPanel();
+
                 // Advance breathing cycle: 0→20→0 (2 seconds at 100ms intervals)
                 self.tick_count +%= 1;
                 self.analysis.breathing_phase = (self.analysis.breathing_phase + 1) % 21;
@@ -453,7 +481,8 @@ pub const Shell = struct {
                     self.ensureActiveWorkspaceDetailRequested();
                 }
                 self.maybeRefreshMetadata();
-                ctx.redraw = true;
+                const is_login_panel = self.shouldShowLoginPanel();
+                ctx.redraw = !is_login_panel or was_login_panel != is_login_panel;
                 try ctx.tick(100, self.widget());
             },
             else => {},
@@ -497,12 +526,21 @@ pub const Shell = struct {
         const show_workspace_drawer = self.workspace.show_drawer and self.selected_module == .workspace and
             !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
             !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form;
-        const modal_active = self.show_help or self.show_confirm or self.review.show_comment_editor or
+        const show_login_panel = self.shouldShowLoginPanel();
+        const allow_regular_overlays = !show_login_panel;
+        const modal_active = show_login_panel or self.show_help or self.show_confirm or self.review.show_comment_editor or
             self.workspace.show_create or self.drafts.show_pr_composer or
             self.drafts.show_new_draft_form or show_workspace_drawer;
         const show_notice_overlay = !modal_active and self.system_notices.hasVisible();
         var child_count: usize = 3;
-        if (modal_active) child_count += 1;
+        if (show_login_panel) child_count += 1;
+        if (allow_regular_overlays and self.show_help) child_count += 1;
+        if (allow_regular_overlays and self.show_confirm) child_count += 1;
+        if (allow_regular_overlays and self.review.show_comment_editor) child_count += 1;
+        if (allow_regular_overlays and self.workspace.show_create) child_count += 1;
+        if (allow_regular_overlays and self.drafts.show_pr_composer) child_count += 1;
+        if (allow_regular_overlays and self.drafts.show_new_draft_form) child_count += 1;
+        if (allow_regular_overlays and show_workspace_drawer) child_count += 1;
         if (show_notice_overlay) child_count += 1;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
@@ -511,7 +549,18 @@ pub const Shell = struct {
         children[2] = .{ .origin = .{ .row = header_h + body_h, .col = 0 }, .surface = try self.drawFooter(footer_ctx, footer_shortcuts) };
         var child_idx: usize = 3;
 
-        if (self.show_help) {
+        if (show_login_panel) {
+            const full_ctx = ctx.withConstraints(
+                .{ .width = size.width, .height = size.height },
+                .{ .width = size.width, .height = size.height },
+            );
+            children[child_idx] = .{
+                .origin = .{ .row = 0, .col = 0 },
+                .surface = try self.drawLoginPanel(full_ctx),
+            };
+            child_idx += 1;
+        }
+        if (allow_regular_overlays and self.show_help) {
             const drawer_w: u16 = @min(HELP_DRAWER_WIDTH, size.width -| DRAWER_SIDE_MARGIN);
             const drawer_top: u16 = header_band_h;
             if (drawer_w >= w.Drawer.min_child_width and size.height > drawer_top) {
@@ -537,7 +586,7 @@ pub const Shell = struct {
                 child_idx += 1;
             }
         }
-        if (self.show_confirm) {
+        if (allow_regular_overlays and self.show_confirm) {
             const confirm_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
@@ -545,7 +594,7 @@ pub const Shell = struct {
             children[child_idx] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawConfirmOverlay(confirm_ctx) };
             child_idx += 1;
         }
-        if (self.review.show_comment_editor) {
+        if (allow_regular_overlays and self.review.show_comment_editor) {
             const box_w: u16 = 42;
             const box_h: u16 = 8;
             const box_col = size.width -| (box_w + 2);
@@ -557,7 +606,7 @@ pub const Shell = struct {
             children[child_idx] = .{ .origin = .{ .row = box_row, .col = box_col }, .surface = try self.drawCommentEditorOverlay(comment_ctx) };
             child_idx += 1;
         }
-        if (self.workspace.show_create) {
+        if (allow_regular_overlays and self.workspace.show_create) {
             const full_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
@@ -568,7 +617,7 @@ pub const Shell = struct {
             };
             child_idx += 1;
         }
-        if (self.drafts.show_pr_composer) {
+        if (allow_regular_overlays and self.drafts.show_pr_composer) {
             const full_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
@@ -579,7 +628,7 @@ pub const Shell = struct {
             };
             child_idx += 1;
         }
-        if (self.drafts.show_new_draft_form) {
+        if (allow_regular_overlays and self.drafts.show_new_draft_form) {
             const full_ctx = ctx.withConstraints(
                 .{ .width = size.width, .height = size.height },
                 .{ .width = size.width, .height = size.height },
@@ -590,7 +639,7 @@ pub const Shell = struct {
             };
             child_idx += 1;
         }
-        if (show_workspace_drawer) {
+        if (allow_regular_overlays and show_workspace_drawer) {
             const drawer_w: u16 = @min(WORKSPACE_DRAWER_WIDTH, size.width -| DRAWER_SIDE_MARGIN);
             const drawer_top: u16 = 1;
             if (drawer_w > 0 and size.height > drawer_top) {
@@ -729,6 +778,12 @@ pub const Shell = struct {
             .{ .key = "w", .label = "close" },
             .{ .key = "Esc", .label = "close" },
         };
+        if (self.shouldShowLoginPanel()) return &.{
+            .{ .key = "Tab", .label = "next field" },
+            .{ .key = "Enter", .label = "continue" },
+            .{ .key = "Esc", .label = "quit" },
+            .{ .key = "Ctrl+C", .label = "quit" },
+        };
 
         return switch (self.selected_module) {
             .dashboard => dashboard_panel.shortcuts(self),
@@ -837,6 +892,268 @@ pub const Shell = struct {
         else
             try rule_detail_panel.drawEmbeddedEmpty(self, detail_ctx);
         return artifact_panel.drawRoot(self, ctx, list_surface, detail_surface);
+    }
+
+    fn seedLoginDefaults(self: *Shell) void {
+        const default_url = "http://127.0.0.1:8400";
+        @memcpy(self.login_hub_url_buf[0..default_url.len], default_url);
+        self.login_hub_url_len = default_url.len;
+        self.login_focus = .username;
+    }
+
+    fn shouldShowLoginPanel(self: *const Shell) bool {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.current_user != null) return false;
+        return switch (self.api_state.status) {
+            .disconnected, .error_auth, .error_network => true,
+            else => false,
+        };
+    }
+
+    fn handleLoginKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (key.matches(vaxis.Key.escape, .{})) {
+            ctx.consumeEvent();
+            ctx.quit = true;
+            return;
+        }
+        if (key.matches(vaxis.Key.tab, .{})) {
+            self.login_focus = nextLoginFocus(self.login_focus);
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.enter, .{})) {
+            if (self.login_focus == .password or self.login_focus == .submit) {
+                self.submitLoginForm();
+            } else {
+                self.login_focus = nextLoginFocus(self.login_focus);
+            }
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (self.login_focus == .submit) {
+            ctx.consumeEvent();
+            return;
+        }
+
+        var input = switch (self.login_focus) {
+            .hub_url => w.TextInput{ .buf = &self.login_hub_url_buf, .len = &self.login_hub_url_len },
+            .username => w.TextInput{ .buf = &self.login_username_buf, .len = &self.login_username_len },
+            .password => w.TextInput{ .buf = &self.login_password_buf, .len = &self.login_password_len },
+            .submit => unreachable,
+        };
+        switch (input.handleKey(key)) {
+            .consumed => {
+                self.login_message = "";
+                ctx.consumeAndRedraw();
+            },
+            .cancel => {
+                self.login_password_len = 0;
+                self.login_message = "";
+                ctx.consumeAndRedraw();
+            },
+            else => ctx.consumeEvent(),
+        }
+    }
+
+    fn submitLoginForm(self: *Shell) void {
+        const hub_url_raw = self.login_hub_url_buf[0..self.login_hub_url_len];
+        const username = self.login_username_buf[0..self.login_username_len];
+        const password = self.login_password_buf[0..self.login_password_len];
+        if (hub_url_raw.len == 0 or username.len == 0 or password.len == 0) {
+            self.login_message = "Hub URL, username, and password are required.";
+            return;
+        }
+
+        const alloc = self.api_state.backing_allocator;
+        const hub_url = normalizeLoginHubUrl(alloc, hub_url_raw) catch {
+            self.login_message = "Hub URL must use http:// or https://.";
+            return;
+        };
+        defer alloc.free(hub_url);
+
+        const LoginBody = struct { username: []const u8, credential: []const u8 };
+        const body = std.json.Stringify.valueAlloc(alloc, LoginBody{
+            .username = username,
+            .credential = password,
+        }, .{}) catch {
+            self.login_message = "Could not build login request.";
+            return;
+        };
+        defer alloc.free(body);
+
+        api.state.setConnectionStatus(self.api_state, .connecting);
+        var client = HubClient.init(alloc, hub_url, null);
+        defer client.deinit();
+        const response = client.post("/api/auth/login", body) catch {
+            api.state.setConnectionStatus(self.api_state, .error_network);
+            self.login_message = "Hub is unreachable. Check the URL and server.";
+            return;
+        };
+        defer response.deinit();
+
+        if (response.status == .unauthorized) {
+            api.state.setConnectionStatus(self.api_state, .error_auth);
+            self.login_message = "Invalid credentials. Invited users can still use clumsies login to activate.";
+            return;
+        }
+        if (response.status != .ok) {
+            api.state.setConnectionStatus(self.api_state, .error_auth);
+            self.login_message = "Login failed. Check Hub logs for details.";
+            return;
+        }
+
+        const parsed = std.json.parseFromSlice(auth_api.LoginResponse, alloc, response.body, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch {
+            api.state.setConnectionStatus(self.api_state, .error_auth);
+            self.login_message = "Hub returned an invalid login response.";
+            return;
+        };
+        defer parsed.deinit();
+
+        _ = auth_mod.saveAuth(alloc, hub_url, username, parsed.value.access_token, parsed.value.refresh_token) catch {};
+        api.fetch.startFetch(self.api_state, hub_url, username, parsed.value.access_token, parsed.value.refresh_token) catch {
+            api.state.setConnectionStatus(self.api_state, .error_network);
+            self.login_message = "Logged in, but startup fetch failed.";
+            return;
+        };
+        tasks.attestation_upload.start(self.api_state) catch {};
+        @memset(&self.login_password_buf, 0);
+        self.login_password_len = 0;
+        self.login_message = "Signed in.";
+    }
+
+    fn drawLoginPanel(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
+        w.fillSurface(&surface, theme.CANVAS);
+        const box_w: u16 = @min(@as(u16, 58), surface.size.width -| 6);
+        const box_h: u16 = 14;
+        const col: u16 = (surface.size.width - box_w) / 2;
+        const row: u16 = if (surface.size.height > box_h) (surface.size.height - box_h) / 2 else 0;
+        const panel_ctx = ctx.withConstraints(
+            .{ .width = box_w, .height = box_h },
+            .{ .width = box_w, .height = box_h },
+        );
+        const panel = try self.drawLoginPanelBox(panel_ctx, box_w, box_h);
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+        children[0] = .{ .origin = .{ .row = row, .col = col }, .surface = panel };
+        surface.children = children;
+        return surface;
+    }
+
+    fn drawLoginPanelBox(self: *Shell, ctx: vxfw.DrawContext, width: u16, height: u16) std.mem.Allocator.Error!vxfw.Surface {
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        w.fillSurface(&surface, theme.PANEL_ALT);
+        w.drawBorder(&surface, theme.BORDER_MUTED, theme.PANEL_ALT);
+        w.writeText(&surface, ctx, 4, 2, "Connect to Hub", theme.boldOn(theme.PANEL_ALT, theme.ACCENT_SOFT));
+
+        const field_start: u16 = 4;
+        self.drawLoginField(&surface, ctx, 4, field_start, "Hub", self.login_hub_url_buf[0..self.login_hub_url_len], .hub_url);
+        self.drawLoginField(&surface, ctx, 4, field_start + 2, "User", self.login_username_buf[0..self.login_username_len], .username);
+        const password_mask = try ctx.arena.alloc(u8, self.login_password_len);
+        @memset(password_mask, '*');
+        self.drawLoginField(&surface, ctx, 4, field_start + 4, "Pass", password_mask, .password);
+
+        self.drawLoginSubmit(&surface, ctx, 4, field_start + 6);
+        if (self.login_message.len > 0) {
+            _ = self.drawLoginWrappedText(&surface, ctx, 4, field_start + 8, self.login_message, theme.textOn(theme.PANEL_ALT, theme.DANGER), 2);
+        }
+        return surface;
+    }
+
+    fn drawLoginWrappedText(
+        self: *Shell,
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        col: u16,
+        row: u16,
+        text: []const u8,
+        style: vaxis.Style,
+        max_lines: u16,
+    ) u16 {
+        _ = self;
+        const max_width = surface.size.width -| (col + 2);
+        if (max_width == 0 or max_lines == 0) return row;
+
+        var out_row = row;
+        var rest = text;
+        var lines_left = max_lines;
+        while (rest.len > 0 and lines_left > 0 and out_row < surface.size.height -| 1) {
+            const line_len = wrappedLineLen(ctx, rest, max_width);
+            if (line_len == 0) break;
+            w.writeText(surface, ctx, col, out_row, rest[0..line_len], style);
+            rest = trimLeadingSpaces(rest[line_len..]);
+            out_row += 1;
+            lines_left -= 1;
+        }
+        return out_row;
+    }
+
+    fn drawLoginField(
+        self: *Shell,
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        col: u16,
+        row: u16,
+        label: []const u8,
+        value: []const u8,
+        focus: LoginFocus,
+    ) void {
+        const active = self.login_focus == focus;
+        const field_col = col + 9;
+        const field_w = surface.size.width -| (field_col + 5);
+        const field_bg = if (active) theme.PANEL else theme.PANEL_ALT;
+        self.paintLoginField(surface, field_col -| 1, row, field_w +| 2, field_bg);
+        w.writeText(surface, ctx, col, row, " ", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        w.writeText(surface, ctx, col + 2, row, label, theme.textOn(theme.PANEL_ALT, if (active) theme.TEXT_SOFT else theme.MUTED));
+        const value_w = field_w -| 1;
+        w.drawTextInputValue(surface, ctx, field_col, row, value_w, value, field_bg, theme.TEXT, active);
+    }
+
+    fn paintLoginField(self: *Shell, surface: *vxfw.Surface, col: u16, row: u16, width: u16, bg: vaxis.Color) void {
+        _ = self;
+        var i: u16 = 0;
+        while (i < width and col + i < surface.size.width -| 1 and row < surface.size.height) : (i += 1) {
+            surface.writeCell(col + i, row, theme.blank(bg));
+        }
+    }
+
+    fn drawLoginSubmit(self: *Shell, surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u16) void {
+        const active = self.login_focus == .submit;
+        const bg = if (active) theme.PANEL else theme.PANEL_ALT;
+        const fg = if (active) theme.TEXT else theme.TEXT_SOFT;
+        if (active) self.paintLoginField(surface, col + 9, row, 10, bg);
+        w.writeText(surface, ctx, col, row, " ", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        w.writeText(surface, ctx, col + 11, row, "Sign in", .{ .fg = fg, .bg = bg, .bold = active });
+    }
+
+    fn nextLoginFocus(focus: LoginFocus) LoginFocus {
+        return switch (focus) {
+            .hub_url => .username,
+            .username => .password,
+            .password => .submit,
+            .submit => .hub_url,
+        };
+    }
+
+    fn normalizeLoginHubUrl(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len == 0) return error.InvalidHubUrl;
+        const with_scheme = if (std.mem.indexOf(u8, trimmed, "://") == null)
+            try std.fmt.allocPrint(allocator, "http://{s}", .{trimmed})
+        else
+            try allocator.dupe(u8, trimmed);
+        errdefer allocator.free(with_scheme);
+        if (!std.mem.startsWith(u8, with_scheme, "http://") and !std.mem.startsWith(u8, with_scheme, "https://")) {
+            return error.UnsupportedHubUrlScheme;
+        }
+        const normalized = std.mem.trimRight(u8, with_scheme, "/");
+        if (normalized.len == with_scheme.len) return with_scheme;
+        const copy = try allocator.dupe(u8, normalized);
+        allocator.free(with_scheme);
+        return copy;
     }
 
     fn drawReview(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -2287,7 +2604,14 @@ pub const Shell = struct {
     fn consumeSignOutResult(self: *Shell) void {
         const result = self.api_state.sign_out_pending.consume() orelse return;
         switch (result) {
-            .ok => self.notifyOp(.success, "Token revoked. Please re-login."),
+            .ok => {
+                auth_mod.clearAuth(self.api_state.backing_allocator) catch |err| {
+                    log.warn("clear_auth_failed error={s}", .{@errorName(err)});
+                };
+                self.api_state.clearAuthSession();
+                self.show_settings = false;
+                self.notifyOp(.success, "Signed out.");
+            },
             .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "Token revoke failed", e)),
             .network_error => self.notifyOp(.failure, "Token revoke failed: network error."),
             .invalid_response => self.notifyOp(.failure, "Token revoke failed: malformed response."),
@@ -2844,13 +3168,8 @@ pub const Shell = struct {
         const result = try modal.draw(ctx, self.widget());
         var surface = result.surface;
 
-        // Input text with cursor
         const input_text = self.review.comment_input_buf[0..self.review.comment_input_len];
-        const max_visible: usize = @as(usize, box_w -| 4);
-        const visible_start = if (input_text.len > max_visible) input_text.len - max_visible else 0;
-        const visible = input_text[visible_start..];
-        const display = try std.fmt.allocPrint(ctx.arena, "{s}_", .{visible});
-        w.writeText(&surface, ctx, result.content_col, result.content_row, display, theme.textOn(theme.PANEL_ALT, theme.TEXT));
+        w.drawTextInputValue(&surface, ctx, result.content_col, result.content_row, box_w -| 4, input_text, theme.PANEL_ALT, theme.TEXT, true);
 
         return surface;
     }
@@ -3853,18 +4172,11 @@ pub const Shell = struct {
         const title_label: []const u8 = if (self.drafts.pr_composer_focus == .title) "title:" else "title:";
         w.writeText(&surface, ctx, col, row, title_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
         const title_text = self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len];
-        const max_visible: usize = @as(usize, box_w -| 4);
-        const title_start = if (title_text.len > max_visible) title_text.len - max_visible else 0;
-        const title_visible = title_text[title_start..];
-        const title_display = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ title_visible, if (self.drafts.pr_composer_focus == .title) "_" else "" });
-        w.writeText(&surface, ctx, col + 6, row, title_display, title_style);
+        w.drawTextInputValue(&surface, ctx, col + 6, row, box_w -| 12, title_text, theme.PANEL_ALT, title_style.fg, self.drafts.pr_composer_focus == .title);
 
         w.writeText(&surface, ctx, col, row + 2, "body:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         const body_text = self.drafts.pr_composer_body_buf[0..self.drafts.pr_composer_body_len];
-        const body_start = if (body_text.len > max_visible) body_text.len - max_visible else 0;
-        const body_visible = body_text[body_start..];
-        const body_display = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ body_visible, if (self.drafts.pr_composer_focus == .body) "_" else "" });
-        w.writeText(&surface, ctx, col + 6, row + 2, body_display, body_style);
+        w.drawTextInputValue(&surface, ctx, col + 6, row + 2, box_w -| 12, body_text, theme.PANEL_ALT, body_style.fg, self.drafts.pr_composer_focus == .body);
 
         return surface;
     }
@@ -3999,11 +4311,7 @@ pub const Shell = struct {
 
         w.writeText(&surface, ctx, col, row, "path:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         const path_text = self.drafts.new_draft_path_buf[0..self.drafts.new_draft_path_len];
-        const max_visible: usize = @as(usize, box_w -| 4);
-        const visible_start = if (path_text.len > max_visible) path_text.len - max_visible else 0;
-        const visible = path_text[visible_start..];
-        const display = try std.fmt.allocPrint(ctx.arena, "{s}_", .{visible});
-        w.writeText(&surface, ctx, col, row + 1, display, theme.textOn(theme.PANEL_ALT, theme.TEXT));
+        w.drawTextInputValue(&surface, ctx, col, row + 1, box_w -| 4, path_text, theme.PANEL_ALT, theme.TEXT, true);
         w.writeText(&surface, ctx, col, row + 3, hint, theme.fg(theme.MUTED));
 
         return surface;
@@ -4101,6 +4409,7 @@ pub const Shell = struct {
     fn activeInputLayer(self: *const Shell) []const u8 {
         if (self.show_confirm) return "confirm";
         if (self.show_help) return "help";
+        if (self.shouldShowLoginPanel()) return "login";
         if (self.workspace.show_drawer) return "workspace_drawer";
         if (self.workspace.show_create) return "workspace_create";
         if (self.review.show_comment_editor) return "comment_editor";

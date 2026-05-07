@@ -19,8 +19,8 @@ pub const Response = struct {
 };
 
 /// Callback invoked after a successful token refresh so the caller
-/// can persist the rotated pair (typically to the keychain or the
-/// auth.json fallback). Failures are swallowed inside HubClient —
+/// can persist the rotated pair to the configured credential store.
+/// Failures are swallowed inside HubClient —
 /// the in-memory tokens are already updated and the current request
 /// will succeed with them; the next process will simply have to
 /// refresh again.

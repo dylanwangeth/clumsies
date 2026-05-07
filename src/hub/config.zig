@@ -10,6 +10,7 @@ db_name: []const u8,
 db_user: []const u8,
 db_password: []const u8,
 token_ttl_seconds: u32,
+refresh_token_ttl_seconds: u32,
 
 const Config = @This();
 
@@ -23,6 +24,7 @@ pub fn fromEnv(env_map: *const std.process.EnvMap) Config {
         .db_user = getEnvStr(env_map, "HUB_DB_USER", "clumsies"),
         .db_password = getEnvStr(env_map, "HUB_DB_PASSWORD", "clumsies"),
         .token_ttl_seconds = getEnvInt(env_map, u32, "HUB_TOKEN_TTL", 3600),
+        .refresh_token_ttl_seconds = getEnvInt(env_map, u32, "HUB_REFRESH_TOKEN_TTL", 90 * 24 * 60 * 60),
     };
 }
 

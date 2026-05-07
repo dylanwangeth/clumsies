@@ -282,7 +282,14 @@ fn printHubRequestError(stderr: *std.Io.Writer, hub_url: []const u8, err: anyerr
 }
 
 fn printStorageNote(stderr: *std.Io.Writer, allocator: std.mem.Allocator, save_location: auth_mod.SaveLocation) !void {
-    if (save_location != .file_fallback) return;
+    switch (save_location) {
+        .file_fallback => {},
+        .memory => {
+            try stderr.print("{s}Note: credentials were kept in memory and will not persist after this process exits\n", .{P});
+            return;
+        },
+        else => return,
+    }
 
     const base = auth_mod.getBasePath(allocator) catch {
         try stderr.print("{s}Note: Keychain was unavailable; credentials were stored in ~/.clumsies/auth.json\n", .{P});
@@ -338,6 +345,14 @@ test "LoginResponse parsing ignores expires_in" {
 
     try testing.expectEqualStrings("acc", parsed.value.access_token);
     try testing.expectEqualStrings("ref", parsed.value.refresh_token);
+}
+
+test "auth store parser accepts supported modes" {
+    try testing.expectEqual(auth_mod.AuthStore.file, auth_mod.parseStore("file").?);
+    try testing.expectEqual(auth_mod.AuthStore.keychain, auth_mod.parseStore("KEYCHAIN").?);
+    try testing.expectEqual(auth_mod.AuthStore.auto, auth_mod.parseStore(" auto ").?);
+    try testing.expectEqual(auth_mod.AuthStore.memory, auth_mod.parseStore("memory").?);
+    try testing.expect(auth_mod.parseStore("system") == null);
 }
 
 test "normalizeHubUrl adds http scheme for host:port input" {

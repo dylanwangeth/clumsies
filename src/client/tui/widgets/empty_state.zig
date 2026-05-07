@@ -29,7 +29,7 @@ pub const EmptyState = struct {
     pub fn message(self: *const EmptyState, arena: std.mem.Allocator) []const u8 {
         return switch (self.status) {
             .connecting => std.fmt.allocPrint(arena, "Loading {s}...", .{self.entity_name}) catch "Loading...",
-            .error_auth => "Not authenticated. Run clumsies login.",
+            .error_auth => "Authentication required. Use the login panel to continue.",
             .error_network => "Hub unavailable. Check clumsies-hub.",
             .disconnected => "Not connected to hub.",
             .connected => std.fmt.allocPrint(arena, "No {s} loaded.", .{self.entity_name}) catch "No data loaded.",

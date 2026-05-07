@@ -85,6 +85,7 @@ The Hub reads its runtime config from environment variables.
 | `HUB_DB_USER` | `clumsies` |
 | `HUB_DB_PASSWORD` | `clumsies` |
 | `HUB_TOKEN_TTL` | `3600` |
+| `HUB_REFRESH_TOKEN_TTL` | `7776000` |
 
 Bootstrap user and org settings:
 
@@ -121,7 +122,7 @@ On first start, the Hub runs migrations and bootstraps the first org and first m
 
 ## Step 5: verify with the bootstrap maintainer
 
-From another terminal:
+From another terminal or from the TUI login state:
 
 ```bash
 clumsies login --hub-url http://127.0.0.1:8400 --username admin
