@@ -48,17 +48,55 @@ pub const TextInput = struct {
         max_width: u16,
     ) void {
         const text = self.buf[0..self.len.*];
-        const max_visible: usize = @as(usize, max_width);
-        const visible_start = if (text.len > max_visible) text.len - max_visible else 0;
-        const visible = text[visible_start..];
-        const display = std.fmt.allocPrint(ctx.arena, "{s}_", .{visible}) catch return;
-        d.writeText(surface, ctx, col, row, display, .{ .fg = theme.TEXT, .bg = self.bg });
+        drawValue(surface, ctx, col, row, max_width, text, self.bg, theme.TEXT, true);
     }
 
     pub fn clear(self: *TextInput) void {
         self.len.* = 0;
     }
 };
+
+pub fn drawValue(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    col: u16,
+    row: u16,
+    max_width: u16,
+    text: []const u8,
+    bg: vaxis.Color,
+    fg: vaxis.Color,
+    focused: bool,
+) void {
+    if (max_width == 0) return;
+    const visible = trailingTextForWidth(ctx, text, max_width -| 1);
+    d.writeText(surface, ctx, col, row, visible, .{ .fg = fg, .bg = bg });
+    if (focused) {
+        const visible_width: u16 = @intCast(ctx.stringWidth(visible));
+        const cursor_col = @min(col + visible_width, surface.size.width -| 1);
+        surface.cursor = .{
+            .row = row,
+            .col = cursor_col,
+            .shape = .block_blink,
+        };
+    }
+}
+
+pub fn trailingTextForWidth(ctx: vxfw.DrawContext, text: []const u8, max_width: u16) []const u8 {
+    if (max_width == 0 or text.len == 0) return "";
+    if (ctx.stringWidth(text) <= max_width) return text;
+
+    var start: usize = text.len;
+    while (start > 0) {
+        start -= 1;
+        while (start > 0 and (text[start] & 0xc0) == 0x80) : (start -= 1) {}
+        if (ctx.stringWidth(text[start..]) > max_width) {
+            const seq_len: usize = std.unicode.utf8ByteSequenceLength(text[start]) catch 1;
+            const next = start + seq_len;
+            return text[@min(next, text.len)..];
+        }
+    }
+    return text[start..];
+}
 
 test "TextInput handleKey appends printable characters" {
     var buf: [16]u8 = undefined;

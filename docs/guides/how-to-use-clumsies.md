@@ -14,9 +14,13 @@ A normal member flow looks like this:
 
 That is the member path. The MCP server belongs to the agent runtime path, not to the normal user path.
 
-## Step 1: log in
+## Step 1: connect and log in
 
-Use `login` to authenticate against the Hub:
+Launch `clumsies` to use the TUI. If the client has no usable credentials, the
+TUI should enter a login state instead of requiring a separate command first.
+
+The CLI login command is still available as a direct credential-management
+entry point:
 
 ```bash
 clumsies login --hub-url http://127.0.0.1:8400 --username admin

@@ -99,7 +99,11 @@ This directory is not one generic cache. It contains several different state typ
 | `~/.clumsies/workspaces/{ws_id}/cache/` | materialized rules, context, and meta prompt |
 | `~/.clumsies/adapters/installs/{install_id}/` | adapter install state and removal history |
 
-On macOS, auth prefers keychain storage first. `auth.json` is a fallback path rather than the primary path.
+Auth uses the credential store selected by `CLUMSIES_AUTH_STORE`. The default
+store is `file`, which writes `~/.clumsies/auth.json`. macOS Keychain remains
+available through `CLUMSIES_AUTH_STORE=keychain` or `auto`, but it is not the
+default because repeated system password prompts are too disruptive for normal
+TUI startup and local development.
 
 ## `config.toml`: local bindings and server target
 
@@ -286,9 +290,14 @@ That is why adapter belongs in architecture and runtime docs, not just in a setu
 
 ## Auth state
 
-Auth is another place where local runtime details matter. The current implementation prefers OS-native keychain storage on macOS. When that is not available, the runtime falls back to `~/.clumsies/auth.json`.
+Auth is another place where local runtime details matter. The current
+implementation supports file, Keychain, auto, and memory-backed credential
+stores. The default file store is intentionally low-friction; stricter
+deployments can opt into Keychain.
 
-That means auth problems can be machine-specific even when the server is fine. If one machine behaves differently from another, the first question is often whether both are using the same auth storage path.
+That means auth problems can be machine-specific even when the server is fine.
+If one machine behaves differently from another, the first question is often
+whether both are using the same auth store and Hub URL.
 
 ## Attestation buffering
 
@@ -312,7 +321,7 @@ The current runtime leaves enough local state behind that filesystem inspection 
 | workspace content looks stale | `~/.clumsies/workspaces/{ws_id}/manifest.json` and `cache/` |
 | agent bootstrap does not match workspace state | cached `META_PROMPT.md` |
 | adapter remove or update behaves unexpectedly | install `manifest.json` and `wal.jsonl` |
-| auth differs between machines | keychain usage versus `auth.json` fallback |
+| auth differs between machines | `CLUMSIES_AUTH_STORE`, `auth.json`, or Keychain state |
 | agent runtime sees a different workspace than expected | `config.toml` bindings |
 
 ## One implementation gap worth calling out

@@ -1,5 +1,6 @@
-//! Authentication credential storage. Persists Hub URL, username, and tokens to the macOS
-//! Keychain (file fallback on other platforms). Shared by CLI login, MCP startup, and TUI init.
+//! Authentication credential storage. Persists Hub URL, username, and tokens
+//! to the configured local credential store. Shared by CLI login, MCP startup,
+//! and TUI init.
 const std = @import("std");
 const build_options = @import("build_options");
 const enable_keychain = build_options.enable_keychain;
@@ -23,10 +24,19 @@ pub const SaveLocation = enum {
     keychain,
     file_default,
     file_fallback,
+    memory,
+};
+
+pub const AuthStore = enum {
+    file,
+    keychain,
+    auto,
+    memory,
 };
 
 const SERVICE_NAME = "clumsies";
 const ACCOUNT_NAME = "hub-auth";
+const STORE_ENV = "CLUMSIES_AUTH_STORE";
 
 pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch
@@ -46,16 +56,29 @@ pub fn saveAuth(allocator: std.mem.Allocator, hub_url: []const u8, username: []c
     const json = std.json.Stringify.valueAlloc(allocator, payload, .{}) catch return error.SerializationFailed;
     defer allocator.free(json);
 
-    if (comptime enable_keychain) {
-        keychainStore(json) catch |err| {
-            log.warn("keychain store failed ({s}); falling back to auth.json", .{@errorName(err)});
+    switch (try currentStore(allocator)) {
+        .file => {
             try fileFallbackStore(allocator, json);
-            return .file_fallback;
-        };
-        return .keychain;
-    } else {
-        try fileFallbackStore(allocator, json);
-        return .file_default;
+            return .file_default;
+        },
+        .keychain => {
+            if (comptime !enable_keychain) return error.KeychainUnavailable;
+            try keychainStore(json);
+            return .keychain;
+        },
+        .auto => {
+            if (comptime enable_keychain) {
+                keychainStore(json) catch |err| {
+                    log.warn("keychain store failed ({s}); falling back to auth.json", .{@errorName(err)});
+                    try fileFallbackStore(allocator, json);
+                    return .file_fallback;
+                };
+                return .keychain;
+            }
+            try fileFallbackStore(allocator, json);
+            return .file_default;
+        },
+        .memory => return .memory,
     }
 }
 
@@ -74,15 +97,25 @@ pub fn persistRotatedTokens(
 }
 
 pub fn loadAuth(allocator: std.mem.Allocator) !AuthInfo {
-    const json = if (comptime enable_keychain)
-        keychainLookup(allocator) catch |err| blk: {
-            if (err != error.NotAuthenticated) {
-                log.warn("keychain lookup failed ({s}); trying auth.json", .{@errorName(err)});
+    const json = switch (try currentStore(allocator)) {
+        .file => fileFallbackLoad(allocator) catch return error.NotAuthenticated,
+        .keychain => blk: {
+            if (comptime !enable_keychain) return error.NotAuthenticated;
+            break :blk keychainLookup(allocator) catch return error.NotAuthenticated;
+        },
+        .auto => blk: {
+            if (comptime enable_keychain) {
+                break :blk keychainLookup(allocator) catch |err| inner: {
+                    if (err != error.NotAuthenticated) {
+                        log.warn("keychain lookup failed ({s}); trying auth.json", .{@errorName(err)});
+                    }
+                    break :inner fileFallbackLoad(allocator) catch return error.NotAuthenticated;
+                };
             }
             break :blk fileFallbackLoad(allocator) catch return error.NotAuthenticated;
-        }
-    else
-        fileFallbackLoad(allocator) catch return error.NotAuthenticated;
+        },
+        .memory => return error.NotAuthenticated,
+    };
     defer allocator.free(json);
 
     const parsed = std.json.parseFromSlice(AuthJson, allocator, json, .{ .allocate = .alloc_always }) catch return error.NotAuthenticated;
@@ -96,12 +129,52 @@ pub fn loadAuth(allocator: std.mem.Allocator) !AuthInfo {
     };
 }
 
+pub fn clearAuth(allocator: std.mem.Allocator) !void {
+    switch (try currentStore(allocator)) {
+        .file => try fileFallbackDelete(allocator),
+        .keychain => {
+            if (comptime !enable_keychain) return error.KeychainUnavailable;
+            try keychainDelete();
+        },
+        .auto => {
+            if (comptime enable_keychain) keychainDelete() catch |err| {
+                if (err != error.NotAuthenticated) {
+                    log.warn("keychain delete failed ({s}); deleting auth.json", .{@errorName(err)});
+                }
+            };
+            try fileFallbackDelete(allocator);
+        },
+        .memory => {},
+    }
+}
+
 const AuthJson = struct {
     hub_url: []const u8,
     username: []const u8,
     access_token: []const u8,
     refresh_token: []const u8,
 };
+
+pub fn currentStore(allocator: std.mem.Allocator) !AuthStore {
+    const raw = std.process.getEnvVarOwned(allocator, STORE_ENV) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return .file,
+        else => return err,
+    };
+    defer allocator.free(raw);
+    return parseStore(raw) orelse {
+        log.warn("invalid {s}={s}; using file auth store", .{ STORE_ENV, raw });
+        return .file;
+    };
+}
+
+pub fn parseStore(raw: []const u8) ?AuthStore {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (std.ascii.eqlIgnoreCase(trimmed, "file")) return .file;
+    if (std.ascii.eqlIgnoreCase(trimmed, "keychain")) return .keychain;
+    if (std.ascii.eqlIgnoreCase(trimmed, "auto")) return .auto;
+    if (std.ascii.eqlIgnoreCase(trimmed, "memory")) return .memory;
+    return null;
+}
 
 // macOS Keychain via Security framework
 const c = if (enable_keychain) @cImport({
@@ -192,6 +265,34 @@ fn keychainLookup(allocator: std.mem.Allocator) ![]const u8 {
     return try allocator.dupe(u8, bytes[0..@as(usize, @intCast(password_len))]);
 }
 
+fn keychainDelete() !void {
+    if (comptime !enable_keychain) return error.NotAuthenticated;
+
+    var item: c.SecKeychainItemRef = null;
+    const status = c.SecKeychainFindGenericPassword(
+        null,
+        @as(c.UInt32, @intCast(SERVICE_NAME.len)),
+        @as([*c]const u8, @ptrCast(SERVICE_NAME.ptr)),
+        @as(c.UInt32, @intCast(ACCOUNT_NAME.len)),
+        @as([*c]const u8, @ptrCast(ACCOUNT_NAME.ptr)),
+        null,
+        null,
+        &item,
+    );
+    defer if (item != null) c.CFRelease(item);
+
+    if (status == c.errSecItemNotFound) return error.NotAuthenticated;
+    if (status != c.errSecSuccess) {
+        log.warn("SecKeychainFindGenericPassword for delete failed with OSStatus {d}", .{status});
+        return error.KeychainError;
+    }
+    const delete_status = c.SecKeychainItemDelete(item);
+    if (delete_status != c.errSecSuccess) {
+        log.warn("SecKeychainItemDelete failed with OSStatus {d}", .{delete_status});
+        return error.KeychainError;
+    }
+}
+
 // File fallback for non-macOS (Linux CI etc)
 fn fileFallbackStore(allocator: std.mem.Allocator, data: []const u8) !void {
     const base = try getBasePath(allocator);
@@ -225,4 +326,15 @@ fn fileFallbackLoad(allocator: std.mem.Allocator) ![]const u8 {
     }
     if (total == 0) return error.NotAuthenticated;
     return try allocator.dupe(u8, buf[0..total]);
+}
+
+fn fileFallbackDelete(allocator: std.mem.Allocator) !void {
+    const base = try getBasePath(allocator);
+    defer allocator.free(base);
+    const path = try std.fs.path.join(allocator, &.{ base, "auth.json" });
+    defer allocator.free(path);
+    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
 }

@@ -137,7 +137,7 @@ fn handlePageAction(
         .account => {
             if (key.matches('x', .{})) {
                 self.confirm_message = "sign out";
-                self.confirm_action = .remove_member;
+                self.confirm_action = .revoke_token;
                 self.show_confirm = true;
                 ctx.consumeAndRedraw();
                 return true;
@@ -289,7 +289,7 @@ fn handleAccountAction(
     }
     if (key.matches('x', .{})) {
         self.confirm_message = "sign out";
-        self.confirm_action = .remove_member;
+        self.confirm_action = .revoke_token;
         self.show_confirm = true;
         ctx.consumeAndRedraw();
         return;

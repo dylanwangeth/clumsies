@@ -113,7 +113,7 @@ pub fn handleLogin(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     const access_token = generateToken(req.arena, conn, user_id, "access", scopes, ctx.config.token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
-    const refresh_token = generateToken(req.arena, conn, user_id, "refresh", scopes, ctx.config.token_ttl_seconds * 24) catch {
+    const refresh_token = generateToken(req.arena, conn, user_id, "refresh", scopes, ctx.config.refresh_token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
 
@@ -170,7 +170,7 @@ pub fn handleRefresh(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     const access_token = generateToken(req.arena, conn, user_id, "access", scopes, ctx.config.token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
-    const new_refresh_token = generateToken(req.arena, conn, user_id, "refresh", scopes, ctx.config.token_ttl_seconds * 24) catch {
+    const new_refresh_token = generateToken(req.arena, conn, user_id, "refresh", scopes, ctx.config.refresh_token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
 
@@ -695,7 +695,7 @@ pub fn handleActivate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     const access_token = generateToken(req.arena, conn, user_id, "access", default_scopes, ttl) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
-    const refresh_token = generateToken(req.arena, conn, user_id, "refresh", default_scopes, ttl * 24) catch {
+    const refresh_token = generateToken(req.arena, conn, user_id, "refresh", default_scopes, ctx.config.refresh_token_ttl_seconds) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "token generation failed");
     };
 

@@ -20,7 +20,10 @@ The analysis view shows why the TUI matters as its own surface. This is the kind
 
 ## Why the TUI exists
 
-CLI is good at discrete actions: login, init, sync, and adapter install. It is not good at sustained observation, comparison, or review-heavy work.
+CLI is good at discrete setup actions such as init, sync, and adapter install.
+Login is shared between CLI and TUI: the TUI should be able to enter a login
+state itself when credentials are missing. The CLI is not good at sustained
+observation, comparison, or review-heavy work.
 
 The TUI exists because the product needs a place where a human can keep state in view and move through it without constantly reissuing commands. That is especially important for:
 

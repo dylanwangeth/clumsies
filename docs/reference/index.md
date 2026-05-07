@@ -10,6 +10,7 @@ Use this part of the docs when you already understand the system shape and need 
 | --- | --- |
 | what a project term means right now | [Glossary](/glossary) |
 | which local files clumsies writes under `~/.clumsies` | [Runtime surfaces](/runtime) and [Workspace](/workspace) |
+| how login, token refresh, and local credential storage work | [Auth and sessions](/reference/auth) |
 | how runtime evidence is buffered and uploaded | [Attestation](/attestation) |
 | which MCP tools are part of the current implementation | [MCP](/mcp) |
 | which commands and flags exist today | [CLI reference](/guides/cli-commands) |

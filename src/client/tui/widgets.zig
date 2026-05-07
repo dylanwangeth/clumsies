@@ -76,6 +76,8 @@ pub const Modal = modal_mod.Modal;
 
 pub const TextInputResult = text_input.TextInputResult;
 pub const TextInput = text_input.TextInput;
+pub const drawTextInputValue = text_input.drawValue;
+pub const trailingTextForWidth = text_input.trailingTextForWidth;
 pub const ContentView = content_view.ContentView;
 pub const ThreadView = thread_view.ThreadView;
 pub const ThreadItem = thread_view.Item;

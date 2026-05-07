@@ -244,6 +244,22 @@ pub const ApiState = struct {
         if (old_access) |token| alloc.free(token);
         if (old_refresh) |token| alloc.free(token);
     }
+
+    pub fn clearAuthSession(self: *ApiState) void {
+        const alloc = self.backing_allocator;
+        self.mutex.lock();
+        const old_access = self.access_token;
+        const old_refresh = self.refresh_token;
+        self.access_token = null;
+        self.refresh_token = null;
+        self.current_user = null;
+        self.status = .error_auth;
+        self.bootstrap_inflight = false;
+        self.bootstrap_refetch_requested = false;
+        self.mutex.unlock();
+        if (old_access) |token| alloc.free(token);
+        if (old_refresh) |token| alloc.free(token);
+    }
 };
 
 pub fn setConnectionStatus(api_state: *ApiState, status: ConnectionStatus) void {
