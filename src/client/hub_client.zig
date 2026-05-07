@@ -145,16 +145,12 @@ pub const HubClient = struct {
         if (first.status != .unauthorized) return first;
         if (self.refresh_token == null) return first;
 
-        first.deinit();
         log.info("refresh_token path={s}", .{logger.redactedPath(path)});
         self.refreshAndPersist() catch |err| {
             log.warn("refresh_token_failed path={s} error={s}", .{ logger.redactedPath(path), @errorName(err) });
-            // Surface the refresh failure rather than the stale 401
-            // so the caller sees a recognisable error code. The most
-            // common case is a server-revoked refresh token, which
-            // this path maps to `error.NotAuthenticated`.
-            return err;
+            return first;
         };
+        first.deinit();
         log.info("refresh_token_ok path={s}", .{logger.redactedPath(path)});
         return self.doFetchOnce(method, path, payload);
     }

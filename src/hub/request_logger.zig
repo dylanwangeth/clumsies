@@ -14,10 +14,11 @@ pub fn execute(_: *const Middleware, req: *httpz.Request, res: *httpz.Response, 
     const start = std.time.microTimestamp();
     defer {
         const elapsed_us = std.time.microTimestamp() - start;
-        const client_id = req.header("x-client-id") orelse "-";
+        var client_buf: [64]u8 = undefined;
+        const client_id = sanitizedClientId(req.header("x-client-id"), &client_buf);
         log.info("{s} {s} client={s} status={d} elapsed_us={d}", .{
             methodText(req),
-            req.url.path,
+            redactedPath(req.url.path),
             client_id,
             res.status,
             elapsed_us,
@@ -33,4 +34,18 @@ fn methodText(req: *const httpz.Request) []const u8 {
         .OTHER => req.method_string,
         else => @tagName(req.method),
     };
+}
+
+fn redactedPath(path: []const u8) []const u8 {
+    const query_start = std.mem.indexOfScalar(u8, path, '?') orelse return path;
+    return path[0..query_start];
+}
+
+fn sanitizedClientId(raw_opt: ?[]const u8, buf: *[64]u8) []const u8 {
+    const raw = raw_opt orelse return "-";
+    const len = @min(raw.len, buf.len);
+    for (raw[0..len], 0..) |byte, idx| {
+        buf[idx] = if (byte < 0x20 or byte == 0x7f) '?' else byte;
+    }
+    return buf[0..len];
 }
