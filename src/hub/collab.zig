@@ -67,6 +67,11 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 
     if (!try validateNoIntraPrPathConflict(req.arena, req_body.operations, res)) return;
 
+    const derived_base_contents = try req.arena.alloc(?[]const u8, req_body.operations.len);
+    for (req_body.operations, 0..) |op, idx| {
+        derived_base_contents[idx] = try deriveRuleBaseContent(conn, req.arena, user.org_id, op, res);
+    }
+
     var rand_bytes: [8]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
     var id_buf: [20]u8 = undefined;
@@ -96,7 +101,16 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         _ = conn.exec(
             \\INSERT INTO rule_pr_operations (pr_id, op_index, type, rule_id, base_hash, base_content, content, path)
             \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        , .{ pr_id, @as(i32, @intCast(idx)), op.type, op.rule_id, op.base_hash, op.base_content, op.content, target_path }) catch {
+        , .{
+            pr_id,
+            @as(i32, @intCast(idx)),
+            op.type,
+            op.rule_id,
+            op.base_hash,
+            derived_base_contents[idx],
+            op.content,
+            target_path,
+        }) catch {
             _ = conn.exec("DELETE FROM rule_prs WHERE pr_id = $1", .{pr_id}) catch {};
             return apiError(res, 500, "INTERNAL_ERROR", "failed to store operation");
         };
@@ -217,6 +231,40 @@ fn verifyPromptBaseHash(conn: anytype, org_id: []const u8, rule_id: []const u8, 
         return false;
     }
     return true;
+}
+
+fn deriveRuleBaseContent(conn: anytype, allocator: std.mem.Allocator, org_id: []const u8, op: Operation, res: *httpz.Response) !?[]const u8 {
+    if (std.mem.eql(u8, op.type, "create")) return null;
+    const rule_id = op.rule_id orelse return null;
+
+    var row = conn.row(
+        "SELECT content_hash, content FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
+        .{ org_id, rule_id },
+    ) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return error.ResponseWritten;
+    } orelse {
+        try apiError(res, 404, "NOT_FOUND", "rule not found");
+        return error.ResponseWritten;
+    };
+    defer row.deinit() catch {};
+
+    const current_hash = row.get([]const u8, 0) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "failed to read rule hash");
+        return error.ResponseWritten;
+    };
+    if (op.base_hash) |base_hash| {
+        if (!std.mem.eql(u8, current_hash, base_hash)) {
+            try apiError(res, 409, "CONFLICT", "base_hash does not match current Artifact version");
+            return error.ResponseWritten;
+        }
+    }
+
+    const content = row.get([]const u8, 1) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "failed to read rule content");
+        return error.ResponseWritten;
+    };
+    return try allocator.dupe(u8, content);
 }
 
 fn verifyPathAvailable(conn: anytype, org_id: []const u8, path: []const u8, allow_rule_id: ?[]const u8, res: *httpz.Response) !bool {

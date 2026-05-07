@@ -232,6 +232,11 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     }
     if (!try validateNoIntraPrPathConflict(req.arena, req_body.operations, res)) return;
 
+    const derived_base_contents = try req.arena.alloc(?[]const u8, req_body.operations.len);
+    for (req_body.operations, 0..) |op, idx| {
+        derived_base_contents[idx] = try deriveContextBaseContent(conn, req.arena, ws_id, op, res);
+    }
+
     var rand_bytes: [8]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
     var pr_id_buf: [20]u8 = undefined;
@@ -261,7 +266,7 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         _ = conn.exec(
             \\INSERT INTO context_pr_operations (pr_id, op_index, type, context_id, base_hash, base_content, content, path)
             \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        , .{ pr_id, @as(i32, @intCast(idx)), op.type, op.context_id, op.base_hash, op.base_content, op.content, target_path }) catch {
+        , .{ pr_id, @as(i32, @intCast(idx)), op.type, op.context_id, op.base_hash, derived_base_contents[idx], op.content, target_path }) catch {
             _ = conn.exec("DELETE FROM context_prs WHERE pr_id = $1", .{pr_id}) catch {};
             return apiError(res, 500, "INTERNAL_ERROR", "failed to store operation");
         };
@@ -384,6 +389,40 @@ fn verifyContextBaseHash(conn: anytype, ws_id: []const u8, context_id: []const u
         return false;
     }
     return true;
+}
+
+fn deriveContextBaseContent(conn: anytype, allocator: std.mem.Allocator, ws_id: []const u8, op: Operation, res: *httpz.Response) !?[]const u8 {
+    if (std.mem.eql(u8, op.type, "create")) return null;
+    const context_id = op.context_id orelse return null;
+
+    var row = conn.row(
+        "SELECT content_hash, content FROM workspace_context WHERE ws_id = $1 AND context_id = $2",
+        .{ ws_id, context_id },
+    ) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return error.ResponseWritten;
+    } orelse {
+        try apiError(res, 404, "NOT_FOUND", "context file not found");
+        return error.ResponseWritten;
+    };
+    defer row.deinit() catch {};
+
+    const current_hash = row.get([]const u8, 0) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "failed to read hash");
+        return error.ResponseWritten;
+    };
+    if (op.base_hash) |base_hash| {
+        if (!std.mem.eql(u8, current_hash, base_hash)) {
+            try apiError(res, 409, "CONFLICT", "base_hash does not match current file version");
+            return error.ResponseWritten;
+        }
+    }
+
+    const content = row.get([]const u8, 1) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "failed to read content");
+        return error.ResponseWritten;
+    };
+    return try allocator.dupe(u8, content);
 }
 
 fn verifyPathAvailable(conn: anytype, ws_id: []const u8, path: []const u8, allow_context_id: ?[]const u8, res: *httpz.Response) !bool {
