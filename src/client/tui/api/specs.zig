@@ -63,7 +63,6 @@ pub const CreateRulePrParams = struct {
     new_path: ?[]const u8 = null,
     content: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
-    base_content: ?[]const u8 = null,
 };
 
 /// Parameters for creating a context PR. Mirrors the rule PR shape
@@ -80,7 +79,6 @@ pub const CreateContextPrParams = struct {
     new_path: ?[]const u8 = null,
     content: []const u8,
     base_hash: ?[]const u8 = null,
-    base_content: ?[]const u8 = null,
 };
 
 pub const artifact_rule_content = dispatcher.RequestSpec(
@@ -218,7 +216,6 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         type: []const u8,
         rule_id: ?[]const u8 = null,
         base_hash: ?[]const u8 = null,
-        base_content: ?[]const u8 = null,
         content: ?[]const u8 = null,
         path: ?[]const u8 = null,
         new_path: ?[]const u8 = null,
@@ -232,7 +229,6 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         .type = p.operation_type,
         .rule_id = p.rule_id,
         .base_hash = p.base_hash,
-        .base_content = p.base_content,
         .content = p.content,
         .path = p.path,
         .new_path = p.new_path,
@@ -253,7 +249,6 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         type: []const u8,
         context_id: ?[]const u8,
         base_hash: ?[]const u8,
-        base_content: ?[]const u8 = null,
         content: []const u8,
         path: ?[]const u8,
         new_path: ?[]const u8,
@@ -267,7 +262,6 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         .type = p.operation_type,
         .context_id = p.context_id,
         .base_hash = p.base_hash,
-        .base_content = p.base_content,
         .content = p.content,
         .path = p.path,
         .new_path = p.new_path,
@@ -519,14 +513,26 @@ pub fn dispatchFromState(
     api_state: *state.ApiState,
     req: ReqT,
 ) void {
+    const token_alloc = api_state.backing_allocator;
+    var access_token_copy: ?[]const u8 = null;
+    var refresh_token_copy: ?[]const u8 = null;
+
     api_state.mutex.lock();
     const hub_url = api_state.hub_url;
     const username = api_state.username;
     const access_token = api_state.access_token;
     const refresh_token = api_state.refresh_token;
+    if (access_token) |token| {
+        access_token_copy = token_alloc.dupe(u8, token) catch null;
+    }
+    if (refresh_token) |token| {
+        refresh_token_copy = token_alloc.dupe(u8, token) catch null;
+    }
     api_state.mutex.unlock();
+    defer if (access_token_copy) |token| token_alloc.free(token);
+    defer if (refresh_token_copy) |token| token_alloc.free(token);
 
-    if (hub_url == null or access_token == null) {
+    if (hub_url == null or access_token_copy == null) {
         const gen = pending.tryBegin() orelse return;
         pending.complete(gen, .network_error);
         return;
@@ -540,11 +546,11 @@ pub fn dispatchFromState(
         &api_state.thread_registry,
         api_state.backing_allocator,
         hub_url.?,
-        access_token.?,
+        access_token_copy.?,
         api_state.clientIdHex(),
-        if (username != null and refresh_token != null) .{
+        if (username != null and refresh_token_copy != null) .{
             .username = username.?,
-            .refresh_token = refresh_token.?,
+            .refresh_token = refresh_token_copy.?,
             .persist_fn = auth_mod.persistRotatedTokens,
             .update_ctx = api_state,
             .update_fn = updateAuthTokens,

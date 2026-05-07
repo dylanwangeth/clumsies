@@ -44,8 +44,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
         .auth_rate_limiter = auth_rl,
     };
 
-    const listen_address = std.net.Address.parseIp(config.host, config.port) catch
-        return error.InvalidHost;
+    const listen_address = try resolveListenAddress(allocator, config.host, config.port);
     var server = try HttpServer.init(allocator, .{
         .address = .{ .addr = listen_address },
     }, ctx);
@@ -127,6 +126,16 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
 
 pub fn deinit(self: *Server) void {
     self.http.deinit();
+}
+
+fn resolveListenAddress(allocator: std.mem.Allocator, host: []const u8, port: u16) !std.net.Address {
+    if (std.net.Address.parseIp(host, port)) |addr| return addr else |_| {}
+
+    const addresses = std.net.getAddressList(allocator, host, port) catch
+        return error.InvalidHost;
+    defer addresses.deinit();
+    if (addresses.addrs.len == 0) return error.InvalidHost;
+    return addresses.addrs[0];
 }
 
 pub fn listen(self: *Server) !void {

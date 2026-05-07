@@ -24,18 +24,26 @@ pub fn startFetch(
     refresh_token: []const u8,
 ) !void {
     const alloc = api_state.allocator();
+    const token_alloc = api_state.backing_allocator;
     const url_copy = try alloc.dupe(u8, hub_url);
     const username_copy = try alloc.dupe(u8, username);
-    const token_copy = try alloc.dupe(u8, access_token);
-    const refresh_copy = try alloc.dupe(u8, refresh_token);
+    const token_copy = try token_alloc.dupe(u8, access_token);
+    const refresh_copy = token_alloc.dupe(u8, refresh_token) catch |err| {
+        token_alloc.free(token_copy);
+        return err;
+    };
     log.info("bootstrap_start", .{});
     api_state.mutex.lock();
+    const old_access = api_state.access_token;
+    const old_refresh = api_state.refresh_token;
     api_state.hub_url = url_copy;
     api_state.username = username_copy;
     api_state.access_token = token_copy;
     api_state.refresh_token = refresh_copy;
     api_state.bootstrap_inflight = true;
     api_state.mutex.unlock();
+    if (old_access) |token| token_alloc.free(token);
+    if (old_refresh) |token| token_alloc.free(token);
 
     const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, url_copy, username_copy, token_copy, refresh_copy }) catch |err| {
         log.warn("bootstrap_spawn_failed error={s}", .{@errorName(err)});

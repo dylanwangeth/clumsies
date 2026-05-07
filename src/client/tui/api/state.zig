@@ -216,6 +216,8 @@ pub const ApiState = struct {
     }
 
     pub fn deinit(self: *ApiState) void {
+        if (self.access_token) |token| self.backing_allocator.free(token);
+        if (self.refresh_token) |token| self.backing_allocator.free(token);
         self.arena.deinit();
         self.local_arena.deinit();
         self.backing_allocator.destroy(self.arena);
@@ -227,16 +229,20 @@ pub const ApiState = struct {
     }
 
     pub fn updateAuthTokens(self: *ApiState, access_token: []const u8, refresh_token: []const u8) void {
-        const alloc = self.allocator();
+        const alloc = self.backing_allocator;
         const access_copy = alloc.dupe(u8, access_token) catch return;
         const refresh_copy = alloc.dupe(u8, refresh_token) catch {
             alloc.free(access_copy);
             return;
         };
         self.mutex.lock();
+        const old_access = self.access_token;
+        const old_refresh = self.refresh_token;
         self.access_token = access_copy;
         self.refresh_token = refresh_copy;
         self.mutex.unlock();
+        if (old_access) |token| alloc.free(token);
+        if (old_refresh) |token| alloc.free(token);
     }
 };
 

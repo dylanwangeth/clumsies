@@ -179,7 +179,6 @@ const Operation = struct {
     type: []const u8,
     context_id: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
-    base_content: ?[]const u8 = null,
     content: ?[]const u8 = null,
     path: ?[]const u8 = null,
     new_path: ?[]const u8 = null,
