@@ -48,13 +48,16 @@ pub fn computeDiffLines(
         for (lines.items) |line| alloc.free(line);
         lines.deinit(alloc);
     }
-    var base_it = std.mem.splitScalar(u8, base, '\n');
-    var prop_it = std.mem.splitScalar(u8, proposed, '\n');
 
-    while (true) {
-        const b = base_it.next();
-        const p = prop_it.next();
-        if (b == null and p == null) break;
+    const base_lines = try splitLines(alloc, base);
+    defer alloc.free(base_lines);
+    const prop_lines = try splitLines(alloc, proposed);
+    defer alloc.free(prop_lines);
+
+    const n = @max(base_lines.len, prop_lines.len);
+    for (0..n) |i| {
+        const b: ?[]const u8 = if (i < base_lines.len) base_lines[i] else null;
+        const p: ?[]const u8 = if (i < prop_lines.len) prop_lines[i] else null;
         if (b != null and p != null and std.mem.eql(u8, b.?, p.?)) {
             try lines.append(alloc, try std.fmt.allocPrint(alloc, "  {s}", .{b.?}));
         } else {
@@ -198,6 +201,36 @@ test "computeDiffLines: returns owned prefixed lines" {
     try std.testing.expectEqualStrings("  a", lines[0]);
     try std.testing.expectEqualStrings("- old", lines[1]);
     try std.testing.expectEqualStrings("+ new", lines[2]);
+}
+
+test "computeDiffLines: empty base is pure addition" {
+    const lines = try computeDiffLines(std.testing.allocator, "", "line1\nline2");
+    defer {
+        for (lines) |line| std.testing.allocator.free(line);
+        std.testing.allocator.free(lines);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), lines.len);
+    try std.testing.expectEqualStrings("+ line1", lines[0]);
+    try std.testing.expectEqualStrings("+ line2", lines[1]);
+}
+
+test "computeDiffLines: empty proposed is pure deletion" {
+    const lines = try computeDiffLines(std.testing.allocator, "old1\nold2", "");
+    defer {
+        for (lines) |line| std.testing.allocator.free(line);
+        std.testing.allocator.free(lines);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), lines.len);
+    try std.testing.expectEqualStrings("- old1", lines[0]);
+    try std.testing.expectEqualStrings("- old2", lines[1]);
+}
+
+test "computeDiffLines: both empty yields nothing" {
+    const lines = try computeDiffLines(std.testing.allocator, "", "");
+    defer std.testing.allocator.free(lines);
+    try std.testing.expectEqual(@as(usize, 0), lines.len);
 }
 
 test "computeInlineGutter: identical input yields all unchanged" {

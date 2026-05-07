@@ -21,6 +21,7 @@ const Operation = struct {
     type: []const u8,
     rule_id: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
+    base_content: ?[]const u8 = null,
     content: ?[]const u8 = null,
     path: ?[]const u8 = null,
     new_path: ?[]const u8 = null,
@@ -88,9 +89,9 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
             null;
 
         _ = conn.exec(
-            \\INSERT INTO rule_pr_operations (pr_id, op_index, type, rule_id, base_hash, content, path)
-            \\VALUES ($1, $2, $3, $4, $5, $6, $7)
-        , .{ pr_id, @as(i32, @intCast(idx)), op.type, op.rule_id, op.base_hash, op.content, target_path }) catch {
+            \\INSERT INTO rule_pr_operations (pr_id, op_index, type, rule_id, base_hash, base_content, content, path)
+            \\VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        , .{ pr_id, @as(i32, @intCast(idx)), op.type, op.rule_id, op.base_hash, op.base_content, op.content, target_path }) catch {
             _ = conn.exec("DELETE FROM rule_prs WHERE pr_id = $1", .{pr_id}) catch {};
             return apiError(res, 500, "INTERNAL_ERROR", "failed to store operation");
         };
@@ -406,7 +407,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
 
     var ops: std.ArrayList(RulePrChange) = .empty;
     var op_result = conn.query(
-        "SELECT op_index, type, rule_id, base_hash, content, path FROM rule_pr_operations WHERE pr_id = $1 ORDER BY op_index",
+        "SELECT op_index, type, rule_id, base_hash, base_content, content, path FROM rule_pr_operations WHERE pr_id = $1 ORDER BY op_index",
         .{pr_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -424,41 +425,18 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
             try req.arena.dupe(u8, v)
         else |_|
             null;
-        const op_content: ?[]const u8 = if (orow.get([]const u8, 4)) |v|
+        const op_base_content: ?[]const u8 = if (orow.get([]const u8, 4)) |v|
             try req.arena.dupe(u8, v)
         else |_|
             null;
-        const op_path: ?[]const u8 = if (orow.get([]const u8, 5)) |v|
+        const op_content: ?[]const u8 = if (orow.get([]const u8, 5)) |v|
             try req.arena.dupe(u8, v)
         else |_|
             null;
-
-        var base_content: ?[]const u8 = null;
-        var current_path: ?[]const u8 = null;
-        if (op_rule_id) |pid| {
-            var pr = conn.row(
-                "SELECT content, path FROM rules WHERE rule_id = $1",
-                .{pid},
-            ) catch null;
-            if (pr) |*br| {
-                base_content = req.arena.dupe(u8, br.get([]const u8, 0) catch "") catch null;
-                current_path = req.arena.dupe(u8, br.get([]const u8, 1) catch "") catch null;
-                br.deinit() catch {};
-            }
-            if (base_content == null) {
-                if (op_base_hash) |bh| {
-                    var hr = conn.row(
-                        "SELECT content, path FROM rule_history WHERE rule_id = $1 AND content_hash = $2",
-                        .{ pid, bh },
-                    ) catch null;
-                    if (hr) |*h| {
-                        base_content = req.arena.dupe(u8, h.get([]const u8, 0) catch "") catch null;
-                        current_path = req.arena.dupe(u8, h.get([]const u8, 1) catch "") catch null;
-                        h.deinit() catch {};
-                    }
-                }
-            }
-        }
+        const op_path: ?[]const u8 = if (orow.get([]const u8, 6)) |v|
+            try req.arena.dupe(u8, v)
+        else |_|
+            null;
 
         try ops.append(req.arena, .{
             .op_index = op_index,
@@ -467,8 +445,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
             .base_hash = op_base_hash,
             .content = op_content,
             .path = op_path,
-            .base_content = base_content,
-            .current_path = current_path,
+            .base_content = op_base_content,
         });
     }
 

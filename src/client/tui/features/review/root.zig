@@ -103,12 +103,12 @@ pub const State = struct {
     total_pr_count: usize = 0,
     selected_pr_idx: usize = 0,
     pr_diff_scroll_bars: vxfw.ScrollBars,
-    pr_diff_widgets: [32]vxfw.Widget = undefined,
-    pr_diff_rows: [32]vxfw.Text = undefined,
+    pr_diff_widgets: []vxfw.Widget = &.{},
+    pr_diff_rows: []vxfw.Text = &.{},
     pr_diff_count: usize = 0,
     pr_comment_scroll_bars: vxfw.ScrollBars,
-    pr_comment_widgets: [64]vxfw.Widget = undefined,
-    pr_comment_rows: [64]vxfw.Text = undefined,
+    pr_comment_widgets: []vxfw.Widget = &.{},
+    pr_comment_rows: []vxfw.Text = &.{},
     pr_comment_count: usize = 0,
     show_comment_editor: bool = false,
     comment_input_buf: [256]u8 = .{0} ** 256,
@@ -899,6 +899,7 @@ fn resetReviewSelection(self: anytype) void {
     self.review.pr_scroll_bars.scroll_view.cursor = 0;
     self.review.pr_diff_scroll_bars.scroll_view.cursor = 0;
     self.review.pr_comment_scroll_bars.scroll_view.cursor = 0;
+    api.state.resetPrDetailState(self.api_state);
 }
 
 fn handleReviewPrListEvent(
@@ -932,6 +933,7 @@ fn handleReviewPrListEvent(
     if (self.review.pr_indices[pos]) |idx| {
         if (self.review.selected_pr_idx != idx) {
             self.review.selected_pr_idx = idx;
+            api.state.resetPrDetailState(self.api_state);
             fetchSelectedReviewPrDetail(self);
         }
     }
@@ -1183,7 +1185,12 @@ pub fn syncPrWidgets(self: anytype) void {
     while (cur < row_idx and self.review.pr_indices[cur] == null) cur += 1;
     self.review.pr_scroll_bars.scroll_view.cursor = @intCast(cur);
     if (cur < row_idx) {
-        if (self.review.pr_indices[cur]) |pi| self.review.selected_pr_idx = pi;
+        if (self.review.pr_indices[cur]) |pi| {
+            if (self.review.selected_pr_idx != pi) {
+                self.review.selected_pr_idx = pi;
+                api.state.resetPrDetailState(self.api_state);
+            }
+        }
     }
     // Kick a detail fetch for the current selection so the diff /
     // description / comment count populate without requiring the
@@ -1273,7 +1280,12 @@ pub fn syncReviewPrWidgets(self: anytype) void {
     while (cur < row_idx and self.review.pr_indices[cur] == null) cur += 1;
     self.review.pr_scroll_bars.scroll_view.cursor = @intCast(cur);
     if (cur < row_idx) {
-        if (self.review.pr_indices[cur]) |pi| self.review.selected_pr_idx = pi;
+        if (self.review.pr_indices[cur]) |pi| {
+            if (self.review.selected_pr_idx != pi) {
+                self.review.selected_pr_idx = pi;
+                api.state.resetPrDetailState(self.api_state);
+            }
+        }
     }
     if (row_idx == 0) {
         self.review.pr_scroll_bars.scroll_view.cursor = 0;
@@ -1345,6 +1357,7 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
     const all_rules = self.getRules();
     if (all_rules.len == 0) {
         self.review.pr_diff_count = 0;
+        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
         return;
     }
     const sel_idx = @min(self.artifact.selected_rule, all_rules.len - 1);
@@ -1352,66 +1365,56 @@ pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
     const prs = self.getPrsForRule(p.path);
     if (prs.len == 0) {
         self.review.pr_diff_count = 0;
+        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
         return;
     }
     const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
     const pr = &prs[pr_idx];
+
+    const total = pr.diff.len + if (pr.comments.len > 0) 1 + pr.comments.len * 3 else 0;
+    const rows = allocator.alloc(vxfw.Text, total) catch {
+        self.review.pr_diff_count = 0;
+        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
+        return;
+    };
+    const widgets = allocator.alloc(vxfw.Widget, total) catch {
+        self.review.pr_diff_count = 0;
+        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
+        return;
+    };
+
     var count: usize = 0;
     for (pr.diff) |line| {
-        if (count >= self.review.pr_diff_rows.len) break;
-        self.review.pr_diff_rows[count] = .{
-            .text = line,
-            .style = diff_viewer.styleLine(line),
-        };
-        self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
+        rows[count] = .{ .text = line, .style = diff_viewer.styleLine(line) };
+        widgets[count] = rows[count].widget();
         count += 1;
     }
-    // Comment section
     if (pr.comments.len > 0) {
-        if (count < self.review.pr_diff_rows.len) {
-            self.review.pr_diff_rows[count] = .{
-                .text = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Comments \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",
-                .style = theme.fg(theme.MUTED),
-            };
-            self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
+        rows[count] = .{
+            .text = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Comments \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",
+            .style = theme.fg(theme.MUTED),
+        };
+        widgets[count] = rows[count].widget();
+        count += 1;
+        for (pr.comments) |comment| {
+            const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
+            const header = std.fmt.allocPrint(allocator, "{s} \xc2\xb7 {s}", .{ comment.author, created_short }) catch "??";
+            rows[count] = .{ .text = header, .style = theme.fgBold(theme.TEXT_SOFT) };
+            widgets[count] = rows[count].widget();
+            count += 1;
+            rows[count] = .{ .text = comment.body, .style = theme.fg(theme.TEXT_SOFT) };
+            widgets[count] = rows[count].widget();
+            count += 1;
+            rows[count] = .{ .text = " ", .style = theme.fg(theme.MUTED) };
+            widgets[count] = rows[count].widget();
             count += 1;
         }
-        for (pr.comments) |comment| {
-            // Header: "author · created". Timestamp is compacted
-            // through the shared formatter so comment rows match PR
-            // list + rule panel timestamp layout.
-            if (count < self.review.pr_diff_rows.len) {
-                const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
-                const header = std.fmt.allocPrint(allocator, "{s} \xc2\xb7 {s}", .{ comment.author, created_short }) catch "??";
-                self.review.pr_diff_rows[count] = .{
-                    .text = header,
-                    .style = theme.fgBold(theme.TEXT_SOFT),
-                };
-                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
-                count += 1;
-            }
-            // Body
-            if (count < self.review.pr_diff_rows.len) {
-                self.review.pr_diff_rows[count] = .{
-                    .text = comment.body,
-                    .style = theme.fg(theme.TEXT_SOFT),
-                };
-                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
-                count += 1;
-            }
-            // Blank line for spacing
-            if (count < self.review.pr_diff_rows.len) {
-                self.review.pr_diff_rows[count] = .{
-                    .text = " ",
-                    .style = theme.fg(theme.MUTED),
-                };
-                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
-                count += 1;
-            }
-        }
     }
+
+    self.review.pr_diff_rows = rows;
+    self.review.pr_diff_widgets = widgets;
     self.review.pr_diff_count = count;
-    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_diff_widgets[0..count] };
+    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = widgets[0..count] };
     self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
 }
 
@@ -1426,99 +1429,66 @@ pub fn syncReviewPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) 
     syncReviewDetailRows(self, allocator, pr);
 }
 
-fn syncPrDiffRows(self: anytype, allocator: std.mem.Allocator, pr: *const data.PullRequestEntry) void {
-    var count: usize = 0;
-    for (pr.diff) |line| {
-        if (count >= self.review.pr_diff_rows.len) break;
-        self.review.pr_diff_rows[count] = .{
-            .text = line,
-            .style = diff_viewer.styleLine(line),
-        };
-        self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
-        count += 1;
-    }
-    if (pr.comments.len > 0) {
-        if (count < self.review.pr_diff_rows.len) {
-            self.review.pr_diff_rows[count] = .{
-                .text = "Comments",
-                .style = theme.fg(theme.MUTED),
-            };
-            self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
-            count += 1;
-        }
-        for (pr.comments) |comment| {
-            if (count < self.review.pr_diff_rows.len) {
-                const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
-                const header = std.fmt.allocPrint(allocator, "{s} - {s}", .{ comment.author, created_short }) catch comment.author;
-                self.review.pr_diff_rows[count] = .{
-                    .text = header,
-                    .style = theme.fgBold(theme.TEXT_SOFT),
-                };
-                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
-                count += 1;
-            }
-            if (count < self.review.pr_diff_rows.len) {
-                self.review.pr_diff_rows[count] = .{
-                    .text = comment.body,
-                    .style = theme.fg(theme.TEXT_SOFT),
-                };
-                self.review.pr_diff_widgets[count] = self.review.pr_diff_rows[count].widget();
-                count += 1;
-            }
-        }
-    }
-    self.review.pr_diff_count = count;
-    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_diff_widgets[0..count] };
-    self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
-}
-
 fn syncReviewDetailRows(self: anytype, allocator: std.mem.Allocator, pr: *const data.PullRequestEntry) void {
-    var diff_count: usize = 0;
-    for (pr.diff) |line| {
-        if (diff_count >= self.review.pr_diff_rows.len) break;
-        self.review.pr_diff_rows[diff_count] = .{
-            .text = line,
-            .style = diff_viewer.styleLine(line),
-        };
-        self.review.pr_diff_widgets[diff_count] = self.review.pr_diff_rows[diff_count].widget();
-        diff_count += 1;
-    }
-    self.review.pr_diff_count = diff_count;
-    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_diff_widgets[0..diff_count] };
-    self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(diff_count);
+    const diff_total = pr.diff.len;
+    const diff_rows = allocator.alloc(vxfw.Text, diff_total) catch {
+        self.review.pr_diff_count = 0;
+        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
+        return;
+    };
+    const diff_widgets = allocator.alloc(vxfw.Widget, diff_total) catch {
+        self.review.pr_diff_count = 0;
+        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
+        return;
+    };
 
-    var comment_count: usize = 0;
+    for (pr.diff, 0..) |line, i| {
+        diff_rows[i] = .{ .text = line, .style = diff_viewer.styleLine(line) };
+        diff_widgets[i] = diff_rows[i].widget();
+    }
+    self.review.pr_diff_rows = diff_rows;
+    self.review.pr_diff_widgets = diff_widgets;
+    self.review.pr_diff_count = diff_total;
+    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = diff_widgets };
+    self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(diff_total);
+
+    const comment_total = pr.comments.len * 3;
+    if (comment_total == 0) {
+        self.review.pr_comment_count = 0;
+        self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = &.{} };
+        return;
+    }
+    const comment_rows = allocator.alloc(vxfw.Text, comment_total) catch {
+        self.review.pr_comment_count = 0;
+        self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = &.{} };
+        return;
+    };
+    const comment_widgets = allocator.alloc(vxfw.Widget, comment_total) catch {
+        self.review.pr_comment_count = 0;
+        self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = &.{} };
+        return;
+    };
+
+    var ci: usize = 0;
     for (pr.comments) |comment| {
-        if (comment_count >= self.review.pr_comment_rows.len) break;
         const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
-        const header = std.fmt.allocPrint(allocator, "o {s} · {s}", .{ comment.author, created_short }) catch comment.author;
-        self.review.pr_comment_rows[comment_count] = .{
-            .text = header,
-            .style = theme.fgBold(theme.TEXT_SOFT),
-        };
-        self.review.pr_comment_widgets[comment_count] = self.review.pr_comment_rows[comment_count].widget();
-        comment_count += 1;
-
-        if (comment_count >= self.review.pr_comment_rows.len) break;
+        const header = std.fmt.allocPrint(allocator, "o {s} \xc2\xb7 {s}", .{ comment.author, created_short }) catch comment.author;
+        comment_rows[ci] = .{ .text = header, .style = theme.fgBold(theme.TEXT_SOFT) };
+        comment_widgets[ci] = comment_rows[ci].widget();
+        ci += 1;
         const body = std.fmt.allocPrint(allocator, "  {s}", .{comment.body}) catch comment.body;
-        self.review.pr_comment_rows[comment_count] = .{
-            .text = body,
-            .style = theme.fg(theme.TEXT_SOFT),
-        };
-        self.review.pr_comment_widgets[comment_count] = self.review.pr_comment_rows[comment_count].widget();
-        comment_count += 1;
-
-        if (comment_count >= self.review.pr_comment_rows.len) break;
-        self.review.pr_comment_rows[comment_count] = .{
-            .text = "  |",
-            .style = theme.fg(theme.MUTED),
-        };
-        self.review.pr_comment_widgets[comment_count] = self.review.pr_comment_rows[comment_count].widget();
-        comment_count += 1;
+        comment_rows[ci] = .{ .text = body, .style = theme.fg(theme.TEXT_SOFT) };
+        comment_widgets[ci] = comment_rows[ci].widget();
+        ci += 1;
+        comment_rows[ci] = .{ .text = "  |", .style = theme.fg(theme.MUTED) };
+        comment_widgets[ci] = comment_rows[ci].widget();
+        ci += 1;
     }
-    self.review.pr_comment_count = comment_count;
-    self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_comment_widgets[0..comment_count] };
-    self.review.pr_comment_scroll_bars.estimated_content_height = @intCast(comment_count);
+    self.review.pr_comment_rows = comment_rows;
+    self.review.pr_comment_widgets = comment_widgets;
+    self.review.pr_comment_count = ci;
+    self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = comment_widgets[0..ci] };
+    self.review.pr_comment_scroll_bars.estimated_content_height = @intCast(ci);
 }
 
 test "review filter predicate handles status and target facets" {
