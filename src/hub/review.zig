@@ -91,7 +91,7 @@ fn appendRulePrs(
     list: *std.ArrayList(ReviewPrListItem),
 ) !void {
     var result = conn.query(
-        \\SELECT pp.pr_id, pp.status, pp.description, pp.created_at::text, u.username,
+        \\SELECT pp.pr_id, pp.status, pp.title, pp.body, pp.created_at::text, u.username,
         \\  (SELECT count(*) FROM rule_pr_operations op WHERE op.pr_id = pp.pr_id) as op_count,
         \\  COALESCE((
         \\    SELECT op.type
@@ -119,7 +119,7 @@ fn appendRulePrs(
     while (try result.next()) |row| {
         const status = try arena.dupe(u8, try row.get([]const u8, 1));
         if (!statusMatches(status_filter, status)) continue;
-        const target_path = try arena.dupe(u8, try row.get([]const u8, 8));
+        const target_path = try arena.dupe(u8, try row.get([]const u8, 9));
         const target_kind = if (std.mem.eql(u8, target_path, "META_PROMPT.md")) "mpf" else "rule";
         if (target_filter) |tf| {
             if (tf.len > 0 and !std.mem.eql(u8, tf, target_kind)) continue;
@@ -129,12 +129,13 @@ fn appendRulePrs(
             .target_kind = target_kind,
             .target_path = target_path,
             .status = status,
-            .description = try arena.dupe(u8, try row.get([]const u8, 2)),
-            .created_at = try arena.dupe(u8, try row.get([]const u8, 3)),
-            .author = try arena.dupe(u8, try row.get([]const u8, 4)),
-            .operation_count = try row.get(i64, 5),
-            .op_type = try arena.dupe(u8, try row.get([]const u8, 6)),
-            .comment_count = try row.get(i64, 7),
+            .title = try arena.dupe(u8, try row.get([]const u8, 2)),
+            .body = try arena.dupe(u8, try row.get([]const u8, 3)),
+            .created_at = try arena.dupe(u8, try row.get([]const u8, 4)),
+            .author = try arena.dupe(u8, try row.get([]const u8, 5)),
+            .operation_count = try row.get(i64, 6),
+            .op_type = try arena.dupe(u8, try row.get([]const u8, 7)),
+            .comment_count = try row.get(i64, 8),
         });
     }
 }
@@ -147,7 +148,7 @@ fn appendContextPrs(
     list: *std.ArrayList(ReviewPrListItem),
 ) !void {
     var result = conn.query(
-        \\SELECT cp.pr_id, cp.ws_id, cp.author, cp.status, cp.description, cp.created_at::text,
+        \\SELECT cp.pr_id, cp.ws_id, cp.author, cp.status, cp.title, cp.body, cp.created_at::text,
         \\  (SELECT count(*) FROM context_pr_operations op WHERE op.pr_id = cp.pr_id) as op_count,
         \\  COALESCE((
         \\    SELECT op.type
@@ -177,15 +178,16 @@ fn appendContextPrs(
         try list.append(arena, .{
             .pr_id = try arena.dupe(u8, try row.get([]const u8, 0)),
             .target_kind = "context",
-            .target_path = try arena.dupe(u8, try row.get([]const u8, 9)),
+            .target_path = try arena.dupe(u8, try row.get([]const u8, 10)),
             .ws_id = try arena.dupe(u8, try row.get([]const u8, 1)),
             .status = status,
-            .description = try arena.dupe(u8, try row.get([]const u8, 4)),
-            .created_at = try arena.dupe(u8, try row.get([]const u8, 5)),
+            .title = try arena.dupe(u8, try row.get([]const u8, 4)),
+            .body = try arena.dupe(u8, try row.get([]const u8, 5)),
+            .created_at = try arena.dupe(u8, try row.get([]const u8, 6)),
             .author = try arena.dupe(u8, try row.get([]const u8, 2)),
-            .operation_count = try row.get(i64, 6),
-            .op_type = try arena.dupe(u8, try row.get([]const u8, 7)),
-            .comment_count = try row.get(i64, 8),
+            .operation_count = try row.get(i64, 7),
+            .op_type = try arena.dupe(u8, try row.get([]const u8, 8)),
+            .comment_count = try row.get(i64, 9),
         });
     }
 }

@@ -244,7 +244,8 @@ pub fn parseRulePrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model.R
         list.append(alloc, .{
             .pr_id = alloc.dupe(u8, pr.pr_id) catch continue,
             .status = alloc.dupe(u8, pr.status) catch continue,
-            .description = alloc.dupe(u8, pr.description) catch continue,
+            .title = alloc.dupe(u8, pr.title) catch continue,
+            .body = alloc.dupe(u8, pr.body) catch continue,
             .created_at = alloc.dupe(u8, pr.created_at) catch continue,
             .author = alloc.dupe(u8, pr.author) catch continue,
             .operation_count = @intCast(@min(pr.operation_count, std.math.maxInt(i32))),
@@ -270,7 +271,8 @@ pub fn parseReviewPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model
             .target_path = alloc.dupe(u8, pr.target_path) catch continue,
             .ws_id = if (pr.ws_id) |ws| alloc.dupe(u8, ws) catch null else null,
             .status = alloc.dupe(u8, pr.status) catch continue,
-            .description = alloc.dupe(u8, pr.description) catch continue,
+            .title = alloc.dupe(u8, pr.title) catch continue,
+            .body = alloc.dupe(u8, pr.body) catch continue,
             .created_at = alloc.dupe(u8, pr.created_at) catch continue,
             .author = alloc.dupe(u8, pr.author) catch continue,
             .operation_count = @intCast(@min(pr.operation_count, std.math.maxInt(i32))),
@@ -366,7 +368,7 @@ test "parseComments reads wrapped comments response" {
 test "parseReviewPrs reads target-aware review list" {
     const testing = std.testing;
     const body =
-        \\{"prs":[{"pr_id":"pr-1","target_kind":"mpf","target_path":"META_PROMPT.md","status":"open","description":"update bootstrap","created_at":"2026-05-02T00:00:00Z","author":"alice","operation_count":1,"op_type":"update","comment_count":3},{"pr_id":"pr-2","target_kind":"context","target_path":"spec/s1.md","ws_id":"ws-1","status":"merged","description":"merge spec","created_at":"2026-05-01T00:00:00Z","author":"bob","operation_count":2,"op_type":"rename","comment_count":0}]}
+        \\{"prs":[{"pr_id":"pr-1","target_kind":"mpf","target_path":"META_PROMPT.md","status":"open","title":"update bootstrap","body":"update bootstrap","created_at":"2026-05-02T00:00:00Z","author":"alice","operation_count":1,"op_type":"update","comment_count":3},{"pr_id":"pr-2","target_kind":"context","target_path":"spec/s1.md","ws_id":"ws-1","status":"merged","title":"merge spec","body":"merge spec","created_at":"2026-05-01T00:00:00Z","author":"bob","operation_count":2,"op_type":"rename","comment_count":0}]}
     ;
 
     const prs = parseReviewPrs(testing.allocator, body) orelse return error.TestUnexpectedResult;
@@ -377,7 +379,8 @@ test "parseReviewPrs reads target-aware review list" {
             testing.allocator.free(pr.target_path);
             if (pr.ws_id) |ws_id| testing.allocator.free(ws_id);
             testing.allocator.free(pr.status);
-            testing.allocator.free(pr.description);
+            testing.allocator.free(pr.title);
+            testing.allocator.free(pr.body);
             testing.allocator.free(pr.created_at);
             testing.allocator.free(pr.author);
             testing.allocator.free(pr.op_type);

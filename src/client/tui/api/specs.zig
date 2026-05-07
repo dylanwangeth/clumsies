@@ -55,7 +55,8 @@ pub const CreateContextPrResponse = state.CreateContextPrResponse;
 /// rename, and delete carry `rule_id`; create carries `path`; rename
 /// carries `new_path`; modify and rename carry `base_hash`.
 pub const CreateRulePrParams = struct {
-    description: []const u8,
+    title: []const u8,
+    body: []const u8,
     operation_type: []const u8,
     rule_id: ?[]const u8 = null,
     path: ?[]const u8 = null,
@@ -71,7 +72,8 @@ pub const CreateRulePrParams = struct {
 /// and populate `path` instead. Rename ops populate `new_path`.
 pub const CreateContextPrParams = struct {
     ws_id: []const u8,
-    description: []const u8,
+    title: []const u8,
+    body: []const u8,
     operation_type: []const u8,
     context_id: ?[]const u8 = null,
     path: ?[]const u8 = null,
@@ -222,7 +224,8 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         new_path: ?[]const u8 = null,
     };
     const Body = struct {
-        description: []const u8,
+        title: []const u8,
+        body: []const u8,
         operations: []const Op,
     };
     const ops = [_]Op{.{
@@ -235,7 +238,8 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         .new_path = p.new_path,
     }};
     return std.json.Stringify.valueAlloc(alloc, Body{
-        .description = p.description,
+        .title = p.title,
+        .body = p.body,
         .operations = &ops,
     }, .{});
 }
@@ -255,7 +259,8 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         new_path: ?[]const u8,
     };
     const Body = struct {
-        description: []const u8,
+        title: []const u8,
+        body: []const u8,
         operations: []const Op,
     };
     const ops = [_]Op{.{
@@ -268,7 +273,8 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         .new_path = p.new_path,
     }};
     return std.json.Stringify.valueAlloc(alloc, Body{
-        .description = p.description,
+        .title = p.title,
+        .body = p.body,
         .operations = &ops,
     }, .{});
 }
@@ -397,7 +403,8 @@ test "rename PR bodies include new_path" {
     const alloc = std.testing.allocator;
 
     const rule_body = try createRulePrBody(alloc, .{
-        .description = "rename rule",
+        .title = "rename rule",
+        .body = "rename rule",
         .operation_type = "rename",
         .rule_id = "p-1",
         .new_path = "new/RULE.md",
@@ -409,7 +416,8 @@ test "rename PR bodies include new_path" {
 
     const context_body = try createContextPrBody(alloc, .{
         .ws_id = "ws-1",
-        .description = "rename context",
+        .title = "rename context",
+        .body = "rename context",
         .operation_type = "rename",
         .context_id = "c-1",
         .new_path = "new/context.md",

@@ -2294,7 +2294,12 @@ pub const Shell = struct {
         const result = self.api_state.submit_comment_pending.consume() orelse return;
         switch (result) {
             .ok => {
-                self.invalidateRemoteDetailRequests();
+                const submitted_pr_id = self.activePrId();
+                api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
+                if (self.selected_module == .review) {
+                    self.ensureReviewPrsRequested();
+                    if (submitted_pr_id) |pr_id| self.fetchReviewPrDetailById(pr_id);
+                }
                 self.notifyOp(.success, "Comment submitted.");
             },
             .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "Comment submission failed", e)),
@@ -2449,6 +2454,31 @@ pub const Shell = struct {
             .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id, .body = comment_text },
         );
         self.notifyOp(.loading, "Submitting comment...");
+    }
+
+    fn fetchReviewPrDetailById(self: *Shell, pr_id: []const u8) void {
+        const prs = self.getReviewPrs();
+        for (prs) |pr| {
+            if (!std.mem.eql(u8, pr.id, pr_id)) continue;
+            if (pr.target_kind == .bundle) return;
+            api.specs.dispatchFromState(
+                api.specs.PrIdParams,
+                @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
+                api.specs.pr_detail,
+                &self.api_state.pr_detail_pending,
+                self.api_state,
+                .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
+            );
+            api.specs.dispatchFromState(
+                api.specs.PrIdParams,
+                api.specs.PrCommentsPayload,
+                api.specs.pr_comments,
+                &self.api_state.pr_comments_pending,
+                self.api_state,
+                .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
+            );
+            return;
+        }
     }
 
     pub fn doPrAction(self: *Shell, action: []const u8) void {
@@ -3429,7 +3459,9 @@ pub const Shell = struct {
         // historical default and keeps the overlay usable if the
         // draft file was tampered with out of band.
         self.drafts.pr_composer_operation = self.lookupDraftOperation(target) orelse .modify;
-        self.drafts.pr_composer_desc_len = 0;
+        self.drafts.pr_composer_title_len = 0;
+        self.drafts.pr_composer_body_len = 0;
+        self.drafts.pr_composer_focus = .title;
         self.drafts.pr_composer_submitting = false;
         self.drafts.show_pr_composer = true;
     }
@@ -3475,14 +3507,16 @@ pub const Shell = struct {
     pub fn cancelPrComposer(self: *Shell) void {
         self.drafts.show_pr_composer = false;
         self.drafts.pr_composer_submitting = false;
-        self.drafts.pr_composer_desc_len = 0;
+        self.drafts.pr_composer_title_len = 0;
+        self.drafts.pr_composer_body_len = 0;
+        self.drafts.pr_composer_focus = .title;
         self.releaseComposerTarget();
     }
 
     pub fn submitPrComposer(self: *Shell) void {
         if (self.drafts.pr_composer_submitting) return;
-        if (self.drafts.pr_composer_desc_len == 0) {
-            self.notifyOp(.warning, "Description is required.");
+        if (self.drafts.pr_composer_title_len == 0) {
+            self.notifyOp(.warning, "Title is required.");
             return;
         }
         const target = self.drafts.pr_composer_target orelse {
@@ -3566,8 +3600,10 @@ pub const Shell = struct {
             .delete => "delete",
         };
 
-        const desc_copy = alloc.dupe(u8, self.drafts.pr_composer_desc_buf[0..self.drafts.pr_composer_desc_len]) catch return;
-        defer alloc.free(desc_copy);
+        const title_copy = alloc.dupe(u8, self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len]) catch return;
+        defer alloc.free(title_copy);
+        const body_copy = alloc.dupe(u8, self.drafts.pr_composer_body_buf[0..self.drafts.pr_composer_body_len]) catch return;
+        defer alloc.free(body_copy);
         const content_copy: ?[]const u8 = if (entry.operation == .delete)
             null
         else
@@ -3629,7 +3665,8 @@ pub const Shell = struct {
             &self.api_state.create_rule_pr_pending,
             self.api_state,
             .{
-                .description = desc_copy,
+                .title = title_copy,
+                .body = body_copy,
                 .operation_type = operation_type,
                 .rule_id = rule_id_copy_opt,
                 .path = path_copy_opt,
@@ -3664,8 +3701,10 @@ pub const Shell = struct {
             .delete => "delete",
         };
 
-        const desc_copy = alloc.dupe(u8, self.drafts.pr_composer_desc_buf[0..self.drafts.pr_composer_desc_len]) catch return;
-        defer alloc.free(desc_copy);
+        const title_copy = alloc.dupe(u8, self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len]) catch return;
+        defer alloc.free(title_copy);
+        const body_copy = alloc.dupe(u8, self.drafts.pr_composer_body_buf[0..self.drafts.pr_composer_body_len]) catch return;
+        defer alloc.free(body_copy);
         const content_copy = alloc.dupe(u8, read.content) catch return;
         defer alloc.free(content_copy);
         const ws_id_copy = alloc.dupe(u8, target.ws_id) catch return;
@@ -3713,7 +3752,8 @@ pub const Shell = struct {
             self.api_state,
             .{
                 .ws_id = ws_id_copy,
-                .description = desc_copy,
+                .title = title_copy,
+                .body = body_copy,
                 .operation_type = operation_type,
                 .context_id = context_id_copy_opt,
                 .path = path_copy_opt,
@@ -3740,31 +3780,65 @@ pub const Shell = struct {
             ctx.consumeAndRedraw();
             return;
         }
+        if (key.matches(vaxis.Key.tab, .{})) {
+            self.drafts.pr_composer_focus = switch (self.drafts.pr_composer_focus) {
+                .title => .body,
+                .body => .title,
+            };
+            ctx.consumeAndRedraw();
+            return;
+        }
         if (key.matches(vaxis.Key.enter, .{})) {
             self.submitPrComposer();
             ctx.consumeAndRedraw();
             return;
         }
         if (key.matches(vaxis.Key.backspace, .{})) {
-            if (self.drafts.pr_composer_desc_len > 0) {
-                self.drafts.pr_composer_desc_len -= 1;
-                ctx.consumeAndRedraw();
+            switch (self.drafts.pr_composer_focus) {
+                .title => if (self.drafts.pr_composer_title_len > 0) {
+                    self.drafts.pr_composer_title_len -= 1;
+                    ctx.consumeAndRedraw();
+                },
+                .body => if (self.drafts.pr_composer_body_len > 0) {
+                    self.drafts.pr_composer_body_len -= 1;
+                    ctx.consumeAndRedraw();
+                },
             }
             return;
         }
-        if (key.text) |text| {
-            const remaining = self.drafts.pr_composer_desc_buf.len - self.drafts.pr_composer_desc_len;
-            if (text.len > 0 and text.len <= remaining) {
-                @memcpy(self.drafts.pr_composer_desc_buf[self.drafts.pr_composer_desc_len..][0..text.len], text);
-                self.drafts.pr_composer_desc_len += text.len;
-                ctx.consumeAndRedraw();
-            }
-        } else if (key.codepoint >= 0x20 and key.codepoint < 0x7f) {
-            if (self.drafts.pr_composer_desc_len < self.drafts.pr_composer_desc_buf.len) {
-                self.drafts.pr_composer_desc_buf[self.drafts.pr_composer_desc_len] = @intCast(key.codepoint);
-                self.drafts.pr_composer_desc_len += 1;
-                ctx.consumeAndRedraw();
-            }
+        switch (self.drafts.pr_composer_focus) {
+            .title => {
+                if (key.text) |text| {
+                    const remaining = self.drafts.pr_composer_title_buf.len - self.drafts.pr_composer_title_len;
+                    if (text.len > 0 and text.len <= remaining) {
+                        @memcpy(self.drafts.pr_composer_title_buf[self.drafts.pr_composer_title_len..][0..text.len], text);
+                        self.drafts.pr_composer_title_len += text.len;
+                        ctx.consumeAndRedraw();
+                    }
+                } else if (key.codepoint >= 0x20 and key.codepoint < 0x7f) {
+                    if (self.drafts.pr_composer_title_len < self.drafts.pr_composer_title_buf.len) {
+                        self.drafts.pr_composer_title_buf[self.drafts.pr_composer_title_len] = @intCast(key.codepoint);
+                        self.drafts.pr_composer_title_len += 1;
+                        ctx.consumeAndRedraw();
+                    }
+                }
+            },
+            .body => {
+                if (key.text) |text| {
+                    const remaining = self.drafts.pr_composer_body_buf.len - self.drafts.pr_composer_body_len;
+                    if (text.len > 0 and text.len <= remaining) {
+                        @memcpy(self.drafts.pr_composer_body_buf[self.drafts.pr_composer_body_len..][0..text.len], text);
+                        self.drafts.pr_composer_body_len += text.len;
+                        ctx.consumeAndRedraw();
+                    }
+                } else if (key.codepoint >= 0x20 and key.codepoint < 0x7f) {
+                    if (self.drafts.pr_composer_body_len < self.drafts.pr_composer_body_buf.len) {
+                        self.drafts.pr_composer_body_buf[self.drafts.pr_composer_body_len] = @intCast(key.codepoint);
+                        self.drafts.pr_composer_body_len += 1;
+                        ctx.consumeAndRedraw();
+                    }
+                }
+            },
         }
     }
 
@@ -3777,46 +3851,41 @@ pub const Shell = struct {
             .category = .rule,
             .path = "",
         };
-        const title = switch (target.category) {
+        const modal_title = switch (target.category) {
             .rule => "New Rule PR",
             .context => "New Context PR",
             .meta_prompt => "New Meta-Prompt PR",
         };
-        const path_label = switch (target.category) {
-            .rule => "rule:",
-            .context => "file:",
-            .meta_prompt => "file:",
-        };
         const modal = Modal{
-            .title = title,
+            .title = modal_title,
             .box_width = box_w,
             .box_height = box_h,
             .anchor = .center,
-            .footer = if (self.drafts.pr_composer_submitting) "Submitting... Esc cancel wait" else "Enter submit  Esc cancel",
+            .footer = if (self.drafts.pr_composer_submitting) "Submitting... Esc cancel wait" else "Tab switch  Enter submit  Esc cancel",
         };
         const result = try modal.draw(ctx, self.widget());
         var surface = result.surface;
         const col = result.content_col;
         const row = result.content_row;
 
-        w.writeText(&surface, ctx, col, row, path_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        w.writeText(&surface, ctx, col + 8, row, target.path, theme.boldOn(theme.PANEL_ALT, theme.TEXT));
-        w.writeText(&surface, ctx, col, row + 1, "op:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        const op_label: []const u8 = switch (self.drafts.pr_composer_operation) {
-            .create => "create",
-            .modify => "modify",
-            .rename => "rename",
-            .delete => "delete",
-        };
-        w.writeText(&surface, ctx, col + 8, row + 1, op_label, theme.textOn(theme.PANEL_ALT, theme.TEXT));
+        const title_style = theme.textOn(theme.PANEL_ALT, if (self.drafts.pr_composer_focus == .title) theme.TEXT else theme.TEXT_SOFT);
+        const body_style = theme.textOn(theme.PANEL_ALT, if (self.drafts.pr_composer_focus == .body) theme.TEXT else theme.TEXT_SOFT);
 
-        w.writeText(&surface, ctx, col, row + 3, "description:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        const desc_text = self.drafts.pr_composer_desc_buf[0..self.drafts.pr_composer_desc_len];
+        const title_label: []const u8 = if (self.drafts.pr_composer_focus == .title) "title:" else "title:";
+        w.writeText(&surface, ctx, col, row, title_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        const title_text = self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len];
         const max_visible: usize = @as(usize, box_w -| 4);
-        const visible_start = if (desc_text.len > max_visible) desc_text.len - max_visible else 0;
-        const visible = desc_text[visible_start..];
-        const display = try std.fmt.allocPrint(ctx.arena, "{s}_", .{visible});
-        w.writeText(&surface, ctx, col, row + 4, display, theme.textOn(theme.PANEL_ALT, theme.TEXT));
+        const title_start = if (title_text.len > max_visible) title_text.len - max_visible else 0;
+        const title_visible = title_text[title_start..];
+        const title_display = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ title_visible, if (self.drafts.pr_composer_focus == .title) "_" else "" });
+        w.writeText(&surface, ctx, col + 6, row, title_display, title_style);
+
+        w.writeText(&surface, ctx, col, row + 2, "body:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        const body_text = self.drafts.pr_composer_body_buf[0..self.drafts.pr_composer_body_len];
+        const body_start = if (body_text.len > max_visible) body_text.len - max_visible else 0;
+        const body_visible = body_text[body_start..];
+        const body_display = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ body_visible, if (self.drafts.pr_composer_focus == .body) "_" else "" });
+        w.writeText(&surface, ctx, col + 6, row + 2, body_display, body_style);
 
         return surface;
     }
@@ -4009,7 +4078,9 @@ pub const Shell = struct {
         // the cached details so the next render re-fetches.
         self.invalidateRemoteDetailRequests();
         self.drafts.show_pr_composer = false;
-        self.drafts.pr_composer_desc_len = 0;
+        self.drafts.pr_composer_title_len = 0;
+        self.drafts.pr_composer_body_len = 0;
+        self.drafts.pr_composer_focus = .title;
         self.releaseComposerTarget();
         const message = std.fmt.allocPrint(
             self.api_state.allocator(),

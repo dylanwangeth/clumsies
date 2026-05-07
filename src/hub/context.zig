@@ -186,7 +186,8 @@ const Operation = struct {
 };
 
 const CreatePrRequest = struct {
-    description: []const u8,
+    title: []const u8,
+    body: []const u8,
     operations: []const Operation,
 };
 
@@ -200,13 +201,17 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
     };
 
-    const body = req.json(CreatePrRequest) catch {
+    const req_body = req.json(CreatePrRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
     };
 
-    if (body.operations.len == 0) {
+    if (req_body.title.len == 0) {
+        return apiError(res, 400, "BAD_REQUEST", "title is required");
+    }
+
+    if (req_body.operations.len == 0) {
         return apiError(res, 400, "BAD_REQUEST", "operations array must not be empty");
     }
 
@@ -219,13 +224,13 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
     }
 
-    for (body.operations) |op| {
+    for (req_body.operations) |op| {
         if (!isValidType(op.type)) {
             return apiError(res, 400, "BAD_REQUEST", "operation type must be modify, rename, create, or delete");
         }
         if (!try validateOperation(conn, ws_id, op, res)) return;
     }
-    if (!try validateNoIntraPrPathConflict(req.arena, body.operations, res)) return;
+    if (!try validateNoIntraPrPathConflict(req.arena, req_body.operations, res)) return;
 
     var rand_bytes: [8]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
@@ -239,13 +244,13 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     const pr_id: []const u8 = &pr_id_buf;
 
     _ = conn.exec(
-        "INSERT INTO context_prs (pr_id, ws_id, author, description) VALUES ($1, $2, $3, $4)",
-        .{ pr_id, ws_id, user.username, body.description },
+        "INSERT INTO context_prs (pr_id, ws_id, author, title, body) VALUES ($1, $2, $3, $4, $5)",
+        .{ pr_id, ws_id, user.username, req_body.title, req_body.body },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "failed to create PR");
     };
 
-    for (body.operations, 0..) |op, idx| {
+    for (req_body.operations, 0..) |op, idx| {
         const target_path: ?[]const u8 = if (std.mem.eql(u8, op.type, "rename"))
             op.new_path
         else if (std.mem.eql(u8, op.type, "create"))
@@ -267,7 +272,7 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         .pr_id = pr_id,
         .status = "open",
         .author = user.username,
-        .operation_count = @as(i64, @intCast(body.operations.len)),
+        .operation_count = @as(i64, @intCast(req_body.operations.len)),
     }, .{});
 }
 
@@ -450,13 +455,14 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         pr_id: []const u8,
         author: []const u8,
         status: []const u8,
-        description: []const u8,
+        title: []const u8,
+        body: []const u8,
         created_at: []const u8,
         operation_count: i64,
     };
 
     const base_sql =
-        \\SELECT pr_id, author, status, description, created_at::text,
+        \\SELECT pr_id, author, status, title, body, created_at::text,
         \\  (SELECT count(*) FROM context_pr_operations op WHERE op.pr_id = context_prs.pr_id)
         \\FROM context_prs
     ;
@@ -475,9 +481,10 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                 .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .author = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .operation_count = try row.get(i64, 5),
+                .title = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                .body = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 5)),
+                .operation_count = try row.get(i64, 6),
             });
         }
     } else {
@@ -492,9 +499,10 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
                 .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .author = try req.arena.dupe(u8, try row.get([]const u8, 1)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .description = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .operation_count = try row.get(i64, 5),
+                .title = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                .body = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 5)),
+                .operation_count = try row.get(i64, 6),
             });
         }
     }
@@ -535,7 +543,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     }
 
     var row = conn.row(
-        "SELECT pr_id, author, status, description, created_at::text FROM context_prs WHERE pr_id = $1 AND ws_id = $2",
+        "SELECT pr_id, author, status, title, body, created_at::text FROM context_prs WHERE pr_id = $1 AND ws_id = $2",
         .{ pr_id, ws_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -546,8 +554,9 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     const pr_id_val = try req.arena.dupe(u8, try row.get([]const u8, 0));
     const author = try req.arena.dupe(u8, try row.get([]const u8, 1));
     const status = try req.arena.dupe(u8, try row.get([]const u8, 2));
-    const description = try req.arena.dupe(u8, try row.get([]const u8, 3));
-    const created_at = try req.arena.dupe(u8, try row.get([]const u8, 4));
+    const pr_title = try req.arena.dupe(u8, try row.get([]const u8, 3));
+    const pr_body = try req.arena.dupe(u8, try row.get([]const u8, 4));
+    const created_at = try req.arena.dupe(u8, try row.get([]const u8, 5));
     row.deinit() catch {};
 
     var ops: std.ArrayList(OperationView) = .empty;
@@ -598,7 +607,8 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
         .pr_id = pr_id_val,
         .author = author,
         .status = status,
-        .description = description,
+        .title = pr_title,
+        .body = pr_body,
         .operations = ops.items,
         .created_at = created_at,
     }, .{});

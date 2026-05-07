@@ -43,8 +43,11 @@ pub const State = struct {
     pending_pr_action_path_owned: ?[]const u8 = null,
 
     show_pr_composer: bool = false,
-    pr_composer_desc_buf: [256]u8 = .{0} ** 256,
-    pr_composer_desc_len: usize = 0,
+    pr_composer_title_buf: [80]u8 = .{0} ** 80,
+    pr_composer_title_len: usize = 0,
+    pr_composer_body_buf: [512]u8 = .{0} ** 512,
+    pr_composer_body_len: usize = 0,
+    pr_composer_focus: enum { title, body } = .title,
     pr_composer_target: ?DraftTarget = null,
     pr_composer_operation: drafts_mod.DraftOperation = .modify,
     pr_composer_path_owned: ?[]const u8 = null,

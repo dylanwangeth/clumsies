@@ -278,7 +278,8 @@ const migration_sql =
     \\    pr_id TEXT PRIMARY KEY,
     \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id) ON DELETE CASCADE,
     \\    author TEXT NOT NULL,
-    \\    description TEXT NOT NULL DEFAULT '',
+    \\    title TEXT NOT NULL DEFAULT '',
+    \\    body TEXT NOT NULL DEFAULT '',
     \\    status TEXT NOT NULL DEFAULT 'open'
     \\        CHECK (status IN ('open', 'merged', 'rejected')),
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -326,7 +327,8 @@ const migration_sql =
     \\    pr_id TEXT PRIMARY KEY,
     \\    org_id UUID NOT NULL REFERENCES orgs(org_id),
     \\    author_id TEXT NOT NULL REFERENCES users(user_id),
-    \\    description TEXT NOT NULL DEFAULT '',
+    \\    title TEXT NOT NULL DEFAULT '',
+    \\    body TEXT NOT NULL DEFAULT '',
     \\    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'rejected')),
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
