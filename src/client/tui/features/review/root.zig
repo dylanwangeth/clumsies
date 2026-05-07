@@ -8,6 +8,7 @@ const theme = @import("../../theme.zig");
 const w = @import("../../widgets.zig");
 const api = @import("../../api.zig");
 const data = @import("../../models/view_types.zig");
+const cursor_mod = @import("../../widgets/cursor.zig");
 const drafts_mod = @import("../../../drafts.zig");
 
 
@@ -94,7 +95,7 @@ pub const State = struct {
     pr_scroll_bars: vxfw.ScrollBars,
     pr_widgets: [64 * 2]vxfw.Widget = undefined,
     pr_table_rows: [64]w.TableRow = undefined,
-    pr_table_cols: [64][6]w.Column = undefined,
+    pr_table_cols: [64][5]w.Column = undefined,
     pr_text_rows: [64]vxfw.Text = undefined,
     pr_indices: [64 * 2]?usize = .{null} ** (64 * 2),
     pr_desc_bufs: [64][160]u8 = undefined,
@@ -450,6 +451,23 @@ fn handleReviewDetailEvent(
         },
         .comments => {
             if (self.review.pr_comment_count == 0) return;
+            if (cursor_mod.isJumpDownKey(key)) {
+                const step = cursor_mod.pageStepRows(&self.review.pr_comment_scroll_bars.scroll_view);
+                const content_h: u32 = self.review.pr_comment_scroll_bars.estimated_content_height orelse 0;
+                const visible = @as(u32, @intCast(cursor_mod.visibleRowCount(&self.review.pr_comment_scroll_bars.scroll_view)));
+                const max_top = content_h -| visible;
+                self.review.pr_comment_scroll_bars.scroll_view.scroll.top = @min(max_top, self.review.pr_comment_scroll_bars.scroll_view.scroll.top + @as(u32, @intCast(step)));
+                self.review.pr_comment_scroll_bars.scroll_view.scroll.vertical_offset = 0;
+                ctx.consumeAndRedraw();
+                return;
+            }
+            if (cursor_mod.isJumpUpKey(key)) {
+                const step = cursor_mod.pageStepRows(&self.review.pr_comment_scroll_bars.scroll_view);
+                self.review.pr_comment_scroll_bars.scroll_view.scroll.top = self.review.pr_comment_scroll_bars.scroll_view.scroll.top -| @as(u32, @intCast(step));
+                self.review.pr_comment_scroll_bars.scroll_view.scroll.vertical_offset = 0;
+                ctx.consumeAndRedraw();
+                return;
+            }
             try self.review.pr_comment_scroll_bars.scroll_view.handleEvent(ctx, event);
         },
     }
@@ -627,20 +645,17 @@ fn writeReviewQueueColumnHeader(
     origin_col: u16,
     body_w: u16,
 ) void {
-    const updated_w: u16 = 16;
     const comments_w: u16 = 10;
     const op_w: u16 = 10;
     const status_w: u16 = 8;
     const gap: u16 = 2;
-    const updated_col = origin_col + body_w -| updated_w;
-    const comments_col = updated_col -| gap -| comments_w;
+    const comments_col = origin_col + body_w -| comments_w;
     const op_col = comments_col -| gap -| op_w;
     const status_col = op_col -| gap -| status_w;
 
     w.writeText(surface, ctx, status_col, 0, "status", theme.fg(theme.MUTED));
     w.writeText(surface, ctx, op_col, 0, "op", theme.fg(theme.MUTED));
     w.writeText(surface, ctx, comments_col, 0, "comments", theme.fg(theme.MUTED));
-    w.writeText(surface, ctx, updated_col, 0, "updated", theme.fg(theme.MUTED));
 }
 
 fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -1238,7 +1253,6 @@ pub fn syncReviewPrWidgets(self: anytype) void {
             .{ .text = status, .flex = 0, .min_width = 8, .style = reviewStatusStyle(pr.status) },
             .{ .text = op_label, .flex = 0, .min_width = 10, .style = reviewOpStyle() },
             .{ .text = comments_label, .flex = 0, .min_width = 10, .style = reviewCommentsStyle() },
-            .{ .text = created_short, .flex = 0, .min_width = 16, .style = theme.fg(theme.MUTED) },
         };
         self.review.pr_table_rows[pi] = .{
             .columns = &self.review.pr_table_cols[pi],
@@ -1252,13 +1266,11 @@ pub fn syncReviewPrWidgets(self: anytype) void {
 
         const desc_text = std.fmt.bufPrint(
             &self.review.pr_desc_bufs[pi],
-            "{s} · {s} · {s}{s}{s}",
+            "{s} · {s} · {s}",
             .{
                 pr.target_path,
                 pr.author,
-                pr.id,
-                if (pr.workspace_id) |_| " · " else "",
-                pr.workspace_id orelse "",
+                created_short,
             },
         ) catch pr.target_path;
         self.review.pr_text_rows[pi] = .{
