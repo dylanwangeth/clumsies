@@ -67,7 +67,8 @@ fn loadDotEnv(allocator: std.mem.Allocator, env_map: *std.process.EnvMap) void {
 
     const size = file.getEndPos() catch return;
     if (size == 0) return;
-    const contents = allocator.alloc(u8, size) catch return;
+    const alloc_size = std.math.cast(usize, size) orelse return;
+    const contents = allocator.alloc(u8, alloc_size) catch return;
     defer allocator.free(contents);
 
     var buf: [4096]u8 = undefined;
@@ -108,14 +109,16 @@ fn stripQuotes(s: []const u8) []const u8 {
 
 fn initHubLogger(env_map: *const std.process.EnvMap) void {
     var level: std.log.Level = .info;
+    var invalid_level: ?[]const u8 = null;
     if (env_map.get("CLUMSIES_LOG_LEVEL")) |raw| {
         if (logger.parseLevel(raw)) |parsed| {
             level = parsed;
         } else {
-            logger.noteInvalidLevel(raw);
+            invalid_level = raw;
         }
     }
     logger.initBestEffort(.{ .level = level, .sink = .stderr });
+    if (invalid_level) |raw| logger.noteInvalidLevel(raw);
 }
 
 test {

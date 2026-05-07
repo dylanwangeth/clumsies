@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const epoch = std.time.epoch;
 
@@ -243,6 +244,7 @@ fn detectColor() bool {
         std.heap.page_allocator.free(val);
         return false;
     }
+    if (builtin.os.tag == .windows) return false;
     return std.posix.isatty(std.posix.STDERR_FILENO);
 }
 
@@ -331,5 +333,8 @@ test "clientDefaultLogPath uses local runtime logs directory" {
     const path = try clientDefaultLogPath(testing.allocator);
     defer testing.allocator.free(path);
 
-    try testing.expect(std.mem.endsWith(u8, path, "/.clumsies/logs/client.log"));
+    const suffix = try std.fs.path.join(testing.allocator, &.{ ".clumsies", "logs", "client.log" });
+    defer testing.allocator.free(suffix);
+
+    try testing.expect(std.mem.endsWith(u8, path, suffix));
 }
