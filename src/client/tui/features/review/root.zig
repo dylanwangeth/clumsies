@@ -9,7 +9,7 @@ const w = @import("../../widgets.zig");
 const api = @import("../../api.zig");
 const data = @import("../../models/view_types.zig");
 const drafts_mod = @import("../../../drafts.zig");
-const diff_viewer = @import("../../widgets/diff_viewer.zig");
+
 
 const RuleDetailLayout = struct {
     inner_h_pad: u16,
@@ -102,10 +102,7 @@ pub const State = struct {
     filtered_pr_count: usize = 0,
     total_pr_count: usize = 0,
     selected_pr_idx: usize = 0,
-    pr_diff_scroll_bars: vxfw.ScrollBars,
-    pr_diff_widgets: []vxfw.Widget = &.{},
-    pr_diff_rows: []vxfw.Text = &.{},
-    pr_diff_count: usize = 0,
+    pr_diff_view: w.ContentView,
     pr_comment_scroll_bars: vxfw.ScrollBars,
     pr_comment_widgets: []vxfw.Widget = &.{},
     pr_comment_rows: []vxfw.Text = &.{},
@@ -118,7 +115,7 @@ pub const State = struct {
         return .{
             .content_view = w.ContentView.init(),
             .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
-            .pr_diff_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
+            .pr_diff_view = w.ContentView.init(),
             .pr_comment_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
         };
     }
@@ -243,7 +240,7 @@ fn buildRuleDetailBody(
                 .pull_request_diff = .{
                     .title = title,
                     .op_line = op_line,
-                    .surface = try self.review.pr_diff_scroll_bars.widget().draw(diff_ctx),
+                    .surface = try self.review.pr_diff_view.buildSurface(ctx.arena, diff_ctx, 0, diff_h),
                 },
             };
         },
@@ -415,8 +412,8 @@ fn handlePrDiffEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    if (self.review.pr_diff_count == 0) return;
-    try self.review.pr_diff_scroll_bars.scroll_view.handleEvent(ctx, event);
+    if (self.review.pr_diff_view.cache_bytes.len == 0 and self.review.pr_diff_view.draft_bytes == null) return;
+    try self.review.pr_diff_view.handleEvent(ctx, event);
 }
 
 fn handleReviewDetailEvent(
@@ -448,8 +445,8 @@ fn handleReviewDetailEvent(
     }
     switch (self.review.detail_pane) {
         .diff => {
-            if (self.review.pr_diff_count == 0) return;
-            try self.review.pr_diff_scroll_bars.scroll_view.handleEvent(ctx, event);
+            if (self.review.pr_diff_view.cache_bytes.len == 0 and self.review.pr_diff_view.draft_bytes == null) return;
+            try self.review.pr_diff_view.handleEvent(ctx, event);
         },
         .comments => {
             if (self.review.pr_comment_count == 0) return;
@@ -709,7 +706,7 @@ fn drawReviewDiffPanel(
     if (subtitle.len > 0) {
         _ = w.writeHeaderRightIfFits(&surface, ctx, 0, meta_min_col, subtitle, theme.fg(theme.MUTED));
     }
-    if (self.review.pr_diff_count == 0) {
+    if (self.review.pr_diff_view.cache_bytes.len == 0 and self.review.pr_diff_view.draft_bytes == null) {
         w.writeText(&surface, ctx, 2, 1, "No diff loaded.", theme.fg(theme.MUTED));
         return surface;
     }
@@ -717,7 +714,7 @@ fn drawReviewDiffPanel(
     const body_h = size.height -| @as(u16, @intCast(body_origin_row)) -| 1;
     const body_w = size.width -| 4;
     const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
-    const body = try self.review.pr_diff_scroll_bars.widget().draw(body_ctx);
+    const body = try self.review.pr_diff_view.buildSurface(ctx.arena, body_ctx, 0, body_h);
     const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
     children[0] = .{ .origin = .{ .row = body_origin_row, .col = 2 }, .surface = body };
     surface.children = children;
@@ -897,7 +894,7 @@ fn clearFocusedFilterFacet(self: anytype) void {
 fn resetReviewSelection(self: anytype) void {
     self.review.selected_pr_idx = 0;
     self.review.pr_scroll_bars.scroll_view.cursor = 0;
-    self.review.pr_diff_scroll_bars.scroll_view.cursor = 0;
+    self.review.pr_diff_view.scroll_bars.scroll_view.scroll.top = 0;
     self.review.pr_comment_scroll_bars.scroll_view.cursor = 0;
     api.state.resetPrDetailState(self.api_state);
 }
@@ -918,7 +915,7 @@ fn handleReviewPrListEvent(
         self.review.mode = .detail;
         self.review.focus = .detail;
         self.review.detail_pane = .diff;
-        self.review.pr_diff_scroll_bars.scroll_view.cursor = 0;
+        self.review.pr_diff_view.scroll_bars.scroll_view.scroll.top = 0;
         self.review.pr_comment_scroll_bars.scroll_view.cursor = 0;
         fetchSelectedReviewPrDetail(self);
         ctx.consumeAndRedraw();
@@ -1356,73 +1353,27 @@ fn sortReviewPrIndices(prs: []const data.PullRequestEntry, indices: []usize, sor
 pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
     const all_rules = self.getRules();
     if (all_rules.len == 0) {
-        self.review.pr_diff_count = 0;
-        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
+        self.review.pr_diff_view.syncBytes(allocator, "", null);
         return;
     }
     const sel_idx = @min(self.artifact.selected_rule, all_rules.len - 1);
     const p = &all_rules[sel_idx];
     const prs = self.getPrsForRule(p.path);
     if (prs.len == 0) {
-        self.review.pr_diff_count = 0;
-        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
+        self.review.pr_diff_view.syncBytes(allocator, "", null);
         return;
     }
     const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
     const pr = &prs[pr_idx];
-
-    const total = pr.diff.len + if (pr.comments.len > 0) 1 + pr.comments.len * 3 else 0;
-    const rows = allocator.alloc(vxfw.Text, total) catch {
-        self.review.pr_diff_count = 0;
-        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
-        return;
-    };
-    const widgets = allocator.alloc(vxfw.Widget, total) catch {
-        self.review.pr_diff_count = 0;
-        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
-        return;
-    };
-
-    var count: usize = 0;
-    for (pr.diff) |line| {
-        rows[count] = .{ .text = line, .style = diff_viewer.styleLine(line) };
-        widgets[count] = rows[count].widget();
-        count += 1;
-    }
-    if (pr.comments.len > 0) {
-        rows[count] = .{
-            .text = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Comments \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",
-            .style = theme.fg(theme.MUTED),
-        };
-        widgets[count] = rows[count].widget();
-        count += 1;
-        for (pr.comments) |comment| {
-            const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
-            const header = std.fmt.allocPrint(allocator, "{s} \xc2\xb7 {s}", .{ comment.author, created_short }) catch "??";
-            rows[count] = .{ .text = header, .style = theme.fgBold(theme.TEXT_SOFT) };
-            widgets[count] = rows[count].widget();
-            count += 1;
-            rows[count] = .{ .text = comment.body, .style = theme.fg(theme.TEXT_SOFT) };
-            widgets[count] = rows[count].widget();
-            count += 1;
-            rows[count] = .{ .text = " ", .style = theme.fg(theme.MUTED) };
-            widgets[count] = rows[count].widget();
-            count += 1;
-        }
-    }
-
-    self.review.pr_diff_rows = rows;
-    self.review.pr_diff_widgets = widgets;
-    self.review.pr_diff_count = count;
-    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = widgets[0..count] };
-    self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(count);
+    self.review.pr_diff_view.syncBytes(allocator, pr.base_content, pr.proposed_content);
 }
 
 pub fn syncReviewPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
     const prs = self.getReviewPrs();
     if (prs.len == 0) {
-        self.review.pr_diff_count = 0;
+        self.review.pr_diff_view.syncBytes(allocator, "", null);
         self.review.pr_comment_count = 0;
+        self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = &.{} };
         return;
     }
     const pr = &prs[@min(self.review.selected_pr_idx, prs.len - 1)];
@@ -1430,27 +1381,7 @@ pub fn syncReviewPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) 
 }
 
 fn syncReviewDetailRows(self: anytype, allocator: std.mem.Allocator, pr: *const data.PullRequestEntry) void {
-    const diff_total = pr.diff.len;
-    const diff_rows = allocator.alloc(vxfw.Text, diff_total) catch {
-        self.review.pr_diff_count = 0;
-        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
-        return;
-    };
-    const diff_widgets = allocator.alloc(vxfw.Widget, diff_total) catch {
-        self.review.pr_diff_count = 0;
-        self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = &.{} };
-        return;
-    };
-
-    for (pr.diff, 0..) |line, i| {
-        diff_rows[i] = .{ .text = line, .style = diff_viewer.styleLine(line) };
-        diff_widgets[i] = diff_rows[i].widget();
-    }
-    self.review.pr_diff_rows = diff_rows;
-    self.review.pr_diff_widgets = diff_widgets;
-    self.review.pr_diff_count = diff_total;
-    self.review.pr_diff_scroll_bars.scroll_view.children = .{ .slice = diff_widgets };
-    self.review.pr_diff_scroll_bars.estimated_content_height = @intCast(diff_total);
+    self.review.pr_diff_view.syncBytes(allocator, pr.base_content, pr.proposed_content);
 
     const comment_total = pr.comments.len * 3;
     if (comment_total == 0) {
@@ -1503,7 +1434,8 @@ test "review filter predicate handles status and target facets" {
         .created = "2026-01-03T00:00:00Z",
         .description = "Update rule",
         .base_hash = "",
-        .diff = &.{},
+        .base_content = "",
+        .proposed_content = "",
         .attestation_refers = 0,
         .attestation_sessions = 0,
     };
@@ -1517,7 +1449,8 @@ test "review filter predicate handles status and target facets" {
         .created = "2026-01-02T00:00:00Z",
         .description = "Close context",
         .base_hash = "",
-        .diff = &.{},
+        .base_content = "",
+        .proposed_content = "",
         .attestation_refers = 0,
         .attestation_sessions = 0,
     };
@@ -1542,7 +1475,8 @@ test "review sort orders newest timestamps first" {
             .created = "2026-01-01T00:00:00Z",
             .description = "old",
             .base_hash = "",
-            .diff = &.{},
+            .base_content = "",
+        .proposed_content = "",
             .attestation_refers = 0,
             .attestation_sessions = 0,
         },
@@ -1556,7 +1490,8 @@ test "review sort orders newest timestamps first" {
             .created = "2026-01-03T00:00:00Z",
             .description = "new",
             .base_hash = "",
-            .diff = &.{},
+            .base_content = "",
+        .proposed_content = "",
             .attestation_refers = 0,
             .attestation_sessions = 0,
         },
@@ -1570,7 +1505,8 @@ test "review sort orders newest timestamps first" {
             .created = "2026-01-02T00:00:00Z",
             .description = "mid",
             .base_hash = "",
-            .diff = &.{},
+            .base_content = "",
+        .proposed_content = "",
             .attestation_refers = 0,
             .attestation_sessions = 0,
         },
@@ -1601,7 +1537,8 @@ test "review labels normalize terminal state and op display" {
         .created = "2026-01-01T00:00:00Z",
         .description = "rename",
         .base_hash = "",
-        .diff = &.{},
+        .base_content = "",
+        .proposed_content = "",
         .attestation_refers = 0,
         .attestation_sessions = 0,
         .operation_count = 1,

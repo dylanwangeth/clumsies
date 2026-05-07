@@ -151,7 +151,8 @@ pub const ApiState = struct {
     // computing the diff on every draw would be wasteful; the consumer
     // caches it once per (pr_id, active rule_id) transition.
     pr_detail_id: ?[]const u8 = null,
-    pr_detail_diff: ?[]const []const u8 = null,
+    pr_detail_base: ?[]const u8 = null,
+    pr_detail_proposed: ?[]const u8 = null,
     pr_detail_attestation_refers: u16 = 0,
     pr_detail_op_type: ?[]const u8 = null,
     pr_detail_op_current_path: ?[]const u8 = null,
@@ -312,7 +313,8 @@ pub fn resetPrDetailState(api_state: *ApiState) void {
     defer api_state.mutex.unlock();
 
     api_state.pr_detail_id = null;
-    api_state.pr_detail_diff = null;
+    api_state.pr_detail_base = null;
+    api_state.pr_detail_proposed = null;
     api_state.pr_detail_attestation_refers = 0;
     api_state.pr_detail_op_type = null;
     api_state.pr_detail_op_current_path = null;
