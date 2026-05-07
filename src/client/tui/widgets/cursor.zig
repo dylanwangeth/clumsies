@@ -273,7 +273,7 @@ pub fn isHalfPageUpKey(key: vaxis.Key) bool {
     return key.matches('u', .{ .ctrl = true });
 }
 
-fn visibleRowCount(scroll_view: *const vxfw.ScrollView) usize {
+pub fn visibleRowCount(scroll_view: *const vxfw.ScrollView) usize {
     return @max(@as(usize, @intCast(scroll_view.last_height)), 1);
 }
 
