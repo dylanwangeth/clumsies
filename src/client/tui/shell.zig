@@ -2237,7 +2237,6 @@ pub const Shell = struct {
         }
         if (pick_idx == null and resp.operations.len > 0) pick_idx = 0;
 
-        var diff_lines: ?[]const []const u8 = null;
         var op_type: ?[]const u8 = null;
         var op_current_path: ?[]const u8 = null;
         var op_new_path: ?[]const u8 = null;
@@ -2245,11 +2244,15 @@ pub const Shell = struct {
         var op_index: u16 = 0;
         const op_total: u16 = @intCast(@min(resp.operations.len, std.math.maxInt(u16)));
 
+        var base_copy: ?[]const u8 = null;
+        var proposed_copy: ?[]const u8 = null;
+
         if (pick_idx) |i| {
             const op = resp.operations[i];
             const base = op.base_content orelse "";
             const proposed = op.content orelse "";
-            diff_lines = w.computeDiffLines(alloc, base, proposed) catch null;
+            base_copy = alloc.dupe(u8, base) catch null;
+            proposed_copy = alloc.dupe(u8, proposed) catch null;
             op_type = alloc.dupe(u8, op.type) catch null;
             if (op.current_path) |cp| op_current_path = alloc.dupe(u8, cp) catch null;
             if (op.path) |np| op_new_path = alloc.dupe(u8, np) catch null;
@@ -2262,7 +2265,8 @@ pub const Shell = struct {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         self.api_state.pr_detail_id = stored_pr_id;
-        self.api_state.pr_detail_diff = diff_lines;
+        self.api_state.pr_detail_base = base_copy;
+        self.api_state.pr_detail_proposed = proposed_copy;
         self.api_state.pr_detail_attestation_refers = attestation_refers;
         self.api_state.pr_detail_op_type = op_type;
         self.api_state.pr_detail_op_current_path = op_current_path;

@@ -58,7 +58,8 @@ pub fn toPrEntries(
 ) []const data.PullRequestEntry {
     var list: std.ArrayList(data.PullRequestEntry) = .empty;
     for (prs) |pr| {
-        var diff: []const []const u8 = &.{};
+        var base_content: []const u8 = "";
+        var proposed_content: []const u8 = "";
         var comments: []const data.CommentEntry = &.{};
         var attestation_refers: u16 = 0;
         var op_type: []const u8 = pr.op_type;
@@ -68,7 +69,8 @@ pub fn toPrEntries(
         var op_index: u16 = 0;
         if (api_state.pr_detail_id) |cached_id| {
             if (std.mem.eql(u8, cached_id, pr.pr_id)) {
-                diff = api_state.pr_detail_diff orelse &.{};
+                base_content = api_state.pr_detail_base orelse "";
+                proposed_content = api_state.pr_detail_proposed orelse "";
                 attestation_refers = api_state.pr_detail_attestation_refers;
                 op_type = api_state.pr_detail_op_type orelse "";
                 op_current_path = api_state.pr_detail_op_current_path orelse "";
@@ -96,7 +98,8 @@ pub fn toPrEntries(
             .created = pr.created_at,
             .description = pr.description,
             .base_hash = op_base_hash,
-            .diff = diff,
+            .base_content = base_content,
+            .proposed_content = proposed_content,
             .comments = comments,
             .comment_count = comment_count,
             .attestation_refers = attestation_refers,
@@ -118,7 +121,8 @@ pub fn toReviewPrEntries(
 ) []const data.PullRequestEntry {
     var list: std.ArrayList(data.PullRequestEntry) = .empty;
     for (prs) |pr| {
-        var diff: []const []const u8 = &.{};
+        var base_content: []const u8 = "";
+        var proposed_content: []const u8 = "";
         var comments: []const data.CommentEntry = &.{};
         var op_type: []const u8 = pr.op_type;
         var op_current_path: []const u8 = "";
@@ -127,7 +131,8 @@ pub fn toReviewPrEntries(
         var op_index: u16 = 0;
         if (api_state.pr_detail_id) |cached_id| {
             if (std.mem.eql(u8, cached_id, pr.pr_id)) {
-                diff = api_state.pr_detail_diff orelse &.{};
+                base_content = api_state.pr_detail_base orelse "";
+                proposed_content = api_state.pr_detail_proposed orelse "";
                 op_type = api_state.pr_detail_op_type orelse "";
                 op_current_path = api_state.pr_detail_op_current_path orelse "";
                 op_new_path = api_state.pr_detail_op_new_path orelse "";
@@ -155,7 +160,8 @@ pub fn toReviewPrEntries(
             .created = pr.created_at,
             .description = pr.description,
             .base_hash = op_base_hash,
-            .diff = diff,
+            .base_content = base_content,
+            .proposed_content = proposed_content,
             .comments = comments,
             .comment_count = comment_count,
             .attestation_refers = 0,

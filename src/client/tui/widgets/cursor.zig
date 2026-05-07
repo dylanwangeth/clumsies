@@ -245,6 +245,13 @@ pub fn moveSelectableRowByVisualRows(
         while (pos < row_count) : (pos += 1) {
             if (pos < selectable_rows.len and selectable_rows[pos] != null) return pos;
         }
+        // No selectable row at or past target; search backward
+        // from target to find the last selectable item.
+        pos = target + 1;
+        while (pos > bounded_cursor) {
+            pos -= 1;
+            if (pos < selectable_rows.len and selectable_rows[pos] != null) return pos;
+        }
     }
 
     return bounded_cursor;
