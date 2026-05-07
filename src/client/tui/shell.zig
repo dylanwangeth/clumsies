@@ -1083,14 +1083,18 @@ pub const Shell = struct {
 
     fn maybeRefreshMetadata(self: *Shell) void {
         if (self.tick_count > 0 and self.tick_count % GLOBAL_METADATA_REFRESH_TICKS == 0) {
-            self.invalidateRemoteDetailRequests();
+            if (self.selected_module == .review) {
+                api.state.invalidateRemoteCaches(self.api_state, .pr_lists);
+            } else {
+                self.invalidateRemoteDetailRequests();
+            }
             api.fetch.refetchAllAsync(self.api_state);
         }
         if (self.tick_count > 0 and self.tick_count % HEALTH_CHECK_TICKS == 0) {
             api.specs.dispatchHealthCheck(self.api_state);
         }
         if (self.selected_module == .review and self.tick_count > 0 and self.tick_count % WORKSPACE_METADATA_REFRESH_TICKS == 0) {
-            api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
+            api.state.invalidateRemoteCaches(self.api_state, .pr_lists);
             self.ensureReviewPrsRequested();
         }
         if (self.selected_module == .workspace and self.tick_count > 0 and self.tick_count % WORKSPACE_METADATA_REFRESH_TICKS == 0) {
@@ -2294,11 +2298,11 @@ pub const Shell = struct {
         const result = self.api_state.submit_comment_pending.consume() orelse return;
         switch (result) {
             .ok => {
-                const submitted_pr_id = self.activePrId();
+                const submitted_pr = self.selectedPr();
                 api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
                 if (self.selected_module == .review) {
                     self.ensureReviewPrsRequested();
-                    if (submitted_pr_id) |pr_id| self.fetchReviewPrDetailById(pr_id);
+                    if (submitted_pr) |pr| self.fetchPrDetailForEntry(pr);
                 }
                 self.notifyOp(.success, "Comment submitted.");
             },
@@ -2456,29 +2460,24 @@ pub const Shell = struct {
         self.notifyOp(.loading, "Submitting comment...");
     }
 
-    fn fetchReviewPrDetailById(self: *Shell, pr_id: []const u8) void {
-        const prs = self.getReviewPrs();
-        for (prs) |pr| {
-            if (!std.mem.eql(u8, pr.id, pr_id)) continue;
-            if (pr.target_kind == .bundle) return;
-            api.specs.dispatchFromState(
-                api.specs.PrIdParams,
-                @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
-                api.specs.pr_detail,
-                &self.api_state.pr_detail_pending,
-                self.api_state,
-                .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
-            );
-            api.specs.dispatchFromState(
-                api.specs.PrIdParams,
-                api.specs.PrCommentsPayload,
-                api.specs.pr_comments,
-                &self.api_state.pr_comments_pending,
-                self.api_state,
-                .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
-            );
-            return;
-        }
+    fn fetchPrDetailForEntry(self: *Shell, pr: data.PullRequestEntry) void {
+        if (pr.target_kind == .bundle) return;
+        api.specs.dispatchFromState(
+            api.specs.PrIdParams,
+            @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
+            api.specs.pr_detail,
+            &self.api_state.pr_detail_pending,
+            self.api_state,
+            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
+        );
+        api.specs.dispatchFromState(
+            api.specs.PrIdParams,
+            api.specs.PrCommentsPayload,
+            api.specs.pr_comments,
+            &self.api_state.pr_comments_pending,
+            self.api_state,
+            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
+        );
     }
 
     pub fn doPrAction(self: *Shell, action: []const u8) void {
@@ -4111,7 +4110,7 @@ pub const Shell = struct {
                 self.ensureActiveWorkspaceDetailRequested();
             },
             .review => {
-                api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
+                api.state.invalidateRemoteCaches(self.api_state, .pr_lists);
                 self.ensureReviewPrsRequested();
             },
             else => {},
