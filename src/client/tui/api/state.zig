@@ -258,6 +258,7 @@ pub fn refreshLocalState(api_state: *ApiState) void {
 }
 
 pub const RemoteCacheScope = enum {
+    pr_lists,
     pr_lifecycle,
     artifact_detail,
     workspace_detail,
@@ -266,6 +267,9 @@ pub const RemoteCacheScope = enum {
 
 pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) void {
     switch (scope) {
+        .pr_lists => {
+            invalidatePrLists(api_state);
+        },
         .pr_lifecycle => {
             invalidatePrLifecycle(api_state);
         },
@@ -286,14 +290,19 @@ pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) voi
     }
 }
 
-fn invalidatePrLifecycle(api_state: *ApiState) void {
+fn invalidatePrLists(api_state: *ApiState) void {
     api_state.rule_prs_cache.invalidate();
     api_state.review_prs_cache.invalidate();
-    api_state.pr_detail_cache.invalidate();
-    api_state.pr_comments_cache.invalidate();
 
     api_state.rule_prs_pending.cancel();
     api_state.review_prs_pending.cancel();
+}
+
+fn invalidatePrLifecycle(api_state: *ApiState) void {
+    invalidatePrLists(api_state);
+    api_state.pr_detail_cache.invalidate();
+    api_state.pr_comments_cache.invalidate();
+
     api_state.pr_detail_pending.cancel();
     api_state.pr_comments_pending.cancel();
     resetPrDetailState(api_state);
