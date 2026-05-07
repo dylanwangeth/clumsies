@@ -3,7 +3,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const theme = @import("../theme.zig");
 const diff_viewer = @import("diff_viewer.zig");
-const widgets = @import("../widgets.zig");
+const cursor = @import("cursor.zig");
 
 pub const ContentView = struct {
     scroll_bars: vxfw.ScrollBars,
@@ -12,7 +12,7 @@ pub const ContentView = struct {
 
     pub fn init() ContentView {
         return .{
-            .scroll_bars = widgets.initPlainScrollBars(theme.PANEL, 3),
+            .scroll_bars = cursor.initPlainScrollBars(theme.PANEL, 3),
         };
     }
 
@@ -49,6 +49,28 @@ pub const ContentView = struct {
     }
 
     pub fn handleEvent(self: *ContentView, ctx: *vxfw.EventContext, event: vxfw.Event) !void {
+        switch (event) {
+            .key_press => |key| {
+                if (cursor.isJumpDownKey(key)) {
+                    const step = cursor.pageStepRows(&self.scroll_bars.scroll_view);
+                    const content_h: u32 = self.scroll_bars.estimated_content_height orelse 0;
+                    const visible = @as(u32, @intCast(cursor.visibleRowCount(&self.scroll_bars.scroll_view)));
+                    const max_top = content_h -| visible;
+                    self.scroll_bars.scroll_view.scroll.top = @min(max_top, self.scroll_bars.scroll_view.scroll.top + @as(u32, @intCast(step)));
+                    self.scroll_bars.scroll_view.scroll.vertical_offset = 0;
+                    ctx.consumeAndRedraw();
+                    return;
+                }
+                if (cursor.isJumpUpKey(key)) {
+                    const step = cursor.pageStepRows(&self.scroll_bars.scroll_view);
+                    self.scroll_bars.scroll_view.scroll.top = self.scroll_bars.scroll_view.scroll.top -| @as(u32, @intCast(step));
+                    self.scroll_bars.scroll_view.scroll.vertical_offset = 0;
+                    ctx.consumeAndRedraw();
+                    return;
+                }
+            },
+            else => {},
+        }
         try self.scroll_bars.scroll_view.handleEvent(ctx, event);
         self.scroll_bars.scroll_view.scroll.left = 0;
     }
