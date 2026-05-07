@@ -267,7 +267,6 @@ pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) voi
     switch (scope) {
         .pr_lifecycle => {
             invalidatePrLifecycle(api_state);
-            resetPrDetailState(api_state);
         },
         .artifact_detail => {
             api_state.rule_content_cache.invalidate();
@@ -289,13 +288,9 @@ pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) voi
 fn invalidatePrLifecycle(api_state: *ApiState) void {
     api_state.rule_prs_cache.invalidate();
     api_state.review_prs_cache.invalidate();
-    api_state.pr_detail_cache.invalidate();
-    api_state.pr_comments_cache.invalidate();
 
     api_state.rule_prs_pending.cancel();
     api_state.review_prs_pending.cancel();
-    api_state.pr_detail_pending.cancel();
-    api_state.pr_comments_pending.cancel();
 }
 
 fn invalidateWorkspaceDetail(api_state: *ApiState) void {
@@ -312,7 +307,7 @@ fn invalidateWorkspaceDetail(api_state: *ApiState) void {
     api_state.workspace_manifest_pending.cancel();
 }
 
-fn resetPrDetailState(api_state: *ApiState) void {
+pub fn resetPrDetailState(api_state: *ApiState) void {
     api_state.mutex.lock();
     defer api_state.mutex.unlock();
 

@@ -3609,6 +3609,15 @@ pub const Shell = struct {
             }
         }
 
+        const base_content_copy_opt: ?[]const u8 = if (entry.operation != .create)
+            if (self.localRuleBody(target.path)) |body|
+                (alloc.dupe(u8, body) catch return)
+            else
+                null
+        else
+            null;
+        defer if (base_content_copy_opt) |bc| alloc.free(bc);
+
         api.specs.dispatchFromState(
             api.specs.CreateRulePrParams,
             api.specs.CreateRulePrResponse,
@@ -3623,6 +3632,7 @@ pub const Shell = struct {
                 .new_path = new_path_copy_opt,
                 .content = content_copy,
                 .base_hash = base_hash_copy_opt,
+                .base_content = base_content_copy_opt,
             },
         );
         self.drafts.pr_composer_submitting = true;
@@ -3682,6 +3692,15 @@ pub const Shell = struct {
             return;
         }
 
+        const base_content_copy_opt: ?[]const u8 = if (entry.operation != .create)
+            if (self.localWorkspaceContextBody(target.ws_id, target.path)) |body|
+                (alloc.dupe(u8, body) catch return)
+            else
+                null
+        else
+            null;
+        defer if (base_content_copy_opt) |bc| alloc.free(bc);
+
         api.specs.dispatchFromState(
             api.specs.CreateContextPrParams,
             api.specs.CreateContextPrResponse,
@@ -3697,6 +3716,7 @@ pub const Shell = struct {
                 .new_path = new_path_copy_opt,
                 .content = content_copy,
                 .base_hash = base_hash_copy_opt,
+                .base_content = base_content_copy_opt,
             },
         );
         self.drafts.pr_composer_submitting = true;

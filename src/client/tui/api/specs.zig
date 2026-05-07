@@ -62,6 +62,7 @@ pub const CreateRulePrParams = struct {
     new_path: ?[]const u8 = null,
     content: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
+    base_content: ?[]const u8 = null,
 };
 
 /// Parameters for creating a context PR. Mirrors the rule PR shape
@@ -77,6 +78,7 @@ pub const CreateContextPrParams = struct {
     new_path: ?[]const u8 = null,
     content: []const u8,
     base_hash: ?[]const u8 = null,
+    base_content: ?[]const u8 = null,
 };
 
 pub const artifact_rule_content = dispatcher.RequestSpec(
@@ -214,6 +216,7 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         type: []const u8,
         rule_id: ?[]const u8 = null,
         base_hash: ?[]const u8 = null,
+        base_content: ?[]const u8 = null,
         content: ?[]const u8 = null,
         path: ?[]const u8 = null,
         new_path: ?[]const u8 = null,
@@ -226,6 +229,7 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         .type = p.operation_type,
         .rule_id = p.rule_id,
         .base_hash = p.base_hash,
+        .base_content = p.base_content,
         .content = p.content,
         .path = p.path,
         .new_path = p.new_path,
@@ -245,6 +249,7 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         type: []const u8,
         context_id: ?[]const u8,
         base_hash: ?[]const u8,
+        base_content: ?[]const u8 = null,
         content: []const u8,
         path: ?[]const u8,
         new_path: ?[]const u8,
@@ -257,6 +262,7 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         .type = p.operation_type,
         .context_id = p.context_id,
         .base_hash = p.base_hash,
+        .base_content = p.base_content,
         .content = p.content,
         .path = p.path,
         .new_path = p.new_path,

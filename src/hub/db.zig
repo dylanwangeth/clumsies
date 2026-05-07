@@ -290,6 +290,7 @@ const migration_sql =
     \\    type TEXT NOT NULL CHECK (type IN ('modify', 'rename', 'create', 'delete')),
     \\    context_id TEXT,
     \\    base_hash TEXT,
+    \\    base_content TEXT,
     \\    content TEXT,
     \\    path TEXT,
     \\    PRIMARY KEY (pr_id, op_index)
@@ -337,6 +338,7 @@ const migration_sql =
     \\    type TEXT NOT NULL CHECK (type IN ('modify', 'rename', 'create', 'delete')),
     \\    rule_id TEXT,
     \\    base_hash TEXT,
+    \\    base_content TEXT,
     \\    content TEXT,
     \\    path TEXT,
     \\    PRIMARY KEY (pr_id, op_index)
