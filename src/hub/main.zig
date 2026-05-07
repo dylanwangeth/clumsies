@@ -33,7 +33,7 @@ pub fn main() !void {
             config.db_name,
             err,
         });
-        return err;
+        std.process.exit(1);
     };
     defer pool.deinit();
 
