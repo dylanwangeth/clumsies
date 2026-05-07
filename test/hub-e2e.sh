@@ -253,7 +253,7 @@ assert_json "includes reserved MPF path" '"path":"META_PROMPT.md"' "$BODY"
 
 # Rule PRs (multi-operation model)
 step "Rule PR: create with modify operation"
-RAW=$(call POST "/api/org/rule-prs" '{"description":"Tighten STYLE rules","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened.\n\n## Rules\n\n- Rule one"}]}')
+RAW=$(call POST "/api/org/rule-prs" '{"title":"Tighten STYLE rules","body":"Tighten STYLE rules","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened.\n\n## Rules\n\n- Rule one"}]}')
 parse_response "$RAW"
 assert_status "create rule PR" "201" "$STATUS"
 assert_json "returns pr_id" "pr_id" "$BODY"
@@ -261,12 +261,12 @@ assert_json "status open" "open" "$BODY"
 PPR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 
 step "Rule PR: reject empty operations"
-RAW=$(call POST "/api/org/rule-prs" '{"description":"empty","operations":[]}')
+RAW=$(call POST "/api/org/rule-prs" '{"title":"empty","body":"empty","operations":[]}')
 parse_response "$RAW"
 assert_status "empty ops rejected" "400" "$STATUS"
 
 step "Rule PR: reject stale base_hash"
-RAW=$(call POST "/api/org/rule-prs" '{"description":"stale","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:wrong","content":"# X\n\nD\n\n## S\n\n- R"}]}')
+RAW=$(call POST "/api/org/rule-prs" '{"title":"stale","body":"stale","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:wrong","content":"# X\n\nD\n\n## S\n\n- R"}]}')
 parse_response "$RAW"
 assert_status "stale base_hash 409" "409" "$STATUS"
 
@@ -300,7 +300,7 @@ step "Rule PR: create with rename operation"
 RAW=$(call GET "/api/org/artifact/rule?rule_id=p-test-002")
 parse_response "$RAW"
 P002_HASH=$(echo "$BODY" | grep -o '"content_hash":"[^"]*"' | cut -d'"' -f4)
-RAW=$(call POST "/api/org/rule-prs" "{\"description\":\"Relocate COMMIT\",\"operations\":[{\"type\":\"rename\",\"rule_id\":\"p-test-002\",\"base_hash\":\"$P002_HASH\",\"new_path\":\"workflow/git/COMMIT.md\"}]}")
+RAW=$(call POST "/api/org/rule-prs" "{\"title\":\"Relocate COMMIT\",\"body\":\"Relocate COMMIT\",\"operations\":[{\"type\":\"rename\",\"rule_id\":\"p-test-002\",\"base_hash\":\"$P002_HASH\",\"new_path\":\"workflow/git/COMMIT.md\"}]}")
 parse_response "$RAW"
 assert_status "create rename PR" "201" "$STATUS"
 RENAME_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
@@ -495,7 +495,7 @@ assert_status "list files on main" "200" "$STATUS"
 assert_json "returns files array" "files" "$BODY"
 
 step "Context: create PR with create operation"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add API spec","operations":[{"type":"create","path":"spec/API.md","content":"# API Design\n\nREST API specification.\n\n## Endpoints\n\n- GET /api"}]}')
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"title":"Add API spec","body":"Add API spec","operations":[{"type":"create","path":"spec/API.md","content":"# API Design\n\nREST API specification.\n\n## Endpoints\n\n- GET /api"}]}')
 parse_response "$RAW"
 assert_status "create context PR" "201" "$STATUS"
 assert_json "returns pr_id" "pr_id" "$BODY"
@@ -504,7 +504,7 @@ assert_json "operation_count is 1" "\"operation_count\":1" "$BODY"
 PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 
 step "Context: reject PR missing operations"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"empty","operations":[]}')
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"title":"empty","body":"empty","operations":[]}')
 parse_response "$RAW"
 assert_status "empty operations rejected" "400" "$STATUS"
 
@@ -524,7 +524,7 @@ step "Context: get PR detail"
 RAW=$(call GET "/api/workspaces/$CTX_WS/context/prs/$PR_ID")
 parse_response "$RAW"
 assert_status "get PR detail" "200" "$STATUS"
-assert_json "has description" "Add API spec" "$BODY"
+assert_json "has title" "Add API spec" "$BODY"
 assert_json "has operations" "operations" "$BODY"
 assert_json "operation type create" '"type":"create"' "$BODY"
 assert_json "operation path" "spec/API.md" "$BODY"
@@ -591,7 +591,7 @@ assert_status "PUT file endpoint 404" "404" "$STATUS"
 
 step "Context: member cannot merge"
 TOKEN="$BOB_TOKEN"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"description":"Add research","operations":[{"type":"create","path":"research/notes.md","content":"# Research Notes\n\nFindings from literature review.\n\n## Sources\n\n- Paper A"}]}')
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/prs" '{"title":"Add research","body":"Add research","operations":[{"type":"create","path":"research/notes.md","content":"# Research Notes\n\nFindings from literature review.\n\n## Sources\n\n- Paper A"}]}')
 parse_response "$RAW"
 BOB_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 RAW=$(call PUT "/api/workspaces/$CTX_WS/context/prs/$BOB_PR_ID" '{"action":"merge"}')

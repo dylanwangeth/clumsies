@@ -11,7 +11,6 @@ const data = @import("../../models/view_types.zig");
 const cursor_mod = @import("../../widgets/cursor.zig");
 const drafts_mod = @import("../../../drafts.zig");
 
-
 const RuleDetailLayout = struct {
     inner_h_pad: u16,
     inner_w_pad: u16,
@@ -104,10 +103,7 @@ pub const State = struct {
     total_pr_count: usize = 0,
     selected_pr_idx: usize = 0,
     pr_diff_view: w.ContentView,
-    pr_comment_scroll_bars: vxfw.ScrollBars,
-    pr_comment_widgets: []vxfw.Widget = &.{},
-    pr_comment_rows: []vxfw.Text = &.{},
-    pr_comment_count: usize = 0,
+    pr_discussion_view: w.ThreadView,
     show_comment_editor: bool = false,
     comment_input_buf: [256]u8 = .{0} ** 256,
     comment_input_len: usize = 0,
@@ -117,7 +113,7 @@ pub const State = struct {
             .content_view = w.ContentView.init(),
             .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .pr_diff_view = w.ContentView.init(),
-            .pr_comment_scroll_bars = w.initPlainScrollBars(theme.PANEL, 2),
+            .pr_discussion_view = w.ThreadView.init(),
         };
     }
 };
@@ -450,25 +446,7 @@ fn handleReviewDetailEvent(
             try self.review.pr_diff_view.handleEvent(ctx, event);
         },
         .comments => {
-            if (self.review.pr_comment_count == 0) return;
-            if (cursor_mod.isJumpDownKey(key)) {
-                const step = cursor_mod.pageStepRows(&self.review.pr_comment_scroll_bars.scroll_view);
-                const content_h: u32 = self.review.pr_comment_scroll_bars.estimated_content_height orelse 0;
-                const visible = @as(u32, @intCast(cursor_mod.visibleRowCount(&self.review.pr_comment_scroll_bars.scroll_view)));
-                const max_top = content_h -| visible;
-                self.review.pr_comment_scroll_bars.scroll_view.scroll.top = @min(max_top, self.review.pr_comment_scroll_bars.scroll_view.scroll.top + @as(u32, @intCast(step)));
-                self.review.pr_comment_scroll_bars.scroll_view.scroll.vertical_offset = 0;
-                ctx.consumeAndRedraw();
-                return;
-            }
-            if (cursor_mod.isJumpUpKey(key)) {
-                const step = cursor_mod.pageStepRows(&self.review.pr_comment_scroll_bars.scroll_view);
-                self.review.pr_comment_scroll_bars.scroll_view.scroll.top = self.review.pr_comment_scroll_bars.scroll_view.scroll.top -| @as(u32, @intCast(step));
-                self.review.pr_comment_scroll_bars.scroll_view.scroll.vertical_offset = 0;
-                ctx.consumeAndRedraw();
-                return;
-            }
-            try self.review.pr_comment_scroll_bars.scroll_view.handleEvent(ctx, event);
+            try self.review.pr_discussion_view.handleEvent(ctx, event);
         },
     }
 }
@@ -672,15 +650,11 @@ fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator
 
     const pr = &prs[@min(self.review.selected_pr_idx, prs.len - 1)];
     const created_short = w.formatShortTimestamp(ctx.arena, pr.created) catch pr.created;
-    const title = try std.fmt.allocPrint(
-        ctx.arena,
-        "{s}:{s}",
-        .{ pr.target_kind.label(), pr.target_path },
-    );
+    const title = pr.id;
     const subtitle = try std.fmt.allocPrint(
         ctx.arena,
-        "{s} · {s} · {s} · {s}",
-        .{ pr.status, pr.author, pr.id, created_short },
+        "{s} · {s} · {s}",
+        .{ pr.status, pr.author, created_short },
     );
 
     syncReviewPrDiffAndComments(self, ctx.arena);
@@ -702,8 +676,8 @@ fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator
 }
 
 fn reviewCommentPanelWidth(body_w: u16) u16 {
-    if (body_w < 72) return @min(@as(u16, 28), body_w / 2);
-    return @min(@as(u16, 44), @max(@as(u16, 32), body_w / 3));
+    if (body_w < 72) return @min(@as(u16, 36), body_w / 2);
+    return @min(@as(u16, 68), @max(@as(u16, 44), (body_w * 9) / 20));
 }
 
 fn drawReviewDiffPanel(
@@ -741,17 +715,14 @@ fn drawReviewCommentPanel(self: anytype, ctx: vxfw.DrawContext, pr: *const data.
     var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, theme.focusBorder(self.review.detail_pane == .comments), theme.PANEL);
-    const title = try std.fmt.allocPrint(ctx.arena, "Comments ({d})", .{pr.comments.len});
+    const title = try std.fmt.allocPrint(ctx.arena, "Discussion ({d})", .{pr.comments.len});
     w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
-    if (pr.comments.len == 0) {
-        w.writeText(&surface, ctx, 2, 1, "No comments yet.", theme.fg(theme.MUTED));
-        return surface;
-    }
     const body_origin_row: i17 = 1;
     const body_h = size.height -| @as(u16, @intCast(body_origin_row)) -| 1;
     const body_w = size.width -| 4;
     const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
-    const body = try self.review.pr_comment_scroll_bars.widget().draw(body_ctx);
+    try syncReviewDiscussionView(self, ctx.arena, body_ctx, pr, body_w, body_h);
+    const body = try self.review.pr_discussion_view.draw(body_ctx);
     const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
     children[0] = .{ .origin = .{ .row = body_origin_row, .col = 2 }, .surface = body };
     surface.children = children;
@@ -910,7 +881,7 @@ fn resetReviewSelection(self: anytype) void {
     self.review.selected_pr_idx = 0;
     self.review.pr_scroll_bars.scroll_view.cursor = 0;
     self.review.pr_diff_view.scroll_bars.scroll_view.scroll.top = 0;
-    self.review.pr_comment_scroll_bars.scroll_view.cursor = 0;
+    self.review.pr_discussion_view.scroll_bars.scroll_view.scroll.top = 0;
     api.state.resetPrDetailState(self.api_state);
 }
 
@@ -931,7 +902,7 @@ fn handleReviewPrListEvent(
         self.review.focus = .detail;
         self.review.detail_pane = .diff;
         self.review.pr_diff_view.scroll_bars.scroll_view.scroll.top = 0;
-        self.review.pr_comment_scroll_bars.scroll_view.cursor = 0;
+        self.review.pr_discussion_view.scroll_bars.scroll_view.scroll.top = 0;
         fetchSelectedReviewPrDetail(self);
         ctx.consumeAndRedraw();
         return;
@@ -1175,12 +1146,12 @@ pub fn syncPrWidgets(self: anytype) void {
         self.review.pr_widgets[row_idx] = self.review.pr_table_rows[pi].widget();
         self.review.pr_indices[row_idx] = pi;
         row_idx += 1;
-        // Row 2: description + multi-op hint (muted)
+        // Row 2: title + multi-op hint (muted)
         const desc_text: []const u8 = if (pr.operation_count > 1) blk: {
             const buf = &self.review.pr_desc_bufs[pi];
-            const written = std.fmt.bufPrint(buf, "{s}  \xc2\xb7 {d} ops", .{ pr.description, pr.operation_count }) catch break :blk pr.description;
+            const written = std.fmt.bufPrint(buf, "{s}  \xc2\xb7 {d} ops", .{ pr.title, pr.operation_count }) catch break :blk pr.title;
             break :blk written;
-        } else pr.description;
+        } else pr.title;
         self.review.pr_text_rows[pi] = .{
             .text = desc_text,
             .style = theme.textOn(theme.PANEL, theme.MUTED),
@@ -1192,7 +1163,7 @@ pub fn syncPrWidgets(self: anytype) void {
     self.review.pr_row_count = row_idx;
     self.review.pr_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_widgets[0..row_idx] };
     self.review.pr_scroll_bars.estimated_content_height = @intCast(row_idx);
-    // Ensure cursor is on a TableRow, not a description
+    // Ensure cursor is on a TableRow, not a title row
     var cur = @as(usize, @intCast(self.review.pr_scroll_bars.scroll_view.cursor));
     while (cur < row_idx and self.review.pr_indices[cur] == null) cur += 1;
     self.review.pr_scroll_bars.scroll_view.cursor = @intCast(cur);
@@ -1205,7 +1176,7 @@ pub fn syncPrWidgets(self: anytype) void {
         }
     }
     // Kick a detail fetch for the current selection so the diff /
-    // description / comment count populate without requiring the
+    // title / comment count populate without requiring the
     // user to move the cursor or press Enter. shouldDispatch de-dupes
     // concurrent requests, so this is cheap on re-renders.
     if (row_idx > 0) fetchSelectedPrDetail(self);
@@ -1249,7 +1220,7 @@ pub fn syncReviewPrWidgets(self: anytype) void {
         ) catch pr.target_kind.label();
         self.review.pr_table_cols[pi] = .{
             .{ .text = target_label, .flex = 0, .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT), .gap_after = 0 },
-            .{ .text = pr.description, .flex = 1, .min_width = 12, .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT) },
+            .{ .text = pr.title, .flex = 1, .min_width = 12, .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT) },
             .{ .text = status, .flex = 0, .min_width = 8, .style = reviewStatusStyle(pr.status) },
             .{ .text = op_label, .flex = 0, .min_width = 10, .style = reviewOpStyle() },
             .{ .text = comments_label, .flex = 0, .min_width = 10, .style = reviewCommentsStyle() },
@@ -1384,8 +1355,6 @@ pub fn syncReviewPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) 
     const prs = self.getReviewPrs();
     if (prs.len == 0) {
         self.review.pr_diff_view.syncBytes(allocator, "", null);
-        self.review.pr_comment_count = 0;
-        self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = &.{} };
         return;
     }
     const pr = &prs[@min(self.review.selected_pr_idx, prs.len - 1)];
@@ -1394,44 +1363,34 @@ pub fn syncReviewPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) 
 
 fn syncReviewDetailRows(self: anytype, allocator: std.mem.Allocator, pr: *const data.PullRequestEntry) void {
     self.review.pr_diff_view.syncBytes(allocator, pr.base_content, pr.proposed_content);
+}
 
-    const comment_total = pr.comments.len * 3;
-    if (comment_total == 0) {
-        self.review.pr_comment_count = 0;
-        self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = &.{} };
-        return;
-    }
-    const comment_rows = allocator.alloc(vxfw.Text, comment_total) catch {
-        self.review.pr_comment_count = 0;
-        self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = &.{} };
-        return;
+fn syncReviewDiscussionView(
+    self: anytype,
+    allocator: std.mem.Allocator,
+    ctx: vxfw.DrawContext,
+    pr: *const data.PullRequestEntry,
+    width: u16,
+    height: u16,
+) std.mem.Allocator.Error!void {
+    const items = try allocator.alloc(w.ThreadItem, 1 + pr.comments.len);
+    const created_short = w.formatShortTimestamp(allocator, pr.created) catch pr.created;
+    items[0] = .{
+        .kind = .primary,
+        .title = pr.title,
+        .meta = try std.fmt.allocPrint(allocator, "{s} · {s}", .{ pr.author, created_short }),
+        .body = pr.body,
     };
-    const comment_widgets = allocator.alloc(vxfw.Widget, comment_total) catch {
-        self.review.pr_comment_count = 0;
-        self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = &.{} };
-        return;
-    };
-
-    var ci: usize = 0;
-    for (pr.comments) |comment| {
-        const created_short = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
-        const header = std.fmt.allocPrint(allocator, "o {s} \xc2\xb7 {s}", .{ comment.author, created_short }) catch comment.author;
-        comment_rows[ci] = .{ .text = header, .style = theme.fgBold(theme.TEXT_SOFT) };
-        comment_widgets[ci] = comment_rows[ci].widget();
-        ci += 1;
-        const body = std.fmt.allocPrint(allocator, "  {s}", .{comment.body}) catch comment.body;
-        comment_rows[ci] = .{ .text = body, .style = theme.fg(theme.TEXT_SOFT) };
-        comment_widgets[ci] = comment_rows[ci].widget();
-        ci += 1;
-        comment_rows[ci] = .{ .text = "  |", .style = theme.fg(theme.MUTED) };
-        comment_widgets[ci] = comment_rows[ci].widget();
-        ci += 1;
+    for (pr.comments, 0..) |comment, idx| {
+        const comment_created = w.formatShortTimestamp(allocator, comment.created) catch comment.created;
+        items[idx + 1] = .{
+            .kind = .reply,
+            .title = comment.author,
+            .meta = comment_created,
+            .body = comment.body,
+        };
     }
-    self.review.pr_comment_rows = comment_rows;
-    self.review.pr_comment_widgets = comment_widgets;
-    self.review.pr_comment_count = ci;
-    self.review.pr_comment_scroll_bars.scroll_view.children = .{ .slice = comment_widgets[0..ci] };
-    self.review.pr_comment_scroll_bars.estimated_content_height = @intCast(ci);
+    try self.review.pr_discussion_view.syncItems(allocator, ctx, items, width, height);
 }
 
 test "review filter predicate handles status and target facets" {
@@ -1444,7 +1403,8 @@ test "review filter predicate handles status and target facets" {
         .status = "open",
         .author = "alice",
         .created = "2026-01-03T00:00:00Z",
-        .description = "Update rule",
+        .title = "Update rule",
+        .body = "Update rule",
         .base_hash = "",
         .base_content = "",
         .proposed_content = "",
@@ -1459,7 +1419,8 @@ test "review filter predicate handles status and target facets" {
         .status = "closed",
         .author = "bob",
         .created = "2026-01-02T00:00:00Z",
-        .description = "Close context",
+        .title = "Close context",
+        .body = "Close context",
         .base_hash = "",
         .base_content = "",
         .proposed_content = "",
@@ -1485,10 +1446,11 @@ test "review sort orders newest timestamps first" {
             .status = "open",
             .author = "alice",
             .created = "2026-01-01T00:00:00Z",
-            .description = "old",
+            .title = "old",
+            .body = "old",
             .base_hash = "",
             .base_content = "",
-        .proposed_content = "",
+            .proposed_content = "",
             .attestation_refers = 0,
             .attestation_sessions = 0,
         },
@@ -1500,10 +1462,11 @@ test "review sort orders newest timestamps first" {
             .status = "open",
             .author = "alice",
             .created = "2026-01-03T00:00:00Z",
-            .description = "new",
+            .title = "new",
+            .body = "new",
             .base_hash = "",
             .base_content = "",
-        .proposed_content = "",
+            .proposed_content = "",
             .attestation_refers = 0,
             .attestation_sessions = 0,
         },
@@ -1515,10 +1478,11 @@ test "review sort orders newest timestamps first" {
             .status = "open",
             .author = "alice",
             .created = "2026-01-02T00:00:00Z",
-            .description = "mid",
+            .title = "mid",
+            .body = "mid",
             .base_hash = "",
             .base_content = "",
-        .proposed_content = "",
+            .proposed_content = "",
             .attestation_refers = 0,
             .attestation_sessions = 0,
         },
@@ -1547,7 +1511,8 @@ test "review labels normalize terminal state and op display" {
         .status = "open",
         .author = "alice",
         .created = "2026-01-01T00:00:00Z",
-        .description = "rename",
+        .title = "rename",
+        .body = "rename",
         .base_hash = "",
         .base_content = "",
         .proposed_content = "",

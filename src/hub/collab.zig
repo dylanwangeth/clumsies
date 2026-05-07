@@ -28,7 +28,8 @@ const Operation = struct {
 };
 
 const CreatePrRequest = struct {
-    description: []const u8,
+    title: []const u8,
+    body: []const u8,
     operations: []const Operation,
 };
 
@@ -38,13 +39,17 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     };
     if (!auth.requireScope(user, "pr:write", res)) return;
 
-    const body = req.json(CreatePrRequest) catch {
+    const req_body = req.json(CreatePrRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
     };
 
-    if (body.operations.len == 0) {
+    if (req_body.title.len == 0) {
+        return apiError(res, 400, "BAD_REQUEST", "title is required");
+    }
+
+    if (req_body.operations.len == 0) {
         return apiError(res, 400, "BAD_REQUEST", "operations array must not be empty");
     }
 
@@ -53,14 +58,14 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     };
     defer conn.release();
 
-    for (body.operations) |op| {
+    for (req_body.operations) |op| {
         if (!isValidType(op.type)) {
             return apiError(res, 400, "BAD_REQUEST", "operation type must be modify, rename, create, or delete");
         }
         if (!try validateOperation(conn, user.org_id, op, res)) return;
     }
 
-    if (!try validateNoIntraPrPathConflict(req.arena, body.operations, res)) return;
+    if (!try validateNoIntraPrPathConflict(req.arena, req_body.operations, res)) return;
 
     var rand_bytes: [8]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
@@ -74,13 +79,13 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     const pr_id: []const u8 = &id_buf;
 
     _ = conn.exec(
-        \\INSERT INTO rule_prs (pr_id, org_id, author_id, description)
-        \\VALUES ($1, $2::uuid, $3, $4)
-    , .{ pr_id, user.org_id, user.user_id, body.description }) catch {
+        \\INSERT INTO rule_prs (pr_id, org_id, author_id, title, body)
+        \\VALUES ($1, $2::uuid, $3, $4, $5)
+    , .{ pr_id, user.org_id, user.user_id, req_body.title, req_body.body }) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "failed to create rule PR");
     };
 
-    for (body.operations, 0..) |op, idx| {
+    for (req_body.operations, 0..) |op, idx| {
         const target_path: ?[]const u8 = if (std.mem.eql(u8, op.type, "rename"))
             op.new_path
         else if (std.mem.eql(u8, op.type, "create"))
@@ -275,7 +280,7 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     var list: std.ArrayList(RulePrListItem) = .empty;
 
     const base_sql =
-        \\SELECT pp.pr_id, pp.status, pp.description, pp.created_at::text, u.username,
+        \\SELECT pp.pr_id, pp.status, pp.title, pp.body, pp.created_at::text, u.username,
         \\  (SELECT count(*) FROM rule_pr_operations op WHERE op.pr_id = pp.pr_id) as op_count,
         \\  COALESCE((
         \\    SELECT op.type
@@ -301,12 +306,13 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
             try list.append(req.arena, .{
                 .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-                .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .author = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .operation_count = try row.get(i64, 5),
-                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 6)),
-                .comment_count = try row.get(i64, 7),
+                .title = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+                .body = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
+                .operation_count = try row.get(i64, 6),
+                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 7)),
+                .comment_count = try row.get(i64, 8),
             });
         }
     } else if (status_filter) |sf| {
@@ -321,12 +327,13 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
             try list.append(req.arena, .{
                 .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-                .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .author = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .operation_count = try row.get(i64, 5),
-                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 6)),
-                .comment_count = try row.get(i64, 7),
+                .title = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+                .body = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
+                .operation_count = try row.get(i64, 6),
+                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 7)),
+                .comment_count = try row.get(i64, 8),
             });
         }
     } else if (rule_filter) |pf| {
@@ -342,12 +349,13 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
             try list.append(req.arena, .{
                 .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-                .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .author = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .operation_count = try row.get(i64, 5),
-                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 6)),
-                .comment_count = try row.get(i64, 7),
+                .title = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+                .body = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
+                .operation_count = try row.get(i64, 6),
+                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 7)),
+                .comment_count = try row.get(i64, 8),
             });
         }
     } else {
@@ -362,12 +370,13 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
             try list.append(req.arena, .{
                 .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
                 .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-                .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .author = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .operation_count = try row.get(i64, 5),
-                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 6)),
-                .comment_count = try row.get(i64, 7),
+                .title = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+                .body = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
+                .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
+                .operation_count = try row.get(i64, 6),
+                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 7)),
+                .comment_count = try row.get(i64, 8),
             });
         }
     }
@@ -391,7 +400,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     defer conn.release();
 
     var row = conn.row(
-        "SELECT pr_id, status, description, created_at::text FROM rule_prs WHERE pr_id = $1 AND org_id = $2::uuid",
+        "SELECT pr_id, status, title, body, created_at::text FROM rule_prs WHERE pr_id = $1 AND org_id = $2::uuid",
         .{ id, user.org_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -401,8 +410,9 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
 
     const pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     const status = try req.arena.dupe(u8, try row.get([]const u8, 1));
-    const description = try req.arena.dupe(u8, try row.get([]const u8, 2));
-    const created_at = try req.arena.dupe(u8, try row.get([]const u8, 3));
+    const pr_title = try req.arena.dupe(u8, try row.get([]const u8, 2));
+    const pr_body = try req.arena.dupe(u8, try row.get([]const u8, 3));
+    const created_at = try req.arena.dupe(u8, try row.get([]const u8, 4));
     row.deinit() catch {};
 
     var ops: std.ArrayList(RulePrChange) = .empty;
@@ -469,7 +479,8 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     try res.json(RulePrDetailResponse{
         .pr_id = pr_id,
         .status = status,
-        .description = description,
+        .title = pr_title,
+        .body = pr_body,
         .created_at = created_at,
         .operations = ops.items,
         .attestation_summary = attestation_summary,

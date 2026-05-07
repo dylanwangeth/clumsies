@@ -289,9 +289,14 @@ pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) voi
 fn invalidatePrLifecycle(api_state: *ApiState) void {
     api_state.rule_prs_cache.invalidate();
     api_state.review_prs_cache.invalidate();
+    api_state.pr_detail_cache.invalidate();
+    api_state.pr_comments_cache.invalidate();
 
     api_state.rule_prs_pending.cancel();
     api_state.review_prs_pending.cancel();
+    api_state.pr_detail_pending.cancel();
+    api_state.pr_comments_pending.cancel();
+    resetPrDetailState(api_state);
 }
 
 fn invalidateWorkspaceDetail(api_state: *ApiState) void {
