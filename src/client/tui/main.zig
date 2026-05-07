@@ -44,7 +44,7 @@ pub fn run() !void {
 
     var dashboard = Shell.init(&api_state, &app, &env_map);
     defer dashboard.deinit();
-    try app.run(dashboard.widget(), .{});
+    try app.run(dashboard.widget(), .{ .mouse = false });
 }
 
 pub fn main() !void {
