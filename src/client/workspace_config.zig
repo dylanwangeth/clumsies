@@ -15,6 +15,15 @@ pub const WorkspaceListEntry = struct {
     name: []const u8,
 };
 
+pub const WorkspacePaths = struct {
+    paths: []const []const u8,
+
+    pub fn deinit(self: WorkspacePaths, allocator: std.mem.Allocator) void {
+        for (self.paths) |path| allocator.free(path);
+        allocator.free(self.paths);
+    }
+};
+
 const WorkspaceMatch = struct {
     ws: *const WorkspaceEntry,
     path: []const u8,
@@ -86,6 +95,26 @@ pub fn deinitWorkspaceList(allocator: std.mem.Allocator, list: []WorkspaceListEn
     allocator.free(list);
 }
 
+pub fn listWorkspacePaths(allocator: std.mem.Allocator, ws_id: []const u8) !WorkspacePaths {
+    var parsed = try loadConfig(allocator);
+    defer parsed.deinit();
+
+    for (parsed.value.workspaces) |ws| {
+        if (!std.mem.eql(u8, ws.ws_id, ws_id)) continue;
+        var paths: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (paths.items) |path| allocator.free(path);
+            paths.deinit(allocator);
+        }
+        for (ws.paths) |path| {
+            try paths.append(allocator, try allocator.dupe(u8, path));
+        }
+        return .{ .paths = try paths.toOwnedSlice(allocator) };
+    }
+
+    return .{ .paths = try allocator.alloc([]const u8, 0) };
+}
+
 /// Resolve the current workspace root for local client operations.
 ///
 /// Returns the matched bound workspace path when the current directory is
@@ -132,10 +161,13 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
         if (err != error.PathAlreadyExists) return err;
     };
 
-    // Read existing config to preserve other workspaces
+    // Read existing config to preserve other workspaces and append to this
+    // workspace's path list without duplicating the same directory.
     var existing_workspaces: std.ArrayList(TomlWorkspaceOut) = .empty;
     defer existing_workspaces.deinit(allocator);
     var existing_server_url: []const u8 = server_url;
+    var merged_paths: std.ArrayList([]const u8) = .empty;
+    defer merged_paths.deinit(allocator);
 
     var parsed_config: ?ParsedConfig = null;
     defer if (parsed_config) |*pc| pc.deinit();
@@ -144,7 +176,14 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
         parsed_config = parsed;
         existing_server_url = parsed_config.?.value.server.url;
         for (parsed_config.?.value.workspaces) |ws| {
-            if (std.mem.eql(u8, ws.ws_id, ws_id)) continue;
+            if (std.mem.eql(u8, ws.ws_id, ws_id)) {
+                for (ws.paths) |existing_path| {
+                    if (!containsPath(merged_paths.items, existing_path)) {
+                        try merged_paths.append(allocator, existing_path);
+                    }
+                }
+                continue;
+            }
             try existing_workspaces.append(allocator, .{
                 .name = ws.name,
                 .ws_id = ws.ws_id,
@@ -166,9 +205,11 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
         try writeWorkspaceBlock(allocator, &buf, ws.name, ws.ws_id, ws.paths);
     }
 
-    // Write new workspace
-    const path_arr = [_][]const u8{path};
-    try writeWorkspaceBlock(allocator, &buf, name, ws_id, &path_arr);
+    if (!containsPath(merged_paths.items, path)) {
+        try merged_paths.append(allocator, path);
+    }
+
+    try writeWorkspaceBlock(allocator, &buf, name, ws_id, merged_paths.items);
 
     const file = try std.fs.createFileAbsolute(config_path, .{ .truncate = true });
     defer file.close();
@@ -240,6 +281,13 @@ fn findBestWorkspaceMatch(workspaces: []const WorkspaceEntry, cwd: []const u8) ?
 
 fn pathContains(cwd: []const u8, path: []const u8) bool {
     return std.mem.startsWith(u8, cwd, path) and (cwd.len == path.len or cwd[path.len] == std.fs.path.sep);
+}
+
+fn containsPath(paths: []const []const u8, needle: []const u8) bool {
+    for (paths) |path| {
+        if (std.mem.eql(u8, path, needle)) return true;
+    }
+    return false;
 }
 
 fn writeWorkspaceBlock(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), name: []const u8, ws_id: []const u8, paths: []const []const u8) !void {

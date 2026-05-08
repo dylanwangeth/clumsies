@@ -41,7 +41,9 @@ const DRAWER_SIDE_MARGIN: u16 = 6;
 
 const ConfirmAction = enum {
     none,
+    bind_current_directory,
     remove_member,
+    remove_workspace_member,
     delete_bundle,
     delete_workspace,
     revoke_token,
@@ -82,7 +84,9 @@ fn moduleName(module: TopModule) []const u8 {
 fn confirmActionName(action: ConfirmAction) []const u8 {
     return switch (action) {
         .none => "none",
+        .bind_current_directory => "bind_current_directory",
         .remove_member => "remove_member",
+        .remove_workspace_member => "remove_workspace_member",
         .delete_bundle => "delete_bundle",
         .delete_workspace => "delete_workspace",
         .revoke_token => "revoke_token",
@@ -104,6 +108,7 @@ fn keyName(key: vaxis.Key) []const u8 {
     if (key.matches(vaxis.Key.page_down, .{})) return "page_down";
     if (key.matches(vaxis.Key.home, .{})) return "home";
     if (key.matches(vaxis.Key.end, .{})) return "end";
+    if (key.matches(vaxis.Key.f2, .{})) return "f2";
     if (key.text) |text| {
         if (text.len > 0) return "text_input";
     }
@@ -126,9 +131,15 @@ const PathTreeState = workspace_panel.PathTreeState;
 
 const DraftTarget = features.drafts.DraftTarget;
 const PendingPrAction = features.drafts.PendingPrAction;
-const LoginFocus = enum { hub_url, username, password, submit };
+const LoginMode = enum { sign_in, activate };
+const LoginFocus = enum { hub_url, username, invite_token, password, submit };
 const ProfileDialogKind = enum { username, password };
 const ProfileDialogFocus = enum { first, second, submit };
+const InviteDialogFocus = enum { username, role, submit };
+const MemberDialogScope = enum { org, workspace };
+const RoleDialogKind = enum { invite, change };
+const ORG_ROLE_OPTIONS = [_][]const u8{ "member", "maintainer" };
+const WORKSPACE_ROLE_OPTIONS = [_][]const u8{ "member", "admin" };
 
 pub const Shell = struct {
     api_state: *api.state.ApiState,
@@ -144,8 +155,14 @@ pub const Shell = struct {
     show_settings: bool = false,
     show_confirm: bool = false,
     confirm_message: []const u8 = "",
+    confirm_error_message: []const u8 = "",
+    confirm_submitting: bool = false,
     confirm_action: ConfirmAction = .none,
     confirm_choice: ConfirmChoice = .accept,
+    confirm_member_user_id_buf: [80]u8 = .{0} ** 80,
+    confirm_member_user_id_len: usize = 0,
+    confirm_workspace_id_buf: [80]u8 = .{0} ** 80,
+    confirm_workspace_id_len: usize = 0,
     last_safe_layout_size: vxfw.Size = .{},
     system_notices: w.SystemNoticeQueue = .{},
     view_arena: std.heap.ArenaAllocator,
@@ -158,6 +175,9 @@ pub const Shell = struct {
     login_username_len: usize = 0,
     login_password_buf: [128]u8 = .{0} ** 128,
     login_password_len: usize = 0,
+    login_invite_token_buf: [128]u8 = .{0} ** 128,
+    login_invite_token_len: usize = 0,
+    login_mode: LoginMode = .sign_in,
     login_focus: LoginFocus = .hub_url,
     login_message: []const u8 = "",
     show_profile_dialog: bool = false,
@@ -169,6 +189,24 @@ pub const Shell = struct {
     profile_second_buf: [128]u8 = .{0} ** 128,
     profile_second_len: usize = 0,
     profile_dialog_message: []const u8 = "",
+    show_invite_dialog: bool = false,
+    invite_dialog_kind: RoleDialogKind = .invite,
+    invite_dialog_focus: InviteDialogFocus = .username,
+    invite_dialog_submitting: bool = false,
+    invite_username_buf: [80]u8 = .{0} ** 80,
+    invite_username_len: usize = 0,
+    invite_role_idx: usize = 0,
+    invite_target_user_id_buf: [80]u8 = .{0} ** 80,
+    invite_target_user_id_len: usize = 0,
+    invite_dialog_message: []const u8 = "",
+    invite_result_token_buf: [160]u8 = .{0} ** 160,
+    invite_result_token_len: usize = 0,
+    invite_token_copied: bool = false,
+    invite_dialog_scope: MemberDialogScope = .org,
+    invite_workspace_id_buf: [80]u8 = .{0} ** 80,
+    invite_workspace_id_len: usize = 0,
+    sign_out_should_quit: bool = false,
+    quit_after_sign_out: bool = false,
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
     // main.zig for the lifetime of the Shell. Active workspace is
@@ -276,6 +314,10 @@ pub const Shell = struct {
 
                 // Confirm overlay absorbs all keys
                 if (self.show_confirm) {
+                    if (self.confirm_submitting) {
+                        ctx.consumeEvent();
+                        return;
+                    }
                     if (key.matches(vaxis.Key.tab, .{}) or key.matches(vaxis.Key.left, .{}) or key.matches(vaxis.Key.right, .{})) {
                         self.confirm_choice = switch (self.confirm_choice) {
                             .accept => .cancel,
@@ -297,6 +339,11 @@ pub const Shell = struct {
 
                 if (self.show_profile_dialog) {
                     self.handleProfileDialogKey(ctx, key);
+                    return;
+                }
+
+                if (self.show_invite_dialog) {
+                    self.handleInviteDialogKey(ctx, key);
                     return;
                 }
 
@@ -445,20 +492,33 @@ pub const Shell = struct {
                 // dispatch checks so that a result landing between
                 // ticks doesn't trigger a redundant re-dispatch.
                 _ = workspace_panel.consumeCreateResult(self);
+                self.consumeUpdateWorkspaceResult();
+                self.consumeDeleteWorkspaceResult();
                 self.consumeRuleContentResult();
                 self.consumeRulePrsResult();
                 self.consumeReviewPrsResult();
                 self.consumeWsContextContentResult();
                 self.consumeWorkspaceContextResult();
                 self.consumeWsManifestResult();
+                self.consumeWorkspaceMembersResult();
                 self.consumePrDetailResult();
                 self.consumePrCommentsResult();
                 self.consumeSignOutResult();
+                if (self.quit_after_sign_out) {
+                    ctx.quit = true;
+                    return;
+                }
                 self.consumeSubmitCommentResult();
                 self.consumePrActionResult();
                 self.consumeCreateRulePrResult();
                 self.consumeCreateContextPrResult();
                 self.consumeUpdateProfileResult();
+                self.consumeInviteMemberResult();
+                self.consumeChangeMemberRoleResult();
+                self.consumeRemoveMemberResult();
+                self.consumeAddWorkspaceMemberResult();
+                self.consumeChangeWorkspaceMemberRoleResult();
+                self.consumeRemoveWorkspaceMemberResult();
                 self.consumeAttestationUploadResult();
                 self.consumeHealthResult();
 
@@ -519,18 +579,19 @@ pub const Shell = struct {
         const show_workspace_drawer = self.workspace.show_drawer and self.selected_module == .workspace and
             !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
             !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form and
-            !self.show_profile_dialog;
+            !self.show_profile_dialog and !self.show_invite_dialog;
         const show_login_panel = self.shouldShowLoginPanel();
         const allow_regular_overlays = !show_login_panel;
         const modal_active = show_login_panel or self.show_help or self.show_confirm or self.review.show_comment_editor or
             self.workspace.show_create or self.drafts.show_pr_composer or
-            self.drafts.show_new_draft_form or self.show_profile_dialog or show_workspace_drawer;
+            self.drafts.show_new_draft_form or self.show_profile_dialog or self.show_invite_dialog or show_workspace_drawer;
         const show_notice_overlay = !modal_active and self.system_notices.hasVisible();
         var child_count: usize = 3;
         if (show_login_panel) child_count += 1;
         if (allow_regular_overlays and self.show_help) child_count += 1;
         if (allow_regular_overlays and self.show_confirm) child_count += 1;
         if (allow_regular_overlays and self.show_profile_dialog) child_count += 1;
+        if (allow_regular_overlays and self.show_invite_dialog) child_count += 1;
         if (allow_regular_overlays and self.review.show_comment_editor) child_count += 1;
         if (allow_regular_overlays and self.workspace.show_create) child_count += 1;
         if (allow_regular_overlays and self.drafts.show_pr_composer) child_count += 1;
@@ -597,6 +658,17 @@ pub const Shell = struct {
             children[child_idx] = .{
                 .origin = .{ .row = 0, .col = 0 },
                 .surface = try self.drawProfileDialog(full_ctx),
+            };
+            child_idx += 1;
+        }
+        if (allow_regular_overlays and self.show_invite_dialog) {
+            const full_ctx = ctx.withConstraints(
+                .{ .width = size.width, .height = size.height },
+                .{ .width = size.width, .height = size.height },
+            );
+            children[child_idx] = .{
+                .origin = .{ .row = 0, .col = 0 },
+                .surface = try self.drawInviteDialog(full_ctx),
             };
             child_idx += 1;
         }
@@ -923,6 +995,7 @@ pub const Shell = struct {
         if (self.shouldShowLoginPanel()) return true;
         if (self.review.show_comment_editor) return true;
         if (self.show_profile_dialog and !self.profile_dialog_submitting) return true;
+        if (self.show_invite_dialog and !self.invite_dialog_submitting) return true;
         if (self.drafts.show_new_draft_form) return true;
         if (self.drafts.show_pr_composer) return self.drafts.pr_composer_focus == .title or self.drafts.pr_composer_focus == .body;
         if (self.workspace.show_create) return self.workspace.create_focus == .name or self.workspace.create_focus == .description;
@@ -935,8 +1008,15 @@ pub const Shell = struct {
             ctx.quit = true;
             return;
         }
+        if (key.matches(vaxis.Key.f2, .{})) {
+            self.login_mode = if (self.login_mode == .sign_in) .activate else .sign_in;
+            if (self.login_focus == .invite_token and self.login_mode == .sign_in) self.login_focus = .username;
+            self.login_message = "";
+            ctx.consumeAndRedraw();
+            return;
+        }
         if (key.matches(vaxis.Key.tab, .{})) {
-            self.login_focus = nextLoginFocus(self.login_focus);
+            self.login_focus = self.nextLoginFocus();
             ctx.consumeAndRedraw();
             return;
         }
@@ -944,7 +1024,7 @@ pub const Shell = struct {
             if (self.login_focus == .password or self.login_focus == .submit) {
                 self.submitLoginForm();
             } else {
-                self.login_focus = nextLoginFocus(self.login_focus);
+                self.login_focus = self.nextLoginFocus();
             }
             ctx.consumeAndRedraw();
             return;
@@ -957,6 +1037,7 @@ pub const Shell = struct {
         var input = switch (self.login_focus) {
             .hub_url => w.TextInput{ .buf = &self.login_hub_url_buf, .len = &self.login_hub_url_len },
             .username => w.TextInput{ .buf = &self.login_username_buf, .len = &self.login_username_len },
+            .invite_token => w.TextInput{ .buf = &self.login_invite_token_buf, .len = &self.login_invite_token_len },
             .password => w.TextInput{ .buf = &self.login_password_buf, .len = &self.login_password_len },
             .submit => unreachable,
         };
@@ -978,8 +1059,9 @@ pub const Shell = struct {
         const hub_url_raw = self.login_hub_url_buf[0..self.login_hub_url_len];
         const username = self.login_username_buf[0..self.login_username_len];
         const password = self.login_password_buf[0..self.login_password_len];
-        if (hub_url_raw.len == 0 or username.len == 0 or password.len == 0) {
-            self.login_message = "Hub URL, username, and password are required.";
+        const invite_token = self.login_invite_token_buf[0..self.login_invite_token_len];
+        if (hub_url_raw.len == 0 or username.len == 0 or password.len == 0 or (self.login_mode == .activate and invite_token.len == 0)) {
+            self.login_message = if (self.login_mode == .activate) "Hub, user, invite token, and password are required." else "Hub URL, username, and password are required.";
             return;
         }
 
@@ -990,20 +1072,40 @@ pub const Shell = struct {
         };
         defer alloc.free(hub_url);
 
-        const LoginBody = struct { username: []const u8, credential: []const u8 };
-        const body = std.json.Stringify.valueAlloc(alloc, LoginBody{
-            .username = username,
-            .credential = password,
-        }, .{}) catch {
+        const body = switch (self.login_mode) {
+            .sign_in => blk: {
+                const LoginBody = struct { username: []const u8, credential: []const u8 };
+                break :blk std.json.Stringify.valueAlloc(alloc, LoginBody{
+                    .username = username,
+                    .credential = password,
+                }, .{}) catch {
+                    self.login_message = "Could not build login request.";
+                    return;
+                };
+            },
+            .activate => std.json.Stringify.valueAlloc(alloc, auth_api.ActivateRequest{
+                .username = username,
+                .invite_token = invite_token,
+                .credential = password,
+            }, .{}) catch {
+                self.login_message = "Could not build login request.";
+                return;
+            },
+        };
+        const path = switch (self.login_mode) {
+            .sign_in => "/api/auth/login",
+            .activate => "/api/auth/activate",
+        };
+        if (body.len == 0) {
             self.login_message = "Could not build login request.";
             return;
-        };
+        }
         defer alloc.free(body);
 
         api.state.setConnectionStatus(self.api_state, .connecting);
         var client = HubClient.init(alloc, hub_url, null);
         defer client.deinit();
-        const response = client.post("/api/auth/login", body) catch {
+        const response = client.post(path, body) catch {
             api.state.setConnectionStatus(self.api_state, .error_network);
             self.login_message = "Hub is unreachable. Check the URL and server.";
             return;
@@ -1012,7 +1114,7 @@ pub const Shell = struct {
 
         if (response.status == .unauthorized) {
             api.state.setConnectionStatus(self.api_state, .error_auth);
-            self.login_message = "Invalid credentials. Invited users can still use clumsies login to activate.";
+            self.login_message = if (self.login_mode == .activate) "Invite activation failed." else "Invalid credentials. Press F2 to activate an invite.";
             return;
         }
         if (response.status != .ok) {
@@ -1038,17 +1140,22 @@ pub const Shell = struct {
             return;
         };
         tasks.attestation_upload.start(self.api_state) catch {};
+        const completed_mode = self.login_mode;
         @memset(&self.login_password_buf, 0);
+        @memset(&self.login_invite_token_buf, 0);
         self.login_password_len = 0;
-        self.login_message = "Signed in.";
+        self.login_invite_token_len = 0;
+        self.login_mode = .sign_in;
+        self.login_message = "";
+        self.notifyOp(.success, if (completed_mode == .activate) "Invite activated." else "Signed in.");
     }
 
     fn drawLoginPanel(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         const box_w: u16 = @min(@as(u16, 58), size.width -| 6);
-        const box_h: u16 = 14;
+        const box_h: u16 = if (self.login_mode == .activate) 17 else 15;
         const modal = Modal{
-            .title = "Connect to Hub",
+            .title = "Connect to Clumsies Hub",
             .box_width = box_w,
             .box_height = box_h,
         };
@@ -1057,15 +1164,28 @@ pub const Shell = struct {
 
         const col = result.content_col;
         const field_start = result.content_row;
+        const switch_label = if (self.login_mode == .activate) "F2 sign in" else "F2 activate invite";
+        const switch_w: u16 = @intCast(@min(ctx.stringWidth(switch_label), result.content_width));
+        w.writeText(&surface, ctx, col + result.content_width -| switch_w, field_start -| 2, switch_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
         self.drawLoginField(&surface, ctx, col, field_start, result.content_width, "Hub", self.login_hub_url_buf[0..self.login_hub_url_len], .hub_url);
         self.drawLoginField(&surface, ctx, col, field_start + 2, result.content_width, "User", self.login_username_buf[0..self.login_username_len], .username);
+        var password_row = field_start + 4;
+        if (self.login_mode == .activate) {
+            self.drawLoginField(&surface, ctx, col, field_start + 4, result.content_width, "Token", self.login_invite_token_buf[0..self.login_invite_token_len], .invite_token);
+            password_row = field_start + 6;
+        }
         const password_mask = try ctx.arena.alloc(u8, self.login_password_len);
         @memset(password_mask, '*');
-        self.drawLoginField(&surface, ctx, col, field_start + 4, result.content_width, "Pass", password_mask, .password);
+        const password_label = if (self.login_mode == .activate) "New Pass" else "Pass";
+        self.drawLoginField(&surface, ctx, col, password_row, result.content_width, password_label, password_mask, .password);
 
-        self.drawLoginSubmit(&surface, ctx, col, field_start + 6);
+        self.drawLoginSubmit(&surface, ctx, col, password_row + 2);
         if (self.login_message.len > 0) {
-            _ = w.writeWrappedTextMax(&surface, ctx, col, field_start + 8, result.content_width, 2, self.login_message, theme.textOn(theme.PANEL_ALT, theme.DANGER));
+            const message_row = password_row + 4;
+            if (message_row + 1 < surface.size.height) {
+                const max_rows: u16 = @min(2, surface.size.height - message_row - 1);
+                _ = w.writeWrappedTextMax(&surface, ctx, col, message_row, result.content_width, max_rows, self.login_message, theme.textOn(theme.PANEL_ALT, theme.DANGER));
+            }
         }
         return surface;
     }
@@ -1082,8 +1202,8 @@ pub const Shell = struct {
         focus: LoginFocus,
     ) void {
         const active = self.login_focus == focus;
-        const field_col = col + 9;
-        const field_w = content_width -| 10;
+        const field_col = col + 11;
+        const field_w = content_width -| 12;
         w.writeText(surface, ctx, col, row, " ", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         w.writeText(surface, ctx, col + 2, row, label, theme.textOn(theme.PANEL_ALT, if (active) theme.TEXT_SOFT else theme.MUTED));
         const value_w = field_w -| 1;
@@ -1094,13 +1214,60 @@ pub const Shell = struct {
         const active = self.login_focus == .submit;
         const fg = if (active) theme.TEXT else theme.TEXT_SOFT;
         w.writeText(surface, ctx, col, row, " ", theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        w.writeText(surface, ctx, col + 9, row, "[ Sign in ]", .{ .fg = fg, .bg = theme.PANEL_ALT, .bold = active });
+        const label = if (self.login_mode == .activate) "[ Activate ]" else "[ Sign in ]";
+        w.writeText(surface, ctx, col + 11, row, label, .{ .fg = fg, .bg = theme.PANEL_ALT, .bold = active });
     }
 
-    fn nextLoginFocus(focus: LoginFocus) LoginFocus {
-        return switch (focus) {
+    pub fn canManageMembers(self: *Shell) bool {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return false;
+        return std.mem.eql(u8, user.role, "maintainer") and std.mem.indexOf(u8, user.scopes, "members:write") != null;
+    }
+
+    pub fn ensureMemberManagementAllowed(self: *Shell) bool {
+        if (self.canManageMembers()) return true;
+        self.notifyOp(.warning, "Maintainer role required.");
+        return false;
+    }
+
+    pub fn canManageSelectedWorkspaceMembers(self: *Shell) bool {
+        const workspace = self.selectedSettingsWorkspace() orelse return false;
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return false;
+        if (std.mem.indexOf(u8, user.scopes, "members:write") == null) return false;
+        return std.mem.eql(u8, user.role, "maintainer") or std.mem.eql(u8, workspace.role, "admin");
+    }
+
+    pub fn ensureWorkspaceMemberManagementAllowed(self: *Shell) bool {
+        if (self.canManageSelectedWorkspaceMembers()) return true;
+        self.notifyOp(.warning, "Workspace admin role required.");
+        return false;
+    }
+
+    pub fn canRemoveSelectedWorkspaceMember(self: *Shell) bool {
+        const workspace = self.selectedSettingsWorkspace() orelse return false;
+        const member = self.selectedWorkspaceMember() orelse return false;
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return false;
+        if (std.mem.indexOf(u8, user.scopes, "members:write") == null) return false;
+        if (std.mem.eql(u8, member.user_id, user.user_id)) return true;
+        return std.mem.eql(u8, user.role, "maintainer") or std.mem.eql(u8, workspace.role, "admin");
+    }
+
+    pub fn ensureWorkspaceMemberRemovalAllowed(self: *Shell) bool {
+        if (self.canRemoveSelectedWorkspaceMember()) return true;
+        self.notifyOp(.warning, "Workspace admin role required.");
+        return false;
+    }
+
+    fn nextLoginFocus(self: *const Shell) LoginFocus {
+        return switch (self.login_focus) {
             .hub_url => .username,
-            .username => .password,
+            .username => if (self.login_mode == .activate) .invite_token else .password,
+            .invite_token => .password,
             .password => .submit,
             .submit => .hub_url,
         };
@@ -1178,6 +1345,16 @@ pub const Shell = struct {
         if (user.workspaces.len == 0) return "No workspace";
         const idx = @min(self.workspace.sel, user.workspaces.len - 1);
         return user.workspaces[idx].name;
+    }
+
+    fn selectedSettingsWorkspaceId(self: *Shell) ?[]const u8 {
+        if (!self.show_settings or self.settings.tab != .workspaces) return null;
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return null;
+        if (user.workspaces.len == 0) return null;
+        const idx = @min(self.settings.content_sel, user.workspaces.len - 1);
+        return user.workspaces[idx].ws_id;
     }
 
     fn reconcileWorkspaceSelection(self: *Shell) void {
@@ -1364,6 +1541,104 @@ pub const Shell = struct {
                 workspace_panel.requestWorkspaceDetail(self, ws_id);
             }
         }
+    }
+
+    pub fn openCreateWorkspace(self: *Shell) void {
+        workspace_panel.openCreate(self);
+    }
+
+    pub fn openRenameWorkspace(self: *Shell) void {
+        const workspace = self.selectedSettingsWorkspace() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        workspace_panel.openEdit(self, workspace.ws_id, workspace.name, workspace.description);
+    }
+
+    pub fn openWorkspaceDeleteConfirm(self: *Shell) void {
+        const workspace = self.selectedSettingsWorkspace() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        self.confirm_message = std.fmt.allocPrint(self.viewAllocator(), "Delete {s}.", .{workspace.name}) catch "Delete selected workspace.";
+        self.confirm_action = .delete_workspace;
+        self.confirm_choice = .accept;
+        self.show_confirm = true;
+    }
+
+    pub fn bindCurrentDirectoryToSelectedWorkspace(self: *Shell) void {
+        const workspace = self.selectedSettingsWorkspace() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        const alloc = self.api_state.backing_allocator;
+        const cwd = std.fs.cwd().realpathAlloc(alloc, ".") catch {
+            self.notifyOp(.failure, "Could not resolve current directory.");
+            return;
+        };
+        defer alloc.free(cwd);
+
+        self.confirm_message = std.fmt.allocPrint(
+            self.viewAllocator(),
+            "Bind {s} to {s}.",
+            .{ workspace.name, cwd },
+        ) catch "Bind current directory.";
+        self.confirm_error_message = "";
+        self.confirm_submitting = false;
+        self.confirm_action = .bind_current_directory;
+        self.confirm_choice = .accept;
+        self.show_confirm = true;
+    }
+
+    fn commitBindCurrentDirectoryToSelectedWorkspace(self: *Shell) bool {
+        const workspace = self.selectedSettingsWorkspace() orelse {
+            self.confirm_error_message = "No workspace selected.";
+            return false;
+        };
+        const alloc = self.api_state.backing_allocator;
+
+        const cwd = std.fs.cwd().realpathAlloc(alloc, ".") catch {
+            self.confirm_error_message = "Could not resolve current directory.";
+            return false;
+        };
+        defer alloc.free(cwd);
+
+        var hub_url_copy: ?[]const u8 = null;
+        self.api_state.mutex.lock();
+        if (self.api_state.hub_url) |hub_url| {
+            hub_url_copy = alloc.dupe(u8, hub_url) catch null;
+        }
+        self.api_state.mutex.unlock();
+        const hub_url = hub_url_copy orelse {
+            self.confirm_error_message = "Hub URL is not loaded.";
+            return false;
+        };
+        defer alloc.free(hub_url);
+
+        workspace_config.addWorkspace(alloc, hub_url, workspace.name, workspace.ws_id, cwd) catch {
+            self.confirm_error_message = "Could not bind current directory.";
+            return false;
+        };
+        self.notifyOp(.success, "Current directory bound.");
+        return true;
+    }
+
+    const SettingsWorkspaceSelection = struct {
+        ws_id: []const u8,
+        name: []const u8,
+        description: []const u8,
+        role: []const u8,
+    };
+
+    fn selectedSettingsWorkspace(self: *Shell) ?SettingsWorkspaceSelection {
+        if (!self.show_settings or self.settings.tab != .workspaces) return null;
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return null;
+        if (user.workspaces.len == 0) return null;
+        const idx = @min(self.settings.content_sel, user.workspaces.len - 1);
+        const ws = user.workspaces[idx];
+        return .{ .ws_id = ws.ws_id, .name = ws.name, .description = ws.description, .role = ws.role };
     }
 
     fn maybeRefreshMetadata(self: *Shell) void {
@@ -2447,6 +2722,20 @@ pub const Shell = struct {
         }
     }
 
+    fn consumeWorkspaceMembersResult(self: *Shell) void {
+        const result = self.api_state.workspace_members_pending.consume() orelse return;
+        switch (result) {
+            .ok => |payload| {
+                self.api_state.workspace_members_cache.store(.{ .value = payload.ws_id }, payload.members);
+            },
+            else => {
+                if (self.selectedSettingsWorkspaceId()) |ws_id| {
+                    self.api_state.workspace_members_cache.markFailed(.{ .value = ws_id });
+                }
+            },
+        }
+    }
+
     /// Pump the PR detail pending slot. On .ok, stash the raw response
     /// in the cache and recompute the derived view fields (picked
     /// operation, diff lines, attestation refers) against the response's
@@ -2584,11 +2873,24 @@ pub const Shell = struct {
                 };
                 self.api_state.clearAuthSession();
                 self.show_settings = false;
-                self.notifyOp(.success, "Signed out.");
+                if (self.sign_out_should_quit) {
+                    self.quit_after_sign_out = true;
+                } else {
+                    self.notifyOp(.success, "Signed out.");
+                }
             },
-            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "Token revoke failed", e)),
-            .network_error => self.notifyOp(.failure, "Token revoke failed: network error."),
-            .invalid_response => self.notifyOp(.failure, "Token revoke failed: malformed response."),
+            .api_error => |e| {
+                self.sign_out_should_quit = false;
+                self.notifyOp(.failure, writeErrorStatus(self, "Token revoke failed", e));
+            },
+            .network_error => {
+                self.sign_out_should_quit = false;
+                self.notifyOp(.failure, "Token revoke failed: network error.");
+            },
+            .invalid_response => {
+                self.sign_out_should_quit = false;
+                self.notifyOp(.failure, "Token revoke failed: malformed response.");
+            },
         }
     }
 
@@ -2612,6 +2914,162 @@ pub const Shell = struct {
                 self.profile_dialog_message = "Profile update failed: malformed response.";
             },
         }
+    }
+
+    fn consumeInviteMemberResult(self: *Shell) void {
+        const result = self.api_state.invite_member_pending.consume() orelse return;
+        self.invite_dialog_submitting = false;
+        switch (result) {
+            .ok => |resp| {
+                self.invite_dialog_message = "Invite created.";
+                const len = @min(resp.invite_token.len, self.invite_result_token_buf.len);
+                @memcpy(self.invite_result_token_buf[0..len], resp.invite_token[0..len]);
+                self.invite_result_token_len = len;
+                api.fetch.refetchAllAsync(self.api_state);
+                self.notifyOp(.success, "Invite created.");
+            },
+            .api_error => |e| {
+                self.invite_dialog_message = writeErrorStatus(self, "Invite failed", e);
+                self.invite_result_token_len = 0;
+            },
+            .network_error => {
+                self.invite_dialog_message = "Invite failed: network error.";
+                self.invite_result_token_len = 0;
+            },
+            .invalid_response => {
+                self.invite_dialog_message = "Invite failed: malformed response.";
+                self.invite_result_token_len = 0;
+            },
+        }
+    }
+
+    fn consumeChangeMemberRoleResult(self: *Shell) void {
+        const result = self.api_state.change_member_role_pending.consume() orelse return;
+        self.invite_dialog_submitting = false;
+        switch (result) {
+            .ok => {
+                self.closeInviteMemberDialog();
+                api.fetch.refetchAllAsync(self.api_state);
+                self.notifyOp(.success, "Role updated.");
+            },
+            .api_error => |e| {
+                self.invite_dialog_message = writeErrorStatus(self, "Role update failed", e);
+            },
+            .network_error => {
+                self.invite_dialog_message = "Role update failed: network error.";
+            },
+            .invalid_response => {
+                self.invite_dialog_message = "Role update failed: malformed response.";
+            },
+        }
+    }
+
+    fn consumeRemoveMemberResult(self: *Shell) void {
+        const result = self.api_state.remove_member_pending.consume() orelse return;
+        self.confirm_submitting = false;
+        switch (result) {
+            .ok => {
+                self.closeConfirmOverlay();
+                api.fetch.refetchAllAsync(self.api_state);
+                self.notifyOp(.success, "Member removed.");
+            },
+            .api_error => |e| self.confirm_error_message = writeErrorStatus(self, "Remove member failed", e),
+            .network_error => self.confirm_error_message = "Remove member failed: network error.",
+            .invalid_response => self.confirm_error_message = "Remove member failed: malformed response.",
+        }
+    }
+
+    fn consumeAddWorkspaceMemberResult(self: *Shell) void {
+        const result = self.api_state.add_workspace_member_pending.consume() orelse return;
+        self.invite_dialog_submitting = false;
+        switch (result) {
+            .ok => {
+                self.closeInviteMemberDialog();
+                self.invalidateSelectedWorkspaceMembers();
+                self.notifyOp(.success, "Workspace member added.");
+            },
+            .api_error => |e| self.invite_dialog_message = writeErrorStatus(self, "Add member failed", e),
+            .network_error => self.invite_dialog_message = "Add member failed: network error.",
+            .invalid_response => self.invite_dialog_message = "Add member failed: malformed response.",
+        }
+    }
+
+    fn consumeChangeWorkspaceMemberRoleResult(self: *Shell) void {
+        const result = self.api_state.change_workspace_member_role_pending.consume() orelse return;
+        self.invite_dialog_submitting = false;
+        switch (result) {
+            .ok => {
+                self.closeInviteMemberDialog();
+                self.invalidateSelectedWorkspaceMembers();
+                self.notifyOp(.success, "Workspace role updated.");
+            },
+            .api_error => |e| self.invite_dialog_message = writeErrorStatus(self, "Role update failed", e),
+            .network_error => self.invite_dialog_message = "Role update failed: network error.",
+            .invalid_response => self.invite_dialog_message = "Role update failed: malformed response.",
+        }
+    }
+
+    fn consumeRemoveWorkspaceMemberResult(self: *Shell) void {
+        const result = self.api_state.remove_workspace_member_pending.consume() orelse return;
+        self.confirm_submitting = false;
+        switch (result) {
+            .ok => {
+                self.closeConfirmOverlay();
+                self.invalidateSelectedWorkspaceMembers();
+                self.settings.workspace_member_sel = 0;
+                self.notifyOp(.success, "Workspace member removed.");
+            },
+            .api_error => |e| self.confirm_error_message = writeErrorStatus(self, "Remove member failed", e),
+            .network_error => self.confirm_error_message = "Remove member failed: network error.",
+            .invalid_response => self.confirm_error_message = "Remove member failed: malformed response.",
+        }
+    }
+
+    fn invalidateSelectedWorkspaceMembers(self: *Shell) void {
+        self.api_state.workspace_members_cache.invalidate();
+    }
+
+    fn consumeUpdateWorkspaceResult(self: *Shell) void {
+        const result = self.api_state.update_ws_pending.consume() orelse return;
+        switch (result) {
+            .ok => {
+                workspace_panel.closeCreate(self);
+                api.fetch.refetchAllAsync(self.api_state);
+                self.notifyOp(.success, "Workspace updated.");
+            },
+            else => workspace_panel.applyCreateResult(self, result),
+        }
+    }
+
+    fn consumeDeleteWorkspaceResult(self: *Shell) void {
+        const result = self.api_state.delete_ws_pending.consume() orelse return;
+        switch (result) {
+            .ok => {
+                self.workspace.sel = 0;
+                self.settings.content_sel = 0;
+                api.fetch.refetchAllAsync(self.api_state);
+                self.notifyOp(.success, "Workspace deleted.");
+            },
+            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "Delete workspace failed", e)),
+            .network_error => self.notifyOp(.failure, "Delete workspace failed: network error."),
+            .invalid_response => self.notifyOp(.failure, "Delete workspace failed: malformed response."),
+        }
+    }
+
+    fn submitDeleteWorkspace(self: *Shell) void {
+        const workspace = self.selectedSettingsWorkspace() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        api.specs.dispatchFromState(
+            api.specs.WorkspaceIdParams,
+            void,
+            api.specs.delete_workspace,
+            &self.api_state.delete_ws_pending,
+            self.api_state,
+            .{ .ws_id = workspace.ws_id },
+        );
+        self.notifyOp(.loading, "Deleting workspace...");
     }
 
     fn applyUpdatedProfile(self: *Shell, resp: auth_api.UpdateProfileResponse) void {
@@ -2705,14 +3163,7 @@ pub const Shell = struct {
                     summary.events_sent,
                     summary.batches_sent,
                 });
-                if (summary.events_sent == 0) return;
-                const message = std.fmt.allocPrint(
-                    self.api_state.allocator(),
-                    "Uploaded attestation logs: {d} events from {d} workspaces.",
-                    .{ summary.events_sent, summary.workspace_count },
-                ) catch "Uploaded attestation logs.";
-                self.system_notices.push(.attestation_upload, .success, .transient, message);
-                api.fetch.refetchAllAsync(self.api_state);
+                if (summary.events_sent > 0) api.fetch.refetchAllAsync(self.api_state);
             },
             .not_authenticated => {
                 log.warn("attestation_upload_not_authenticated", .{});
@@ -3153,15 +3604,35 @@ pub const Shell = struct {
         log.info("confirm_accept action={s}", .{confirmActionName(self.confirm_action)});
         switch (self.confirm_action) {
             .remove_member => {
-                self.notifyOp(.info, "Member removed (not yet implemented)");
+                self.confirm_error_message = "";
+                self.confirm_submitting = true;
+                self.submitRemoveMember();
+                ctx.consumeAndRedraw();
+                return;
+            },
+            .remove_workspace_member => {
+                self.confirm_error_message = "";
+                self.confirm_submitting = true;
+                self.submitRemoveWorkspaceMember();
+                ctx.consumeAndRedraw();
+                return;
+            },
+            .bind_current_directory => {
+                self.confirm_error_message = "";
+                if (self.commitBindCurrentDirectoryToSelectedWorkspace()) {
+                    self.closeConfirmOverlay();
+                }
+                ctx.consumeAndRedraw();
+                return;
             },
             .delete_bundle => {
                 self.notifyOp(.info, "Bundle deleted (not yet implemented)");
             },
             .delete_workspace => {
-                self.notifyOp(.info, "Workspace deleted (not yet implemented)");
+                self.submitDeleteWorkspace();
             },
             .revoke_token => {
+                self.sign_out_should_quit = std.mem.eql(u8, self.confirm_message, "sign out");
                 api.specs.dispatchFromState(
                     api.specs.EmptyParams,
                     void,
@@ -3180,10 +3651,18 @@ pub const Shell = struct {
             },
             .none => {},
         }
+        self.closeConfirmOverlay();
+        ctx.consumeAndRedraw();
+    }
+
+    fn closeConfirmOverlay(self: *Shell) void {
         self.show_confirm = false;
         self.confirm_action = .none;
         self.confirm_choice = .accept;
-        ctx.consumeAndRedraw();
+        self.confirm_error_message = "";
+        self.confirm_submitting = false;
+        self.confirm_member_user_id_len = 0;
+        self.confirm_workspace_id_len = 0;
     }
 
     fn cancelConfirm(self: *Shell, ctx: *vxfw.EventContext) void {
@@ -3191,9 +3670,7 @@ pub const Shell = struct {
         // Releasing here keeps the pending-discard path owned slice
         // from leaking when the user declines the confirm overlay.
         self.releasePendingDiscardTarget();
-        self.show_confirm = false;
-        self.confirm_action = .none;
-        self.confirm_choice = .accept;
+        self.closeConfirmOverlay();
         self.notifyOp(.warning, "Cancelled.");
         ctx.consumeAndRedraw();
     }
@@ -3203,30 +3680,50 @@ pub const Shell = struct {
         const message = self.confirmBody();
         const message_w: u16 = @intCast(@min(ctx.stringWidth(message), std.math.maxInt(u16)));
         const box_w = @min(@max(@as(u16, 44), message_w +| 8), size.width -| 4);
+        const message_lines: u16 = if (self.confirm_action == .bind_current_directory) 3 else 1;
+        const box_h: u16 = if (self.confirm_action == .bind_current_directory)
+            if (self.confirm_error_message.len > 0) 13 else 10
+        else if (self.confirm_error_message.len > 0) 13 else 10;
         const modal = Modal{
             .title = self.confirmTitle(),
             .box_width = box_w,
-            .box_height = 10,
+            .box_height = box_h,
         };
         const result = try modal.draw(ctx, self.widget());
         var surface = result.surface;
         const col = result.content_col;
         const row = result.content_row;
 
+        var button_row = row;
         if (message.len > 0) {
-            w.writeTextMax(&surface, ctx, col, row, result.content_width, message, theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT));
+            button_row = w.writeWrappedTextMax(&surface, ctx, col, row, result.content_width, message_lines, message, theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT));
         }
 
-        const button_row = row + 2;
+        button_row += 1;
         self.drawConfirmButton(&surface, ctx, col, button_row, self.confirmAcceptLabel(), .accept);
         self.drawConfirmButton(&surface, ctx, col + 14, button_row, "[ Cancel ]", .cancel);
+
+        if (self.confirm_error_message.len > 0) {
+            _ = w.writeWrappedTextMax(
+                &surface,
+                ctx,
+                col,
+                button_row + 2,
+                result.content_width,
+                3,
+                self.confirm_error_message,
+                theme.textOn(theme.PANEL_ALT, theme.DANGER),
+            );
+        }
 
         return surface;
     }
 
     fn confirmTitle(self: *const Shell) []const u8 {
         return switch (self.confirm_action) {
+            .bind_current_directory => "Bind Directory",
             .remove_member => "Remove Member",
+            .remove_workspace_member => "Remove Member",
             .delete_bundle => "Delete Bundle",
             .delete_workspace => "Delete Workspace",
             .revoke_token => if (std.mem.eql(u8, self.confirm_message, "sign out")) "Sign Out" else "Revoke Token",
@@ -3246,7 +3743,9 @@ pub const Shell = struct {
     }
 
     fn confirmAcceptLabel(self: *const Shell) []const u8 {
+        if (self.confirm_submitting) return "[ Removing... ]";
         if (std.mem.eql(u8, self.confirm_message, "sign out")) return "[ Sign out ]";
+        if (self.confirm_action == .bind_current_directory) return "[ Bind ]";
         return "[ Confirm ]";
     }
 
@@ -3469,6 +3968,501 @@ pub const Shell = struct {
             _ = w.writeWrappedTextMax(&surface, ctx, col, row + 2, result.content_width, 2, self.profile_dialog_message, theme.textOn(theme.PANEL_ALT, theme.DANGER));
         }
         return surface;
+    }
+
+    pub fn openInviteMemberDialog(self: *Shell) void {
+        if (!self.ensureMemberManagementAllowed()) return;
+        self.show_invite_dialog = true;
+        self.invite_dialog_scope = .org;
+        self.invite_dialog_kind = .invite;
+        self.invite_dialog_focus = .username;
+        self.invite_dialog_submitting = false;
+        self.invite_username_len = 0;
+        self.invite_role_idx = 0;
+        self.invite_target_user_id_len = 0;
+        self.invite_workspace_id_len = 0;
+        self.invite_dialog_message = "";
+        self.invite_result_token_len = 0;
+        self.invite_token_copied = false;
+        @memset(&self.invite_username_buf, 0);
+        @memset(&self.invite_target_user_id_buf, 0);
+        @memset(&self.invite_workspace_id_buf, 0);
+        @memset(&self.invite_result_token_buf, 0);
+    }
+
+    pub fn openAddWorkspaceMemberDialog(self: *Shell) void {
+        if (!self.ensureWorkspaceMemberManagementAllowed()) return;
+        const workspace = self.selectedSettingsWorkspace() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        self.show_invite_dialog = true;
+        self.invite_dialog_scope = .workspace;
+        self.invite_dialog_kind = .invite;
+        self.invite_dialog_focus = .username;
+        self.invite_dialog_submitting = false;
+        self.invite_username_len = 0;
+        self.invite_role_idx = 0;
+        self.invite_target_user_id_len = 0;
+        self.invite_workspace_id_len = @min(workspace.ws_id.len, self.invite_workspace_id_buf.len);
+        @memcpy(self.invite_workspace_id_buf[0..self.invite_workspace_id_len], workspace.ws_id[0..self.invite_workspace_id_len]);
+        self.invite_dialog_message = "";
+        self.invite_result_token_len = 0;
+        self.invite_token_copied = false;
+        @memset(&self.invite_username_buf, 0);
+        @memset(&self.invite_target_user_id_buf, 0);
+        @memset(&self.invite_result_token_buf, 0);
+    }
+
+    pub fn openChangeMemberRoleDialog(self: *Shell) void {
+        if (!self.ensureMemberManagementAllowed()) return;
+        const member = self.selectedDirectoryMember() orelse {
+            self.notifyOp(.warning, "No member selected.");
+            return;
+        };
+        self.show_invite_dialog = true;
+        self.invite_dialog_scope = .org;
+        self.invite_dialog_kind = .change;
+        self.invite_dialog_focus = .role;
+        self.invite_dialog_submitting = false;
+        self.invite_username_len = @min(member.username.len, self.invite_username_buf.len);
+        @memcpy(self.invite_username_buf[0..self.invite_username_len], member.username[0..self.invite_username_len]);
+        self.invite_target_user_id_len = @min(member.user_id.len, self.invite_target_user_id_buf.len);
+        @memcpy(self.invite_target_user_id_buf[0..self.invite_target_user_id_len], member.user_id[0..self.invite_target_user_id_len]);
+        self.invite_role_idx = roleIndexForScope(.org, member.role);
+        self.invite_workspace_id_len = 0;
+        self.invite_dialog_message = "";
+        self.invite_result_token_len = 0;
+        self.invite_token_copied = false;
+        @memset(&self.invite_result_token_buf, 0);
+    }
+
+    pub fn openChangeWorkspaceMemberRoleDialog(self: *Shell) void {
+        if (!self.ensureWorkspaceMemberManagementAllowed()) return;
+        const workspace = self.selectedSettingsWorkspace() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        const member = self.selectedWorkspaceMember() orelse {
+            self.notifyOp(.warning, "No workspace member selected.");
+            return;
+        };
+        self.show_invite_dialog = true;
+        self.invite_dialog_scope = .workspace;
+        self.invite_dialog_kind = .change;
+        self.invite_dialog_focus = .role;
+        self.invite_dialog_submitting = false;
+        self.invite_username_len = @min(member.username.len, self.invite_username_buf.len);
+        @memcpy(self.invite_username_buf[0..self.invite_username_len], member.username[0..self.invite_username_len]);
+        self.invite_target_user_id_len = @min(member.user_id.len, self.invite_target_user_id_buf.len);
+        @memcpy(self.invite_target_user_id_buf[0..self.invite_target_user_id_len], member.user_id[0..self.invite_target_user_id_len]);
+        self.invite_workspace_id_len = @min(workspace.ws_id.len, self.invite_workspace_id_buf.len);
+        @memcpy(self.invite_workspace_id_buf[0..self.invite_workspace_id_len], workspace.ws_id[0..self.invite_workspace_id_len]);
+        self.invite_role_idx = roleIndexForScope(.workspace, member.role);
+        self.invite_dialog_message = "";
+        self.invite_result_token_len = 0;
+        self.invite_token_copied = false;
+        @memset(&self.invite_result_token_buf, 0);
+    }
+
+    pub fn openRemoveMemberConfirm(self: *Shell) void {
+        if (!self.ensureMemberManagementAllowed()) return;
+        const member = self.selectedDirectoryMember() orelse {
+            self.notifyOp(.warning, "No member selected.");
+            return;
+        };
+        self.confirm_member_user_id_len = @min(member.user_id.len, self.confirm_member_user_id_buf.len);
+        @memcpy(self.confirm_member_user_id_buf[0..self.confirm_member_user_id_len], member.user_id[0..self.confirm_member_user_id_len]);
+        self.confirm_message = std.fmt.allocPrint(self.viewAllocator(), "Remove {s}.", .{member.username}) catch "Remove selected member.";
+        self.confirm_error_message = "";
+        self.confirm_submitting = false;
+        self.confirm_action = .remove_member;
+        self.confirm_choice = .accept;
+        self.show_confirm = true;
+    }
+
+    pub fn openRemoveWorkspaceMemberConfirm(self: *Shell) void {
+        if (!self.ensureWorkspaceMemberRemovalAllowed()) return;
+        const workspace = self.selectedSettingsWorkspace() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        const member = self.selectedWorkspaceMember() orelse {
+            self.notifyOp(.warning, "No workspace member selected.");
+            return;
+        };
+        self.confirm_workspace_id_len = @min(workspace.ws_id.len, self.confirm_workspace_id_buf.len);
+        @memcpy(self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len], workspace.ws_id[0..self.confirm_workspace_id_len]);
+        self.confirm_member_user_id_len = @min(member.user_id.len, self.confirm_member_user_id_buf.len);
+        @memcpy(self.confirm_member_user_id_buf[0..self.confirm_member_user_id_len], member.user_id[0..self.confirm_member_user_id_len]);
+        self.confirm_message = std.fmt.allocPrint(self.viewAllocator(), "Remove {s}.", .{member.username}) catch "Remove selected member.";
+        self.confirm_error_message = "";
+        self.confirm_submitting = false;
+        self.confirm_action = .remove_workspace_member;
+        self.confirm_choice = .accept;
+        self.show_confirm = true;
+    }
+
+    fn closeInviteMemberDialog(self: *Shell) void {
+        self.show_invite_dialog = false;
+        self.invite_dialog_submitting = false;
+        self.invite_username_len = 0;
+        self.invite_role_idx = 0;
+        self.invite_target_user_id_len = 0;
+        self.invite_workspace_id_len = 0;
+        self.invite_dialog_message = "";
+        self.invite_result_token_len = 0;
+        self.invite_token_copied = false;
+        @memset(&self.invite_username_buf, 0);
+        @memset(&self.invite_target_user_id_buf, 0);
+        @memset(&self.invite_workspace_id_buf, 0);
+        @memset(&self.invite_result_token_buf, 0);
+    }
+
+    fn handleInviteDialogKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (self.invite_dialog_submitting) return;
+        if (key.matches(vaxis.Key.escape, .{})) {
+            self.closeInviteMemberDialog();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.tab, .{})) {
+            self.invite_dialog_focus = self.nextInviteFocus();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (self.invite_result_token_len > 0 and key.matches('y', .{})) {
+            self.copyInviteToken();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (self.invite_dialog_focus == .role and (key.matches(vaxis.Key.left, .{}) or key.matches('h', .{}) or key.matches(vaxis.Key.right, .{}) or key.matches('l', .{}) or key.matches(' ', .{}))) {
+            self.toggleInviteRole();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.enter, .{})) {
+            if (self.invite_dialog_focus == .submit) {
+                self.submitMemberRoleDialog();
+            } else if (self.invite_dialog_focus == .role and self.invite_dialog_kind == .change) {
+                self.submitMemberRoleDialog();
+            } else {
+                self.invite_dialog_focus = self.nextInviteFocus();
+            }
+            ctx.consumeAndRedraw();
+            return;
+        }
+
+        var input: ?w.TextInput = switch (self.invite_dialog_focus) {
+            .username => if (self.invite_dialog_kind == .invite) w.TextInput{ .buf = &self.invite_username_buf, .len = &self.invite_username_len } else null,
+            .role => null,
+            .submit => null,
+        };
+        if (input) |*field| {
+            switch (field.handleKey(key)) {
+                .consumed => {
+                    self.invite_dialog_message = "";
+                    self.invite_result_token_len = 0;
+                    ctx.consumeAndRedraw();
+                },
+                .submit => {
+                    self.invite_dialog_focus = self.nextInviteFocus();
+                    ctx.consumeAndRedraw();
+                },
+                .cancel => {
+                    self.closeInviteMemberDialog();
+                    ctx.consumeAndRedraw();
+                },
+                .ignored => {},
+            }
+        }
+    }
+
+    fn nextInviteFocus(self: *const Shell) InviteDialogFocus {
+        if (self.invite_dialog_kind == .change) {
+            return switch (self.invite_dialog_focus) {
+                .username => .role,
+                .role => .submit,
+                .submit => .role,
+            };
+        }
+        return switch (self.invite_dialog_focus) {
+            .username => .role,
+            .role => .submit,
+            .submit => .username,
+        };
+    }
+
+    fn submitMemberRoleDialog(self: *Shell) void {
+        const username = self.invite_username_buf[0..self.invite_username_len];
+        const role = self.roleOptions()[self.invite_role_idx];
+        if (username.len == 0) {
+            self.invite_dialog_message = "Username is required.";
+            return;
+        }
+        self.invite_dialog_submitting = true;
+        self.invite_dialog_message = "";
+        self.invite_result_token_len = 0;
+        self.invite_token_copied = false;
+        if (self.invite_dialog_scope == .workspace) {
+            const ws_id = self.invite_workspace_id_buf[0..self.invite_workspace_id_len];
+            if (ws_id.len == 0) {
+                self.invite_dialog_submitting = false;
+                self.invite_dialog_message = "No workspace selected.";
+                return;
+            }
+            const user_id = if (self.invite_dialog_kind == .invite)
+                self.resolveOrgUserIdByUsername(username) orelse {
+                    self.invite_dialog_submitting = false;
+                    self.invite_dialog_message = "User must already belong to the organization.";
+                    return;
+                }
+            else
+                self.invite_target_user_id_buf[0..self.invite_target_user_id_len];
+            if (user_id.len == 0) {
+                self.invite_dialog_submitting = false;
+                self.invite_dialog_message = "No workspace member selected.";
+                return;
+            }
+            api.specs.dispatchFromState(
+                api.specs.WorkspaceMemberRoleParams,
+                void,
+                if (self.invite_dialog_kind == .invite) api.specs.add_workspace_member else api.specs.change_workspace_member_role,
+                if (self.invite_dialog_kind == .invite) &self.api_state.add_workspace_member_pending else &self.api_state.change_workspace_member_role_pending,
+                self.api_state,
+                .{ .ws_id = ws_id, .user_id = user_id, .role = role },
+            );
+            return;
+        }
+        switch (self.invite_dialog_kind) {
+            .invite => api.specs.dispatchFromState(
+                auth_api.InviteMemberRequest,
+                auth_api.InviteMemberResponse,
+                api.specs.invite_member,
+                &self.api_state.invite_member_pending,
+                self.api_state,
+                .{ .username = username, .role = role },
+            ),
+            .change => {
+                const user_id = self.invite_target_user_id_buf[0..self.invite_target_user_id_len];
+                if (user_id.len == 0) {
+                    self.invite_dialog_submitting = false;
+                    self.invite_dialog_message = "No member selected.";
+                    return;
+                }
+                api.specs.dispatchFromState(
+                    api.specs.ChangeMemberRoleParams,
+                    void,
+                    api.specs.change_member_role,
+                    &self.api_state.change_member_role_pending,
+                    self.api_state,
+                    .{ .user_id = user_id, .role = role },
+                );
+            },
+        }
+    }
+
+    fn drawInviteDialog(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const title = if (self.invite_dialog_scope == .workspace)
+            if (self.invite_dialog_kind == .invite) "Add Workspace Member" else "Change Workspace Role"
+        else if (self.invite_dialog_kind == .invite) "Invite Member" else "Change Role";
+        const message_rows: u16 = if (self.invite_dialog_message.len > 0 and self.invite_result_token_len == 0) 3 else 0;
+        const base_height: u16 = if (self.invite_result_token_len > 0) 15 else if (self.invite_dialog_kind == .change) 11 else 13;
+        const modal = Modal{
+            .title = title,
+            .box_width = 62,
+            .box_height = base_height + message_rows,
+        };
+        const result = try modal.draw(ctx, self.widget());
+        var surface = result.surface;
+        const col = result.content_col;
+        var row = result.content_row;
+
+        if (self.invite_dialog_kind == .invite) {
+            const label = if (self.invite_dialog_scope == .workspace) "User" else "Username";
+            w.writeText(&surface, ctx, col, row, label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
+            w.drawTextInputSlot(&surface, ctx, col + 12, row, result.content_width -| 14, self.invite_username_buf[0..self.invite_username_len], theme.TEXT, self.invite_dialog_focus == .username and !self.invite_dialog_submitting);
+            row += 2;
+        } else {
+            w.writeText(&surface, ctx, col, row, "Member", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+            w.writeTextMax(&surface, ctx, col + 12, row, result.content_width -| 14, self.invite_username_buf[0..self.invite_username_len], theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT));
+            row += 2;
+        }
+        w.writeText(&surface, ctx, col, row, "Role", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        self.drawRoleSelector(&surface, ctx, col + 12, row, result.content_width -| 12, self.invite_dialog_focus == .role and !self.invite_dialog_submitting);
+        row += 2;
+
+        const button_label = if (self.invite_dialog_submitting)
+            if (self.invite_dialog_kind == .invite) "[ Inviting... ]" else "[ Saving... ]"
+        else if (self.invite_dialog_kind == .invite)
+            "[ Invite ]"
+        else
+            "[ Save ]";
+        const button_style = if (self.invite_dialog_focus == .submit and !self.invite_dialog_submitting)
+            theme.boldOn(theme.PANEL_ALT, theme.TEXT)
+        else
+            theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT);
+        w.writeText(&surface, ctx, col, row, button_label, button_style);
+        row += 2;
+
+        if (self.invite_result_token_len > 0) {
+            w.writeText(&surface, ctx, col, row, "Invite token", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+            const copy_hint = if (self.invite_token_copied) "copied" else "y copy token";
+            const copy_hint_w: u16 = @intCast(@min(ctx.stringWidth(copy_hint), result.content_width));
+            const copy_hint_style = if (self.invite_token_copied)
+                theme.textOn(theme.PANEL_ALT, theme.OK)
+            else
+                theme.textOn(theme.PANEL_ALT, theme.MUTED);
+            w.writeText(&surface, ctx, col + result.content_width -| copy_hint_w, row, copy_hint, copy_hint_style);
+            row += 1;
+            _ = w.writeWrappedTextMax(&surface, ctx, col, row, result.content_width, 2, self.invite_result_token_buf[0..self.invite_result_token_len], theme.textOn(theme.PANEL_ALT, theme.TEXT));
+            row += 3;
+        }
+        if (self.invite_dialog_message.len > 0 and self.invite_result_token_len == 0) {
+            const max_rows: u16 = if (row + 1 < surface.size.height) @min(3, surface.size.height - row - 1) else 0;
+            if (max_rows > 0) {
+                _ = w.writeWrappedTextMax(&surface, ctx, col, row, result.content_width, max_rows, self.invite_dialog_message, theme.textOn(theme.PANEL_ALT, theme.DANGER));
+            }
+        }
+        return surface;
+    }
+
+    fn copyInviteToken(self: *Shell) void {
+        const token = self.invite_result_token_buf[0..self.invite_result_token_len];
+        if (token.len == 0) return;
+        workspace_panel.copyTextToClipboard(self.api_state.backing_allocator, token);
+        self.invite_token_copied = true;
+    }
+
+    fn drawRoleSelector(
+        self: *const Shell,
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        col: u16,
+        row: u16,
+        max_width: u16,
+        active: bool,
+    ) void {
+        var cursor = col;
+        const end_col = col + max_width;
+        for (self.roleOptions(), 0..) |role, i| {
+            if (i > 0) {
+                if (cursor + 2 >= end_col) return;
+                w.writeText(surface, ctx, cursor, row, "  ", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+                cursor += 2;
+            }
+            const selected = i == self.invite_role_idx;
+            const mark = if (selected) "[*] " else "[ ] ";
+            const item_w: u16 = @intCast(ctx.stringWidth(mark) + ctx.stringWidth(role));
+            if (cursor + item_w > end_col) return;
+            const style = if (active and selected)
+                theme.boldOn(theme.PANEL_ALT, theme.TEXT)
+            else if (selected)
+                theme.textOn(theme.PANEL_ALT, theme.TEXT)
+            else
+                theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT);
+            w.writeText(surface, ctx, cursor, row, mark, style);
+            cursor += @intCast(ctx.stringWidth(mark));
+            w.writeText(surface, ctx, cursor, row, role, style);
+            cursor += @intCast(ctx.stringWidth(role));
+        }
+        if (active) {
+            const hint = "  Space switch";
+            const hint_w: u16 = @intCast(ctx.stringWidth(hint));
+            if (cursor + hint_w <= end_col) {
+                w.writeText(surface, ctx, cursor, row, hint, theme.textOn(theme.PANEL_ALT, theme.MUTED));
+            }
+        }
+    }
+
+    fn toggleInviteRole(self: *Shell) void {
+        self.invite_role_idx = (self.invite_role_idx + 1) % self.roleOptions().len;
+        self.invite_dialog_message = "";
+    }
+
+    fn roleOptions(self: *const Shell) []const []const u8 {
+        return switch (self.invite_dialog_scope) {
+            .org => &ORG_ROLE_OPTIONS,
+            .workspace => &WORKSPACE_ROLE_OPTIONS,
+        };
+    }
+
+    fn roleIndexForScope(scope: MemberDialogScope, role: []const u8) usize {
+        const options = switch (scope) {
+            .org => &ORG_ROLE_OPTIONS,
+            .workspace => &WORKSPACE_ROLE_OPTIONS,
+        };
+        for (options, 0..) |candidate, i| {
+            if (std.mem.eql(u8, role, candidate)) return i;
+        }
+        return 0;
+    }
+
+    fn selectedDirectoryMember(self: *Shell) ?api.model.DirectoryMember {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const dir = self.api_state.directory orelse return null;
+        if (dir.members.len == 0) return null;
+        const idx = @min(self.settings.content_sel, dir.members.len - 1);
+        return dir.members[idx];
+    }
+
+    fn selectedWorkspaceMember(self: *Shell) ?api.model.WorkspaceMemberData {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return null;
+        if (user.workspaces.len == 0) return null;
+        const ws_idx = @min(self.settings.content_sel, user.workspaces.len - 1);
+        const ws_id = user.workspaces[ws_idx].ws_id;
+        const members = self.api_state.workspace_members_cache.lookup(.{ .value = ws_id }) orelse return null;
+        if (members.len == 0) return null;
+        const member_idx = @min(self.settings.workspace_member_sel, members.len - 1);
+        return members[member_idx];
+    }
+
+    fn resolveOrgUserIdByUsername(self: *Shell, username: []const u8) ?[]const u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const dir = self.api_state.directory orelse return null;
+        for (dir.members) |member| {
+            if (std.mem.eql(u8, member.username, username)) return member.user_id;
+        }
+        return null;
+    }
+
+    fn submitRemoveMember(self: *Shell) void {
+        const user_id = self.confirm_member_user_id_buf[0..self.confirm_member_user_id_len];
+        if (user_id.len == 0) {
+            self.notifyOp(.warning, "No member selected.");
+            return;
+        }
+        api.specs.dispatchFromState(
+            api.specs.MemberIdParams,
+            void,
+            api.specs.remove_member,
+            &self.api_state.remove_member_pending,
+            self.api_state,
+            .{ .user_id = user_id },
+        );
+        self.notifyOp(.loading, "Removing member...");
+    }
+
+    fn submitRemoveWorkspaceMember(self: *Shell) void {
+        const ws_id = self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len];
+        const user_id = self.confirm_member_user_id_buf[0..self.confirm_member_user_id_len];
+        if (ws_id.len == 0 or user_id.len == 0) {
+            self.notifyOp(.warning, "No workspace member selected.");
+            return;
+        }
+        api.specs.dispatchFromState(
+            api.specs.WorkspaceMemberIdParams,
+            void,
+            api.specs.remove_workspace_member,
+            &self.api_state.remove_workspace_member_pending,
+            self.api_state,
+            .{ .ws_id = ws_id, .user_id = user_id },
+        );
+        self.notifyOp(.loading, "Removing workspace member...");
     }
 
     fn drawTooSmall(self: *Shell, ctx: vxfw.DrawContext, size: vxfw.Size) std.mem.Allocator.Error!vxfw.Surface {
@@ -4722,6 +5716,7 @@ pub const Shell = struct {
     fn activeInputLayer(self: *const Shell) []const u8 {
         if (self.show_confirm) return "confirm";
         if (self.show_profile_dialog) return "profile_dialog";
+        if (self.show_invite_dialog) return "invite_dialog";
         if (self.show_help) return "help";
         if (self.shouldShowLoginPanel()) return "login";
         if (self.workspace.show_drawer) return "workspace_drawer";

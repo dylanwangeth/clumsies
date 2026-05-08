@@ -1250,6 +1250,7 @@ test "artifact tool creates context change through tagged op" {
         .workspace_root = try testing.allocator.dupe(u8, root),
     };
     defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
 
     const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
@@ -1294,6 +1295,7 @@ test "artifact tool discards rule change by local temp id" {
         .workspace_root = try testing.allocator.dupe(u8, root),
     };
     defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
 
     const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
@@ -1333,6 +1335,7 @@ test "artifact tool updates MPF change" {
         .workspace_root = try testing.allocator.dupe(u8, root),
     };
     defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
 
     const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
@@ -1368,6 +1371,7 @@ test "artifact update overwrites existing context modify draft" {
         .workspace_root = try testing.allocator.dupe(u8, root),
     };
     defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
 
     const first_json =
         \\{
@@ -1455,6 +1459,7 @@ test "context propose delete discards create-only draft by local temp id" {
         .workspace_root = try testing.allocator.dupe(u8, root),
     };
     defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
 
     const result = try handleProposeDelete(
         testing.allocator,
@@ -1506,6 +1511,7 @@ test "rule propose delete discards create-only draft by local temp id" {
         .workspace_root = try testing.allocator.dupe(u8, root),
     };
     defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
 
     const result = try handleProposeDelete(
         testing.allocator,
@@ -1727,6 +1733,7 @@ test "handleRefer resolves constraints from current workspace root" {
         .workspace_root = try testing.allocator.dupe(u8, "/wrong/workspace/root"),
     };
     defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
 
     const args_json =
         \\{

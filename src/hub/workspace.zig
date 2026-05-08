@@ -46,8 +46,8 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     }
 
     _ = conn.exec(
-        "INSERT INTO workspaces (ws_id, org_id, name) VALUES ($1, $2::uuid, $3)",
-        .{ &ws_id_buf, user.org_id, body.name },
+        "INSERT INTO workspaces (ws_id, org_id, name, description) VALUES ($1, $2::uuid, $3, $4)",
+        .{ &ws_id_buf, user.org_id, body.name, body.description },
     ) catch {
         if (conn.err) |pg_err| {
             if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
@@ -76,6 +76,7 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     try res.json(CreateWorkspaceResponse{
         .ws_id = ws_id_buf[0..],
         .name = body.name,
+        .description = body.description,
         .revision = 0,
     }, .{});
 }
@@ -100,7 +101,7 @@ pub fn handleGet(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response
     }
 
     var row = conn.row(
-        "SELECT ws_id, name, revision FROM workspaces WHERE ws_id = $1",
+        "SELECT ws_id, name, description, revision FROM workspaces WHERE ws_id = $1",
         .{ws_id},
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -112,13 +113,12 @@ pub fn handleGet(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response
     try res.json(.{
         .ws_id = try row.get([]const u8, 0),
         .name = try row.get([]const u8, 1),
-        .revision = try row.get(i32, 2),
+        .description = try row.get([]const u8, 2),
+        .revision = try row.get(i32, 3),
     }, .{});
 }
 
-const UpdateRequest = struct {
-    name: []const u8,
-};
+const UpdateRequest = workspace_api.UpdateWorkspaceRequest;
 
 pub fn handleUpdate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -148,8 +148,8 @@ pub fn handleUpdate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     if (!try checkIfMatch(conn, req, res, ws_id)) return;
 
     var row = conn.row(
-        "UPDATE workspaces SET name = $1, revision = revision + 1 WHERE ws_id = $2 RETURNING ws_id, name, revision",
-        .{ body.name, ws_id },
+        "UPDATE workspaces SET name = $1, description = $2, revision = revision + 1 WHERE ws_id = $3 RETURNING ws_id, name, description, revision",
+        .{ body.name, body.description, ws_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     } orelse {
@@ -160,7 +160,8 @@ pub fn handleUpdate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     try res.json(.{
         .ws_id = try row.get([]const u8, 0),
         .name = try row.get([]const u8, 1),
-        .revision = try row.get(i32, 2),
+        .description = try row.get([]const u8, 2),
+        .revision = try row.get(i32, 3),
     }, .{});
 }
 
@@ -446,7 +447,6 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "members:read", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -467,9 +467,7 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         return apiError(res, 404, "NOT_FOUND", "workspace not found");
     }
 
-    if (!std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
-    }
+    if (!auth.requireWorkspaceMemberRead(conn, user, ws_id, res)) return;
 
     var result = conn.query(
         \\SELECT wm.user_id, u.username, wm.role, wm.joined_at::text
@@ -495,14 +493,13 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
 
 const InviteRequest = struct {
     user_id: []const u8,
-    role: []const u8 = "member",
+    role: []const u8,
 };
 
 pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "members:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -523,9 +520,7 @@ pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     };
     defer conn.release();
 
-    if (!std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceAdmin(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "ws:admin or maintainer required");
-    }
+    if (!auth.requireWorkspaceMemberWrite(conn, user, ws_id, res)) return;
 
     var org_check = conn.row(
         "SELECT 1 FROM users u JOIN workspaces w ON w.org_id = u.org_id WHERE u.user_id = $1 AND w.ws_id = $2",
@@ -563,7 +558,6 @@ pub fn handleChangeMemberRole(ctx: *Server.Context, req: *httpz.Request, res: *h
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "members:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -587,38 +581,8 @@ pub fn handleChangeMemberRole(ctx: *Server.Context, req: *httpz.Request, res: *h
     };
     defer conn.release();
 
-    if (!std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceAdmin(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "ws:admin or maintainer required");
-    }
-
-    // Prevent downgrading the last admin
-    if (std.mem.eql(u8, body.role, "member")) {
-        var admin_count = conn.row(
-            "SELECT count(*) FROM workspace_members WHERE ws_id = $1 AND role = 'admin'",
-            .{ws_id},
-        ) catch {
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        } orelse {
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        };
-        const count = admin_count.get(i64, 0) catch {
-            admin_count.deinit() catch {};
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        };
-        admin_count.deinit() catch {};
-        if (count <= 1) {
-            var is_target_admin = conn.row(
-                "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND role = 'admin'",
-                .{ ws_id, target_id },
-            ) catch {
-                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-            };
-            if (is_target_admin) |*r| {
-                r.deinit() catch {};
-                return apiError(res, 400, "BAD_REQUEST", "cannot downgrade the last admin");
-            }
-        }
-    }
+    if (!auth.requireWorkspaceMemberWrite(conn, user, ws_id, res)) return;
+    if (!auth.validateWorkspaceRoleChange(conn, ws_id, target_id, body.role, res)) return;
 
     const updated = conn.exec(
         "UPDATE workspace_members SET role = $3 WHERE ws_id = $1 AND user_id = $2",
@@ -638,7 +602,6 @@ pub fn handleRemoveWsMember(ctx: *Server.Context, req: *httpz.Request, res: *htt
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
     };
-    if (!auth.requireScope(user, "members:write", res)) return;
 
     const ws_id = req.param("ws_id") orelse {
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
@@ -652,38 +615,8 @@ pub fn handleRemoveWsMember(ctx: *Server.Context, req: *httpz.Request, res: *htt
     };
     defer conn.release();
 
-    // Self-leave allowed, otherwise need admin/maintainer
-    const is_self = std.mem.eql(u8, target_id, user.user_id);
-    if (!is_self and !std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceAdmin(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "ws:admin or maintainer required");
-    }
-
-    // Prevent removing the last admin
-    var admin_check = conn.row(
-        "SELECT count(*) FROM workspace_members WHERE ws_id = $1 AND role = 'admin'",
-        .{ws_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-    if (admin_check) |*ac| {
-        const count = ac.get(i64, 0) catch {
-            ac.deinit() catch {};
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        };
-        ac.deinit() catch {};
-        if (count <= 1) {
-            var is_target_admin = conn.row(
-                "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND role = 'admin'",
-                .{ ws_id, target_id },
-            ) catch {
-                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-            };
-            if (is_target_admin) |*r| {
-                r.deinit() catch {};
-                return apiError(res, 400, "BAD_REQUEST", "cannot remove the last admin");
-            }
-        }
-    }
+    if (!auth.requireWorkspaceMemberRemoval(conn, user, ws_id, target_id, res)) return;
+    if (!auth.validateWorkspaceMemberRemoval(conn, ws_id, target_id, res)) return;
 
     _ = conn.exec(
         "DELETE FROM workspace_members WHERE ws_id = $1 AND user_id = $2",

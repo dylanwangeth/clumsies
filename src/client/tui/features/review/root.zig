@@ -631,9 +631,21 @@ fn writeReviewQueueColumnHeader(
     const op_col = comments_col -| gap -| op_w;
     const status_col = op_col -| gap -| status_w;
 
-    w.writeText(surface, ctx, status_col, 0, "status", theme.fg(theme.MUTED));
-    w.writeText(surface, ctx, op_col, 0, "op", theme.fg(theme.MUTED));
-    w.writeText(surface, ctx, comments_col, 0, "comments", theme.fg(theme.MUTED));
+    writeRightAlignedHeader(surface, ctx, status_col, status_w, "status");
+    writeRightAlignedHeader(surface, ctx, op_col, op_w, "operation");
+    writeRightAlignedHeader(surface, ctx, comments_col, comments_w, "comments");
+}
+
+fn writeRightAlignedHeader(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    col: u16,
+    width: u16,
+    text: []const u8,
+) void {
+    const text_w: u16 = @intCast(@min(ctx.stringWidth(text), width));
+    const start_col = col + width -| text_w;
+    w.writeText(surface, ctx, start_col, 0, text, theme.fg(theme.MUTED));
 }
 
 fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -1221,9 +1233,9 @@ pub fn syncReviewPrWidgets(self: anytype) void {
         self.review.pr_table_cols[pi] = .{
             .{ .text = target_label, .flex = 0, .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT), .gap_after = 0 },
             .{ .text = pr.title, .flex = 1, .min_width = 12, .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT) },
-            .{ .text = status, .flex = 0, .min_width = 8, .style = reviewStatusStyle(pr.status) },
-            .{ .text = op_label, .flex = 0, .min_width = 10, .style = reviewOpStyle() },
-            .{ .text = comments_label, .flex = 0, .min_width = 10, .style = reviewCommentsStyle() },
+            .{ .text = status, .flex = 0, .min_width = 8, .alignment = .right, .style = reviewStatusStyle(pr.status) },
+            .{ .text = op_label, .flex = 0, .min_width = 10, .alignment = .right, .style = reviewOpStyle() },
+            .{ .text = comments_label, .flex = 0, .min_width = 10, .alignment = .right, .style = reviewCommentsStyle() },
         };
         self.review.pr_table_rows[pi] = .{
             .columns = &self.review.pr_table_cols[pi],

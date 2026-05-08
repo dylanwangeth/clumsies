@@ -15,6 +15,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         .{ .short = 'c', .long = "create", .kind = .value },
         .{ .short = 'w', .long = "ws-id", .kind = .value },
         .{ .short = 'b', .long = "bundle", .kind = .value },
+        .{ .short = 'd', .long = "description", .kind = .value },
     };
 
     var err_ctx: flag.ErrorContext = .{};
@@ -43,9 +44,15 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const create_name = result.value(0);
     const ws_id_flag = result.value(1);
     const bundle_id = result.value(2);
+    const description = result.value(3);
 
     if (create_name == null and ws_id_flag == null) {
         try stderr.print("{s}{s}{s}Error:{s} Either --create <name> or --ws-id <id> is required\n", .{ P, Color.bold, Color.red, Color.reset });
+        try printHelp(stderr);
+        return;
+    }
+    if (create_name != null and description == null) {
+        try stderr.print("{s}{s}{s}Error:{s} --description is required with --create\n", .{ P, Color.bold, Color.red, Color.reset });
         try printHelp(stderr);
         return;
     }
@@ -71,7 +78,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     if (create_name) |name| {
         // POST /api/workspaces to create a new workspace
-        const request = workspace_api.CreateWorkspaceRequest{ .name = name, .bundle_id = bundle_id };
+        const request = workspace_api.CreateWorkspaceRequest{ .name = name, .description = description.?, .bundle_id = bundle_id };
         const body = std.json.Stringify.valueAlloc(
             allocator,
             request,
@@ -197,17 +204,18 @@ fn reportApiError(
 }
 
 fn printHelp(out: *std.Io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies init [--create <name> | --ws-id <id>] [--bundle <bundle_id>]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies init [--create <name> --description <text> | --ws-id <id>] [--bundle <bundle_id>]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Initialize a workspace binding in the current directory.\n", .{P});
     try out.print("{s}Flags:\n", .{P});
     try out.print("{s}  {s}--create <name>{s}     Create a new workspace with this name\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}--description <text>{s} Workspace description (with --create)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--ws-id <id>{s}        Bind to an existing workspace by ID\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--bundle <bundle_id>{s} Associate a bundle (with --create)\n", .{ P, Color.cyan, Color.reset });
 }
 
-test "parseCreatedWorkspace ignores added fields from hub responses" {
+test "parseCreatedWorkspace reads workspace description" {
     const body =
-        \\{"ws_id":"ws-123","name":"clumsiesws","revision":4}
+        \\{"ws_id":"ws-123","name":"clumsiesws","description":"Primary workspace","revision":4}
     ;
 
     const parsed = try parseCreatedWorkspace(std.testing.allocator, body);
@@ -215,5 +223,6 @@ test "parseCreatedWorkspace ignores added fields from hub responses" {
 
     try std.testing.expectEqualStrings("ws-123", parsed.value.ws_id);
     try std.testing.expectEqualStrings("clumsiesws", parsed.value.name);
+    try std.testing.expectEqualStrings("Primary workspace", parsed.value.description);
     try std.testing.expectEqual(@as(i32, 4), parsed.value.revision);
 }

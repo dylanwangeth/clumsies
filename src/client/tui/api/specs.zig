@@ -37,6 +37,7 @@ pub const RuleContentParams = struct { path: []const u8, rule_id: ?[]const u8 = 
 pub const RulePrsParams = struct { rule_id: []const u8 };
 pub const WorkspaceContextContentParams = struct { ws_id: []const u8, path: []const u8 };
 pub const WorkspaceIdParams = struct { ws_id: []const u8 };
+pub const UpdateWorkspaceParams = struct { ws_id: []const u8, name: []const u8, description: []const u8 };
 pub const PrIdParams = struct { pr_id: []const u8, target_kind: data.PrTargetKind = .rule, ws_id: ?[]const u8 = null };
 pub const ReviewPrsParams = struct { target_kind: ?data.PrTargetKind = null, status: []const u8 = "open" };
 
@@ -44,6 +45,7 @@ pub const RulePrsPayload = state.RulePrsPayload;
 pub const WorkspaceContextPayload = state.WorkspaceContextPayload;
 pub const WorkspaceManifestPayload = state.WorkspaceManifestPayload;
 pub const WorkspaceContextContentPayload = state.WorkspaceContextContentPayload;
+pub const WorkspaceMembersPayload = state.WorkspaceMembersPayload;
 pub const PrCommentsPayload = state.PrCommentsPayload;
 pub const CreateRulePrResponse = state.CreateRulePrResponse;
 pub const CreateContextPrResponse = state.CreateContextPrResponse;
@@ -136,6 +138,32 @@ pub const workspace_manifest = dispatcher.RequestSpec(
     .parse_ok = parseWorkspaceManifestPayload,
 };
 
+pub const workspace_members = dispatcher.RequestSpec(
+    WorkspaceIdParams,
+    WorkspaceMembersPayload,
+){
+    .method = .GET,
+    .path_builder = workspaceMembersPath,
+    .parse_ok = parseWorkspaceMembersPayload,
+};
+
+pub const update_workspace = dispatcher.RequestSpec(
+    UpdateWorkspaceParams,
+    workspace_api.CreateWorkspaceResponse,
+){
+    .method = .PATCH,
+    .path_builder = updateWorkspacePath,
+    .body_builder = updateWorkspaceBody,
+    .parse_ok = dispatcher.jsonParser(UpdateWorkspaceParams, workspace_api.CreateWorkspaceResponse),
+};
+
+pub const delete_workspace = dispatcher.RequestSpec(WorkspaceIdParams, void){
+    .method = .DELETE,
+    .path_builder = workspacePath,
+    .body_builder = null,
+    .parse_ok = dispatcher.parseVoid(WorkspaceIdParams),
+};
+
 pub const pr_detail = dispatcher.RequestSpec(
     PrIdParams,
     collab_api.RulePrDetailResponse,
@@ -170,6 +198,26 @@ pub const PrActionParams = struct {
     action: []const u8,
 };
 
+pub const MemberIdParams = struct {
+    user_id: []const u8,
+};
+
+pub const ChangeMemberRoleParams = struct {
+    user_id: []const u8,
+    role: []const u8,
+};
+
+pub const WorkspaceMemberIdParams = struct {
+    ws_id: []const u8,
+    user_id: []const u8,
+};
+
+pub const WorkspaceMemberRoleParams = struct {
+    ws_id: []const u8,
+    user_id: []const u8,
+    role: []const u8,
+};
+
 pub const sign_out = dispatcher.RequestSpec(EmptyParams, void){
     .method = .DELETE,
     .path_builder = dispatcher.staticPath(EmptyParams, "/api/auth/token"),
@@ -182,6 +230,48 @@ pub const update_profile = dispatcher.RequestSpec(auth_api.UpdateProfileRequest,
     .path_builder = dispatcher.staticPath(auth_api.UpdateProfileRequest, "/api/auth/me"),
     .body_builder = dispatcher.jsonBody(auth_api.UpdateProfileRequest),
     .parse_ok = dispatcher.jsonParser(auth_api.UpdateProfileRequest, auth_api.UpdateProfileResponse),
+};
+
+pub const invite_member = dispatcher.RequestSpec(auth_api.InviteMemberRequest, auth_api.InviteMemberResponse){
+    .method = .POST,
+    .path_builder = dispatcher.staticPath(auth_api.InviteMemberRequest, "/api/org/members"),
+    .body_builder = dispatcher.jsonBody(auth_api.InviteMemberRequest),
+    .parse_ok = dispatcher.jsonParser(auth_api.InviteMemberRequest, auth_api.InviteMemberResponse),
+};
+
+pub const change_member_role = dispatcher.RequestSpec(ChangeMemberRoleParams, void){
+    .method = .PATCH,
+    .path_builder = memberPath(ChangeMemberRoleParams),
+    .body_builder = changeMemberRoleBody,
+    .parse_ok = dispatcher.parseVoid(ChangeMemberRoleParams),
+};
+
+pub const remove_member = dispatcher.RequestSpec(MemberIdParams, void){
+    .method = .DELETE,
+    .path_builder = memberPath(MemberIdParams),
+    .body_builder = null,
+    .parse_ok = dispatcher.parseVoid(MemberIdParams),
+};
+
+pub const add_workspace_member = dispatcher.RequestSpec(WorkspaceMemberRoleParams, void){
+    .method = .POST,
+    .path_builder = addWorkspaceMemberPath,
+    .body_builder = workspaceMemberRoleBody,
+    .parse_ok = dispatcher.parseVoid(WorkspaceMemberRoleParams),
+};
+
+pub const change_workspace_member_role = dispatcher.RequestSpec(WorkspaceMemberRoleParams, void){
+    .method = .PATCH,
+    .path_builder = workspaceMemberPath(WorkspaceMemberRoleParams),
+    .body_builder = workspaceMemberChangeRoleBody,
+    .parse_ok = dispatcher.parseVoid(WorkspaceMemberRoleParams),
+};
+
+pub const remove_workspace_member = dispatcher.RequestSpec(WorkspaceMemberIdParams, void){
+    .method = .DELETE,
+    .path_builder = workspaceMemberPath(WorkspaceMemberIdParams),
+    .body_builder = null,
+    .parse_ok = dispatcher.parseVoid(WorkspaceMemberIdParams),
 };
 
 pub const submit_comment = dispatcher.RequestSpec(SubmitCommentParams, void){
@@ -306,6 +396,39 @@ fn prActionBody(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8
     return std.json.Stringify.valueAlloc(alloc, Payload{ .action = action }, .{});
 }
 
+fn changeMemberRoleBody(alloc: std.mem.Allocator, p: ChangeMemberRoleParams) anyerror![]const u8 {
+    return std.json.Stringify.valueAlloc(alloc, auth_api.ChangeMemberRoleRequest{ .role = p.role }, .{});
+}
+
+fn workspaceMemberRoleBody(alloc: std.mem.Allocator, p: WorkspaceMemberRoleParams) anyerror![]const u8 {
+    const Payload = struct { user_id: []const u8, role: []const u8 };
+    return std.json.Stringify.valueAlloc(alloc, Payload{ .user_id = p.user_id, .role = p.role }, .{});
+}
+
+fn workspaceMemberChangeRoleBody(alloc: std.mem.Allocator, p: WorkspaceMemberRoleParams) anyerror![]const u8 {
+    return std.json.Stringify.valueAlloc(alloc, auth_api.ChangeMemberRoleRequest{ .role = p.role }, .{});
+}
+
+fn memberPath(comptime ReqT: type) *const fn (std.mem.Allocator, ReqT) anyerror![]const u8 {
+    return struct {
+        fn build(alloc: std.mem.Allocator, p: ReqT) anyerror![]const u8 {
+            return std.fmt.allocPrint(alloc, "/api/org/members/{s}", .{p.user_id});
+        }
+    }.build;
+}
+
+fn addWorkspaceMemberPath(alloc: std.mem.Allocator, p: WorkspaceMemberRoleParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/members", .{p.ws_id});
+}
+
+fn workspaceMemberPath(comptime ReqT: type) *const fn (std.mem.Allocator, ReqT) anyerror![]const u8 {
+    return struct {
+        fn build(alloc: std.mem.Allocator, p: ReqT) anyerror![]const u8 {
+            return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/members/{s}", .{ p.ws_id, p.user_id });
+        }
+    }.build;
+}
+
 fn ruleContentPath(alloc: std.mem.Allocator, p: RuleContentParams) anyerror![]const u8 {
     if (p.rule_id) |rule_id| {
         const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
@@ -344,6 +467,25 @@ fn workspaceContextFilesPath(alloc: std.mem.Allocator, p: WorkspaceIdParams) any
 
 fn workspaceManifestPath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror![]const u8 {
     return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/manifest", .{p.ws_id});
+}
+
+fn workspaceMembersPath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/members", .{p.ws_id});
+}
+
+fn workspacePath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}", .{p.ws_id});
+}
+
+fn updateWorkspacePath(alloc: std.mem.Allocator, p: UpdateWorkspaceParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}", .{p.ws_id});
+}
+
+fn updateWorkspaceBody(alloc: std.mem.Allocator, p: UpdateWorkspaceParams) anyerror![]const u8 {
+    return std.json.Stringify.valueAlloc(alloc, workspace_api.UpdateWorkspaceRequest{
+        .name = p.name,
+        .description = p.description,
+    }, .{});
 }
 
 fn prDetailPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
@@ -476,6 +618,18 @@ fn parseWorkspaceManifestPayload(
     return .{
         .ws_id = try alloc.dupe(u8, req.ws_id),
         .rules = rules,
+    };
+}
+
+fn parseWorkspaceMembersPayload(
+    alloc: std.mem.Allocator,
+    req: WorkspaceIdParams,
+    body: []const u8,
+) anyerror!WorkspaceMembersPayload {
+    const members = parse.parseWorkspaceMembers(alloc, body) orelse return error.ParseFailed;
+    return .{
+        .ws_id = try alloc.dupe(u8, req.ws_id),
+        .members = members,
     };
 }
 
