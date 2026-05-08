@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const auth_mod = @import("../../auth.zig");
+const auth_api = @import("clumsies_lib").protocol.auth_api;
 const collab_api = @import("clumsies_lib").protocol.collab_api;
 const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
@@ -174,6 +175,13 @@ pub const sign_out = dispatcher.RequestSpec(EmptyParams, void){
     .path_builder = dispatcher.staticPath(EmptyParams, "/api/auth/token"),
     .body_builder = null,
     .parse_ok = dispatcher.parseVoid(EmptyParams),
+};
+
+pub const update_profile = dispatcher.RequestSpec(auth_api.UpdateProfileRequest, auth_api.UpdateProfileResponse){
+    .method = .PATCH,
+    .path_builder = dispatcher.staticPath(auth_api.UpdateProfileRequest, "/api/auth/me"),
+    .body_builder = dispatcher.jsonBody(auth_api.UpdateProfileRequest),
+    .parse_ok = dispatcher.jsonParser(auth_api.UpdateProfileRequest, auth_api.UpdateProfileResponse),
 };
 
 pub const submit_comment = dispatcher.RequestSpec(SubmitCommentParams, void){

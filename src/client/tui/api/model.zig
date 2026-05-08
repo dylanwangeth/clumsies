@@ -4,6 +4,7 @@
 
 pub const UserData = struct {
     user_id: []const u8,
+    org_name: []const u8,
     username: []const u8,
     role: []const u8,
     scopes: []const u8,
@@ -14,6 +15,7 @@ pub const WorkspaceData = struct {
     ws_id: []const u8,
     name: []const u8,
     role: []const u8 = "",
+    owner: []const u8 = "",
 };
 
 pub const DirectoryMember = struct {

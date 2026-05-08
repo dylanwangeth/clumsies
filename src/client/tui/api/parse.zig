@@ -84,11 +84,13 @@ pub fn parseUser(alloc: std.mem.Allocator, body: []const u8) ?model.UserData {
             .ws_id = alloc.dupe(u8, ws.ws_id) catch continue,
             .name = alloc.dupe(u8, ws.name) catch continue,
             .role = alloc.dupe(u8, ws.role) catch continue,
+            .owner = alloc.dupe(u8, ws.owner) catch continue,
         }) catch continue;
     }
 
     return .{
         .user_id = alloc.dupe(u8, v.user_id) catch return null,
+        .org_name = alloc.dupe(u8, v.org_name) catch return null,
         .username = alloc.dupe(u8, v.username) catch return null,
         .role = alloc.dupe(u8, v.role) catch return null,
         .scopes = alloc.dupe(u8, v.scopes) catch return null,

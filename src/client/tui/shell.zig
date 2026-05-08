@@ -49,6 +49,8 @@ const ConfirmAction = enum {
     quit,
 };
 
+const ConfirmChoice = enum { accept, cancel };
+
 const TopModule = enum(u8) {
     dashboard,
     workspace,
@@ -124,6 +126,8 @@ const PathTreeState = workspace_panel.PathTreeState;
 const DraftTarget = features.drafts.DraftTarget;
 const PendingPrAction = features.drafts.PendingPrAction;
 const LoginFocus = enum { hub_url, username, password, submit };
+const ProfileDialogKind = enum { username, password };
+const ProfileDialogFocus = enum { first, second, submit };
 
 pub const Shell = struct {
     api_state: *api.state.ApiState,
@@ -140,6 +144,7 @@ pub const Shell = struct {
     show_confirm: bool = false,
     confirm_message: []const u8 = "",
     confirm_action: ConfirmAction = .none,
+    confirm_choice: ConfirmChoice = .accept,
     last_safe_layout_size: vxfw.Size = .{},
     system_notices: w.SystemNoticeQueue = .{},
     view_arena: std.heap.ArenaAllocator,
@@ -154,6 +159,15 @@ pub const Shell = struct {
     login_password_len: usize = 0,
     login_focus: LoginFocus = .hub_url,
     login_message: []const u8 = "",
+    show_profile_dialog: bool = false,
+    profile_dialog_kind: ProfileDialogKind = .username,
+    profile_dialog_focus: ProfileDialogFocus = .first,
+    profile_dialog_submitting: bool = false,
+    profile_first_buf: [128]u8 = .{0} ** 128,
+    profile_first_len: usize = 0,
+    profile_second_buf: [128]u8 = .{0} ** 128,
+    profile_second_len: usize = 0,
+    profile_dialog_message: []const u8 = "",
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
     // main.zig for the lifetime of the Shell. Active workspace is
@@ -261,52 +275,27 @@ pub const Shell = struct {
 
                 // Confirm overlay absorbs all keys
                 if (self.show_confirm) {
-                    if (key.matches('y', .{})) {
-                        log.info("confirm_accept action={s}", .{confirmActionName(self.confirm_action)});
-                        switch (self.confirm_action) {
-                            .remove_member => {
-                                self.notifyOp(.info, "Member removed (not yet implemented)");
-                            },
-                            .delete_bundle => {
-                                self.notifyOp(.info, "Bundle deleted (not yet implemented)");
-                            },
-                            .delete_workspace => {
-                                self.notifyOp(.info, "Workspace deleted (not yet implemented)");
-                            },
-                            .revoke_token => {
-                                api.specs.dispatchFromState(
-                                    api.specs.EmptyParams,
-                                    void,
-                                    api.specs.sign_out,
-                                    &self.api_state.sign_out_pending,
-                                    self.api_state,
-                                    .{},
-                                );
-                                self.notifyOp(.loading, "Revoking token...");
-                            },
-                            .discard_draft => self.commitDiscardDraft(),
-                            .quit => {
-                                ctx.consumeEvent();
-                                ctx.quit = true;
-                                return;
-                            },
-                            .none => {},
-                        }
-                        self.show_confirm = false;
-                        self.confirm_action = .none;
+                    if (key.matches(vaxis.Key.tab, .{}) or key.matches(vaxis.Key.left, .{}) or key.matches(vaxis.Key.right, .{})) {
+                        self.confirm_choice = switch (self.confirm_choice) {
+                            .accept => .cancel,
+                            .cancel => .accept,
+                        };
                         ctx.consumeAndRedraw();
+                        return;
                     }
-                    if (key.matches('n', .{}) or key.matches(vaxis.Key.escape, .{})) {
-                        log.info("confirm_cancel action={s}", .{confirmActionName(self.confirm_action)});
-                        // Releasing here keeps the pending-discard
-                        // path owned slice from leaking when the
-                        // user declines the confirm overlay.
-                        self.releasePendingDiscardTarget();
-                        self.show_confirm = false;
-                        self.confirm_action = .none;
-                        self.notifyOp(.warning, "Cancelled.");
-                        ctx.consumeAndRedraw();
+                    if (key.matches('y', .{}) or (self.confirm_choice == .accept and (key.matches(vaxis.Key.enter, .{}) or key.matches(' ', .{})))) {
+                        self.acceptConfirm(ctx);
+                        return;
                     }
+                    if (key.matches('n', .{}) or key.matches(vaxis.Key.escape, .{}) or (self.confirm_choice == .cancel and (key.matches(vaxis.Key.enter, .{}) or key.matches(' ', .{})))) {
+                        self.cancelConfirm(ctx);
+                        return;
+                    }
+                    return;
+                }
+
+                if (self.show_profile_dialog) {
+                    self.handleProfileDialogKey(ctx, key);
                     return;
                 }
 
@@ -444,6 +433,7 @@ pub const Shell = struct {
             },
             .tick => {
                 const was_login_panel = self.shouldShowLoginPanel();
+                const was_native_cursor_input = self.hasNativeCursorInput();
 
                 // Advance breathing cycle: 0→20→0 (2 seconds at 100ms intervals)
                 self.tick_count +%= 1;
@@ -467,6 +457,7 @@ pub const Shell = struct {
                 self.consumePrActionResult();
                 self.consumeCreateRulePrResult();
                 self.consumeCreateContextPrResult();
+                self.consumeUpdateProfileResult();
                 self.consumeAttestationUploadResult();
                 self.consumeHealthResult();
 
@@ -482,7 +473,8 @@ pub const Shell = struct {
                 }
                 self.maybeRefreshMetadata();
                 const is_login_panel = self.shouldShowLoginPanel();
-                ctx.redraw = !is_login_panel or was_login_panel != is_login_panel;
+                const is_native_cursor_input = self.hasNativeCursorInput();
+                ctx.redraw = !is_native_cursor_input or was_login_panel != is_login_panel or was_native_cursor_input != is_native_cursor_input;
                 try ctx.tick(100, self.widget());
             },
             else => {},
@@ -525,17 +517,19 @@ pub const Shell = struct {
 
         const show_workspace_drawer = self.workspace.show_drawer and self.selected_module == .workspace and
             !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
-            !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form;
+            !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form and
+            !self.show_profile_dialog;
         const show_login_panel = self.shouldShowLoginPanel();
         const allow_regular_overlays = !show_login_panel;
         const modal_active = show_login_panel or self.show_help or self.show_confirm or self.review.show_comment_editor or
             self.workspace.show_create or self.drafts.show_pr_composer or
-            self.drafts.show_new_draft_form or show_workspace_drawer;
+            self.drafts.show_new_draft_form or self.show_profile_dialog or show_workspace_drawer;
         const show_notice_overlay = !modal_active and self.system_notices.hasVisible();
         var child_count: usize = 3;
         if (show_login_panel) child_count += 1;
         if (allow_regular_overlays and self.show_help) child_count += 1;
         if (allow_regular_overlays and self.show_confirm) child_count += 1;
+        if (allow_regular_overlays and self.show_profile_dialog) child_count += 1;
         if (allow_regular_overlays and self.review.show_comment_editor) child_count += 1;
         if (allow_regular_overlays and self.workspace.show_create) child_count += 1;
         if (allow_regular_overlays and self.drafts.show_pr_composer) child_count += 1;
@@ -594,16 +588,31 @@ pub const Shell = struct {
             children[child_idx] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = try self.drawConfirmOverlay(confirm_ctx) };
             child_idx += 1;
         }
+        if (allow_regular_overlays and self.show_profile_dialog) {
+            const full_ctx = ctx.withConstraints(
+                .{ .width = size.width, .height = size.height },
+                .{ .width = size.width, .height = size.height },
+            );
+            children[child_idx] = .{
+                .origin = .{ .row = 0, .col = 0 },
+                .surface = try self.drawProfileDialog(full_ctx),
+            };
+            child_idx += 1;
+        }
         if (allow_regular_overlays and self.review.show_comment_editor) {
-            const box_w: u16 = 42;
+            const box_w = @min(size.width -| 4, @as(u16, 60));
             const box_h: u16 = 8;
-            const box_col = size.width -| (box_w + 2);
-            const box_row = size.height -| (box_h + 2);
-            const comment_ctx = ctx.withConstraints(
+            const full_ctx = ctx.withConstraints(
                 .{ .width = box_w, .height = box_h },
                 .{ .width = box_w, .height = box_h },
             );
-            children[child_idx] = .{ .origin = .{ .row = box_row, .col = box_col }, .surface = try self.drawCommentEditorOverlay(comment_ctx) };
+            children[child_idx] = .{
+                .origin = .{
+                    .row = size.height -| box_h -| 1,
+                    .col = size.width -| box_w -| 2,
+                },
+                .surface = try self.drawCommentEditorOverlay(full_ctx),
+            };
             child_idx += 1;
         }
         if (allow_regular_overlays and self.workspace.show_create) {
@@ -699,16 +708,14 @@ pub const Shell = struct {
 
         // Row 0: Accent band with org/user context
         w.paintBand(&surface, 0, theme.ACCENT, theme.PANEL);
-        const HeaderInfo = struct { username: []const u8, role: []const u8 };
-        const header_info: HeaderInfo = blk: {
+        const org_name: []const u8 = blk: {
             self.api_state.mutex.lock();
             defer self.api_state.mutex.unlock();
             if (self.api_state.current_user) |u|
-                break :blk .{ .username = u.username, .role = u.role };
-            break :blk .{ .username = "\xe2\x80\x94", .role = "\xe2\x80\x94" };
+                break :blk u.org_name;
+            break :blk "\xe2\x80\x94";
         };
-        const header_left = try std.fmt.allocPrint(ctx.arena, "{s} \xe2\x94\x80 {s} ({s})", .{ "acme", header_info.username, header_info.role });
-        w.writeText(&surface, ctx, 1, 0, header_left, .{
+        w.writeText(&surface, ctx, 1, 0, org_name, .{
             .fg = theme.PANEL,
             .bg = theme.ACCENT,
             .bold = true,
@@ -911,6 +918,16 @@ pub const Shell = struct {
         };
     }
 
+    fn hasNativeCursorInput(self: *const Shell) bool {
+        if (self.shouldShowLoginPanel()) return true;
+        if (self.review.show_comment_editor) return true;
+        if (self.show_profile_dialog and !self.profile_dialog_submitting) return true;
+        if (self.drafts.show_new_draft_form) return true;
+        if (self.drafts.show_pr_composer) return self.drafts.pr_composer_focus == .title or self.drafts.pr_composer_focus == .body;
+        if (self.workspace.show_create) return self.workspace.create_focus == .name or self.workspace.create_focus == .description;
+        return false;
+    }
+
     fn handleLoginKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
         if (key.matches(vaxis.Key.escape, .{})) {
             ctx.consumeEvent();
@@ -1026,69 +1043,30 @@ pub const Shell = struct {
     }
 
     fn drawLoginPanel(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-        w.fillSurface(&surface, theme.CANVAS);
-        const box_w: u16 = @min(@as(u16, 58), surface.size.width -| 6);
+        const size = ctx.max.size();
+        const box_w: u16 = @min(@as(u16, 58), size.width -| 6);
         const box_h: u16 = 14;
-        const col: u16 = (surface.size.width - box_w) / 2;
-        const row: u16 = if (surface.size.height > box_h) (surface.size.height - box_h) / 2 else 0;
-        const panel_ctx = ctx.withConstraints(
-            .{ .width = box_w, .height = box_h },
-            .{ .width = box_w, .height = box_h },
-        );
-        const panel = try self.drawLoginPanelBox(panel_ctx, box_w, box_h);
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-        children[0] = .{ .origin = .{ .row = row, .col = col }, .surface = panel };
-        surface.children = children;
-        return surface;
-    }
+        const modal = Modal{
+            .title = "Connect to Hub",
+            .box_width = box_w,
+            .box_height = box_h,
+        };
+        const result = try modal.draw(ctx, self.widget());
+        var surface = result.surface;
 
-    fn drawLoginPanelBox(self: *Shell, ctx: vxfw.DrawContext, width: u16, height: u16) std.mem.Allocator.Error!vxfw.Surface {
-        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
-        w.fillSurface(&surface, theme.PANEL_ALT);
-        w.drawBorder(&surface, theme.BORDER_MUTED, theme.PANEL_ALT);
-        w.writeText(&surface, ctx, 4, 2, "Connect to Hub", theme.boldOn(theme.PANEL_ALT, theme.ACCENT_SOFT));
-
-        const field_start: u16 = 4;
-        self.drawLoginField(&surface, ctx, 4, field_start, "Hub", self.login_hub_url_buf[0..self.login_hub_url_len], .hub_url);
-        self.drawLoginField(&surface, ctx, 4, field_start + 2, "User", self.login_username_buf[0..self.login_username_len], .username);
+        const col = result.content_col;
+        const field_start = result.content_row;
+        self.drawLoginField(&surface, ctx, col, field_start, result.content_width, "Hub", self.login_hub_url_buf[0..self.login_hub_url_len], .hub_url);
+        self.drawLoginField(&surface, ctx, col, field_start + 2, result.content_width, "User", self.login_username_buf[0..self.login_username_len], .username);
         const password_mask = try ctx.arena.alloc(u8, self.login_password_len);
         @memset(password_mask, '*');
-        self.drawLoginField(&surface, ctx, 4, field_start + 4, "Pass", password_mask, .password);
+        self.drawLoginField(&surface, ctx, col, field_start + 4, result.content_width, "Pass", password_mask, .password);
 
-        self.drawLoginSubmit(&surface, ctx, 4, field_start + 6);
+        self.drawLoginSubmit(&surface, ctx, col, field_start + 6);
         if (self.login_message.len > 0) {
-            _ = self.drawLoginWrappedText(&surface, ctx, 4, field_start + 8, self.login_message, theme.textOn(theme.PANEL_ALT, theme.DANGER), 2);
+            _ = w.writeWrappedTextMax(&surface, ctx, col, field_start + 8, result.content_width, 2, self.login_message, theme.textOn(theme.PANEL_ALT, theme.DANGER));
         }
         return surface;
-    }
-
-    fn drawLoginWrappedText(
-        self: *Shell,
-        surface: *vxfw.Surface,
-        ctx: vxfw.DrawContext,
-        col: u16,
-        row: u16,
-        text: []const u8,
-        style: vaxis.Style,
-        max_lines: u16,
-    ) u16 {
-        _ = self;
-        const max_width = surface.size.width -| (col + 2);
-        if (max_width == 0 or max_lines == 0) return row;
-
-        var out_row = row;
-        var rest = text;
-        var lines_left = max_lines;
-        while (rest.len > 0 and lines_left > 0 and out_row < surface.size.height -| 1) {
-            const line_len = wrappedLineLen(ctx, rest, max_width);
-            if (line_len == 0) break;
-            w.writeText(surface, ctx, col, out_row, rest[0..line_len], style);
-            rest = trimLeadingSpaces(rest[line_len..]);
-            out_row += 1;
-            lines_left -= 1;
-        }
-        return out_row;
     }
 
     fn drawLoginField(
@@ -1097,36 +1075,25 @@ pub const Shell = struct {
         ctx: vxfw.DrawContext,
         col: u16,
         row: u16,
+        content_width: u16,
         label: []const u8,
         value: []const u8,
         focus: LoginFocus,
     ) void {
         const active = self.login_focus == focus;
         const field_col = col + 9;
-        const field_w = surface.size.width -| (field_col + 5);
-        const field_bg = if (active) theme.PANEL else theme.PANEL_ALT;
-        self.paintLoginField(surface, field_col -| 1, row, field_w +| 2, field_bg);
+        const field_w = content_width -| 10;
         w.writeText(surface, ctx, col, row, " ", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         w.writeText(surface, ctx, col + 2, row, label, theme.textOn(theme.PANEL_ALT, if (active) theme.TEXT_SOFT else theme.MUTED));
         const value_w = field_w -| 1;
-        w.drawTextInputValue(surface, ctx, field_col, row, value_w, value, field_bg, theme.TEXT, active);
-    }
-
-    fn paintLoginField(self: *Shell, surface: *vxfw.Surface, col: u16, row: u16, width: u16, bg: vaxis.Color) void {
-        _ = self;
-        var i: u16 = 0;
-        while (i < width and col + i < surface.size.width -| 1 and row < surface.size.height) : (i += 1) {
-            surface.writeCell(col + i, row, theme.blank(bg));
-        }
+        w.drawTextInputSlot(surface, ctx, field_col, row, value_w, value, theme.TEXT, active);
     }
 
     fn drawLoginSubmit(self: *Shell, surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u16) void {
         const active = self.login_focus == .submit;
-        const bg = if (active) theme.PANEL else theme.PANEL_ALT;
         const fg = if (active) theme.TEXT else theme.TEXT_SOFT;
-        if (active) self.paintLoginField(surface, col + 9, row, 10, bg);
         w.writeText(surface, ctx, col, row, " ", theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        w.writeText(surface, ctx, col + 11, row, "Sign in", .{ .fg = fg, .bg = bg, .bold = active });
+        w.writeText(surface, ctx, col + 9, row, "[ Sign in ]", .{ .fg = fg, .bg = theme.PANEL_ALT, .bold = active });
     }
 
     fn nextLoginFocus(focus: LoginFocus) LoginFocus {
@@ -2618,6 +2585,61 @@ pub const Shell = struct {
         }
     }
 
+    fn consumeUpdateProfileResult(self: *Shell) void {
+        const result = self.api_state.update_profile_pending.consume() orelse return;
+        self.profile_dialog_submitting = false;
+        switch (result) {
+            .ok => |resp| {
+                self.applyUpdatedProfile(resp);
+                self.closeProfileDialog();
+                api.fetch.refetchAllAsync(self.api_state);
+                self.notifyOp(.success, "Profile updated.");
+            },
+            .api_error => |e| {
+                self.profile_dialog_message = writeErrorStatus(self, "Profile update failed", e);
+            },
+            .network_error => {
+                self.profile_dialog_message = "Profile update failed: network error.";
+            },
+            .invalid_response => {
+                self.profile_dialog_message = "Profile update failed: malformed response.";
+            },
+        }
+    }
+
+    fn applyUpdatedProfile(self: *Shell, resp: auth_api.UpdateProfileResponse) void {
+        const alloc = self.api_state.backing_allocator;
+        const state_alloc = self.api_state.allocator();
+        const org_name_copy = state_alloc.dupe(u8, resp.org_name) catch return;
+        const username_copy = state_alloc.dupe(u8, resp.username) catch return;
+        var hub_url_copy: ?[]const u8 = null;
+        var access_copy: ?[]const u8 = null;
+        var refresh_copy: ?[]const u8 = null;
+
+        self.api_state.mutex.lock();
+        self.api_state.username = username_copy;
+        if (self.api_state.current_user) |*u| {
+            u.org_name = org_name_copy;
+            u.username = username_copy;
+            u.role = resp.role;
+            u.scopes = resp.scopes;
+        }
+        if (self.api_state.hub_url) |value| hub_url_copy = alloc.dupe(u8, value) catch null;
+        if (self.api_state.access_token) |value| access_copy = alloc.dupe(u8, value) catch null;
+        if (self.api_state.refresh_token) |value| refresh_copy = alloc.dupe(u8, value) catch null;
+        self.api_state.mutex.unlock();
+
+        defer if (hub_url_copy) |value| alloc.free(value);
+        defer if (access_copy) |value| alloc.free(value);
+        defer if (refresh_copy) |value| alloc.free(value);
+
+        if (hub_url_copy != null and access_copy != null and refresh_copy != null) {
+            _ = auth_mod.saveAuth(alloc, hub_url_copy.?, resp.username, access_copy.?, refresh_copy.?) catch |err| {
+                log.warn("profile_auth_persist_failed error={s}", .{@errorName(err)});
+            };
+        }
+    }
+
     fn consumeSubmitCommentResult(self: *Shell) void {
         const result = self.api_state.submit_comment_pending.consume() orelse return;
         switch (result) {
@@ -3120,32 +3142,124 @@ pub const Shell = struct {
         return text[i..];
     }
 
+    fn acceptConfirm(self: *Shell, ctx: *vxfw.EventContext) void {
+        log.info("confirm_accept action={s}", .{confirmActionName(self.confirm_action)});
+        switch (self.confirm_action) {
+            .remove_member => {
+                self.notifyOp(.info, "Member removed (not yet implemented)");
+            },
+            .delete_bundle => {
+                self.notifyOp(.info, "Bundle deleted (not yet implemented)");
+            },
+            .delete_workspace => {
+                self.notifyOp(.info, "Workspace deleted (not yet implemented)");
+            },
+            .revoke_token => {
+                api.specs.dispatchFromState(
+                    api.specs.EmptyParams,
+                    void,
+                    api.specs.sign_out,
+                    &self.api_state.sign_out_pending,
+                    self.api_state,
+                    .{},
+                );
+                self.notifyOp(.loading, "Revoking token...");
+            },
+            .discard_draft => self.commitDiscardDraft(),
+            .quit => {
+                ctx.consumeEvent();
+                ctx.quit = true;
+                return;
+            },
+            .none => {},
+        }
+        self.show_confirm = false;
+        self.confirm_action = .none;
+        self.confirm_choice = .accept;
+        ctx.consumeAndRedraw();
+    }
+
+    fn cancelConfirm(self: *Shell, ctx: *vxfw.EventContext) void {
+        log.info("confirm_cancel action={s}", .{confirmActionName(self.confirm_action)});
+        // Releasing here keeps the pending-discard path owned slice
+        // from leaking when the user declines the confirm overlay.
+        self.releasePendingDiscardTarget();
+        self.show_confirm = false;
+        self.confirm_action = .none;
+        self.confirm_choice = .accept;
+        self.notifyOp(.warning, "Cancelled.");
+        ctx.consumeAndRedraw();
+    }
+
     fn drawConfirmOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const size = ctx.max.size();
+        const message = self.confirmBody();
+        const message_w: u16 = @intCast(@min(ctx.stringWidth(message), std.math.maxInt(u16)));
+        const box_w = @min(@max(@as(u16, 44), message_w +| 8), size.width -| 4);
         const modal = Modal{
-            .title = "Confirm",
-            .box_width = 44,
-            .box_height = 7,
-            .border_color = theme.DANGER,
-            .footer = "y confirm    n / Esc cancel",
+            .title = self.confirmTitle(),
+            .box_width = box_w,
+            .box_height = 10,
         };
         const result = try modal.draw(ctx, self.widget());
         var surface = result.surface;
         const col = result.content_col;
         const row = result.content_row;
 
-        const action_label: []const u8 = switch (self.confirm_action) {
-            .remove_member => "Remove member:",
-            .delete_bundle => "Delete bundle:",
-            .delete_workspace => "Delete workspace:",
-            .revoke_token => "Revoke token?",
-            .discard_draft => "Discard draft:",
-            .quit => "Quit clumsies?",
-            .none => "Confirm:",
-        };
-        w.writeText(&surface, ctx, col, row, action_label, theme.textOn(theme.PANEL_ALT, theme.TEXT));
-        w.writeText(&surface, ctx, col, row + 1, self.confirm_message, theme.boldOn(theme.PANEL_ALT, theme.ACCENT));
+        if (message.len > 0) {
+            w.writeTextMax(&surface, ctx, col, row, result.content_width, message, theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT));
+        }
+
+        const button_row = row + 2;
+        self.drawConfirmButton(&surface, ctx, col, button_row, self.confirmAcceptLabel(), .accept);
+        self.drawConfirmButton(&surface, ctx, col + 14, button_row, "[ Cancel ]", .cancel);
 
         return surface;
+    }
+
+    fn confirmTitle(self: *const Shell) []const u8 {
+        return switch (self.confirm_action) {
+            .remove_member => "Remove Member",
+            .delete_bundle => "Delete Bundle",
+            .delete_workspace => "Delete Workspace",
+            .revoke_token => if (std.mem.eql(u8, self.confirm_message, "sign out")) "Sign Out" else "Revoke Token",
+            .discard_draft => "Discard Draft",
+            .quit => "Quit Clumsies",
+            .none => "Confirm",
+        };
+    }
+
+    fn confirmBody(self: *const Shell) []const u8 {
+        if (std.mem.eql(u8, self.confirm_message, "sign out")) return "Revoke the current session token.";
+        if (self.confirm_message.len > 0) return self.confirm_message;
+        return switch (self.confirm_action) {
+            .quit => "Leave the current TUI session.",
+            else => "",
+        };
+    }
+
+    fn confirmAcceptLabel(self: *const Shell) []const u8 {
+        if (std.mem.eql(u8, self.confirm_message, "sign out")) return "[ Sign out ]";
+        return "[ Confirm ]";
+    }
+
+    fn drawConfirmButton(
+        self: *const Shell,
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        col: u16,
+        row: u16,
+        label: []const u8,
+        choice: ConfirmChoice,
+    ) void {
+        const active = self.confirm_choice == choice;
+        const fg = if (choice == .accept and self.confirm_action != .none)
+            theme.DANGER
+        else if (active)
+            theme.TEXT
+        else
+            theme.TEXT_SOFT;
+        w.writeText(surface, ctx, col, row, label, .{ .fg = fg, .bg = theme.PANEL_ALT, .bold = active });
     }
 
     fn drawCommentEditorOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -3156,21 +3270,197 @@ pub const Shell = struct {
         else
             @as([]const u8, "New Comment");
 
-        const box_w = @min(size.width -| 4, 60);
+        const box_w = size.width;
         const box_h: u16 = 8;
         const modal = Modal{
             .title = title,
             .box_width = box_w,
             .box_height = box_h,
             .anchor = .bottom_right,
-            .footer = "Enter send  Esc cancel",
+            .backdrop = .none,
         };
         const result = try modal.draw(ctx, self.widget());
         var surface = result.surface;
 
         const input_text = self.review.comment_input_buf[0..self.review.comment_input_len];
-        w.drawTextInputValue(&surface, ctx, result.content_col, result.content_row, box_w -| 4, input_text, theme.PANEL_ALT, theme.TEXT, true);
+        w.drawTextInputSlot(&surface, ctx, result.content_col, result.content_row, result.content_width -| 2, input_text, theme.TEXT, true);
 
+        return surface;
+    }
+
+    pub fn openUsernameDialog(self: *Shell) void {
+        self.profile_dialog_kind = .username;
+        self.profile_dialog_focus = .first;
+        self.profile_dialog_submitting = false;
+        self.profile_first_len = 0;
+        self.profile_second_len = 0;
+        self.profile_dialog_message = "";
+        self.show_profile_dialog = true;
+
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.current_user) |u| {
+            const len = @min(u.username.len, self.profile_first_buf.len);
+            @memcpy(self.profile_first_buf[0..len], u.username[0..len]);
+            self.profile_first_len = len;
+        }
+    }
+
+    pub fn openPasswordDialog(self: *Shell) void {
+        self.profile_dialog_kind = .password;
+        self.profile_dialog_focus = .first;
+        self.profile_dialog_submitting = false;
+        self.profile_first_len = 0;
+        self.profile_second_len = 0;
+        self.profile_dialog_message = "";
+        self.show_profile_dialog = true;
+    }
+
+    fn closeProfileDialog(self: *Shell) void {
+        self.show_profile_dialog = false;
+        self.profile_dialog_submitting = false;
+        self.profile_first_len = 0;
+        self.profile_second_len = 0;
+        self.profile_dialog_message = "";
+        @memset(&self.profile_first_buf, 0);
+        @memset(&self.profile_second_buf, 0);
+    }
+
+    fn handleProfileDialogKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (self.profile_dialog_submitting) {
+            if (key.matches(vaxis.Key.escape, .{})) {
+                ctx.consumeEvent();
+            }
+            return;
+        }
+        if (key.matches(vaxis.Key.escape, .{})) {
+            self.closeProfileDialog();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.tab, .{})) {
+            self.profile_dialog_focus = self.nextProfileFocus();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (key.matches(vaxis.Key.enter, .{})) {
+            if (self.profile_dialog_focus == .submit) {
+                self.submitProfileDialog();
+            } else {
+                self.profile_dialog_focus = self.nextProfileFocus();
+            }
+            ctx.consumeAndRedraw();
+            return;
+        }
+
+        var input: ?w.TextInput = switch (self.profile_dialog_focus) {
+            .first => w.TextInput{ .buf = &self.profile_first_buf, .len = &self.profile_first_len },
+            .second => if (self.profileDialogHasSecondField()) w.TextInput{ .buf = &self.profile_second_buf, .len = &self.profile_second_len } else null,
+            .submit => null,
+        };
+        if (input) |*field| {
+            switch (field.handleKey(key)) {
+                .consumed => ctx.consumeAndRedraw(),
+                .submit => {
+                    self.profile_dialog_focus = self.nextProfileFocus();
+                    ctx.consumeAndRedraw();
+                },
+                .cancel => {
+                    self.closeProfileDialog();
+                    ctx.consumeAndRedraw();
+                },
+                .ignored => {},
+            }
+        }
+    }
+
+    fn profileDialogHasSecondField(self: *const Shell) bool {
+        return self.profile_dialog_kind == .password;
+    }
+
+    fn nextProfileFocus(self: *const Shell) ProfileDialogFocus {
+        return switch (self.profile_dialog_focus) {
+            .first => if (self.profileDialogHasSecondField()) .second else .submit,
+            .second => .submit,
+            .submit => .first,
+        };
+    }
+
+    fn submitProfileDialog(self: *Shell) void {
+        const first = self.profile_first_buf[0..self.profile_first_len];
+        const second = self.profile_second_buf[0..self.profile_second_len];
+        const req: auth_api.UpdateProfileRequest = switch (self.profile_dialog_kind) {
+            .username => blk: {
+                if (first.len == 0) {
+                    self.profile_dialog_message = "Username is required.";
+                    return;
+                }
+                break :blk .{ .username = first };
+            },
+            .password => blk: {
+                if (first.len == 0 or second.len == 0) {
+                    self.profile_dialog_message = "Current and new password are required.";
+                    return;
+                }
+                break :blk .{ .current_password = first, .new_password = second };
+            },
+        };
+        self.profile_dialog_submitting = true;
+        self.profile_dialog_message = "";
+        api.specs.dispatchFromState(
+            auth_api.UpdateProfileRequest,
+            auth_api.UpdateProfileResponse,
+            api.specs.update_profile,
+            &self.api_state.update_profile_pending,
+            self.api_state,
+            req,
+        );
+    }
+
+    fn drawProfileDialog(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const title = switch (self.profile_dialog_kind) {
+            .username => "Change Username",
+            .password => "Change Password",
+        };
+        const modal = Modal{
+            .title = title,
+            .box_width = 54,
+            .box_height = if (self.profile_dialog_kind == .password) 13 else 11,
+        };
+        const result = try modal.draw(ctx, self.widget());
+        var surface = result.surface;
+        const col = result.content_col;
+        var row = result.content_row;
+
+        switch (self.profile_dialog_kind) {
+            .username => {
+                w.writeText(&surface, ctx, col, row, "Username", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+                w.drawTextInputSlot(&surface, ctx, col + 12, row, result.content_width -| 14, self.profile_first_buf[0..self.profile_first_len], theme.TEXT, self.profile_dialog_focus == .first and !self.profile_dialog_submitting);
+                row += 2;
+            },
+            .password => {
+                const current_mask = try ctx.arena.alloc(u8, self.profile_first_len);
+                @memset(current_mask, '*');
+                const next_mask = try ctx.arena.alloc(u8, self.profile_second_len);
+                @memset(next_mask, '*');
+                w.writeText(&surface, ctx, col, row, "Current", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+                w.drawTextInputSlot(&surface, ctx, col + 12, row, result.content_width -| 14, current_mask, theme.TEXT, self.profile_dialog_focus == .first and !self.profile_dialog_submitting);
+                row += 2;
+                w.writeText(&surface, ctx, col, row, "New", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+                w.drawTextInputSlot(&surface, ctx, col + 12, row, result.content_width -| 14, next_mask, theme.TEXT, self.profile_dialog_focus == .second and !self.profile_dialog_submitting);
+                row += 2;
+            },
+        }
+
+        const button_label = if (self.profile_dialog_submitting) "[ Saving... ]" else "[ Save ]";
+        const button_style = if (self.profile_dialog_focus == .submit and !self.profile_dialog_submitting)
+            theme.boldOn(theme.PANEL_ALT, theme.TEXT)
+        else
+            theme.textOn(theme.PANEL_ALT, theme.TEXT_SOFT);
+        w.writeText(&surface, ctx, col, row, button_label, button_style);
+        if (self.profile_dialog_message.len > 0) {
+            _ = w.writeWrappedTextMax(&surface, ctx, col, row + 2, result.content_width, 2, self.profile_dialog_message, theme.textOn(theme.PANEL_ALT, theme.DANGER));
+        }
         return surface;
     }
 
@@ -3507,9 +3797,9 @@ pub const Shell = struct {
         };
         defer alloc.free(ws_dir);
 
+        const base_content = self.seedContentForTarget(target) orelse "";
         if (self.draftStatusFor(target.category, target.path) == null) {
-            const seed = self.seedContentForTarget(target) orelse "";
-            const seed_hash = util_hash.contentHash(seed);
+            const seed_hash = util_hash.contentHash(base_content);
             drafts_mod.createDraft(alloc, ws_dir, .{
                 .category = target.category,
                 .operation = .modify,
@@ -3518,7 +3808,7 @@ pub const Shell = struct {
                 .rule_id = target.rule_id,
                 .context_id = target.context_id,
                 .base_hash = seed_hash[0..],
-            }, seed) catch |err| switch (err) {
+            }, base_content) catch |err| switch (err) {
                 // Index and in-memory map raced (e.g., the user ran a
                 // previous session that left entries, then restarted
                 // before current_user had a chance to re-seed the
@@ -3550,7 +3840,24 @@ pub const Shell = struct {
             return;
         };
         switch (result) {
-            .completed => self.notifyOp(.success, "Draft saved."),
+            .completed => {
+                const unchanged = drafts_mod.discardUnchangedModifyDraft(
+                    alloc,
+                    ws_dir,
+                    target.category,
+                    draft_path,
+                    base_content,
+                ) catch |err| {
+                    self.notifyOp(.failure, @errorName(err));
+                    self.refreshDraftsCache();
+                    return;
+                };
+                if (unchanged) {
+                    self.notifyOp(.success, "No changes.");
+                } else {
+                    self.notifyOp(.success, "Draft saved.");
+                }
+            },
             .failed => self.notifyOp(.failure, "Editor exited non-zero."),
             .editor_not_found => self.notifyOp(.failure, "No $EDITOR resolved."),
             .spawn_failed => self.notifyOp(.failure, "Editor spawn failed."),
@@ -4143,7 +4450,6 @@ pub const Shell = struct {
     fn drawPrComposerOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         const box_w = @min(size.width -| 4, 60);
-        const box_h: u16 = 9;
         const target = self.drafts.pr_composer_target orelse DraftTarget{
             .ws_id = "",
             .category = .rule,
@@ -4154,12 +4460,13 @@ pub const Shell = struct {
             .context => "New Context PR",
             .meta_prompt => "New Meta-Prompt PR",
         };
+        const box_h: u16 = if (self.drafts.pr_composer_submitting) 11 else 10;
         const modal = Modal{
             .title = modal_title,
             .box_width = box_w,
             .box_height = box_h,
             .anchor = .center,
-            .footer = if (self.drafts.pr_composer_submitting) "Submitting... Esc cancel wait" else "Tab switch  Enter submit  Esc cancel",
+            .footer = if (self.drafts.pr_composer_submitting) "Submitting..." else "",
         };
         const result = try modal.draw(ctx, self.widget());
         var surface = result.surface;
@@ -4172,11 +4479,11 @@ pub const Shell = struct {
         const title_label: []const u8 = if (self.drafts.pr_composer_focus == .title) "title:" else "title:";
         w.writeText(&surface, ctx, col, row, title_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
         const title_text = self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len];
-        w.drawTextInputValue(&surface, ctx, col + 6, row, box_w -| 12, title_text, theme.PANEL_ALT, title_style.fg, self.drafts.pr_composer_focus == .title);
+        w.drawTextInputSlot(&surface, ctx, col + 6, row, result.content_width -| 8, title_text, title_style.fg, self.drafts.pr_composer_focus == .title);
 
         w.writeText(&surface, ctx, col, row + 2, "body:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         const body_text = self.drafts.pr_composer_body_buf[0..self.drafts.pr_composer_body_len];
-        w.drawTextInputValue(&surface, ctx, col + 6, row + 2, box_w -| 12, body_text, theme.PANEL_ALT, body_style.fg, self.drafts.pr_composer_focus == .body);
+        w.drawTextInputSlot(&surface, ctx, col + 6, row + 2, result.content_width -| 8, body_text, body_style.fg, self.drafts.pr_composer_focus == .body);
 
         return surface;
     }
@@ -4286,7 +4593,7 @@ pub const Shell = struct {
     fn drawNewDraftFormOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();
         const box_w = @min(size.width -| 4, 54);
-        const box_h: u16 = 7;
+        const box_h: u16 = 10;
         const title = switch (self.drafts.new_draft_category) {
             .rule => "New Rule Draft",
             .context => "New Context Draft",
@@ -4302,7 +4609,6 @@ pub const Shell = struct {
             .box_width = box_w,
             .box_height = box_h,
             .anchor = .center,
-            .footer = "Enter create & edit  Esc cancel",
         };
         const result = try modal.draw(ctx, self.widget());
         var surface = result.surface;
@@ -4311,8 +4617,8 @@ pub const Shell = struct {
 
         w.writeText(&surface, ctx, col, row, "path:", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         const path_text = self.drafts.new_draft_path_buf[0..self.drafts.new_draft_path_len];
-        w.drawTextInputValue(&surface, ctx, col, row + 1, box_w -| 4, path_text, theme.PANEL_ALT, theme.TEXT, true);
-        w.writeText(&surface, ctx, col, row + 3, hint, theme.fg(theme.MUTED));
+        w.drawTextInputSlot(&surface, ctx, col, row + 1, result.content_width -| 2, path_text, theme.TEXT, true);
+        w.writeText(&surface, ctx, col, row + 3, hint, theme.textOn(theme.PANEL_ALT, theme.MUTED));
 
         return surface;
     }
@@ -4408,6 +4714,7 @@ pub const Shell = struct {
 
     fn activeInputLayer(self: *const Shell) []const u8 {
         if (self.show_confirm) return "confirm";
+        if (self.show_profile_dialog) return "profile_dialog";
         if (self.show_help) return "help";
         if (self.shouldShowLoginPanel()) return "login";
         if (self.workspace.show_drawer) return "workspace_drawer";

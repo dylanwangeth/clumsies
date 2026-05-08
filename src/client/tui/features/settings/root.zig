@@ -104,6 +104,7 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
             .{ .key = "j/k", .label = "move" },
             .{ .key = "Enter", .label = "open/switch" },
             .{ .key = "Tab", .label = "switch focus" },
+            .{ .key = "u", .label = "change username" },
             .{ .key = "c", .label = "change password" },
             .{ .key = "x", .label = "sign out" },
             .{ .key = "Esc", .label = "back" },
@@ -143,7 +144,12 @@ fn handlePageAction(
                 return true;
             }
             if (key.matches('c', .{})) {
-                self.notifyOp(.info, "Password change (requires input dialog)");
+                self.openPasswordDialog();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('u', .{})) {
+                self.openUsernameDialog();
                 ctx.consumeAndRedraw();
                 return true;
             }
@@ -295,7 +301,12 @@ fn handleAccountAction(
         return;
     }
     if (key.matches('c', .{})) {
-        self.notifyOp(.info, "Password change (requires input dialog)");
+        self.openPasswordDialog();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('u', .{})) {
+        self.openUsernameDialog();
         ctx.consumeAndRedraw();
     }
 }
@@ -384,6 +395,7 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
 
     row = w.writeSectionHeader(&surface, ctx, 2, row, "Profile");
     row = w.writeKv(&surface, ctx, 4, row, "Username", user.username, 14);
+    w.writeText(&surface, ctx, 30, row - 1, "[ Change ]", theme.fg(theme.ACCENT_SOFT));
     row = w.writeKv(&surface, ctx, 4, row, "User ID", user.user_id, 14);
     const role_color = if (std.mem.eql(u8, user.role, "maintainer")) theme.ACCENT else theme.TEXT_SOFT;
     w.writeText(&surface, ctx, 4, row, "Role", theme.fg(theme.MUTED));

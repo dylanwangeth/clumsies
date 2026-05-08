@@ -88,6 +88,7 @@ fn applyEnvLine(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, line
     const key = std.mem.trim(u8, trimmed[0..eq], " \t");
     const raw_value = std.mem.trim(u8, trimmed[eq + 1 ..], " \t");
     const value = stripQuotes(raw_value);
+    if (env_map.get(key) != null) return;
 
     const key_owned = allocator.dupe(u8, key) catch return;
     const val_owned = allocator.dupe(u8, value) catch {
