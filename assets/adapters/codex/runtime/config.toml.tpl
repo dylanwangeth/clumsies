@@ -1,5 +1,5 @@
 [features]
-codex_hooks = true
+hooks = true
 
 [mcp_servers.clumsies]
 command = "clumsies"

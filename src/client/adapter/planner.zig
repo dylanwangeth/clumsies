@@ -74,7 +74,8 @@ pub fn buildAdaptPlan(
         defer if (existing) |content| allocator.free(content);
 
         if (std.mem.eql(u8, asset.resource_kind, "toml_fragment")) {
-            const toml_result = try toml_ops.prepareTomlFragment(allocator, existing, asset.content);
+            const previous_managed = previousManagedContent(loaded_opt, asset.resource_id);
+            const toml_result = try toml_ops.prepareTomlFragment(allocator, existing, asset.content, previous_managed);
             switch (toml_result) {
                 .conflict => |message| {
                     return .{ .conflict = .{
@@ -266,6 +267,15 @@ pub fn buildAdaptPlan(
         .steps = owned_steps,
         .notes = notes,
     } };
+}
+
+fn previousManagedContent(loaded_opt: ?store.LoadedManifest, resource_id: []const u8) ?[]const u8 {
+    const loaded = loaded_opt orelse return null;
+    for (loaded.parsed.value.managed_resources) |resource| {
+        if (!std.mem.eql(u8, resource.resource_id, resource_id)) continue;
+        return resource.managed_content;
+    }
+    return null;
 }
 
 fn assetAbsolutePath(

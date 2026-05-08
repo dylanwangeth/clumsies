@@ -32,6 +32,7 @@ pub fn prepareTomlFragment(
     allocator: std.mem.Allocator,
     existing_content_opt: ?[]const u8,
     managed_fragment: []const u8,
+    previous_managed_fragment_opt: ?[]const u8,
 ) !TomlPlanResult {
     var managed_parsed = parseTomlTable(allocator, managed_fragment) catch return .{ .conflict = conflict_invalid_fragment };
     defer managed_parsed.deinit();
@@ -54,6 +55,14 @@ pub fn prepareTomlFragment(
 
     var current_root = try cloneTable(arena, current_parsed.value);
     var did_change = false;
+
+    if (previous_managed_fragment_opt) |previous_managed_fragment| {
+        if (!std.mem.eql(u8, previous_managed_fragment, managed_fragment)) {
+            var previous_parsed = parseTomlTable(allocator, previous_managed_fragment) catch return .{ .conflict = conflict_invalid_fragment };
+            defer previous_parsed.deinit();
+            removeTableFragment(&current_root, &previous_parsed.value, &did_change) catch return .{ .conflict = conflict_merge };
+        }
+    }
 
     mergeTableFragment(arena, &current_root, &managed_parsed.value, &did_change) catch return .{ .conflict = conflict_merge };
 
@@ -504,7 +513,7 @@ test "prepareTomlFragment merges managed keys into existing config" {
     ;
     const managed =
         \\[features]
-        \\codex_hooks = true
+        \\hooks = true
         \\
         \\[mcp_servers.clumsies]
         \\command = "clumsies"
@@ -512,7 +521,7 @@ test "prepareTomlFragment merges managed keys into existing config" {
         \\
     ;
 
-    const result = try prepareTomlFragment(allocator, existing, managed);
+    const result = try prepareTomlFragment(allocator, existing, managed, null);
     switch (result) {
         .conflict => |message| {
             std.debug.print("unexpected conflict: {s}\n", .{message});
@@ -526,7 +535,7 @@ test "prepareTomlFragment merges managed keys into existing config" {
             try std.testing.expectEqualStrings("update", prepared.action);
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "model = \"gpt-5\"") != null);
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "[features]") != null);
-            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "codex_hooks = true") != null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "hooks = true") != null);
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "[mcp_servers.clumsies]") != null);
         },
     }
@@ -542,7 +551,7 @@ test "prepareTomlFragment conflicts on incompatible nested values" {
     ;
     const managed =
         \\[features]
-        \\codex_hooks = true
+        \\hooks = true
         \\
         \\[mcp_servers.clumsies]
         \\command = "clumsies"
@@ -550,10 +559,49 @@ test "prepareTomlFragment conflicts on incompatible nested values" {
         \\
     ;
 
-    const result = try prepareTomlFragment(allocator, existing, managed);
+    const result = try prepareTomlFragment(allocator, existing, managed, null);
     switch (result) {
         .conflict => |message| try std.testing.expectEqualStrings(conflict_merge, message),
         else => return error.ExpectedConflict,
+    }
+}
+
+test "prepareTomlFragment replaces previous managed keys" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\model = "gpt-5"
+        \\
+        \\[features]
+        \\codex_hooks = true
+        \\
+    ;
+    const previous =
+        \\[features]
+        \\codex_hooks = true
+        \\
+    ;
+    const managed =
+        \\[features]
+        \\hooks = true
+        \\
+    ;
+
+    const result = try prepareTomlFragment(allocator, existing, managed, previous);
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "model = \"gpt-5\"") != null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "hooks = true") != null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "codex_hooks") == null);
+        },
     }
 }
 
@@ -563,7 +611,7 @@ test "removeTomlFragment removes only managed keys and preserves foreign config"
         \\model = "gpt-5"
         \\
         \\[features]
-        \\codex_hooks = true
+        \\hooks = true
         \\
         \\[mcp_servers.clumsies]
         \\command = "clumsies"
@@ -572,7 +620,7 @@ test "removeTomlFragment removes only managed keys and preserves foreign config"
     ;
     const managed =
         \\[features]
-        \\codex_hooks = true
+        \\hooks = true
         \\
         \\[mcp_servers.clumsies]
         \\command = "clumsies"
@@ -585,7 +633,7 @@ test "removeTomlFragment removes only managed keys and preserves foreign config"
         .rewrite => |content| {
             defer allocator.free(content);
             try std.testing.expect(std.mem.indexOf(u8, content, "model = \"gpt-5\"") != null);
-            try std.testing.expect(std.mem.indexOf(u8, content, "codex_hooks") == null);
+            try std.testing.expect(std.mem.indexOf(u8, content, "hooks") == null);
             try std.testing.expect(std.mem.indexOf(u8, content, "mcp_servers.clumsies") == null);
         },
         else => return error.UnexpectedRemoveResult,
@@ -596,12 +644,12 @@ test "removeTomlFragment conflicts when managed content drifted" {
     const allocator = std.testing.allocator;
     const current =
         \\[features]
-        \\codex_hooks = false
+        \\hooks = false
         \\
     ;
     const managed =
         \\[features]
-        \\codex_hooks = true
+        \\hooks = true
         \\
     ;
 

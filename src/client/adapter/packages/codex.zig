@@ -81,38 +81,7 @@ pub fn renderRuntimeAssets(
         .file_mode = 0o755,
         .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_stop_refer_check_sh),
     });
-    if (scope == .user) {
-        const skills_root_absolute = try codexSkillsRootAbsolute(allocator, target_root);
-        defer allocator.free(skills_root_absolute);
-
-        try appendCodexSkill(
-            allocator,
-            &assets,
-            "codex.skills.discover",
-            "discover",
-            "Codex discover skill",
-            skills_root_absolute,
-            build_options.adapter_codex_runtime_skill_discover,
-        );
-        try appendCodexSkill(
-            allocator,
-            &assets,
-            "codex.skills.ntmd",
-            "ntmd",
-            "Codex ntmd skill",
-            skills_root_absolute,
-            build_options.adapter_codex_runtime_skill_ntmd,
-        );
-        try appendCodexSkill(
-            allocator,
-            &assets,
-            "codex.skills.setup",
-            "setup",
-            "Codex setup skill",
-            skills_root_absolute,
-            build_options.adapter_codex_runtime_skill_setup,
-        );
-    }
+    try appendCodexCoreSkills(allocator, &assets, target_root);
 
     if (scope == .workspace) {
         const workspace_root = workspaceRootFromAdapterRoot(target_root);
@@ -251,6 +220,43 @@ fn appendCodexSkill(
     });
 }
 
+fn appendCodexCoreSkills(
+    allocator: std.mem.Allocator,
+    assets: *std.ArrayList(model.RenderedAsset),
+    target_root: []const u8,
+) !void {
+    const skills_root_absolute = try codexSkillsRootAbsolute(allocator, target_root);
+    defer allocator.free(skills_root_absolute);
+
+    try appendCodexSkill(
+        allocator,
+        assets,
+        "codex.skills.discover",
+        "discover",
+        "Codex discover skill",
+        skills_root_absolute,
+        build_options.adapter_codex_runtime_skill_discover,
+    );
+    try appendCodexSkill(
+        allocator,
+        assets,
+        "codex.skills.ntmd",
+        "ntmd",
+        "Codex ntmd skill",
+        skills_root_absolute,
+        build_options.adapter_codex_runtime_skill_ntmd,
+    );
+    try appendCodexSkill(
+        allocator,
+        assets,
+        "codex.skills.setup",
+        "setup",
+        "Codex setup skill",
+        skills_root_absolute,
+        build_options.adapter_codex_runtime_skill_setup,
+    );
+}
+
 fn userCodexRoot(allocator: std.mem.Allocator) ![]const u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |fallback_err| switch (fallback_err) {
@@ -315,8 +321,8 @@ fn renderNotes(
     try notes.append(allocator, try allocator.dupe(u8, "Restart Codex to reload hooks and discover newly installed skills."));
 
     try notes.append(allocator, switch (scope) {
-        .workspace => try allocator.dupe(u8, "Codex workflow skills are installed under this workspace's .agents/skills directory."),
-        .user => try allocator.dupe(u8, "Codex user skills are installed under ~/.agents/skills."),
+        .workspace => try allocator.dupe(u8, "Codex skills are installed under this workspace's .agents/skills directory."),
+        .user => try allocator.dupe(u8, "Codex skills are installed under ~/.agents/skills."),
     });
 
     _ = target_root;
@@ -413,14 +419,18 @@ test "renderRuntimeAssets installs codex user skills under home agents skills" {
     try std.testing.expect(found);
 }
 
-test "renderRuntimeAssets does not install codex core skills in workspace scope" {
+test "renderRuntimeAssets installs codex workspace skills under workspace agents skills" {
     const allocator = std.testing.allocator;
     const assets = try renderRuntimeAssets(allocator, .workspace, "/Users/test/project/.codex");
     defer deinitRenderedAssets(allocator, assets);
 
+    var found = false;
     for (assets) |asset| {
-        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "codex.skills.discover"));
-        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "codex.skills.ntmd"));
-        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "codex.skills.setup"));
+        if (!std.mem.eql(u8, asset.resource_id, "codex.skills.discover")) continue;
+        found = true;
+        try std.testing.expectEqualStrings(".agents/skills/discover/SKILL.md", asset.relative_path);
+        try std.testing.expect(asset.absolute_path != null);
+        try std.testing.expectEqualStrings("/Users/test/project/.agents/skills/discover/SKILL.md", asset.absolute_path.?);
     }
+    try std.testing.expect(found);
 }
