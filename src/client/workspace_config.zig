@@ -162,12 +162,19 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
     };
 
     // Read existing config to preserve other workspaces and append to this
-    // workspace's path list without duplicating the same directory.
+    // workspace's path list without duplicating the same directory. A local
+    // path can only resolve to one workspace, so binding it to this workspace
+    // removes it from any previous owner.
     var existing_workspaces: std.ArrayList(TomlWorkspaceOut) = .empty;
     defer existing_workspaces.deinit(allocator);
     var existing_server_url: []const u8 = server_url;
     var merged_paths: std.ArrayList([]const u8) = .empty;
     defer merged_paths.deinit(allocator);
+    var owned_path_slices: std.ArrayList([]const []const u8) = .empty;
+    defer {
+        for (owned_path_slices.items) |paths| allocator.free(paths);
+        owned_path_slices.deinit(allocator);
+    }
 
     var parsed_config: ?ParsedConfig = null;
     defer if (parsed_config) |*pc| pc.deinit();
@@ -184,10 +191,19 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
                 }
                 continue;
             }
+            var filtered_paths: std.ArrayList([]const u8) = .empty;
+            defer filtered_paths.deinit(allocator);
+            for (ws.paths) |existing_path| {
+                if (std.mem.eql(u8, existing_path, path)) continue;
+                try filtered_paths.append(allocator, existing_path);
+            }
+            if (filtered_paths.items.len == 0) continue;
+            const filtered_owned = try filtered_paths.toOwnedSlice(allocator);
+            try owned_path_slices.append(allocator, filtered_owned);
             try existing_workspaces.append(allocator, .{
                 .name = ws.name,
                 .ws_id = ws.ws_id,
-                .paths = ws.paths,
+                .paths = filtered_owned,
             });
         }
     } else |_| {}
@@ -210,6 +226,52 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
     }
 
     try writeWorkspaceBlock(allocator, &buf, name, ws_id, merged_paths.items);
+
+    const file = try std.fs.createFileAbsolute(config_path, .{ .truncate = true });
+    defer file.close();
+    _ = try file.write(buf.items);
+}
+
+/// Remove a workspace binding from ~/.clumsies/config.toml.
+///
+/// Hub owns the workspace record; this only cleans local path bindings so stale
+/// deleted workspaces cannot keep resolving MCP/CLI calls from the current dir.
+pub fn removeWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) !void {
+    const base = try auth.getBasePath(allocator);
+    defer allocator.free(base);
+    const config_path = try std.fs.path.join(allocator, &.{ base, "config.toml" });
+    defer allocator.free(config_path);
+
+    var existing_workspaces: std.ArrayList(TomlWorkspaceOut) = .empty;
+    defer existing_workspaces.deinit(allocator);
+    var existing_server_url: []const u8 = "";
+
+    var parsed_config: ?ParsedConfig = null;
+    defer if (parsed_config) |*pc| pc.deinit();
+
+    if (loadConfig(allocator)) |parsed| {
+        parsed_config = parsed;
+        existing_server_url = parsed_config.?.value.server.url;
+        for (parsed_config.?.value.workspaces) |ws| {
+            if (std.mem.eql(u8, ws.ws_id, ws_id)) continue;
+            try existing_workspaces.append(allocator, .{
+                .name = ws.name,
+                .ws_id = ws.ws_id,
+                .paths = ws.paths,
+            });
+        }
+    } else |_| return;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+
+    try appendLine(allocator, &buf, "[server]");
+    try appendKv(allocator, &buf, "url", existing_server_url);
+    try appendLine(allocator, &buf, "");
+
+    for (existing_workspaces.items) |ws| {
+        try writeWorkspaceBlock(allocator, &buf, ws.name, ws.ws_id, ws.paths);
+    }
 
     const file = try std.fs.createFileAbsolute(config_path, .{ .truncate = true });
     defer file.close();
@@ -266,7 +328,7 @@ fn findBestWorkspaceMatch(workspaces: []const WorkspaceEntry, cwd: []const u8) ?
     for (workspaces) |*ws| {
         for (ws.paths) |path| {
             if (!pathContains(cwd, path)) continue;
-            if (path.len < best_len) continue;
+            if (path.len <= best_len) continue;
 
             best_match = .{
                 .ws = ws,
@@ -369,4 +431,22 @@ test "findBestWorkspaceMatch prefers the longest matching path" {
     const match = findBestWorkspaceMatch(&workspaces, "/home/me/project/packages/app/src") orelse unreachable;
     try testing.expectEqualStrings("ws-nested", match.ws.ws_id);
     try testing.expectEqualStrings("/home/me/project/packages/app", match.path);
+}
+
+test "findBestWorkspaceMatch keeps first workspace for duplicate paths" {
+    const workspaces = [_]WorkspaceEntry{
+        .{
+            .name = "first",
+            .ws_id = "ws-first",
+            .paths = &.{"/home/me/project"},
+        },
+        .{
+            .name = "second",
+            .ws_id = "ws-second",
+            .paths = &.{"/home/me/project"},
+        },
+    };
+
+    const match = findBestWorkspaceMatch(&workspaces, "/home/me/project") orelse unreachable;
+    try testing.expectEqualStrings("ws-first", match.ws.ws_id);
 }

@@ -163,6 +163,8 @@ pub const Shell = struct {
     confirm_member_user_id_len: usize = 0,
     confirm_workspace_id_buf: [80]u8 = .{0} ** 80,
     confirm_workspace_id_len: usize = 0,
+    pending_delete_workspace_id_buf: [80]u8 = .{0} ** 80,
+    pending_delete_workspace_id_len: usize = 0,
     last_safe_layout_size: vxfw.Size = .{},
     system_notices: w.SystemNoticeQueue = .{},
     view_arena: std.heap.ArenaAllocator,
@@ -1560,6 +1562,8 @@ pub const Shell = struct {
             self.notifyOp(.warning, "No workspace selected.");
             return;
         };
+        self.confirm_workspace_id_len = @min(workspace.ws_id.len, self.confirm_workspace_id_buf.len);
+        @memcpy(self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len], workspace.ws_id[0..self.confirm_workspace_id_len]);
         self.confirm_message = std.fmt.allocPrint(self.viewAllocator(), "Delete {s}.", .{workspace.name}) catch "Delete selected workspace.";
         self.confirm_action = .delete_workspace;
         self.confirm_choice = .accept;
@@ -3044,8 +3048,14 @@ pub const Shell = struct {
 
     fn consumeDeleteWorkspaceResult(self: *Shell) void {
         const result = self.api_state.delete_ws_pending.consume() orelse return;
+        defer self.pending_delete_workspace_id_len = 0;
         switch (result) {
             .ok => {
+                const deleted_ws_id = self.pending_delete_workspace_id_buf[0..self.pending_delete_workspace_id_len];
+                if (deleted_ws_id.len > 0) {
+                    workspace_config.removeWorkspace(self.api_state.backing_allocator, deleted_ws_id) catch {};
+                    self.api_state.workspace_paths_cache.invalidate();
+                }
                 self.workspace.sel = 0;
                 self.settings.content_sel = 0;
                 api.fetch.refetchAllAsync(self.api_state);
@@ -3062,6 +3072,8 @@ pub const Shell = struct {
             self.notifyOp(.warning, "No workspace selected.");
             return;
         };
+        self.pending_delete_workspace_id_len = @min(workspace.ws_id.len, self.pending_delete_workspace_id_buf.len);
+        @memcpy(self.pending_delete_workspace_id_buf[0..self.pending_delete_workspace_id_len], workspace.ws_id[0..self.pending_delete_workspace_id_len]);
         api.specs.dispatchFromState(
             api.specs.WorkspaceIdParams,
             void,
