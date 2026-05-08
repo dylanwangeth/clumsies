@@ -183,7 +183,7 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
 }
 
 fn readWorkspaceEvents(allocator: std.mem.Allocator, ws_dir: []const u8, ws_id: []const u8, events: *std.ArrayList(AttestationEvent)) void {
-    const log_dir = std.fs.path.join(allocator, &.{ ws_dir, "logs", "attestation" }) catch return;
+    const log_dir = std.fs.path.join(allocator, &.{ ws_dir, "attestation" }) catch return;
     defer allocator.free(log_dir);
 
     var dir = std.fs.openDirAbsolute(log_dir, .{ .iterate = true }) catch null;
