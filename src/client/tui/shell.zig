@@ -121,6 +121,7 @@ const top_tabs = [_]TopModule{ .dashboard, .workspace, .artifact, .review, .anal
 const WORKSPACE_METADATA_REFRESH_TICKS = 600;
 const GLOBAL_METADATA_REFRESH_TICKS = 3000;
 const HEALTH_CHECK_TICKS = 300;
+const ATTESTATION_UPLOAD_TICKS = 600;
 const PathTreeState = workspace_panel.PathTreeState;
 
 const DraftTarget = features.drafts.DraftTarget;
@@ -1376,6 +1377,11 @@ pub const Shell = struct {
         }
         if (self.tick_count > 0 and self.tick_count % HEALTH_CHECK_TICKS == 0) {
             api.specs.dispatchHealthCheck(self.api_state);
+        }
+        if (self.tick_count > 0 and self.tick_count % ATTESTATION_UPLOAD_TICKS == 0) {
+            tasks.attestation_upload.start(self.api_state) catch |err| {
+                log.warn("attestation_upload_start_failed error={s}", .{@errorName(err)});
+            };
         }
         if (self.selected_module == .review and self.tick_count > 0 and self.tick_count % WORKSPACE_METADATA_REFRESH_TICKS == 0) {
             api.state.invalidateRemoteCaches(self.api_state, .pr_lists);
