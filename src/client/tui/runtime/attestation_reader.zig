@@ -532,7 +532,6 @@ fn computeStats(
         total_constraints += total_count_u32;
         active_constraints += @min(active_count_u32, total_count_u32);
 
-        const rate: u16 = @intCast(@min(@divTrunc(kv.value_ptr.refer_count, 30), std.math.maxInt(u16)));
         const sig: u8 = if (total_count_u32 > 0)
             @intCast(@min(@divTrunc(@min(active_count_u32, total_count_u32) * 100, total_count_u32), 100))
         else
@@ -564,10 +563,6 @@ fn computeStats(
             .idle_constraint_count = idle_count,
             .signal_ratio = sig,
             .refer_count = kv.value_ptr.refer_count,
-            .workspace_count = 0,
-            .rate_per_day = rate,
-            .delta_pct = 0,
-            .last_referred_days_ago = null,
             .trend = .{0} ** 30,
             .constraints = constraints_list.items,
         }) catch continue;

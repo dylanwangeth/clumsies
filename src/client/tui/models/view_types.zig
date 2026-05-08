@@ -108,10 +108,6 @@ pub const AnalysisRule = struct {
     idle_constraint_count: u8,
     signal_ratio: u8,
     refer_count: u32,
-    workspace_count: u8,
-    rate_per_day: u16,
-    delta_pct: i8,
-    last_referred_days_ago: ?u16,
     trend: [30]u16,
     constraints: []const ConstraintStat,
 };
