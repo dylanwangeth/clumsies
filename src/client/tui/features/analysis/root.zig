@@ -63,7 +63,9 @@ pub fn drawRules(
     w.drawBorder(&surface, border_color, theme.PANEL);
 
     w.writeText(&surface, ctx, 3, 0, "Rules Rank", theme.boldOn(theme.PANEL, theme.TEXT));
+    const col_refs: u16 = width -| 18;
     const col_move: u16 = width -| 9;
+    w.writeText(&surface, ctx, col_refs, 0, "refs", theme.fg(theme.MUTED));
     w.writeText(&surface, ctx, col_move, 0, "move", theme.fg(theme.MUTED));
 
     if (!available) {
@@ -71,71 +73,74 @@ pub fn drawRules(
         return surface;
     }
 
-    if (insights.rules.len == 0) {
+    var ranked_rules: std.ArrayList(data.AnalysisRule) = .empty;
+    for (insights.rules) |rule| {
+        if (rule.refer_count == 0) continue;
+        try ranked_rules.append(ctx.arena, rule);
+    }
+    const rules = ranked_rules.items;
+
+    if (rules.len == 0) {
         w.writeText(&surface, ctx, 2, 1, "No rule analysis data returned by the hub.", theme.fg(theme.MUTED));
         return surface;
     }
+    if (self.analysis.rule_cursor >= rules.len) self.analysis.rule_cursor = rules.len - 1;
+    if (self.analysis.expanded_rule) |expanded_idx| {
+        if (expanded_idx >= rules.len) self.analysis.expanded_rule = null;
+    }
 
     var max_refer: u32 = 1;
-    for (insights.rules) |rule| {
+    for (rules) |rule| {
         if (rule.refer_count > max_refer) max_refer = rule.refer_count;
     }
 
     const name_col: u16 = 2;
     const min_name_w: u16 = 18;
-    const max_name_w: u16 = @max(min_name_w, @min(@as(u16, 40), col_move -| name_col -| 12));
+    const max_name_w: u16 = @max(min_name_w, @min(@as(u16, 40), col_refs -| name_col -| 12));
     var measured_name_w: u16 = min_name_w;
-    for (insights.rules) |rule| {
+    for (rules) |rule| {
         const candidate = @as(u16, @intCast(ctx.stringWidth(firstLineTrimmed(rule.name, max_name_w))));
         if (candidate > measured_name_w) measured_name_w = candidate;
     }
     const name_w: u16 = @min(max_name_w, measured_name_w);
     const bar_start: u16 = name_col + name_w + 1;
-    const bar_end: u16 = col_move -| 2;
+    const bar_end: u16 = col_refs -| 2;
     const bar_max_w: u16 = bar_end -| bar_start;
 
     const focused = self.analysis.focus == .rules;
     var row: u16 = 1;
-    for (insights.rules, 0..) |rule, rule_idx| {
+    for (rules, 0..) |rule, rule_idx| {
         if (row >= height -| 1) break;
-        const is_idle = rule.refer_count == 0;
         const is_sel = rule_idx == self.analysis.rule_cursor and focused;
 
         if (is_sel) {
             w.writeCursorMarker(&surface, 1, row);
         }
 
-        const name_style: vaxis.Style = if (is_idle)
-            (if (is_sel) theme.boldOn(theme.PANEL, theme.DANGER) else .{ .fg = theme.DANGER, .bg = theme.PANEL })
-        else if (is_sel)
+        const name_style: vaxis.Style = if (is_sel)
             theme.boldOn(theme.PANEL, theme.TEXT)
         else
             theme.fg(theme.TEXT_SOFT);
         w.writeText(&surface, ctx, name_col, row, firstLineTrimmed(rule.name, name_w), name_style);
 
-        if (!is_idle) {
-            const bar_w_raw: u16 = @intCast(@as(u32, bar_max_w) * rule.refer_count / max_refer);
-            const bar_w: u16 = if (rule.refer_count > 0 and bar_w_raw == 0 and bar_max_w > 0) 1 else bar_w_raw;
-            for (0..bar_w) |offset| {
-                const bc: u16 = bar_start + @as(u16, @intCast(offset));
-                if (bc >= bar_end) break;
-                const t: f32 = if (bar_w > 1)
-                    @as(f32, @floatFromInt(offset)) / @as(f32, @floatFromInt(bar_w - 1))
-                else
-                    0.5;
-                surface.writeCell(bc, row, .{
-                    .char = .{ .grapheme = "\xe2\x96\x88", .width = 1 },
-                    .style = .{ .fg = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, t), .bg = theme.PANEL },
-                });
-            }
-            const ref_text = try std.fmt.allocPrint(ctx.arena, " {d}", .{rule.refer_count});
-            const ref_col: u16 = bar_start + bar_w;
-            if (ref_col + @as(u16, @intCast(ctx.stringWidth(ref_text))) < col_move) {
-                w.writeText(&surface, ctx, ref_col, row, ref_text, theme.fg(theme.TEXT));
-            }
+        const bar_w_raw: u16 = @intCast(@as(u32, bar_max_w) * rule.refer_count / max_refer);
+        const bar_w: u16 = if (rule.refer_count > 0 and bar_w_raw == 0 and bar_max_w > 0) 1 else bar_w_raw;
+        for (0..bar_w) |offset| {
+            const bc: u16 = bar_start + @as(u16, @intCast(offset));
+            if (bc >= bar_end) break;
+            const t: f32 = if (bar_w > 1)
+                @as(f32, @floatFromInt(offset)) / @as(f32, @floatFromInt(bar_w - 1))
+            else
+                0.5;
+            surface.writeCell(bc, row, .{
+                .char = .{ .grapheme = "\xe2\x96\x88", .width = 1 },
+                .style = .{ .fg = theme.lerpColor(theme.ACCENT_SOFT, theme.ACCENT, t), .bg = theme.PANEL },
+            });
         }
+        const ref_text = try std.fmt.allocPrint(ctx.arena, "{d}", .{rule.refer_count});
+        w.writeText(&surface, ctx, col_refs, row, ref_text, theme.fg(theme.TEXT_SOFT));
 
-        const rank_move = try ruleRankMove(ctx.arena, insights.rules, rule_idx);
+        const rank_move = try ruleRankMove(ctx.arena, rules, rule_idx);
         const move_style: vaxis.Style = switch (rank_move.kind) {
             .up => theme.fg(theme.OK),
             .down => theme.fg(theme.DANGER),
@@ -180,7 +185,7 @@ pub fn drawRules(
                     const c_bar_w: u16 = if (constraint.refer_count > 0 and c_bar_w_raw == 0 and child_bar_max_w > 0) 1 else c_bar_w_raw;
                     for (0..c_bar_w) |offset| {
                         const bc: u16 = child_bar_start + @as(u16, @intCast(offset));
-                        if (bc >= col_move -| 2) break;
+                        if (bc >= col_refs -| 2) break;
                         const t: f32 = if (c_bar_w > 1)
                             @as(f32, @floatFromInt(offset)) / @as(f32, @floatFromInt(c_bar_w - 1))
                         else
@@ -191,13 +196,13 @@ pub fn drawRules(
                         });
                     }
                     const c_ref = try std.fmt.allocPrint(ctx.arena, " {d}", .{constraint.refer_count});
-                    w.writeText(&surface, ctx, col_move, row, c_ref, theme.fg(theme.MUTED));
+                    w.writeText(&surface, ctx, col_refs, row, c_ref, theme.fg(theme.MUTED));
                 } else {
                     const idle_txt = if (constraint.idle_days) |days|
                         try std.fmt.allocPrint(ctx.arena, "idle {d}d \xe2\x9a\xa0", .{days})
                     else
                         "idle \xe2\x9a\xa0";
-                    w.writeText(&surface, ctx, col_move, row, idle_txt, .{ .fg = theme.DANGER, .bg = theme.PANEL });
+                    w.writeText(&surface, ctx, col_refs, row, idle_txt, .{ .fg = theme.DANGER, .bg = theme.PANEL });
                 }
                 row += 1;
             }

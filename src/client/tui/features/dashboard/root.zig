@@ -10,9 +10,10 @@ const attestation_reader = @import("../../runtime/attestation_reader.zig");
 const drafts_mod = @import("../../../drafts.zig");
 const workspace_rule = @import("../../../rule.zig");
 pub const ARENA_HEIGHT: u16 = 7;
-const MAX_ROUND_ROWS = 2048;
-const MAX_CHAIN_ROWS = 1024;
 pub const ROUND_ROW_COUNT = 5;
+pub const MAX_VISIBLE_ROUNDS: usize = 1000;
+const MAX_ROUND_ROWS = MAX_VISIBLE_ROUNDS * ROUND_ROW_COUNT;
+const MAX_CHAIN_ROWS = 1024;
 const ROUND_CURSOR_HEIGHT = ROUND_ROW_COUNT - 1;
 const BAR_HEIGHT: u16 = 5;
 const BAR_WIDTH: u16 = 2;
@@ -51,6 +52,14 @@ pub const State = struct {
         };
     }
 };
+
+pub fn visibleRounds(rounds: []const attestation_reader.RoundEvent) []const attestation_reader.RoundEvent {
+    return rounds[0..@min(rounds.len, MAX_VISIBLE_ROUNDS)];
+}
+
+pub fn visibleRoundCount(round_count: usize) usize {
+    return @min(round_count, MAX_VISIBLE_ROUNDS);
+}
 
 pub fn drawRoot(
     self: anytype,
@@ -386,6 +395,9 @@ pub fn drawRounds(
     w.drawBorder(&surface, border_color, theme.PANEL);
 
     w.writeText(&surface, ctx, 2, 0, "Rounds", theme.boldOn(theme.PANEL, theme.TEXT));
+    if (rounds.len == MAX_VISIBLE_ROUNDS) {
+        w.writeRightText(&surface, ctx, 0, "latest 1000", theme.fg(theme.MUTED));
+    }
 
     if (rounds.len == 0) {
         w.writeText(&surface, ctx, 2, 1, "No interaction rounds captured.", theme.fg(theme.MUTED));

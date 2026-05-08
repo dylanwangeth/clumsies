@@ -2168,6 +2168,7 @@ pub const Shell = struct {
         const size = ctx.max.size();
         const scoped_attestation = self.scopedAttestationData();
         const rounds: []const attestation_reader.RoundEvent = if (scoped_attestation) |st| st.rounds else &.{};
+        const visible_rounds = dashboard_panel.visibleRounds(rounds);
 
         const arena_h: u16 = dashboard_panel.ARENA_HEIGHT;
         const body_h: u16 = size.height -| arena_h;
@@ -2176,13 +2177,13 @@ pub const Shell = struct {
         const trace_w: u16 = size.width -| rounds_w;
         const usable_round_rows: u16 = body_h -| 2;
         self.dashboard.input_capacity = @max(@as(usize, 1), @as(usize, @intCast(usable_round_rows / 2)));
-        if (self.analysis.input_cursor >= rounds.len and rounds.len > 0) {
-            self.analysis.input_cursor = rounds.len - 1;
+        if (self.analysis.input_cursor >= visible_rounds.len and visible_rounds.len > 0) {
+            self.analysis.input_cursor = visible_rounds.len - 1;
         }
         const max_round_cursor = std.math.maxInt(u32) / dashboard_panel.ROUND_ROW_COUNT;
         self.dashboard.round_scroll_bars.scroll_view.cursor = @intCast(@min(self.analysis.input_cursor, max_round_cursor) * dashboard_panel.ROUND_ROW_COUNT);
-        const selected_round = if (rounds.len > 0)
-            rounds[@min(self.analysis.input_cursor, rounds.len - 1)]
+        const selected_round = if (visible_rounds.len > 0)
+            visible_rounds[@min(self.analysis.input_cursor, visible_rounds.len - 1)]
         else
             null;
         const summary = dashboardSummary(ctx.arena, rounds);
@@ -2192,7 +2193,7 @@ pub const Shell = struct {
             size.width,
             arena_h,
             summary,
-            rounds,
+            visible_rounds,
             self.analysis.input_cursor,
         );
         const rounds_surface = try dashboard_panel.drawRounds(
@@ -2200,7 +2201,7 @@ pub const Shell = struct {
             ctx,
             rounds_w,
             body_h,
-            rounds,
+            visible_rounds,
         );
         const trace_surface = try dashboard_panel.drawProtocolTrace(self, ctx, trace_w, body_h, selected_round);
         return dashboard_panel.drawRoot(self, ctx, arena_surface, rounds_surface, trace_surface);
@@ -2991,7 +2992,7 @@ pub const Shell = struct {
                 (if (local.workspace(ws_id)) |ws| ws.rounds else &.{})
             else
                 local.rounds;
-            break :blk rounds.len;
+            break :blk dashboard_panel.visibleRoundCount(rounds.len);
         } else 0;
 
         const rule_count: usize = if (self.api_state.org_stats) |stats|
