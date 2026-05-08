@@ -124,6 +124,13 @@ start_hub() {
 }
 
 cleanup() {
+    if [ -n "${WS_ID:-}" ] || [ -n "${CTX_WS:-}" ]; then
+        run_psql <<SQL || true
+DELETE FROM attestation_events
+WHERE ws_id IN ('${WS_ID:-}', '${CTX_WS:-}')
+   OR session_id LIKE 'sess-e2e-%';
+SQL
+    fi
     if [ -n "${HUB_PID:-}" ]; then
         kill "$HUB_PID" 2>/dev/null || true
         wait "$HUB_PID" 2>/dev/null || true
