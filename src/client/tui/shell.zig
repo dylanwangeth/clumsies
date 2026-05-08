@@ -1619,6 +1619,7 @@ pub const Shell = struct {
             self.confirm_error_message = "Could not bind current directory.";
             return false;
         };
+        self.api_state.workspace_paths_cache.invalidate();
         self.notifyOp(.success, "Current directory bound.");
         return true;
     }

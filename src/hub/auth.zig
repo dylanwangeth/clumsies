@@ -252,8 +252,8 @@ pub fn handleUpdateMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
     };
 
-    const wants_username = body.username != null and body.username.?.len > 0;
-    const wants_password = body.new_password != null and body.new_password.?.len > 0;
+    const wants_username = body.username != null;
+    const wants_password = body.new_password != null;
     if (!wants_username and !wants_password) {
         return apiError(res, 400, "BAD_REQUEST", "no profile changes requested");
     }
@@ -263,12 +263,12 @@ pub fn handleUpdateMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         }
     }
     if (wants_password) {
+        if (body.new_password.?.len < 8) {
+            return apiError(res, 400, "BAD_REQUEST", "new password must be at least 8 characters");
+        }
         const current = body.current_password orelse "";
         if (current.len == 0) {
             return apiError(res, 400, "BAD_REQUEST", "current password is required");
-        }
-        if (body.new_password.?.len < 8) {
-            return apiError(res, 400, "BAD_REQUEST", "new password must be at least 8 characters");
         }
     }
 
@@ -443,56 +443,90 @@ pub fn requireWorkspaceMemberRemoval(conn: anytype, user: AuthUser, ws_id: []con
     return true;
 }
 
-pub fn validateWorkspaceRoleChange(conn: anytype, ws_id: []const u8, target_id: []const u8, new_role: []const u8, res: anytype) bool {
+pub fn validateWorkspaceRoleChange(conn: anytype, ws_id: []const u8, target_id: []const u8, new_role: []const u8, res: anytype) !bool {
     if (!std.mem.eql(u8, new_role, "member")) return true;
-    if (workspaceAdminCount(conn, ws_id) == 1 and workspaceMemberHasRole(conn, ws_id, target_id, "admin")) {
+    const admin_count = workspaceAdminCount(conn, ws_id) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    const target_is_admin = workspaceMemberHasRole(conn, ws_id, target_id, "admin") catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    if (admin_count == 1 and target_is_admin) {
         apiError(res, 400, "BAD_REQUEST", "cannot downgrade the last workspace admin") catch {};
         return false;
     }
     return true;
 }
 
-pub fn validateWorkspaceMemberRemoval(conn: anytype, ws_id: []const u8, target_id: []const u8, res: anytype) bool {
-    if (!checkWorkspaceMember(conn, ws_id, target_id)) {
+pub fn validateWorkspaceMemberRemoval(conn: anytype, ws_id: []const u8, target_id: []const u8, res: anytype) !bool {
+    const member_exists = workspaceMemberExists(conn, ws_id, target_id) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    if (!member_exists) {
         apiError(res, 404, "NOT_FOUND", "member not found") catch {};
         return false;
     }
-    if (workspaceMemberCount(conn, ws_id) <= 1) {
+    const member_count = workspaceMemberCount(conn, ws_id) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    if (member_count <= 1) {
         apiError(res, 400, "BAD_REQUEST", "cannot remove the last workspace member") catch {};
         return false;
     }
-    if (workspaceMemberHasRole(conn, ws_id, target_id, "admin") and workspaceAdminCount(conn, ws_id) <= 1) {
+    const target_is_admin = workspaceMemberHasRole(conn, ws_id, target_id, "admin") catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    const admin_count = workspaceAdminCount(conn, ws_id) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    if (target_is_admin and admin_count <= 1) {
         apiError(res, 400, "BAD_REQUEST", "cannot remove the last workspace admin") catch {};
         return false;
     }
     return true;
 }
 
-fn workspaceMemberCount(conn: anytype, ws_id: []const u8) i64 {
-    var row = conn.row("SELECT count(*) FROM workspace_members WHERE ws_id = $1", .{ws_id}) catch return 0;
+fn workspaceMemberCount(conn: anytype, ws_id: []const u8) !i64 {
+    var row = try conn.row("SELECT count(*) FROM workspace_members WHERE ws_id = $1", .{ws_id});
     if (row) |*r| {
-        const count = r.get(i64, 0) catch 0;
-        r.deinit() catch {};
-        return count;
+        defer r.deinit() catch {};
+        return try r.get(i64, 0);
     }
     return 0;
 }
 
-fn workspaceAdminCount(conn: anytype, ws_id: []const u8) i64 {
-    var row = conn.row("SELECT count(*) FROM workspace_members WHERE ws_id = $1 AND role = 'admin'", .{ws_id}) catch return 0;
+fn workspaceAdminCount(conn: anytype, ws_id: []const u8) !i64 {
+    var row = try conn.row("SELECT count(*) FROM workspace_members WHERE ws_id = $1 AND role = 'admin'", .{ws_id});
     if (row) |*r| {
-        const count = r.get(i64, 0) catch 0;
-        r.deinit() catch {};
-        return count;
+        defer r.deinit() catch {};
+        return try r.get(i64, 0);
     }
     return 0;
 }
 
-fn workspaceMemberHasRole(conn: anytype, ws_id: []const u8, user_id: []const u8, role: []const u8) bool {
-    var row = conn.row(
+fn workspaceMemberExists(conn: anytype, ws_id: []const u8, user_id: []const u8) !bool {
+    var row = try conn.row(
+        "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2",
+        .{ ws_id, user_id },
+    );
+    if (row) |*r| {
+        r.deinit() catch {};
+        return true;
+    }
+    return false;
+}
+
+fn workspaceMemberHasRole(conn: anytype, ws_id: []const u8, user_id: []const u8, role: []const u8) !bool {
+    var row = try conn.row(
         "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND role = $3",
         .{ ws_id, user_id, role },
-    ) catch return false;
+    );
     if (row) |*r| {
         r.deinit() catch {};
         return true;
