@@ -54,6 +54,11 @@ pub const WorkspaceContextContentPayload = struct {
     body: []const u8,
 };
 
+pub const WorkspaceMembersPayload = struct {
+    ws_id: []const u8,
+    members: []const model.WorkspaceMemberData,
+};
+
 pub const PrCommentsPayload = struct {
     pr_id: []const u8,
     comments: []const data.CommentEntry,
@@ -127,6 +132,8 @@ pub const ApiState = struct {
     workspace_context_cache: cache.CacheSlot(cache.StringKey, []const model.WorkspaceContextData) = .{},
     workspace_manifest_pending: request.PendingRequest(dispatcher.Result(WorkspaceManifestPayload)) = .{},
     workspace_manifest_cache: cache.CacheSlot(cache.StringKey, []const model.WorkspaceRuleData) = .{},
+    workspace_members_pending: request.PendingRequest(dispatcher.Result(WorkspaceMembersPayload)) = .{},
+    workspace_members_cache: cache.CacheSlot(cache.StringKey, []const model.WorkspaceMemberData) = .{},
 
     // Pr detail (compound): detail response + comments keyed by pr_id.
     // The detail response carries operations + attestation_summary; the consumer
@@ -147,6 +154,14 @@ pub const ApiState = struct {
     create_rule_pr_pending: request.PendingRequest(dispatcher.Result(CreateRulePrResponse)) = .{},
     create_context_pr_pending: request.PendingRequest(dispatcher.Result(CreateContextPrResponse)) = .{},
     update_profile_pending: request.PendingRequest(dispatcher.Result(auth_api.UpdateProfileResponse)) = .{},
+    invite_member_pending: request.PendingRequest(dispatcher.Result(auth_api.InviteMemberResponse)) = .{},
+    change_member_role_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
+    remove_member_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
+    add_workspace_member_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
+    change_workspace_member_role_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
+    remove_workspace_member_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
+    update_ws_pending: request.PendingRequest(dispatcher.Result(workspace_api.CreateWorkspaceResponse)) = .{},
+    delete_ws_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     attestation_upload_pending: request.PendingRequest(AttestationUploadResult) = .{},
     // Derived pr_detail view state, recomputed by consumers whenever
     // pr_detail_cache or pr_comments_cache changes. Kept here because

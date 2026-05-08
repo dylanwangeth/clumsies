@@ -14,14 +14,23 @@ pub const UserData = struct {
 pub const WorkspaceData = struct {
     ws_id: []const u8,
     name: []const u8,
-    role: []const u8 = "",
-    owner: []const u8 = "",
+    description: []const u8,
+    role: []const u8,
+    owner: []const u8,
+};
+
+pub const WorkspaceMemberData = struct {
+    user_id: []const u8,
+    username: []const u8,
+    role: []const u8,
+    joined_at: []const u8,
 };
 
 pub const DirectoryMember = struct {
     user_id: []const u8,
     username: []const u8,
     role: []const u8,
+    status: []const u8,
     joined_at: []const u8,
 };
 

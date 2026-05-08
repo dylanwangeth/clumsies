@@ -55,6 +55,7 @@ pub const State = struct {
     local_load_failed: bool = false,
 
     show_create: bool = false,
+    create_mode: CreateWsMode = .create,
     create_phase: CreateWsPhase = .form,
     create_focus: CreateWsFocus = .name,
     create_name_buf: [64]u8 = undefined,
@@ -70,6 +71,9 @@ pub const State = struct {
     create_created_id_len: usize = 0,
     create_created_name_buf: [64]u8 = undefined,
     create_created_name_len: usize = 0,
+    create_init_copied: bool = false,
+    create_edit_ws_id_buf: [64]u8 = undefined,
+    create_edit_ws_id_len: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) State {
         return .{
@@ -86,6 +90,7 @@ pub const State = struct {
 };
 
 pub const CreateWsPhase = enum { form, submitting, success };
+pub const CreateWsMode = enum { create, edit };
 
 pub const CreateWsFocus = enum {
     name,
@@ -612,14 +617,16 @@ pub fn drawWorkspaceDrawer(
                 theme.textOn(theme.PANEL_SOFT, theme.TEXT)
             else
                 theme.textOn(theme.PANEL_SOFT, theme.TEXT_SOFT);
+            const name_col: u16 = 2;
             const owner_width: u16 = if (entry.owner.len > 0) @intCast(@min(ctx.stringWidth(entry.owner), body_w)) else 0;
             const owner_col = if (owner_width > 0 and owner_width + 2 < body_w) body_w - owner_width - 1 else body_w;
-            const name_col: u16 = 4;
-            const name_width = if (owner_col > name_col + 2) owner_col - name_col - 2 else body_w -| name_col;
+            const name_width = if (owner_col > name_col + 4) owner_col - name_col - 4 else body_w -| name_col;
             w.writeTextMax(&body, ctx, name_col, out_row, name_width, entry.name, name_style);
 
-            if (is_active and owner_col > name_col + 2) {
-                w.writeText(&body, ctx, owner_col - 2, out_row, "\xe2\x80\xa2", theme.boldOn(theme.PANEL_SOFT, theme.ACCENT_SOFT));
+            const written_name_w: u16 = @intCast(@min(ctx.stringWidth(entry.name), name_width));
+            const suffix_col = name_col + written_name_w;
+            if (is_active and suffix_col + 1 < body_w) {
+                w.writeText(&body, ctx, suffix_col + 1, out_row, "\xe2\x80\xa2", theme.boldOn(theme.PANEL_SOFT, theme.ACCENT_SOFT));
             }
             if (entry.owner.len > 0 and owner_col < body_w) {
                 w.writeText(&body, ctx, owner_col, out_row, entry.owner, theme.textOn(theme.PANEL_SOFT, theme.MUTED));
@@ -684,12 +691,6 @@ pub fn handleModuleEvent(
     if (key.matches('w', .{})) {
         self.workspace.drawer_cursor = self.workspace.sel;
         self.workspace.show_drawer = true;
-        ctx.consumeAndRedraw();
-        return;
-    }
-
-    if (key.matches('c', .{})) {
-        openCreate(self);
         ctx.consumeAndRedraw();
         return;
     }
@@ -986,6 +987,7 @@ pub fn drawCreateOverlay(
 
 fn resetCreate(self: anytype) void {
     self.workspace.create_phase = .form;
+    self.workspace.create_mode = .create;
     self.workspace.create_focus = .name;
     self.workspace.create_name_len = 0;
     self.workspace.create_desc_len = 0;
@@ -995,6 +997,8 @@ fn resetCreate(self: anytype) void {
     self.workspace.create_error_len = 0;
     self.workspace.create_created_id_len = 0;
     self.workspace.create_created_name_len = 0;
+    self.workspace.create_init_copied = false;
+    self.workspace.create_edit_ws_id_len = 0;
 }
 
 pub fn openCreate(self: anytype) void {
@@ -1002,7 +1006,16 @@ pub fn openCreate(self: anytype) void {
     self.workspace.show_create = true;
 }
 
-fn closeCreate(self: anytype) void {
+pub fn openEdit(self: anytype, ws_id: []const u8, name: []const u8, description: []const u8) void {
+    resetCreate(self);
+    self.workspace.create_mode = .edit;
+    writeFixedBuf(&self.workspace.create_edit_ws_id_buf, &self.workspace.create_edit_ws_id_len, ws_id);
+    writeFixedBuf(&self.workspace.create_name_buf, &self.workspace.create_name_len, name);
+    writeFixedBuf(&self.workspace.create_desc_buf, &self.workspace.create_desc_len, description);
+    self.workspace.show_create = true;
+}
+
+pub fn closeCreate(self: anytype) void {
     self.workspace.show_create = false;
     resetCreate(self);
 }
@@ -1147,6 +1160,23 @@ fn submitCreate(self: anytype) void {
     self.workspace.create_error_kind = .none;
     self.workspace.create_error_len = 0;
 
+    if (self.workspace.create_mode == .edit) {
+        const ws_id = self.workspace.create_edit_ws_id_buf[0..self.workspace.create_edit_ws_id_len];
+        api.specs.dispatchFromState(
+            api.specs.UpdateWorkspaceParams,
+            workspace_api.CreateWorkspaceResponse,
+            api.specs.update_workspace,
+            &self.api_state.update_ws_pending,
+            self.api_state,
+            .{
+                .ws_id = ws_id,
+                .name = name,
+                .description = self.workspace.create_desc_buf[0..self.workspace.create_desc_len],
+            },
+        );
+        return;
+    }
+
     api.specs.dispatchFromState(
         workspace_api.CreateWorkspaceRequest,
         workspace_api.CreateWorkspaceResponse,
@@ -1155,6 +1185,7 @@ fn submitCreate(self: anytype) void {
         self.api_state,
         .{
             .name = name,
+            .description = self.workspace.create_desc_buf[0..self.workspace.create_desc_len],
             .bundle_id = createSelectedBundleName(self),
         },
     );
@@ -1187,7 +1218,7 @@ fn handleCreateSuccessKey(
     }
     if (key.matches('c', .{})) {
         copyCreateInitCommand(self);
-        self.notifyOp(.success, "Copied clumsies init command to clipboard.");
+        self.workspace.create_init_copied = true;
         ctx.consumeAndRedraw();
         return;
     }
@@ -1204,6 +1235,7 @@ pub fn consumeCreateResult(self: anytype) bool {
 }
 
 fn createBundleCount(self: anytype) usize {
+    if (self.workspace.create_mode == .edit) return 0;
     self.api_state.mutex.lock();
     defer self.api_state.mutex.unlock();
     if (self.api_state.bundles) |list| return list.len;
@@ -1234,6 +1266,7 @@ pub fn applyCreateResult(
         .ok => |resp| {
             writeFixedBuf(&self.workspace.create_created_id_buf, &self.workspace.create_created_id_len, resp.ws_id);
             writeFixedBuf(&self.workspace.create_created_name_buf, &self.workspace.create_created_name_len, resp.name);
+            self.workspace.create_init_copied = false;
             self.workspace.create_phase = .success;
             self.workspace.create_error_kind = .none;
             self.workspace.create_error_len = 0;
@@ -1311,7 +1344,7 @@ fn drawCreateForm(
     const has_error = self.workspace.create_error_kind != .none;
     const box_h = bundle_list_h + if (has_error) @as(u16, 15) else @as(u16, 13);
     const modal = Modal{
-        .title = "Create Workspace",
+        .title = if (self.workspace.create_mode == .edit) "Rename Workspace" else "Create Workspace",
         .box_width = CREATE_BOX_W,
         .box_height = box_h,
     };
@@ -1353,23 +1386,27 @@ fn drawCreateForm(
     row += 1;
     row += 1;
 
-    w.writeText(&surface, ctx, c0, row, "Bundle", theme.textOn(bg, theme.MUTED));
-    w.writeTextMax(
-        &surface,
-        ctx,
-        c0 + label_w + 1,
-        row,
-        content_w -| (label_w + 2),
-        "Choose initial rules for this workspace.",
-        theme.textOn(bg, theme.DIM),
-    );
-    row += 1;
-    drawCreateBundleList(self, &surface, ctx, c0, row, content_w, bundle_list_h, bg);
-    row += bundle_list_h + 1;
+    if (self.workspace.create_mode == .create) {
+        w.writeText(&surface, ctx, c0, row, "Bundle", theme.textOn(bg, theme.MUTED));
+        w.writeTextMax(
+            &surface,
+            ctx,
+            c0 + label_w + 1,
+            row,
+            content_w -| (label_w + 2),
+            "Choose initial rules for this workspace.",
+            theme.textOn(bg, theme.DIM),
+        );
+        row += 1;
+        drawCreateBundleList(self, &surface, ctx, c0, row, content_w, bundle_list_h, bg);
+        row += bundle_list_h + 1;
+    }
 
     const focused = self.workspace.create_focus == .submit;
     const button_label = if (self.workspace.create_phase == .submitting)
         "[ Submitting... ]"
+    else if (self.workspace.create_mode == .edit)
+        "[ Save ]"
     else
         "[ Create Workspace ]";
     const button_style: vaxis.Style = if (focused)
@@ -1388,6 +1425,7 @@ fn drawCreateForm(
 }
 
 fn createBundleListHeight(self: anytype) u16 {
+    if (self.workspace.create_mode == .edit) return 0;
     self.api_state.mutex.lock();
     const bundles_opt = self.api_state.bundles;
     self.api_state.mutex.unlock();
@@ -1465,7 +1503,6 @@ fn drawCreateSuccess(
         .title = "Workspace Created",
         .box_width = CREATE_BOX_W,
         .box_height = CREATE_SUCCESS_BOX_H,
-        .footer = "c copy command",
     };
     const dr = try modal.draw(ctx, self.widget());
     var surface = dr.surface;
@@ -1492,12 +1529,22 @@ fn drawCreateSuccess(
     );
     row += 2;
 
+    const copy_hint = if (self.workspace.create_init_copied) "copied" else "c copy command";
+    const copy_hint_w: u16 = @intCast(@min(ctx.stringWidth(copy_hint), dr.content_width));
+    const copy_hint_style = if (self.workspace.create_init_copied)
+        theme.textOn(bg, theme.OK)
+    else
+        theme.textOn(bg, theme.MUTED);
+    w.writeText(&surface, ctx, c0, row, "Command", theme.textOn(bg, theme.MUTED));
+    w.writeText(&surface, ctx, c0 + dr.content_width -| copy_hint_w, row, copy_hint, copy_hint_style);
+    row += 1;
+
     const cmd = try std.fmt.allocPrint(
         ctx.arena,
-        "  $ clumsies init --ws-id {s}",
+        "$ clumsies init --ws-id {s}",
         .{ws_id},
     );
-    w.writeTextMax(&surface, ctx, c0, row, dr.content_width, cmd, theme.boldOn(bg, theme.ACCENT));
+    _ = w.writeWrappedTextMax(&surface, ctx, c0, row, dr.content_width, 2, cmd, theme.boldOn(bg, theme.ACCENT));
     return surface;
 }
 

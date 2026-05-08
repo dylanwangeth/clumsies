@@ -22,7 +22,7 @@ pub const AuthUser = struct {
     scopes: []const u8,
 };
 
-const MEMBER_SCOPES = "artifact:read,workspace:read,workspace:write,attestation:write,stats:read,members:read,pr:read,pr:write";
+const MEMBER_SCOPES = "artifact:read,workspace:read,workspace:write,attestation:write,stats:read,members:read,members:write,pr:read,pr:write";
 const MAINTAINER_SCOPES = "artifact:read,artifact:write,bundle:write,workspace:read,workspace:write,attestation:write,stats:read,members:read,members:write,pr:read,pr:write,pr:merge";
 
 pub fn requireScope(user: AuthUser, scope: []const u8, res: anytype) bool {
@@ -42,6 +42,9 @@ const RefreshRequest = struct {
 };
 
 const UpdateProfileRequest = auth_api.UpdateProfileRequest;
+const InviteRequest = auth_api.InviteMemberRequest;
+const ActivateRequest = auth_api.ActivateRequest;
+const ChangeRoleRequest = auth_api.ChangeMemberRoleRequest;
 
 pub fn handleRevokeToken(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = authenticate(ctx, req) catch {
@@ -198,7 +201,7 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
     defer ws_list.deinit(req.arena);
 
     var result = conn.query(
-        \\SELECT wm.ws_id, w.name, wm.role, COALESCE(owner.username, '')
+        \\SELECT wm.ws_id, w.name, w.description, wm.role, COALESCE(owner.username, '')
         \\FROM workspace_members wm
         \\JOIN workspaces w ON w.ws_id = wm.ws_id
         \\LEFT JOIN LATERAL (
@@ -222,8 +225,9 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
         try ws_list.append(req.arena, .{
             .ws_id = try req.arena.dupe(u8, try ws_row.get([]const u8, 0)),
             .name = try req.arena.dupe(u8, try ws_row.get([]const u8, 1)),
-            .role = try req.arena.dupe(u8, try ws_row.get([]const u8, 2)),
-            .owner = try req.arena.dupe(u8, try ws_row.get([]const u8, 3)),
+            .description = try req.arena.dupe(u8, try ws_row.get([]const u8, 2)),
+            .role = try req.arena.dupe(u8, try ws_row.get([]const u8, 3)),
+            .owner = try req.arena.dupe(u8, try ws_row.get([]const u8, 4)),
         });
     }
 
@@ -412,6 +416,90 @@ pub fn checkWorkspaceAdmin(conn: anytype, ws_id: []const u8, user_id: []const u8
     return false;
 }
 
+pub fn canManageWorkspaceMembers(conn: anytype, user: AuthUser, ws_id: []const u8) bool {
+    return std.mem.eql(u8, user.role, "maintainer") or checkWorkspaceAdmin(conn, ws_id, user.user_id);
+}
+
+pub fn requireWorkspaceMemberRead(conn: anytype, user: AuthUser, ws_id: []const u8, res: anytype) bool {
+    if (!requireScope(user, "members:read", res)) return false;
+    if (std.mem.eql(u8, user.role, "maintainer") or checkWorkspaceMember(conn, ws_id, user.user_id)) return true;
+    apiError(res, 403, "FORBIDDEN", "not a member of this workspace") catch {};
+    return false;
+}
+
+pub fn requireWorkspaceMemberWrite(conn: anytype, user: AuthUser, ws_id: []const u8, res: anytype) bool {
+    if (!requireScope(user, "members:write", res)) return false;
+    if (canManageWorkspaceMembers(conn, user, ws_id)) return true;
+    apiError(res, 403, "FORBIDDEN", "workspace admin or org maintainer required") catch {};
+    return false;
+}
+
+pub fn requireWorkspaceMemberRemoval(conn: anytype, user: AuthUser, ws_id: []const u8, target_id: []const u8, res: anytype) bool {
+    if (!requireScope(user, "members:write", res)) return false;
+    if (!std.mem.eql(u8, target_id, user.user_id) and !canManageWorkspaceMembers(conn, user, ws_id)) {
+        apiError(res, 403, "FORBIDDEN", "workspace admin or org maintainer required") catch {};
+        return false;
+    }
+    return true;
+}
+
+pub fn validateWorkspaceRoleChange(conn: anytype, ws_id: []const u8, target_id: []const u8, new_role: []const u8, res: anytype) bool {
+    if (!std.mem.eql(u8, new_role, "member")) return true;
+    if (workspaceAdminCount(conn, ws_id) == 1 and workspaceMemberHasRole(conn, ws_id, target_id, "admin")) {
+        apiError(res, 400, "BAD_REQUEST", "cannot downgrade the last workspace admin") catch {};
+        return false;
+    }
+    return true;
+}
+
+pub fn validateWorkspaceMemberRemoval(conn: anytype, ws_id: []const u8, target_id: []const u8, res: anytype) bool {
+    if (!checkWorkspaceMember(conn, ws_id, target_id)) {
+        apiError(res, 404, "NOT_FOUND", "member not found") catch {};
+        return false;
+    }
+    if (workspaceMemberCount(conn, ws_id) <= 1) {
+        apiError(res, 400, "BAD_REQUEST", "cannot remove the last workspace member") catch {};
+        return false;
+    }
+    if (workspaceMemberHasRole(conn, ws_id, target_id, "admin") and workspaceAdminCount(conn, ws_id) <= 1) {
+        apiError(res, 400, "BAD_REQUEST", "cannot remove the last workspace admin") catch {};
+        return false;
+    }
+    return true;
+}
+
+fn workspaceMemberCount(conn: anytype, ws_id: []const u8) i64 {
+    var row = conn.row("SELECT count(*) FROM workspace_members WHERE ws_id = $1", .{ws_id}) catch return 0;
+    if (row) |*r| {
+        const count = r.get(i64, 0) catch 0;
+        r.deinit() catch {};
+        return count;
+    }
+    return 0;
+}
+
+fn workspaceAdminCount(conn: anytype, ws_id: []const u8) i64 {
+    var row = conn.row("SELECT count(*) FROM workspace_members WHERE ws_id = $1 AND role = 'admin'", .{ws_id}) catch return 0;
+    if (row) |*r| {
+        const count = r.get(i64, 0) catch 0;
+        r.deinit() catch {};
+        return count;
+    }
+    return 0;
+}
+
+fn workspaceMemberHasRole(conn: anytype, ws_id: []const u8, user_id: []const u8, role: []const u8) bool {
+    var row = conn.row(
+        "SELECT 1 FROM workspace_members WHERE ws_id = $1 AND user_id = $2 AND role = $3",
+        .{ ws_id, user_id, role },
+    ) catch return false;
+    if (row) |*r| {
+        r.deinit() catch {};
+        return true;
+    }
+    return false;
+}
+
 fn verifyPassword(input: []const u8, stored_hash: []const u8) bool {
     // Reject placeholder hashes (invited users who haven't set a password)
     if (std.mem.startsWith(u8, stored_hash, "!")) return false;
@@ -530,11 +618,6 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     try res.json(.{ .members = list.items }, .{});
 }
 
-const InviteRequest = struct {
-    username: []const u8,
-    role: []const u8,
-};
-
 pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
@@ -611,10 +694,6 @@ pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         .invite_expires_at = expires_at,
     }, .{});
 }
-
-const ChangeRoleRequest = struct {
-    role: []const u8,
-};
 
 pub fn handleChangeRole(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = authenticate(ctx, req) catch {
@@ -730,12 +809,6 @@ pub fn handleRemoveMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
 }
 
 // Invite activation
-
-const ActivateRequest = struct {
-    username: []const u8,
-    invite_token: []const u8,
-    credential: []const u8,
-};
 
 pub fn handleActivate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const client_ip = req.header("x-forwarded-for") orelse "unknown";

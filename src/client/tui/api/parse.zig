@@ -83,6 +83,7 @@ pub fn parseUser(alloc: std.mem.Allocator, body: []const u8) ?model.UserData {
         ws_list.append(alloc, .{
             .ws_id = alloc.dupe(u8, ws.ws_id) catch continue,
             .name = alloc.dupe(u8, ws.name) catch continue,
+            .description = alloc.dupe(u8, ws.description) catch continue,
             .role = alloc.dupe(u8, ws.role) catch continue,
             .owner = alloc.dupe(u8, ws.owner) catch continue,
         }) catch continue;
@@ -111,11 +112,31 @@ pub fn parseDirectory(alloc: std.mem.Allocator, body: []const u8) ?model.Directo
             .user_id = alloc.dupe(u8, m.user_id) catch continue,
             .username = alloc.dupe(u8, m.username) catch continue,
             .role = alloc.dupe(u8, m.role) catch continue,
+            .status = alloc.dupe(u8, m.status) catch continue,
             .joined_at = alloc.dupe(u8, m.joined_at) catch continue,
         }) catch continue;
     }
 
     return .{ .members = members.items };
+}
+
+pub fn parseWorkspaceMembers(alloc: std.mem.Allocator, body: []const u8) ?[]const model.WorkspaceMemberData {
+    const parsed = std.json.parseFromSlice(workspace_api.WorkspaceMembersResponse, alloc, body, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch return null;
+    defer parsed.deinit();
+
+    var members: std.ArrayList(model.WorkspaceMemberData) = .empty;
+    for (parsed.value.members) |m| {
+        members.append(alloc, .{
+            .user_id = alloc.dupe(u8, m.user_id) catch continue,
+            .username = alloc.dupe(u8, m.username) catch continue,
+            .role = alloc.dupe(u8, m.role) catch continue,
+            .joined_at = alloc.dupe(u8, m.joined_at) catch continue,
+        }) catch continue;
+    }
+    return members.toOwnedSlice(alloc) catch null;
 }
 
 pub fn parseArtifactRules(alloc: std.mem.Allocator, body: []const u8) ?[]const model.ArtifactRule {

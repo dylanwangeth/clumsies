@@ -27,8 +27,9 @@ pub const RefreshResponse = struct {
 pub const MeWorkspace = struct {
     ws_id: []const u8,
     name: []const u8,
-    role: []const u8 = "",
-    owner: []const u8 = "",
+    description: []const u8,
+    role: []const u8,
+    owner: []const u8,
 };
 
 pub const MeResponse = struct {
@@ -37,7 +38,7 @@ pub const MeResponse = struct {
     username: []const u8,
     role: []const u8,
     scopes: []const u8,
-    workspaces: []const MeWorkspace = &.{},
+    workspaces: []const MeWorkspace,
 };
 
 pub const UpdateProfileRequest = struct {
@@ -54,14 +55,38 @@ pub const UpdateProfileResponse = struct {
     scopes: []const u8,
 };
 
+pub const InviteMemberRequest = struct {
+    username: []const u8,
+    role: []const u8,
+};
+
+pub const InviteMemberResponse = struct {
+    user_id: []const u8,
+    username: []const u8,
+    role: []const u8,
+    status: []const u8,
+    invite_token: []const u8,
+    invite_expires_at: []const u8,
+};
+
+pub const ActivateRequest = struct {
+    username: []const u8,
+    invite_token: []const u8,
+    credential: []const u8,
+};
+
+pub const ChangeMemberRoleRequest = struct {
+    role: []const u8,
+};
+
 pub const DirectoryMember = struct {
     user_id: []const u8,
     username: []const u8,
     role: []const u8,
-    status: []const u8 = "",
+    status: []const u8,
     joined_at: []const u8,
 };
 
 pub const DirectoryResponse = struct {
-    members: []const DirectoryMember = &.{},
+    members: []const DirectoryMember,
 };

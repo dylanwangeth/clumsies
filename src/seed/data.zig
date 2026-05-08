@@ -28,6 +28,7 @@ pub const RuleFixture = struct {
 pub const WorkspaceFixture = struct {
     id: []const u8,
     name: []const u8,
+    description: []const u8,
 };
 
 pub const WorkspaceMemberFixture = struct {
@@ -238,10 +239,10 @@ pub const RULES = [_]RuleFixture{
 };
 
 pub const WORKSPACES = [_]WorkspaceFixture{
-    .{ .id = "ws-seed-sandbox", .name = "seed-sandbox" },
-    .{ .id = "ws-seed-hub", .name = "hub-bootstrap" },
-    .{ .id = "ws-seed-tui", .name = "tui-insights" },
-    .{ .id = "ws-seed-plugin", .name = "plugin-lab" },
+    .{ .id = "ws-seed-sandbox", .name = "seed-sandbox", .description = "Seed workspace for local rule and context experiments." },
+    .{ .id = "ws-seed-hub", .name = "hub-bootstrap", .description = "Seed workspace for Hub API and database development." },
+    .{ .id = "ws-seed-tui", .name = "tui-insights", .description = "Seed workspace for TUI interaction and layout work." },
+    .{ .id = "ws-seed-plugin", .name = "plugin-lab", .description = "Seed workspace for plugin and workflow integration." },
 };
 
 pub const WORKSPACE_MEMBERS = [_]WorkspaceMemberFixture{

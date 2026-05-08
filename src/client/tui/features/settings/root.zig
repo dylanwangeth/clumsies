@@ -1,5 +1,5 @@
-//! Settings feature container. Renders account, organization, and token
-//! panes and handles settings-mode navigation.
+//! Settings feature container. Renders account, workspace, organization,
+//! and token panes and handles settings-mode navigation.
 
 const std = @import("std");
 const vaxis = @import("vaxis");
@@ -7,15 +7,19 @@ const vxfw = vaxis.vxfw;
 const theme = @import("../../theme.zig");
 const w = @import("../../widgets.zig");
 const data = @import("../../models/view_types.zig");
+const api = @import("../../api.zig");
+const workspace_config = @import("../../../workspace_config.zig");
 
 pub const Tab = enum(u8) {
     account,
+    workspaces,
     organization,
     token,
 
     pub fn label(self: Tab) []const u8 {
         return switch (self) {
             .account => "Account",
+            .workspaces => "Workspaces",
             .organization => "Organization",
             .token => "Token",
         };
@@ -23,16 +27,19 @@ pub const Tab = enum(u8) {
 };
 
 pub const Focus = enum { sidebar, content };
+pub const WorkspaceFocus = enum { list, members };
 
 pub const State = struct {
     tab: Tab = .account,
     focus: Focus = .sidebar,
     content_sel: usize = 0,
+    workspace_focus: WorkspaceFocus = .list,
+    workspace_member_sel: usize = 0,
 };
 
 pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
     const SettingsTab = @TypeOf(self.settings.tab);
-    const settings_tabs = [_]SettingsTab{ .account, .organization, .token };
+    const settings_tabs = [_]SettingsTab{ .account, .workspaces, .organization, .token };
 
     const size = ctx.max.size();
     var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
@@ -45,7 +52,7 @@ pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Erro
     w.drawBorder(&sidebar, sidebar_border, theme.PANEL);
     w.writeText(&sidebar, ctx, 2, 0, "Settings", theme.boldOn(theme.PANEL, theme.TEXT));
 
-    var row: u16 = 2;
+    var row: u16 = 1;
     for (settings_tabs) |tab| {
         const is_sel = tab == self.settings.tab;
         if (is_sel) {
@@ -63,6 +70,7 @@ pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Erro
     );
     const content = switch (self.settings.tab) {
         .account => try drawSettingsAccount(self, content_ctx),
+        .workspaces => try drawSettingsWorkspaces(self, content_ctx),
         .organization => try drawSettingsOrg(self, content_ctx),
         .token => try drawSettingsToken(self, content_ctx),
     };
@@ -80,13 +88,25 @@ pub fn handleEvent(
     key: vaxis.Key,
 ) void {
     if (key.matches(vaxis.Key.escape, .{})) {
+        if (self.settings.tab == .workspaces and self.settings.focus == .content and self.settings.workspace_focus == .members) {
+            self.settings.workspace_focus = .list;
+            ctx.consumeAndRedraw();
+            return;
+        }
         self.show_settings = false;
         self.settings.focus = .sidebar;
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches(vaxis.Key.tab, .{})) {
+        if (self.settings.tab == .workspaces and self.settings.focus == .content) {
+            self.settings.workspace_focus = if (self.settings.workspace_focus == .list) .members else .list;
+            if (self.settings.workspace_focus == .members) self.settings.workspace_member_sel = 0;
+            ctx.consumeAndRedraw();
+            return;
+        }
         self.settings.focus = if (self.settings.focus == .sidebar) .content else .sidebar;
+        if (self.settings.focus == .sidebar) self.settings.workspace_focus = .list;
         ctx.consumeAndRedraw();
         return;
     }
@@ -101,21 +121,41 @@ pub fn handleEvent(
 pub fn shortcuts(self: anytype) []const w.Shortcut {
     return switch (self.settings.tab) {
         .account => &.{
-            .{ .key = "j/k", .label = "move" },
-            .{ .key = "Enter", .label = "open/switch" },
             .{ .key = "Tab", .label = "switch focus" },
             .{ .key = "u", .label = "change username" },
             .{ .key = "c", .label = "change password" },
             .{ .key = "x", .label = "sign out" },
             .{ .key = "Esc", .label = "back" },
         },
-        .organization => &.{
+        .workspaces => if (self.settings.workspace_focus == .members) &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "a", .label = "add member" },
+            .{ .key = "r", .label = "change role" },
+            .{ .key = "x", .label = "remove" },
+            .{ .key = "Tab", .label = "workspaces" },
+            .{ .key = "Esc", .label = "workspaces" },
+        } else &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "open" },
+            .{ .key = "Tab", .label = "members" },
+            .{ .key = "n", .label = "create" },
+            .{ .key = "r", .label = "rename" },
+            .{ .key = "p", .label = "bind cwd" },
+            .{ .key = "x", .label = "delete" },
+            .{ .key = "Esc", .label = "back" },
+        },
+        .organization => if (self.canManageMembers()) &.{
             .{ .key = "j/k", .label = "move" },
             .{ .key = "Enter", .label = "open" },
             .{ .key = "Tab", .label = "switch focus" },
             .{ .key = "a", .label = "invite" },
             .{ .key = "r", .label = "change role" },
             .{ .key = "x", .label = "remove" },
+            .{ .key = "Esc", .label = "back" },
+        } else &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "open" },
+            .{ .key = "Tab", .label = "switch focus" },
             .{ .key = "Esc", .label = "back" },
         },
         .token => &.{
@@ -154,21 +194,69 @@ fn handlePageAction(
                 return true;
             }
         },
-        .organization => {
-            if (key.matches('r', .{})) {
-                self.notifyOp(.info, "Role change (requires input dialog)");
+        .workspaces => {
+            if (key.matches('n', .{})) {
+                self.settings.workspace_focus = .list;
+                self.openCreateWorkspace();
                 ctx.consumeAndRedraw();
                 return true;
             }
-            if (key.matches('x', .{})) {
-                self.confirm_message = "selected member";
-                self.confirm_action = .remove_member;
-                self.show_confirm = true;
+            if (key.matches('r', .{}) and self.settings.workspace_focus == .list) {
+                self.openRenameWorkspace();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('r', .{}) and self.settings.workspace_focus == .members) {
+                self.openChangeWorkspaceMemberRoleDialog();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('x', .{}) and self.settings.workspace_focus == .list) {
+                self.openWorkspaceDeleteConfirm();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('x', .{}) and self.settings.workspace_focus == .members) {
+                self.openRemoveWorkspaceMemberConfirm();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('p', .{}) and self.settings.workspace_focus == .list) {
+                self.bindCurrentDirectoryToSelectedWorkspace();
                 ctx.consumeAndRedraw();
                 return true;
             }
             if (key.matches('a', .{})) {
-                self.notifyOp(.info, "Invite member (requires input dialog)");
+                self.openAddWorkspaceMemberDialog();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+        },
+        .organization => {
+            if (key.matches('r', .{})) {
+                if (!self.ensureMemberManagementAllowed()) {
+                    ctx.consumeAndRedraw();
+                    return true;
+                }
+                self.openChangeMemberRoleDialog();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('x', .{})) {
+                if (!self.ensureMemberManagementAllowed()) {
+                    ctx.consumeAndRedraw();
+                    return true;
+                }
+                self.openRemoveMemberConfirm();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('a', .{})) {
+                if (!self.ensureMemberManagementAllowed()) {
+                    ctx.consumeAndRedraw();
+                    return true;
+                }
+                self.openInviteMemberDialog();
                 ctx.consumeAndRedraw();
                 return true;
             }
@@ -193,12 +281,14 @@ fn handlePageAction(
 
 fn shiftSettingsTab(self: anytype, delta: i8) void {
     const SettingsTab = @TypeOf(self.settings.tab);
-    const settings_tabs = [_]SettingsTab{ .account, .organization, .token };
+    const settings_tabs = [_]SettingsTab{ .account, .workspaces, .organization, .token };
 
     const current: i8 = @intCast(@intFromEnum(self.settings.tab));
     const count: i8 = @intCast(settings_tabs.len);
     const next = @mod(current + delta + count, count);
     self.settings.tab = @enumFromInt(@as(u8, @intCast(next)));
+    self.settings.workspace_focus = .list;
+    self.settings.workspace_member_sel = 0;
 }
 
 fn orgMemberCount(self: anytype) usize {
@@ -212,6 +302,17 @@ fn accountWorkspaceCount(self: anytype) usize {
     self.api_state.mutex.lock();
     defer self.api_state.mutex.unlock();
     if (self.api_state.current_user) |u| return u.workspaces.len;
+    return 0;
+}
+
+fn selectedWorkspaceMemberCount(self: anytype) usize {
+    self.api_state.mutex.lock();
+    defer self.api_state.mutex.unlock();
+    const user = self.api_state.current_user orelse return 0;
+    if (user.workspaces.len == 0) return 0;
+    const idx = @min(self.settings.content_sel, user.workspaces.len - 1);
+    const ws_id = user.workspaces[idx].ws_id;
+    if (self.api_state.workspace_members_cache.lookup(.{ .value = ws_id })) |members| return members.len;
     return 0;
 }
 
@@ -246,30 +347,47 @@ fn handleContentEvent(
     key: vaxis.Key,
 ) void {
     if (key.matches(vaxis.Key.escape, .{})) {
+        if (self.settings.tab == .workspaces and self.settings.workspace_focus == .members) {
+            self.settings.workspace_focus = .list;
+            ctx.consumeAndRedraw();
+            return;
+        }
         self.settings.focus = .sidebar;
         ctx.consumeAndRedraw();
         return;
     }
     const max_items: usize = switch (self.settings.tab) {
-        .account => accountWorkspaceCount(self),
+        .account => 0,
+        .workspaces => if (self.settings.workspace_focus == .members) selectedWorkspaceMemberCount(self) else accountWorkspaceCount(self),
         .organization => orgMemberCount(self),
         .token => data.ALL_SCOPES.len,
     };
     if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-        if (self.settings.content_sel + 1 < max_items)
-            self.settings.content_sel += 1;
+        if (self.settings.tab == .workspaces and self.settings.workspace_focus == .members) {
+            if (self.settings.workspace_member_sel + 1 < max_items)
+                self.settings.workspace_member_sel += 1;
+        } else {
+            if (self.settings.content_sel + 1 < max_items)
+                self.settings.content_sel += 1;
+        }
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-        if (self.settings.content_sel > 0)
-            self.settings.content_sel -= 1;
+        if (self.settings.tab == .workspaces and self.settings.workspace_focus == .members) {
+            if (self.settings.workspace_member_sel > 0)
+                self.settings.workspace_member_sel -= 1;
+        } else {
+            if (self.settings.content_sel > 0)
+                self.settings.content_sel -= 1;
+        }
         ctx.consumeAndRedraw();
         return;
     }
 
     switch (self.settings.tab) {
         .account => handleAccountAction(self, ctx, key),
+        .workspaces => handleWorkspacesAction(self, ctx, key),
         .organization => handleOrganizationAction(self, ctx, key),
         .token => handleTokenAction(self, ctx, key),
     }
@@ -280,19 +398,6 @@ fn handleAccountAction(
     ctx: *vxfw.EventContext,
     key: vaxis.Key,
 ) void {
-    if (key.matches(vaxis.Key.enter, .{})) {
-        const ws_count = accountWorkspaceCount(self);
-        if (ws_count == 0) return;
-        const sel = @min(self.settings.content_sel, ws_count - 1);
-        self.selectWorkspaceIndex(sel);
-        self.show_settings = false;
-        self.settings.focus = .sidebar;
-        self.selected_module = .workspace;
-        self.workspace.focus = .list;
-        self.workspace.show_drawer = false;
-        ctx.consumeAndRedraw();
-        return;
-    }
     if (key.matches('x', .{})) {
         self.confirm_message = "sign out";
         self.confirm_action = .revoke_token;
@@ -311,25 +416,92 @@ fn handleAccountAction(
     }
 }
 
+fn handleWorkspacesAction(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches(vaxis.Key.enter, .{})) {
+        if (self.settings.workspace_focus == .members) return;
+        const ws_count = accountWorkspaceCount(self);
+        if (ws_count == 0) return;
+        const sel = @min(self.settings.content_sel, ws_count - 1);
+        self.selectWorkspaceIndex(sel);
+        self.show_settings = false;
+        self.settings.focus = .sidebar;
+        self.selected_module = .workspace;
+        self.workspace.focus = .list;
+        self.workspace.show_drawer = false;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('n', .{})) {
+        self.settings.workspace_focus = .list;
+        self.openCreateWorkspace();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('r', .{}) and self.settings.workspace_focus == .list) {
+        self.openRenameWorkspace();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('r', .{}) and self.settings.workspace_focus == .members) {
+        self.openChangeWorkspaceMemberRoleDialog();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('x', .{}) and self.settings.workspace_focus == .list) {
+        self.openWorkspaceDeleteConfirm();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('x', .{}) and self.settings.workspace_focus == .members) {
+        self.openRemoveWorkspaceMemberConfirm();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('p', .{}) and self.settings.workspace_focus == .list) {
+        self.bindCurrentDirectoryToSelectedWorkspace();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('a', .{})) {
+        self.openAddWorkspaceMemberDialog();
+        ctx.consumeAndRedraw();
+        return;
+    }
+}
+
 fn handleOrganizationAction(
     self: anytype,
     ctx: *vxfw.EventContext,
     key: vaxis.Key,
 ) void {
     if (key.matches('r', .{})) {
-        self.notifyOp(.info, "Role change (requires input dialog)");
+        if (!self.ensureMemberManagementAllowed()) {
+            ctx.consumeAndRedraw();
+            return;
+        }
+        self.openChangeMemberRoleDialog();
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('x', .{})) {
-        self.confirm_message = "selected member";
-        self.confirm_action = .remove_member;
-        self.show_confirm = true;
+        if (!self.ensureMemberManagementAllowed()) {
+            ctx.consumeAndRedraw();
+            return;
+        }
+        self.openRemoveMemberConfirm();
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('a', .{})) {
-        self.notifyOp(.info, "Invite member (requires input dialog)");
+        if (!self.ensureMemberManagementAllowed()) {
+            ctx.consumeAndRedraw();
+            return;
+        }
+        self.openInviteMemberDialog();
         ctx.consumeAndRedraw();
     }
 }
@@ -355,6 +527,7 @@ fn handleTokenAction(
 fn settingsTabLabel(tab: anytype) []const u8 {
     return switch (tab) {
         .account => "Account",
+        .workspaces => "Workspaces",
         .organization => "Organization",
         .token => "Token",
     };
@@ -367,15 +540,14 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
         user_id: []const u8,
         username: []const u8,
         role: []const u8,
-        workspaces: []const data.WorkspaceAccess,
     };
 
     const user: UserView = blk: {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.current_user) |u|
-            break :blk .{ .user_id = u.user_id, .username = u.username, .role = u.role, .workspaces = &.{} };
-        break :blk .{ .user_id = "\xe2\x80\x94", .username = "\xe2\x80\x94", .role = "\xe2\x80\x94", .workspaces = &.{} };
+            break :blk .{ .user_id = u.user_id, .username = u.username, .role = u.role };
+        break :blk .{ .user_id = "\xe2\x80\x94", .username = "\xe2\x80\x94", .role = "\xe2\x80\x94" };
     };
     const cfg: data.ClientConfig = blk: {
         self.api_state.mutex.lock();
@@ -391,7 +563,7 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     w.drawBorder(&surface, theme.focusBorder(focused), theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Account", theme.boldOn(theme.PANEL, theme.TEXT));
 
-    var row: u16 = 2;
+    var row: u16 = 1;
 
     row = w.writeSectionHeader(&surface, ctx, 2, row, "Profile");
     row = w.writeKv(&surface, ctx, 4, row, "Username", user.username, 14);
@@ -425,55 +597,182 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     w.writeText(&surface, ctx, 19, row, "1 active", theme.fg(theme.OK));
     row += 2;
 
-    row = w.writeSectionHeader(&surface, ctx, 2, row, try std.fmt.allocPrint(ctx.arena, "My Workspaces ({d})", .{user.workspaces.len}));
-    if (user.workspaces.len == 0) {
-        w.writeText(&surface, ctx, 4, row, "No workspaces", theme.fg(theme.MUTED));
-        return surface;
-    }
-
-    const sel = @min(self.settings.content_sel, user.workspaces.len - 1);
-    for (user.workspaces, 0..) |ws_access, i| {
-        if (row >= size.height -| 4) break;
-        const is_sel = i == sel and focused;
-        if (is_sel) {
-            w.writeCursorMarker(&surface, 1, row);
-        }
-        const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
-        w.writeText(&surface, ctx, 4, row, ws_access.name, name_style);
-        const badge_fg = switch (ws_access.role) {
-            .member => theme.OK,
-            .admin => theme.ACCENT,
-        };
-        const level_label = switch (ws_access.role) {
-            .member => "member",
-            .admin => "admin",
-        };
-        w.writeText(&surface, ctx, 24, row, level_label, theme.fg(badge_fg));
-        row += 1;
-
-        if (is_sel and ws_access.paths.len > 0) {
-            for (ws_access.paths, 0..) |path, pi| {
-                if (row >= size.height -| 4) break;
-                const is_last = pi + 1 == ws_access.paths.len;
-                const connector = if (is_last) "\xe2\x94\x94" else "\xe2\x94\x9c";
-                w.writeText(&surface, ctx, 6, row, connector, theme.fg(theme.BORDER));
-                w.writeText(&surface, ctx, 8, row, path, theme.fg(theme.MUTED));
-                row += 1;
-            }
-        } else if (is_sel and ws_access.paths.len == 0) {
-            w.writeText(&surface, ctx, 6, row, "\xe2\x94\x94", theme.fg(theme.BORDER));
-            w.writeText(&surface, ctx, 8, row, "(no local paths)", theme.fg(theme.MUTED));
-            row += 1;
-        }
-    }
-    row += 1;
-
     if (row + 2 < size.height) {
         row = w.writeSectionHeader(&surface, ctx, 2, row, "Danger Zone");
         w.writeText(&surface, ctx, 4, row, "[ Sign Out ]", theme.fg(theme.DANGER));
         w.writeText(&surface, ctx, 19, row, "Revoke current token and exit", theme.fg(theme.MUTED));
     }
     return surface;
+}
+
+fn drawSettingsWorkspaces(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    const focused = self.settings.focus == .content;
+    const list_focused = focused and self.settings.workspace_focus == .list;
+    const members_focused = focused and self.settings.workspace_focus == .members;
+    var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    w.fillSurface(&root, theme.PANEL);
+
+    const WorkspaceView = struct {
+        ws_id: []const u8,
+        name: []const u8,
+        description: []const u8,
+        owner: []const u8,
+        active: bool,
+    };
+    const workspaces: []const WorkspaceView = blk: {
+        var list: std.ArrayList(WorkspaceView) = .empty;
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        if (self.api_state.current_user) |u| {
+            const active_idx = if (u.workspaces.len > 0) @min(self.workspace.sel, u.workspaces.len - 1) else 0;
+            for (u.workspaces, 0..) |ws, i| {
+                try list.append(ctx.arena, .{
+                    .ws_id = try ctx.arena.dupe(u8, ws.ws_id),
+                    .name = try ctx.arena.dupe(u8, ws.name),
+                    .description = try ctx.arena.dupe(u8, ws.description),
+                    .owner = try ctx.arena.dupe(u8, ws.owner),
+                    .active = i == active_idx,
+                });
+            }
+        }
+        break :blk try list.toOwnedSlice(ctx.arena);
+    };
+
+    const gap: u16 = if (size.width > 70) 1 else 0;
+    const list_w: u16 = if (size.width >= 90)
+        @min(@as(u16, 42), @max(@as(u16, 30), size.width / 3))
+    else
+        @max(@as(u16, 24), size.width / 2);
+    const detail_w: u16 = size.width -| list_w -| gap;
+
+    var list = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = list_w, .height = size.height });
+    w.fillSurface(&list, theme.PANEL);
+    w.drawBorder(&list, theme.focusBorder(list_focused), theme.PANEL);
+    w.writeText(&list, ctx, 2, 0, "Workspaces", theme.boldOn(theme.PANEL, theme.TEXT));
+
+    var row: u16 = 1;
+    if (workspaces.len == 0) {
+        w.writeText(&list, ctx, 3, row, "No workspaces", theme.fg(theme.MUTED));
+    } else {
+        const sel = @min(self.settings.content_sel, workspaces.len - 1);
+        for (workspaces, 0..) |workspace, i| {
+            if (row >= size.height -| 2) break;
+            const is_sel = i == sel and list_focused;
+            if (is_sel) {
+                w.writeCursorMarker(&list, 1, row);
+            }
+            const name_style = if (is_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+            w.writeTextMax(&list, ctx, 3, row, list_w -| 6, workspace.name, name_style);
+            if (workspace.active) {
+                const dot_col: u16 = @min(list_w -| 3, @as(u16, @intCast(3 + workspace.name.len + 1)));
+                w.writeText(&list, ctx, dot_col, row, "\xe2\x80\xa2", theme.fg(theme.ACCENT));
+            }
+            row += 1;
+        }
+    }
+
+    var detail = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = detail_w, .height = size.height });
+    w.fillSurface(&detail, theme.PANEL);
+    w.drawBorder(&detail, theme.focusBorder(members_focused), theme.PANEL);
+    w.writeText(&detail, ctx, 2, 0, "Details", theme.boldOn(theme.PANEL, theme.TEXT));
+
+    var detail_row: u16 = 1;
+    if (workspaces.len == 0) {
+        w.writeTextMax(&detail, ctx, 3, detail_row, detail_w -| 6, "Create a workspace to start managing shared rules.", theme.fg(theme.MUTED));
+    } else {
+        const sel = @min(self.settings.content_sel, workspaces.len - 1);
+        const workspace = workspaces[sel];
+        requestWorkspaceMembers(self, workspace.ws_id);
+        const members = self.api_state.workspace_members_cache.lookup(.{ .value = workspace.ws_id });
+        w.writeText(&detail, ctx, 3, detail_row, "Description", theme.fg(theme.MUTED));
+        detail_row += 1;
+        if (workspace.description.len > 0) {
+            _ = w.writeWrappedTextMax(&detail, ctx, 3, detail_row, detail_w -| 6, 2, workspace.description, theme.fg(theme.TEXT_SOFT));
+        } else {
+            w.writeText(&detail, ctx, 3, detail_row, "No description", theme.fg(theme.MUTED));
+        }
+        detail_row += 3;
+
+        const local_paths = workspace_config.listWorkspacePaths(ctx.arena, workspace.ws_id) catch workspace_config.WorkspacePaths{ .paths = &.{} };
+        w.writeText(&detail, ctx, 3, detail_row, "Bound paths", theme.fg(theme.MUTED));
+        detail_row += 1;
+        if (local_paths.paths.len == 0) {
+            w.writeText(&detail, ctx, 3, detail_row, "No bound paths", theme.fg(theme.MUTED));
+            detail_row += 1;
+        } else {
+            const max_paths = @min(local_paths.paths.len, @as(usize, 3));
+            for (local_paths.paths[0..max_paths]) |path| {
+                w.writeText(&detail, ctx, 3, detail_row, "-", theme.fg(theme.MUTED));
+                detail_row = w.writeWrappedTextMax(&detail, ctx, 5, detail_row, detail_w -| 8, 2, path, theme.fg(theme.TEXT_SOFT));
+            }
+            if (local_paths.paths.len > max_paths) {
+                const more = try std.fmt.allocPrint(ctx.arena, "{d} more", .{local_paths.paths.len - max_paths});
+                w.writeText(&detail, ctx, 3, detail_row, "-", theme.fg(theme.MUTED));
+                w.writeText(&detail, ctx, 5, detail_row, more, theme.fg(theme.MUTED));
+                detail_row += 1;
+            }
+        }
+        detail_row += 1;
+
+        w.writeText(&detail, ctx, 3, detail_row, "Status", theme.fg(theme.MUTED));
+        w.writeText(&detail, ctx, 15, detail_row, if (workspace.active) "active" else "available", theme.fg(if (workspace.active) theme.ACCENT_SOFT else theme.TEXT_SOFT));
+        detail_row += 1;
+        if (workspace.owner.len > 0) {
+            w.writeText(&detail, ctx, 3, detail_row, "Owner", theme.fg(theme.MUTED));
+            w.writeTextMax(&detail, ctx, 15, detail_row, detail_w -| 18, workspace.owner, theme.fg(theme.TEXT_SOFT));
+            detail_row += 1;
+        }
+        detail_row += 1;
+
+        w.writeText(&detail, ctx, 3, detail_row, "Members", theme.fgBold(theme.ACCENT));
+        detail_row += 1;
+        if (members) |list_members| {
+            if (list_members.len == 0) {
+                w.writeText(&detail, ctx, 3, detail_row, "No members", theme.fg(theme.MUTED));
+            } else {
+                const member_sel = @min(self.settings.workspace_member_sel, list_members.len - 1);
+                const max_members = @min(list_members.len, @as(usize, @intCast(size.height -| detail_row -| 2)));
+                for (list_members[0..max_members], 0..) |member, member_idx| {
+                    const is_member_sel = members_focused and member_idx == member_sel;
+                    if (is_member_sel) {
+                        w.writeCursorMarker(&detail, 1, detail_row);
+                    }
+                    const name_col: u16 = 2;
+                    const name_w: u16 = if (detail_w > 36) 18 else @max(@as(u16, 10), detail_w / 2);
+                    const role_col: u16 = @min(detail_w -| 8, name_col + name_w + 2);
+                    const name_style = if (is_member_sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.fg(theme.TEXT_SOFT);
+                    const role_style = if (std.mem.eql(u8, member.role, "admin")) theme.fg(theme.ACCENT_SOFT) else theme.fg(theme.MUTED);
+                    w.writeTextMax(&detail, ctx, name_col, detail_row, name_w, member.username, name_style);
+                    w.writeTextMax(&detail, ctx, role_col, detail_row, detail_w -| role_col -| 2, member.role, role_style);
+                    detail_row += 1;
+                }
+            }
+        } else if (self.api_state.workspace_members_cache.isFailed(.{ .value = workspace.ws_id })) {
+            w.writeText(&detail, ctx, 3, detail_row, "Members failed to load", theme.fg(theme.DANGER));
+        } else {
+            w.writeText(&detail, ctx, 3, detail_row, "Loading members...", theme.fg(theme.MUTED));
+        }
+    }
+
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+    children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = list };
+    children[1] = .{ .origin = .{ .row = 0, .col = list_w + gap }, .surface = detail };
+    root.children = children;
+    return root;
+}
+
+fn requestWorkspaceMembers(self: anytype, ws_id: []const u8) void {
+    const key: api.cache.StringKey = .{ .value = ws_id };
+    if (!self.api_state.workspace_members_cache.shouldDispatch(key)) return;
+    api.specs.dispatchFromState(
+        api.specs.WorkspaceIdParams,
+        api.specs.WorkspaceMembersPayload,
+        api.specs.workspace_members,
+        &self.api_state.workspace_members_pending,
+        self.api_state,
+        .{ .ws_id = ws_id },
+    );
 }
 
 fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -484,18 +783,18 @@ fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error
     w.drawBorder(&surface, theme.focusBorder(focused), theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Organization", theme.boldOn(theme.PANEL, theme.TEXT));
 
-    var row: u16 = 2;
+    var row: u16 = 1;
     const sel = self.settings.content_sel;
 
     self.api_state.mutex.lock();
     const live_dir = self.api_state.directory;
     self.api_state.mutex.unlock();
 
-    const MemberView = struct { username: []const u8, role: []const u8, joined: []const u8 };
+    const MemberView = struct { username: []const u8, role: []const u8, status: []const u8, joined: []const u8 };
     var member_views: std.ArrayList(MemberView) = .empty;
     if (live_dir) |dir| {
         for (dir.members) |m| {
-            try member_views.append(ctx.arena, .{ .username = m.username, .role = m.role, .joined = m.joined_at });
+            try member_views.append(ctx.arena, .{ .username = m.username, .role = m.role, .status = m.status, .joined = m.joined_at });
         }
     }
 
@@ -512,7 +811,8 @@ fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error
 
     w.writeText(&surface, ctx, 4, row, "USERNAME", theme.fg(theme.MUTED));
     w.writeText(&surface, ctx, 18, row, "ROLE", theme.fg(theme.MUTED));
-    w.writeText(&surface, ctx, 30, row, "JOINED", theme.fg(theme.MUTED));
+    w.writeText(&surface, ctx, 30, row, "STATUS", theme.fg(theme.MUTED));
+    w.writeText(&surface, ctx, 42, row, "JOINED", theme.fg(theme.MUTED));
     row += 1;
 
     for (member_views.items, 0..) |m, i| {
@@ -524,7 +824,9 @@ fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error
         w.writeText(&surface, ctx, 4, row, m.username, name_style);
         const role_color = if (std.mem.eql(u8, m.role, "maintainer")) theme.ACCENT else theme.TEXT_SOFT;
         w.writeText(&surface, ctx, 18, row, m.role, theme.fg(role_color));
-        w.writeText(&surface, ctx, 30, row, m.joined, theme.fg(theme.MUTED));
+        const status_color = if (std.mem.eql(u8, m.status, "active")) theme.OK else theme.WARN;
+        w.writeText(&surface, ctx, 30, row, m.status, theme.fg(status_color));
+        w.writeText(&surface, ctx, 42, row, m.joined, theme.fg(theme.MUTED));
         row += 1;
         if (row >= size.height -| 4) break;
     }
@@ -548,7 +850,7 @@ fn drawSettingsToken(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Err
     w.drawBorder(&surface, theme.focusBorder(focused), theme.PANEL);
     w.writeText(&surface, ctx, 2, 0, "Token", theme.boldOn(theme.PANEL, theme.TEXT));
 
-    var row: u16 = 2;
+    var row: u16 = 1;
     var active_count: u16 = 0;
     for (data.ALL_SCOPES) |scope_def| {
         if (live_scopes) |scopes_csv| {

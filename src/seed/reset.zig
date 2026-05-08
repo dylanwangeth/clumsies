@@ -93,9 +93,9 @@ fn seedRules(conn: *pg.Conn) !void {
 fn seedWorkspaces(conn: *pg.Conn) !void {
     for (data.WORKSPACES) |workspace| {
         _ = try conn.exec(
-            \\INSERT INTO workspaces (ws_id, org_id, name, revision)
-            \\VALUES ($1, $2::uuid, $3, $4)
-        , .{ workspace.id, data.ORG_ID, workspace.name, data.FIXTURE_VERSION });
+            \\INSERT INTO workspaces (ws_id, org_id, name, description, revision)
+            \\VALUES ($1, $2::uuid, $3, $4, $5)
+        , .{ workspace.id, data.ORG_ID, workspace.name, workspace.description, data.FIXTURE_VERSION });
     }
 }
 

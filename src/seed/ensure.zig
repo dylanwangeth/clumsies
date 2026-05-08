@@ -60,6 +60,12 @@ fn fixturesHealthy(conn: *pg.Conn) !bool {
             .{workspace.id},
             workspace.name,
         )) return false;
+        if (!try stringColumnMatches(
+            conn,
+            "SELECT description FROM workspaces WHERE ws_id = $1",
+            .{workspace.id},
+            workspace.description,
+        )) return false;
     }
 
     for (data.WORKSPACE_MEMBERS) |membership| {

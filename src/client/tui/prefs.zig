@@ -90,16 +90,16 @@ fn prefsPathFromBase(allocator: std.mem.Allocator, base: []const u8) ![]const u8
 
 test "selectWorkspaceIndex matches saved workspace id" {
     const workspaces = [_]model.WorkspaceData{
-        .{ .ws_id = "ws-1", .name = "One" },
-        .{ .ws_id = "ws-2", .name = "Two" },
+        .{ .ws_id = "ws-1", .name = "One", .description = "First workspace", .role = "admin", .owner = "user" },
+        .{ .ws_id = "ws-2", .name = "Two", .description = "Second workspace", .role = "admin", .owner = "user" },
     };
     try std.testing.expectEqual(@as(usize, 1), selectWorkspaceIndex(&workspaces, "ws-2"));
 }
 
 test "selectWorkspaceIndex falls back to first when saved workspace is stale" {
     const workspaces = [_]model.WorkspaceData{
-        .{ .ws_id = "ws-1", .name = "One" },
-        .{ .ws_id = "ws-2", .name = "Two" },
+        .{ .ws_id = "ws-1", .name = "One", .description = "First workspace", .role = "admin", .owner = "user" },
+        .{ .ws_id = "ws-2", .name = "Two", .description = "Second workspace", .role = "admin", .owner = "user" },
     };
     try std.testing.expectEqual(@as(usize, 0), selectWorkspaceIndex(&workspaces, "ws-gone"));
     try std.testing.expectEqual(@as(usize, 0), selectWorkspaceIndex(&workspaces, null));

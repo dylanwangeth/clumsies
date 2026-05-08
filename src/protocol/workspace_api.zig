@@ -46,11 +46,29 @@ pub const WorkspaceManifestResponse = struct {
 
 pub const CreateWorkspaceRequest = struct {
     name: []const u8,
+    description: []const u8,
     bundle_id: ?[]const u8 = null,
 };
 
 pub const CreateWorkspaceResponse = struct {
     ws_id: []const u8,
     name: []const u8,
+    description: []const u8,
     revision: i32 = 0,
+};
+
+pub const UpdateWorkspaceRequest = struct {
+    name: []const u8,
+    description: []const u8,
+};
+
+pub const WorkspaceMember = struct {
+    user_id: []const u8,
+    username: []const u8,
+    role: []const u8,
+    joined_at: []const u8,
+};
+
+pub const WorkspaceMembersResponse = struct {
+    members: []const WorkspaceMember = &.{},
 };
