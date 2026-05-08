@@ -608,12 +608,21 @@ pub fn drawWorkspaceDrawer(
             }
             const name_style = if (is_cursor)
                 theme.boldOn(theme.PANEL_SOFT, theme.TEXT)
+            else if (is_active)
+                theme.textOn(theme.PANEL_SOFT, theme.TEXT)
             else
                 theme.textOn(theme.PANEL_SOFT, theme.TEXT_SOFT);
-            w.writeText(&body, ctx, 2, out_row, entry.name, name_style);
+            const owner_width: u16 = if (entry.owner.len > 0) @intCast(@min(ctx.stringWidth(entry.owner), body_w)) else 0;
+            const owner_col = if (owner_width > 0 and owner_width + 2 < body_w) body_w - owner_width - 1 else body_w;
+            const name_col: u16 = 4;
+            const name_width = if (owner_col > name_col + 2) owner_col - name_col - 2 else body_w -| name_col;
+            w.writeTextMax(&body, ctx, name_col, out_row, name_width, entry.name, name_style);
 
-            if (is_active) {
-                w.writeRightText(&body, ctx, out_row, "active", theme.boldOn(theme.PANEL_SOFT, theme.ACCENT_SOFT));
+            if (is_active and owner_col > name_col + 2) {
+                w.writeText(&body, ctx, owner_col - 2, out_row, "\xe2\x80\xa2", theme.boldOn(theme.PANEL_SOFT, theme.ACCENT_SOFT));
+            }
+            if (entry.owner.len > 0 and owner_col < body_w) {
+                w.writeText(&body, ctx, owner_col, out_row, entry.owner, theme.textOn(theme.PANEL_SOFT, theme.MUTED));
             }
         }
     }
@@ -963,8 +972,7 @@ fn clampScrollTop(scroll_view: *vxfw.ScrollView, row_count: usize) void {
 }
 
 const CREATE_BOX_W: u16 = 76;
-const CREATE_FORM_BOX_H: u16 = 24;
-const CREATE_SUCCESS_BOX_H: u16 = 14;
+const CREATE_SUCCESS_BOX_H: u16 = 13;
 
 pub fn drawCreateOverlay(
     self: anytype,
@@ -1299,50 +1307,46 @@ fn drawCreateForm(
     self: anytype,
     ctx: vxfw.DrawContext,
 ) std.mem.Allocator.Error!vxfw.Surface {
-    const footer = if (self.workspace.create_phase == .submitting)
-        "Submitting... Esc to cancel"
-    else
-        "Tab next  Enter advance  Space toggle bundle  Esc cancel";
-
+    const bundle_list_h = createBundleListHeight(self);
+    const has_error = self.workspace.create_error_kind != .none;
+    const box_h = bundle_list_h + if (has_error) @as(u16, 15) else @as(u16, 13);
     const modal = Modal{
         .title = "Create Workspace",
         .box_width = CREATE_BOX_W,
-        .box_height = CREATE_FORM_BOX_H,
-        .footer = footer,
+        .box_height = box_h,
     };
     const dr = try modal.draw(ctx, self.widget());
     var surface = dr.surface;
     const c0 = dr.content_col;
     const r0 = dr.content_row;
+    const content_w = dr.content_width;
     const bg = theme.PANEL_ALT;
 
     var row: u16 = r0;
     const label_w: u16 = 14;
 
-    w.writeText(&surface, ctx, c0, row, "Name *", theme.fg(theme.MUTED));
-    w.drawTextInputValue(
+    w.writeText(&surface, ctx, c0, row, "Name *", theme.textOn(bg, theme.MUTED));
+    w.drawTextInputSlot(
         &surface,
         ctx,
         c0 + label_w + 1,
         row,
-        CREATE_BOX_W -| (label_w + 6),
+        content_w -| (label_w + 2),
         self.workspace.create_name_buf[0..self.workspace.create_name_len],
-        bg,
         theme.TEXT,
         self.workspace.create_focus == .name,
     );
     row += 1;
     row += 1;
 
-    w.writeText(&surface, ctx, c0, row, "Description", theme.fg(theme.MUTED));
-    w.drawTextInputValue(
+    w.writeText(&surface, ctx, c0, row, "Description", theme.textOn(bg, theme.MUTED));
+    w.drawTextInputSlot(
         &surface,
         ctx,
         c0 + label_w + 1,
         row,
-        CREATE_BOX_W -| (label_w + 6),
+        content_w -| (label_w + 2),
         self.workspace.create_desc_buf[0..self.workspace.create_desc_len],
-        bg,
         theme.TEXT,
         self.workspace.create_focus == .description,
     );
@@ -1350,17 +1354,18 @@ fn drawCreateForm(
     row += 1;
 
     w.writeText(&surface, ctx, c0, row, "Bundle", theme.textOn(bg, theme.MUTED));
-    w.writeText(
+    w.writeTextMax(
         &surface,
         ctx,
-        c0 + label_w,
+        c0 + label_w + 1,
         row,
-        "(optional) seeds workspace with a rule set",
-        theme.textOn(bg, theme.MUTED),
+        content_w -| (label_w + 2),
+        "Choose initial rules for this workspace.",
+        theme.textOn(bg, theme.DIM),
     );
     row += 1;
-    drawCreateBundleList(self, &surface, ctx, c0, row, CREATE_BOX_W - 4, 8, bg);
-    row += 9;
+    drawCreateBundleList(self, &surface, ctx, c0, row, content_w, bundle_list_h, bg);
+    row += bundle_list_h + 1;
 
     const focused = self.workspace.create_focus == .submit;
     const button_label = if (self.workspace.create_phase == .submitting)
@@ -1368,18 +1373,27 @@ fn drawCreateForm(
     else
         "[ Create Workspace ]";
     const button_style: vaxis.Style = if (focused)
-        theme.boldOn(theme.ACCENT, theme.CANVAS)
+        theme.boldOn(theme.PANEL_ALT, theme.TEXT)
     else
-        theme.boldOn(theme.PANEL_SOFT, theme.TEXT);
+        theme.boldOn(theme.PANEL_ALT, theme.TEXT_SOFT);
     w.writeText(&surface, ctx, c0, row, button_label, button_style);
 
-    if (self.workspace.create_error_kind != .none) {
-        const err_row = r0 + CREATE_FORM_BOX_H - 4;
+    if (has_error) {
+        const err_row = row + 2;
         const err_text = self.workspace.create_error_buf[0..self.workspace.create_error_len];
-        w.writeText(&surface, ctx, c0, err_row, err_text, theme.textOn(bg, theme.DANGER));
+        _ = w.writeWrappedTextMax(&surface, ctx, c0, err_row, content_w, 2, err_text, theme.textOn(bg, theme.DANGER));
     }
 
     return surface;
+}
+
+fn createBundleListHeight(self: anytype) u16 {
+    self.api_state.mutex.lock();
+    const bundles_opt = self.api_state.bundles;
+    self.api_state.mutex.unlock();
+    const count = if (bundles_opt) |bundles| bundles.len else 1;
+    if (count == 0) return 3;
+    return @intCast(@min(count + 2, 6));
 }
 
 fn drawCreateBundleList(
@@ -1392,7 +1406,6 @@ fn drawCreateBundleList(
     height: u16,
     bg: vaxis.Color,
 ) void {
-    _ = width;
     self.api_state.mutex.lock();
     const bundles_opt = self.api_state.bundles;
     self.api_state.mutex.unlock();
@@ -1400,11 +1413,11 @@ fn drawCreateBundleList(
     const list_focused = self.workspace.create_focus == .bundle;
 
     const bundles = bundles_opt orelse {
-        w.writeText(surface, ctx, col + 2, row + 1, "(loading bundles...)", theme.textOn(bg, theme.MUTED));
+        w.writeTextMax(surface, ctx, col + 2, row + 1, width -| 4, "loading bundles...", theme.textOn(bg, theme.MUTED));
         return;
     };
     if (bundles.len == 0) {
-        w.writeText(surface, ctx, col + 2, row + 1, "(no bundles available)", theme.textOn(bg, theme.MUTED));
+        w.writeTextMax(surface, ctx, col + 2, row + 1, width -| 4, "No bundles available.", theme.textOn(bg, theme.MUTED));
         return;
     }
 
@@ -1419,23 +1432,28 @@ fn drawCreateBundleList(
         const is_cursor = i == cursor;
         const is_selected = self.workspace.create_selected_bundle != null and
             self.workspace.create_selected_bundle.? == i;
-        const marker: []const u8 = if (is_selected) "\xe2\x97\x8f " else "  ";
-
-        const text = std.fmt.allocPrint(
+        const marker: []const u8 = if (is_selected) "[*]" else "[ ]";
+        const bundle_text = std.fmt.allocPrint(
             ctx.arena,
-            "{s}{s}  ({d} rules)",
-            .{ marker, b.name, b.rule_count },
+            "{s} ({d} rules)",
+            .{ b.name, b.rule_count },
         ) catch continue;
 
         const render_row: u16 = row + 1 + @as(u16, @intCast(i - scroll_start));
-        if (is_cursor and list_focused) w.writeCursorMarker(surface, col, render_row);
+        const marker_style: vaxis.Style = if (is_selected)
+            theme.boldOn(bg, theme.ACCENT_SOFT)
+        else if (is_cursor and list_focused)
+            theme.boldOn(bg, theme.TEXT)
+        else
+            theme.textOn(bg, theme.MUTED);
         const row_style: vaxis.Style = if (is_cursor and list_focused)
             theme.boldOn(bg, theme.TEXT)
         else if (is_selected)
-            theme.boldOn(bg, theme.ACCENT_SOFT)
+            theme.textOn(bg, theme.TEXT)
         else
             theme.textOn(bg, theme.TEXT_SOFT);
-        w.writeText(surface, ctx, col + 2, render_row, text, row_style);
+        w.writeText(surface, ctx, col, render_row, marker, marker_style);
+        w.writeTextMax(surface, ctx, col + 4, render_row, width -| 4, bundle_text, row_style);
     }
 }
 
@@ -1447,8 +1465,7 @@ fn drawCreateSuccess(
         .title = "Workspace Created",
         .box_width = CREATE_BOX_W,
         .box_height = CREATE_SUCCESS_BOX_H,
-        .footer = "c copy cmd  Esc close",
-        .border_color = theme.OK,
+        .footer = "c copy command",
     };
     const dr = try modal.draw(ctx, self.widget());
     var surface = dr.surface;
@@ -1464,11 +1481,12 @@ fn drawCreateSuccess(
     row = w.writeKv(&surface, ctx, c0, row, "name", ws_name, 10);
     row += 1;
 
-    w.writeText(
+    w.writeTextMax(
         &surface,
         ctx,
         c0,
         row,
+        dr.content_width,
         "To bind this workspace to a local directory, run from the target dir:",
         theme.textOn(bg, theme.TEXT),
     );
@@ -1479,18 +1497,7 @@ fn drawCreateSuccess(
         "  $ clumsies init --ws-id {s}",
         .{ws_id},
     );
-    w.writeText(&surface, ctx, c0, row, cmd, theme.boldOn(bg, theme.ACCENT));
-    row += 2;
-
-    w.writeText(
-        &surface,
-        ctx,
-        c0,
-        row,
-        "c Copy command    Esc Close",
-        theme.textOn(bg, theme.TEXT_SOFT),
-    );
-
+    w.writeTextMax(&surface, ctx, c0, row, dr.content_width, cmd, theme.boldOn(bg, theme.ACCENT));
     return surface;
 }
 

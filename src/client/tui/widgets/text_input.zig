@@ -81,6 +81,28 @@ pub fn drawValue(
     }
 }
 
+pub fn drawSlot(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    col: u16,
+    row: u16,
+    max_width: u16,
+    text: []const u8,
+    fg: vaxis.Color,
+    focused: bool,
+) void {
+    const bg = if (focused) theme.PANEL else theme.PANEL_ALT;
+    paintSlot(surface, col -| 1, row, max_width +| 1, bg);
+    drawValue(surface, ctx, col, row, max_width, text, bg, fg, focused);
+}
+
+fn paintSlot(surface: *vxfw.Surface, col: u16, row: u16, width: u16, bg: vaxis.Color) void {
+    var i: u16 = 0;
+    while (i < width and col + i < surface.size.width -| 1 and row < surface.size.height) : (i += 1) {
+        surface.writeCell(col + i, row, theme.blank(bg));
+    }
+}
+
 pub fn trailingTextForWidth(ctx: vxfw.DrawContext, text: []const u8, max_width: u16) []const u8 {
     if (max_width == 0 or text.len == 0) return "";
     if (ctx.stringWidth(text) <= max_width) return text;

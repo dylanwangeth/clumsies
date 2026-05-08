@@ -425,6 +425,39 @@ pub fn discardDraftById(
     return draft_path;
 }
 
+/// Discard a modify draft when its file content still matches the base
+/// content. Returns true only when a matching draft was removed.
+pub fn discardUnchangedModifyDraft(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+    base_content: []const u8,
+) !bool {
+    if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
+
+    const unchanged = blk: {
+        var index = try loadIndex(allocator, ws_dir);
+        defer index.deinit(allocator);
+
+        for (index.entries.items) |entry| {
+            if (entry.category != category) continue;
+            if (!std.mem.eql(u8, entry.draft_path, draft_path)) continue;
+            if (entry.operation != .modify) break :blk false;
+
+            const content = try readDraftFile(allocator, ws_dir, category, draft_path);
+            defer allocator.free(content);
+            break :blk std.mem.eql(u8, content, base_content);
+        }
+
+        break :blk false;
+    };
+
+    if (!unchanged) return false;
+    try discardDraft(allocator, ws_dir, category, draft_path);
+    return true;
+}
+
 /// Discard a create-only draft addressed by the identity exposed through
 /// discovery. Create drafts must have `local_temp_id`; `discardDraft`
 /// itself remains intentionally keyed by `draft_path`.
@@ -1159,6 +1192,88 @@ test "discardDraftById: accepts rule id for modify draft" {
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
     try testing.expect(index.findDraftById(.rule, "p-style") == null);
+}
+
+test "discardUnchangedModifyDraft: removes modify draft matching base content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .modify,
+        .draft_path = "adr/ADR-003.md",
+        .current_path = "adr/ADR-003.md",
+    }, "# ADR-003\n");
+
+    try testing.expect(try discardUnchangedModifyDraft(
+        testing.allocator,
+        root,
+        .rule,
+        "adr/ADR-003.md",
+        "# ADR-003\n",
+    ));
+
+    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .rule, "adr/ADR-003.md"));
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expect(index.findDraftById(.rule, "adr/ADR-003.md") == null);
+}
+
+test "discardUnchangedModifyDraft: keeps modify draft with changed content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .modify,
+        .draft_path = "adr/ADR-003.md",
+        .current_path = "adr/ADR-003.md",
+    }, "# ADR-003\n\nChanged.\n");
+
+    try testing.expect(!try discardUnchangedModifyDraft(
+        testing.allocator,
+        root,
+        .rule,
+        "adr/ADR-003.md",
+        "# ADR-003\n",
+    ));
+
+    const content = try readDraftFile(testing.allocator, root, .rule, "adr/ADR-003.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("# ADR-003\n\nChanged.\n", content);
+}
+
+test "discardUnchangedModifyDraft: ignores create draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .create,
+        .draft_path = "adr/ADR-004.md",
+    }, "# ADR-004\n");
+
+    try testing.expect(!try discardUnchangedModifyDraft(
+        testing.allocator,
+        root,
+        .rule,
+        "adr/ADR-004.md",
+        "# ADR-004\n",
+    ));
+
+    const content = try readDraftFile(testing.allocator, root, .rule, "adr/ADR-004.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("# ADR-004\n", content);
 }
 
 test "discardDraft: idempotent when draft is absent" {

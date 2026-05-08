@@ -7,6 +7,10 @@ set -euo pipefail
 HUB="${1:-./zig-out/bin/clumsies-hub}"
 HUB_PORT="${HUB_E2E_PORT:-8400}"
 BASE="http://127.0.0.1:${HUB_PORT}"
+RUN_ID="${HUB_E2E_RUN_ID:-$$}"
+BUNDLE_NAME="test-bundle-${RUN_ID}"
+WS_NAME="test-ws-${RUN_ID}"
+CTX_WS_NAME="ctx-test-ws-${RUN_ID}"
 PASS=0
 FAIL=0
 
@@ -161,6 +165,27 @@ parse_response "$RAW"
 assert_status "me returns 200" "200" "$STATUS"
 assert_json "returns username alice" "alice" "$BODY"
 assert_json "returns role maintainer" "maintainer" "$BODY"
+
+step "Auth: update username"
+RAW=$(call PATCH "/api/auth/me" '{"username":"alice-renamed"}')
+parse_response "$RAW"
+assert_status "username update succeeds" "200" "$STATUS"
+assert_json "returns renamed username" "alice-renamed" "$BODY"
+RAW=$(call PATCH "/api/auth/me" '{"username":"alice"}')
+parse_response "$RAW"
+assert_status "username restore succeeds" "200" "$STATUS"
+assert_json "returns restored username" "alice" "$BODY"
+
+step "Auth: change password"
+RAW=$(call PATCH "/api/auth/me" '{"current_password":"testpass","new_password":"betterpass"}')
+parse_response "$RAW"
+assert_status "password update succeeds" "200" "$STATUS"
+RAW=$(call POST "/api/auth/login" '{"username":"alice","credential":"betterpass"}')
+parse_response "$RAW"
+assert_status "login with new password succeeds" "200" "$STATUS"
+RAW=$(call PATCH "/api/auth/me" '{"current_password":"betterpass","new_password":"testpass"}')
+parse_response "$RAW"
+assert_status "password restore succeeds" "200" "$STATUS"
 
 # Org Members
 step "Org Members: list"
@@ -319,36 +344,36 @@ assert_json "path is new" "workflow/git/COMMIT.md" "$BODY"
 
 # Bundles
 step "Bundle: create"
-RAW=$(call POST "/api/org/bundles" '{"name":"test-bundle","description":"test","rule_ids":["p-test-001","p-test-002"]}')
+RAW=$(call POST "/api/org/bundles" '{"name":"'"$BUNDLE_NAME"'","description":"test","rule_ids":["p-test-001","p-test-002"]}')
 parse_response "$RAW"
 assert_status "create bundle" "201" "$STATUS"
-assert_json "returns name" "test-bundle" "$BODY"
+assert_json "returns name" "$BUNDLE_NAME" "$BODY"
 
 step "Bundle: list"
 RAW=$(call GET "/api/org/bundles")
 parse_response "$RAW"
 assert_status "list bundles" "200" "$STATUS"
-assert_json "contains test-bundle" "test-bundle" "$BODY"
+assert_json "contains test bundle" "$BUNDLE_NAME" "$BODY"
 
 step "Bundle: get"
-RAW=$(call GET "/api/org/bundles/test-bundle")
+RAW=$(call GET "/api/org/bundles/$BUNDLE_NAME")
 parse_response "$RAW"
 assert_status "get bundle" "200" "$STATUS"
 assert_json "contains rule_ids" "p-test-001" "$BODY"
 
 step "Bundle: update"
-RAW=$(call PUT "/api/org/bundles/test-bundle" '{"description":"updated desc","rule_ids":["p-test-001"]}')
+RAW=$(call PUT "/api/org/bundles/$BUNDLE_NAME" '{"description":"updated desc","rule_ids":["p-test-001"]}')
 parse_response "$RAW"
 assert_status "update bundle" "200" "$STATUS"
 
 step "Bundle: delete"
-RAW=$(call DELETE "/api/org/bundles/test-bundle")
+RAW=$(call DELETE "/api/org/bundles/$BUNDLE_NAME")
 parse_response "$RAW"
 assert_status "delete bundle" "204" "$STATUS"
 
 # Workspaces
 step "Workspace: create"
-RAW=$(call POST "/api/workspaces" '{"name":"test-ws"}')
+RAW=$(call POST "/api/workspaces" '{"name":"'"$WS_NAME"'"}')
 parse_response "$RAW"
 assert_status "create workspace" "201" "$STATUS"
 assert_json "returns ws_id" "ws_id" "$BODY"
@@ -358,7 +383,7 @@ step "Workspace: get"
 RAW=$(call GET "/api/workspaces/$WS_ID")
 parse_response "$RAW"
 assert_status "get workspace" "200" "$STATUS"
-assert_json "returns name" "test-ws" "$BODY"
+assert_json "returns name" "$WS_NAME" "$BODY"
 
 step "Workspace: list members"
 RAW=$(call GET "/api/workspaces/$WS_ID/members")
@@ -472,14 +497,11 @@ RAW=$(call POST "/api/org/bundles" '{"name":"scope-test","description":"test","r
 parse_response "$RAW"
 assert_status "limited scope blocked" "403" "$STATUS"
 
-# Restore full token
-TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-
-# Context: create workspace for context tests (as maintainer alice)
+# Restore full token for context tests (as maintainer alice)
 TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 
 step "Context setup: create workspace"
-RAW=$(call POST "/api/workspaces" '{"name":"ctx-test-ws"}')
+RAW=$(call POST "/api/workspaces" '{"name":"'"$CTX_WS_NAME"'"}')
 parse_response "$RAW"
 assert_status "create workspace for context" "201" "$STATUS"
 CTX_WS=$(echo "$BODY" | grep -o '"ws_id":"[^"]*"' | cut -d'"' -f4)

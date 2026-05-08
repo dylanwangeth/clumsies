@@ -28,14 +28,30 @@ pub const MeWorkspace = struct {
     ws_id: []const u8,
     name: []const u8,
     role: []const u8 = "",
+    owner: []const u8 = "",
 };
 
 pub const MeResponse = struct {
     user_id: []const u8,
+    org_name: []const u8,
     username: []const u8,
     role: []const u8,
     scopes: []const u8,
     workspaces: []const MeWorkspace = &.{},
+};
+
+pub const UpdateProfileRequest = struct {
+    username: ?[]const u8 = null,
+    current_password: ?[]const u8 = null,
+    new_password: ?[]const u8 = null,
+};
+
+pub const UpdateProfileResponse = struct {
+    user_id: []const u8,
+    org_name: []const u8,
+    username: []const u8,
+    role: []const u8,
+    scopes: []const u8,
 };
 
 pub const DirectoryMember = struct {

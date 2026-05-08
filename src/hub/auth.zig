@@ -16,6 +16,7 @@ const log = std.log.scoped(.hub_auth);
 pub const AuthUser = struct {
     user_id: []const u8,
     org_id: []const u8,
+    org_name: []const u8,
     username: []const u8,
     role: []const u8,
     scopes: []const u8,
@@ -39,6 +40,8 @@ const LoginRequest = struct {
 const RefreshRequest = struct {
     refresh_token: []const u8,
 };
+
+const UpdateProfileRequest = auth_api.UpdateProfileRequest;
 
 pub fn handleRevokeToken(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = authenticate(ctx, req) catch {
@@ -195,8 +198,18 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
     defer ws_list.deinit(req.arena);
 
     var result = conn.query(
-        \\SELECT wm.ws_id, w.name, wm.role FROM workspace_members wm
+        \\SELECT wm.ws_id, w.name, wm.role, COALESCE(owner.username, '')
+        \\FROM workspace_members wm
         \\JOIN workspaces w ON w.ws_id = wm.ws_id
+        \\LEFT JOIN LATERAL (
+        \\  SELECT u.username
+        \\  FROM workspace_members owner_wm
+        \\  JOIN users u ON u.user_id = owner_wm.user_id
+        \\  WHERE owner_wm.ws_id = wm.ws_id
+        \\    AND owner_wm.role = 'admin'
+        \\  ORDER BY u.username
+        \\  LIMIT 1
+        \\) owner ON true
         \\WHERE wm.user_id = $1 ORDER BY w.name
     ,
         .{user.user_id},
@@ -210,15 +223,131 @@ pub fn handleMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response)
             .ws_id = try req.arena.dupe(u8, try ws_row.get([]const u8, 0)),
             .name = try req.arena.dupe(u8, try ws_row.get([]const u8, 1)),
             .role = try req.arena.dupe(u8, try ws_row.get([]const u8, 2)),
+            .owner = try req.arena.dupe(u8, try ws_row.get([]const u8, 3)),
         });
     }
 
     try res.json(MeResponse{
         .user_id = user.user_id,
+        .org_name = user.org_name,
         .username = user.username,
         .role = user.role,
         .scopes = user.scopes,
         .workspaces = ws_list.items,
+    }, .{});
+}
+
+pub fn handleUpdateMe(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+
+    const body = req.json(UpdateProfileRequest) catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "missing request body");
+    };
+
+    const wants_username = body.username != null and body.username.?.len > 0;
+    const wants_password = body.new_password != null and body.new_password.?.len > 0;
+    if (!wants_username and !wants_password) {
+        return apiError(res, 400, "BAD_REQUEST", "no profile changes requested");
+    }
+    if (body.username) |username| {
+        if (username.len == 0 or username.len > 80) {
+            return apiError(res, 400, "BAD_REQUEST", "username must be 1-80 characters");
+        }
+    }
+    if (wants_password) {
+        const current = body.current_password orelse "";
+        if (current.len == 0) {
+            return apiError(res, 400, "BAD_REQUEST", "current password is required");
+        }
+        if (body.new_password.?.len < 8) {
+            return apiError(res, 400, "BAD_REQUEST", "new password must be at least 8 characters");
+        }
+    }
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    var current_row = conn.row(
+        "SELECT password_hash FROM users WHERE user_id = $1 AND org_id = $2::uuid",
+        .{ user.user_id, user.org_id },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 404, "NOT_FOUND", "user not found");
+    };
+    const stored_hash = try req.arena.dupe(u8, try current_row.get([]const u8, 0));
+    current_row.deinit() catch {};
+
+    var hash_buf: [128]u8 = undefined;
+    const next_hash: ?[]const u8 = if (wants_password) blk: {
+        if (!verifyPassword(body.current_password.?, stored_hash)) {
+            return apiError(res, 401, "UNAUTHORIZED", "current password is incorrect");
+        }
+        break :blk hashPassword(body.new_password.?, &hash_buf) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "password hashing failed");
+        };
+    } else null;
+
+    if (wants_username and wants_password) {
+        _ = conn.exec(
+            \\UPDATE users
+            \\SET username = $1, password_hash = $2
+            \\WHERE user_id = $3 AND org_id = $4::uuid
+        , .{ body.username.?, next_hash.?, user.user_id, user.org_id }) catch {
+            if (conn.err) |pg_err| {
+                if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
+                    std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
+                {
+                    return apiError(res, 409, "CONFLICT", "username already exists");
+                }
+            }
+            return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+        };
+    } else if (wants_username) {
+        _ = conn.exec(
+            "UPDATE users SET username = $1 WHERE user_id = $2 AND org_id = $3::uuid",
+            .{ body.username.?, user.user_id, user.org_id },
+        ) catch {
+            if (conn.err) |pg_err| {
+                if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
+                    std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
+                {
+                    return apiError(res, 409, "CONFLICT", "username already exists");
+                }
+            }
+            return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+        };
+    } else if (wants_password) {
+        _ = conn.exec(
+            "UPDATE users SET password_hash = $1 WHERE user_id = $2 AND org_id = $3::uuid",
+            .{ next_hash.?, user.user_id, user.org_id },
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+        };
+    }
+
+    var updated = conn.row(
+        "SELECT user_id, username, role FROM users WHERE user_id = $1 AND org_id = $2::uuid",
+        .{ user.user_id, user.org_id },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    } orelse {
+        return apiError(res, 404, "NOT_FOUND", "user not found");
+    };
+    defer updated.deinit() catch {};
+
+    try res.json(auth_api.UpdateProfileResponse{
+        .user_id = try req.arena.dupe(u8, try updated.get([]const u8, 0)),
+        .org_name = user.org_name,
+        .username = try req.arena.dupe(u8, try updated.get([]const u8, 1)),
+        .role = try req.arena.dupe(u8, try updated.get([]const u8, 2)),
+        .scopes = user.scopes,
     }, .{});
 }
 
@@ -235,8 +364,9 @@ pub fn authenticate(ctx: *Server.Context, req: *httpz.Request) !AuthUser {
     defer conn.release();
 
     var row = conn.row(
-        \\SELECT u.user_id, u.org_id::text, u.username, u.role, t.scopes
+        \\SELECT u.user_id, u.org_id::text, o.name, u.username, u.role, t.scopes
         \\FROM tokens t JOIN users u ON u.user_id = t.user_id
+        \\JOIN orgs o ON o.org_id = u.org_id
         \\WHERE t.token_hash = $1
         \\  AND t.kind = 'access'
         \\  AND t.revoked = false
@@ -247,9 +377,10 @@ pub fn authenticate(ctx: *Server.Context, req: *httpz.Request) !AuthUser {
         const user = AuthUser{
             .user_id = req.arena.dupe(u8, try r.get([]const u8, 0)) catch return error.Unauthorized,
             .org_id = req.arena.dupe(u8, try r.get([]const u8, 1)) catch return error.Unauthorized,
-            .username = req.arena.dupe(u8, try r.get([]const u8, 2)) catch return error.Unauthorized,
-            .role = req.arena.dupe(u8, try r.get([]const u8, 3)) catch return error.Unauthorized,
-            .scopes = req.arena.dupe(u8, try r.get([]const u8, 4)) catch return error.Unauthorized,
+            .org_name = req.arena.dupe(u8, try r.get([]const u8, 2)) catch return error.Unauthorized,
+            .username = req.arena.dupe(u8, try r.get([]const u8, 3)) catch return error.Unauthorized,
+            .role = req.arena.dupe(u8, try r.get([]const u8, 4)) catch return error.Unauthorized,
+            .scopes = req.arena.dupe(u8, try r.get([]const u8, 5)) catch return error.Unauthorized,
         };
         r.deinit() catch {};
         return user;

@@ -59,6 +59,80 @@ pub fn writeText(surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u
     }
 }
 
+// Write text with an explicit width budget so panel content cannot
+// overwrite borders or neighboring fields.
+pub fn writeTextMax(surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u16, max_width: u16, text: []const u8, s: vaxis.Style) void {
+    var cursor = col;
+    const right = col +| max_width;
+    var iter = ctx.graphemeIterator(text);
+    while (iter.next()) |grapheme| {
+        if (cursor >= surface.size.width or cursor >= right or row >= surface.size.height) break;
+        const bytes = grapheme.bytes(text);
+        if (std.mem.eql(u8, bytes, "\n")) break;
+        const width: u16 = @intCast(ctx.stringWidth(bytes));
+        if (width == 0 or cursor + width > surface.size.width or cursor + width > right) break;
+        surface.writeCell(cursor, row, .{
+            .char = .{ .grapheme = bytes, .width = @intCast(width) },
+            .style = s,
+        });
+        cursor += width;
+    }
+}
+
+/// Write text across multiple rows within an explicit width budget.
+/// Returns the row after the last rendered line.
+pub fn writeWrappedTextMax(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    col: u16,
+    row: u16,
+    max_width: u16,
+    max_lines: u16,
+    text: []const u8,
+    s: vaxis.Style,
+) u16 {
+    if (max_width == 0 or max_lines == 0) return row;
+
+    var out_row = row;
+    var rest = text;
+    var lines_left = max_lines;
+    while (rest.len > 0 and lines_left > 0 and out_row < surface.size.height -| 1) {
+        const line_len = wrappedLineLen(ctx, rest, max_width);
+        if (line_len == 0) break;
+        writeTextMax(surface, ctx, col, out_row, max_width, rest[0..line_len], s);
+        rest = trimLeadingSpaces(rest[line_len..]);
+        out_row += 1;
+        lines_left -= 1;
+    }
+    return out_row;
+}
+
+pub fn wrappedLineLen(ctx: vxfw.DrawContext, text: []const u8, max_width: u16) usize {
+    var iter = ctx.graphemeIterator(text);
+    var byte_len: usize = 0;
+    var width: u16 = 0;
+    var last_space: usize = 0;
+    while (iter.next()) |grapheme| {
+        const bytes = grapheme.bytes(text);
+        const grapheme_width: u16 = @intCast(ctx.stringWidth(bytes));
+        if (std.mem.eql(u8, bytes, "\n")) return byte_len;
+        if (width + grapheme_width > max_width) {
+            if (last_space > 0) return last_space;
+            return if (byte_len > 0) byte_len else bytes.len;
+        }
+        byte_len += bytes.len;
+        width += grapheme_width;
+        if (bytes.len == 1 and bytes[0] == ' ') last_space = byte_len - 1;
+    }
+    return text.len;
+}
+
+pub fn trimLeadingSpaces(text: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < text.len and text[i] == ' ') : (i += 1) {}
+    return text[i..];
+}
+
 // Write text right-aligned on a given row.
 pub fn writeRightText(surface: *vxfw.Surface, ctx: vxfw.DrawContext, row: u16, text: []const u8, s: vaxis.Style) void {
     const width: u16 = @intCast(ctx.stringWidth(text));

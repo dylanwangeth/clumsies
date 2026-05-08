@@ -59,6 +59,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.post("/api/auth/activate", auth.handleActivate, .{});
     router.post("/api/auth/refresh", auth.handleRefresh, .{});
     router.get("/api/auth/me", auth.handleMe, .{});
+    router.patch("/api/auth/me", auth.handleUpdateMe, .{});
     router.delete("/api/auth/token", auth.handleRevokeToken, .{});
 
     // Org Members
