@@ -14,7 +14,7 @@ pub const FlushResult = struct {
 };
 
 pub const FlushError = error{
-    ReadTraceFailed,
+    ReadAttestationFailed,
     ReadCursorFailed,
     WriteCursorFailed,
     ParseCursorFailed,
@@ -30,6 +30,7 @@ pub const MAX_BYTES_PER_BATCH: usize = 512 * 1024;
 /// successfully. Such events are logged and skipped so the pipeline cannot be
 /// wedged by a malformed or pathologically large attestation line.
 pub const MAX_SINGLE_EVENT_BYTES: usize = 900 * 1024;
+const READ_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// A single batch collected from an attestation log, ready to POST as
 /// {"events":[line1, line2, ...]} to /api/attestations.
@@ -75,7 +76,7 @@ pub fn flushOnce(
         var dir = dir_handle;
         defer dir.close();
         var it = dir.iterate();
-        while (it.next() catch return error.ReadTraceFailed) |entry| {
+        while (it.next() catch return error.ReadAttestationFailed) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
 
@@ -93,17 +94,8 @@ pub fn flushOnce(
         }
     } else |err| switch (err) {
         error.FileNotFound => {},
-        else => return error.ReadTraceFailed,
+        else => return error.ReadAttestationFailed,
     }
-
-    const legacy_path = attestation.attestationFilePath(allocator, ws_id) catch return error.OutOfMemory;
-    defer allocator.free(legacy_path);
-    const legacy_cursor_path = attestation.cursorFilePath(allocator, ws_id) catch return error.OutOfMemory;
-    defer allocator.free(legacy_cursor_path);
-    const legacy = try flushLogFile(allocator, legacy_path, legacy_cursor_path, uploader);
-    result.events_read += legacy.events_read;
-    result.events_sent += legacy.events_sent;
-    result.batches_sent += legacy.batches_sent;
 
     return result;
 }
@@ -116,7 +108,7 @@ fn flushLogFile(
 ) FlushError!FlushResult {
     var result: FlushResult = .{};
 
-    const start_offset = readCursorPath(allocator, cursor_path) catch |err| switch (err) {
+    var start_offset = readCursorPath(allocator, cursor_path) catch |err| switch (err) {
         error.FileNotFound => 0,
         error.ParseCursorFailed => return error.ParseCursorFailed,
         else => return error.ReadCursorFailed,
@@ -124,24 +116,27 @@ fn flushLogFile(
 
     var file = std.fs.openFileAbsolute(attestation_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return result,
-        else => return error.ReadTraceFailed,
+        else => return error.ReadAttestationFailed,
     };
     defer file.close();
 
-    const stat = file.stat() catch return error.ReadTraceFailed;
+    const stat = file.stat() catch return error.ReadAttestationFailed;
+    if (start_offset > stat.size) start_offset = 0;
     if (start_offset >= stat.size) return result;
 
-    file.seekTo(start_offset) catch return error.ReadTraceFailed;
+    file.seekTo(start_offset) catch return error.ReadAttestationFailed;
 
-    var read_buf: [8192]u8 = undefined;
-    var reader = std.fs.File.Reader.initSize(file, &read_buf, stat.size);
+    const read_buf = allocator.alloc(u8, READ_BUFFER_BYTES) catch return error.OutOfMemory;
+    defer allocator.free(read_buf);
+    var reader = std.fs.File.Reader.initSize(file, read_buf, stat.size);
 
     var cursor_offset: u64 = start_offset;
 
     while (true) {
-        var batch = collectBatch(allocator, &reader.interface, cursor_offset) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return error.ReadTraceFailed,
+        var batch = collectBatch(allocator, &reader.interface, cursor_offset) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            log.warn("read attestation log failed path={s} error={s}", .{ attestation_path, @errorName(err) });
+            return error.ReadAttestationFailed;
         };
         defer batch.deinit(allocator);
 
@@ -308,6 +303,86 @@ test "buildBatchBody wraps lines in events array" {
     try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"refer\"") != null);
     const comma_count = std.mem.count(u8, body, "},{");
     try testing.expectEqual(@as(usize, 1), comma_count);
+}
+
+test "flushLogFile resets cursor after log truncation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        const file = try tmp.dir.createFile("events.jsonl", .{});
+        defer file.close();
+        try file.writeAll(
+            \\{"type":"refer","event_id":"after-truncate"}
+            \\
+        );
+    }
+    {
+        const file = try tmp.dir.createFile("events.cursor", .{});
+        defer file.close();
+        try file.writeAll("999999\n");
+    }
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var cursor_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp.dir.realpath("events.jsonl", &path_buf);
+    const cursor_path = try tmp.dir.realpath("events.cursor", &cursor_buf);
+
+    var captured: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (captured.items) |body| testing.allocator.free(body);
+        captured.deinit(testing.allocator);
+    }
+    var uploader = TestUploader{ .captured = &captured, .allocator = testing.allocator };
+
+    const result = try flushLogFile(testing.allocator, path, cursor_path, uploader.uploader());
+
+    try testing.expectEqual(@as(usize, 1), result.events_sent);
+    try testing.expectEqual(@as(usize, 1), result.batches_sent);
+    try testing.expectEqual(@as(usize, 1), captured.items.len);
+    try testing.expect(std.mem.indexOf(u8, captured.items[0], "after-truncate") != null);
+    try testing.expectEqual(@as(u64, 45), try readCursorPath(testing.allocator, cursor_path));
+}
+
+test "flushLogFile handles event lines larger than small read buffers" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var event: std.ArrayList(u8) = .empty;
+    defer event.deinit(testing.allocator);
+    try event.appendSlice(testing.allocator, "{\"type\":\"user_prompt\",\"content\":\"");
+    try event.appendNTimes(testing.allocator, 'x', 9000);
+    try event.appendSlice(testing.allocator, "\"}\n");
+
+    {
+        const file = try tmp.dir.createFile("events.jsonl", .{});
+        defer file.close();
+        try file.writeAll(event.items);
+    }
+    {
+        const file = try tmp.dir.createFile("events.cursor", .{});
+        defer file.close();
+        try file.writeAll("0\n");
+    }
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var cursor_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp.dir.realpath("events.jsonl", &path_buf);
+    const cursor_path = try tmp.dir.realpath("events.cursor", &cursor_buf);
+
+    var captured: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (captured.items) |body| testing.allocator.free(body);
+        captured.deinit(testing.allocator);
+    }
+    var uploader = TestUploader{ .captured = &captured, .allocator = testing.allocator };
+
+    const result = try flushLogFile(testing.allocator, path, cursor_path, uploader.uploader());
+
+    try testing.expectEqual(@as(usize, 1), result.events_sent);
+    try testing.expectEqual(@as(usize, 1), captured.items.len);
+    try testing.expect(std.mem.indexOf(u8, captured.items[0], "\"type\":\"user_prompt\"") != null);
+    try testing.expectEqual(@as(u64, @intCast(event.items.len)), try readCursorPath(testing.allocator, cursor_path));
 }
 
 test "collectBatch stops at event count limit" {

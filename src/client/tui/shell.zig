@@ -2715,9 +2715,9 @@ pub const Shell = struct {
                 log.warn("attestation_upload_failed error={s}", .{name});
                 const message = std.fmt.allocPrint(
                     self.api_state.allocator(),
-                    "Attestation upload failed: {s}; restart TUI after fixing Hub or auth.",
+                    "Attestation upload failed: {s}. Check local client log.",
                     .{name},
-                ) catch "Attestation upload failed; restart TUI after fixing Hub or auth.";
+                ) catch "Attestation upload failed. Check local client log.";
                 self.system_notices.push(.attestation_upload, .failure, .persistent, message);
             },
         }

@@ -45,7 +45,7 @@ The runtime shape is easier to understand as a sequence:
 agent host
   -> MCP stdio server (`clumsies mcp serve`)
   -> local workspace manifest + cache
-  -> logs/attestation/{session_id}.jsonl
+  -> attestation/{session_id}.jsonl
   -> TUI background upload to Hub
 ```
 
@@ -66,7 +66,7 @@ The host runtime depends on several local files under `~/.clumsies`:
 | `config.toml` | resolves which workspace is bound to the current repo path |
 | `workspaces/{ws_id}/manifest.json` | gives the current workspace snapshot and revision |
 | `workspaces/{ws_id}/cache/` | stores materialized rules, context, and `META_PROMPT` |
-| `workspaces/{ws_id}/logs/attestation/` | session logs and cursors |
+| `workspaces/{ws_id}/attestation/` | session logs and cursors |
 | `adapters/installs/{install_id}/manifest.json` | records what an adapter installation owns |
 | `adapters/installs/{install_id}/wal.jsonl` | supports safe update and remove behavior |
 

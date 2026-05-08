@@ -66,23 +66,13 @@ That is an architectural choice, not an implementation accident. It keeps runtim
 The current local files are session-scoped:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/logs/attestation/{session_id}.jsonl
-~/.clumsies/workspaces/{ws_id}/logs/attestation/{session_id}.cursor
+~/.clumsies/workspaces/{ws_id}/attestation/{session_id}.jsonl
+~/.clumsies/workspaces/{ws_id}/attestation/{session_id}.cursor
 ```
 
 The JSONL file stores the append-only event stream for one host-agent
 session. The cursor file stores that session's upload offset. The TUI
 background uploader can then flush pending events without blocking work.
-
-Older clients wrote a legacy workspace-level pair:
-
-```text
-~/.clumsies/workspaces/{ws_id}/attestation.jsonl
-~/.clumsies/workspaces/{ws_id}/attestation.cursor
-```
-
-The upload worker still checks that legacy path. Buffered events are
-preserved, but new events are written under `logs/attestation/`.
 
 The upload path on the server side is:
 
