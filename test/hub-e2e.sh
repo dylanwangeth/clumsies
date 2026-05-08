@@ -380,7 +380,7 @@ assert_status "delete bundle" "204" "$STATUS"
 
 # Workspaces
 step "Workspace: create"
-RAW=$(call POST "/api/workspaces" '{"name":"'"$WS_NAME"'"}')
+RAW=$(call POST "/api/workspaces" '{"name":"'"$WS_NAME"'","description":"E2E workspace for hub API coverage."}')
 parse_response "$RAW"
 assert_status "create workspace" "201" "$STATUS"
 assert_json "returns ws_id" "ws_id" "$BODY"
@@ -508,7 +508,7 @@ assert_status "limited scope blocked" "403" "$STATUS"
 TOKEN=$(call POST "/api/auth/login" '{"username":"alice","credential":"testpass"}' | sed '$d' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 
 step "Context setup: create workspace"
-RAW=$(call POST "/api/workspaces" '{"name":"'"$CTX_WS_NAME"'"}')
+RAW=$(call POST "/api/workspaces" '{"name":"'"$CTX_WS_NAME"'","description":"E2E workspace for context API coverage."}')
 parse_response "$RAW"
 assert_status "create workspace for context" "201" "$STATUS"
 CTX_WS=$(echo "$BODY" | grep -o '"ws_id":"[^"]*"' | cut -d'"' -f4)
