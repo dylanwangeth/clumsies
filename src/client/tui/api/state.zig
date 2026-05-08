@@ -134,6 +134,7 @@ pub const ApiState = struct {
     workspace_manifest_cache: cache.CacheSlot(cache.StringKey, []const model.WorkspaceRuleData) = .{},
     workspace_members_pending: request.PendingRequest(dispatcher.Result(WorkspaceMembersPayload)) = .{},
     workspace_members_cache: cache.CacheSlot(cache.StringKey, []const model.WorkspaceMemberData) = .{},
+    workspace_paths_cache: cache.CacheSlot(cache.StringKey, []const []const u8) = .{},
 
     // Pr detail (compound): detail response + comments keyed by pr_id.
     // The detail response carries operations + attestation_summary; the consumer

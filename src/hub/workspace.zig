@@ -582,7 +582,7 @@ pub fn handleChangeMemberRole(ctx: *Server.Context, req: *httpz.Request, res: *h
     defer conn.release();
 
     if (!auth.requireWorkspaceMemberWrite(conn, user, ws_id, res)) return;
-    if (!auth.validateWorkspaceRoleChange(conn, ws_id, target_id, body.role, res)) return;
+    if (!try auth.validateWorkspaceRoleChange(conn, ws_id, target_id, body.role, res)) return;
 
     const updated = conn.exec(
         "UPDATE workspace_members SET role = $3 WHERE ws_id = $1 AND user_id = $2",
@@ -616,7 +616,7 @@ pub fn handleRemoveWsMember(ctx: *Server.Context, req: *httpz.Request, res: *htt
     defer conn.release();
 
     if (!auth.requireWorkspaceMemberRemoval(conn, user, ws_id, target_id, res)) return;
-    if (!auth.validateWorkspaceMemberRemoval(conn, ws_id, target_id, res)) return;
+    if (!try auth.validateWorkspaceMemberRemoval(conn, ws_id, target_id, res)) return;
 
     _ = conn.exec(
         "DELETE FROM workspace_members WHERE ws_id = $1 AND user_id = $2",

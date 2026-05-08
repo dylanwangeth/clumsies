@@ -640,10 +640,14 @@ fn drawSettingsWorkspaces(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
     };
 
     const gap: u16 = if (size.width > 70) 1 else 0;
-    const list_w: u16 = if (size.width >= 90)
+    const desired_list_w: u16 = if (size.width >= 90)
         @min(@as(u16, 42), @max(@as(u16, 30), size.width / 3))
     else
         @max(@as(u16, 24), size.width / 2);
+    const panes_w = size.width -| gap;
+    const min_detail_w: u16 = if (panes_w > 1) 1 else 0;
+    const max_list_w: u16 = panes_w -| min_detail_w;
+    const list_w: u16 = if (max_list_w == 0) 0 else @max(@as(u16, 1), @min(desired_list_w, max_list_w));
     const detail_w: u16 = size.width -| list_w -| gap;
 
     var list = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = list_w, .height = size.height });
@@ -672,6 +676,13 @@ fn drawSettingsWorkspaces(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
         }
     }
 
+    if (detail_w == 0) {
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = list };
+        root.children = children;
+        return root;
+    }
+
     var detail = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = detail_w, .height = size.height });
     w.fillSurface(&detail, theme.PANEL);
     w.drawBorder(&detail, theme.focusBorder(members_focused), theme.PANEL);
@@ -694,20 +705,20 @@ fn drawSettingsWorkspaces(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
         }
         detail_row += 3;
 
-        const local_paths = workspace_config.listWorkspacePaths(ctx.arena, workspace.ws_id) catch workspace_config.WorkspacePaths{ .paths = &.{} };
+        const local_paths = cachedWorkspacePaths(self, workspace.ws_id);
         w.writeText(&detail, ctx, 3, detail_row, "Bound paths", theme.fg(theme.MUTED));
         detail_row += 1;
-        if (local_paths.paths.len == 0) {
+        if (local_paths.len == 0) {
             w.writeText(&detail, ctx, 3, detail_row, "No bound paths", theme.fg(theme.MUTED));
             detail_row += 1;
         } else {
-            const max_paths = @min(local_paths.paths.len, @as(usize, 3));
-            for (local_paths.paths[0..max_paths]) |path| {
+            const max_paths = @min(local_paths.len, @as(usize, 3));
+            for (local_paths[0..max_paths]) |path| {
                 w.writeText(&detail, ctx, 3, detail_row, "-", theme.fg(theme.MUTED));
                 detail_row = w.writeWrappedTextMax(&detail, ctx, 5, detail_row, detail_w -| 8, 2, path, theme.fg(theme.TEXT_SOFT));
             }
-            if (local_paths.paths.len > max_paths) {
-                const more = try std.fmt.allocPrint(ctx.arena, "{d} more", .{local_paths.paths.len - max_paths});
+            if (local_paths.len > max_paths) {
+                const more = try std.fmt.allocPrint(ctx.arena, "{d} more", .{local_paths.len - max_paths});
                 w.writeText(&detail, ctx, 3, detail_row, "-", theme.fg(theme.MUTED));
                 w.writeText(&detail, ctx, 5, detail_row, more, theme.fg(theme.MUTED));
                 detail_row += 1;
@@ -773,6 +784,24 @@ fn requestWorkspaceMembers(self: anytype, ws_id: []const u8) void {
         self.api_state,
         .{ .ws_id = ws_id },
     );
+}
+
+fn cachedWorkspacePaths(self: anytype, ws_id: []const u8) []const []const u8 {
+    const key: api.cache.StringKey = .{ .value = ws_id };
+    if (self.api_state.workspace_paths_cache.lookup(key)) |paths| return paths;
+    if (!self.api_state.workspace_paths_cache.shouldDispatch(key)) return &.{};
+
+    const alloc = self.api_state.allocator();
+    const key_copy = alloc.dupe(u8, ws_id) catch {
+        self.api_state.workspace_paths_cache.markFailed(key);
+        return &.{};
+    };
+    const paths = workspace_config.listWorkspacePaths(alloc, ws_id) catch {
+        self.api_state.workspace_paths_cache.markFailed(.{ .value = key_copy });
+        return &.{};
+    };
+    self.api_state.workspace_paths_cache.store(.{ .value = key_copy }, paths.paths);
+    return paths.paths;
 }
 
 fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
