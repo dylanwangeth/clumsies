@@ -66,10 +66,6 @@ pub const RuleStats = struct {
     rule_id: []const u8,
     refer_count: i64,
     active_constraint_count: i64,
-    workspace_count: i64,
-    bundle_count: i64,
-    open_pr_count: i64,
-    last_referred_at: ?i64 = null,
     trend: []const i64 = &.{},
 };
 
@@ -83,7 +79,6 @@ pub const UserStats = struct {
     username: []const u8,
     refer_count: i64,
     active_days: i64,
-    last_referred_at: ?i64 = null,
     trend: []const i64 = &.{},
     top_rules: []const UserRuleStats = &.{},
 };

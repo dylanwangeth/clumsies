@@ -435,39 +435,15 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     var rule_result = conn.query(
         \\SELECT p.rule_id,
         \\  COALESCE(te_stats.refer_count, 0),
-        \\  COALESCE(te_stats.active_constraints, 0),
-        \\  COALESCE(ws_stats.workspace_count, 0),
-        \\  COALESCE(bp_stats.bundle_count, 0),
-        \\  COALESCE(pr_stats.open_pr_count, 0),
-        \\  te_stats.last_referred_at
+        \\  COALESCE(te_stats.active_constraints, 0)
         \\FROM rules p
         \\LEFT JOIN (
         \\  SELECT te.rule_id, count(*) as refer_count,
-        \\    count(DISTINCT te.constraint_id) as active_constraints,
-        \\    max(te.timestamp) as last_referred_at
+        \\    count(DISTINCT te.constraint_id) as active_constraints
         \\  FROM attestation_events te JOIN workspaces w ON w.ws_id = te.ws_id
         \\  WHERE w.org_id = $1::uuid AND te.type = 'refer' AND te.rule_id IS NOT NULL
         \\  GROUP BY te.rule_id
         \\) te_stats ON te_stats.rule_id = p.rule_id
-        \\LEFT JOIN (
-        \\  SELECT wp.rule_id, count(DISTINCT wp.ws_id) as workspace_count
-        \\  FROM workspace_rules wp JOIN workspaces w ON w.ws_id = wp.ws_id
-        \\  WHERE w.org_id = $1::uuid
-        \\  GROUP BY wp.rule_id
-        \\) ws_stats ON ws_stats.rule_id = p.rule_id
-        \\LEFT JOIN (
-        \\  SELECT bp.rule_id, count(*) as bundle_count
-        \\  FROM bundle_rules bp JOIN bundles b ON b.bundle_id = bp.bundle_id
-        \\  WHERE b.org_id = $1::uuid
-        \\  GROUP BY bp.rule_id
-        \\) bp_stats ON bp_stats.rule_id = p.rule_id
-        \\LEFT JOIN (
-        \\  SELECT op.rule_id, count(DISTINCT op.pr_id) as open_pr_count
-        \\  FROM rule_pr_operations op
-        \\  JOIN rule_prs pr ON pr.pr_id = op.pr_id
-        \\  WHERE pr.org_id = $1::uuid AND pr.status = 'open' AND op.rule_id IS NOT NULL
-        \\  GROUP BY op.rule_id
-        \\) pr_stats ON pr_stats.rule_id = p.rule_id
         \\WHERE p.org_id = $1::uuid
         \\ORDER BY COALESCE(te_stats.refer_count, 0) DESC
     , .{user.org_id}) catch |err| blk: {
@@ -494,22 +470,6 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
                     log.err("org stats active_constraint_count get failed: {}", .{err});
                     continue;
                 },
-                .workspace_count = prow.get(i64, 3) catch |err| {
-                    log.err("org stats workspace_count get failed: {}", .{err});
-                    continue;
-                },
-                .bundle_count = prow.get(i64, 4) catch |err| {
-                    log.err("org stats bundle_count get failed: {}", .{err});
-                    continue;
-                },
-                .open_pr_count = prow.get(i64, 5) catch |err| {
-                    log.err("org stats open_pr_count get failed: {}", .{err});
-                    continue;
-                },
-                .last_referred_at = prow.get(?i64, 6) catch |err| blk: {
-                    log.err("org stats last_referred_at get failed: {}", .{err});
-                    break :blk null;
-                },
                 .trend = if (rule_trends.get(prow.get([]const u8, 0) catch "")) |trend| trend else zeroTrendSeries(req.arena, max_days),
             }) catch continue;
         }
@@ -520,14 +480,12 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         \\SELECT u.user_id,
         \\  u.username,
         \\  COALESCE(stats.refer_count, 0),
-        \\  COALESCE(stats.active_days, 0),
-        \\  stats.last_referred_at
+        \\  COALESCE(stats.active_days, 0)
         \\FROM users u
         \\LEFT JOIN (
         \\  SELECT te.user_id,
         \\    count(*) as refer_count,
-        \\    count(DISTINCT date_trunc('day', to_timestamp(te.timestamp / 1000))) as active_days,
-        \\    max(te.timestamp) as last_referred_at
+        \\    count(DISTINCT date_trunc('day', to_timestamp(te.timestamp / 1000))) as active_days
         \\  FROM attestation_events te
         \\  JOIN workspaces w ON w.ws_id = te.ws_id
         \\  WHERE w.org_id = $1::uuid
@@ -565,10 +523,6 @@ pub fn handleOrgStats(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
                 .active_days = urow.get(i64, 3) catch |err| {
                     log.err("org stats user active_days get failed: {}", .{err});
                     continue;
-                },
-                .last_referred_at = urow.get(?i64, 4) catch |err| blk: {
-                    log.err("org stats user last_referred_at get failed: {}", .{err});
-                    break :blk null;
                 },
                 .trend = if (user_trends.get(user_id)) |trend| trend else zeroTrendSeries(req.arena, max_days),
                 .top_rules = if (user_top_rules.get(user_id)) |tops| tops else &.{},

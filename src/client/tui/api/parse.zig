@@ -163,10 +163,6 @@ pub fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?model.OrgStats
             .rule_id = alloc.dupe(u8, p.rule_id) catch continue,
             .refer_count = p.refer_count,
             .active_constraint_count = p.active_constraint_count,
-            .workspace_count = p.workspace_count,
-            .bundle_count = p.bundle_count,
-            .open_pr_count = p.open_pr_count,
-            .last_referred_at = p.last_referred_at,
             .trend = trend_values.items,
         }) catch continue;
     }
@@ -191,7 +187,6 @@ pub fn parseOrgStats(alloc: std.mem.Allocator, body: []const u8) ?model.OrgStats
             .username = alloc.dupe(u8, u.username) catch continue,
             .refer_count = u.refer_count,
             .active_days = u.active_days,
-            .last_referred_at = u.last_referred_at,
             .trend = trend_values.items,
             .top_rules = top_rules.items,
         }) catch continue;

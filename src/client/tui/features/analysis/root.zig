@@ -63,12 +63,8 @@ pub fn drawRules(
     w.drawBorder(&surface, border_color, theme.PANEL);
 
     w.writeText(&surface, ctx, 3, 0, "Rules Rank", theme.boldOn(theme.PANEL, theme.TEXT));
-    const col_reach: u16 = width -| 24;
-    const col_trend: u16 = width -| 16;
-    const col_last: u16 = width -| 8;
-    w.writeText(&surface, ctx, col_reach, 0, "reach", theme.fg(theme.MUTED));
-    w.writeText(&surface, ctx, col_trend, 0, "trend", theme.fg(theme.MUTED));
-    w.writeText(&surface, ctx, col_last, 0, "last", theme.fg(theme.MUTED));
+    const col_move: u16 = width -| 9;
+    w.writeText(&surface, ctx, col_move, 0, "move", theme.fg(theme.MUTED));
 
     if (!available) {
         w.writeText(&surface, ctx, 2, 1, "Remote analysis unavailable.", theme.fg(theme.MUTED));
@@ -87,7 +83,7 @@ pub fn drawRules(
 
     const name_col: u16 = 2;
     const min_name_w: u16 = 18;
-    const max_name_w: u16 = @max(min_name_w, @min(@as(u16, 40), col_reach -| name_col -| 24));
+    const max_name_w: u16 = @max(min_name_w, @min(@as(u16, 40), col_move -| name_col -| 12));
     var measured_name_w: u16 = min_name_w;
     for (insights.rules) |rule| {
         const candidate = @as(u16, @intCast(ctx.stringWidth(firstLineTrimmed(rule.name, max_name_w))));
@@ -95,7 +91,7 @@ pub fn drawRules(
     }
     const name_w: u16 = @min(max_name_w, measured_name_w);
     const bar_start: u16 = name_col + name_w + 1;
-    const bar_end: u16 = col_reach -| 2;
+    const bar_end: u16 = col_move -| 2;
     const bar_max_w: u16 = bar_end -| bar_start;
 
     const focused = self.analysis.focus == .rules;
@@ -134,26 +130,19 @@ pub fn drawRules(
             }
             const ref_text = try std.fmt.allocPrint(ctx.arena, " {d}", .{rule.refer_count});
             const ref_col: u16 = bar_start + bar_w;
-            if (ref_col + @as(u16, @intCast(ctx.stringWidth(ref_text))) < col_reach) {
+            if (ref_col + @as(u16, @intCast(ctx.stringWidth(ref_text))) < col_move) {
                 w.writeText(&surface, ctx, ref_col, row, ref_text, theme.fg(theme.TEXT));
             }
         }
 
-        const reach_txt = try std.fmt.allocPrint(ctx.arena, "{d}", .{rule.workspace_count});
-        w.writeText(&surface, ctx, col_reach, row, reach_txt, theme.fg(theme.MUTED));
-        const trend_summary = try ruleTrendSummary(ctx.arena, rule.trend);
-        const trend_style: vaxis.Style = switch (trend_summary.kind) {
+        const rank_move = try ruleRankMove(ctx.arena, insights.rules, rule_idx);
+        const move_style: vaxis.Style = switch (rank_move.kind) {
             .up => theme.fg(theme.OK),
             .down => theme.fg(theme.DANGER),
             .flat => theme.fg(theme.MUTED),
             .none => theme.fg(theme.DIM),
         };
-        w.writeText(&surface, ctx, col_trend, row, trend_summary.text, trend_style);
-        const last_txt = if (rule.last_referred_days_ago) |days|
-            (try std.fmt.allocPrint(ctx.arena, "{d}d", .{days}))
-        else
-            "\xe2\x80\x94";
-        w.writeText(&surface, ctx, col_last, row, last_txt, theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, col_move, row, rank_move.text, move_style);
         row += 1;
 
         if (self.analysis.expanded_rule == rule_idx) {
@@ -191,7 +180,7 @@ pub fn drawRules(
                     const c_bar_w: u16 = if (constraint.refer_count > 0 and c_bar_w_raw == 0 and child_bar_max_w > 0) 1 else c_bar_w_raw;
                     for (0..c_bar_w) |offset| {
                         const bc: u16 = child_bar_start + @as(u16, @intCast(offset));
-                        if (bc >= col_reach -| 2) break;
+                        if (bc >= col_move -| 2) break;
                         const t: f32 = if (c_bar_w > 1)
                             @as(f32, @floatFromInt(offset)) / @as(f32, @floatFromInt(c_bar_w - 1))
                         else
@@ -202,13 +191,13 @@ pub fn drawRules(
                         });
                     }
                     const c_ref = try std.fmt.allocPrint(ctx.arena, " {d}", .{constraint.refer_count});
-                    w.writeText(&surface, ctx, col_reach, row, c_ref, theme.fg(theme.MUTED));
+                    w.writeText(&surface, ctx, col_move, row, c_ref, theme.fg(theme.MUTED));
                 } else {
                     const idle_txt = if (constraint.idle_days) |days|
                         try std.fmt.allocPrint(ctx.arena, "idle {d}d \xe2\x9a\xa0", .{days})
                     else
                         "idle \xe2\x9a\xa0";
-                    w.writeText(&surface, ctx, col_reach, row, idle_txt, .{ .fg = theme.DANGER, .bg = theme.PANEL });
+                    w.writeText(&surface, ctx, col_move, row, idle_txt, .{ .fg = theme.DANGER, .bg = theme.PANEL });
                 }
                 row += 1;
             }
@@ -473,51 +462,73 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
     };
 }
 
-const TrendSummaryKind = enum {
+const RankMoveKind = enum {
     up,
     down,
     flat,
     none,
 };
 
-const TrendSummary = struct {
+const RankMove = struct {
     text: []const u8,
-    kind: TrendSummaryKind,
+    kind: RankMoveKind,
 };
 
-fn ruleTrendSummary(
+fn ruleRankMove(
     arena: std.mem.Allocator,
-    trend: [30]u16,
-) std.mem.Allocator.Error!TrendSummary {
-    const window = 7;
-    var recent: u32 = 0;
-    var previous: u32 = 0;
+    rules: []const data.AnalysisRule,
+    current_idx: usize,
+) std.mem.Allocator.Error!RankMove {
+    if (current_idx >= rules.len) return .{ .text = try arena.dupe(u8, "\xe2\x80\x94"), .kind = .none };
 
-    for (trend[trend.len - window ..]) |value| recent += value;
-    for (trend[trend.len - window * 2 .. trend.len - window]) |value| previous += value;
+    const current = rules[current_idx];
+    if (current.refer_count == 0) return .{ .text = try arena.dupe(u8, "\xe2\x80\x94"), .kind = .none };
 
-    if (recent == 0 and previous == 0) {
-        return .{ .text = try arena.dupe(u8, "\xe2\x80\x94"), .kind = .none };
-    }
-    if (previous == 0 and recent > 0) {
+    const current_previous_score = previousRankScore(current);
+    if (current_previous_score == 0 and recentRankScore(current) > 0) {
         return .{ .text = try arena.dupe(u8, "new"), .kind = .up };
     }
-    if (recent == previous) {
-        return .{ .text = try arena.dupe(u8, "flat"), .kind = .flat };
+
+    var previous_rank: usize = 1;
+    for (rules, 0..) |other, other_idx| {
+        if (other_idx == current_idx) continue;
+        const other_previous_score = previousRankScore(other);
+        if (other_previous_score > current_previous_score or
+            (other_previous_score == current_previous_score and other_idx < current_idx))
+        {
+            previous_rank += 1;
+        }
     }
-    if (recent > previous) {
-        const pct = @min(@divTrunc((recent - previous) * 100, previous), 999);
+
+    const current_rank = current_idx + 1;
+    if (previous_rank > current_rank) {
+        const delta = previous_rank - current_rank;
         return .{
-            .text = try std.fmt.allocPrint(arena, "+{d}%", .{pct}),
+            .text = try std.fmt.allocPrint(arena, "\xe2\x86\x91{d}", .{delta}),
             .kind = .up,
         };
     }
+    if (previous_rank < current_rank) {
+        const delta = current_rank - previous_rank;
+        return .{
+            .text = try std.fmt.allocPrint(arena, "\xe2\x86\x93{d}", .{delta}),
+            .kind = .down,
+        };
+    }
 
-    const pct = @min(@divTrunc((previous - recent) * 100, previous), 999);
-    return .{
-        .text = try std.fmt.allocPrint(arena, "-{d}%", .{pct}),
-        .kind = .down,
-    };
+    return .{ .text = try arena.dupe(u8, "\xe2\x80\x94"), .kind = .flat };
+}
+
+fn recentRankScore(rule: data.AnalysisRule) u32 {
+    const window = 7;
+    var recent: u32 = 0;
+    for (rule.trend[rule.trend.len - window ..]) |value| recent += value;
+    return recent;
+}
+
+fn previousRankScore(rule: data.AnalysisRule) u32 {
+    const recent = recentRankScore(rule);
+    return if (rule.refer_count > recent) rule.refer_count - recent else 0;
 }
 
 fn firstLineTrimmed(text: []const u8, max_cells: u16) []const u8 {

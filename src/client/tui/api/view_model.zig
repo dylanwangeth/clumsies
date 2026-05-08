@@ -225,11 +225,6 @@ pub fn analysisFromStats(
             @intCast(@min(@divTrunc(ps.active_constraint_count * 100, @max(c_total, 1)), 100))
         else
             0;
-        const rate: u16 = @intCast(@min(
-            @divTrunc(@max(ps.refer_count, 0), @max(@as(i64, @intCast(tcount)), 1)),
-            std.math.maxInt(u16),
-        ));
-
         rules_list.append(alloc, .{
             .name = name,
             .constraint_count = c_total,
@@ -237,10 +232,6 @@ pub fn analysisFromStats(
             .idle_constraint_count = c_idle,
             .signal_ratio = sig,
             .refer_count = @intCast(@min(ps.refer_count, std.math.maxInt(u32))),
-            .workspace_count = @intCast(@min(ps.workspace_count, 255)),
-            .rate_per_day = rate,
-            .delta_pct = 0,
-            .last_referred_days_ago = lastReferredDaysAgo(ps.last_referred_at),
             .trend = trend30FromBuckets(ps.trend),
             .constraints = &.{},
         }) catch continue;
@@ -309,14 +300,6 @@ fn formatCount(alloc: std.mem.Allocator, n: i64) ![]const u8 {
         return std.fmt.allocPrint(alloc, "{d:.1}k", .{k});
     }
     return std.fmt.allocPrint(alloc, "{d}", .{n});
-}
-
-fn lastReferredDaysAgo(ts_ms: ?i64) ?u16 {
-    const ts = ts_ms orelse return null;
-    const now_ms = std.time.milliTimestamp();
-    if (ts > now_ms) return 0;
-    const age_days = @divTrunc(now_ms - ts, std.time.ms_per_day);
-    return @intCast(@min(age_days, std.math.maxInt(u16)));
 }
 
 fn trend30FromBuckets(source: []const i64) [30]u16 {

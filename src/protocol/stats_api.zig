@@ -15,10 +15,6 @@ pub const OrgRuleStat = struct {
     rule_id: []const u8,
     refer_count: i64 = 0,
     active_constraint_count: i64 = 0,
-    workspace_count: i64 = 0,
-    bundle_count: i64 = 0,
-    open_pr_count: i64 = 0,
-    last_referred_at: ?i64 = null,
     trend: []const i64 = &.{},
 };
 
@@ -32,7 +28,6 @@ pub const OrgUserStat = struct {
     username: []const u8 = "",
     refer_count: i64 = 0,
     active_days: i64 = 0,
-    last_referred_at: ?i64 = null,
     trend: []const i64 = &.{},
     top_rules: []const OrgUserTopRuleStat = &.{},
 };
