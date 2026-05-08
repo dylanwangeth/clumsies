@@ -1286,11 +1286,11 @@ fn reviewStatusStyle(status: []const u8) vaxis.Style {
 }
 
 fn reviewOpStyle() vaxis.Style {
-    return theme.fgBold(theme.ACCENT_PR);
+    return theme.fg(theme.TEXT);
 }
 
 fn reviewCommentsStyle() vaxis.Style {
-    return theme.fg(theme.INFO);
+    return theme.fg(theme.TEXT);
 }
 
 fn reviewOpLabel(allocator: std.mem.Allocator, pr: data.PullRequestEntry) std.mem.Allocator.Error![]const u8 {
