@@ -345,6 +345,8 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
         text_lens: std.ArrayListUnmanaged(usize) = .empty,
         text_bufs: std.ArrayListUnmanaged([text_buf_len]u8) = .empty,
         all_dir_paths: std.ArrayListUnmanaged([]const u8) = .empty,
+        all_leaf_paths: std.ArrayListUnmanaged([]const u8) = .empty,
+        all_leaf_indices: std.ArrayListUnmanaged(usize) = .empty,
         expanded: std.StringHashMapUnmanaged(void) = .empty,
         seen_dir_paths: std.StringHashMapUnmanaged(void) = .empty,
         initialized: bool = false,
@@ -357,6 +359,9 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             self.text_bufs.deinit(allocator);
             self.freeAllDirPaths(allocator);
             self.all_dir_paths.deinit(allocator);
+            self.freeAllLeafPaths(allocator);
+            self.all_leaf_paths.deinit(allocator);
+            self.all_leaf_indices.deinit(allocator);
             freeMapKeys(allocator, &self.expanded);
             self.expanded.deinit(allocator);
             freeMapKeys(allocator, &self.seen_dir_paths);
@@ -365,6 +370,7 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
 
         pub fn reset(self: *Self, allocator: std.mem.Allocator) void {
             self.freeAllDirPaths(allocator);
+            self.freeAllLeafPaths(allocator);
             freeMapKeys(allocator, &self.expanded);
             freeMapKeys(allocator, &self.seen_dir_paths);
             self.initialized = false;
@@ -388,6 +394,24 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
         pub fn leafIndexAt(self: *const Self, row: usize) ?usize {
             if (row >= self.rowCount()) return null;
             return self.leaf_indices.items[row];
+        }
+
+        pub fn leafCountUnderDir(self: *const Self, prefix: []const u8) usize {
+            var count: usize = 0;
+            for (self.all_leaf_paths.items) |path| {
+                if (std.mem.startsWith(u8, path, prefix)) count += 1;
+            }
+            return count;
+        }
+
+        pub fn leafIndexUnderDirAt(self: *const Self, prefix: []const u8, offset: usize) ?usize {
+            var seen: usize = 0;
+            for (self.all_leaf_paths.items, self.all_leaf_indices.items) |path, leaf_idx| {
+                if (!std.mem.startsWith(u8, path, prefix)) continue;
+                if (seen == offset) return leaf_idx;
+                seen += 1;
+            }
+            return null;
         }
 
         pub fn depthAt(self: *const Self, row: usize) u8 {
@@ -492,6 +516,7 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
                 sorted_orig[i] = original_leaf_indices[sort_idx[i]];
             }
             self.syncAllDirPaths(allocator, sorted_paths[0..item_count]);
+            self.syncAllLeafPaths(allocator, sorted_paths[0..item_count], sorted_orig[0..item_count]);
 
             var rows_buf: std.ArrayListUnmanaged(Row) = .empty;
             defer rows_buf.deinit(allocator);
@@ -584,6 +609,20 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
             }
         }
 
+        fn syncAllLeafPaths(self: *Self, allocator: std.mem.Allocator, paths: []const []const u8, original_leaf_indices: []const usize) void {
+            self.freeAllLeafPaths(allocator);
+            const count = @min(paths.len, original_leaf_indices.len);
+            var i: usize = 0;
+            while (i < count) : (i += 1) {
+                const owned = allocator.dupe(u8, paths[i]) catch return;
+                self.all_leaf_paths.append(allocator, owned) catch {
+                    allocator.free(owned);
+                    return;
+                };
+                self.all_leaf_indices.append(allocator, original_leaf_indices[i]) catch return;
+            }
+        }
+
         fn hasDirPath(self: *const Self, prefix: []const u8) bool {
             for (self.all_dir_paths.items) |path| {
                 if (std.mem.eql(u8, path, prefix)) return true;
@@ -607,6 +646,12 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
         fn freeAllDirPaths(self: *Self, allocator: std.mem.Allocator) void {
             for (self.all_dir_paths.items) |path| allocator.free(path);
             self.all_dir_paths.clearRetainingCapacity();
+        }
+
+        fn freeAllLeafPaths(self: *Self, allocator: std.mem.Allocator) void {
+            for (self.all_leaf_paths.items) |path| allocator.free(path);
+            self.all_leaf_paths.clearRetainingCapacity();
+            self.all_leaf_indices.clearRetainingCapacity();
         }
     };
 }

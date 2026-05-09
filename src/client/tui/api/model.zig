@@ -51,6 +51,7 @@ pub const ArtifactRule = struct {
 };
 
 pub const BundleData = struct {
+    bundle_id: []const u8 = "",
     name: []const u8,
     description: []const u8,
     rule_count: usize,

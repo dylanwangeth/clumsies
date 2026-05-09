@@ -336,7 +336,7 @@ test "toRuleEntries maps artifact rules to view entries" {
 test "toBundleEntries maps bundle data to view entries" {
     const alloc = std.testing.allocator;
     const bundles = [_]model.BundleData{
-        .{ .name = "default", .description = "", .rule_count = 5 },
+        .{ .bundle_id = "bnd-default", .name = "default", .description = "", .rule_count = 5 },
     };
     const entries = toBundleEntries(alloc, &bundles);
     defer alloc.free(entries);

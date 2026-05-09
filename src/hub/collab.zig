@@ -59,9 +59,9 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 
     for (req_body.operations) |op| {
         if (!isValidType(op.type)) {
-            return apiError(res, 400, "BAD_REQUEST", "operation type must be modify, rename, create, or delete");
+            return apiError(res, 400, "BAD_REQUEST", "operation type is not supported");
         }
-        if (!try validateOperation(conn, user.org_id, op, res)) return;
+        if (!try validateOperation(conn, user.org_id, op, req_body.operations, res)) return;
     }
 
     if (!try validateNoIntraPrPathConflict(req.arena, req_body.operations, res)) return;
@@ -93,6 +93,10 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         const target_path: ?[]const u8 = if (std.mem.eql(u8, op.type, "rename"))
             op.new_path
         else if (std.mem.eql(u8, op.type, "create"))
+            op.path
+        else if (std.mem.eql(u8, op.type, "bundle_create") or
+            std.mem.eql(u8, op.type, "bundle_add") or
+            std.mem.eql(u8, op.type, "bundle_remove"))
             op.path
         else
             null;
@@ -126,10 +130,13 @@ fn isValidType(t: []const u8) bool {
     return std.mem.eql(u8, t, "modify") or
         std.mem.eql(u8, t, "rename") or
         std.mem.eql(u8, t, "create") or
-        std.mem.eql(u8, t, "delete");
+        std.mem.eql(u8, t, "delete") or
+        std.mem.eql(u8, t, "bundle_create") or
+        std.mem.eql(u8, t, "bundle_add") or
+        std.mem.eql(u8, t, "bundle_remove");
 }
 
-fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, res: *httpz.Response) !bool {
+fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, ops: []const Operation, res: *httpz.Response) !bool {
     if (std.mem.eql(u8, op.type, "modify")) {
         const pid = op.rule_id orelse {
             try apiError(res, 400, "BAD_REQUEST", "modify requires rule_id");
@@ -201,8 +208,85 @@ fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, res: *htt
         }
         try apiError(res, 404, "NOT_FOUND", "rule not found");
         return false;
+    } else if (std.mem.eql(u8, op.type, "bundle_create")) {
+        const bundle_name = op.path orelse {
+            try apiError(res, 400, "BAD_REQUEST", "bundle_create requires bundle name");
+            return false;
+        };
+        return try verifyBundleAvailable(conn, org_id, bundle_name, res);
+    } else if (std.mem.eql(u8, op.type, "bundle_add") or std.mem.eql(u8, op.type, "bundle_remove")) {
+        const pid = op.rule_id orelse {
+            try apiError(res, 400, "BAD_REQUEST", "bundle operation requires rule_id");
+            return false;
+        };
+        const bundle_name = op.path orelse {
+            try apiError(res, 400, "BAD_REQUEST", "bundle operation requires bundle name");
+            return false;
+        };
+        if (!try verifyRuleExists(conn, org_id, pid, res)) return false;
+        if (std.mem.eql(u8, op.type, "bundle_add") and createsBundleInPr(ops, bundle_name)) return true;
+        if (!try verifyBundleExists(conn, org_id, bundle_name, res)) return false;
+        return true;
     }
     return false;
+}
+
+fn createsBundleInPr(ops: []const Operation, bundle_name: []const u8) bool {
+    for (ops) |op| {
+        if (!std.mem.eql(u8, op.type, "bundle_create")) continue;
+        if (op.path) |path| {
+            if (std.mem.eql(u8, path, bundle_name)) return true;
+        }
+    }
+    return false;
+}
+
+fn verifyRuleExists(conn: anytype, org_id: []const u8, rule_id: []const u8, res: *httpz.Response) !bool {
+    var row = conn.row(
+        "SELECT 1 FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
+        .{ org_id, rule_id },
+    ) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    if (row) |*r| {
+        r.deinit() catch {};
+        return true;
+    }
+    try apiError(res, 404, "NOT_FOUND", "rule not found");
+    return false;
+}
+
+fn verifyBundleExists(conn: anytype, org_id: []const u8, bundle_name: []const u8, res: *httpz.Response) !bool {
+    var row = conn.row(
+        "SELECT 1 FROM bundles WHERE org_id = $1::uuid AND name = $2",
+        .{ org_id, bundle_name },
+    ) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    if (row) |*r| {
+        r.deinit() catch {};
+        return true;
+    }
+    try apiError(res, 404, "NOT_FOUND", "bundle not found");
+    return false;
+}
+
+fn verifyBundleAvailable(conn: anytype, org_id: []const u8, bundle_name: []const u8, res: *httpz.Response) !bool {
+    var row = conn.row(
+        "SELECT 1 FROM bundles WHERE org_id = $1::uuid AND name = $2",
+        .{ org_id, bundle_name },
+    ) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    if (row) |*r| {
+        r.deinit() catch {};
+        try apiError(res, 409, "CONFLICT", "bundle already exists");
+        return false;
+    }
+    return true;
 }
 
 fn verifyPromptBaseHash(conn: anytype, org_id: []const u8, rule_id: []const u8, base_hash: []const u8, res: *httpz.Response) !bool {
@@ -234,6 +318,9 @@ fn verifyPromptBaseHash(conn: anytype, org_id: []const u8, rule_id: []const u8, 
 
 fn deriveRuleBaseContent(conn: anytype, allocator: std.mem.Allocator, org_id: []const u8, op: Operation, res: *httpz.Response) !?[]const u8 {
     if (std.mem.eql(u8, op.type, "create")) return null;
+    if (std.mem.eql(u8, op.type, "bundle_create") or
+        std.mem.eql(u8, op.type, "bundle_add") or
+        std.mem.eql(u8, op.type, "bundle_remove")) return null;
     const rule_id = op.rule_id orelse return null;
 
     var row = conn.row(
@@ -825,6 +912,47 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                 try apiError(res, 500, "INTERNAL_ERROR", "failed to delete rule");
                 return false;
             };
+        } else if (std.mem.eql(u8, op.type, "bundle_create")) {
+            const bundle_name = op.path.?;
+            const bundle_id = try generateBundleId(arena);
+            _ = conn.exec(
+                "INSERT INTO bundles (bundle_id, org_id, name, description) VALUES ($1, $2::uuid, $3, '')",
+                .{ bundle_id, org_id, bundle_name },
+            ) catch {
+                conn.rollback() catch {};
+                try apiError(res, 409, "CONFLICT", "failed to create bundle");
+                return false;
+            };
+        } else if (std.mem.eql(u8, op.type, "bundle_add")) {
+            const pid = op.rule_id.?;
+            const bundle_name = op.path.?;
+            const bundle_id = try loadBundleId(conn, arena, org_id, bundle_name, res) orelse {
+                conn.rollback() catch {};
+                return false;
+            };
+            _ = conn.exec(
+                "INSERT INTO bundle_rules (bundle_id, rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                .{ bundle_id, pid },
+            ) catch {
+                conn.rollback() catch {};
+                try apiError(res, 500, "INTERNAL_ERROR", "failed to add rule to bundle");
+                return false;
+            };
+        } else if (std.mem.eql(u8, op.type, "bundle_remove")) {
+            const pid = op.rule_id.?;
+            const bundle_name = op.path.?;
+            const bundle_id = try loadBundleId(conn, arena, org_id, bundle_name, res) orelse {
+                conn.rollback() catch {};
+                return false;
+            };
+            _ = conn.exec(
+                "DELETE FROM bundle_rules WHERE bundle_id = $1 AND rule_id = $2",
+                .{ bundle_id, pid },
+            ) catch {
+                conn.rollback() catch {};
+                try apiError(res, 500, "INTERNAL_ERROR", "failed to remove rule from bundle");
+                return false;
+            };
         }
     }
 
@@ -854,6 +982,40 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
     };
 
     return true;
+}
+
+fn generateBundleId(arena: std.mem.Allocator) ![]const u8 {
+    var rand_bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&rand_bytes);
+    var buf: [36]u8 = undefined;
+    @memcpy(buf[0..4], "bnd-");
+    const hex = "0123456789abcdef";
+    for (rand_bytes, 0..) |byte, i| {
+        buf[4 + i * 2] = hex[byte >> 4];
+        buf[4 + i * 2 + 1] = hex[byte & 0x0f];
+    }
+    return try arena.dupe(u8, buf[0..36]);
+}
+
+fn loadBundleId(
+    conn: anytype,
+    arena: std.mem.Allocator,
+    org_id: []const u8,
+    bundle_name: []const u8,
+    res: *httpz.Response,
+) !?[]const u8 {
+    var row = conn.row(
+        "SELECT bundle_id FROM bundles WHERE org_id = $1::uuid AND name = $2",
+        .{ org_id, bundle_name },
+    ) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return null;
+    } orelse {
+        try apiError(res, 404, "NOT_FOUND", "bundle not found");
+        return null;
+    };
+    defer row.deinit() catch {};
+    return try arena.dupe(u8, try row.get([]const u8, 0));
 }
 
 fn bumpWorkspaceRevisions(conn: anytype, rule_id: []const u8) void {

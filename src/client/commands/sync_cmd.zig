@@ -21,6 +21,21 @@ const log = std.log.scoped(.sync);
 /// that many changed entries.
 const BATCH_CHUNK_SIZE: usize = 1024;
 
+pub const MaterializeOptions = struct {
+    progress: ?*std.Io.Writer = null,
+    errors: ?*std.Io.Writer = null,
+};
+
+pub const MaterializeSummary = struct {
+    rules_total: usize = 0,
+    rules_fetched: usize = 0,
+    rules_unchanged: usize = 0,
+    context_total: usize = 0,
+    context_fetched: usize = 0,
+    context_unchanged: usize = 0,
+    conflicted_drafts: usize = 0,
+};
+
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const SPECS = [_]flag.FlagSpec{};
 
@@ -71,27 +86,39 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     // transparently during sync instead of forcing `clumsies login`.
     try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
 
+    const summary = materializeWorkspace(allocator, &hub, ws_id, .{ .progress = stdout, .errors = stderr }) catch |err| {
+        try stderr.print("{s}{s}{s}Error:{s} Sync failed: {s}\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
+        return;
+    };
+
+    const skipped_suffix = try std.fmt.allocPrint(allocator, " ({d} rules + {d} context unchanged)", .{ summary.rules_unchanged, summary.context_unchanged });
+    defer allocator.free(skipped_suffix);
+    const skipped_note: []const u8 = if (summary.rules_unchanged + summary.context_unchanged > 0) skipped_suffix else "";
+    if (summary.conflicted_drafts > 0) {
+        try stdout.print("{s}{s}{s}Synced:{s} {d} rules, {d} context files{s}, {d} drafts flagged conflicted\n", .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total, skipped_note, summary.conflicted_drafts });
+    } else {
+        try stdout.print("{s}{s}{s}Synced:{s} {d} rules, {d} context files{s}\n", .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total, skipped_note });
+    }
+}
+
+pub fn materializeWorkspace(
+    allocator: std.mem.Allocator,
+    hub: *HubClient,
+    ws_id: []const u8,
+    options: MaterializeOptions,
+) !MaterializeSummary {
     // GET /api/workspaces/{ws_id}/manifest
     const manifest_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/manifest", .{ws_id});
     defer allocator.free(manifest_path);
 
-    const manifest_response = hub.get(manifest_path) catch |err| {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to reach Hub at {s}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, auth_info.hub_url, @errorName(err) });
-        return;
-    };
+    const manifest_response = try hub.get(manifest_path);
     defer manifest_response.deinit();
-    if (manifest_response.status != .ok) {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to fetch manifest (HTTP {d})\n", .{ P, Color.bold, Color.red, Color.reset, @intFromEnum(manifest_response.status) });
-        return;
-    }
+    if (manifest_response.status != .ok) return error.ManifestFetchFailed;
 
     const manifest_parsed = std.json.parseFromSlice(workspace_api.WorkspaceManifestResponse, allocator, manifest_response.body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
-    }) catch {
-        try stderr.print("{s}{s}{s}Error:{s} Failed to parse manifest\n", .{ P, Color.bold, Color.red, Color.reset });
-        return;
-    };
+    }) catch return error.ManifestParseFailed;
     defer manifest_parsed.deinit();
     const manifest = manifest_parsed.value;
 
@@ -158,36 +185,40 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     switch (mpf_status) {
         .absent => {},
-        .unchanged => try stdout.print("{s}\xe2\x86\x92 META_PROMPT.md: unchanged\n", .{P}),
-        .to_fetch => try stdout.print("{s}\xe2\x86\x92 META_PROMPT.md: to fetch\n", .{P}),
+        .unchanged => if (options.progress) |out| try out.print("{s}\xe2\x86\x92 META_PROMPT.md: unchanged\n", .{P}),
+        .to_fetch => if (options.progress) |out| try out.print("{s}\xe2\x86\x92 META_PROMPT.md: to fetch\n", .{P}),
     }
-    try stdout.print("{s}\xe2\x86\x92 Rules: {d} unchanged, {d} to fetch\n", .{ P, rule_skipped, regular_rule_to_fetch });
-    try stdout.flush();
+    if (options.progress) |out| {
+        try out.print("{s}\xe2\x86\x92 Rules: {d} unchanged, {d} to fetch\n", .{ P, rule_skipped, regular_rule_to_fetch });
+        try out.flush();
+    }
 
     var rule_fetched: usize = 0;
     {
         var start: usize = 0;
         while (start < rule_to_fetch.items.len) {
             const end = @min(start + BATCH_CHUNK_SIZE, rule_to_fetch.items.len);
-            rule_fetched += fetchRuleBatch(allocator, &hub, stderr, cache_dir, rule_to_fetch.items[start..end], &rule_path_for_id) catch |err| {
-                try stderr.print("{s}{s}{s}Error:{s} Rule batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
-                return;
+            rule_fetched += fetchRuleBatch(allocator, hub, options.errors, cache_dir, rule_to_fetch.items[start..end], &rule_path_for_id) catch |err| {
+                if (options.errors) |writer| try writer.print("{s}{s}{s}Error:{s} Rule batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
+                return error.RuleBatchFetchFailed;
             };
             start = end;
         }
     }
 
-    try stdout.print("{s}\xe2\x86\x92 Context: {d} unchanged, {d} to fetch\n", .{ P, context_skipped, contexts_to_fetch.items.len });
-    try stdout.flush();
+    if (options.progress) |out| {
+        try out.print("{s}\xe2\x86\x92 Context: {d} unchanged, {d} to fetch\n", .{ P, context_skipped, contexts_to_fetch.items.len });
+        try out.flush();
+    }
 
     var context_fetched: usize = 0;
     {
         var start: usize = 0;
         while (start < contexts_to_fetch.items.len) {
             const end = @min(start + BATCH_CHUNK_SIZE, contexts_to_fetch.items.len);
-            context_fetched += fetchContextBatch(allocator, &hub, stderr, cache_dir, ws_id, contexts_to_fetch.items[start..end]) catch |err| {
-                try stderr.print("{s}{s}{s}Error:{s} Context batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
-                return;
+            context_fetched += fetchContextBatch(allocator, hub, options.errors, cache_dir, ws_id, contexts_to_fetch.items[start..end]) catch |err| {
+                if (options.errors) |writer| try writer.print("{s}{s}{s}Error:{s} Context batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
+                return error.ContextBatchFetchFailed;
             };
             start = end;
         }
@@ -216,14 +247,15 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }
 
     const reconcile = drafts_mod.reconcileDrafts(allocator, ws_dir, cache_dir) catch drafts_mod.ReconcileSummary{};
-    const skipped_suffix = try std.fmt.allocPrint(allocator, " ({d} rules + {d} context unchanged)", .{ rule_skipped, context_skipped });
-    defer allocator.free(skipped_suffix);
-    const skipped_note: []const u8 = if (rule_skipped + context_skipped > 0) skipped_suffix else "";
-    if (reconcile.conflicted > 0) {
-        try stdout.print("{s}{s}{s}Synced:{s} {d} rules, {d} context files{s}, {d} drafts flagged conflicted\n", .{ P, Color.bold, Color.green, Color.reset, rule_count, context_count, skipped_note, reconcile.conflicted });
-    } else {
-        try stdout.print("{s}{s}{s}Synced:{s} {d} rules, {d} context files{s}\n", .{ P, Color.bold, Color.green, Color.reset, rule_count, context_count, skipped_note });
-    }
+    return .{
+        .rules_total = rule_count,
+        .rules_fetched = rule_fetched,
+        .rules_unchanged = rule_skipped + mpf_in_unchanged,
+        .context_total = context_count,
+        .context_fetched = context_fetched,
+        .context_unchanged = context_skipped,
+        .conflicted_drafts = reconcile.conflicted,
+    };
 }
 
 /// Batch-fetch rule bodies in a single POST. Per-item errors from
@@ -234,7 +266,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 fn fetchRuleBatch(
     allocator: std.mem.Allocator,
     hub: *HubClient,
-    stderr: *std.Io.Writer,
+    stderr: ?*std.Io.Writer,
     cache_dir: []const u8,
     rule_ids: []const []const u8,
     path_for_id: *const std.StringHashMapUnmanaged([]const u8),
@@ -259,7 +291,7 @@ fn fetchRuleBatch(
     var written: usize = 0;
     for (parsed.value.items) |item| {
         if (item.@"error".len > 0) {
-            try stderr.print("  ! rule {s}: {s}\n", .{ item.rule_id, item.@"error" });
+            if (stderr) |writer| try writer.print("  ! rule {s}: {s}\n", .{ item.rule_id, item.@"error" });
             continue;
         }
         // Prefer the path the server reports (authoritative) but fall
@@ -270,11 +302,11 @@ fn fetchRuleBatch(
             item.path
         else
             path_for_id.get(item.rule_id) orelse {
-                try stderr.print("  ! rule {s}: missing path in response\n", .{item.rule_id});
+                if (stderr) |writer| try writer.print("  ! rule {s}: missing path in response\n", .{item.rule_id});
                 continue;
             };
         writeToCache(allocator, cache_dir, cacheSubDirForRulePath(target_path), target_path, item.body) catch |err| {
-            try stderr.print("  ! rule {s}: write failed ({s})\n", .{ target_path, @errorName(err) });
+            if (stderr) |writer| try writer.print("  ! rule {s}: write failed ({s})\n", .{ target_path, @errorName(err) });
             continue;
         };
         written += 1;
@@ -297,7 +329,7 @@ fn cacheSubDirForRulePath(rule_path: []const u8) []const u8 {
 fn fetchContextBatch(
     allocator: std.mem.Allocator,
     hub: *HubClient,
-    stderr: *std.Io.Writer,
+    stderr: ?*std.Io.Writer,
     cache_dir: []const u8,
     ws_id: []const u8,
     paths: []const []const u8,
@@ -325,11 +357,11 @@ fn fetchContextBatch(
     var written: usize = 0;
     for (parsed.value.items) |item| {
         if (item.@"error".len > 0) {
-            try stderr.print("  ! context {s}: {s}\n", .{ item.path, item.@"error" });
+            if (stderr) |writer| try writer.print("  ! context {s}: {s}\n", .{ item.path, item.@"error" });
             continue;
         }
         writeToCache(allocator, cache_dir, "context", item.path, item.body) catch |err| {
-            try stderr.print("  ! context {s}: write failed ({s})\n", .{ item.path, @errorName(err) });
+            if (stderr) |writer| try writer.print("  ! context {s}: write failed ({s})\n", .{ item.path, @errorName(err) });
             continue;
         };
         written += 1;

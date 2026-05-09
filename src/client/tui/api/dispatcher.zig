@@ -418,7 +418,26 @@ fn deepCopy(comptime T: type, alloc: std.mem.Allocator, value: T) !T {
 fn deepCopyField(comptime T: type, alloc: std.mem.Allocator, value: T) !T {
     if (T == []const u8) return alloc.dupe(u8, value);
     if (T == ?[]const u8) return if (value) |v| try alloc.dupe(u8, v) else null;
+    if (comptime isStruct(T)) return try deepCopy(T, alloc, value);
+    if (comptime isSlice(T)) return try deepCopySlice(T, alloc, value);
     return value;
+}
+
+fn deepCopySlice(comptime T: type, alloc: std.mem.Allocator, value: T) !T {
+    const info = @typeInfo(T).pointer;
+    const Child = info.child;
+    var out = try alloc.alloc(Child, value.len);
+    errdefer {
+        var i: usize = 0;
+        while (i < out.len) : (i += 1) {
+            freeDeepCopyField(Child, alloc, out[i]);
+        }
+        alloc.free(out);
+    }
+    for (value, 0..) |item, i| {
+        out[i] = try deepCopy(Child, alloc, item);
+    }
+    return out;
 }
 
 fn freeDeepCopy(comptime T: type, alloc: std.mem.Allocator, value: T) void {
@@ -437,6 +456,30 @@ fn freeDeepCopyField(comptime T: type, alloc: std.mem.Allocator, value: T) void 
     if (T == ?[]const u8) {
         if (value) |v| alloc.free(v);
     }
+    if (comptime isStruct(T)) {
+        freeDeepCopy(T, alloc, value);
+    }
+    if (comptime isSlice(T)) {
+        const Child = @typeInfo(T).pointer.child;
+        for (value) |item| {
+            freeDeepCopyField(Child, alloc, item);
+        }
+        alloc.free(value);
+    }
+}
+
+fn isSlice(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .pointer => |ptr| ptr.size == .slice and ptr.child != u8,
+        else => false,
+    };
+}
+
+fn isStruct(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .@"struct" => true,
+        else => false,
+    };
 }
 
 fn methodName(method: std.http.Method) []const u8 {
@@ -642,6 +685,31 @@ test "jsonBody serializes structs and skips null optionals" {
     const body_with_bundle = try build(std.testing.allocator, Req{ .name = "foo", .bundle_id = "b1" });
     defer std.testing.allocator.free(body_with_bundle);
     try std.testing.expectEqualStrings("{\"name\":\"foo\",\"bundle_id\":\"b1\"}", body_with_bundle);
+}
+
+test "deepCopy recursively owns slices of structs" {
+    const Op = struct {
+        operation_type: []const u8,
+        rule_id: ?[]const u8 = null,
+    };
+    const Req = struct {
+        title: []const u8,
+        operations: []const Op,
+    };
+
+    const ops = [_]Op{.{ .operation_type = "bundle_add", .rule_id = "p-1" }};
+    const copy = try deepCopy(Req, std.testing.allocator, .{
+        .title = "bundle update",
+        .operations = ops[0..],
+    });
+    defer freeDeepCopy(Req, std.testing.allocator, copy);
+
+    try std.testing.expect(copy.title.ptr != "bundle update".ptr);
+    try std.testing.expect(copy.operations.ptr != ops[0..].ptr);
+    try std.testing.expect(copy.operations[0].operation_type.ptr != ops[0].operation_type.ptr);
+    try std.testing.expect(copy.operations[0].rule_id.?.ptr != ops[0].rule_id.?.ptr);
+    try std.testing.expectEqualStrings("bundle_add", copy.operations[0].operation_type);
+    try std.testing.expectEqualStrings("p-1", copy.operations[0].rule_id.?);
 }
 
 test "ThreadRegistry register and joinAll drain spawned threads" {

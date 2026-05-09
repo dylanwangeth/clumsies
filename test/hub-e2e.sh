@@ -124,11 +124,14 @@ start_hub() {
 }
 
 cleanup() {
-    if [ -n "${WS_ID:-}" ] || [ -n "${CTX_WS:-}" ]; then
+    if [ -n "${WS_ID:-}" ] || [ -n "${CTX_WS:-}" ] || [ -n "${BUNDLE_WS_ID:-}" ]; then
         run_psql <<SQL || true
 DELETE FROM attestation_events
-WHERE ws_id IN ('${WS_ID:-}', '${CTX_WS:-}')
+WHERE ws_id IN ('${WS_ID:-}', '${CTX_WS:-}', '${BUNDLE_WS_ID:-}')
    OR session_id LIKE 'sess-e2e-%';
+DELETE FROM bundle_rules
+WHERE bundle_id IN (SELECT bundle_id FROM bundles WHERE name = '${BUNDLE_NAME:-}');
+DELETE FROM bundles WHERE name = '${BUNDLE_NAME:-}';
 SQL
     fi
     if [ -n "${HUB_PID:-}" ]; then
@@ -355,12 +358,30 @@ RAW=$(call POST "/api/org/bundles" '{"name":"'"$BUNDLE_NAME"'","description":"te
 parse_response "$RAW"
 assert_status "create bundle" "201" "$STATUS"
 assert_json "returns name" "$BUNDLE_NAME" "$BODY"
+BUNDLE_ID=$(echo "$BODY" | grep -o '"bundle_id":"[^"]*"' | cut -d'"' -f4)
+if [ -z "$BUNDLE_ID" ]; then
+    echo "  FAIL: create bundle did not return bundle_id"
+    exit 1
+fi
 
 step "Bundle: list"
 RAW=$(call GET "/api/org/bundles")
 parse_response "$RAW"
 assert_status "list bundles" "200" "$STATUS"
 assert_json "contains test bundle" "$BUNDLE_NAME" "$BODY"
+
+step "Workspace: create from bundle"
+RAW=$(call POST "/api/workspaces" '{"name":"bundle-ws-'"$RUN_ID"'","description":"Workspace seeded from a bundle.","bundle_id":"'"$BUNDLE_ID"'"}')
+parse_response "$RAW"
+assert_status "create workspace from bundle" "201" "$STATUS"
+BUNDLE_WS_ID=$(echo "$BODY" | grep -o '"ws_id":"[^"]*"' | cut -d'"' -f4)
+
+step "Workspace: bundle seed appears in manifest"
+RAW=$(call GET "/api/workspaces/$BUNDLE_WS_ID/manifest")
+parse_response "$RAW"
+assert_status "get bundle-seeded manifest" "200" "$STATUS"
+assert_json "manifest contains first bundle rule" "p-test-001" "$BODY"
+assert_json "manifest contains second bundle rule" "p-test-002" "$BODY"
 
 step "Bundle: get"
 RAW=$(call GET "/api/org/bundles/$BUNDLE_NAME")

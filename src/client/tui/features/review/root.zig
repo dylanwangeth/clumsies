@@ -507,6 +507,7 @@ const target_chips = [_]FilterChip{
     .{ .label = "All", .target_all = true },
     .{ .label = "Context", .target = .context },
     .{ .label = "Rule", .target = .rule },
+    .{ .label = "Bundle", .target = .bundle },
     .{ .label = "MPF", .target = .mpf },
 };
 
@@ -971,7 +972,6 @@ pub fn fetchSelectedReviewPrDetail(self: anytype) void {
     const prs = self.getReviewPrs();
     if (prs.len == 0) return;
     const pr = prs[@min(self.review.selected_pr_idx, prs.len - 1)];
-    if (pr.target_kind == .bundle) return;
     if (self.api_state.pr_detail_cache.shouldDispatch(.{ .value = pr.id })) {
         api.specs.dispatchFromState(
             api.specs.PrIdParams,
@@ -1306,12 +1306,23 @@ fn reviewCommentsStyle() vaxis.Style {
 }
 
 fn reviewOpLabel(allocator: std.mem.Allocator, pr: data.PullRequestEntry) std.mem.Allocator.Error![]const u8 {
+    if (pr.target_kind == .bundle) {
+        const op_label = reviewBundleOpLabel(pr.op_type);
+        if (op_label.len > 0) return allocator.dupe(u8, op_label);
+    }
     if (pr.operation_count > 1) {
         return std.fmt.allocPrint(allocator, "{d} ops", .{pr.operation_count});
     }
     if (pr.op_type.len > 0) {
         return allocator.dupe(u8, pr.op_type);
     }
+    return "";
+}
+
+fn reviewBundleOpLabel(op_type: []const u8) []const u8 {
+    if (std.mem.eql(u8, op_type, "bundle_create")) return "create";
+    if (std.mem.eql(u8, op_type, "bundle_add")) return "modify";
+    if (std.mem.eql(u8, op_type, "bundle_remove")) return "modify";
     return "";
 }
 
@@ -1439,12 +1450,30 @@ test "review filter predicate handles status and target facets" {
         .attestation_refers = 0,
         .attestation_sessions = 0,
     };
+    const bundle = data.PullRequestEntry{
+        .id = "pr_3",
+        .target_kind = .bundle,
+        .target_path = "zig",
+        .rule_name = "zig",
+        .status = "open",
+        .author = "carol",
+        .created = "2026-01-04T00:00:00Z",
+        .title = "Create bundle",
+        .body = "Create bundle",
+        .base_hash = "",
+        .base_content = "",
+        .proposed_content = "",
+        .attestation_refers = 0,
+        .attestation_sessions = 0,
+    };
 
     try testing.expect(reviewPrMatchesFilters(.open, null, open_rule));
     try testing.expect(!reviewPrMatchesFilters(.closed, null, open_rule));
     try testing.expect(reviewPrMatchesFilters(.all, .rule, open_rule));
     try testing.expect(!reviewPrMatchesFilters(.all, .mpf, open_rule));
     try testing.expect(reviewPrMatchesFilters(.closed, .context, closed_context));
+    try testing.expect(reviewPrMatchesFilters(.open, .bundle, bundle));
+    try testing.expect(!reviewPrMatchesFilters(.open, .rule, bundle));
 }
 
 test "review sort orders newest timestamps first" {
@@ -1506,9 +1535,9 @@ test "review sort orders newest timestamps first" {
 
 test "review chips wrap for narrow and medium widths" {
     const testing = std.testing;
-    const labels = [_][]const u8{ "All", "Context", "Rule", "MPF" };
-    try testing.expectEqual(@as(u16, 4), chipWrapRowCount(10, &labels));
-    try testing.expectEqual(@as(u16, 2), chipWrapRowCount(22, &labels));
+    const labels = [_][]const u8{ "All", "Context", "Rule", "Bundle", "MPF" };
+    try testing.expectEqual(@as(u16, 5), chipWrapRowCount(10, &labels));
+    try testing.expectEqual(@as(u16, 3), chipWrapRowCount(22, &labels));
 }
 
 test "review labels normalize terminal state and op display" {
@@ -1536,6 +1565,50 @@ test "review labels normalize terminal state and op display" {
     const label = try reviewOpLabel(testing.allocator, rename);
     defer testing.allocator.free(label);
     try testing.expectEqualStrings("rename", label);
+
+    const bundle_create = data.PullRequestEntry{
+        .id = "pr",
+        .target_kind = .bundle,
+        .target_path = "zig",
+        .rule_name = "zig",
+        .status = "open",
+        .author = "alice",
+        .created = "2026-01-01T00:00:00Z",
+        .title = "create bundle",
+        .body = "create bundle",
+        .base_hash = "",
+        .base_content = "",
+        .proposed_content = "",
+        .attestation_refers = 0,
+        .attestation_sessions = 0,
+        .operation_count = 22,
+        .op_type = "bundle_create",
+    };
+    const bundle_label = try reviewOpLabel(testing.allocator, bundle_create);
+    defer testing.allocator.free(bundle_label);
+    try testing.expectEqualStrings("create", bundle_label);
+
+    const bundle_add = data.PullRequestEntry{
+        .id = "pr",
+        .target_kind = .bundle,
+        .target_path = "zig",
+        .rule_name = "zig",
+        .status = "open",
+        .author = "alice",
+        .created = "2026-01-01T00:00:00Z",
+        .title = "add to bundle",
+        .body = "add to bundle",
+        .base_hash = "",
+        .base_content = "",
+        .proposed_content = "",
+        .attestation_refers = 0,
+        .attestation_sessions = 0,
+        .operation_count = 3,
+        .op_type = "bundle_add",
+    };
+    const bundle_add_label = try reviewOpLabel(testing.allocator, bundle_add);
+    defer testing.allocator.free(bundle_add_label);
+    try testing.expectEqualStrings("modify", bundle_add_label);
 }
 
 test "review filter cursor navigation clamps across groups and chips" {
@@ -1547,7 +1620,7 @@ test "review filter cursor navigation clamps across groups and chips" {
     try testing.expectEqual(@as(usize, 1), cursor.group_idx);
     try testing.expectEqual(@as(usize, 2), cursor.chip_idx);
     moveFilterChip(&cursor, 10);
-    try testing.expectEqual(@as(usize, 3), cursor.chip_idx);
+    try testing.expectEqual(@as(usize, 4), cursor.chip_idx);
     moveFilterGroup(&cursor, 1);
     try testing.expectEqual(@as(usize, 2), cursor.group_idx);
     try testing.expectEqual(@as(usize, 1), cursor.chip_idx);
