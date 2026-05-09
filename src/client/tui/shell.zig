@@ -35,16 +35,11 @@ const editor_host = runtime.editor_host;
 const attestation_reader = runtime.attestation_reader;
 const Modal = w.Modal;
 
-const WORKSPACE_DRAWER_WIDTH: u16 = 44;
-const HELP_DRAWER_WIDTH: u16 = WORKSPACE_DRAWER_WIDTH;
-const DRAWER_SIDE_MARGIN: u16 = 6;
-
 const ConfirmAction = enum {
     none,
     bind_current_directory,
     remove_member,
     remove_workspace_member,
-    delete_bundle,
     delete_workspace,
     revoke_token,
     discard_draft,
@@ -87,7 +82,6 @@ fn confirmActionName(action: ConfirmAction) []const u8 {
         .bind_current_directory => "bind_current_directory",
         .remove_member => "remove_member",
         .remove_workspace_member => "remove_workspace_member",
-        .delete_bundle => "delete_bundle",
         .delete_workspace => "delete_workspace",
         .revoke_token => "revoke_token",
         .discard_draft => "discard_draft",
@@ -582,11 +576,16 @@ pub const Shell = struct {
             !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
             !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form and
             !self.show_profile_dialog and !self.show_invite_dialog;
+        const show_artifact_bundle_drawer = self.artifact.show_bundle_drawer and self.selected_module == .artifact and
+            !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
+            !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form and
+            !self.show_profile_dialog and !self.show_invite_dialog;
         const show_login_panel = self.shouldShowLoginPanel();
         const allow_regular_overlays = !show_login_panel;
         const modal_active = show_login_panel or self.show_help or self.show_confirm or self.review.show_comment_editor or
             self.workspace.show_create or self.drafts.show_pr_composer or
-            self.drafts.show_new_draft_form or self.show_profile_dialog or self.show_invite_dialog or show_workspace_drawer;
+            self.drafts.show_new_draft_form or self.show_profile_dialog or self.show_invite_dialog or
+            show_workspace_drawer or show_artifact_bundle_drawer;
         const show_notice_overlay = !modal_active and self.system_notices.hasVisible();
         var child_count: usize = 3;
         if (show_login_panel) child_count += 1;
@@ -599,6 +598,7 @@ pub const Shell = struct {
         if (allow_regular_overlays and self.drafts.show_pr_composer) child_count += 1;
         if (allow_regular_overlays and self.drafts.show_new_draft_form) child_count += 1;
         if (allow_regular_overlays and show_workspace_drawer) child_count += 1;
+        if (allow_regular_overlays and show_artifact_bundle_drawer) child_count += 1;
         if (show_notice_overlay) child_count += 1;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
@@ -619,16 +619,13 @@ pub const Shell = struct {
             child_idx += 1;
         }
         if (allow_regular_overlays and self.show_help) {
-            const drawer_w: u16 = @min(HELP_DRAWER_WIDTH, size.width -| DRAWER_SIDE_MARGIN);
-            const drawer_top: u16 = header_band_h;
-            if (drawer_w >= w.Drawer.min_child_width and size.height > drawer_top) {
-                const drawer_h: u16 = size.height - drawer_top;
+            if (w.Drawer.rightPlacement(size, w.Drawer.default_width, header_band_h)) |placement| {
                 const help_ctx = ctx.withConstraints(
-                    .{ .width = drawer_w, .height = drawer_h },
-                    .{ .width = drawer_w, .height = drawer_h },
+                    placement.size,
+                    placement.max_size,
                 );
                 children[child_idx] = .{
-                    .origin = .{ .row = drawer_top, .col = size.width - drawer_w },
+                    .origin = placement.origin,
                     .surface = try self.drawHelpDrawer(help_ctx),
                 };
                 child_idx += 1;
@@ -724,17 +721,27 @@ pub const Shell = struct {
             child_idx += 1;
         }
         if (allow_regular_overlays and show_workspace_drawer) {
-            const drawer_w: u16 = @min(WORKSPACE_DRAWER_WIDTH, size.width -| DRAWER_SIDE_MARGIN);
-            const drawer_top: u16 = 1;
-            if (drawer_w > 0 and size.height > drawer_top) {
-                const drawer_h: u16 = size.height - drawer_top;
+            if (w.Drawer.rightPlacement(size, w.Drawer.default_width, 1)) |placement| {
                 const drawer_ctx = ctx.withConstraints(
-                    .{ .width = drawer_w, .height = drawer_h },
-                    .{ .width = drawer_w, .height = drawer_h },
+                    placement.size,
+                    placement.max_size,
                 );
                 children[child_idx] = .{
-                    .origin = .{ .row = drawer_top, .col = size.width - drawer_w },
+                    .origin = placement.origin,
                     .surface = try workspace_panel.drawWorkspaceDrawer(self, drawer_ctx),
+                };
+                child_idx += 1;
+            }
+        }
+        if (allow_regular_overlays and show_artifact_bundle_drawer) {
+            if (w.Drawer.rightPlacement(size, w.Drawer.default_width, 1)) |placement| {
+                const drawer_ctx = ctx.withConstraints(
+                    placement.size,
+                    placement.max_size,
+                );
+                children[child_idx] = .{
+                    .origin = placement.origin,
+                    .surface = try artifact_panel.drawBundleDrawer(self, drawer_ctx),
                 };
                 child_idx += 1;
             }
@@ -837,7 +844,7 @@ pub const Shell = struct {
     }
 
     fn footerShortcuts(self: *Shell, arena: std.mem.Allocator) std.mem.Allocator.Error![]const w.Shortcut {
-        if (self.show_confirm or self.review.show_comment_editor or self.workspace.show_drawer) {
+        if (self.show_confirm or self.review.show_comment_editor or self.workspace.show_drawer or self.artifact.show_bundle_drawer) {
             return w.sortedShortcuts(arena, self.contextShortcuts());
         }
         return filteredFooterShortcuts(arena, self.contextShortcuts());
@@ -945,11 +952,13 @@ pub const Shell = struct {
         // the header stays in sync with the content.
         var virtual_entry: data.RuleEntry = undefined;
         const selected_entry: ?*const data.RuleEntry = blk: {
+            if (!self.artifact.has_selected_rule) break :blk null;
             if (self.artifact.selected_rule < rules.len) break :blk &rules[self.artifact.selected_rule];
             const k = self.artifact.selected_rule - rules.len;
             if (k >= create_paths.len) break :blk null;
             if (self.draftLocalIdFor(.rule, create_paths[k]) == null) break :blk null;
             virtual_entry = .{
+                .rule_id = "",
                 .path = create_paths[k],
                 .kind = "",
                 .refer_count = "",
@@ -3638,9 +3647,6 @@ pub const Shell = struct {
                 ctx.consumeAndRedraw();
                 return;
             },
-            .delete_bundle => {
-                self.notifyOp(.info, "Bundle deleted (not yet implemented)");
-            },
             .delete_workspace => {
                 self.submitDeleteWorkspace();
             },
@@ -3737,7 +3743,6 @@ pub const Shell = struct {
             .bind_current_directory => "Bind Directory",
             .remove_member => "Remove Member",
             .remove_workspace_member => "Remove Member",
-            .delete_bundle => "Delete Bundle",
             .delete_workspace => "Delete Workspace",
             .revoke_token => if (std.mem.eql(u8, self.confirm_message, "sign out")) "Sign Out" else "Revoke Token",
             .discard_draft => "Discard Draft",

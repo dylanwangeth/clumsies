@@ -9,11 +9,30 @@ pub const Drawer = struct {
     pub const child_origin_col: u16 = 4;
     pub const min_child_width: u16 = child_origin_col + 1;
     pub const min_child_height: u16 = child_origin_row + 1;
+    pub const default_width: u16 = 44;
+    pub const side_margin: u16 = 6;
+
+    pub const Placement = struct {
+        origin: vxfw.RelativePoint,
+        size: vxfw.Size,
+        max_size: vxfw.MaxSize,
+    };
 
     title: []const u8,
     border_color: vaxis.Color = theme.ACCENT_SOFT,
     background: vaxis.Color = theme.PANEL_SOFT,
     body: vxfw.Surface,
+
+    pub fn rightPlacement(container: vxfw.Size, desired_width: u16, top: u16) ?Placement {
+        if (container.height <= top) return null;
+        const width = @min(desired_width, container.width -| side_margin);
+        if (width < min_child_width) return null;
+        return .{
+            .origin = .{ .row = top, .col = container.width - width },
+            .size = .{ .width = width, .height = container.height - top },
+            .max_size = .{ .width = width, .height = container.height - top },
+        };
+    }
 
     pub fn draw(self: *const Drawer, ctx: vxfw.DrawContext, owner: vxfw.Widget) std.mem.Allocator.Error!vxfw.Surface {
         const size = ctx.max.size();

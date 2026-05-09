@@ -434,12 +434,16 @@ pub fn State(comptime max_rows: usize, comptime text_buf_len: usize) type {
         pub fn toggleAll(self: *Self, allocator: std.mem.Allocator) void {
             if (self.all_dir_paths.items.len == 0) return;
             if (self.currentExpandedDirCount() < self.all_dir_paths.items.len) {
-                freeMapKeys(allocator, &self.expanded);
-                for (self.all_dir_paths.items) |path| {
-                    putOwnedMapKey(allocator, &self.expanded, path) catch return;
-                }
+                self.expandAllDirs(allocator);
             } else {
                 freeMapKeys(allocator, &self.expanded);
+            }
+        }
+
+        pub fn expandAllDirs(self: *Self, allocator: std.mem.Allocator) void {
+            freeMapKeys(allocator, &self.expanded);
+            for (self.all_dir_paths.items) |path| {
+                putOwnedMapKey(allocator, &self.expanded, path) catch return;
             }
         }
 

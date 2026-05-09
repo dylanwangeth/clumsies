@@ -617,17 +617,13 @@ pub fn drawWorkspaceDrawer(
                 theme.textOn(theme.PANEL_SOFT, theme.TEXT)
             else
                 theme.textOn(theme.PANEL_SOFT, theme.TEXT_SOFT);
-            const name_col: u16 = 2;
+            const marker = if (is_active) "[*] " else "[ ] ";
+            w.writeText(&body, ctx, 1, out_row, marker, name_style);
+            const name_col: u16 = 5;
             const owner_width: u16 = if (entry.owner.len > 0) @intCast(@min(ctx.stringWidth(entry.owner), body_w)) else 0;
             const owner_col = if (owner_width > 0 and owner_width + 2 < body_w) body_w - owner_width - 1 else body_w;
             const name_width = if (owner_col > name_col + 4) owner_col - name_col - 4 else body_w -| name_col;
             w.writeTextMax(&body, ctx, name_col, out_row, name_width, entry.name, name_style);
-
-            const written_name_w: u16 = @intCast(@min(ctx.stringWidth(entry.name), name_width));
-            const suffix_col = name_col + written_name_w;
-            if (is_active and suffix_col + 1 < body_w) {
-                w.writeText(&body, ctx, suffix_col + 1, out_row, "\xe2\x80\xa2", theme.boldOn(theme.PANEL_SOFT, theme.ACCENT_SOFT));
-            }
             if (entry.owner.len > 0 and owner_col < body_w) {
                 w.writeText(&body, ctx, owner_col, out_row, entry.owner, theme.textOn(theme.PANEL_SOFT, theme.MUTED));
             }
