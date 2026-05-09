@@ -440,8 +440,6 @@ pub fn syncArtifactWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocat
                     .text = row_text,
                     .cursor = row_sel,
                     .active = true,
-                    .selector = self.artifact.list_machine.selectorForDirAt(&self.artifact.tree, i),
-                    .selector_placement = .right,
                     .style = if (row_sel)
                         theme.boldOn(theme.PANEL, theme.TEXT)
                     else

@@ -71,6 +71,10 @@ pub const Machine = struct {
             self.active_leaf = leaf;
             return;
         }
+        if (tree.dirPathAt(self.cursor) != null) {
+            if (self.active_leaf == null) self.active_leaf = self.firstVisibleLeaf(tree);
+            return;
+        }
         if (!self.leafVisible(tree, self.active_leaf)) {
             self.active_leaf = self.firstVisibleLeaf(tree);
         }
@@ -403,9 +407,24 @@ test "Machine falls back when active leaf is filtered out" {
 
     const filtered_leaves = [_]?usize{ null, 30 };
     const filtered_tree = FakeTree{ .leaves = filtered_leaves[0..] };
-    machine.cursor = 0;
+    machine.cursor = 1;
     machine.sync(&filtered_tree);
     try std.testing.expectEqual(@as(?usize, 30), machine.active_leaf);
+}
+
+test "Machine preserves active leaf when directory collapse hides it" {
+    const expanded_leaves = [_]?usize{ null, 10, 20 };
+    const expanded_tree = FakeTree{ .leaves = expanded_leaves[0..] };
+    var machine: Machine = .{ .cursor = 2 };
+
+    machine.sync(&expanded_tree);
+    try std.testing.expectEqual(@as(?usize, 20), machine.active_leaf);
+
+    const collapsed_leaves = [_]?usize{null};
+    const collapsed_tree = FakeTree{ .leaves = collapsed_leaves[0..] };
+    machine.cursor = 0;
+    machine.sync(&collapsed_tree);
+    try std.testing.expectEqual(@as(?usize, 20), machine.active_leaf);
 }
 
 test "Machine toggles selector state for current leaf" {

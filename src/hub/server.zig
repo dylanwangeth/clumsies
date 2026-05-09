@@ -78,6 +78,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.delete("/api/workspaces/:ws_id", workspace_handler.handleDelete, .{});
     router.get("/api/workspaces/:ws_id/manifest", workspace_handler.handleGetManifest, .{});
     router.post("/api/workspaces/:ws_id/rules", workspace_handler.handleAddRule, .{});
+    router.post("/api/workspaces/:ws_id/rules/detach", workspace_handler.handleDetachRules, .{});
     router.delete("/api/workspaces/:ws_id/rules/:rule_id", workspace_handler.handleRemoveRule, .{});
     // Context
     router.get("/api/workspaces/:ws_id/context/files", context_handler.handleListFiles, .{});

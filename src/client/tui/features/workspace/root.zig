@@ -761,6 +761,12 @@ pub fn handleModuleEvent(
 }
 
 pub fn shortcuts(self: anytype) []const w.Shortcut {
+    if (self.workspace.tab == .rules and self.workspace.list_machine.selection_mode) return &.{
+        .{ .key = "j/k", .label = "move/scroll" },
+        .{ .key = "Space", .label = "toggle" },
+        .{ .key = "x", .label = "detach" },
+        .{ .key = "Esc", .label = "cancel" },
+    };
     return content_actions.workspaceShortcuts(self.workspace.tab == .context);
 }
 
@@ -802,7 +808,7 @@ fn handleListFocusEvent(
     }
     if (key.matches(' ', .{})) {
         self.workspace.list_machine.cursor = self.workspace.list_sel;
-        if (self.workspace.list_machine.toggleSelectedLeaf(self.api_state.allocator(), ws_tree)) {
+        if (self.workspace.list_machine.toggleSelectedAtCursor(self.api_state.allocator(), ws_tree)) {
             ctx.consumeAndRedraw();
             return;
         }
@@ -816,6 +822,15 @@ fn handleListFocusEvent(
             return;
         }
         ctx.consumeEvent();
+        return;
+    }
+    if (key.matches('x', .{})) {
+        if (self.workspace.tab != .rules or !self.workspace.list_machine.selection_mode) {
+            ctx.consumeEvent();
+            return;
+        }
+        self.confirmDetachSelectedWorkspaceRules();
+        ctx.consumeAndRedraw();
         return;
     }
     if (ws_tree.rowCount() == 0) {
