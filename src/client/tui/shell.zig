@@ -43,6 +43,7 @@ const ConfirmAction = enum {
     bind_current_directory,
     bundle_rule_pr,
     import_workspace_rules,
+    detach_workspace_rules,
     remove_member,
     remove_workspace_member,
     delete_workspace,
@@ -94,6 +95,7 @@ fn confirmActionName(action: ConfirmAction) []const u8 {
         .bind_current_directory => "bind_current_directory",
         .bundle_rule_pr => "bundle_rule_pr",
         .import_workspace_rules => "import_workspace_rules",
+        .detach_workspace_rules => "detach_workspace_rules",
         .remove_member => "remove_member",
         .remove_workspace_member => "remove_workspace_member",
         .delete_workspace => "delete_workspace",
@@ -534,6 +536,7 @@ pub const Shell = struct {
                 self.consumeCreateContextPrResult();
                 self.consumeImportWorkspaceRulesResult();
                 self.consumeImportRuleContentResult();
+                self.consumeDetachWorkspaceRulesResult();
                 self.consumeUpdateProfileResult();
                 self.consumeInviteMemberResult();
                 self.consumeChangeMemberRoleResult();
@@ -2005,6 +2008,14 @@ pub const Shell = struct {
         const ws_tree = self.currentWsTree();
         if (ws_tree.dirPathAt(row) != null) return null;
         const leaf = ws_tree.leafIndexAt(row) orelse return null;
+        return self.workspaceFileAtLeaf(leaf, live_ws);
+    }
+
+    pub fn workspaceFileAtLeaf(
+        self: *Shell,
+        leaf: usize,
+        live_ws: ?api.model.WorkspaceDetail,
+    ) ?WorkspaceFileSelection {
         switch (self.workspace.tab) {
             .context => {
                 const context_count = if (live_ws) |ws_d| ws_d.workspace_context.len else 0;
@@ -2057,7 +2068,13 @@ pub const Shell = struct {
         self: *Shell,
         live_ws: ?api.model.WorkspaceDetail,
     ) ?WorkspaceFileSelection {
-        return self.workspaceFileAtRow(self.workspace.list_sel, live_ws);
+        const ws_tree = self.currentWsTree();
+        self.workspace.list_machine.cursor = self.workspace.list_sel;
+        self.workspace.list_machine.sync(ws_tree);
+        self.workspace.list_sel = self.workspace.list_machine.cursor;
+        if (self.workspaceFileAtRow(self.workspace.list_sel, live_ws)) |selection| return selection;
+        const leaf = self.workspace.list_machine.active_leaf orelse return null;
+        return self.workspaceFileAtLeaf(leaf, live_ws);
     }
 
     pub fn pathForWorkspaceRule(self: *Shell, wp: api.model.WorkspaceRuleData) []const u8 {
@@ -2474,12 +2491,13 @@ pub const Shell = struct {
         else
             null;
         workspace_panel.syncWsRows(self);
-        const current_file_sel = self.currentWorkspaceFileSelection(live_ws);
+        const current_row_file_sel = self.workspaceFileAtRow(self.workspace.list_sel, live_ws);
+        const current_file_sel = current_row_file_sel orelse self.currentWorkspaceFileSelection(live_ws);
         const file_sel = current_file_sel orelse self.lastWorkspaceFileSelection(live_ws);
         if (live_ws) |ws_d| {
             if (file_sel) |selection| self.requestWorkspaceSelectionContent(&ws_d, selection);
         }
-        if (current_file_sel != null) {
+        if (current_row_file_sel != null) {
             switch (self.workspace.tab) {
                 .context => self.workspace.last_context_file_row = self.workspace.list_sel,
                 .rules => self.workspace.last_rule_file_row = self.workspace.list_sel,
@@ -3758,6 +3776,13 @@ pub const Shell = struct {
                 ctx.consumeAndRedraw();
                 return;
             },
+            .detach_workspace_rules => {
+                self.confirm_error_message = "";
+                self.confirm_submitting = true;
+                self.submitDetachWorkspaceRules();
+                ctx.consumeAndRedraw();
+                return;
+            },
             .delete_workspace => {
                 self.submitDeleteWorkspace();
             },
@@ -3873,6 +3898,7 @@ pub const Shell = struct {
             .bind_current_directory => "Bind Directory",
             .bundle_rule_pr => "Open Bundle PR",
             .import_workspace_rules => "Import Rules",
+            .detach_workspace_rules => "Detach Rules",
             .remove_member => "Remove Member",
             .remove_workspace_member => "Remove Member",
             .delete_workspace => "Delete Workspace",
@@ -3895,11 +3921,13 @@ pub const Shell = struct {
     fn confirmAcceptLabel(self: *const Shell) []const u8 {
         if (self.confirm_submitting and self.confirm_action == .bundle_rule_pr) return "[ Opening... ]";
         if (self.confirm_submitting and self.confirm_action == .import_workspace_rules) return "[ Importing... ]";
+        if (self.confirm_submitting and self.confirm_action == .detach_workspace_rules) return "[ Detaching... ]";
         if (self.confirm_submitting) return "[ Removing... ]";
         if (std.mem.eql(u8, self.confirm_message, "sign out")) return "[ Sign out ]";
         if (self.confirm_action == .bind_current_directory) return "[ Bind ]";
         if (self.confirm_action == .bundle_rule_pr) return "[ Open PR ]";
         if (self.confirm_action == .import_workspace_rules) return "[ Import ]";
+        if (self.confirm_action == .detach_workspace_rules) return "[ Detach ]";
         return "[ Confirm ]";
     }
 
@@ -3924,7 +3952,7 @@ pub const Shell = struct {
 
     fn isDangerConfirmAction(action: ConfirmAction) bool {
         return switch (action) {
-            .remove_member, .remove_workspace_member, .delete_workspace, .revoke_token, .discard_draft, .quit => true,
+            .detach_workspace_rules, .remove_member, .remove_workspace_member, .delete_workspace, .revoke_token, .discard_draft, .quit => true,
             else => false,
         };
     }
@@ -5746,6 +5774,117 @@ pub const Shell = struct {
         return written;
     }
 
+    pub fn confirmDetachSelectedWorkspaceRules(self: *Shell) void {
+        if (self.workspace.tab != .rules) {
+            self.notifyOp(.warning, "Select workspace rules first.");
+            return;
+        }
+        const selected_count = self.selectedWorkspaceRuleCount();
+        if (selected_count == 0) {
+            self.notifyOp(.warning, "Select rules first.");
+            return;
+        }
+        const ws_id = self.activeWsId() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        self.confirm_workspace_id_len = @min(ws_id.len, self.confirm_workspace_id_buf.len);
+        @memcpy(self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len], ws_id[0..self.confirm_workspace_id_len]);
+        self.setConfirmMessageFmt(
+            "Detach {d} selected rules from this workspace.",
+            .{selected_count},
+            "Detach selected rules from this workspace.",
+        );
+        self.confirm_error_message = "";
+        self.confirm_submitting = false;
+        self.confirm_action = .detach_workspace_rules;
+        self.confirm_choice = .accept;
+        self.show_confirm = true;
+    }
+
+    fn submitDetachWorkspaceRules(self: *Shell) void {
+        const alloc = self.api_state.allocator();
+        const ws_id = self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len];
+        if (ws_id.len == 0) {
+            self.confirm_error_message = "No workspace selected.";
+            self.confirm_submitting = false;
+            return;
+        }
+        const ids = self.collectSelectedWorkspaceRuleIds(alloc) orelse {
+            self.confirm_error_message = "Could not collect selected rules.";
+            self.confirm_submitting = false;
+            return;
+        };
+        defer {
+            for (ids) |id| alloc.free(id);
+            alloc.free(ids);
+        }
+        if (ids.len == 0) {
+            self.confirm_error_message = "Select synced rules first.";
+            self.confirm_submitting = false;
+            return;
+        }
+
+        api.specs.dispatchFromState(
+            api.specs.WorkspaceRulesParams,
+            workspace_api.WorkspaceRulesResponse,
+            api.specs.detach_workspace_rules,
+            &self.api_state.detach_workspace_rules_pending,
+            self.api_state,
+            .{
+                .ws_id = ws_id,
+                .rule_ids = ids,
+            },
+        );
+        self.notifyOp(.loading, "Detaching rules...");
+    }
+
+    fn selectedWorkspaceRuleCount(self: *Shell) usize {
+        const ws_id = self.activeWsId() orelse return 0;
+        const live_ws = self.workspaceDetailForView(ws_id) orelse return 0;
+        var count: usize = 0;
+        for (live_ws.workspace_rules, 0..) |rule, idx| {
+            if (!self.workspace.list_machine.selected_leaves.contains(idx)) continue;
+            if (rule.rule_id.len == 0) continue;
+            count += 1;
+        }
+        return count;
+    }
+
+    fn collectSelectedWorkspaceRuleIds(self: *Shell, alloc: std.mem.Allocator) ?[]const []const u8 {
+        const ws_id = self.activeWsId() orelse return null;
+        const live_ws = self.workspaceDetailForView(ws_id) orelse return null;
+        var ids: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (ids.items) |id| alloc.free(id);
+            ids.deinit(alloc);
+        }
+        for (live_ws.workspace_rules, 0..) |rule, idx| {
+            if (!self.workspace.list_machine.selected_leaves.contains(idx)) continue;
+            if (rule.rule_id.len == 0) continue;
+            ids.append(alloc, alloc.dupe(u8, rule.rule_id) catch return null) catch return null;
+        }
+        return ids.toOwnedSlice(alloc) catch null;
+    }
+
+    fn removeDetachedRulesFromLocalCache(self: *Shell) !void {
+        const arena = self.viewAllocator();
+        const ws_id = self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len];
+        if (ws_id.len == 0) return error.NoWorkspaceSelected;
+        const live_ws = self.workspaceDetailForView(ws_id) orelse return error.WorkspaceRulesUnavailable;
+        const ws_dir = try workspace_config.getWsDir(arena, ws_id);
+        const ws_name = self.workspaceNameById(ws_id);
+        var removed: usize = 0;
+        for (live_ws.workspace_rules, 0..) |rule, idx| {
+            if (!self.workspace.list_machine.selected_leaves.contains(idx)) continue;
+            if (rule.rule_id.len == 0) continue;
+            const path = self.pathForWorkspaceRule(rule);
+            try local_content.removeManifestRuleEntry(arena, ws_dir, ws_id, ws_name, rule.rule_id, path);
+            removed += 1;
+        }
+        if (removed == 0) return error.NoRulesDetached;
+    }
+
     fn selectedArtifactRuleIdCount(self: *Shell) usize {
         const rules = self.getRules();
         var count: usize = 0;
@@ -6208,6 +6347,52 @@ pub const Shell = struct {
                     self.confirm_error_message = "Import content failed: malformed response.";
                 } else {
                     self.notifyOp(.failure, "Import content failed: malformed response.");
+                }
+            },
+        }
+    }
+
+    fn consumeDetachWorkspaceRulesResult(self: *Shell) void {
+        const result = self.api_state.detach_workspace_rules_pending.consume() orelse return;
+        self.confirm_submitting = false;
+        switch (result) {
+            .ok => {
+                self.removeDetachedRulesFromLocalCache() catch {
+                    if (self.show_confirm and self.confirm_action == .detach_workspace_rules) {
+                        self.confirm_error_message = "Detached remotely; local cache update failed.";
+                    } else {
+                        self.notifyOp(.warning, "Detached remotely; local cache update failed.");
+                    }
+                    return;
+                };
+                const ws_id = self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len];
+                self.workspace.list_machine.exitSelectionMode();
+                self.resetLocalWorkspaceDetail();
+                api.state.invalidateRemoteCaches(self.api_state, .workspace_detail);
+                if (ws_id.len > 0) workspace_panel.refreshWorkspaceDetail(self, ws_id);
+                self.closeConfirmOverlay();
+                self.notifyOp(.success, "Rules detached from workspace.");
+            },
+            .api_error => |e| {
+                const message = writeErrorStatus(self, "Detach failed", e);
+                if (self.show_confirm and self.confirm_action == .detach_workspace_rules) {
+                    self.confirm_error_message = message;
+                } else {
+                    self.notifyOp(.failure, message);
+                }
+            },
+            .network_error => {
+                if (self.show_confirm and self.confirm_action == .detach_workspace_rules) {
+                    self.confirm_error_message = "Detach failed: network error.";
+                } else {
+                    self.notifyOp(.failure, "Detach failed: network error.");
+                }
+            },
+            .invalid_response => {
+                if (self.show_confirm and self.confirm_action == .detach_workspace_rules) {
+                    self.confirm_error_message = "Detach failed: malformed response.";
+                } else {
+                    self.notifyOp(.failure, "Detach failed: malformed response.");
                 }
             },
         }

@@ -157,6 +157,7 @@ pub const ApiState = struct {
     create_context_pr_pending: request.PendingRequest(dispatcher.Result(CreateContextPrResponse)) = .{},
     import_workspace_rules_pending: request.PendingRequest(dispatcher.Result(workspace_api.WorkspaceRulesResponse)) = .{},
     import_rule_content_pending: request.PendingRequest(dispatcher.Result(artifact_api.BatchRuleContentResponse)) = .{},
+    detach_workspace_rules_pending: request.PendingRequest(dispatcher.Result(workspace_api.WorkspaceRulesResponse)) = .{},
     update_profile_pending: request.PendingRequest(dispatcher.Result(auth_api.UpdateProfileResponse)) = .{},
     invite_member_pending: request.PendingRequest(dispatcher.Result(auth_api.InviteMemberResponse)) = .{},
     change_member_role_pending: request.PendingRequest(dispatcher.Result(void)) = .{},

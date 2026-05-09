@@ -201,6 +201,16 @@ pub const import_workspace_rules = dispatcher.RequestSpec(
     .parse_ok = dispatcher.jsonParser(WorkspaceRulesParams, workspace_api.WorkspaceRulesResponse),
 };
 
+pub const detach_workspace_rules = dispatcher.RequestSpec(
+    WorkspaceRulesParams,
+    workspace_api.WorkspaceRulesResponse,
+){
+    .method = .POST,
+    .path_builder = detachWorkspaceRulesPath,
+    .body_builder = workspaceRulesBody,
+    .parse_ok = dispatcher.jsonParser(WorkspaceRulesParams, workspace_api.WorkspaceRulesResponse),
+};
+
 pub const pr_detail = dispatcher.RequestSpec(
     PrIdParams,
     collab_api.RulePrDetailResponse,
@@ -562,6 +572,10 @@ fn workspacePath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror![]cons
 
 fn workspaceRulesPath(alloc: std.mem.Allocator, p: WorkspaceRulesParams) anyerror![]const u8 {
     return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/rules", .{p.ws_id});
+}
+
+fn detachWorkspaceRulesPath(alloc: std.mem.Allocator, p: WorkspaceRulesParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/rules/detach", .{p.ws_id});
 }
 
 fn workspaceRulesBody(alloc: std.mem.Allocator, p: WorkspaceRulesParams) anyerror![]const u8 {

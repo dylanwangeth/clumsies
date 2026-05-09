@@ -42,6 +42,20 @@ assert_json() {
     fi
 }
 
+assert_json_absent() {
+    local desc="$1" pattern="$2" body="$3"
+    if echo "$body" | grep -q "$pattern"; then
+        printf "  FAIL: %s\n" "$desc"
+        printf "  Unexpected pattern: %s\n" "$pattern"
+        printf "  Body: %s\n" "$body"
+        FAIL=$((FAIL + 1))
+        exit 1
+    else
+        printf "  OK: %s\n" "$desc"
+        PASS=$((PASS + 1))
+    fi
+}
+
 # Seed database with test org and maintainer user. Uses a local psql
 # if available, otherwise falls back to the docker-compose postgres container.
 run_psql() {
@@ -425,6 +439,19 @@ parse_response "$RAW"
 assert_status "get imported manifest" "200" "$STATUS"
 assert_json "manifest contains imported rule" "p-test-001" "$BODY"
 assert_json "manifest contains second imported rule" "p-test-002" "$BODY"
+
+step "Workspace: detach imported rule"
+RAW=$(call POST "/api/workspaces/$WS_ID/rules/detach" '{"rule_ids":["p-test-001"]}')
+parse_response "$RAW"
+assert_status "detach workspace rule" "200" "$STATUS"
+assert_json "detach returns revision" "revision" "$BODY"
+
+step "Workspace: detached rule leaves manifest"
+RAW=$(call GET "/api/workspaces/$WS_ID/manifest")
+parse_response "$RAW"
+assert_status "get detached manifest" "200" "$STATUS"
+assert_json_absent "manifest removed detached rule" "p-test-001" "$BODY"
+assert_json "manifest keeps other imported rule" "p-test-002" "$BODY"
 
 step "Workspace: list members"
 RAW=$(call GET "/api/workspaces/$WS_ID/members")
