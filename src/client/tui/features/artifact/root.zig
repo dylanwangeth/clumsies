@@ -6,7 +6,6 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const theme = @import("../../theme.zig");
 const w = @import("../../widgets.zig");
-const api = @import("../../api.zig");
 const data = @import("../../models/view_types.zig");
 const rule_detail_panel = @import("../review/root.zig");
 const content_actions = @import("../content_actions.zig");
@@ -132,13 +131,6 @@ pub fn handleModuleEvent(
     self.review.detail_tab = .content;
     if (self.artifact.show_bundle_drawer) {
         handleBundleDrawerKey(self, ctx, key);
-        return;
-    }
-    if (key.matches('r', .{})) {
-        self.invalidateRemoteDetailRequests();
-        api.fetch.refetchAllAsync(self.api_state);
-        self.notifyOp(.loading, "Reloading remote metadata...");
-        ctx.consumeAndRedraw();
         return;
     }
     if (key.matches('b', .{})) {

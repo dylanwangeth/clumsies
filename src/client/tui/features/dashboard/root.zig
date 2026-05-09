@@ -731,12 +731,13 @@ fn appendExceptionRoundHeader(
 ) std.mem.Allocator.Error!void {
     if (out.* >= self.dashboard.round_rich_rows.len) return;
 
+    const line_width = width -| 3;
     const time_w: u16 = @intCast(ctx.stringWidth(time_txt));
-    const session_budget = width -| time_w -| 3;
+    const session_budget = line_width -| time_w -| 1;
     const session_text = firstLineTrimmed(session_id, session_budget);
     const session_w: u16 = @intCast(ctx.stringWidth(session_text));
-    const used_w = 1 + session_w + time_w;
-    const gap_w = width -| used_w;
+    const used_w = session_w + time_w;
+    const gap_w = line_width -| used_w;
     const gap = try ctx.arena.alloc(u8, gap_w);
     @memset(gap, ' ');
 
