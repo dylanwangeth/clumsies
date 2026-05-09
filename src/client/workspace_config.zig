@@ -384,18 +384,24 @@ fn pathSafeWorkspaceName(allocator: std.mem.Allocator, name: []const u8, fallbac
     if (name.len == 0) return try allocator.dupe(u8, fallback);
 
     var out = try allocator.alloc(u8, name.len);
-    errdefer allocator.free(out);
+    defer allocator.free(out);
     for (name, 0..) |byte, idx| {
         out[idx] = switch (byte) {
-            0...31, 127, '/', '\\' => '-',
+            0...31, 127, '/', '\\', ':', '*', '?', '"', '<', '>', '|' => '-',
             else => byte,
         };
     }
-    if (std.mem.eql(u8, out, ".") or std.mem.eql(u8, out, "..")) {
-        allocator.free(out);
+
+    var out_len = out.len;
+    while (out_len > 0 and (out[out_len - 1] == ' ' or out[out_len - 1] == '.')) {
+        out_len -= 1;
+    }
+
+    const trimmed = out[0..out_len];
+    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, ".") or std.mem.eql(u8, trimmed, "..")) {
         return try allocator.dupe(u8, fallback);
     }
-    return out;
+    return try allocator.dupe(u8, trimmed);
 }
 
 fn migrateWorkspaceDir(allocator: std.mem.Allocator, parent: []const u8, ws_id: []const u8, target: []const u8) !void {
@@ -481,6 +487,18 @@ test "pathSafeWorkspaceName replaces separators" {
     const dir_name = try pathSafeWorkspaceName(testing.allocator, "team/demo\\app", "ws-1");
     defer testing.allocator.free(dir_name);
     try testing.expectEqualStrings("team-demo-app", dir_name);
+}
+
+test "pathSafeWorkspaceName replaces Windows reserved characters" {
+    const dir_name = try pathSafeWorkspaceName(testing.allocator, "team:demo*app?name\"<>|", "ws-1");
+    defer testing.allocator.free(dir_name);
+    try testing.expectEqualStrings("team-demo-app-name----", dir_name);
+}
+
+test "pathSafeWorkspaceName trims trailing dots and spaces" {
+    const dir_name = try pathSafeWorkspaceName(testing.allocator, "demo. ", "ws-1");
+    defer testing.allocator.free(dir_name);
+    try testing.expectEqualStrings("demo", dir_name);
 }
 
 test "pathSafeWorkspaceName falls back for dot names" {
