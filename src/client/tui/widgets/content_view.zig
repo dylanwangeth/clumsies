@@ -94,19 +94,21 @@ pub const ContentView = struct {
 
         const row_count = @max(lines.items.len, 1);
         const widgets_buf = try arena.alloc(vxfw.Widget, row_count);
-        const texts = try arena.alloc(vxfw.Text, row_count);
+        const texts = try arena.alloc(vxfw.RichText, row_count);
         if (lines.items.len == 0) {
+            const spans = try arena.alloc(vaxis.Segment, 1);
+            spans[0] = .{ .text = "", .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT) };
             texts[0] = .{
-                .text = "",
-                .style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
+                .text = spans,
+                .base_style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
                 .softwrap = false,
             };
             widgets_buf[0] = texts[0].widget();
         } else {
             for (lines.items, 0..) |line, idx| {
                 texts[idx] = .{
-                    .text = line.text,
-                    .style = line.style,
+                    .text = line.spans,
+                    .base_style = theme.textOn(theme.PANEL, theme.TEXT_SOFT),
                     .softwrap = false,
                 };
                 widgets_buf[idx] = texts[idx].widget();
@@ -128,8 +130,7 @@ pub const ContentView = struct {
 };
 
 const DisplayLine = struct {
-    text: []const u8,
-    style: vaxis.Style,
+    spans: []const vaxis.Segment,
 };
 
 fn appendWrappedDiffLines(
@@ -148,7 +149,7 @@ fn appendWrappedDiffLines(
         const lineno = row.new_line orelse row.old_line orelse 0;
         const prefix = try std.fmt.allocPrint(arena, "{d:>4} {c} ", .{ lineno, marker });
         const continuation = "       ";
-        try appendWrappedLine(out, arena, ctx, prefix, continuation, row.text, gutterRowStyle(row.marker), max_width);
+        try appendWrappedLine(out, arena, ctx, prefix, continuation, row.text, gutterStyle(), gutterRowStyle(row.marker), max_width);
     }
 }
 
@@ -162,10 +163,12 @@ fn appendWrappedFlatLines(
 ) !void {
     var iter = LocalLineIterator{ .buf = content };
     while (iter.next()) |line| {
-        try appendWrappedLine(out, arena, ctx, "", "", line, style, max_width);
+        try appendWrappedLine(out, arena, ctx, "", "", line, style, style, max_width);
     }
     if (content.len == 0) {
-        try out.append(arena, .{ .text = "", .style = style });
+        const spans = try arena.alloc(vaxis.Segment, 1);
+        spans[0] = .{ .text = "", .style = style };
+        try out.append(arena, .{ .spans = spans });
     }
 }
 
@@ -176,6 +179,7 @@ fn appendWrappedLine(
     first_prefix: []const u8,
     continuation_prefix: []const u8,
     text: []const u8,
+    prefix_style: vaxis.Style,
     style: vaxis.Style,
     max_width: u16,
 ) !void {
@@ -187,9 +191,10 @@ fn appendWrappedLine(
     var prefix_w = first_prefix_w;
 
     if (rest.len == 0) {
+        const spans = try arena.alloc(vaxis.Segment, 1);
+        spans[0] = .{ .text = try std.fmt.allocPrint(arena, "{s}", .{prefix}), .style = prefix_style };
         try out.append(arena, .{
-            .text = try std.fmt.allocPrint(arena, "{s}", .{prefix}),
-            .style = style,
+            .spans = spans,
         });
         return;
     }
@@ -198,9 +203,11 @@ fn appendWrappedLine(
         const available = @max(@as(u16, 1), base_limit -| @as(u16, @intCast(prefix_w)));
         const consumed = wrapBytesForWidth(ctx, rest, available);
         const slice = rest[0..consumed];
+        const spans = try arena.alloc(vaxis.Segment, 2);
+        spans[0] = .{ .text = prefix, .style = prefix_style };
+        spans[1] = .{ .text = slice, .style = style };
         try out.append(arena, .{
-            .text = try std.fmt.allocPrint(arena, "{s}{s}", .{ prefix, slice }),
-            .style = style,
+            .spans = spans,
         });
         if (consumed >= rest.len) break;
         rest = rest[consumed..];
@@ -262,4 +269,8 @@ fn gutterRowStyle(marker: diff_viewer.Marker) vaxis.Style {
         .added => .{ .fg = theme.OK, .bg = theme.rgb(0x1d2617) },
         .removed => .{ .fg = theme.DANGER, .bg = theme.rgb(0x2a1b18) },
     };
+}
+
+fn gutterStyle() vaxis.Style {
+    return theme.textOn(theme.PANEL, theme.MUTED);
 }
