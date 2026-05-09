@@ -351,7 +351,7 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer conn.release();
 
     var result = conn.query(
-        \\SELECT b.name, b.description, b.updated_at::text, count(bp.rule_id)::bigint
+        \\SELECT b.bundle_id, b.name, b.description, b.updated_at::text, count(bp.rule_id)::bigint
         \\FROM bundles b
         \\LEFT JOIN bundle_rules bp ON bp.bundle_id = b.bundle_id
         \\WHERE b.org_id = $1::uuid
@@ -362,19 +362,59 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
-    defer result.deinit();
+
+    const BundleRow = struct {
+        bundle_id: []const u8,
+        name: []const u8,
+        description: []const u8,
+        updated_at: []const u8,
+        rule_count: i64,
+    };
+    var rows: std.ArrayList(BundleRow) = .empty;
+    while (try result.next()) |row| {
+        try rows.append(req.arena, .{
+            .bundle_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .name = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+            .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+            .rule_count = try row.get(i64, 4),
+        });
+    }
+    result.deinit();
 
     var list: std.ArrayList(BundleMeta) = .empty;
-    while (try result.next()) |row| {
+    for (rows.items) |row| {
+        const rule_ids = collectBundleRuleIds(req.arena, conn, row.bundle_id) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        };
         try list.append(req.arena, .{
-            .name = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-            .description = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-            .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            .rule_count = try row.get(i64, 3),
+            .name = row.name,
+            .description = row.description,
+            .updated_at = row.updated_at,
+            .rule_count = row.rule_count,
+            .rule_ids = rule_ids,
         });
     }
 
     try res.json(BundleListResponse{ .bundles = list.items }, .{});
+}
+
+fn collectBundleRuleIds(
+    arena: std.mem.Allocator,
+    conn: anytype,
+    bundle_id: []const u8,
+) ![]const []const u8 {
+    var result = conn.query(
+        "SELECT rule_id FROM bundle_rules WHERE bundle_id = $1 ORDER BY rule_id",
+        .{bundle_id},
+    ) catch return error.QueryFailed;
+    defer result.deinit();
+
+    var ids: std.ArrayList([]const u8) = .empty;
+    while (try result.next()) |row| {
+        try ids.append(arena, try arena.dupe(u8, try row.get([]const u8, 0)));
+    }
+    return ids.items;
 }
 
 pub fn handleGetBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -430,11 +470,7 @@ pub fn handleGetBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     }, .{});
 }
 
-const CreateBundleRequest = struct {
-    name: []const u8,
-    description: ?[]const u8 = null,
-    rule_ids: []const []const u8,
-};
+const CreateBundleRequest = artifact_api.CreateBundleRequest;
 
 pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -502,7 +538,9 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
         _ = conn.exec(
             "INSERT INTO bundle_rules (bundle_id, rule_id) VALUES ($1, $2)",
             .{ bundle_id, pid },
-        ) catch {};
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database insert failed");
+        };
     }
 
     res.status = 201;
@@ -513,10 +551,7 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     }, .{});
 }
 
-const UpdateBundleRequest = struct {
-    description: ?[]const u8 = null,
-    rule_ids: ?[]const []const u8 = null,
-};
+const UpdateBundleRequest = artifact_api.UpdateBundleRequest;
 
 pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -554,7 +589,22 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const bundle_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     row.deinit() catch {};
 
-    // Update description if provided
+    if (body.name) |new_name| {
+        _ = conn.exec(
+            "UPDATE bundles SET name = $1, updated_at = now() WHERE bundle_id = $2",
+            .{ new_name, bundle_id },
+        ) catch {
+            if (conn.err) |pg_err| {
+                if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
+                    std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
+                {
+                    return apiError(res, 409, "CONFLICT", "bundle with this name already exists");
+                }
+            }
+            return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+        };
+    }
+
     if (body.description) |desc| {
         _ = conn.exec(
             "UPDATE bundles SET description = $1, updated_at = now() WHERE bundle_id = $2",
@@ -580,20 +630,26 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
             }
         }
 
-        _ = conn.exec("DELETE FROM bundle_rules WHERE bundle_id = $1", .{bundle_id}) catch {};
+        _ = conn.exec("DELETE FROM bundle_rules WHERE bundle_id = $1", .{bundle_id}) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+        };
         for (pids) |pid| {
             _ = conn.exec(
                 "INSERT INTO bundle_rules (bundle_id, rule_id) VALUES ($1, $2)",
                 .{ bundle_id, pid },
-            ) catch {};
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+            };
         }
         _ = conn.exec(
             "UPDATE bundles SET updated_at = now() WHERE bundle_id = $1",
             .{bundle_id},
-        ) catch {};
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
+        };
     }
 
-    try res.json(.{ .name = name, .updated = true }, .{});
+    try res.json(.{ .name = body.name orelse name, .updated = true }, .{});
 }
 
 pub fn handleDeleteBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -625,8 +681,12 @@ pub fn handleDeleteBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const bundle_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     row.deinit() catch {};
 
-    _ = conn.exec("DELETE FROM bundle_rules WHERE bundle_id = $1", .{bundle_id}) catch {};
-    _ = conn.exec("DELETE FROM bundles WHERE bundle_id = $1", .{bundle_id}) catch {};
+    _ = conn.exec("DELETE FROM bundle_rules WHERE bundle_id = $1", .{bundle_id}) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");
+    };
+    _ = conn.exec("DELETE FROM bundles WHERE bundle_id = $1", .{bundle_id}) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");
+    };
 
     res.status = 204;
 }

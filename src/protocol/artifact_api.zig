@@ -59,6 +59,18 @@ pub const BundleMeta = struct {
     rule_ids: []const []const u8 = &.{},
 };
 
+pub const CreateBundleRequest = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+    rule_ids: []const []const u8 = &.{},
+};
+
+pub const UpdateBundleRequest = struct {
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    rule_ids: ?[]const []const u8 = null,
+};
+
 pub const BundleListResponse = struct {
     bundles: []const BundleMeta = &.{},
 };

@@ -241,10 +241,16 @@ pub fn parseBundles(alloc: std.mem.Allocator, body: []const u8) ?[]const model.B
             @intCast(b.rule_count)
         else
             b.rule_ids.len;
+        var rule_ids: std.ArrayList([]const u8) = .empty;
+        for (b.rule_ids) |rule_id| {
+            rule_ids.append(alloc, alloc.dupe(u8, rule_id) catch continue) catch continue;
+        }
+        const owned_rule_ids = rule_ids.toOwnedSlice(alloc) catch &.{};
         list.append(alloc, .{
             .name = alloc.dupe(u8, b.name) catch continue,
             .description = alloc.dupe(u8, b.description) catch continue,
             .rule_count = rule_count,
+            .rule_ids = owned_rule_ids,
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch return null;
@@ -420,7 +426,7 @@ test "parseReviewPrs reads target-aware review list" {
 test "parseBundles uses rule_count when server provides it" {
     const testing = std.testing;
     const body =
-        \\{"bundles":[{"name":"core","description":"Core rules","updated_at":"2026-04-16T00:00:00Z","rule_count":3}]}
+        \\{"bundles":[{"name":"core","description":"Core rules","updated_at":"2026-04-16T00:00:00Z","rule_count":3,"rule_ids":["p-1","p-2"]}]}
     ;
 
     const bundles = parseBundles(testing.allocator, body) orelse return error.TestUnexpectedResult;
@@ -428,10 +434,14 @@ test "parseBundles uses rule_count when server provides it" {
         for (bundles) |bundle| {
             testing.allocator.free(bundle.name);
             testing.allocator.free(bundle.description);
+            for (bundle.rule_ids) |rule_id| testing.allocator.free(rule_id);
+            testing.allocator.free(bundle.rule_ids);
         }
         testing.allocator.free(bundles);
     }
 
     try testing.expectEqual(@as(usize, 1), bundles.len);
     try testing.expectEqual(@as(usize, 3), bundles[0].rule_count);
+    try testing.expectEqual(@as(usize, 2), bundles[0].rule_ids.len);
+    try testing.expectEqualStrings("p-1", bundles[0].rule_ids[0]);
 }

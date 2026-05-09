@@ -54,6 +54,7 @@ pub const BundleData = struct {
     name: []const u8,
     description: []const u8,
     rule_count: usize,
+    rule_ids: []const []const u8 = &.{},
 };
 
 pub const RulePr = struct {
