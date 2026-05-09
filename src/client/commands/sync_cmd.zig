@@ -133,7 +133,7 @@ pub fn materializeWorkspace(
     const workspaces_dir = try std.fs.path.join(allocator, &.{ base_path, "workspaces" });
     defer allocator.free(workspaces_dir);
     ensureDir(workspaces_dir);
-    const ws_dir = try std.fs.path.join(allocator, &.{ workspaces_dir, ws_id });
+    const ws_dir = try ws_config.getWsDir(allocator, ws_id);
     defer allocator.free(ws_dir);
     ensureDir(ws_dir);
     ensureDir(cache_dir);

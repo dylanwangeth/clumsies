@@ -95,8 +95,8 @@ This directory is not one generic cache. It contains several different state typ
 | --- | --- |
 | `~/.clumsies/config.toml` | local server config and workspace bindings |
 | `~/.clumsies/auth.json` | auth token file fallback |
-| `~/.clumsies/workspaces/{ws_id}/manifest.json` | last synced workspace snapshot |
-| `~/.clumsies/workspaces/{ws_id}/cache/` | materialized rules, context, and meta prompt |
+| `~/.clumsies/workspaces/{workspace_name}/manifest.json` | last synced workspace snapshot |
+| `~/.clumsies/workspaces/{workspace_name}/cache/` | materialized rules, context, and meta prompt |
 | `~/.clumsies/adapters/installs/{install_id}/` | adapter install state and removal history |
 
 Auth uses the credential store selected by `CLUMSIES_AUTH_STORE`. The default
@@ -128,7 +128,7 @@ This means the local checkout path is not the workspace identity. It is a client
 After sync, the current workspace snapshot is written to:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/manifest.json
+~/.clumsies/workspaces/{workspace_name}/manifest.json
 ```
 
 This file is the serialized `WorkspaceManifestResponse` from Hub. It is not just a timestamp or sync marker. It is the indexed description of what the workspace currently exposes to local runtime.
@@ -186,7 +186,7 @@ Second, `manifest.json` lives alongside `cache/`, not inside it. The manifest de
 The actual synced content lives under:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/cache/
+~/.clumsies/workspaces/{workspace_name}/cache/
 ```
 
 The current implementation writes at least these categories there:
@@ -318,7 +318,7 @@ The current runtime leaves enough local state behind that filesystem inspection 
 
 | Symptom | First place to inspect |
 | --- | --- |
-| workspace content looks stale | `~/.clumsies/workspaces/{ws_id}/manifest.json` and `cache/` |
+| workspace content looks stale | `~/.clumsies/workspaces/{workspace_name}/manifest.json` and `cache/` |
 | agent bootstrap does not match workspace state | cached `META_PROMPT.md` |
 | adapter remove or update behaves unexpectedly | install `manifest.json` and `wal.jsonl` |
 | auth differs between machines | `CLUMSIES_AUTH_STORE`, `auth.json`, or Keychain state |

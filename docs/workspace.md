@@ -82,7 +82,7 @@ workspace ID.
 The manifest is the bridge between Hub authority and local runtime. In the current implementation it is written to:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/manifest.json
+~/.clumsies/workspaces/{workspace_name}/manifest.json
 ```
 
 The current top-level schema is:
@@ -148,13 +148,13 @@ That is why manifest belongs in the workspace model, not only in a sync page.
 Each workspace also has a dedicated local runtime directory:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/
+~/.clumsies/workspaces/{workspace_name}/
 ```
 
 The synced content lives under:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/cache/
+~/.clumsies/workspaces/{workspace_name}/cache/
 ```
 
 The current implementation materializes at least:
@@ -171,8 +171,8 @@ The local workspace directory has two layers:
 
 | Path | Role |
 | --- | --- |
-| `~/.clumsies/workspaces/{ws_id}/manifest.json` | workspace snapshot and sync index |
-| `~/.clumsies/workspaces/{ws_id}/cache/` | materialized files used by local runtime |
+| `~/.clumsies/workspaces/{workspace_name}/manifest.json` | workspace snapshot and sync index |
+| `~/.clumsies/workspaces/{workspace_name}/cache/` | materialized files used by local runtime |
 
 That split explains practical behavior. Sync can skip unchanged content because the manifest tells it what should exist and which hash each item should have. MCP can serve from local state because the cache already contains the materialized files.
 

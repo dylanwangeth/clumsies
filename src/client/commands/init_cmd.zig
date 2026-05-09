@@ -149,9 +149,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             const ws_dir = try std.fs.path.join(allocator, &.{ base_path, "workspaces" });
             defer allocator.free(ws_dir);
             std.fs.makeDirAbsolute(ws_dir) catch {};
-            const ws_id_dir = try std.fs.path.join(allocator, &.{ ws_dir, ws_id });
-            defer allocator.free(ws_id_dir);
-            std.fs.makeDirAbsolute(ws_id_dir) catch {};
+            const local_ws_dir = try ws_config.getWsDir(allocator, ws_id);
+            defer allocator.free(local_ws_dir);
+            std.fs.makeDirAbsolute(local_ws_dir) catch {};
             std.fs.makeDirAbsolute(cache_path) catch {};
         }
     };

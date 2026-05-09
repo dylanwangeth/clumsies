@@ -4,14 +4,24 @@ This page is for a human team member working inside a workspace. It is not the a
 
 ## What you actually do
 
-A normal member flow looks like this:
+A normal member flow starts with the TUI:
 
-1. log in to the Hub
+```bash
+clumsies
+```
+
+From there, the TUI can handle the normal product workflow:
+
+1. sign in to the Hub
 2. create or choose a workspace
 3. bind a local directory
-4. sync the local cache
-5. use the CLI for explicit actions
-6. keep the TUI open for state-heavy work
+4. sync workspace rules and context into the local cache
+5. import or detach workspace rules
+6. review changes and manage workspace membership
+
+You do not need to learn `login`, `init`, or `sync` before using clumsies.
+Those commands remain available for scripts, automation, and explicit
+troubleshooting, but the interactive path is to open the TUI.
 
 That is the member path. The MCP server belongs to the agent runtime path, not to the normal user path.
 
@@ -21,7 +31,7 @@ Launch `clumsies` to use the TUI. If the client has no usable credentials, the
 TUI enters a login state instead of requiring a separate command first.
 
 The CLI login command is still available as a direct credential-management
-entry point:
+entry point for scripts and recovery:
 
 ```bash
 clumsies login --hub-url http://127.0.0.1:8400 --username admin
@@ -39,10 +49,9 @@ If you omit `--username`, the CLI prompts for it.
 ## Step 2: bind the repo to a workspace
 
 The TUI can create a workspace, choose an initial bundle, and bind a local
-path from Settings > Workspaces. This is the preferred interactive flow when
-you are already inside the dashboard.
+path from Settings > Workspaces. This is the preferred interactive flow.
 
-Use `init` in the repo directory when you want an explicit command.
+Use `init` only when you want an explicit command.
 
 Create a new workspace:
 
@@ -82,19 +91,23 @@ Artifact.
 
 ## Step 4: sync local state
 
-Once the directory is bound, sync the local cache:
+The TUI can sync the local cache for the active workspace. Use the CLI command
+only when you want a direct one-shot sync:
 
 ```bash
 clumsies sync
 ```
 
-This pulls workspace rules and context into the local runtime cache. It is the step that makes the workspace usable by local tools.
+Sync pulls workspace rules and context into the local runtime cache. It is the
+step that makes the workspace usable by local tools.
 
 ## Step 5: choose the right surface
 
-Use the CLI when the job is explicit and short-lived.
+Use the TUI for normal product work. That includes browsing the Artifact,
+inspecting Workspace status, reading analysis, reviewing changes, creating or
+binding workspaces, and managing members.
 
-Use the TUI when the job is state-heavy. That usually means browsing the Artifact, inspecting Workspace status, reading a denser analysis view, or staying inside review work longer than one command at a time.
+Use the CLI when the job is explicit, short-lived, or part of automation.
 
 Launch the TUI with:
 
@@ -106,7 +119,8 @@ clumsies
 
 If you want a supported agent host to pick up clumsies-managed runtime behavior, install an adapter.
 
-The most flexible way is the interactive flow:
+Adapter installation is the one normal member task that still belongs in the
+CLI:
 
 ```bash
 clumsies adapt

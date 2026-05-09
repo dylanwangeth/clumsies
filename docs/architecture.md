@@ -184,7 +184,7 @@ Without manifest, each client would need its own discovery logic. With manifest,
 The current implementation writes this snapshot to:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/manifest.json
+~/.clumsies/workspaces/{workspace_name}/manifest.json
 ```
 
 That file is not a decorative cache marker. It is the local index for the current workspace snapshot. In the current code, it contains:
@@ -210,7 +210,7 @@ That local runtime serves at least three jobs:
 The current workspace cache root is:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/cache/
+~/.clumsies/workspaces/{workspace_name}/cache/
 ```
 
 Inside that cache, the runtime materializes at least:

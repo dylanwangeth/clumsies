@@ -66,8 +66,8 @@ That is an architectural choice, not an implementation accident. It keeps runtim
 The current local files are session-scoped:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/attestation/{session_id}.jsonl
-~/.clumsies/workspaces/{ws_id}/attestation/{session_id}.cursor
+~/.clumsies/workspaces/{workspace_name}/attestation/{session_id}.jsonl
+~/.clumsies/workspaces/{workspace_name}/attestation/{session_id}.cursor
 ```
 
 The JSONL file stores the append-only event stream for one host-agent

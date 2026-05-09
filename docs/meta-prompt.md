@@ -9,7 +9,7 @@ It is not a normal rule. It is not a workflow. It is the session-start frame tha
 In the current implementation, the synced file lives at:
 
 ```text
-~/.clumsies/workspaces/{ws_id}/cache/META_PROMPT.md
+~/.clumsies/workspaces/{workspace_name}/cache/META_PROMPT.md
 ```
 
 That path matters because the file is part of the workspace cache, not a random repo-local convention. When `sync` refreshes the workspace snapshot, `META_PROMPT.md` is refreshed with it.
