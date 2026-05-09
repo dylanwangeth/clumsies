@@ -20,6 +20,7 @@ const table_row = @import("widgets/table_row.zig");
 const surface_size = @import("widgets/surface_size.zig");
 const diff_viewer = @import("widgets/diff_viewer.zig");
 const shortcut_bar = @import("widgets/shortcut_bar.zig");
+const tree_list = @import("widgets/tree_list.zig");
 
 pub const fillSurface = draw.fillSurface;
 pub const paintBand = draw.paintBand;
@@ -99,6 +100,7 @@ pub const ShortcutBarOptions = shortcut_bar.Options;
 pub const drawShortcutBar = shortcut_bar.drawInline;
 pub const shortcutBarRows = shortcut_bar.requiredRows;
 pub const sortedShortcuts = shortcut_bar.sortedCopy;
+pub const TreeList = tree_list;
 
 pub fn countLines(text: []const u8) usize {
     if (text.len == 0) return 0;
@@ -224,4 +226,5 @@ test {
     _ = @import("widgets/content_view.zig");
     _ = @import("widgets/system_notice.zig");
     _ = @import("widgets/shortcut_bar.zig");
+    _ = @import("widgets/tree_list.zig");
 }

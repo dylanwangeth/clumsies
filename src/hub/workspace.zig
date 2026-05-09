@@ -29,11 +29,25 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     if (body.name.len == 0) {
         return apiError(res, 400, "BAD_REQUEST", "name is required");
     }
+    if (body.bundle_id) |bid| {
+        if (bid.len == 0) {
+            return apiError(res, 400, "BAD_REQUEST", "bundle_id is required when provided");
+        }
+    }
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
     };
     defer conn.release();
+
+    if (body.bundle_id) |bid| {
+        const ok = bundleExists(conn, user.org_id, bid) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        };
+        if (!ok) {
+            return apiError(res, 404, "NOT_FOUND", "bundle not found");
+        }
+    }
 
     var rand_bytes: [16]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
@@ -45,10 +59,15 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         ws_id_buf[3 + i * 2 + 1] = hex_chars[byte & 0x0f];
     }
 
+    conn.begin() catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to begin transaction");
+    };
+
     _ = conn.exec(
         "INSERT INTO workspaces (ws_id, org_id, name, description) VALUES ($1, $2::uuid, $3, $4)",
         .{ &ws_id_buf, user.org_id, body.name, body.description },
     ) catch {
+        conn.rollback() catch {};
         if (conn.err) |pg_err| {
             if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
                 std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
@@ -59,18 +78,25 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         return apiError(res, 500, "INTERNAL_ERROR", "failed to create workspace");
     };
 
-    // Creator becomes workspace admin
     _ = conn.exec(
         "INSERT INTO workspace_members (ws_id, user_id, role) VALUES ($1, $2, 'admin')",
         .{ &ws_id_buf, user.user_id },
     ) catch {
+        conn.rollback() catch {};
         return apiError(res, 500, "INTERNAL_ERROR", "failed to add creator as admin");
     };
 
-    // Initialize workspace from bundle if specified
     if (body.bundle_id) |bid| {
-        initFromBundle(conn, &ws_id_buf, bid);
+        seedWorkspaceFromBundle(conn, &ws_id_buf, bid) catch {
+            conn.rollback() catch {};
+            return apiError(res, 500, "INTERNAL_ERROR", "failed to seed workspace from bundle");
+        };
     }
+
+    conn.commit() catch {
+        conn.rollback() catch {};
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to commit transaction");
+    };
 
     res.status = 201;
     try res.json(CreateWorkspaceResponse{
@@ -340,20 +366,26 @@ pub fn handleRemoveRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     try res.json(.{ .revision = new_rev }, .{});
 }
 
-fn initFromBundle(conn: anytype, ws_id: []const u8, bundle_id: []const u8) void {
-    var result = conn.query(
-        "SELECT rule_id FROM bundle_rules WHERE bundle_id = $1",
-        .{bundle_id},
-    ) catch return;
-    defer result.deinit();
-
-    while (result.next() catch null) |brow| {
-        const pid = brow.get([]const u8, 0) catch continue;
-        _ = conn.exec(
-            "INSERT INTO workspace_rules (ws_id, rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-            .{ ws_id, pid },
-        ) catch {};
+fn bundleExists(conn: anytype, org_id: []const u8, bundle_id: []const u8) !bool {
+    var row = conn.row(
+        "SELECT 1 FROM bundles WHERE org_id = $1::uuid AND bundle_id = $2",
+        .{ org_id, bundle_id },
+    ) catch return error.DatabaseQueryFailed;
+    if (row) |*found| {
+        found.deinit() catch {};
+        return true;
     }
+    return false;
+}
+
+fn seedWorkspaceFromBundle(conn: anytype, ws_id: []const u8, bundle_id: []const u8) !void {
+    _ = conn.exec(
+        \\INSERT INTO workspace_rules (ws_id, rule_id)
+        \\SELECT $1, rule_id FROM bundle_rules WHERE bundle_id = $2
+        \\ON CONFLICT DO NOTHING
+    ,
+        .{ ws_id, bundle_id },
+    ) catch return error.DatabaseQueryFailed;
 }
 
 fn checkIfMatch(conn: anytype, req: anytype, res: anytype, ws_id: []const u8) !bool {

@@ -388,6 +388,7 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
             return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
         };
         try list.append(req.arena, .{
+            .bundle_id = row.bundle_id,
             .name = row.name,
             .description = row.description,
             .updated_at = row.updated_at,
@@ -462,6 +463,7 @@ pub fn handleGetBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     }
 
     try res.json(.{
+        .bundle_id = bundle_id,
         .name = bundle_name,
         .description = description,
         .rule_ids = ids.items,
@@ -545,6 +547,7 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
 
     res.status = 201;
     try res.json(.{
+        .bundle_id = bundle_id,
         .name = body.name,
         .description = desc,
         .rule_ids = body.rule_ids,

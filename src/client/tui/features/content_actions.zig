@@ -15,7 +15,6 @@ pub const Surface = enum {
 
 const workspace_context_shortcuts = [_]w.Shortcut{
     .{ .key = "j/k", .label = "move/scroll" },
-    .{ .key = "z", .label = "tree" },
     .{ .key = "h/l", .label = "switch tab" },
     .{ .key = "n", .label = "new context" },
     .{ .key = "w", .label = "workspaces" },
@@ -30,7 +29,6 @@ const workspace_context_shortcuts = [_]w.Shortcut{
 
 const workspace_rule_shortcuts = [_]w.Shortcut{
     .{ .key = "j/k", .label = "move/scroll" },
-    .{ .key = "z", .label = "tree" },
     .{ .key = "h/l", .label = "switch tab" },
     .{ .key = "w", .label = "workspaces" },
     .{ .key = "y", .label = "copy id" },
@@ -44,7 +42,7 @@ const workspace_rule_shortcuts = [_]w.Shortcut{
 
 const artifact_content_shortcuts = [_]w.Shortcut{
     .{ .key = "j/k", .label = "move/scroll" },
-    .{ .key = "z", .label = "tree" },
+    .{ .key = "Space", .label = "select" },
     .{ .key = "Enter", .label = "open" },
     .{ .key = "h/l", .label = "switch tab" },
     .{ .key = "y", .label = "copy id" },
@@ -54,7 +52,7 @@ const artifact_content_shortcuts = [_]w.Shortcut{
     .{ .key = "u", .label = "pull" },
     .{ .key = "d", .label = "toggle diff" },
     .{ .key = "D", .label = "discard" },
-    .{ .key = "b", .label = "bundle filter" },
+    .{ .key = "b", .label = "bundles" },
     .{ .key = "?", .label = "help" },
     .{ .key = "q", .label = "quit" },
 };

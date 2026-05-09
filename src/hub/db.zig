@@ -338,7 +338,7 @@ const migration_sql =
     \\CREATE TABLE IF NOT EXISTS rule_pr_operations (
     \\    pr_id TEXT NOT NULL REFERENCES rule_prs(pr_id) ON DELETE CASCADE,
     \\    op_index INTEGER NOT NULL,
-    \\    type TEXT NOT NULL CHECK (type IN ('modify', 'rename', 'create', 'delete')),
+    \\    type TEXT NOT NULL CHECK (type IN ('modify', 'rename', 'create', 'delete', 'bundle_create', 'bundle_add', 'bundle_remove')),
     \\    rule_id TEXT,
     \\    base_hash TEXT,
     \\    base_content TEXT,
@@ -348,6 +348,11 @@ const migration_sql =
     \\);
     \\CREATE INDEX IF NOT EXISTS rule_pr_operations_rule_id_idx
     \\    ON rule_pr_operations(rule_id);
+    \\ALTER TABLE rule_pr_operations
+    \\    DROP CONSTRAINT IF EXISTS rule_pr_operations_type_check;
+    \\ALTER TABLE rule_pr_operations
+    \\    ADD CONSTRAINT rule_pr_operations_type_check
+    \\    CHECK (type IN ('modify', 'rename', 'create', 'delete', 'bundle_create', 'bundle_add', 'bundle_remove'));
     \\
     \\CREATE TABLE IF NOT EXISTS rule_pr_comments (
     \\    comment_id TEXT PRIMARY KEY,

@@ -52,6 +52,7 @@ pub const BatchRuleContentResponse = struct {
 };
 
 pub const BundleMeta = struct {
+    bundle_id: []const u8 = "",
     name: []const u8,
     description: []const u8 = "",
     updated_at: []const u8 = "",

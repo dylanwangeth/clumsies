@@ -24,6 +24,7 @@ const drafts_mod = @import("../drafts.zig");
 const workspace_rule = @import("../rule.zig");
 const workspace_config = @import("../workspace_config.zig");
 const local_content = @import("../local_content.zig");
+const sync_cmd = @import("../commands/sync_cmd.zig");
 const runtime = @import("runtime.zig");
 const tasks = @import("tasks.zig");
 const util_hash = @import("clumsies_lib").util.hash;
@@ -38,6 +39,7 @@ const Modal = w.Modal;
 const ConfirmAction = enum {
     none,
     bind_current_directory,
+    bundle_rule_pr,
     remove_member,
     remove_workspace_member,
     delete_workspace,
@@ -47,6 +49,13 @@ const ConfirmAction = enum {
 };
 
 const ConfirmChoice = enum { accept, cancel };
+
+const BundlePrConfirmOp = enum {
+    none,
+    add,
+    remove,
+    create,
+};
 
 const TopModule = enum(u8) {
     dashboard,
@@ -80,6 +89,7 @@ fn confirmActionName(action: ConfirmAction) []const u8 {
     return switch (action) {
         .none => "none",
         .bind_current_directory => "bind_current_directory",
+        .bundle_rule_pr => "bundle_rule_pr",
         .remove_member => "remove_member",
         .remove_workspace_member => "remove_workspace_member",
         .delete_workspace => "delete_workspace",
@@ -157,6 +167,9 @@ pub const Shell = struct {
     confirm_member_user_id_len: usize = 0,
     confirm_workspace_id_buf: [80]u8 = .{0} ** 80,
     confirm_workspace_id_len: usize = 0,
+    confirm_bundle_name_buf: [96]u8 = .{0} ** 96,
+    confirm_bundle_name_len: usize = 0,
+    confirm_bundle_op: BundlePrConfirmOp = .none,
     pending_delete_workspace_id_buf: [80]u8 = .{0} ** 80,
     pending_delete_workspace_id_len: usize = 0,
     last_safe_layout_size: vxfw.Size = .{},
@@ -322,11 +335,11 @@ pub const Shell = struct {
                         ctx.consumeAndRedraw();
                         return;
                     }
-                    if (key.matches('y', .{}) or (self.confirm_choice == .accept and (key.matches(vaxis.Key.enter, .{}) or key.matches(' ', .{})))) {
+                    if (key.matches('y', .{}) or (self.confirm_choice == .accept and key.matches(vaxis.Key.enter, .{}))) {
                         self.acceptConfirm(ctx);
                         return;
                     }
-                    if (key.matches('n', .{}) or key.matches(vaxis.Key.escape, .{}) or (self.confirm_choice == .cancel and (key.matches(vaxis.Key.enter, .{}) or key.matches(' ', .{})))) {
+                    if (key.matches('n', .{}) or key.matches(vaxis.Key.escape, .{}) or (self.confirm_choice == .cancel and key.matches(vaxis.Key.enter, .{}))) {
                         self.cancelConfirm(ctx);
                         return;
                     }
@@ -507,6 +520,7 @@ pub const Shell = struct {
                 self.consumeSubmitCommentResult();
                 self.consumePrActionResult();
                 self.consumeCreateRulePrResult();
+                self.consumeCreateBundleRulePrResult();
                 self.consumeCreateContextPrResult();
                 self.consumeUpdateProfileResult();
                 self.consumeInviteMemberResult();
@@ -952,7 +966,7 @@ pub const Shell = struct {
         // the header stays in sync with the content.
         var virtual_entry: data.RuleEntry = undefined;
         const selected_entry: ?*const data.RuleEntry = blk: {
-            if (!self.artifact.has_selected_rule) break :blk null;
+            if (self.artifact.tree.rowCount() == 0) break :blk null;
             if (self.artifact.selected_rule < rules.len) break :blk &rules[self.artifact.selected_rule];
             const k = self.artifact.selected_rule - rules.len;
             if (k >= create_paths.len) break :blk null;
@@ -1537,6 +1551,7 @@ pub const Shell = struct {
         self.api_state.mutex.unlock();
 
         self.workspace.list_sel = 0;
+        self.workspace.list_machine.reset();
         self.workspace.hide_diff = false;
         self.resetWorkspaceTrees();
         self.workspace.list_scroll_bars.scroll_view.cursor = 0;
@@ -1632,9 +1647,49 @@ pub const Shell = struct {
             self.confirm_error_message = "Could not bind current directory.";
             return false;
         };
+
+        _ = self.materializeWorkspaceCache(workspace.ws_id) catch |err| {
+            log.warn("bind_initial_sync_failed ws_id={s} error={s}", .{ workspace.ws_id, @errorName(err) });
+            self.confirm_error_message = "Bound, but initial sync failed.";
+            return false;
+        };
+
         self.api_state.workspace_paths_cache.invalidate();
-        self.notifyOp(.success, "Current directory bound.");
+        self.resetLocalWorkspaceDetail();
+        self.notifyOp(.success, "Current directory bound and synced.");
         return true;
+    }
+
+    pub fn materializeWorkspaceCache(self: *Shell, ws_id: []const u8) !sync_cmd.MaterializeSummary {
+        const alloc = self.api_state.backing_allocator;
+        const auth_info = try auth_mod.loadAuth(alloc);
+        defer auth_info.deinit(alloc);
+
+        var hub = HubClient.init(alloc, auth_info.hub_url, auth_info.access_token);
+        defer hub.deinit();
+        try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
+        const summary = try sync_cmd.materializeWorkspace(alloc, &hub, ws_id, .{});
+        self.api_state.workspace_paths_cache.invalidate();
+        self.resetLocalWorkspaceDetail();
+        return summary;
+    }
+
+    pub fn bindWorkspacePath(self: *Shell, name: []const u8, ws_id: []const u8, path: []const u8) !void {
+        const alloc = self.api_state.backing_allocator;
+        var hub_url_copy: ?[]const u8 = null;
+        self.api_state.mutex.lock();
+        if (self.api_state.hub_url) |hub_url| {
+            hub_url_copy = alloc.dupe(u8, hub_url) catch {
+                self.api_state.mutex.unlock();
+                return error.OutOfMemory;
+            };
+        }
+        self.api_state.mutex.unlock();
+        const hub_url = hub_url_copy orelse return error.HubUrlNotLoaded;
+        defer alloc.free(hub_url);
+
+        try workspace_config.addWorkspace(alloc, hub_url, name, ws_id, path);
+        self.api_state.workspace_paths_cache.invalidate();
     }
 
     const SettingsWorkspaceSelection = struct {
@@ -1688,6 +1743,7 @@ pub const Shell = struct {
         self.workspace.context_tree.reset(allocator);
         self.workspace.rules_tree.reset(allocator);
         self.workspace.list_sel = 0;
+        self.workspace.list_machine.reset();
     }
 
     fn currentWsDirSelection(self: *Shell) ?[]const u8 {
@@ -3147,11 +3203,17 @@ pub const Shell = struct {
 
     fn consumePrActionResult(self: *Shell) void {
         const result = self.api_state.pr_action_pending.consume() orelse return;
+        const acted_pr = self.selectedPr();
         switch (result) {
             .ok => {
                 const wait_for_workspace = self.shouldSettlePrActionAfterWorkspaceRefresh();
                 if (!wait_for_workspace) self.settlePendingPrActionDraft();
                 self.invalidateRemoteDetailRequests();
+                if (acted_pr) |pr| {
+                    if (pr.target_kind == .bundle and std.mem.eql(u8, pr.status, "open")) {
+                        api.fetch.refetchAllAsync(self.api_state);
+                    }
+                }
                 self.returnReviewDetailToListAfterPrAction();
                 if (wait_for_workspace) {
                     if (self.drafts.pending_pr_action) |pending| {
@@ -3272,7 +3334,6 @@ pub const Shell = struct {
 
     fn submitComment(self: *Shell) void {
         const pr = self.selectedPr() orelse return;
-        if (pr.target_kind == .bundle) return;
 
         const comment_text = self.review.comment_input_buf[0..self.review.comment_input_len];
         api.specs.dispatchFromState(
@@ -3287,7 +3348,6 @@ pub const Shell = struct {
     }
 
     fn fetchPrDetailForEntry(self: *Shell, pr: data.PullRequestEntry) void {
-        if (pr.target_kind == .bundle) return;
         api.specs.dispatchFromState(
             api.specs.PrIdParams,
             @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
@@ -3308,8 +3368,9 @@ pub const Shell = struct {
 
     pub fn doPrAction(self: *Shell, action: []const u8) void {
         const pr = self.selectedPr() orelse return;
-        if (pr.target_kind == .bundle) return;
-        if (!self.capturePendingPrAction(pr, action)) return;
+        if (pr.target_kind == .bundle) {
+            self.releasePendingPrAction();
+        } else if (!self.capturePendingPrAction(pr, action)) return;
 
         api.specs.dispatchFromState(
             api.specs.PrActionParams,
@@ -3502,7 +3563,7 @@ pub const Shell = struct {
             .{ .key = "h/l", .label = "switch inner tabs when a panel has them" },
             .{ .key = "Tab", .label = "switch focus between panels or regions" },
             .{ .key = "Enter", .label = "open, toggle, or confirm the selected item" },
-            .{ .key = "z", .label = "expand or collapse all rows in a tree list" },
+            .{ .key = "z", .label = "fold or unfold all grouped rows" },
             .{ .key = "Esc", .label = "go back, close a drawer, or leave detail focus" },
         });
         if (row < body_h) row += 1;
@@ -3647,6 +3708,14 @@ pub const Shell = struct {
                 ctx.consumeAndRedraw();
                 return;
             },
+            .bundle_rule_pr => {
+                self.confirm_error_message = "";
+                self.confirm_submitting = true;
+                self.commitConfirmedBundleRulePr();
+                self.closeConfirmOverlay();
+                ctx.consumeAndRedraw();
+                return;
+            },
             .delete_workspace => {
                 self.submitDeleteWorkspace();
             },
@@ -3682,6 +3751,8 @@ pub const Shell = struct {
         self.confirm_submitting = false;
         self.confirm_member_user_id_len = 0;
         self.confirm_workspace_id_len = 0;
+        self.confirm_bundle_name_len = 0;
+        self.confirm_bundle_op = .none;
     }
 
     fn cancelConfirm(self: *Shell, ctx: *vxfw.EventContext) void {
@@ -3741,6 +3812,7 @@ pub const Shell = struct {
     fn confirmTitle(self: *const Shell) []const u8 {
         return switch (self.confirm_action) {
             .bind_current_directory => "Bind Directory",
+            .bundle_rule_pr => "Open Bundle PR",
             .remove_member => "Remove Member",
             .remove_workspace_member => "Remove Member",
             .delete_workspace => "Delete Workspace",
@@ -3761,9 +3833,11 @@ pub const Shell = struct {
     }
 
     fn confirmAcceptLabel(self: *const Shell) []const u8 {
+        if (self.confirm_submitting and self.confirm_action == .bundle_rule_pr) return "[ Opening... ]";
         if (self.confirm_submitting) return "[ Removing... ]";
         if (std.mem.eql(u8, self.confirm_message, "sign out")) return "[ Sign out ]";
         if (self.confirm_action == .bind_current_directory) return "[ Bind ]";
+        if (self.confirm_action == .bundle_rule_pr) return "[ Open PR ]";
         return "[ Confirm ]";
     }
 
@@ -5314,6 +5388,166 @@ pub const Shell = struct {
         self.notifyOp(.loading, "Submitting PR...");
     }
 
+    pub fn confirmAddSelectedRulesToBundle(self: *Shell, bundle_idx: usize) void {
+        const bundle_name = self.bundleNameAtIndex(bundle_idx) orelse {
+            self.notifyOp(.warning, "No bundle selected.");
+            return;
+        };
+        defer self.api_state.allocator().free(bundle_name);
+        self.openBundleRulePrConfirm(.add, bundle_name);
+    }
+
+    pub fn confirmRemoveSelectedRulesFromBundle(self: *Shell) void {
+        if (self.artifact.bundle_filter == 0) {
+            self.notifyOp(.warning, "Open a bundle before removing rules.");
+            return;
+        }
+        const bundle_name = self.bundleNameAtIndex(self.artifact.bundle_filter - 1) orelse {
+            self.notifyOp(.warning, "No bundle selected.");
+            return;
+        };
+        defer self.api_state.allocator().free(bundle_name);
+        self.openBundleRulePrConfirm(.remove, bundle_name);
+    }
+
+    pub fn confirmCreateBundleWithSelectedRules(self: *Shell, bundle_name: []const u8) void {
+        self.openBundleRulePrConfirm(.create, bundle_name);
+    }
+
+    fn openBundleRulePrConfirm(self: *Shell, op: BundlePrConfirmOp, bundle_name: []const u8) void {
+        const selected_count = self.artifact.list_machine.selectedCount();
+        if (selected_count == 0) {
+            self.notifyOp(.warning, "Select rules first.");
+            return;
+        }
+        self.confirm_bundle_name_len = @min(bundle_name.len, self.confirm_bundle_name_buf.len);
+        @memcpy(self.confirm_bundle_name_buf[0..self.confirm_bundle_name_len], bundle_name[0..self.confirm_bundle_name_len]);
+        self.confirm_bundle_op = op;
+        self.confirm_message = switch (op) {
+            .add => std.fmt.allocPrint(self.viewAllocator(), "Open a PR to add {d} selected rules to {s}.", .{ selected_count, bundle_name }) catch "Open a PR to add selected rules.",
+            .remove => std.fmt.allocPrint(self.viewAllocator(), "Open a PR to remove {d} selected rules from {s}.", .{ selected_count, bundle_name }) catch "Open a PR to remove selected rules.",
+            .create => std.fmt.allocPrint(self.viewAllocator(), "Open a PR to create {s} with {d} selected rules.", .{ bundle_name, selected_count }) catch "Open a PR to create this bundle.",
+            .none => "",
+        };
+        self.confirm_error_message = "";
+        self.confirm_submitting = false;
+        self.confirm_action = .bundle_rule_pr;
+        self.confirm_choice = .accept;
+        self.show_confirm = true;
+    }
+
+    fn commitConfirmedBundleRulePr(self: *Shell) void {
+        const bundle_name = self.confirm_bundle_name_buf[0..self.confirm_bundle_name_len];
+        switch (self.confirm_bundle_op) {
+            .add => self.submitSelectedBundleRulePr("bundle_add", bundle_name, "Add"),
+            .remove => self.submitSelectedBundleRulePr("bundle_remove", bundle_name, "Remove"),
+            .create => self.submitSelectedBundleRulePr("bundle_create", bundle_name, "Create"),
+            .none => self.confirm_error_message = "No bundle operation selected.",
+        }
+    }
+
+    fn bundleNameAtIndex(self: *Shell, bundle_idx: usize) ?[]const u8 {
+        const alloc = self.api_state.allocator();
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const bundles = self.api_state.bundles orelse return null;
+        if (bundle_idx >= bundles.len) return null;
+        return alloc.dupe(u8, bundles[bundle_idx].name) catch null;
+    }
+
+    fn submitSelectedBundleRulePr(self: *Shell, operation_type: []const u8, bundle_name: []const u8, verb: []const u8) void {
+        const alloc = self.api_state.allocator();
+        const ids = self.collectSelectedArtifactRuleIds(alloc) orelse return;
+        defer {
+            for (ids) |id| alloc.free(id);
+            alloc.free(ids);
+        }
+        if (ids.len == 0) {
+            self.notifyOp(.warning, "Select synced rules first.");
+            return;
+        }
+
+        var ops: std.ArrayList(api.specs.CreateRulePrOperation) = .empty;
+        defer ops.deinit(alloc);
+        if (std.mem.eql(u8, operation_type, "bundle_create")) {
+            ops.append(alloc, .{
+                .operation_type = "bundle_create",
+                .path = bundle_name,
+            }) catch {
+                self.notifyOp(.failure, "Out of memory creating bundle PR.");
+                return;
+            };
+        }
+        const membership_op = if (std.mem.eql(u8, operation_type, "bundle_create")) "bundle_add" else operation_type;
+        for (ids) |rule_id| {
+            ops.append(alloc, .{
+                .operation_type = membership_op,
+                .rule_id = rule_id,
+                .path = bundle_name,
+            }) catch {
+                self.notifyOp(.failure, "Out of memory creating bundle PR.");
+                return;
+            };
+        }
+
+        const title = if (std.mem.eql(u8, operation_type, "bundle_create"))
+            std.fmt.allocPrint(alloc, "Create {s} bundle with {d} rules", .{ bundle_name, ids.len }) catch {
+                self.notifyOp(.failure, "Out of memory creating bundle PR.");
+                return;
+            }
+        else
+            std.fmt.allocPrint(alloc, "{s} {d} rules in {s}", .{ verb, ids.len, bundle_name }) catch {
+                self.notifyOp(.failure, "Out of memory creating bundle PR.");
+                return;
+            };
+        defer alloc.free(title);
+        const body = if (std.mem.eql(u8, operation_type, "bundle_create"))
+            std.fmt.allocPrint(alloc, "Create the {s} bundle and add {d} selected rules.", .{ bundle_name, ids.len }) catch {
+                self.notifyOp(.failure, "Out of memory creating bundle PR.");
+                return;
+            }
+        else
+            std.fmt.allocPrint(alloc, "{s} {d} selected rules {s} {s}.", .{
+                verb,
+                ids.len,
+                if (std.mem.eql(u8, operation_type, "bundle_add")) "to" else "from",
+                bundle_name,
+            }) catch {
+                self.notifyOp(.failure, "Out of memory creating bundle PR.");
+                return;
+            };
+        defer alloc.free(body);
+
+        api.specs.dispatchFromState(
+            api.specs.CreateRulePrBatchParams,
+            api.specs.CreateRulePrResponse,
+            api.specs.create_rule_pr_batch,
+            &self.api_state.create_bundle_rule_pr_pending,
+            self.api_state,
+            .{
+                .title = title,
+                .body = body,
+                .operations = ops.items,
+            },
+        );
+        self.notifyOp(.loading, "Submitting bundle PR...");
+    }
+
+    fn collectSelectedArtifactRuleIds(self: *Shell, alloc: std.mem.Allocator) ?[]const []const u8 {
+        const rules = self.getRules();
+        var ids: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (ids.items) |id| alloc.free(id);
+            ids.deinit(alloc);
+        }
+        for (rules, 0..) |rule, idx| {
+            if (!self.artifact.list_machine.selected_leaves.contains(idx)) continue;
+            if (rule.rule_id.len == 0) continue;
+            ids.append(alloc, alloc.dupe(u8, rule.rule_id) catch return null) catch return null;
+        }
+        return ids.toOwnedSlice(alloc) catch null;
+    }
+
     fn submitContextPr(self: *Shell, target: DraftTarget) void {
         const alloc = self.api_state.allocator();
         const read = self.readDraftForSubmit(alloc, target) orelse return;
@@ -5648,6 +5882,26 @@ pub const Shell = struct {
         switch (result) {
             .ok => |resp| {
                 self.markComposerInReview(resp.pr_id, resp.status);
+            },
+            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", e)),
+            .network_error => self.notifyOp(.failure, "PR submit failed: network error."),
+            .invalid_response => self.notifyOp(.failure, "PR submit failed: malformed response."),
+        }
+    }
+
+    fn consumeCreateBundleRulePrResult(self: *Shell) void {
+        const result = self.api_state.create_bundle_rule_pr_pending.consume() orelse return;
+        switch (result) {
+            .ok => |resp| {
+                self.artifact.list_machine.exitSelectionMode();
+                api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
+                self.ensureReviewPrsRequested();
+                const message = std.fmt.allocPrint(
+                    self.api_state.allocator(),
+                    "PR {s} opened ({s}).",
+                    .{ resp.pr_id, resp.status },
+                ) catch "PR opened.";
+                self.notifyOp(.success, message);
             },
             .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", e)),
             .network_error => self.notifyOp(.failure, "PR submit failed: network error."),

@@ -41,14 +41,13 @@ pub const State = struct {
     show_drawer: bool = false,
     drawer_cursor: usize = 0,
     list_sel: usize = 0,
+    list_machine: w.TreeList.Machine = .{},
     last_context_file_row: ?usize = null,
     last_rule_file_row: ?usize = null,
     hide_diff: bool = false,
     list_scroll_bars: vxfw.ScrollBars,
     context_tree: PathTreeState = .{},
     rules_tree: PathTreeState = .{},
-    list_widgets: [MAX_TREE_ROWS]vxfw.Widget = undefined,
-    list_rows: [MAX_TREE_ROWS]vxfw.Text = undefined,
     local_arena: std.heap.ArenaAllocator,
     local_cache_id: ?[]const u8 = null,
     local_detail: ?api.model.WorkspaceDetail = null,
@@ -62,6 +61,8 @@ pub const State = struct {
     create_name_len: usize = 0,
     create_desc_buf: [256]u8 = undefined,
     create_desc_len: usize = 0,
+    create_path_buf: [512]u8 = undefined,
+    create_path_len: usize = 0,
     create_selected_bundle: ?usize = null,
     create_bundle_cursor: usize = 0,
     create_error_kind: CreateWsErrorKind = .none,
@@ -71,6 +72,9 @@ pub const State = struct {
     create_created_id_len: usize = 0,
     create_created_name_buf: [64]u8 = undefined,
     create_created_name_len: usize = 0,
+    create_bound_path_buf: [512]u8 = undefined,
+    create_bound_path_len: usize = 0,
+    create_bound_ok: bool = false,
     create_init_copied: bool = false,
     create_edit_ws_id_buf: [64]u8 = undefined,
     create_edit_ws_id_len: usize = 0,
@@ -86,6 +90,7 @@ pub const State = struct {
         self.local_arena.deinit();
         self.context_tree.deinit(allocator);
         self.rules_tree.deinit(allocator);
+        self.list_machine.deinit(allocator);
     }
 };
 
@@ -95,24 +100,27 @@ pub const CreateWsMode = enum { create, edit };
 pub const CreateWsFocus = enum {
     name,
     description,
+    path,
     bundle,
     submit,
 
-    pub fn next(self: CreateWsFocus, bundle_count: usize) CreateWsFocus {
+    pub fn next(self: CreateWsFocus, bundle_count: usize, include_path: bool) CreateWsFocus {
         return switch (self) {
             .name => .description,
-            .description => if (bundle_count == 0) .submit else .bundle,
+            .description => if (include_path) .path else if (bundle_count == 0) .submit else .bundle,
+            .path => if (bundle_count == 0) .submit else .bundle,
             .bundle => .submit,
             .submit => .name,
         };
     }
 
-    pub fn prev(self: CreateWsFocus, bundle_count: usize) CreateWsFocus {
+    pub fn prev(self: CreateWsFocus, bundle_count: usize, include_path: bool) CreateWsFocus {
         return switch (self) {
             .name => .submit,
             .description => .name,
-            .bundle => .description,
-            .submit => if (bundle_count == 0) .description else .bundle,
+            .path => .description,
+            .bundle => if (include_path) .path else .description,
+            .submit => if (bundle_count == 0) if (include_path) .path else .description else .bundle,
         };
     }
 };
@@ -123,6 +131,7 @@ pub const CreateWsErrorKind = enum {
     api,
     network,
     invalid_response,
+    invalid_path,
 };
 
 pub const DetailArgs = struct {
@@ -476,38 +485,66 @@ fn syncListWidgets(
     live_ws: ?api.model.WorkspaceDetail,
 ) std.mem.Allocator.Error!void {
     const row_count = ws_tree.rowCount();
-    const list_rows = try ctx.arena.alloc(vxfw.Text, row_count);
+    const rows = try ctx.arena.alloc(w.TreeList.RowWidget, row_count);
     const list_widgets = try ctx.arena.alloc(vxfw.Widget, row_count);
+    self.workspace.list_machine.cursor = self.workspace.list_sel;
+    self.workspace.list_machine.sync(ws_tree);
+    self.workspace.list_sel = self.workspace.list_machine.cursor;
     for (0..row_count) |r| {
         const sel = r == self.workspace.list_sel;
         const rendered = ws_tree.rowText(r);
         if (ws_tree.dirPathAt(r) != null) {
-            list_rows[r] = .{
-                .text = rendered,
-                .style = if (sel) theme.boldOn(theme.PANEL, theme.TEXT) else theme.boldOn(theme.PANEL, theme.TEXT_SOFT),
-                .softwrap = false,
+            rows[r] = .{
+                .item = .{
+                    .text = rendered,
+                    .cursor = sel,
+                    .active = true,
+                    .style = if (sel)
+                        theme.boldOn(theme.PANEL, theme.TEXT)
+                    else
+                        theme.boldOn(theme.PANEL, theme.TEXT_SOFT),
+                },
+                .options = .{
+                    .background = theme.PANEL,
+                    .text_col = 0,
+                    .show_cursor_marker = false,
+                },
             };
         } else {
             const draft_status = draftStatusForRow(self, ws_tree, r, live_ws);
-            const is_stale = draft_status == null and isStaleRow(self, ws_tree, r, live_ws);
-            const row_style = w.contentRowStyle(sel, draft_status, is_stale);
-            const text = if (is_stale)
+            const pull_available = draft_status == null and isStaleRow(self, ws_tree, r, live_ws);
+            const text = if (pull_available)
                 std.fmt.allocPrint(self.viewAllocator(), "{s} *", .{rendered}) catch rendered
             else
                 rendered;
-            list_rows[r] = .{
-                .text = text,
-                .style = row_style,
-                .softwrap = false,
+            rows[r] = .{
+                .item = .{
+                    .text = text,
+                    .cursor = sel,
+                    .selector = if (ws_tree.leafIndexAt(r)) |leaf|
+                        self.workspace.list_machine.selectorForLeaf(leaf)
+                    else
+                        .none,
+                    .selector_placement = .right,
+                    .style = w.contentRowStyle(sel, draft_status, pull_available),
+                },
+                .options = .{
+                    .background = theme.PANEL,
+                    .text_col = 0,
+                    .show_cursor_marker = false,
+                },
             };
         }
-        list_widgets[r] = list_rows[r].widget();
+        list_widgets[r] = rows[r].widget();
     }
     self.workspace.list_scroll_bars.scroll_view.children = .{ .slice = list_widgets };
     self.workspace.list_scroll_bars.estimated_content_height = @intCast(row_count);
     const cur = if (row_count == 0) 0 else @min(self.workspace.list_sel, row_count - 1);
     self.workspace.list_sel = cur;
-    self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(cur);
+    self.workspace.list_machine.cursor = cur;
+    self.workspace.list_machine.sync(ws_tree);
+    self.workspace.list_sel = self.workspace.list_machine.cursor;
+    self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(self.workspace.list_sel);
     clampScrollTop(&self.workspace.list_scroll_bars.scroll_view, row_count);
 }
 
@@ -593,40 +630,25 @@ pub fn drawWorkspaceDrawer(
         w.writeText(&body, ctx, 1, 1, "No workspaces.", theme.textOn(theme.PANEL_SOFT, theme.MUTED));
     } else {
         if (self.workspace.drawer_cursor >= workspaces.len) self.workspace.drawer_cursor = workspaces.len - 1;
-        const max_rows: usize = @intCast(body_h);
-        const visible_rows = if (max_rows > 2) max_rows - 2 else max_rows;
-        const start = if (self.workspace.drawer_cursor >= visible_rows)
-            self.workspace.drawer_cursor - visible_rows + 1
-        else
-            0;
+        const window = w.TreeList.visibleWindow(
+            self.workspace.drawer_cursor,
+            workspaces.len,
+            @intCast(body_h),
+        );
         var out_row: u16 = 0;
-        var i = start;
+        var i = window.start;
         while (i < workspaces.len and out_row < body_h) : ({
             i += 1;
             out_row += 1;
         }) {
             const entry = workspaces[i];
-            const is_cursor = i == self.workspace.drawer_cursor;
-            const is_active = i == self.workspace.sel;
-            if (is_cursor) {
-                w.writeText(&body, ctx, 0, out_row, "\xe2\x96\x8c", theme.textOn(theme.PANEL_SOFT, theme.ACCENT_SOFT));
-            }
-            const name_style = if (is_cursor)
-                theme.boldOn(theme.PANEL_SOFT, theme.TEXT)
-            else if (is_active)
-                theme.textOn(theme.PANEL_SOFT, theme.TEXT)
-            else
-                theme.textOn(theme.PANEL_SOFT, theme.TEXT_SOFT);
-            const marker = if (is_active) "[*] " else "[ ] ";
-            w.writeText(&body, ctx, 1, out_row, marker, name_style);
-            const name_col: u16 = 5;
-            const owner_width: u16 = if (entry.owner.len > 0) @intCast(@min(ctx.stringWidth(entry.owner), body_w)) else 0;
-            const owner_col = if (owner_width > 0 and owner_width + 2 < body_w) body_w - owner_width - 1 else body_w;
-            const name_width = if (owner_col > name_col + 4) owner_col - name_col - 4 else body_w -| name_col;
-            w.writeTextMax(&body, ctx, name_col, out_row, name_width, entry.name, name_style);
-            if (entry.owner.len > 0 and owner_col < body_w) {
-                w.writeText(&body, ctx, owner_col, out_row, entry.owner, theme.textOn(theme.PANEL_SOFT, theme.MUTED));
-            }
+            w.TreeList.drawItem(&body, ctx, out_row, body_w, .{
+                .text = entry.name,
+                .trailing = entry.owner,
+                .cursor = i == self.workspace.drawer_cursor,
+                .active = i == self.workspace.sel,
+                .selector = if (i == self.workspace.sel) .on else .off,
+            }, .{ .background = theme.PANEL_SOFT });
         }
     }
 
@@ -694,6 +716,7 @@ pub fn handleModuleEvent(
     if (self.workspace.focus == .list and key.matches('l', .{})) {
         self.shiftWsTab(1);
         self.workspace.list_sel = 0;
+        self.workspace.list_machine.reset();
         resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
         self.workspace.hide_diff = false;
         ctx.consumeAndRedraw();
@@ -702,6 +725,7 @@ pub fn handleModuleEvent(
     if (self.workspace.focus == .list and key.matches('h', .{})) {
         self.shiftWsTab(-1);
         self.workspace.list_sel = 0;
+        self.workspace.list_machine.reset();
         resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
         self.workspace.hide_diff = false;
         ctx.consumeAndRedraw();
@@ -756,8 +780,10 @@ fn handleListFocusEvent(
     const ws_tree = self.currentWsTree();
 
     if (key.matches(vaxis.Key.enter, .{})) {
-        if (ws_tree.dirPathAt(self.workspace.list_sel)) |dir| {
-            ws_tree.toggleDir(self.api_state.allocator(), dir);
+        self.workspace.list_machine.cursor = self.workspace.list_sel;
+        if (self.workspace.list_machine.toggleDirAtCursor(self.api_state.allocator(), ws_tree)) {
+            self.workspace.list_sel = self.workspace.list_machine.cursor;
+            self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(self.workspace.list_sel);
             self.workspace.hide_diff = false;
             ctx.consumeAndRedraw();
             return;
@@ -766,16 +792,30 @@ fn handleListFocusEvent(
         return;
     }
     if (key.matches('z', .{})) {
-        ws_tree.toggleAll(self.api_state.allocator());
+        self.workspace.list_machine.cursor = self.workspace.list_sel;
+        self.workspace.list_machine.toggleAllDirs(self.api_state.allocator(), ws_tree);
+        self.workspace.list_sel = self.workspace.list_machine.cursor;
         self.workspace.hide_diff = false;
         syncWsRows(self);
         ctx.consumeAndRedraw();
         return;
     }
+    if (key.matches(' ', .{})) {
+        self.workspace.list_machine.cursor = self.workspace.list_sel;
+        if (self.workspace.list_machine.toggleSelectedLeaf(self.api_state.allocator(), ws_tree)) {
+            ctx.consumeAndRedraw();
+            return;
+        }
+        ctx.consumeEvent();
+        return;
+    }
     if (key.matches(vaxis.Key.escape, .{})) {
-        self.workspace.drawer_cursor = self.workspace.sel;
-        self.workspace.show_drawer = true;
-        ctx.consumeAndRedraw();
+        if (self.workspace.list_machine.selection_mode) {
+            self.workspace.list_machine.exitSelectionMode();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        ctx.consumeEvent();
         return;
     }
     if (ws_tree.rowCount() == 0) {
@@ -784,7 +824,9 @@ fn handleListFocusEvent(
     }
     const count = ws_tree.rowCount();
     const step = w.stepForKey(key, &self.workspace.list_scroll_bars.scroll_view) orelse return;
-    _ = w.moveCursorBy(&self.workspace.list_sel, count, step);
+    self.workspace.list_machine.cursor = self.workspace.list_sel;
+    _ = self.workspace.list_machine.moveBy(ws_tree, step);
+    self.workspace.list_sel = self.workspace.list_machine.cursor;
     w.syncScrollCursor(&self.workspace.list_scroll_bars.scroll_view, self.workspace.list_sel, count);
     w.scrollCursorIntoView(&self.workspace.list_scroll_bars.scroll_view, count);
     self.workspace.hide_diff = false;
@@ -949,6 +991,7 @@ pub fn syncWsRows(self: anytype) void {
     ws_tree.sync(self.api_state.allocator(), paths_buf[0..item_count], orig_idx[0..item_count]);
     if (ws_tree.rowCount() == 0) {
         self.workspace.list_sel = 0;
+        self.workspace.list_machine.reset();
         resetScrollView(&self.workspace.list_scroll_bars.scroll_view);
     } else if (self.workspace.list_sel >= ws_tree.rowCount()) {
         self.workspace.list_sel = ws_tree.rowCount() - 1;
@@ -987,18 +1030,22 @@ fn resetCreate(self: anytype) void {
     self.workspace.create_focus = .name;
     self.workspace.create_name_len = 0;
     self.workspace.create_desc_len = 0;
+    self.workspace.create_path_len = 0;
     self.workspace.create_selected_bundle = null;
     self.workspace.create_bundle_cursor = 0;
     self.workspace.create_error_kind = .none;
     self.workspace.create_error_len = 0;
     self.workspace.create_created_id_len = 0;
     self.workspace.create_created_name_len = 0;
+    self.workspace.create_bound_path_len = 0;
+    self.workspace.create_bound_ok = false;
     self.workspace.create_init_copied = false;
     self.workspace.create_edit_ws_id_len = 0;
 }
 
 pub fn openCreate(self: anytype) void {
     resetCreate(self);
+    seedCreatePathFromCwd(self);
     self.workspace.show_create = true;
 }
 
@@ -1009,6 +1056,13 @@ pub fn openEdit(self: anytype, ws_id: []const u8, name: []const u8, description:
     writeFixedBuf(&self.workspace.create_name_buf, &self.workspace.create_name_len, name);
     writeFixedBuf(&self.workspace.create_desc_buf, &self.workspace.create_desc_len, description);
     self.workspace.show_create = true;
+}
+
+fn seedCreatePathFromCwd(self: anytype) void {
+    const alloc = self.api_state.backing_allocator;
+    const cwd = std.fs.cwd().realpathAlloc(alloc, ".") catch return;
+    defer alloc.free(cwd);
+    writeFixedBuf(&self.workspace.create_path_buf, &self.workspace.create_path_len, cwd);
 }
 
 pub fn closeCreate(self: anytype) void {
@@ -1040,14 +1094,27 @@ fn handleCreateFormKey(
     }
 
     const bundles_n = createBundleCount(self);
+    const include_path = self.workspace.create_mode == .create;
 
+    if (self.workspace.create_focus == .path and key.matches(vaxis.Key.tab, .{ .shift = true })) {
+        ctx.consumeEvent();
+        return;
+    }
+    if (self.workspace.create_focus == .path and key.matches(vaxis.Key.tab, .{})) {
+        if (completeCreatePath(self)) {
+            self.workspace.create_error_kind = .none;
+            self.workspace.create_error_len = 0;
+        }
+        ctx.consumeAndRedraw();
+        return;
+    }
     if (key.matches(vaxis.Key.tab, .{})) {
-        self.workspace.create_focus = self.workspace.create_focus.next(bundles_n);
+        self.workspace.create_focus = self.workspace.create_focus.next(bundles_n, include_path);
         ctx.consumeAndRedraw();
         return;
     }
     if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
-        self.workspace.create_focus = self.workspace.create_focus.prev(bundles_n);
+        self.workspace.create_focus = self.workspace.create_focus.prev(bundles_n, include_path);
         ctx.consumeAndRedraw();
         return;
     }
@@ -1067,6 +1134,13 @@ fn handleCreateFormKey(
             &self.workspace.create_desc_buf,
             &self.workspace.create_desc_len,
         ),
+        .path => routeCreateTextInput(
+            self,
+            ctx,
+            key,
+            &self.workspace.create_path_buf,
+            &self.workspace.create_path_len,
+        ),
         .bundle => handleCreateBundleKey(self, ctx, key),
         .submit => handleCreateSubmitKey(self, ctx, key),
     }
@@ -1083,7 +1157,8 @@ fn routeCreateTextInput(
     switch (input.handleKey(key)) {
         .submit => {
             const bundles_n = createBundleCount(self);
-            self.workspace.create_focus = self.workspace.create_focus.next(bundles_n);
+            const include_path = self.workspace.create_mode == .create;
+            self.workspace.create_focus = self.workspace.create_focus.next(bundles_n, include_path);
             ctx.consumeAndRedraw();
         },
         .consumed => {
@@ -1131,12 +1206,79 @@ fn handleCreateBundleKey(
     ctx.consumeEvent();
 }
 
+fn completeCreatePath(self: anytype) bool {
+    const raw = self.workspace.create_path_buf[0..self.workspace.create_path_len];
+    const parent = if (raw.len > 0 and raw[raw.len - 1] == '/')
+        raw
+    else
+        std.fs.path.dirname(raw) orelse ".";
+    const prefix = if (raw.len > 0 and raw[raw.len - 1] == '/')
+        ""
+    else
+        std.fs.path.basename(raw);
+
+    var dir = if (std.fs.path.isAbsolute(parent))
+        std.fs.openDirAbsolute(parent, .{ .iterate = true }) catch return false
+    else
+        std.fs.cwd().openDir(parent, .{ .iterate = true }) catch return false;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    var count: usize = 0;
+    var common: [256]u8 = undefined;
+    var common_len: usize = 0;
+    var single_is_dir = false;
+    while (iter.next() catch null) |entry| {
+        if (!std.mem.startsWith(u8, entry.name, prefix)) continue;
+        if (count == 0) {
+            common_len = @min(entry.name.len, common.len);
+            @memcpy(common[0..common_len], entry.name[0..common_len]);
+            single_is_dir = entry.kind == .directory;
+        } else {
+            common_len = commonPrefixLen(common[0..common_len], entry.name);
+            single_is_dir = false;
+        }
+        count += 1;
+    }
+    if (count == 0 or common_len <= prefix.len) return false;
+
+    var completed: [512]u8 = undefined;
+    var next_len: usize = 0;
+    if (!std.mem.eql(u8, parent, ".")) {
+        const parent_len = @min(parent.len, completed.len);
+        @memcpy(completed[0..parent_len], parent[0..parent_len]);
+        next_len = parent_len;
+        if (next_len < completed.len and (next_len == 0 or completed[next_len - 1] != '/')) {
+            completed[next_len] = '/';
+            next_len += 1;
+        }
+    }
+    const room = completed.len - next_len;
+    const name_len = @min(common_len, room);
+    @memcpy(completed[next_len..][0..name_len], common[0..name_len]);
+    next_len += name_len;
+    if (count == 1 and single_is_dir and next_len < completed.len) {
+        completed[next_len] = '/';
+        next_len += 1;
+    }
+    @memcpy(self.workspace.create_path_buf[0..next_len], completed[0..next_len]);
+    self.workspace.create_path_len = next_len;
+    return true;
+}
+
+fn commonPrefixLen(a: []const u8, b: []const u8) usize {
+    const n = @min(a.len, b.len);
+    var i: usize = 0;
+    while (i < n and a[i] == b[i]) : (i += 1) {}
+    return i;
+}
+
 fn handleCreateSubmitKey(
     self: anytype,
     ctx: *vxfw.EventContext,
     key: vaxis.Key,
 ) void {
-    if (key.matches(vaxis.Key.enter, .{}) or key.matches(' ', .{})) {
+    if (key.matches(vaxis.Key.enter, .{})) {
         submitCreate(self);
         ctx.consumeAndRedraw();
         return;
@@ -1150,6 +1292,14 @@ fn submitCreate(self: anytype) void {
         setCreateNameRequired(self);
         self.workspace.create_focus = .name;
         return;
+    }
+    if (self.workspace.create_mode == .create) {
+        if (!normalizeCreatePath(self)) {
+            self.workspace.create_error_kind = .invalid_path;
+            self.workspace.create_focus = .path;
+            writeErrorMessage(self, "Path does not exist.");
+            return;
+        }
     }
 
     self.workspace.create_phase = .submitting;
@@ -1182,9 +1332,19 @@ fn submitCreate(self: anytype) void {
         .{
             .name = name,
             .description = self.workspace.create_desc_buf[0..self.workspace.create_desc_len],
-            .bundle_id = createSelectedBundleName(self),
+            .bundle_id = createSelectedBundleId(self),
         },
     );
+}
+
+fn normalizeCreatePath(self: anytype) bool {
+    const raw = self.workspace.create_path_buf[0..self.workspace.create_path_len];
+    if (raw.len == 0) return false;
+    const alloc = self.api_state.backing_allocator;
+    const real = std.fs.cwd().realpathAlloc(alloc, raw) catch return false;
+    defer alloc.free(real);
+    writeFixedBuf(&self.workspace.create_path_buf, &self.workspace.create_path_len, real);
+    return true;
 }
 
 fn handleCreateSubmittingKey(
@@ -1212,7 +1372,7 @@ fn handleCreateSuccessKey(
         ctx.consumeAndRedraw();
         return;
     }
-    if (key.matches('c', .{})) {
+    if (!self.workspace.create_bound_ok and key.matches('c', .{})) {
         copyCreateInitCommand(self);
         self.workspace.create_init_copied = true;
         ctx.consumeAndRedraw();
@@ -1238,13 +1398,14 @@ fn createBundleCount(self: anytype) usize {
     return 0;
 }
 
-fn createSelectedBundleName(self: anytype) ?[]const u8 {
+fn createSelectedBundleId(self: anytype) ?[]const u8 {
     const idx = self.workspace.create_selected_bundle orelse return null;
     self.api_state.mutex.lock();
     defer self.api_state.mutex.unlock();
     const bundles = self.api_state.bundles orelse return null;
     if (idx >= bundles.len) return null;
-    return bundles[idx].name;
+    if (bundles[idx].bundle_id.len == 0) return null;
+    return bundles[idx].bundle_id;
 }
 
 fn setCreateNameRequired(self: anytype) void {
@@ -1266,6 +1427,22 @@ pub fn applyCreateResult(
             self.workspace.create_phase = .success;
             self.workspace.create_error_kind = .none;
             self.workspace.create_error_len = 0;
+            if (self.workspace.create_mode == .create) {
+                const bind_path = self.workspace.create_path_buf[0..self.workspace.create_path_len];
+                self.bindWorkspacePath(resp.name, resp.ws_id, bind_path) catch |err| {
+                    self.notifyOp(.warning, "Workspace created, but path binding failed.");
+                    std.log.scoped(.workspace).warn("create_bind_path_failed ws_id={s} error={s}", .{ resp.ws_id, @errorName(err) });
+                    return;
+                };
+                writeFixedBuf(&self.workspace.create_bound_path_buf, &self.workspace.create_bound_path_len, bind_path);
+                self.workspace.create_bound_ok = true;
+            }
+            _ = self.materializeWorkspaceCache(resp.ws_id) catch |err| {
+                self.notifyOp(.warning, "Workspace created, but initial sync failed.");
+                std.log.scoped(.workspace).warn("create_initial_sync_failed ws_id={s} error={s}", .{ resp.ws_id, @errorName(err) });
+                return;
+            };
+            self.notifyOp(.success, if (self.workspace.create_mode == .create) "Workspace created, bound, and synced." else "Workspace updated.");
             // Refresh the cached workspace list so the new workspace
             // appears in the grid once the background fetch completes.
             api.fetch.refetchAllAsync(self.api_state);
@@ -1338,7 +1515,8 @@ fn drawCreateForm(
 ) std.mem.Allocator.Error!vxfw.Surface {
     const bundle_list_h = createBundleListHeight(self);
     const has_error = self.workspace.create_error_kind != .none;
-    const box_h = bundle_list_h + if (has_error) @as(u16, 15) else @as(u16, 13);
+    const path_h: u16 = if (self.workspace.create_mode == .create) 2 else 0;
+    const box_h = bundle_list_h + path_h + if (has_error) @as(u16, 15) else @as(u16, 13);
     const modal = Modal{
         .title = if (self.workspace.create_mode == .edit) "Rename Workspace" else "Create Workspace",
         .box_width = CREATE_BOX_W,
@@ -1381,6 +1559,22 @@ fn drawCreateForm(
     );
     row += 1;
     row += 1;
+
+    if (self.workspace.create_mode == .create) {
+        w.writeText(&surface, ctx, c0, row, "Path", theme.textOn(bg, theme.MUTED));
+        w.drawTextInputSlot(
+            &surface,
+            ctx,
+            c0 + label_w + 1,
+            row,
+            content_w -| (label_w + 2),
+            self.workspace.create_path_buf[0..self.workspace.create_path_len],
+            theme.TEXT,
+            self.workspace.create_focus == .path,
+        );
+        row += 1;
+        row += 1;
+    }
 
     if (self.workspace.create_mode == .create) {
         w.writeText(&surface, ctx, c0, row, "Bundle", theme.textOn(bg, theme.MUTED));
@@ -1457,37 +1651,31 @@ fn drawCreateBundleList(
 
     const visible_rows: u16 = height - 2;
     const cursor = self.workspace.create_bundle_cursor;
-    const scroll_start: usize = if (cursor >= visible_rows) cursor - visible_rows + 1 else 0;
-    const end: usize = @min(bundles.len, scroll_start + @as(usize, visible_rows));
+    const window = w.TreeList.visibleWindow(cursor, bundles.len, visible_rows);
 
-    var i: usize = scroll_start;
-    while (i < end) : (i += 1) {
+    var i: usize = window.start;
+    while (i < bundles.len and i < window.start + window.len) : (i += 1) {
         const b = bundles[i];
         const is_cursor = i == cursor;
         const is_selected = self.workspace.create_selected_bundle != null and
             self.workspace.create_selected_bundle.? == i;
-        const marker: []const u8 = if (is_selected) "[*]" else "[ ]";
         const bundle_text = std.fmt.allocPrint(
             ctx.arena,
             "{s} ({d} rules)",
             .{ b.name, b.rule_count },
         ) catch continue;
 
-        const render_row: u16 = row + 1 + @as(u16, @intCast(i - scroll_start));
-        const marker_style: vaxis.Style = if (is_selected)
-            theme.boldOn(bg, theme.ACCENT_SOFT)
-        else if (is_cursor and list_focused)
-            theme.boldOn(bg, theme.TEXT)
-        else
-            theme.textOn(bg, theme.MUTED);
-        const row_style: vaxis.Style = if (is_cursor and list_focused)
-            theme.boldOn(bg, theme.TEXT)
-        else if (is_selected)
-            theme.textOn(bg, theme.TEXT)
-        else
-            theme.textOn(bg, theme.TEXT_SOFT);
-        w.writeText(surface, ctx, col, render_row, marker, marker_style);
-        w.writeTextMax(surface, ctx, col + 4, render_row, width -| 4, bundle_text, row_style);
+        const render_row: u16 = row + 1 + @as(u16, @intCast(i - window.start));
+        w.TreeList.drawItem(surface, ctx, render_row, col + width, .{
+            .text = bundle_text,
+            .cursor = is_cursor and list_focused,
+            .active = is_selected,
+            .selector = if (is_selected) .on else .off,
+        }, .{
+            .background = bg,
+            .text_col = col,
+            .show_cursor_marker = false,
+        });
     }
 }
 
@@ -1513,6 +1701,16 @@ fn drawCreateSuccess(
     row = w.writeKv(&surface, ctx, c0, row, "ws_id", ws_id, 10);
     row = w.writeKv(&surface, ctx, c0, row, "name", ws_name, 10);
     row += 1;
+
+    if (self.workspace.create_bound_ok) {
+        const bound_path = self.workspace.create_bound_path_buf[0..self.workspace.create_bound_path_len];
+        w.writeText(&surface, ctx, c0, row, "Bound path", theme.textOn(bg, theme.MUTED));
+        row += 1;
+        row = w.writeWrappedTextMax(&surface, ctx, c0, row, dr.content_width, 2, bound_path, theme.textOn(bg, theme.TEXT_SOFT));
+        row += 1;
+        w.writeText(&surface, ctx, c0, row, "Local cache synced.", theme.textOn(bg, theme.OK));
+        return surface;
+    }
 
     w.writeTextMax(
         &surface,
@@ -1545,18 +1743,25 @@ fn drawCreateSuccess(
 }
 
 test "CreateWsFocus.next cycles through form fields when no bundles" {
-    try std.testing.expectEqual(CreateWsFocus.description, CreateWsFocus.name.next(0));
-    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.description.next(0));
-    try std.testing.expectEqual(CreateWsFocus.name, CreateWsFocus.submit.next(0));
+    try std.testing.expectEqual(CreateWsFocus.description, CreateWsFocus.name.next(0, false));
+    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.description.next(0, false));
+    try std.testing.expectEqual(CreateWsFocus.name, CreateWsFocus.submit.next(0, false));
 }
 
 test "CreateWsFocus.next includes bundle when bundles available" {
-    try std.testing.expectEqual(CreateWsFocus.bundle, CreateWsFocus.description.next(3));
-    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.bundle.next(3));
+    try std.testing.expectEqual(CreateWsFocus.bundle, CreateWsFocus.description.next(3, false));
+    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.bundle.next(3, false));
+}
+
+test "CreateWsFocus.next includes path for create flow" {
+    try std.testing.expectEqual(CreateWsFocus.path, CreateWsFocus.description.next(0, true));
+    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.path.next(0, true));
+    try std.testing.expectEqual(CreateWsFocus.bundle, CreateWsFocus.path.next(3, true));
 }
 
 test "CreateWsFocus.prev mirrors next" {
-    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.name.prev(0));
-    try std.testing.expectEqual(CreateWsFocus.description, CreateWsFocus.submit.prev(0));
-    try std.testing.expectEqual(CreateWsFocus.bundle, CreateWsFocus.submit.prev(3));
+    try std.testing.expectEqual(CreateWsFocus.submit, CreateWsFocus.name.prev(0, false));
+    try std.testing.expectEqual(CreateWsFocus.description, CreateWsFocus.submit.prev(0, false));
+    try std.testing.expectEqual(CreateWsFocus.bundle, CreateWsFocus.submit.prev(3, false));
+    try std.testing.expectEqual(CreateWsFocus.path, CreateWsFocus.submit.prev(0, true));
 }

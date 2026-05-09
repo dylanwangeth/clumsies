@@ -6,6 +6,7 @@ const HubClient = @import("../hub_client.zig").HubClient;
 const styles = @import("../styles.zig");
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const api_error = @import("clumsies_lib").protocol.api_error;
+const sync_cmd = @import("sync_cmd.zig");
 
 const Color = styles.Color;
 const P = styles.P;
@@ -156,6 +157,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
 
     try stdout.print("{s}{s}{s}Workspace {s} bound to current directory (ws_id: {s}){s}\n", .{ P, Color.bold, Color.green, ws_name, ws_id, Color.reset });
+    const summary = sync_cmd.materializeWorkspace(allocator, &hub, ws_id, .{ .errors = stderr }) catch |err| {
+        try stderr.print("{s}{s}{s}Warning:{s} Initial sync failed: {s}. Run {s}clumsies sync{s} after Hub/auth is fixed.\n", .{ P, Color.bold, Color.orange, Color.reset, @errorName(err), Color.cyan, Color.reset });
+        return;
+    };
+    try stdout.print("{s}{s}{s}Synced:{s} {d} rules, {d} context files into local cache\n", .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total });
 }
 
 fn parseCreatedWorkspace(

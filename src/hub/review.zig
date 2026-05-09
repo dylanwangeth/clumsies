@@ -35,7 +35,10 @@ pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     defer conn.release();
 
     var list: std.ArrayList(ReviewPrListItem) = .empty;
-    if (targetMatches(target_filter, "rule") or targetMatches(target_filter, "mpf")) {
+    if (targetMatches(target_filter, "rule") or
+        targetMatches(target_filter, "bundle") or
+        targetMatches(target_filter, "mpf"))
+    {
         appendRulePrs(conn, req.arena, user.org_id, status_filter, target_filter, &list) catch {
             return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
         };
@@ -68,7 +71,6 @@ fn isValidStatusFilter(status: []const u8) bool {
 fn targetMatches(target: ?[]const u8, kind: []const u8) bool {
     const t = target orelse return true;
     if (t.len == 0) return true;
-    if (std.mem.eql(u8, t, "bundle")) return false;
     return std.mem.eql(u8, t, kind);
 }
 
@@ -102,7 +104,10 @@ fn appendRulePrs(
         \\  ), '') as op_type,
         \\  (SELECT count(*) FROM rule_pr_comments c WHERE c.pr_id = pp.pr_id) as comment_count,
         \\  COALESCE((
-        \\    SELECT COALESCE(r.path, op.path, '')
+        \\    SELECT CASE
+        \\      WHEN op.type IN ('bundle_create', 'bundle_add', 'bundle_remove') THEN op.path
+        \\      ELSE COALESCE(r.path, op.path, '')
+        \\    END
         \\    FROM rule_pr_operations op
         \\    LEFT JOIN rules r ON r.rule_id = op.rule_id
         \\    WHERE op.pr_id = pp.pr_id
@@ -120,7 +125,13 @@ fn appendRulePrs(
         const status = try arena.dupe(u8, try row.get([]const u8, 1));
         if (!statusMatches(status_filter, status)) continue;
         const target_path = try arena.dupe(u8, try row.get([]const u8, 9));
-        const target_kind = if (std.mem.eql(u8, target_path, "META_PROMPT.md")) "mpf" else "rule";
+        const op_type = try arena.dupe(u8, try row.get([]const u8, 7));
+        const target_kind = if (std.mem.startsWith(u8, op_type, "bundle_"))
+            "bundle"
+        else if (std.mem.eql(u8, target_path, "META_PROMPT.md"))
+            "mpf"
+        else
+            "rule";
         if (target_filter) |tf| {
             if (tf.len > 0 and !std.mem.eql(u8, tf, target_kind)) continue;
         }
@@ -134,7 +145,7 @@ fn appendRulePrs(
             .created_at = try arena.dupe(u8, try row.get([]const u8, 4)),
             .author = try arena.dupe(u8, try row.get([]const u8, 5)),
             .operation_count = try row.get(i64, 6),
-            .op_type = try arena.dupe(u8, try row.get([]const u8, 7)),
+            .op_type = op_type,
             .comment_count = try row.get(i64, 8),
         });
     }

@@ -153,6 +153,7 @@ pub const ApiState = struct {
     submit_comment_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     pr_action_pending: request.PendingRequest(dispatcher.Result(void)) = .{},
     create_rule_pr_pending: request.PendingRequest(dispatcher.Result(CreateRulePrResponse)) = .{},
+    create_bundle_rule_pr_pending: request.PendingRequest(dispatcher.Result(CreateRulePrResponse)) = .{},
     create_context_pr_pending: request.PendingRequest(dispatcher.Result(CreateContextPrResponse)) = .{},
     update_profile_pending: request.PendingRequest(dispatcher.Result(auth_api.UpdateProfileResponse)) = .{},
     invite_member_pending: request.PendingRequest(dispatcher.Result(auth_api.InviteMemberResponse)) = .{},

@@ -68,6 +68,21 @@ pub const CreateRulePrParams = struct {
     base_hash: ?[]const u8 = null,
 };
 
+pub const CreateRulePrOperation = struct {
+    operation_type: []const u8,
+    rule_id: ?[]const u8 = null,
+    base_hash: ?[]const u8 = null,
+    content: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+    new_path: ?[]const u8 = null,
+};
+
+pub const CreateRulePrBatchParams = struct {
+    title: []const u8,
+    body: []const u8,
+    operations: []const CreateRulePrOperation,
+};
+
 /// Parameters for creating a context PR. Mirrors the rule PR shape
 /// but against a workspace-scoped endpoint. `context_id` identifies
 /// an existing file (modify/rename/delete); create-ops leave it null
@@ -295,6 +310,13 @@ pub const create_rule_pr = dispatcher.RequestSpec(CreateRulePrParams, CreateRule
     .parse_ok = dispatcher.jsonParser(CreateRulePrParams, CreateRulePrResponse),
 };
 
+pub const create_rule_pr_batch = dispatcher.RequestSpec(CreateRulePrBatchParams, CreateRulePrResponse){
+    .method = .POST,
+    .path_builder = dispatcher.staticPath(CreateRulePrBatchParams, "/api/org/rule-prs"),
+    .body_builder = createRulePrBatchBody,
+    .parse_ok = dispatcher.jsonParser(CreateRulePrBatchParams, CreateRulePrResponse),
+};
+
 pub const create_context_pr = dispatcher.RequestSpec(CreateContextPrParams, CreateContextPrResponse){
     .method = .POST,
     .path_builder = createContextPrPath,
@@ -335,6 +357,39 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         .title = p.title,
         .body = p.body,
         .operations = &ops,
+    }, .{});
+}
+
+fn createRulePrBatchBody(alloc: std.mem.Allocator, p: CreateRulePrBatchParams) anyerror![]const u8 {
+    const Op = struct {
+        type: []const u8,
+        rule_id: ?[]const u8 = null,
+        base_hash: ?[]const u8 = null,
+        content: ?[]const u8 = null,
+        path: ?[]const u8 = null,
+        new_path: ?[]const u8 = null,
+    };
+    const Body = struct {
+        title: []const u8,
+        body: []const u8,
+        operations: []const Op,
+    };
+    var ops: std.ArrayList(Op) = .empty;
+    for (p.operations) |op| {
+        try ops.append(alloc, .{
+            .type = op.operation_type,
+            .rule_id = op.rule_id,
+            .base_hash = op.base_hash,
+            .content = op.content,
+            .path = op.path,
+            .new_path = op.new_path,
+        });
+    }
+    defer ops.deinit(alloc);
+    return std.json.Stringify.valueAlloc(alloc, Body{
+        .title = p.title,
+        .body = p.body,
+        .operations = ops.items,
     }, .{});
 }
 
