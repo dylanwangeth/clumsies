@@ -6,7 +6,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const theme = @import("../../theme.zig");
 const w = @import("../../widgets.zig");
-const data = @import("../../models/view_types.zig");
+const api_model = @import("../../api/model.zig");
 const rule_detail_panel = @import("../review/root.zig");
 const content_actions = @import("../content_actions.zig");
 
@@ -28,6 +28,8 @@ pub const State = struct {
     bundle_cursor: usize = 0,
     new_bundle_name_buf: [96]u8 = undefined,
     new_bundle_name_len: usize = 0,
+    show_workspace_drawer: bool = false,
+    workspace_cursor: usize = 0,
     last_synced_bundle_filter: usize = std.math.maxInt(usize),
     scroll_bars: vxfw.ScrollBars,
     tree: PathTreeState = .{},
@@ -133,10 +135,35 @@ pub fn handleModuleEvent(
         handleBundleDrawerKey(self, ctx, key);
         return;
     }
+    if (self.artifact.show_workspace_drawer) {
+        handleWorkspaceDrawerKey(self, ctx, key);
+        return;
+    }
     if (key.matches('b', .{})) {
         self.artifact.show_bundle_drawer = true;
         self.artifact.bundle_drawer_mode = .browse;
         self.artifact.bundle_cursor = self.artifact.bundle_filter;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('i', .{})) {
+        if (!self.artifact.list_machine.selection_mode) {
+            self.notifyOp(.warning, "Enter selection mode first.");
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (self.artifact.list_machine.selectedCount() == 0) {
+            self.notifyOp(.warning, "Select rules first.");
+            ctx.consumeAndRedraw();
+            return;
+        }
+        if (workspaceChoiceCount(self) == 0) {
+            self.notifyOp(.warning, "No workspace available.");
+            ctx.consumeAndRedraw();
+            return;
+        }
+        self.artifact.show_workspace_drawer = true;
+        self.artifact.workspace_cursor = @min(self.workspace.sel, workspaceChoiceCount(self) - 1);
         ctx.consumeAndRedraw();
         return;
     }
@@ -211,17 +238,24 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
         .{ .key = "Enter", .label = "select" },
         .{ .key = "Esc", .label = "close" },
     };
+    if (self.artifact.show_workspace_drawer) return &.{
+        .{ .key = "j/k", .label = "move" },
+        .{ .key = "Enter", .label = "select" },
+        .{ .key = "Esc", .label = "close" },
+    };
     if (self.artifact.list_machine.selection_mode) {
         if (self.artifact.bundle_filter == 0) return &.{
             .{ .key = "j/k", .label = "move/scroll" },
             .{ .key = "Space", .label = "toggle" },
             .{ .key = "a", .label = "add to bundle" },
+            .{ .key = "i", .label = "import to workspace" },
             .{ .key = "Esc", .label = "cancel" },
         };
         return &.{
             .{ .key = "j/k", .label = "move/scroll" },
             .{ .key = "Space", .label = "toggle" },
             .{ .key = "x", .label = "remove from bundle" },
+            .{ .key = "i", .label = "import to workspace" },
             .{ .key = "Esc", .label = "cancel" },
         };
     }
@@ -539,6 +573,45 @@ fn bundleChoiceCount(self: anytype) usize {
     };
 }
 
+fn workspaceChoiceCount(self: anytype) usize {
+    self.api_state.mutex.lock();
+    defer self.api_state.mutex.unlock();
+    if (self.api_state.current_user) |user| return user.workspaces.len;
+    return 0;
+}
+
+fn workspaceAtIndex(self: anytype, idx: usize) ?api_model.WorkspaceData {
+    self.api_state.mutex.lock();
+    defer self.api_state.mutex.unlock();
+    const user = self.api_state.current_user orelse return null;
+    if (idx >= user.workspaces.len) return null;
+    return user.workspaces[idx];
+}
+
+fn handleWorkspaceDrawerKey(self: anytype, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+    if (key.matches(vaxis.Key.escape, .{})) {
+        self.artifact.show_workspace_drawer = false;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    const count = workspaceChoiceCount(self);
+    if (count == 0) {
+        ctx.consumeEvent();
+        return;
+    }
+    if (key.matches(vaxis.Key.enter, .{})) {
+        self.artifact.show_workspace_drawer = false;
+        self.confirmImportSelectedRulesToWorkspace(self.artifact.workspace_cursor);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    var cursor = self.artifact.workspace_cursor;
+    const step = w.stepForKey(key, &self.artifact.scroll_bars.scroll_view) orelse return;
+    _ = w.moveCursorBy(&cursor, count, step);
+    self.artifact.workspace_cursor = cursor;
+    ctx.consumeAndRedraw();
+}
+
 fn handleBundleDrawerKey(self: anytype, ctx: *vxfw.EventContext, key: vaxis.Key) void {
     if (self.artifact.bundle_drawer_mode == .add_selected and self.artifact.bundle_cursor == 0) {
         handleBundleDrawerInputKey(self, ctx, key);
@@ -631,6 +704,48 @@ fn handleBundleDrawerInputKey(self: anytype, ctx: *vxfw.EventContext, key: vaxis
             ctx.consumeAndRedraw();
         }
     }
+}
+
+pub fn drawWorkspaceDrawer(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    if (size.width < w.Drawer.min_child_width or size.height < w.Drawer.min_child_height) {
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&surface, theme.PANEL_SOFT);
+        return surface;
+    }
+
+    const body_w = size.width - w.Drawer.child_origin_col;
+    const body_h = size.height - w.Drawer.child_origin_row;
+    var body = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = body_w, .height = body_h });
+    w.fillSurface(&body, theme.PANEL_SOFT);
+
+    const count = workspaceChoiceCount(self);
+    if (count > 0) {
+        if (self.artifact.workspace_cursor >= count) self.artifact.workspace_cursor = count - 1;
+        const window = w.TreeList.visibleWindow(self.artifact.workspace_cursor, count, @intCast(body_h));
+        var out_row: u16 = 0;
+        var idx = window.start;
+        while (idx < count and out_row < body_h) : ({
+            idx += 1;
+            out_row += 1;
+        }) {
+            const workspace = workspaceAtIndex(self, idx) orelse continue;
+            w.TreeList.drawItem(&body, ctx, out_row, body_w, .{
+                .text = workspace.name,
+                .cursor = idx == self.artifact.workspace_cursor,
+                .active = idx == self.workspace.sel,
+                .selector = if (idx == self.workspace.sel) .on else .off,
+            }, .{ .background = theme.PANEL_SOFT });
+        }
+    }
+
+    const drawer = w.Drawer{
+        .title = "Import to Workspace",
+        .border_color = theme.ACCENT_SOFT,
+        .background = theme.PANEL_SOFT,
+        .body = body,
+    };
+    return drawer.draw(ctx, self.widget());
 }
 
 pub fn drawBundleDrawer(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
