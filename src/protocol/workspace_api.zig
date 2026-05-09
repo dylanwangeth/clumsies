@@ -62,6 +62,14 @@ pub const UpdateWorkspaceRequest = struct {
     description: []const u8,
 };
 
+pub const WorkspaceRulesRequest = struct {
+    rule_ids: []const []const u8,
+};
+
+pub const WorkspaceRulesResponse = struct {
+    revision: i32,
+};
+
 pub const WorkspaceMember = struct {
     user_id: []const u8,
     username: []const u8,

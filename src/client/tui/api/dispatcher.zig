@@ -427,15 +427,17 @@ fn deepCopySlice(comptime T: type, alloc: std.mem.Allocator, value: T) !T {
     const info = @typeInfo(T).pointer;
     const Child = info.child;
     var out = try alloc.alloc(Child, value.len);
+    var initialized: usize = 0;
     errdefer {
         var i: usize = 0;
-        while (i < out.len) : (i += 1) {
+        while (i < initialized) : (i += 1) {
             freeDeepCopyField(Child, alloc, out[i]);
         }
         alloc.free(out);
     }
     for (value, 0..) |item, i| {
-        out[i] = try deepCopy(Child, alloc, item);
+        out[i] = try deepCopyField(Child, alloc, item);
+        initialized += 1;
     }
     return out;
 }
@@ -452,12 +454,17 @@ fn freeDeepCopy(comptime T: type, alloc: std.mem.Allocator, value: T) void {
 }
 
 fn freeDeepCopyField(comptime T: type, alloc: std.mem.Allocator, value: T) void {
-    if (T == []const u8) alloc.free(value);
+    if (T == []const u8) {
+        alloc.free(value);
+        return;
+    }
     if (T == ?[]const u8) {
         if (value) |v| alloc.free(v);
+        return;
     }
     if (comptime isStruct(T)) {
         freeDeepCopy(T, alloc, value);
+        return;
     }
     if (comptime isSlice(T)) {
         const Child = @typeInfo(T).pointer.child;

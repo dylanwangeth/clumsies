@@ -19,6 +19,8 @@ const settings_panel = features.settings;
 const workspace_panel = features.workspace;
 const auth_mod = @import("../auth.zig");
 const auth_api = @import("clumsies_lib").protocol.auth_api;
+const artifact_api = @import("clumsies_lib").protocol.artifact_api;
+const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const HubClient = @import("../hub_client.zig").HubClient;
 const drafts_mod = @import("../drafts.zig");
 const workspace_rule = @import("../rule.zig");
@@ -40,6 +42,7 @@ const ConfirmAction = enum {
     none,
     bind_current_directory,
     bundle_rule_pr,
+    import_workspace_rules,
     remove_member,
     remove_workspace_member,
     delete_workspace,
@@ -90,6 +93,7 @@ fn confirmActionName(action: ConfirmAction) []const u8 {
         .none => "none",
         .bind_current_directory => "bind_current_directory",
         .bundle_rule_pr => "bundle_rule_pr",
+        .import_workspace_rules => "import_workspace_rules",
         .remove_member => "remove_member",
         .remove_workspace_member => "remove_workspace_member",
         .delete_workspace => "delete_workspace",
@@ -159,6 +163,8 @@ pub const Shell = struct {
     show_settings: bool = false,
     show_confirm: bool = false,
     confirm_message: []const u8 = "",
+    confirm_message_buf: [512]u8 = .{0} ** 512,
+    confirm_message_len: usize = 0,
     confirm_error_message: []const u8 = "",
     confirm_submitting: bool = false,
     confirm_action: ConfirmAction = .none,
@@ -370,6 +376,10 @@ pub const Shell = struct {
                     workspace_panel.handleWorkspaceDrawerKey(self, ctx, key);
                     return;
                 }
+                if (self.artifact.show_workspace_drawer) {
+                    try artifact_panel.handleModuleEvent(self, ctx, event, key);
+                    return;
+                }
 
                 // Create Workspace overlay absorbs all keys
                 if (self.workspace.show_create) {
@@ -522,6 +532,8 @@ pub const Shell = struct {
                 self.consumeCreateRulePrResult();
                 self.consumeCreateBundleRulePrResult();
                 self.consumeCreateContextPrResult();
+                self.consumeImportWorkspaceRulesResult();
+                self.consumeImportRuleContentResult();
                 self.consumeUpdateProfileResult();
                 self.consumeInviteMemberResult();
                 self.consumeChangeMemberRoleResult();
@@ -594,12 +606,16 @@ pub const Shell = struct {
             !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
             !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form and
             !self.show_profile_dialog and !self.show_invite_dialog;
+        const show_artifact_workspace_drawer = self.artifact.show_workspace_drawer and self.selected_module == .artifact and
+            !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
+            !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form and
+            !self.show_profile_dialog and !self.show_invite_dialog;
         const show_login_panel = self.shouldShowLoginPanel();
         const allow_regular_overlays = !show_login_panel;
         const modal_active = show_login_panel or self.show_help or self.show_confirm or self.review.show_comment_editor or
             self.workspace.show_create or self.drafts.show_pr_composer or
             self.drafts.show_new_draft_form or self.show_profile_dialog or self.show_invite_dialog or
-            show_workspace_drawer or show_artifact_bundle_drawer;
+            show_workspace_drawer or show_artifact_bundle_drawer or show_artifact_workspace_drawer;
         const show_notice_overlay = !modal_active and self.system_notices.hasVisible();
         var child_count: usize = 3;
         if (show_login_panel) child_count += 1;
@@ -613,6 +629,7 @@ pub const Shell = struct {
         if (allow_regular_overlays and self.drafts.show_new_draft_form) child_count += 1;
         if (allow_regular_overlays and show_workspace_drawer) child_count += 1;
         if (allow_regular_overlays and show_artifact_bundle_drawer) child_count += 1;
+        if (allow_regular_overlays and show_artifact_workspace_drawer) child_count += 1;
         if (show_notice_overlay) child_count += 1;
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_count);
@@ -760,6 +777,19 @@ pub const Shell = struct {
                 child_idx += 1;
             }
         }
+        if (allow_regular_overlays and show_artifact_workspace_drawer) {
+            if (w.Drawer.rightPlacement(size, w.Drawer.default_width, 1)) |placement| {
+                const drawer_ctx = ctx.withConstraints(
+                    placement.size,
+                    placement.max_size,
+                );
+                children[child_idx] = .{
+                    .origin = placement.origin,
+                    .surface = try artifact_panel.drawWorkspaceDrawer(self, drawer_ctx),
+                };
+                child_idx += 1;
+            }
+        }
         if (show_notice_overlay) {
             const notice_max_size = vxfw.Size{
                 .width = size.width,
@@ -858,7 +888,7 @@ pub const Shell = struct {
     }
 
     fn footerShortcuts(self: *Shell, arena: std.mem.Allocator) std.mem.Allocator.Error![]const w.Shortcut {
-        if (self.show_confirm or self.review.show_comment_editor or self.workspace.show_drawer or self.artifact.show_bundle_drawer) {
+        if (self.show_confirm or self.review.show_comment_editor or self.workspace.show_drawer or self.artifact.show_bundle_drawer or self.artifact.show_workspace_drawer) {
             return w.sortedShortcuts(arena, self.contextShortcuts());
         }
         return filteredFooterShortcuts(arena, self.contextShortcuts());
@@ -879,6 +909,11 @@ pub const Shell = struct {
             .{ .key = "j/k", .label = "move" },
             .{ .key = "Enter", .label = "switch" },
             .{ .key = "w", .label = "close" },
+            .{ .key = "Esc", .label = "close" },
+        };
+        if (self.artifact.show_workspace_drawer) return &.{
+            .{ .key = "j/k", .label = "move" },
+            .{ .key = "Enter", .label = "select" },
             .{ .key = "Esc", .label = "close" },
         };
         if (self.shouldShowLoginPanel()) return &.{
@@ -1588,7 +1623,7 @@ pub const Shell = struct {
         };
         self.confirm_workspace_id_len = @min(workspace.ws_id.len, self.confirm_workspace_id_buf.len);
         @memcpy(self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len], workspace.ws_id[0..self.confirm_workspace_id_len]);
-        self.confirm_message = std.fmt.allocPrint(self.viewAllocator(), "Delete {s}.", .{workspace.name}) catch "Delete selected workspace.";
+        self.setConfirmMessageFmt("Delete {s}.", .{workspace.name}, "Delete selected workspace.");
         self.confirm_action = .delete_workspace;
         self.confirm_choice = .accept;
         self.show_confirm = true;
@@ -1606,11 +1641,11 @@ pub const Shell = struct {
         };
         defer alloc.free(cwd);
 
-        self.confirm_message = std.fmt.allocPrint(
-            self.viewAllocator(),
+        self.setConfirmMessageFmt(
             "Bind {s} to {s}.",
             .{ workspace.name, cwd },
-        ) catch "Bind current directory.";
+            "Bind current directory.",
+        );
         self.confirm_error_message = "";
         self.confirm_submitting = false;
         self.confirm_action = .bind_current_directory;
@@ -3716,6 +3751,13 @@ pub const Shell = struct {
                 ctx.consumeAndRedraw();
                 return;
             },
+            .import_workspace_rules => {
+                self.confirm_error_message = "";
+                self.confirm_submitting = true;
+                self.submitImportWorkspaceRules();
+                ctx.consumeAndRedraw();
+                return;
+            },
             .delete_workspace => {
                 self.submitDeleteWorkspace();
             },
@@ -3747,12 +3789,29 @@ pub const Shell = struct {
         self.show_confirm = false;
         self.confirm_action = .none;
         self.confirm_choice = .accept;
+        self.confirm_message = "";
+        self.confirm_message_len = 0;
         self.confirm_error_message = "";
         self.confirm_submitting = false;
         self.confirm_member_user_id_len = 0;
         self.confirm_workspace_id_len = 0;
         self.confirm_bundle_name_len = 0;
         self.confirm_bundle_op = .none;
+    }
+
+    fn setConfirmMessage(self: *Shell, text: []const u8) void {
+        self.confirm_message_len = @min(text.len, self.confirm_message_buf.len);
+        @memcpy(self.confirm_message_buf[0..self.confirm_message_len], text[0..self.confirm_message_len]);
+        self.confirm_message = self.confirm_message_buf[0..self.confirm_message_len];
+    }
+
+    fn setConfirmMessageFmt(self: *Shell, comptime fmt: []const u8, args: anytype, fallback: []const u8) void {
+        const rendered = std.fmt.bufPrint(&self.confirm_message_buf, fmt, args) catch {
+            self.setConfirmMessage(fallback);
+            return;
+        };
+        self.confirm_message_len = rendered.len;
+        self.confirm_message = self.confirm_message_buf[0..self.confirm_message_len];
     }
 
     fn cancelConfirm(self: *Shell, ctx: *vxfw.EventContext) void {
@@ -3813,6 +3872,7 @@ pub const Shell = struct {
         return switch (self.confirm_action) {
             .bind_current_directory => "Bind Directory",
             .bundle_rule_pr => "Open Bundle PR",
+            .import_workspace_rules => "Import Rules",
             .remove_member => "Remove Member",
             .remove_workspace_member => "Remove Member",
             .delete_workspace => "Delete Workspace",
@@ -3834,10 +3894,12 @@ pub const Shell = struct {
 
     fn confirmAcceptLabel(self: *const Shell) []const u8 {
         if (self.confirm_submitting and self.confirm_action == .bundle_rule_pr) return "[ Opening... ]";
+        if (self.confirm_submitting and self.confirm_action == .import_workspace_rules) return "[ Importing... ]";
         if (self.confirm_submitting) return "[ Removing... ]";
         if (std.mem.eql(u8, self.confirm_message, "sign out")) return "[ Sign out ]";
         if (self.confirm_action == .bind_current_directory) return "[ Bind ]";
         if (self.confirm_action == .bundle_rule_pr) return "[ Open PR ]";
+        if (self.confirm_action == .import_workspace_rules) return "[ Import ]";
         return "[ Confirm ]";
     }
 
@@ -3851,13 +3913,20 @@ pub const Shell = struct {
         choice: ConfirmChoice,
     ) void {
         const active = self.confirm_choice == choice;
-        const fg = if (choice == .accept and self.confirm_action != .none)
+        const fg = if (choice == .accept and isDangerConfirmAction(self.confirm_action))
             theme.DANGER
         else if (active)
             theme.TEXT
         else
             theme.TEXT_SOFT;
         w.writeText(surface, ctx, col, row, label, .{ .fg = fg, .bg = theme.PANEL_ALT, .bold = active });
+    }
+
+    fn isDangerConfirmAction(action: ConfirmAction) bool {
+        return switch (action) {
+            .remove_member, .remove_workspace_member, .delete_workspace, .revoke_token, .discard_draft, .quit => true,
+            else => false,
+        };
     }
 
     fn drawCommentEditorOverlay(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -4165,7 +4234,7 @@ pub const Shell = struct {
         };
         self.confirm_member_user_id_len = @min(member.user_id.len, self.confirm_member_user_id_buf.len);
         @memcpy(self.confirm_member_user_id_buf[0..self.confirm_member_user_id_len], member.user_id[0..self.confirm_member_user_id_len]);
-        self.confirm_message = std.fmt.allocPrint(self.viewAllocator(), "Remove {s}.", .{member.username}) catch "Remove selected member.";
+        self.setConfirmMessageFmt("Remove {s}.", .{member.username}, "Remove selected member.");
         self.confirm_error_message = "";
         self.confirm_submitting = false;
         self.confirm_action = .remove_member;
@@ -4187,7 +4256,7 @@ pub const Shell = struct {
         @memcpy(self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len], workspace.ws_id[0..self.confirm_workspace_id_len]);
         self.confirm_member_user_id_len = @min(member.user_id.len, self.confirm_member_user_id_buf.len);
         @memcpy(self.confirm_member_user_id_buf[0..self.confirm_member_user_id_len], member.user_id[0..self.confirm_member_user_id_len]);
-        self.confirm_message = std.fmt.allocPrint(self.viewAllocator(), "Remove {s}.", .{member.username}) catch "Remove selected member.";
+        self.setConfirmMessageFmt("Remove {s}.", .{member.username}, "Remove selected member.");
         self.confirm_error_message = "";
         self.confirm_submitting = false;
         self.confirm_action = .remove_workspace_member;
@@ -5414,6 +5483,35 @@ pub const Shell = struct {
         self.openBundleRulePrConfirm(.create, bundle_name);
     }
 
+    pub fn confirmImportSelectedRulesToWorkspace(self: *Shell, workspace_idx: usize) void {
+        const workspace = self.workspaceAtIndex(workspace_idx) orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        const selected_count = self.artifact.list_machine.selectedCount();
+        if (selected_count == 0) {
+            self.notifyOp(.warning, "Select rules first.");
+            return;
+        }
+        const import_count = self.selectedArtifactRuleIdCount();
+        if (import_count == 0) {
+            self.notifyOp(.warning, "Select synced rules first.");
+            return;
+        }
+        self.confirm_workspace_id_len = @min(workspace.ws_id.len, self.confirm_workspace_id_buf.len);
+        @memcpy(self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len], workspace.ws_id[0..self.confirm_workspace_id_len]);
+        self.setConfirmMessageFmt(
+            "Import {d} selected rules to {s}.",
+            .{ import_count, workspace.name },
+            "Import selected rules to this workspace.",
+        );
+        self.confirm_error_message = "";
+        self.confirm_submitting = false;
+        self.confirm_action = .import_workspace_rules;
+        self.confirm_choice = .accept;
+        self.show_confirm = true;
+    }
+
     fn openBundleRulePrConfirm(self: *Shell, op: BundlePrConfirmOp, bundle_name: []const u8) void {
         const selected_count = self.artifact.list_machine.selectedCount();
         if (selected_count == 0) {
@@ -5423,12 +5521,24 @@ pub const Shell = struct {
         self.confirm_bundle_name_len = @min(bundle_name.len, self.confirm_bundle_name_buf.len);
         @memcpy(self.confirm_bundle_name_buf[0..self.confirm_bundle_name_len], bundle_name[0..self.confirm_bundle_name_len]);
         self.confirm_bundle_op = op;
-        self.confirm_message = switch (op) {
-            .add => std.fmt.allocPrint(self.viewAllocator(), "Open a PR to add {d} selected rules to {s}.", .{ selected_count, bundle_name }) catch "Open a PR to add selected rules.",
-            .remove => std.fmt.allocPrint(self.viewAllocator(), "Open a PR to remove {d} selected rules from {s}.", .{ selected_count, bundle_name }) catch "Open a PR to remove selected rules.",
-            .create => std.fmt.allocPrint(self.viewAllocator(), "Open a PR to create {s} with {d} selected rules.", .{ bundle_name, selected_count }) catch "Open a PR to create this bundle.",
-            .none => "",
-        };
+        switch (op) {
+            .add => self.setConfirmMessageFmt(
+                "Open a PR to add {d} selected rules to {s}.",
+                .{ selected_count, bundle_name },
+                "Open a PR to add selected rules.",
+            ),
+            .remove => self.setConfirmMessageFmt(
+                "Open a PR to remove {d} selected rules from {s}.",
+                .{ selected_count, bundle_name },
+                "Open a PR to remove selected rules.",
+            ),
+            .create => self.setConfirmMessageFmt(
+                "Open a PR to create {s} with {d} selected rules.",
+                .{ bundle_name, selected_count },
+                "Open a PR to create this bundle.",
+            ),
+            .none => self.setConfirmMessage(""),
+        }
         self.confirm_error_message = "";
         self.confirm_submitting = false;
         self.confirm_action = .bundle_rule_pr;
@@ -5531,6 +5641,120 @@ pub const Shell = struct {
             },
         );
         self.notifyOp(.loading, "Submitting bundle PR...");
+    }
+
+    fn workspaceAtIndex(self: *Shell, workspace_idx: usize) ?api.model.WorkspaceData {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return null;
+        if (workspace_idx >= user.workspaces.len) return null;
+        return user.workspaces[workspace_idx];
+    }
+
+    fn workspaceNameById(self: *Shell, ws_id: []const u8) []const u8 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        const user = self.api_state.current_user orelse return "Workspace";
+        for (user.workspaces) |workspace| {
+            if (std.mem.eql(u8, workspace.ws_id, ws_id)) return workspace.name;
+        }
+        return "Workspace";
+    }
+
+    fn submitImportWorkspaceRules(self: *Shell) void {
+        const alloc = self.api_state.allocator();
+        const ws_id = self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len];
+        if (ws_id.len == 0) {
+            self.confirm_error_message = "No workspace selected.";
+            self.confirm_submitting = false;
+            return;
+        }
+        const ids = self.collectSelectedArtifactRuleIds(alloc) orelse {
+            self.confirm_error_message = "Could not collect selected rules.";
+            self.confirm_submitting = false;
+            return;
+        };
+        defer {
+            for (ids) |id| alloc.free(id);
+            alloc.free(ids);
+        }
+        if (ids.len == 0) {
+            self.confirm_error_message = "Select synced rules first.";
+            self.confirm_submitting = false;
+            return;
+        }
+
+        api.specs.dispatchFromState(
+            api.specs.WorkspaceRulesParams,
+            workspace_api.WorkspaceRulesResponse,
+            api.specs.import_workspace_rules,
+            &self.api_state.import_workspace_rules_pending,
+            self.api_state,
+            .{
+                .ws_id = ws_id,
+                .rule_ids = ids,
+            },
+        );
+        self.notifyOp(.loading, "Importing rules...");
+    }
+
+    fn submitImportRuleContent(self: *Shell) void {
+        const alloc = self.api_state.allocator();
+        const ids = self.collectSelectedArtifactRuleIds(alloc) orelse {
+            self.confirm_error_message = "Could not collect selected rules.";
+            self.confirm_submitting = false;
+            return;
+        };
+        defer {
+            for (ids) |id| alloc.free(id);
+            alloc.free(ids);
+        }
+        if (ids.len == 0) {
+            self.confirm_error_message = "Select synced rules first.";
+            self.confirm_submitting = false;
+            return;
+        }
+
+        api.specs.dispatchFromState(
+            api.specs.BatchRuleContentParams,
+            artifact_api.BatchRuleContentResponse,
+            api.specs.artifact_rule_content_batch,
+            &self.api_state.import_rule_content_pending,
+            self.api_state,
+            .{ .rule_ids = ids },
+        );
+        self.notifyOp(.loading, "Materializing imported rules...");
+    }
+
+    fn materializeImportedRuleContent(self: *Shell, resp: artifact_api.BatchRuleContentResponse) !usize {
+        const arena = self.viewAllocator();
+        const ws_id = self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len];
+        if (ws_id.len == 0) return error.NoWorkspaceSelected;
+        const ws_dir = try workspace_config.getWsDir(arena, ws_id);
+        const ws_name = self.workspaceNameById(ws_id);
+
+        var written: usize = 0;
+        for (resp.items) |item| {
+            if (item.@"error".len > 0) return error.RuleContentItemFailed;
+            if (item.rule_id.len == 0 or item.path.len == 0 or item.content_hash.len == 0) return error.RuleContentItemInvalid;
+            const category = self.artifactCategoryForPath(item.path);
+            try local_content.write(arena, ws_dir, category, item.path, item.body);
+            try local_content.writeManifestRuleEntry(arena, ws_dir, ws_id, ws_name, item.rule_id, item.path, item.content_hash);
+            written += 1;
+        }
+        if (written == 0) return error.NoRulesMaterialized;
+        return written;
+    }
+
+    fn selectedArtifactRuleIdCount(self: *Shell) usize {
+        const rules = self.getRules();
+        var count: usize = 0;
+        for (rules, 0..) |rule, idx| {
+            if (!self.artifact.list_machine.selected_leaves.contains(idx)) continue;
+            if (rule.rule_id.len == 0) continue;
+            count += 1;
+        }
+        return count;
     }
 
     fn collectSelectedArtifactRuleIds(self: *Shell, alloc: std.mem.Allocator) ?[]const []const u8 {
@@ -5909,6 +6133,86 @@ pub const Shell = struct {
         }
     }
 
+    fn consumeImportWorkspaceRulesResult(self: *Shell) void {
+        const result = self.api_state.import_workspace_rules_pending.consume() orelse return;
+        switch (result) {
+            .ok => {
+                self.submitImportRuleContent();
+            },
+            .api_error => |e| {
+                self.confirm_submitting = false;
+                const message = writeErrorStatus(self, "Import failed", e);
+                if (self.show_confirm and self.confirm_action == .import_workspace_rules) {
+                    self.confirm_error_message = message;
+                } else {
+                    self.notifyOp(.failure, message);
+                }
+            },
+            .network_error => {
+                self.confirm_submitting = false;
+                if (self.show_confirm and self.confirm_action == .import_workspace_rules) {
+                    self.confirm_error_message = "Import failed: network error.";
+                } else {
+                    self.notifyOp(.failure, "Import failed: network error.");
+                }
+            },
+            .invalid_response => {
+                self.confirm_submitting = false;
+                if (self.show_confirm and self.confirm_action == .import_workspace_rules) {
+                    self.confirm_error_message = "Import failed: malformed response.";
+                } else {
+                    self.notifyOp(.failure, "Import failed: malformed response.");
+                }
+            },
+        }
+    }
+
+    fn consumeImportRuleContentResult(self: *Shell) void {
+        const result = self.api_state.import_rule_content_pending.consume() orelse return;
+        self.confirm_submitting = false;
+        switch (result) {
+            .ok => |resp| {
+                _ = self.materializeImportedRuleContent(resp) catch {
+                    if (self.show_confirm and self.confirm_action == .import_workspace_rules) {
+                        self.confirm_error_message = "Imported remotely; local cache update failed.";
+                    } else {
+                        self.notifyOp(.warning, "Imported remotely; local cache update failed.");
+                    }
+                    return;
+                };
+                const ws_id = self.confirm_workspace_id_buf[0..self.confirm_workspace_id_len];
+                self.artifact.list_machine.exitSelectionMode();
+                self.resetLocalWorkspaceDetail();
+                api.state.invalidateRemoteCaches(self.api_state, .workspace_detail);
+                if (ws_id.len > 0) workspace_panel.refreshWorkspaceDetail(self, ws_id);
+                self.closeConfirmOverlay();
+                self.notifyOp(.success, "Rules imported.");
+            },
+            .api_error => |e| {
+                const message = writeErrorStatus(self, "Import content failed", e);
+                if (self.show_confirm and self.confirm_action == .import_workspace_rules) {
+                    self.confirm_error_message = message;
+                } else {
+                    self.notifyOp(.failure, message);
+                }
+            },
+            .network_error => {
+                if (self.show_confirm and self.confirm_action == .import_workspace_rules) {
+                    self.confirm_error_message = "Import content failed: network error.";
+                } else {
+                    self.notifyOp(.failure, "Import content failed: network error.");
+                }
+            },
+            .invalid_response => {
+                if (self.show_confirm and self.confirm_action == .import_workspace_rules) {
+                    self.confirm_error_message = "Import content failed: malformed response.";
+                } else {
+                    self.notifyOp(.failure, "Import content failed: malformed response.");
+                }
+            },
+        }
+    }
+
     fn consumeCreateContextPrResult(self: *Shell) void {
         const result = self.api_state.create_context_pr_pending.consume() orelse return;
         self.drafts.pr_composer_submitting = false;
@@ -5992,6 +6296,7 @@ pub const Shell = struct {
         if (self.show_help) return "help";
         if (self.shouldShowLoginPanel()) return "login";
         if (self.workspace.show_drawer) return "workspace_drawer";
+        if (self.artifact.show_workspace_drawer) return "artifact_workspace_drawer";
         if (self.workspace.show_create) return "workspace_create";
         if (self.review.show_comment_editor) return "comment_editor";
         if (self.drafts.show_pr_composer) return "pr_composer";

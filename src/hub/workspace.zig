@@ -13,6 +13,8 @@ const ManifestItem = manifest.ManifestItem;
 const WorkspaceManifestResponse = workspace_api.WorkspaceManifestResponse;
 const CreateWorkspaceRequest = workspace_api.CreateWorkspaceRequest;
 const CreateWorkspaceResponse = workspace_api.CreateWorkspaceResponse;
+const WorkspaceRulesRequest = workspace_api.WorkspaceRulesRequest;
+const WorkspaceRulesResponse = workspace_api.WorkspaceRulesResponse;
 
 pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -250,10 +252,6 @@ pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     }, .{});
 }
 
-const AddRuleRequest = struct {
-    rule_id: []const u8,
-};
-
 pub fn handleAddRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
@@ -264,11 +262,14 @@ pub fn handleAddRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
         return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
     };
 
-    const body = req.json(AddRuleRequest) catch {
+    const body = req.json(WorkspaceRulesRequest) catch {
         return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
     } orelse {
         return apiError(res, 400, "BAD_REQUEST", "missing request body");
     };
+    if (body.rule_ids.len == 0) {
+        return apiError(res, 400, "BAD_REQUEST", "rule_ids is required");
+    }
 
     const conn = ctx.pool.acquire() catch {
         return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
@@ -281,40 +282,74 @@ pub fn handleAddRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
 
     if (!try checkIfMatch(conn, req, res, ws_id)) return;
 
-    var rule_row = conn.row(
-        "SELECT rule_id FROM rules WHERE rule_id = $1",
-        .{body.rule_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    } orelse {
-        return apiError(res, 404, "NOT_FOUND", "rule not found");
-    };
-    rule_row.deinit() catch {};
+    for (body.rule_ids) |rule_id| {
+        var rule_row = conn.row(
+            "SELECT rule_id FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
+            .{ user.org_id, rule_id },
+        ) catch {
+            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        } orelse {
+            return apiError(res, 404, "NOT_FOUND", "rule not found");
+        };
+        rule_row.deinit() catch {};
+    }
 
-    _ = conn.exec(
-        "INSERT INTO workspace_rules (ws_id, rule_id) VALUES ($1, $2)",
-        .{ ws_id, body.rule_id },
-    ) catch {
-        if (conn.err) |pg_err| {
-            if (std.mem.indexOf(u8, pg_err.message, "duplicate") != null) {
-                return apiError(res, 409, "CONFLICT", "rule already in workspace");
-            }
-        }
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to add rule");
+    conn.begin() catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to begin transaction");
     };
 
-    var rev_row = conn.row(
-        "UPDATE workspaces SET revision = revision + 1 WHERE ws_id = $1 RETURNING revision",
-        .{ws_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "failed to update revision");
-    } orelse {
-        return apiError(res, 404, "NOT_FOUND", "workspace not found");
-    };
-    const new_rev = try rev_row.get(i32, 0);
-    rev_row.deinit() catch {};
+    var inserted_count: i64 = 0;
+    for (body.rule_ids) |rule_id| {
+        const inserted = conn.exec(
+            "INSERT INTO workspace_rules (ws_id, rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            .{ ws_id, rule_id },
+        ) catch {
+            conn.rollback() catch {};
+            return apiError(res, 500, "INTERNAL_ERROR", "failed to add rule");
+        };
+        if (inserted) |count| inserted_count += count;
+    }
 
-    try res.json(.{ .revision = new_rev }, .{});
+    const new_rev = if (inserted_count == 0) blk: {
+        var rev_row = conn.row(
+            "SELECT revision FROM workspaces WHERE ws_id = $1",
+            .{ws_id},
+        ) catch {
+            conn.rollback() catch {};
+            return apiError(res, 500, "INTERNAL_ERROR", "failed to read revision");
+        } orelse {
+            conn.rollback() catch {};
+            return apiError(res, 404, "NOT_FOUND", "workspace not found");
+        };
+        defer rev_row.deinit() catch {};
+        break :blk rev_row.get(i32, 0) catch {
+            conn.rollback() catch {};
+            return apiError(res, 500, "INTERNAL_ERROR", "failed to read revision");
+        };
+    } else blk: {
+        var rev_row = conn.row(
+            "UPDATE workspaces SET revision = revision + 1 WHERE ws_id = $1 RETURNING revision",
+            .{ws_id},
+        ) catch {
+            conn.rollback() catch {};
+            return apiError(res, 500, "INTERNAL_ERROR", "failed to update revision");
+        } orelse {
+            conn.rollback() catch {};
+            return apiError(res, 404, "NOT_FOUND", "workspace not found");
+        };
+        defer rev_row.deinit() catch {};
+        break :blk rev_row.get(i32, 0) catch {
+            conn.rollback() catch {};
+            return apiError(res, 500, "INTERNAL_ERROR", "failed to update revision");
+        };
+    };
+
+    conn.commit() catch {
+        conn.rollback() catch {};
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to commit transaction");
+    };
+
+    try res.json(WorkspaceRulesResponse{ .revision = new_rev }, .{});
 }
 
 pub fn handleRemoveRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {

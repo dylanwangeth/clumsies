@@ -34,9 +34,11 @@ pub const create_workspace = dispatcher.RequestSpec(
 
 pub const PathParams = struct { path: []const u8 };
 pub const RuleContentParams = struct { path: []const u8, rule_id: ?[]const u8 = null };
+pub const BatchRuleContentParams = struct { rule_ids: []const []const u8 };
 pub const RulePrsParams = struct { rule_id: []const u8 };
 pub const WorkspaceContextContentParams = struct { ws_id: []const u8, path: []const u8 };
 pub const WorkspaceIdParams = struct { ws_id: []const u8 };
+pub const WorkspaceRulesParams = struct { ws_id: []const u8, rule_ids: []const []const u8 };
 pub const UpdateWorkspaceParams = struct { ws_id: []const u8, name: []const u8, description: []const u8 };
 pub const PrIdParams = struct { pr_id: []const u8, target_kind: data.PrTargetKind = .rule, ws_id: ?[]const u8 = null };
 pub const ReviewPrsParams = struct { target_kind: ?data.PrTargetKind = null, status: []const u8 = "open" };
@@ -108,6 +110,16 @@ pub const artifact_rule_content = dispatcher.RequestSpec(
     .parse_ok = dispatcher.jsonParser(RuleContentParams, artifact_api.RuleContentResponse),
 };
 
+pub const artifact_rule_content_batch = dispatcher.RequestSpec(
+    BatchRuleContentParams,
+    artifact_api.BatchRuleContentResponse,
+){
+    .method = .POST,
+    .path_builder = dispatcher.staticPath(BatchRuleContentParams, "/api/org/artifact/rules/content"),
+    .body_builder = batchRuleContentBody,
+    .parse_ok = dispatcher.jsonParser(BatchRuleContentParams, artifact_api.BatchRuleContentResponse),
+};
+
 pub const artifact_rule_prs = dispatcher.RequestSpec(
     RulePrsParams,
     RulePrsPayload,
@@ -177,6 +189,16 @@ pub const delete_workspace = dispatcher.RequestSpec(WorkspaceIdParams, void){
     .path_builder = workspacePath,
     .body_builder = null,
     .parse_ok = dispatcher.parseVoid(WorkspaceIdParams),
+};
+
+pub const import_workspace_rules = dispatcher.RequestSpec(
+    WorkspaceRulesParams,
+    workspace_api.WorkspaceRulesResponse,
+){
+    .method = .POST,
+    .path_builder = workspaceRulesPath,
+    .body_builder = workspaceRulesBody,
+    .parse_ok = dispatcher.jsonParser(WorkspaceRulesParams, workspace_api.WorkspaceRulesResponse),
 };
 
 pub const pr_detail = dispatcher.RequestSpec(
@@ -499,6 +521,12 @@ fn ruleContentPath(alloc: std.mem.Allocator, p: RuleContentParams) anyerror![]co
     return std.fmt.allocPrint(alloc, "/api/org/artifact/rule/content?path={s}", .{encoded});
 }
 
+fn batchRuleContentBody(alloc: std.mem.Allocator, p: BatchRuleContentParams) anyerror![]const u8 {
+    return std.json.Stringify.valueAlloc(alloc, artifact_api.BatchRuleContentRequest{
+        .rule_ids = p.rule_ids,
+    }, .{});
+}
+
 fn rulePrsPath(alloc: std.mem.Allocator, p: RulePrsParams) anyerror![]const u8 {
     return std.fmt.allocPrint(alloc, "/api/org/rule-prs?rule_id={s}", .{p.rule_id});
 }
@@ -530,6 +558,16 @@ fn workspaceMembersPath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror
 
 fn workspacePath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror![]const u8 {
     return std.fmt.allocPrint(alloc, "/api/workspaces/{s}", .{p.ws_id});
+}
+
+fn workspaceRulesPath(alloc: std.mem.Allocator, p: WorkspaceRulesParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/rules", .{p.ws_id});
+}
+
+fn workspaceRulesBody(alloc: std.mem.Allocator, p: WorkspaceRulesParams) anyerror![]const u8 {
+    return std.json.Stringify.valueAlloc(alloc, workspace_api.WorkspaceRulesRequest{
+        .rule_ids = p.rule_ids,
+    }, .{});
 }
 
 fn updateWorkspacePath(alloc: std.mem.Allocator, p: UpdateWorkspaceParams) anyerror![]const u8 {

@@ -413,6 +413,19 @@ parse_response "$RAW"
 assert_status "get workspace" "200" "$STATUS"
 assert_json "returns name" "$WS_NAME" "$BODY"
 
+step "Workspace: import rules"
+RAW=$(call POST "/api/workspaces/$WS_ID/rules" '{"rule_ids":["p-test-001","p-test-002"]}')
+parse_response "$RAW"
+assert_status "import workspace rules" "200" "$STATUS"
+assert_json "returns revision" "revision" "$BODY"
+
+step "Workspace: imported rules appear in manifest"
+RAW=$(call GET "/api/workspaces/$WS_ID/manifest")
+parse_response "$RAW"
+assert_status "get imported manifest" "200" "$STATUS"
+assert_json "manifest contains imported rule" "p-test-001" "$BODY"
+assert_json "manifest contains second imported rule" "p-test-002" "$BODY"
+
 step "Workspace: list members"
 RAW=$(call GET "/api/workspaces/$WS_ID/members")
 parse_response "$RAW"
