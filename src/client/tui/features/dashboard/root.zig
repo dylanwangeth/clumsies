@@ -559,6 +559,13 @@ pub fn handleModuleEvent(
             return;
         }
     }
+    if (key.matches('z', .{})) {
+        if (self.analysis.focus == .chart) {
+            toggleAllChainItems(self);
+            ctx.consumeAndRedraw();
+            return;
+        }
+    }
     if (key.matches(vaxis.Key.escape, .{})) {
         self.analysis.focus = .chart;
         ctx.consumeAndRedraw();
@@ -590,6 +597,20 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
 
 fn resetChainExpansion(self: anytype) void {
     @memset(self.dashboard.chain_expanded_items[0..], false);
+}
+
+fn toggleAllChainItems(self: anytype) void {
+    const item_count = @min(self.dashboard.chain_item_count, self.dashboard.chain_expanded_items.len);
+    if (item_count == 0) return;
+
+    var expand = false;
+    for (self.dashboard.chain_expanded_items[0..item_count]) |is_expanded| {
+        if (!is_expanded) {
+            expand = true;
+            break;
+        }
+    }
+    @memset(self.dashboard.chain_expanded_items[0..item_count], expand);
 }
 
 fn resetScrollView(scroll_view: *vxfw.ScrollView) void {
