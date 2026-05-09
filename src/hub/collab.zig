@@ -57,11 +57,11 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     };
     defer conn.release();
 
-    for (req_body.operations) |op| {
+    for (req_body.operations, 0..) |op, idx| {
         if (!isValidType(op.type)) {
             return apiError(res, 400, "BAD_REQUEST", "operation type is not supported");
         }
-        if (!try validateOperation(conn, user.org_id, op, req_body.operations, res)) return;
+        if (!try validateOperation(conn, user.org_id, op, req_body.operations, idx, res)) return;
     }
 
     if (!try validateNoIntraPrPathConflict(req.arena, req_body.operations, res)) return;
@@ -136,7 +136,7 @@ fn isValidType(t: []const u8) bool {
         std.mem.eql(u8, t, "bundle_remove");
 }
 
-fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, ops: []const Operation, res: *httpz.Response) !bool {
+fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, ops: []const Operation, op_index: usize, res: *httpz.Response) !bool {
     if (std.mem.eql(u8, op.type, "modify")) {
         const pid = op.rule_id orelse {
             try apiError(res, 400, "BAD_REQUEST", "modify requires rule_id");
@@ -224,15 +224,15 @@ fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, ops: []co
             return false;
         };
         if (!try verifyRuleExists(conn, org_id, pid, res)) return false;
-        if (std.mem.eql(u8, op.type, "bundle_add") and createsBundleInPr(ops, bundle_name)) return true;
+        if (std.mem.eql(u8, op.type, "bundle_add") and createsBundleEarlierInPr(ops, op_index, bundle_name)) return true;
         if (!try verifyBundleExists(conn, org_id, bundle_name, res)) return false;
         return true;
     }
     return false;
 }
 
-fn createsBundleInPr(ops: []const Operation, bundle_name: []const u8) bool {
-    for (ops) |op| {
+fn createsBundleEarlierInPr(ops: []const Operation, current_index: usize, bundle_name: []const u8) bool {
+    for (ops[0..current_index]) |op| {
         if (!std.mem.eql(u8, op.type, "bundle_create")) continue;
         if (op.path) |path| {
             if (std.mem.eql(u8, path, bundle_name)) return true;

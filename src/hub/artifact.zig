@@ -351,7 +351,8 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     defer conn.release();
 
     var result = conn.query(
-        \\SELECT b.bundle_id, b.name, b.description, b.updated_at::text, count(bp.rule_id)::bigint
+        \\SELECT b.bundle_id, b.name, b.description, b.updated_at::text, count(bp.rule_id)::bigint,
+        \\       COALESCE(string_agg(bp.rule_id, E'\n' ORDER BY bp.rule_id), '')
         \\FROM bundles b
         \\LEFT JOIN bundle_rules bp ON bp.bundle_id = b.bundle_id
         \\WHERE b.org_id = $1::uuid
@@ -362,58 +363,31 @@ pub fn handleListBundles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
+    defer result.deinit();
 
-    const BundleRow = struct {
-        bundle_id: []const u8,
-        name: []const u8,
-        description: []const u8,
-        updated_at: []const u8,
-        rule_count: i64,
-    };
-    var rows: std.ArrayList(BundleRow) = .empty;
+    var list: std.ArrayList(BundleMeta) = .empty;
     while (try result.next()) |row| {
-        try rows.append(req.arena, .{
+        const rule_ids_raw = try row.get([]const u8, 5);
+        try list.append(req.arena, .{
             .bundle_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
             .name = try req.arena.dupe(u8, try row.get([]const u8, 1)),
             .description = try req.arena.dupe(u8, try row.get([]const u8, 2)),
             .updated_at = try req.arena.dupe(u8, try row.get([]const u8, 3)),
             .rule_count = try row.get(i64, 4),
-        });
-    }
-    result.deinit();
-
-    var list: std.ArrayList(BundleMeta) = .empty;
-    for (rows.items) |row| {
-        const rule_ids = collectBundleRuleIds(req.arena, conn, row.bundle_id) catch {
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        };
-        try list.append(req.arena, .{
-            .bundle_id = row.bundle_id,
-            .name = row.name,
-            .description = row.description,
-            .updated_at = row.updated_at,
-            .rule_count = row.rule_count,
-            .rule_ids = rule_ids,
+            .rule_ids = try splitBundleRuleIds(req.arena, rule_ids_raw),
         });
     }
 
     try res.json(BundleListResponse{ .bundles = list.items }, .{});
 }
 
-fn collectBundleRuleIds(
-    arena: std.mem.Allocator,
-    conn: anytype,
-    bundle_id: []const u8,
-) ![]const []const u8 {
-    var result = conn.query(
-        "SELECT rule_id FROM bundle_rules WHERE bundle_id = $1 ORDER BY rule_id",
-        .{bundle_id},
-    ) catch return error.QueryFailed;
-    defer result.deinit();
-
+fn splitBundleRuleIds(arena: std.mem.Allocator, raw: []const u8) ![]const []const u8 {
+    if (raw.len == 0) return &.{};
     var ids: std.ArrayList([]const u8) = .empty;
-    while (try result.next()) |row| {
-        try ids.append(arena, try arena.dupe(u8, try row.get([]const u8, 0)));
+    var iter = std.mem.splitScalar(u8, raw, '\n');
+    while (iter.next()) |id| {
+        if (id.len == 0) continue;
+        try ids.append(arena, try arena.dupe(u8, id));
     }
     return ids.items;
 }
@@ -522,10 +496,15 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const bundle_id: []const u8 = &bid_buf;
 
     const desc = body.description orelse "";
+    conn.begin() catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to begin transaction");
+    };
+
     _ = conn.exec(
         "INSERT INTO bundles (bundle_id, org_id, name, description) VALUES ($1, $2::uuid, $3, $4)",
         .{ bundle_id, user.org_id, body.name, desc },
     ) catch {
+        conn.rollback() catch {};
         if (conn.err) |pg_err| {
             if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
                 std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
@@ -541,9 +520,15 @@ pub fn handleCreateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
             "INSERT INTO bundle_rules (bundle_id, rule_id) VALUES ($1, $2)",
             .{ bundle_id, pid },
         ) catch {
+            conn.rollback() catch {};
             return apiError(res, 500, "INTERNAL_ERROR", "database insert failed");
         };
     }
+
+    conn.commit() catch {
+        conn.rollback() catch {};
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to commit transaction");
+    };
 
     res.status = 201;
     try res.json(.{
@@ -592,11 +577,32 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const bundle_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     row.deinit() catch {};
 
+    if (body.rule_ids) |pids| {
+        for (pids) |pid| {
+            var exists2 = conn.row(
+                "SELECT 1 FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
+                .{ user.org_id, pid },
+            ) catch {
+                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            };
+            if (exists2) |*r| {
+                r.deinit() catch {};
+            } else {
+                return apiError(res, 400, "BAD_REQUEST", "rule_id not found in Artifact");
+            }
+        }
+    }
+
+    conn.begin() catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to begin transaction");
+    };
+
     if (body.name) |new_name| {
         _ = conn.exec(
             "UPDATE bundles SET name = $1, updated_at = now() WHERE bundle_id = $2",
             .{ new_name, bundle_id },
         ) catch {
+            conn.rollback() catch {};
             if (conn.err) |pg_err| {
                 if (std.mem.indexOf(u8, pg_err.message, "unique") != null or
                     std.mem.indexOf(u8, pg_err.message, "duplicate") != null)
@@ -613,27 +619,15 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
             "UPDATE bundles SET description = $1, updated_at = now() WHERE bundle_id = $2",
             .{ desc, bundle_id },
         ) catch {
+            conn.rollback() catch {};
             return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
         };
     }
 
     // Replace rule_ids if provided
     if (body.rule_ids) |pids| {
-        for (pids) |pid| {
-            var exists2 = conn.row(
-                "SELECT 1 FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
-                .{ user.org_id, pid },
-            ) catch {
-                return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-            };
-            if (exists2) |*r| {
-                r.deinit() catch {};
-            } else {
-                return apiError(res, 400, "BAD_REQUEST", "rule_id not found in Artifact");
-            }
-        }
-
         _ = conn.exec("DELETE FROM bundle_rules WHERE bundle_id = $1", .{bundle_id}) catch {
+            conn.rollback() catch {};
             return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
         };
         for (pids) |pid| {
@@ -641,6 +635,7 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
                 "INSERT INTO bundle_rules (bundle_id, rule_id) VALUES ($1, $2)",
                 .{ bundle_id, pid },
             ) catch {
+                conn.rollback() catch {};
                 return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
             };
         }
@@ -648,9 +643,15 @@ pub fn handleUpdateBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
             "UPDATE bundles SET updated_at = now() WHERE bundle_id = $1",
             .{bundle_id},
         ) catch {
+            conn.rollback() catch {};
             return apiError(res, 500, "INTERNAL_ERROR", "database update failed");
         };
     }
+
+    conn.commit() catch {
+        conn.rollback() catch {};
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to commit transaction");
+    };
 
     try res.json(.{ .name = body.name orelse name, .updated = true }, .{});
 }
@@ -684,11 +685,22 @@ pub fn handleDeleteBundle(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     const bundle_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
     row.deinit() catch {};
 
+    conn.begin() catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to begin transaction");
+    };
+
     _ = conn.exec("DELETE FROM bundle_rules WHERE bundle_id = $1", .{bundle_id}) catch {
+        conn.rollback() catch {};
         return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");
     };
     _ = conn.exec("DELETE FROM bundles WHERE bundle_id = $1", .{bundle_id}) catch {
+        conn.rollback() catch {};
         return apiError(res, 500, "INTERNAL_ERROR", "database delete failed");
+    };
+
+    conn.commit() catch {
+        conn.rollback() catch {};
+        return apiError(res, 500, "INTERNAL_ERROR", "failed to commit transaction");
     };
 
     res.status = 204;
