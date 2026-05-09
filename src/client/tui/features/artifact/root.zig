@@ -18,7 +18,11 @@ const PathTreeState = @import("../../models.zig").path_tree.State(MAX_TREE_ROWS,
 
 pub const State = struct {
     selected_rule: usize = 0,
+    has_selected_rule: bool = false,
     bundle_filter: usize = 0,
+    show_bundle_drawer: bool = false,
+    bundle_cursor: usize = 0,
+    last_synced_bundle_filter: usize = std.math.maxInt(usize),
     scroll_bars: vxfw.ScrollBars,
     tree: PathTreeState = .{},
 
@@ -51,7 +55,8 @@ pub fn drawListPanel(
     w.fillSurface(&surface, theme.PANEL);
     w.drawBorder(&surface, border_color, theme.PANEL);
 
-    w.writeText(&surface, ctx, 2, 0, "Rules", theme.boldOn(theme.PANEL, theme.TEXT));
+    const title = try artifactListTitle(self, ctx.arena);
+    w.writeTextMax(&surface, ctx, 2, 0, size.width -| 4, title, theme.boldOn(theme.PANEL, theme.TEXT));
 
     // Body sits one row below the top border (row 1) and two
     // columns in (col=2). The cursor bar is written directly onto
@@ -113,6 +118,10 @@ pub fn handleModuleEvent(
     key: vaxis.Key,
 ) anyerror!void {
     self.review.detail_tab = .content;
+    if (self.artifact.show_bundle_drawer) {
+        handleBundleDrawerKey(self, ctx, key);
+        return;
+    }
     if (key.matches('r', .{})) {
         self.invalidateRemoteDetailRequests();
         api.fetch.refetchAllAsync(self.api_state);
@@ -121,14 +130,8 @@ pub fn handleModuleEvent(
         return;
     }
     if (key.matches('b', .{})) {
-        const bundle_count = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
-            if (self.api_state.bundles) |bundles| break :blk bundles.len;
-            break :blk 0;
-        };
-        self.artifact.bundle_filter = (self.artifact.bundle_filter + 1) % (bundle_count + 1);
-        resetScrollView(&self.artifact.scroll_bars.scroll_view);
+        self.artifact.show_bundle_drawer = true;
+        self.artifact.bundle_cursor = self.artifact.bundle_filter;
         ctx.consumeAndRedraw();
         return;
     }
@@ -156,7 +159,11 @@ pub fn handleModuleEvent(
 }
 
 pub fn shortcuts(self: anytype) []const w.Shortcut {
-    _ = self;
+    if (self.artifact.show_bundle_drawer) return &.{
+        .{ .key = "j/k", .label = "move" },
+        .{ .key = "Enter", .label = "select" },
+        .{ .key = "Esc", .label = "close" },
+    };
     return content_actions.artifactContentShortcuts();
 }
 
@@ -255,14 +262,8 @@ fn handlePrListEvent(
 
 pub fn syncArtifactTree(self: anytype) void {
     const rules = self.getRules();
-    const bundles = self.getBundles();
     const create_paths = self.drafts.create_rule_paths;
-    const filter_name: ?[]const u8 = if (self.artifact.bundle_filter == 0)
-        null
-    else if (self.artifact.bundle_filter - 1 < bundles.len)
-        bundles[self.artifact.bundle_filter - 1].name
-    else
-        null;
+    const selected_bundle_rule_ids = selectedBundleRuleIds(self);
 
     const allocator = self.api_state.allocator();
     const path_capacity = rules.len + create_paths.len;
@@ -272,26 +273,32 @@ pub fn syncArtifactTree(self: anytype) void {
     defer allocator.free(filtered_orig);
     var filtered_len: usize = 0;
     for (rules, 0..) |p, pidx| {
-        if (filter_name) |fname| {
-            if (std.mem.indexOf(u8, p.bundle_names, fname) == null) continue;
+        if (selected_bundle_rule_ids) |rule_ids| {
+            if (!bundleContainsRule(rule_ids, p.rule_id)) continue;
         }
         filtered_paths[filtered_len] = p.path;
         filtered_orig[filtered_len] = pidx;
         filtered_len += 1;
     }
 
-    // Append local create-op drafts as virtual rows. Tree-leaf index
-    // is `rules.len + k` so selectedDraftTarget can tell virtual
-    // rows from server-backed rows by the index range. Bundle filter
-    // does not constrain create drafts — the user created them
-    // locally, they should always be visible.
-    for (create_paths, 0..) |path, k| {
-        filtered_paths[filtered_len] = path;
-        filtered_orig[filtered_len] = rules.len + k;
-        filtered_len += 1;
+    if (selected_bundle_rule_ids == null) {
+        // Append local create-op drafts as virtual rows only in the
+        // unfiltered rule list. A bundle filter means "show members of
+        // this bundle"; showing unrelated draft rows there makes a
+        // partially-loaded bundle look like it contains only the draft.
+        for (create_paths, 0..) |path, k| {
+            filtered_paths[filtered_len] = path;
+            filtered_orig[filtered_len] = rules.len + k;
+            filtered_len += 1;
+        }
     }
 
     self.artifact.tree.sync(allocator, filtered_paths[0..filtered_len], filtered_orig[0..filtered_len]);
+    if (self.artifact.last_synced_bundle_filter != self.artifact.bundle_filter) {
+        self.artifact.tree.expandAllDirs(allocator);
+        self.artifact.tree.sync(allocator, filtered_paths[0..filtered_len], filtered_orig[0..filtered_len]);
+        self.artifact.last_synced_bundle_filter = self.artifact.bundle_filter;
+    }
 }
 
 pub fn syncArtifactWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!void {
@@ -358,14 +365,38 @@ pub fn syncArtifactWidgets(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocat
     if (cur >= row_count) cur = if (row_count > 0) row_count - 1 else 0;
     self.artifact.scroll_bars.scroll_view.cursor = @intCast(cur);
     clampScrollTop(&self.artifact.scroll_bars.scroll_view, row_count);
+    self.artifact.has_selected_rule = false;
     if (cur < row_count) {
+        const leaf_row = if (self.artifact.tree.leafIndexAt(cur) != null)
+            cur
+        else
+            firstLeafRowAtOrAfter(self, cur) orelse cur;
+        if (leaf_row != cur) {
+            self.artifact.scroll_bars.scroll_view.cursor = @intCast(leaf_row);
+            cur = leaf_row;
+            w.scrollCursorIntoView(&self.artifact.scroll_bars.scroll_view, row_count);
+        }
         if (self.artifact.tree.leafIndexAt(cur)) |pi| {
+            self.artifact.has_selected_rule = true;
             if (self.artifact.selected_rule != pi) {
                 self.artifact.selected_rule = pi;
                 self.review.hide_diff = false;
             }
         }
     }
+}
+
+fn firstLeafRowAtOrAfter(self: anytype, start: usize) ?usize {
+    const row_count = self.artifact.tree.rowCount();
+    var row = start;
+    while (row < row_count) : (row += 1) {
+        if (self.artifact.tree.leafIndexAt(row) != null) return row;
+    }
+    row = 0;
+    while (row < start and row < row_count) : (row += 1) {
+        if (self.artifact.tree.leafIndexAt(row) != null) return row;
+    }
+    return null;
 }
 
 fn resetScrollView(scroll_view: *vxfw.ScrollView) void {
@@ -377,4 +408,125 @@ fn resetScrollView(scroll_view: *vxfw.ScrollView) void {
 
 fn clampScrollTop(scroll_view: *vxfw.ScrollView, row_count: usize) void {
     w.clampScrollTop(scroll_view, row_count);
+}
+
+fn artifactListTitle(self: anytype, arena: std.mem.Allocator) std.mem.Allocator.Error![]const u8 {
+    const bundles = self.getBundles();
+    if (self.artifact.bundle_filter == 0 or self.artifact.bundle_filter - 1 >= bundles.len) {
+        return arena.dupe(u8, "Rules");
+    }
+    return std.fmt.allocPrint(arena, "Rules · {s}", .{bundles[self.artifact.bundle_filter - 1].name});
+}
+
+fn selectedBundleRuleIds(self: anytype) ?[]const []const u8 {
+    if (self.artifact.bundle_filter == 0) return null;
+    self.api_state.mutex.lock();
+    defer self.api_state.mutex.unlock();
+    const bundles = self.api_state.bundles orelse return null;
+    const idx = self.artifact.bundle_filter - 1;
+    if (idx >= bundles.len) return null;
+    return bundles[idx].rule_ids;
+}
+
+fn bundleContainsRule(rule_ids: []const []const u8, rule_id: []const u8) bool {
+    for (rule_ids) |id| {
+        if (std.mem.eql(u8, id, rule_id)) return true;
+    }
+    return false;
+}
+
+fn bundleChoiceCount(self: anytype) usize {
+    const bundles = self.getBundles();
+    return bundles.len + 1;
+}
+
+fn handleBundleDrawerKey(self: anytype, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+    if (key.matches(vaxis.Key.escape, .{}) or key.matches('b', .{})) {
+        self.artifact.show_bundle_drawer = false;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    const count = bundleChoiceCount(self);
+    if (count == 0) {
+        ctx.consumeEvent();
+        return;
+    }
+    if (key.matches(vaxis.Key.enter, .{})) {
+        self.artifact.bundle_filter = @min(self.artifact.bundle_cursor, count - 1);
+        self.artifact.show_bundle_drawer = false;
+        resetScrollView(&self.artifact.scroll_bars.scroll_view);
+        self.review.selected_pr_idx = 0;
+        self.review.pr_scroll_bars.scroll_view.cursor = 0;
+        ctx.consumeAndRedraw();
+        return;
+    }
+    var cursor = self.artifact.bundle_cursor;
+    const step = w.stepForKey(key, &self.artifact.scroll_bars.scroll_view) orelse return;
+    _ = w.moveCursorBy(&cursor, count, step);
+    self.artifact.bundle_cursor = cursor;
+    ctx.consumeAndRedraw();
+}
+
+pub fn drawBundleDrawer(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    if (size.width < w.Drawer.min_child_width or size.height < w.Drawer.min_child_height) {
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+        w.fillSurface(&surface, theme.PANEL_SOFT);
+        return surface;
+    }
+
+    const body_w = size.width - w.Drawer.child_origin_col;
+    const body_h = size.height - w.Drawer.child_origin_row;
+    var body = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = body_w, .height = body_h });
+    w.fillSurface(&body, theme.PANEL_SOFT);
+
+    const bundles = self.getBundles();
+    const count = bundles.len + 1;
+    if (self.artifact.bundle_cursor >= count) self.artifact.bundle_cursor = count - 1;
+    var row: u16 = 0;
+    drawBundleChoice(&body, ctx, 0, row, body_w, "All rules", 0, self.artifact.bundle_cursor, self.artifact.bundle_filter, 0);
+    row += 1;
+    for (bundles, 0..) |bundle, i| {
+        if (row >= body_h) break;
+        const label = try std.fmt.allocPrint(ctx.arena, "{s} ({d})", .{ bundle.name, bundle.count });
+        drawBundleChoice(&body, ctx, 0, row, body_w, label, i + 1, self.artifact.bundle_cursor, self.artifact.bundle_filter, bundle.count);
+        row += 1;
+    }
+
+    const drawer = w.Drawer{
+        .title = "Bundles",
+        .border_color = theme.ACCENT_SOFT,
+        .background = theme.PANEL_SOFT,
+        .body = body,
+    };
+    return drawer.draw(ctx, self.widget());
+}
+
+fn drawBundleChoice(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    marker_col: u16,
+    row: u16,
+    width: u16,
+    label: []const u8,
+    idx: usize,
+    cursor: usize,
+    active_filter: usize,
+    count: u16,
+) void {
+    const is_cursor = idx == cursor;
+    const is_active = idx == active_filter;
+    if (is_cursor) w.writeCursorMarker(surface, marker_col, row);
+    const text_col = marker_col + 1;
+    const marker = if (is_active) "[*] " else "[ ] ";
+    const style = if (is_cursor)
+        theme.boldOn(theme.PANEL_SOFT, theme.TEXT)
+    else if (is_active)
+        theme.textOn(theme.PANEL_SOFT, theme.TEXT)
+    else
+        theme.textOn(theme.PANEL_SOFT, theme.TEXT_SOFT);
+    w.writeText(surface, ctx, text_col, row, marker, style);
+    const label_col = text_col + @as(u16, @intCast(ctx.stringWidth(marker)));
+    const count_w: u16 = if (count > 0) 7 else 0;
+    w.writeTextMax(surface, ctx, label_col, row, width -| label_col -| count_w -| 2, label, style);
 }

@@ -16,6 +16,7 @@ pub fn toRuleEntries(
     for (rules) |p| {
         const refer_str = formatCount(alloc, p.refer_count) catch "";
         list.append(alloc, .{
+            .rule_id = p.rule_id,
             .path = p.path,
             .kind = data.kindFromPath(p.path),
             .refer_count = refer_str,

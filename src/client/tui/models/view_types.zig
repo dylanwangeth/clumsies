@@ -2,6 +2,7 @@
 const std = @import("std");
 
 pub const RuleEntry = struct {
+    rule_id: []const u8 = "",
     path: []const u8,
     kind: []const u8,
     refer_count: []const u8,
