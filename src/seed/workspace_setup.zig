@@ -1,12 +1,9 @@
-//! Creates workspace directory structure under ~/.clumsies/workspaces/{ws_id}/ for seed workspaces.
+//! Creates workspace directory structure under ~/.clumsies/workspaces/{name}/ for seed workspaces.
 const std = @import("std");
-const local_attestation = @import("clumsies_client").attestation;
 
-pub fn ensureWorkspaceFiles(ws_id: []const u8) !void {
-    if (!isSafeWorkspaceId(ws_id)) return error.InvalidWorkspaceId;
-
+pub fn ensureWorkspaceFiles(ws_id: []const u8, name: []const u8) !void {
     const alloc = std.heap.page_allocator;
-    const ws_dir = try workspaceDirPath(alloc, ws_id);
+    const ws_dir = try workspaceDirPath(alloc, ws_id, name);
     defer alloc.free(ws_dir);
     try ensureWorkspaceDirTree(ws_dir);
 
@@ -14,16 +11,14 @@ pub fn ensureWorkspaceFiles(ws_id: []const u8) !void {
     defer alloc.free(logs_dir);
     try ensureDir(logs_dir);
 
-    const attestation_dir = try local_attestation.attestationLogDirPath(alloc, ws_id);
+    const attestation_dir = try std.fs.path.join(alloc, &.{ ws_dir, "attestation" });
     defer alloc.free(attestation_dir);
     try ensureDir(attestation_dir);
 }
 
-pub fn deleteWorkspaceFiles(ws_id: []const u8) void {
-    if (!isSafeWorkspaceId(ws_id)) return;
-
+pub fn deleteWorkspaceFiles(ws_id: []const u8, name: []const u8) void {
     const alloc = std.heap.page_allocator;
-    const ws_dir = workspaceDirPath(alloc, ws_id) catch return;
+    const ws_dir = workspaceDirPath(alloc, ws_id, name) catch return;
     defer alloc.free(ws_dir);
 
     std.fs.deleteTreeAbsolute(ws_dir) catch |err| switch (err) {
@@ -32,13 +27,14 @@ pub fn deleteWorkspaceFiles(ws_id: []const u8) void {
     };
 }
 
-fn workspaceDirPath(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
-    const attestation_dir = try local_attestation.attestationLogDirPath(allocator, ws_id);
-    defer allocator.free(attestation_dir);
+fn workspaceDirPath(allocator: std.mem.Allocator, _: []const u8, name: []const u8) ![]const u8 {
+    if (!isSafeWorkspaceDirName(name)) return error.InvalidWorkspaceName;
 
-    const logs_dir = std.fs.path.dirname(attestation_dir) orelse return error.InvalidAttestationPath;
-    const ws_dir = std.fs.path.dirname(logs_dir) orelse return error.InvalidAttestationPath;
-    return try allocator.dupe(u8, ws_dir);
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
+        return error.HomeNotSet;
+    defer allocator.free(home);
+    return try std.fs.path.join(allocator, &.{ home, ".clumsies", "workspaces", name });
 }
 
 fn ensureWorkspaceDirTree(ws_dir: []const u8) !void {
@@ -70,6 +66,14 @@ fn isSafeWorkspaceId(ws_id: []const u8) bool {
     if (std.mem.indexOfScalar(u8, ws_id, '/')) |_| return false;
     if (std.mem.indexOfScalar(u8, ws_id, '\\')) |_| return false;
     if (std.mem.indexOf(u8, ws_id, "..")) |_| return false;
+    return true;
+}
+
+fn isSafeWorkspaceDirName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
+    if (std.mem.indexOfScalar(u8, name, '/')) |_| return false;
+    if (std.mem.indexOfScalar(u8, name, '\\')) |_| return false;
     return true;
 }
 

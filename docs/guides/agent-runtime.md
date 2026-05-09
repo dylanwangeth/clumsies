@@ -64,9 +64,9 @@ The host runtime depends on several local files under `~/.clumsies`:
 | Path | Why the runtime needs it |
 | --- | --- |
 | `config.toml` | resolves which workspace is bound to the current repo path |
-| `workspaces/{ws_id}/manifest.json` | gives the current workspace snapshot and revision |
-| `workspaces/{ws_id}/cache/` | stores materialized rules, context, and `META_PROMPT` |
-| `workspaces/{ws_id}/attestation/` | session logs and cursors |
+| `workspaces/{workspace_name}/manifest.json` | gives the current workspace snapshot and revision |
+| `workspaces/{workspace_name}/cache/` | stores materialized rules, context, and `META_PROMPT` |
+| `workspaces/{workspace_name}/attestation/` | session logs and cursors |
 | `adapters/installs/{install_id}/manifest.json` | records what an adapter installation owns |
 | `adapters/installs/{install_id}/wal.jsonl` | supports safe update and remove behavior |
 

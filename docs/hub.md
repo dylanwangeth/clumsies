@@ -85,7 +85,7 @@ In the running server, that authority surface is the workspace manifest endpoint
 GET /api/workspaces/:ws_id/manifest
 ```
 
-That endpoint is what lets local runtime avoid rediscovering state object by object. The client pulls one indexed snapshot, stores it as `~/.clumsies/workspaces/{ws_id}/manifest.json`, and then uses hashes to decide what must be refreshed under `cache/`.
+That endpoint is what lets local runtime avoid rediscovering state object by object. The client pulls one indexed snapshot, stores it as `~/.clumsies/workspaces/{workspace_name}/manifest.json`, and then uses hashes to decide what must be refreshed under `cache/`.
 
 This is the bridge between server-side authority and local non-blocking runtime. Clients do not need to rediscover the workspace by crawling local files or asking ad hoc APIs for each object. They can sync one indexed snapshot, compare revisions and hashes, and then refresh only what changed.
 

@@ -209,7 +209,7 @@ pub const TRACE_ALIGNMENT_CONTEXT =
 pub const RECENT_INPUTS_CONTEXT =
     \\# Recent Inputs Snapshot
     \\
-    \\- The TUI Recent Inputs panel reads local attestation logs from `~/.clumsies/workspaces/{ws_id}/attestation/*.jsonl`.
+    \\- The TUI Recent Inputs panel reads local attestation logs from `~/.clumsies/workspaces/{workspace_name}/attestation/*.jsonl`.
     \\- `user_prompt` drives the feed; `refer` enriches the rule-level stats.
     \\- If the pump only mutates server tables and skips local attestation writes, Recent Inputs will look empty.
 ;

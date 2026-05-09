@@ -136,18 +136,25 @@ pub fn resolveCurrentWorkspaceRoot(allocator: std.mem.Allocator) !?[]const u8 {
     return try resolveWorkspaceRoot(allocator, cwd);
 }
 
-/// Get the workspace directory for a workspace: ~/.clumsies/workspaces/{ws_id}
+/// Get the workspace directory for a workspace: ~/.clumsies/workspaces/{name}
 pub fn getWsDir(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
     const base = try auth.getBasePath(allocator);
     defer allocator.free(base);
-    return std.fs.path.join(allocator, &.{ base, "workspaces", ws_id });
+    const parent = try std.fs.path.join(allocator, &.{ base, "workspaces" });
+    defer allocator.free(parent);
+    const dir_name = try workspaceDirName(allocator, ws_id);
+    defer allocator.free(dir_name);
+    const ws_dir = try std.fs.path.join(allocator, &.{ parent, dir_name });
+    errdefer allocator.free(ws_dir);
+    try migrateWorkspaceDir(allocator, parent, ws_id, ws_dir);
+    return ws_dir;
 }
 
-/// Get the cache directory for a workspace: ~/.clumsies/workspaces/{ws_id}/cache
+/// Get the cache directory for a workspace: ~/.clumsies/workspaces/{name}/cache
 pub fn getCachePath(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
-    const base = try auth.getBasePath(allocator);
-    defer allocator.free(base);
-    return std.fs.path.join(allocator, &.{ base, "workspaces", ws_id, "cache" });
+    const ws_dir = try getWsDir(allocator, ws_id);
+    defer allocator.free(ws_dir);
+    return std.fs.path.join(allocator, &.{ ws_dir, "cache" });
 }
 
 /// Add a workspace binding to config.toml.
@@ -241,6 +248,8 @@ pub fn removeWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) !void {
     defer allocator.free(base);
     const config_path = try std.fs.path.join(allocator, &.{ base, "config.toml" });
     defer allocator.free(config_path);
+    const local_ws_dir = getWsDir(allocator, ws_id) catch null;
+    defer if (local_ws_dir) |path| allocator.free(path);
 
     var existing_workspaces: std.ArrayList(TomlWorkspaceOut) = .empty;
     defer existing_workspaces.deinit(allocator);
@@ -276,6 +285,13 @@ pub fn removeWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) !void {
     const file = try std.fs.createFileAbsolute(config_path, .{ .truncate = true });
     defer file.close();
     _ = try file.write(buf.items);
+
+    if (local_ws_dir) |path| {
+        std.fs.deleteTreeAbsolute(path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+    }
 }
 
 const ParsedConfig = struct {
@@ -352,6 +368,54 @@ fn containsPath(paths: []const []const u8, needle: []const u8) bool {
     return false;
 }
 
+fn workspaceDirName(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
+    var parsed = loadConfig(allocator) catch return try allocator.dupe(u8, ws_id);
+    defer parsed.deinit();
+
+    for (parsed.value.workspaces) |ws| {
+        if (!std.mem.eql(u8, ws.ws_id, ws_id)) continue;
+        return try pathSafeWorkspaceName(allocator, ws.name, ws_id);
+    }
+
+    return try allocator.dupe(u8, ws_id);
+}
+
+fn pathSafeWorkspaceName(allocator: std.mem.Allocator, name: []const u8, fallback: []const u8) ![]const u8 {
+    if (name.len == 0) return try allocator.dupe(u8, fallback);
+
+    var out = try allocator.alloc(u8, name.len);
+    errdefer allocator.free(out);
+    for (name, 0..) |byte, idx| {
+        out[idx] = switch (byte) {
+            0...31, 127, '/', '\\' => '-',
+            else => byte,
+        };
+    }
+    if (std.mem.eql(u8, out, ".") or std.mem.eql(u8, out, "..")) {
+        allocator.free(out);
+        return try allocator.dupe(u8, fallback);
+    }
+    return out;
+}
+
+fn migrateWorkspaceDir(allocator: std.mem.Allocator, parent: []const u8, ws_id: []const u8, target: []const u8) !void {
+    const old = try std.fs.path.join(allocator, &.{ parent, ws_id });
+    defer allocator.free(old);
+    if (std.mem.eql(u8, old, target)) return;
+
+    std.fs.accessAbsolute(old, .{}) catch return;
+    std.fs.accessAbsolute(target, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.fs.renameAbsolute(old, target) catch |rename_err| switch (rename_err) {
+                error.FileNotFound => {},
+                else => return rename_err,
+            };
+            return;
+        },
+        else => return,
+    };
+}
+
 fn writeWorkspaceBlock(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), name: []const u8, ws_id: []const u8, paths: []const []const u8) !void {
     try appendLine(allocator, buf, "[[workspaces]]");
     try appendKv(allocator, buf, "name", name);
@@ -405,6 +469,24 @@ test "appendTomlEscaped passes plain text" {
     defer buf.deinit(testing.allocator);
     try appendTomlEscaped(testing.allocator, &buf, "/home/user/workspace");
     try testing.expectEqualStrings("/home/user/workspace", buf.items);
+}
+
+test "pathSafeWorkspaceName preserves readable names" {
+    const dir_name = try pathSafeWorkspaceName(testing.allocator, "Clumsies Lab", "ws-1");
+    defer testing.allocator.free(dir_name);
+    try testing.expectEqualStrings("Clumsies Lab", dir_name);
+}
+
+test "pathSafeWorkspaceName replaces separators" {
+    const dir_name = try pathSafeWorkspaceName(testing.allocator, "team/demo\\app", "ws-1");
+    defer testing.allocator.free(dir_name);
+    try testing.expectEqualStrings("team-demo-app", dir_name);
+}
+
+test "pathSafeWorkspaceName falls back for dot names" {
+    const dir_name = try pathSafeWorkspaceName(testing.allocator, "..", "ws-1");
+    defer testing.allocator.free(dir_name);
+    try testing.expectEqualStrings("ws-1", dir_name);
 }
 
 test "pathMatchBoundary" {

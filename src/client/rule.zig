@@ -110,7 +110,7 @@ pub const MetaPromptResult = struct {
 };
 
 /// Load META_PROMPT.md from the workspace cache directory.
-/// `ws_dir` is the workspace root (~/.clumsies/workspaces/{ws_id}).
+/// `ws_dir` is the workspace root (~/.clumsies/workspaces/{name}).
 /// MPF lives at `{ws_dir}/cache/META_PROMPT.md` — reserved paths
 /// sit at the cache root rather than under the `rule/` namespace
 /// so a future MPF rename does not reshuffle the rule tree.

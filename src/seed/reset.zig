@@ -46,13 +46,13 @@ pub fn rebuild(conn: *pg.Conn) !void {
 
 fn clearSeedLocalState() void {
     for (data.WORKSPACES) |workspace| {
-        workspace_setup.deleteWorkspaceFiles(workspace.id);
+        workspace_setup.deleteWorkspaceFiles(workspace.id, workspace.name);
     }
 }
 
 fn ensureLocalWorkspaceState() !void {
     for (data.WORKSPACES) |workspace| {
-        try workspace_setup.ensureWorkspaceFiles(workspace.id);
+        try workspace_setup.ensureWorkspaceFiles(workspace.id, workspace.name);
     }
 }
 

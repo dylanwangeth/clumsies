@@ -1,6 +1,6 @@
 //! Attestation event recording. Each MCP setup/discover/load/refer/submit interaction
 //! is serialized as an AttestationEvent and appended to
-//! ~/.clumsies/workspaces/{ws_id}/attestation/{session_id}.jsonl. The Hub later
+//! ~/.clumsies/workspaces/{workspace_name}/attestation/{session_id}.jsonl. The Hub later
 //! ingests these events via POST /api/attestations to compute constraint-level usage statistics.
 //!
 //! The data model uses a tagged union (Payload) so each event type carries only
@@ -8,6 +8,7 @@
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("clumsies_lib").util.encoding;
+const workspace_config = @import("workspace_config.zig");
 
 fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch
@@ -147,7 +148,7 @@ pub fn payloadTypeTag(payload: AttestationEvent.Payload) []const u8 {
     };
 }
 
-/// Get the per-session attestation log path: ~/.clumsies/workspaces/{ws_id}/attestation/{session_id}.jsonl
+/// Get the per-session attestation log path: ~/.clumsies/workspaces/{name}/attestation/{session_id}.jsonl
 pub fn sessionAttestationFilePath(allocator: std.mem.Allocator, ws_id: []const u8, session_id: []const u8) ![]const u8 {
     const dir = try attestationLogDirPath(allocator, ws_id);
     defer allocator.free(dir);
@@ -166,9 +167,9 @@ pub fn sessionCursorFilePath(allocator: std.mem.Allocator, ws_id: []const u8, se
 }
 
 pub fn attestationLogDirPath(allocator: std.mem.Allocator, ws_id: []const u8) ![]const u8 {
-    const base = try getBasePath(allocator);
-    defer allocator.free(base);
-    return try std.fs.path.join(allocator, &.{ base, "workspaces", ws_id, "attestation" });
+    const ws_dir = try workspace_config.getWsDir(allocator, ws_id);
+    defer allocator.free(ws_dir);
+    return try std.fs.path.join(allocator, &.{ ws_dir, "attestation" });
 }
 
 fn ensureWorkspaceDir(allocator: std.mem.Allocator, ws_id: []const u8) !void {
@@ -187,7 +188,7 @@ fn ensureWorkspaceDir(allocator: std.mem.Allocator, ws_id: []const u8) !void {
         else => return err,
     };
 
-    const ws_dir = try std.fs.path.join(allocator, &.{ ws_parent, ws_id });
+    const ws_dir = try workspace_config.getWsDir(allocator, ws_id);
     defer allocator.free(ws_dir);
     std.fs.makeDirAbsolute(ws_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},

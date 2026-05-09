@@ -1,6 +1,6 @@
 //! Local drafts: tracks in-progress edits to rules and context files per workspace. When a
 //! user modifies a Artifact rule locally (creating a "local edit"), the draft is stored under
-//! ~/.clumsies/workspaces/{ws_id}/drafts/ with an index mapping original paths to draft files.
+//! ~/.clumsies/workspaces/{name}/drafts/ with an index mapping original paths to draft files.
 const std = @import("std");
 const testing = std.testing;
 const path_util = @import("clumsies_lib").util.path_util;

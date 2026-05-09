@@ -121,7 +121,7 @@ fn userHealthy(conn: *pg.Conn, user: data.UserFixture) !bool {
 
 fn ensureLocalWorkspaceState() !void {
     for (data.WORKSPACES) |workspace| {
-        try workspace_setup.ensureWorkspaceFiles(workspace.id);
+        try workspace_setup.ensureWorkspaceFiles(workspace.id, workspace.name);
     }
 }
 
