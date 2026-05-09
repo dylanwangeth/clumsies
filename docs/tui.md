@@ -20,10 +20,11 @@ The analysis view shows why the TUI matters as its own surface. This is the kind
 
 ## Why the TUI exists
 
-CLI is good at discrete setup actions such as init, sync, and adapter install.
-Login is shared between CLI and TUI: the TUI should be able to enter a login
-state itself when credentials are missing. The CLI is not good at sustained
-observation, comparison, or review-heavy work.
+CLI is good at discrete setup actions such as sync and adapter install. Login
+is shared between CLI and TUI: the TUI enters a login state itself when
+credentials are missing, and the CLI remains available for scripts and direct
+credential management. The CLI is not good at sustained observation,
+comparison, or review-heavy work.
 
 The TUI exists because the product needs a place where a human can keep state in view and move through it without constantly reissuing commands. That is especially important for:
 
@@ -110,13 +111,12 @@ The current code already exposes a lot of product intent that is worth documenti
 
 The dashboard screen combines a trend chart with a live input feed.
 
-Current details from `src/client/tui/app/dashboard.zig` include:
+Current details include:
 
-- chart title: `Signal Trend`
-- scope switching hint: `w scope`
+- a scoped attestation trail
+- `z` fold/unfold support for the trail panel
 - attestation upload: background upload starts when the TUI launches
 - live session count shown in the header when available
-- lower panel title shape: `Recent Inputs · <scope> · live feed`
 - input detail overlay for reading captured user input in full
 
 That tells you what the dashboard is trying to be: not a static summary page, but an operational screen for current signal and recent activity.
@@ -125,16 +125,15 @@ That tells you what the dashboard is trying to be: not a static summary page, bu
 
 The Artifact screen is a true split-pane browser, not a single scrolling list.
 
-Current behavior in `src/client/tui/app/artifact.zig` includes:
+Current behavior includes:
 
 - left list panel plus right detail panel
-- tab split between `Files` and `Pull Requests`
 - bundle filter on `b`
-- refresh on `r`
 - new draft on `n`
-- tab switching on `[` and `]`
 - focus shift into detail on `Tab`
-- PR filter cycling on `f`
+- tree fold/unfold on `z`
+- selector mode for batch rule actions
+- bundle membership PRs for adding or removing selected rules
 - a separate cursor gutter so list text stays clean
 
 That is why the screenshot matters. It is showing a specific interaction model, not a generic terminal aesthetic.
@@ -145,12 +144,34 @@ The workspace screen is not just another Artifact variant. It has its own status
 
 The current code already includes:
 
-- workspace status layout with top workspace bar
+- workspace status layout with list and detail panes
 - lower split panes
 - tabs for `context` and `rules`
 - create-workspace modal flow
+- optional bundle selection during workspace creation
+- local path binding from the workspace UI
 - row-level draft status markers
 - virtual rows for create-operation drafts
+- selector mode for importing Artifact rules into a workspace
+- selector mode for detaching workspace rules
+
+Directory rows are navigation and grouping controls. Folding a directory keeps
+the last selected file visible in the detail panel, so the user does not lose
+reading context just because the cursor moved to a folder row.
+
+### Settings
+
+Settings is the management surface for account, organization, token,
+workspace, and membership operations.
+
+The Workspaces tab uses a list-detail layout. The left panel selects a
+workspace; the detail panel shows description, bound paths, status, owner, and
+members. From this surface the user can create workspaces, bind the current
+directory, rename or remove a workspace, and manage members.
+
+Member management supports invite creation, role changes, and removal with the
+same modal pattern used elsewhere in the TUI. Errors stay in the modal when the
+operation can be retried.
 
 ### Analysis
 
@@ -158,7 +179,8 @@ The analysis screen is where Hub stats become operator-readable.
 
 The current code renders:
 
-- rule ranking metrics such as `reach`, `trend`, and `last`
+- rule ranking by reference count
+- rank movement relative to the previous snapshot
 - member and rule detail drill-down
 - a remote-analysis availability message when Hub stats have not loaded yet
 

@@ -27,6 +27,8 @@ You own the rules. The agent loads them on demand. Every interaction is traced a
 - **Organization-owned library.** Update a rule once, sync everywhere. No more copying `.cursorrules` between repos or hoping everyone has the latest version.
 - **Built-in observability.** Every agent interaction is recorded as an attestation event — which constraints were loaded, which were applied, and the agent's self-assessment. The event lifecycle (`user_prompt` → `discover`/`load`/`refer` → `agent_report`) gives you data-driven insight into which rules work and which get ignored. Agent adapters enforce turn closure: the stop hook ensures the agent submits a summary before finishing.
 - **Agent-agnostic adapters.** An adapter layer sits between your rules and the agent runtime. Claude Code, Codex, Cursor — same rules, same attestations, no vendor lock-in.
+- **TUI-first workspace control.** The terminal UI handles login, workspace creation, path binding, member management, rule import/detach, bundle browsing, and review from one persistent surface.
+- **Bundle-based rollout.** Bundle filters let teams browse a named subset of the Artifact library, propose bundle membership changes through PRs, and initialize workspaces with a curated rule set.
 - **Self-hosted, zero vendor lock-in.** Runs entirely in your infrastructure with PostgreSQL and Zig.
 
 ## TUI preview
@@ -35,17 +37,13 @@ Dashboard view:
 
 ![TUI dashboard view](assets/screenshots/tui_dashboard.png)
 
-Library view:
+Artifact view:
 
-![TUI library view](assets/screenshots/tui_library.png)
+![TUI artifact view](assets/screenshots/tui_artifact.png)
 
-Analysis view:
+Workspace view:
 
-![TUI analysis view](assets/screenshots/tui_analysis.png)
-
-Watch a short recording:
-
-https://github.com/user-attachments/assets/3ae8473c-dac1-45b5-8a72-6ad21906f235
+![TUI workspace view](assets/screenshots/tui_workspace.png)
 
 ## Documentation
 
@@ -80,7 +78,14 @@ Start the Hub:
 clumsies-hub
 ```
 
-Launch the TUI and sign in when prompted, or use the CLI login wrapper:
+Launch the TUI and sign in when prompted:
+
+```bash
+clumsies
+```
+
+The CLI login wrapper remains available for scripts and direct credential
+management:
 
 ```bash
 clumsies login --hub-url http://127.0.0.1:8400 --username admin
@@ -91,6 +96,9 @@ Bind the current directory to a workspace:
 ```bash
 clumsies init --create my-workspace
 ```
+
+The TUI can also create a workspace, choose an initial bundle, and bind a local
+path from Settings > Workspaces.
 
 Sync local cache:
 
@@ -109,6 +117,10 @@ Launch the TUI:
 ```bash
 clumsies
 ```
+
+Inside the TUI, use Workspace to inspect local context and rules, Artifact to
+browse shared rules and bundles, Review to handle PRs, and Settings to manage
+account, organization, tokens, members, workspaces, and local path bindings.
 
 > [!TIP]
 > For iterative development, `just dev` spins up the Hub, seeds representative
