@@ -7,17 +7,18 @@ This page is for a human team member working inside a workspace. It is not the a
 A normal member flow looks like this:
 
 1. log in to the Hub
-2. bind the current directory to a workspace
-3. sync the local cache
-4. use the CLI for explicit actions
-5. open the TUI when you need a denser view of state
+2. create or choose a workspace
+3. bind a local directory
+4. sync the local cache
+5. use the CLI for explicit actions
+6. keep the TUI open for state-heavy work
 
 That is the member path. The MCP server belongs to the agent runtime path, not to the normal user path.
 
 ## Step 1: connect and log in
 
 Launch `clumsies` to use the TUI. If the client has no usable credentials, the
-TUI should enter a login state instead of requiring a separate command first.
+TUI enters a login state instead of requiring a separate command first.
 
 The CLI login command is still available as a direct credential-management
 entry point:
@@ -37,7 +38,11 @@ If you omit `--username`, the CLI prompts for it.
 
 ## Step 2: bind the repo to a workspace
 
-Use `init` in the repo directory you want to bind.
+The TUI can create a workspace, choose an initial bundle, and bind a local
+path from Settings > Workspaces. This is the preferred interactive flow when
+you are already inside the dashboard.
+
+Use `init` in the repo directory when you want an explicit command.
 
 Create a new workspace:
 
@@ -65,7 +70,17 @@ Current flags:
 | `--ws-id <id>` | bind to an existing workspace |
 | `--bundle <bundle_id>` | associate a bundle during create |
 
-## Step 3: sync local state
+## Step 3: manage workspace rules
+
+Use Artifact when you want to browse the organization library. Select one or
+more rules and import them into the active workspace.
+
+Use Workspace when you want to inspect what the current project has selected.
+In the Rules tab, selector mode can detach selected rules from the workspace.
+Detach removes the workspace selection. It does not delete the rule from
+Artifact.
+
+## Step 4: sync local state
 
 Once the directory is bound, sync the local cache:
 
@@ -75,7 +90,7 @@ clumsies sync
 
 This pulls workspace rules and context into the local runtime cache. It is the step that makes the workspace usable by local tools.
 
-## Step 4: choose the right surface
+## Step 5: choose the right surface
 
 Use the CLI when the job is explicit and short-lived.
 
@@ -87,7 +102,7 @@ Launch the TUI with:
 clumsies
 ```
 
-## Step 5: install adapters when you need host integration
+## Step 6: install adapters when you need host integration
 
 If you want a supported agent host to pick up clumsies-managed runtime behavior, install an adapter.
 

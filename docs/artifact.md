@@ -108,3 +108,19 @@ That means:
 - changing bundle membership does not redefine prompt identity
 
 If a reader mistakes bundle membership for rule ownership, the system starts to look much more arbitrary than it actually is.
+
+## Bundle operations in the TUI
+
+The Artifact screen treats bundle as a browsing and composition mode. `All
+rules` shows the full Artifact library. Choosing a bundle changes the tree to
+that bundle's rule set.
+
+Bundle membership changes still use review. In `All rules`, selector mode can
+choose multiple rules and propose adding them to a bundle. In a bundle view,
+selector mode can choose multiple rules and propose removing them from that
+bundle. The resulting change is a rule PR targeting bundle membership, not a
+silent local edit.
+
+The same bundle object is used by workspace creation. A workspace can start
+with a selected bundle, which seeds its manifest and local cache with that
+bundle's rules.

@@ -72,12 +72,15 @@ the refresh token is valid, the TUI should refresh silently and continue into
 the main workspace.
 
 If no credentials exist, or both access and refresh tokens are unusable, the TUI
-must enter a login state. The login state should eventually prefer a
-browser/device flow, with username/password and invite activation as local or
-self-hosted fallbacks.
+must enter a login state. The current TUI flow supports username/password login
+and invite activation. The login modal is an overlay, so the user does not have
+to leave the TUI to recover an expired or missing session.
 
 Network reachability and authentication are separate states. A successful
 unauthenticated health check must not clear an authentication failure.
+
+Sign out clears local credentials and exits the TUI. A later launch starts from
+the same login flow.
 
 ## CLI behavior
 

@@ -68,6 +68,15 @@ That example makes two design points concrete.
 
 First, both local paths bind to the same workspace ID. Second, the path list is only local resolution state. The server-side workspace still remains the real project identity.
 
+The TUI can manage these bindings from Settings > Workspaces. A user can create
+a workspace, choose an initial bundle, and bind a local directory without
+leaving the TUI. The CLI `init` command remains available for scripts and
+explicit setup.
+
+Bound paths are a list, not a single value. A workspace can have several local
+directories on one machine, and each path resolves back to the same server-side
+workspace ID.
+
 ## Manifest: the current workspace snapshot
 
 The manifest is the bridge between Hub authority and local runtime. In the current implementation it is written to:
@@ -192,6 +201,15 @@ That distinction is what keeps the object model clean:
 - workspace owns project knowledge
 - manifest brings both into one runtime snapshot
 
+The TUI exposes that split directly. From Artifact, a user can select rules and
+import them into the active workspace. From Workspace, a user can select rules
+and detach them from the workspace. Both flows update Hub state and the local
+manifest/cache instead of editing files by hand.
+
+Import means "make this Artifact rule active in this workspace." Detach means
+"stop selecting this Artifact rule for this workspace." Neither operation
+changes the rule's Artifact identity.
+
 ## Drafts and review flow
 
 Workspace also matters because real editing happens around it.
@@ -210,6 +228,11 @@ This is one of the reasons the workspace model exists at all. Without it, rule l
 The workspace boundary is also where membership starts to matter. A workspace is not only a content container. It is an authorization boundary for who can bind, inspect, edit, and review project-specific material.
 
 That is why the server-side workspace object has to stay authoritative. If local folders were treated as identity, permission checks would become guesswork.
+
+The TUI Settings surface includes workspace membership management. Maintainers
+can create invite tokens, change workspace roles, and remove members. These
+operations are checked against Hub policy; the client presents errors in the
+same modal when the user can retry the operation.
 
 ## Why Workspace matters in the docs
 
