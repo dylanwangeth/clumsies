@@ -167,6 +167,23 @@ pub fn writeKv(surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u16
     return row + 1;
 }
 
+pub fn writeKvMax(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    col: u16,
+    row: u16,
+    max_width: u16,
+    key: []const u8,
+    value: []const u8,
+    key_width: u16,
+) u16 {
+    writeTextMax(surface, ctx, col, row, @min(max_width, key_width), key, theme.fg(theme.MUTED));
+    const value_col = col + key_width + 1;
+    const value_width = max_width -| key_width -| 1;
+    writeTextMax(surface, ctx, value_col, row, value_width, value, theme.fg(theme.TEXT));
+    return row + 1;
+}
+
 // Section header: bold accent text, used before vertical KV groups.
 // Returns the next available row (row + 1).
 pub fn writeSectionHeader(surface: *vxfw.Surface, ctx: vxfw.DrawContext, col: u16, row: u16, text: []const u8) u16 {

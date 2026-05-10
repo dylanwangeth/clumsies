@@ -31,6 +31,7 @@ pub const writeWrappedTextMax = draw.writeWrappedTextMax;
 pub const writeRightText = draw.writeRightText;
 pub const writeHeaderRightIfFits = draw.writeHeaderRightIfFits;
 pub const writeKv = draw.writeKv;
+pub const writeKvMax = draw.writeKvMax;
 pub const writeSectionHeader = draw.writeSectionHeader;
 pub const writeCursorMarker = draw.writeCursorMarker;
 
