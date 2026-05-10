@@ -283,6 +283,16 @@ fn localTempIdPrefix(category: DraftCategory) []const u8 {
     };
 }
 
+pub const DraftIdentity = struct {
+    draft_path: []const u8,
+    local_temp_id: ?[]const u8 = null,
+
+    pub fn deinit(self: DraftIdentity, allocator: std.mem.Allocator) void {
+        allocator.free(self.draft_path);
+        if (self.local_temp_id) |id| allocator.free(id);
+    }
+};
+
 /// Create a new draft entry and write its initial content file. Fails
 /// if a draft for the same (category, draft_path) already exists —
 /// callers should use `saveDraftContent` to update an existing draft.
@@ -378,6 +388,55 @@ pub fn updateModifyDraftContent(
     }
 
     return false;
+}
+
+/// Overwrite an existing create draft addressed by any user-facing draft
+/// identifier. Returns null when the id does not refer to a create draft.
+pub fn updateCreateDraftContentById(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    id: []const u8,
+    content: []const u8,
+    description: ?[]const u8,
+) !?DraftIdentity {
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    var maybe_entry: ?*DraftEntry = null;
+    for (index.entries.items) |*entry| {
+        if (entry.category != category) continue;
+        if (std.mem.eql(u8, entry.draft_path, id)) {
+            maybe_entry = entry;
+            break;
+        }
+        if (entry.local_temp_id) |value| {
+            if (std.mem.eql(u8, value, id)) {
+                maybe_entry = entry;
+                break;
+            }
+        }
+    }
+    const entry = maybe_entry orelse return null;
+    if (entry.operation != .create) return null;
+
+    const draft_path = try allocator.dupe(u8, entry.draft_path);
+    errdefer allocator.free(draft_path);
+    const local_temp_id = if (entry.local_temp_id) |temp_id|
+        try allocator.dupe(u8, temp_id)
+    else
+        null;
+    errdefer if (local_temp_id) |temp_id| allocator.free(temp_id);
+
+    try writeDraftFileAbs(allocator, ws_dir, category, entry.draft_path, content);
+    if (description) |desc| entry.description = desc;
+    entry.status = .draft;
+    try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+
+    return .{
+        .draft_path = draft_path,
+        .local_temp_id = local_temp_id,
+    };
 }
 
 /// Remove a draft: delete its content file (if any) and drop its entry
@@ -889,6 +948,44 @@ test "createDraft: generates local temp id for create operation" {
     const entry = index.findCreateByDraftPath("research/NEW.md").?;
     try testing.expect(entry.local_temp_id != null);
     try testing.expect(std.mem.startsWith(u8, entry.local_temp_id.?, "tmp-context-"));
+}
+
+test "updateCreateDraftContentById: overwrites create draft by path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "research/NEW.md",
+        .description = "first",
+    }, "first body");
+
+    const identity = try updateCreateDraftContentById(
+        testing.allocator,
+        root,
+        .context,
+        "research/NEW.md",
+        "second body",
+        "second",
+    ) orelse return error.TestUnexpectedResult;
+    defer identity.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("research/NEW.md", identity.draft_path);
+    try testing.expect(identity.local_temp_id != null);
+
+    const content = try readDraftFile(testing.allocator, root, .context, "research/NEW.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("second body", content);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    const entry = index.findCreateByDraftPath("research/NEW.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(DraftOperation.create, entry.operation);
+    try testing.expectEqualStrings("second", entry.description.?);
 }
 
 test "findCreateByDraftPath: only matches create operation" {
