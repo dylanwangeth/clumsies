@@ -30,7 +30,7 @@ if [ -n "$WORKFLOW_SKILLS_DIR" ] && [ -d "$CACHE_DIR/workflow" ]; then
     filename="$(basename "$filepath")"
     slug="$(echo "$filename" | sed 's/^[0-9]*_//; s/\.md$//; s/_/-/g' | tr '[:upper:]' '[:lower:]')"
     [ -n "$slug" ] || slug="workflow"
-    rel_path="${filepath#"$WORKFLOW_DIR/"}"
+    workflow_name="$(echo "$filename" | sed 's/^[0-9]*_//; s/\.md$//')"
 
     skill_dir="$WORKFLOW_SKILLS_DIR/$slug"
     skill_file="$skill_dir/SKILL.md"
@@ -44,8 +44,11 @@ description: Run $filename workflow
 argument-hint: "[task description]"
 user-invocable: true
 ---
-Call the \`memload\` MCP tool with ids: ["workflow:$rel_path"] and
-knownHashes: {"workflow:$rel_path": ""}
+Call the \`memload\` MCP tool with ids: ["workflow:$workflow_name"] and
+knownHashes: {"workflow:$workflow_name": "<remembered_hash_or_empty_string>"}.
+Use the last hash you remember for this workflow when available; otherwise use an empty string.
+If memload returns changed:false without content, continue from the workflow content you already remember.
+Then follow the loaded workflow carefully.
 
 \$ARGUMENTS
 SKILL

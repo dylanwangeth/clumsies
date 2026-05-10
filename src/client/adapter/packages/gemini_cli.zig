@@ -84,6 +84,15 @@ pub fn renderRuntimeAssets(
         .content = try allocator.dupe(u8, build_options.adapter_gemini_cli_runtime_skill_discover),
     });
     try assets.append(allocator, .{
+        .resource_id = "gemini-cli.skills.clumsies_error_prone",
+        .resource_kind = "plain_file",
+        .relative_path = try scopedRelativePath(allocator, "commands/clumsies-error-prone.toml"),
+        .ownership = "exclusive",
+        .label = "Gemini CLI clumsies-error-prone command",
+        .file_mode = 0o644,
+        .content = try allocator.dupe(u8, build_options.adapter_gemini_cli_runtime_skill_clumsies_error_prone),
+    });
+    try assets.append(allocator, .{
         .resource_id = "gemini-cli.skills.ntmd",
         .resource_kind = "plain_file",
         .relative_path = try scopedRelativePath(allocator, "commands/ntmd.toml"),

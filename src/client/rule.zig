@@ -44,6 +44,11 @@ pub const KnownHash = struct {
     hash: []const u8,
 };
 
+const ResolvedLoadId = struct {
+    requested_id: []const u8,
+    actual_id: []const u8,
+};
+
 pub const LoadedRule = struct {
     id: []const u8,
     kind: RuleKind,
@@ -294,6 +299,110 @@ fn matchesQuery(haystack: []const u8, query: []const u8) bool {
     return false;
 }
 
+const LoadAlias = struct {
+    kind: ?RuleKind,
+    target: []const u8,
+};
+
+fn parseLoadAlias(id: []const u8) ?LoadAlias {
+    if (std.mem.startsWith(u8, id, "workflow:")) return .{ .kind = .workflow, .target = id["workflow:".len..] };
+    if (std.mem.startsWith(u8, id, "rule:")) return .{ .kind = .rule, .target = id["rule:".len..] };
+    if (std.mem.startsWith(u8, id, "context:")) return .{ .kind = .context, .target = id["context:".len..] };
+    if (std.mem.indexOfScalar(u8, id, '/') != null or std.mem.endsWith(u8, id, ".md")) return .{ .kind = null, .target = id };
+    return null;
+}
+
+fn normalizedNameMatches(path: []const u8, target: []const u8) bool {
+    if (std.mem.eql(u8, path, target)) return true;
+
+    const filename = std.fs.path.basename(path);
+    const stem = if (std.mem.endsWith(u8, filename, ".md"))
+        filename[0 .. filename.len - ".md".len]
+    else
+        filename;
+    const trimmed_stem = trimNumericNamePrefix(stem);
+    const trimmed_target = trimNumericNamePrefix(if (std.mem.endsWith(u8, target, ".md"))
+        target[0 .. target.len - ".md".len]
+    else
+        target);
+
+    return normalizedIdentifierEqual(trimmed_stem, trimmed_target);
+}
+
+fn trimNumericNamePrefix(value: []const u8) []const u8 {
+    var idx: usize = 0;
+    while (idx < value.len and std.ascii.isDigit(value[idx])) : (idx += 1) {}
+    while (idx < value.len and (value[idx] == '_' or value[idx] == '-' or value[idx] == ' ')) : (idx += 1) {}
+    return value[idx..];
+}
+
+fn normalizedIdentifierEqual(a: []const u8, b: []const u8) bool {
+    var ai: usize = 0;
+    var bi: usize = 0;
+    while (true) {
+        while (ai < a.len and !std.ascii.isAlphanumeric(a[ai])) : (ai += 1) {}
+        while (bi < b.len and !std.ascii.isAlphanumeric(b[bi])) : (bi += 1) {}
+        if (ai == a.len or bi == b.len) return ai == a.len and bi == b.len;
+        if (std.ascii.toLower(a[ai]) != std.ascii.toLower(b[bi])) return false;
+        ai += 1;
+        bi += 1;
+    }
+}
+
+fn loadAliasMatchesPath(alias: LoadAlias, path: []const u8, kind: RuleKind) bool {
+    if (alias.kind) |expected| {
+        if (expected != kind) return false;
+    }
+    return normalizedNameMatches(path, alias.target);
+}
+
+fn resolveLoadId(
+    id: []const u8,
+    manifest: *const Manifest,
+    draft_index: *const drafts.DraftsIndex,
+) !ResolvedLoadId {
+    if (manifest.rules.contains(id) or manifest.context.contains(id)) return .{ .requested_id = id, .actual_id = id };
+    if (draft_index.findByLocalTempId(id) != null) return .{ .requested_id = id, .actual_id = id };
+
+    const alias = parseLoadAlias(id) orelse return error.UnknownRuleId;
+
+    var rule_it = manifest.rules.iterator();
+    while (rule_it.next()) |entry| {
+        const path = entry.value_ptr.path;
+        const kind = kindFromPath(path) orelse continue;
+        if (loadAliasMatchesPath(alias, path, kind)) return .{
+            .requested_id = id,
+            .actual_id = entry.key_ptr.*,
+        };
+    }
+
+    if (alias.kind == null or alias.kind.? == .context) {
+        var ctx_it = manifest.context.iterator();
+        while (ctx_it.next()) |entry| {
+            if (loadAliasMatchesPath(alias, entry.value_ptr.path, .context)) return .{
+                .requested_id = id,
+                .actual_id = entry.key_ptr.*,
+            };
+        }
+    }
+
+    for (draft_index.entries.items) |entry| {
+        if (entry.operation != .create) continue;
+        const local_temp_id = entry.local_temp_id orelse continue;
+        const kind: RuleKind = switch (entry.category) {
+            .context => .context,
+            .rule => kindFromPath(entry.draft_path) orelse continue,
+            .meta_prompt => continue,
+        };
+        if (loadAliasMatchesPath(alias, entry.draft_path, kind)) return .{
+            .requested_id = id,
+            .actual_id = local_temp_id,
+        };
+    }
+
+    return error.UnknownRuleId;
+}
+
 /// Discover rules and context available for memdisc. Iterates the
 /// local manifest, classifies each entry by path prefix or category, and
 /// applies optional kind/group filters. Reserved paths (META_PROMPT.md) are
@@ -526,17 +635,18 @@ pub fn loadRules(
     }
 
     for (ids) |id| {
-        if (seen.contains(id)) continue;
-        const seen_key = try allocator.dupe(u8, id);
+        const resolved_id = try resolveLoadId(id, &manifest, &draft_index);
+        if (seen.contains(resolved_id.actual_id)) continue;
+        const seen_key = try allocator.dupe(u8, resolved_id.actual_id);
         seen.put(seen_key, {}) catch |err| {
             allocator.free(seen_key);
             return err;
         };
 
-        if (manifest.rules.get(id)) |m_entry| {
+        if (manifest.rules.get(resolved_id.actual_id)) |m_entry| {
             const kind = kindFromPath(m_entry.path) orelse return error.UnknownRuleId;
 
-            const known_hash = knownHashFor(id, known);
+            const known_hash = knownHashFor(resolved_id.actual_id, known) orelse knownHashFor(resolved_id.requested_id, known);
             const draft_entry = draft_index.findByCurrentPath(.rule, m_entry.path);
             if (draft_entry) |entry| {
                 if (entry.operation == .delete) return error.UnknownRuleId;
@@ -564,7 +674,7 @@ pub fn loadRules(
             errdefer if (draft_base) |bh| allocator.free(bh);
 
             try result.items.append(allocator, .{
-                .id = try allocator.dupe(u8, id),
+                .id = try allocator.dupe(u8, resolved_id.actual_id),
                 .kind = kind,
                 .path = try allocator.dupe(u8, m_entry.path),
                 .name = try allocator.dupe(u8, display_name),
@@ -575,8 +685,8 @@ pub fn loadRules(
                 .has_draft = has_draft,
                 .draft_base_hash = draft_base,
             });
-        } else if (manifest.context.get(id)) |m_entry| {
-            const known_hash = knownHashFor(id, known);
+        } else if (manifest.context.get(resolved_id.actual_id)) |m_entry| {
+            const known_hash = knownHashFor(resolved_id.actual_id, known) orelse knownHashFor(resolved_id.requested_id, known);
             const draft_entry = draft_index.findByCurrentPath(.context, m_entry.path);
             if (draft_entry) |entry| {
                 if (entry.operation == .delete) return error.UnknownRuleId;
@@ -604,7 +714,7 @@ pub fn loadRules(
             errdefer if (draft_base) |bh| allocator.free(bh);
 
             try result.items.append(allocator, .{
-                .id = try allocator.dupe(u8, id),
+                .id = try allocator.dupe(u8, resolved_id.actual_id),
                 .kind = .context,
                 .path = try allocator.dupe(u8, m_entry.path),
                 .name = try allocator.dupe(u8, display_name),
@@ -616,7 +726,7 @@ pub fn loadRules(
                 .draft_base_hash = draft_base,
             });
         } else {
-            const draft_entry = draft_index.findByLocalTempId(id) orelse return error.UnknownRuleId;
+            const draft_entry = draft_index.findByLocalTempId(resolved_id.actual_id) orelse return error.UnknownRuleId;
             if (draft_entry.operation != .create) return error.UnknownRuleId;
 
             switch (draft_entry.category) {
@@ -635,6 +745,9 @@ pub fn loadRules(
             const effective_hash = try util_hash.sha256HexAlloc(allocator, content);
             errdefer allocator.free(effective_hash);
 
+            const known_hash = knownHashFor(resolved_id.actual_id, known) orelse knownHashFor(resolved_id.requested_id, known);
+            const changed = known_hash == null or !std.mem.eql(u8, known_hash.?, effective_hash);
+
             const kind: RuleKind = if (draft_entry.category == .context)
                 .context
             else
@@ -645,17 +758,18 @@ pub fn loadRules(
             const group_slice = groupFromPath(draft_entry.draft_path);
 
             try result.items.append(allocator, .{
-                .id = try allocator.dupe(u8, id),
+                .id = try allocator.dupe(u8, resolved_id.actual_id),
                 .kind = kind,
                 .path = try allocator.dupe(u8, draft_entry.draft_path),
                 .name = try allocator.dupe(u8, display_name),
                 .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
                 .hash = effective_hash,
-                .changed = true,
-                .content = content,
+                .changed = changed,
+                .content = if (changed) content else null,
                 .has_draft = true,
                 .draft_base_hash = null,
             });
+            if (!changed) allocator.free(content);
         }
     }
 
@@ -1214,6 +1328,87 @@ test "loadRules: known hash matches returns delta with no content" {
     var result = try loadRules(testing.allocator, root, &.{"p-style"}, &known);
     defer result.deinit(testing.allocator);
 
+    try testing.expect(!result.items.items[0].changed);
+    try testing.expect(result.items.items[0].content == null);
+}
+
+test "loadRules: workflow name alias resolves through manifest" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/workflow");
+    try writeFile(tmp.dir, "cache/rule/workflow/00_GEN_COMMIT_MSG.md", "commit workflow");
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "rules": {
+        \\    "p-commit": {"path": "workflow/00_GEN_COMMIT_MSG.md", "hash": "sha256:workflow"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var result = try loadRules(testing.allocator, root, &.{"workflow:gen commit msg"}, &.{});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.items.items.len);
+    try testing.expectEqualStrings("p-commit", result.items.items[0].id);
+    try testing.expectEqual(RuleKind.workflow, result.items.items[0].kind);
+    try testing.expectEqualStrings("commit workflow", result.items.items[0].content.?);
+}
+
+test "loadRules: alias known hash suppresses unchanged content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/rule/workflow");
+    try writeFile(tmp.dir, "cache/rule/workflow/CLUMSIES_ERROR_PRONE.md", "error workflow");
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "rules": {
+        \\    "p-error": {"path": "workflow/CLUMSIES_ERROR_PRONE.md", "hash": "sha256:error"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const known = [_]KnownHash{.{ .id = "workflow:CLUMSIES_ERROR_PRONE", .hash = "sha256:error" }};
+    var result = try loadRules(testing.allocator, root, &.{"workflow:CLUMSIES_ERROR_PRONE"}, &known);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("p-error", result.items.items[0].id);
+    try testing.expect(!result.items.items[0].changed);
+    try testing.expect(result.items.items[0].content == null);
+}
+
+test "loadRules: create draft alias known hash suppresses unchanged content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try drafts.createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .create,
+        .draft_path = "workflow/CLUMSIES_ERROR_PRONE.md",
+        .local_temp_id = "tmp-rule-error",
+        .description = "error workflow",
+    }, "draft workflow");
+
+    const hash = try util_hash.sha256HexAlloc(testing.allocator, "draft workflow");
+    defer testing.allocator.free(hash);
+    const known = [_]KnownHash{.{ .id = "workflow:clumsies-error-prone", .hash = hash }};
+
+    var result = try loadRules(testing.allocator, root, &.{"workflow:clumsies-error-prone"}, &known);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("tmp-rule-error", result.items.items[0].id);
     try testing.expect(!result.items.items[0].changed);
     try testing.expect(result.items.items[0].content == null);
 }

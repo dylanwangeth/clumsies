@@ -41,7 +41,6 @@ pub fn renderImportedWorkflowSkills(
 
     var it = manifest.rules.iterator();
     while (it.next()) |entry| {
-        const rule_id = entry.key_ptr.*;
         const workflow_path = entry.value_ptr.path;
         if (!std.mem.startsWith(u8, workflow_path, "workflow/")) continue;
         if (!std.mem.endsWith(u8, workflow_path, ".md")) continue;
@@ -52,7 +51,8 @@ pub fn renderImportedWorkflowSkills(
         const slug = try uniqueSlug(allocator, &slug_counts, base_slug);
         defer allocator.free(slug);
 
-        const skill_content = try renderSkillContent(allocator, host, slug, filename, rule_id);
+        const workflow_name = workflowNameFromFilename(filename);
+        const skill_content = try renderSkillContent(allocator, host, slug, filename, workflow_name);
         const relative_path = try skillFilePath(allocator, host, skill_root_display, slug);
         const absolute_path = try skillFilePath(allocator, host, skill_root_absolute, slug);
         const resource_id = try std.fmt.allocPrint(allocator, "{s}.workflow.{s}", .{ resource_prefix, slug });
@@ -150,13 +150,21 @@ fn trimWorkflowPrefix(stem: []const u8) []const u8 {
     return stem[idx..];
 }
 
+fn workflowNameFromFilename(filename: []const u8) []const u8 {
+    const stem = filename[0 .. filename.len - ".md".len];
+    return trimWorkflowPrefix(stem);
+}
+
 fn renderSkillContent(
     allocator: std.mem.Allocator,
     host: Host,
     slug: []const u8,
     filename: []const u8,
-    workflow_id: []const u8,
+    workflow_name: []const u8,
 ) ![]u8 {
+    const workflow_ref = try std.fmt.allocPrint(allocator, "workflow:{s}", .{workflow_name});
+    defer allocator.free(workflow_ref);
+
     return switch (host) {
         .codex => std.fmt.allocPrint(
             allocator,
@@ -168,12 +176,14 @@ fn renderSkillContent(
             \\---
             \\
             \\Call the `memload` MCP tool with ids: ["{s}"] and
-            \\knownHashes: {{"{s}": ""}}.
+            \\knownHashes: {{"{s}": "<remembered_hash_or_empty_string>"}}.
+            \\Use the last hash you remember for this workflow when available; otherwise use an empty string.
+            \\If memload returns changed:false without content, continue from the workflow content you already remember.
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
             \\
         ,
-            .{ slug, filename, filename, workflow_id, workflow_id },
+            .{ slug, filename, filename, workflow_ref, workflow_ref },
         ),
         .claude_code => std.fmt.allocPrint(
             allocator,
@@ -184,11 +194,14 @@ fn renderSkillContent(
             \\user-invocable: true
             \\---
             \\Call the `memload` MCP tool with ids: ["{s}"] and
-            \\knownHashes: {{"{s}": ""}}
+            \\knownHashes: {{"{s}": "<remembered_hash_or_empty_string>"}}.
+            \\Use the last hash you remember for this workflow when available; otherwise use an empty string.
+            \\If memload returns changed:false without content, continue from the workflow content you already remember.
+            \\Then follow the loaded workflow carefully.
             \\
             \\$ARGUMENTS
         ,
-            .{ slug, filename, workflow_id, workflow_id },
+            .{ slug, filename, workflow_ref, workflow_ref },
         ),
         .gemini_cli => std.fmt.allocPrint(
             allocator,
@@ -198,11 +211,13 @@ fn renderSkillContent(
             \\---
             \\
             \\Call the `memload` MCP tool with ids: ["{s}"] and
-            \\knownHashes: {{"{s}": ""}}.
+            \\knownHashes: {{"{s}": "<remembered_hash_or_empty_string>"}}.
+            \\Use the last hash you remember for this workflow when available; otherwise use an empty string.
+            \\If memload returns changed:false without content, continue from the workflow content you already remember.
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
         ,
-            .{ slug, filename, workflow_id, workflow_id },
+            .{ slug, filename, workflow_ref, workflow_ref },
         ),
     };
 }
@@ -232,11 +247,11 @@ test "skillAlreadyInstalled detects existing absolute skill paths" {
     try std.testing.expect(!skillAlreadyInstalled("/tmp/clumsies-skill-does-not-exist"));
 }
 
-test "renderSkillContent uses stable rule ids for memload" {
-    const content = try renderSkillContent(std.testing.allocator, .codex, "gen-commit-msg", "GEN_COMMIT_MSG.md", "p-commit");
+test "renderSkillContent loads workflow by name alias" {
+    const content = try renderSkillContent(std.testing.allocator, .codex, "gen-commit-msg", "GEN_COMMIT_MSG.md", "GEN_COMMIT_MSG");
     defer std.testing.allocator.free(content);
 
-    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"p-commit\"]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "knownHashes: {\"p-commit\": \"\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow:GEN_COMMIT_MSG\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "<remembered_hash_or_empty_string>") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "workflow/GEN_COMMIT_MSG.md") == null);
 }

@@ -240,6 +240,15 @@ fn appendCodexCoreSkills(
     try appendCodexSkill(
         allocator,
         assets,
+        "codex.skills.clumsies_error_prone",
+        "clumsies-error-prone",
+        "Codex clumsies-error-prone skill",
+        skills_root_absolute,
+        build_options.adapter_codex_runtime_skill_clumsies_error_prone,
+    );
+    try appendCodexSkill(
+        allocator,
+        assets,
         "codex.skills.ntmd",
         "ntmd",
         "Codex ntmd skill",
