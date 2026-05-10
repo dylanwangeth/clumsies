@@ -62,6 +62,7 @@ pub fn toPrEntries(
         var base_content: []const u8 = "";
         var proposed_content: []const u8 = "";
         var comments: []const data.CommentEntry = &.{};
+        var changes: []const data.PrChangeEntry = &.{};
         var attestation_refers: u16 = 0;
         var op_type: []const u8 = pr.op_type;
         var op_current_path: []const u8 = "";
@@ -79,6 +80,9 @@ pub fn toPrEntries(
                 op_base_hash = api_state.pr_detail_op_base_hash orelse "";
                 op_index = api_state.pr_detail_op_index;
             }
+        }
+        if (api_state.pr_detail_cache.lookup(.{ .value = pr.pr_id })) |detail| {
+            changes = toPrChangeEntries(alloc, detail.operations, pr.target_kind, pr.target_path, pr.operation_targets);
         }
         if (api_state.pr_comments_cache.lookup(.{ .value = pr.pr_id })) |c| {
             comments = c;
@@ -103,6 +107,7 @@ pub fn toPrEntries(
             .base_content = base_content,
             .proposed_content = proposed_content,
             .comments = comments,
+            .changes = changes,
             .comment_count = comment_count,
             .attestation_refers = attestation_refers,
             .attestation_sessions = 0,
@@ -111,6 +116,7 @@ pub fn toPrEntries(
             .op_current_path = op_current_path,
             .op_new_path = op_new_path,
             .op_index = op_index,
+            .has_conflict = pr.has_conflict,
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch &.{};
@@ -126,6 +132,7 @@ pub fn toReviewPrEntries(
         var base_content: []const u8 = "";
         var proposed_content: []const u8 = "";
         var comments: []const data.CommentEntry = &.{};
+        var changes: []const data.PrChangeEntry = &.{};
         var op_type: []const u8 = pr.op_type;
         var op_current_path: []const u8 = "";
         var op_new_path: []const u8 = "";
@@ -141,6 +148,9 @@ pub fn toReviewPrEntries(
                 op_base_hash = api_state.pr_detail_op_base_hash orelse "";
                 op_index = api_state.pr_detail_op_index;
             }
+        }
+        if (api_state.pr_detail_cache.lookup(.{ .value = pr.pr_id })) |detail| {
+            changes = toPrChangeEntries(alloc, detail.operations, pr.target_kind, pr.target_path, pr.operation_targets);
         }
         if (api_state.pr_comments_cache.lookup(.{ .value = pr.pr_id })) |c| {
             comments = c;
@@ -166,6 +176,7 @@ pub fn toReviewPrEntries(
             .base_content = base_content,
             .proposed_content = proposed_content,
             .comments = comments,
+            .changes = changes,
             .comment_count = comment_count,
             .attestation_refers = 0,
             .attestation_sessions = 0,
@@ -174,9 +185,44 @@ pub fn toReviewPrEntries(
             .op_current_path = op_current_path,
             .op_new_path = op_new_path,
             .op_index = op_index,
+            .has_conflict = pr.has_conflict,
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch &.{};
+}
+
+fn toPrChangeEntries(
+    alloc: std.mem.Allocator,
+    operations: []const @import("clumsies_lib").protocol.collab_api.RulePrChange,
+    fallback_kind: []const u8,
+    fallback_path: []const u8,
+    targets: []const model.OperationTarget,
+) []const data.PrChangeEntry {
+    if (operations.len == 0) return &.{};
+    var list: std.ArrayList(data.PrChangeEntry) = .empty;
+    for (operations, 0..) |op, idx| {
+        const target: ?model.OperationTarget = if (idx < targets.len) targets[idx] else null;
+        const raw_kind = if (target) |t| t.target_kind else fallback_kind;
+        const raw_path = op.path orelse op.current_path orelse if (target) |t| t.target_path else fallback_path;
+        const display_path = changeDisplayPath(alloc, parseTargetKind(raw_kind), raw_path) catch raw_path;
+        list.append(alloc, .{
+            .target_kind = parseTargetKind(raw_kind),
+            .path = display_path,
+            .op_type = op.type,
+            .base_hash = op.base_hash orelse "",
+            .base_content = op.base_content orelse "",
+            .proposed_content = op.content orelse "",
+            .conflict = op.conflict,
+        }) catch continue;
+    }
+    return list.toOwnedSlice(alloc) catch &.{};
+}
+
+fn changeDisplayPath(alloc: std.mem.Allocator, kind: data.PrTargetKind, path: []const u8) std.mem.Allocator.Error![]const u8 {
+    return switch (kind) {
+        .bundle => std.fmt.allocPrint(alloc, "bundles/{s}", .{path}),
+        else => alloc.dupe(u8, path),
+    };
 }
 
 pub fn parseTargetKind(raw: []const u8) data.PrTargetKind {

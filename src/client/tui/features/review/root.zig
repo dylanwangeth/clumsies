@@ -10,6 +10,7 @@ const api = @import("../../api.zig");
 const data = @import("../../models/view_types.zig");
 const cursor_mod = @import("../../widgets/cursor.zig");
 const drafts_mod = @import("../../../drafts.zig");
+const PathTreeState = @import("../../models.zig").path_tree.State(128, 96);
 
 const RuleDetailLayout = struct {
     inner_h_pad: u16,
@@ -46,7 +47,7 @@ pub const ReviewMode = enum { list, detail };
 
 pub const ReviewFocus = enum { filters, queue, detail };
 
-pub const ReviewDetailPane = enum { diff, comments };
+pub const ReviewDetailPane = enum { changes, diff, comments };
 
 pub const PrSort = enum {
     updated,
@@ -102,6 +103,10 @@ pub const State = struct {
     filtered_pr_count: usize = 0,
     total_pr_count: usize = 0,
     selected_pr_idx: usize = 0,
+    changes_tree: PathTreeState = .{},
+    changes_machine: w.TreeList.Machine = .{},
+    changes_scroll_bars: vxfw.ScrollBars,
+    selected_change_idx: usize = 0,
     pr_diff_view: w.ContentView,
     pr_discussion_view: w.ThreadView,
     show_comment_editor: bool = false,
@@ -112,9 +117,15 @@ pub const State = struct {
         return .{
             .content_view = w.ContentView.init(),
             .pr_scroll_bars = w.initCursorScrollBars(theme.PANEL),
+            .changes_scroll_bars = w.initCursorScrollBars(theme.PANEL),
             .pr_diff_view = w.ContentView.init(),
             .pr_discussion_view = w.ThreadView.init(),
         };
+    }
+
+    pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
+        self.changes_tree.deinit(allocator);
+        self.changes_machine.deinit(allocator);
     }
 };
 
@@ -413,6 +424,14 @@ fn handlePrDiffEvent(
     try self.review.pr_diff_view.handleEvent(ctx, event);
 }
 
+fn nextReviewDetailPane(pane: ReviewDetailPane) ReviewDetailPane {
+    return switch (pane) {
+        .changes => .diff,
+        .diff => .comments,
+        .comments => .changes,
+    };
+}
+
 fn handleReviewDetailEvent(
     self: anytype,
     ctx: *vxfw.EventContext,
@@ -436,11 +455,14 @@ fn handleReviewDetailEvent(
         return;
     }
     if (key.matches(vaxis.Key.tab, .{})) {
-        self.review.detail_pane = if (self.review.detail_pane == .diff) .comments else .diff;
+        self.review.detail_pane = nextReviewDetailPane(self.review.detail_pane);
         ctx.consumeAndRedraw();
         return;
     }
     switch (self.review.detail_pane) {
+        .changes => {
+            try handleReviewChangesEvent(self, ctx, key);
+        },
         .diff => {
             if (self.review.pr_diff_view.cache_bytes.len == 0 and self.review.pr_diff_view.draft_bytes == null) return;
             try self.review.pr_diff_view.handleEvent(ctx, event);
@@ -448,6 +470,35 @@ fn handleReviewDetailEvent(
         .comments => {
             try self.review.pr_discussion_view.handleEvent(ctx, event);
         },
+    }
+}
+
+fn handleReviewChangesEvent(self: anytype, ctx: *vxfw.EventContext, key: vaxis.Key) anyerror!void {
+    const row_count = self.review.changes_tree.rowCount();
+    if (row_count == 0) {
+        ctx.consumeEvent();
+        return;
+    }
+    if (key.matches(vaxis.Key.enter, .{})) {
+        if (self.review.changes_machine.toggleDirAtCursor(self.api_state.allocator(), &self.review.changes_tree)) {
+            syncSelectedReviewChange(self);
+            ctx.consumeAndRedraw();
+        }
+        return;
+    }
+    if (key.matches('z', .{})) {
+        self.review.changes_machine.toggleAllDirs(self.api_state.allocator(), &self.review.changes_tree);
+        syncSelectedReviewChange(self);
+        ctx.consumeAndRedraw();
+        return;
+    }
+    const step = w.stepForKey(key, &self.review.changes_scroll_bars.scroll_view) orelse return;
+    self.review.changes_machine.cursor = @intCast(self.review.changes_scroll_bars.scroll_view.cursor);
+    if (self.review.changes_machine.moveBy(&self.review.changes_tree, step)) {
+        self.review.changes_scroll_bars.scroll_view.cursor = @intCast(self.review.changes_machine.cursor);
+        w.scrollCursorIntoView(&self.review.changes_scroll_bars.scroll_view, row_count);
+        syncSelectedReviewChange(self);
+        ctx.consumeAndRedraw();
     }
 }
 
@@ -670,27 +721,111 @@ fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator
         .{ pr.status, pr.author, created_short },
     );
 
+    syncReviewChangeTree(self, ctx, pr);
     syncReviewPrDiffAndComments(self, ctx.arena);
     const body_h: u16 = size.height;
     const body_w: u16 = size.width;
 
-    const comment_w = reviewCommentPanelWidth(body_w);
-    const diff_w: u16 = body_w - comment_w -| 1;
+    const widths = reviewDetailPanelWidths(body_w);
+    const changes_w = widths.changes;
+    const diff_w = widths.diff;
+    const comment_w = widths.comments;
+    const changes_ctx = ctx.withConstraints(.{ .width = changes_w, .height = body_h }, .{ .width = changes_w, .height = body_h });
     const diff_ctx = ctx.withConstraints(.{ .width = diff_w, .height = body_h }, .{ .width = diff_w, .height = body_h });
     const comment_ctx = ctx.withConstraints(.{ .width = comment_w, .height = body_h }, .{ .width = comment_w, .height = body_h });
-    const diff_panel = try drawReviewDiffPanel(self, diff_ctx, title, subtitle);
+    const changes_panel = try drawReviewChangesPanel(self, changes_ctx, pr);
+    const diff_title = try selectedReviewChangeTitle(self, ctx.arena, pr, title);
+    const diff_subtitle = selectedReviewChangeSubtitle(self, pr, subtitle);
+    const diff_panel = try drawReviewDiffPanel(self, diff_ctx, diff_title, diff_subtitle);
     const comment_panel = try drawReviewCommentPanel(self, comment_ctx, pr);
 
-    const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-    children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = diff_panel };
-    children[1] = .{ .origin = .{ .row = 0, .col = @as(i17, @intCast(diff_w + 1)) }, .surface = comment_panel };
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 3);
+    children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = changes_panel };
+    children[1] = .{ .origin = .{ .row = 0, .col = @as(i17, @intCast(changes_w + 1)) }, .surface = diff_panel };
+    children[2] = .{ .origin = .{ .row = 0, .col = @as(i17, @intCast(changes_w + diff_w + 2)) }, .surface = comment_panel };
     surface.children = children;
     return surface;
 }
 
-fn reviewCommentPanelWidth(body_w: u16) u16 {
-    if (body_w < 72) return @min(@as(u16, 36), body_w / 2);
-    return @min(@as(u16, 68), @max(@as(u16, 44), (body_w * 9) / 20));
+pub fn reviewChangesPanelWidth(body_w: u16) u16 {
+    if (body_w < 90) return @min(@as(u16, 28), body_w / 3);
+    return @min(@as(u16, 36), @max(@as(u16, 28), body_w / 5));
+}
+
+pub fn reviewCommentPanelWidth(body_w: u16) u16 {
+    if (body_w < 72) return @min(@as(u16, 32), body_w / 3);
+    return @min(@as(u16, 52), @max(@as(u16, 40), body_w / 3));
+}
+
+pub const ReviewDetailWidths = struct {
+    changes: u16,
+    diff: u16,
+    comments: u16,
+};
+
+pub fn reviewDetailPanelWidths(body_w: u16) ReviewDetailWidths {
+    if (body_w <= 4) return .{ .changes = 1, .diff = 1, .comments = 1 };
+    if (body_w < 72) {
+        const changes_w = @max(@as(u16, 1), body_w / 3);
+        const remaining = body_w -| changes_w -| 2;
+        const comment_w = @max(@as(u16, 1), remaining / 3);
+        return .{
+            .changes = changes_w,
+            .diff = @max(@as(u16, 1), body_w - changes_w -| comment_w -| 2),
+            .comments = comment_w,
+        };
+    }
+    var changes_w = reviewChangesPanelWidth(body_w);
+    var comment_w = reviewCommentPanelWidth(body_w);
+    const min_diff_w: u16 = if (body_w >= 96) 32 else @max(@as(u16, 1), body_w / 4);
+
+    while (changes_w + comment_w + 2 + min_diff_w > body_w and comment_w > 32) {
+        comment_w -= 1;
+    }
+    while (changes_w + comment_w + 2 + min_diff_w > body_w and changes_w > 24) {
+        changes_w -= 1;
+    }
+    const diff_w = body_w - changes_w -| comment_w -| 2;
+    return .{
+        .changes = @max(@as(u16, 1), changes_w),
+        .diff = @max(@as(u16, 1), diff_w),
+        .comments = @max(@as(u16, 1), comment_w),
+    };
+}
+
+fn drawReviewChangesPanel(self: anytype, ctx: vxfw.DrawContext, pr: *const data.PullRequestEntry) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(self.review.detail_pane == .changes), theme.PANEL);
+    w.writeText(&surface, ctx, 2, 0, "Changes", theme.boldOn(theme.PANEL, theme.TEXT));
+    const header = selectedReviewChangeHeader(self, ctx.arena, pr) catch "";
+    if (header.len > 0) {
+        _ = w.writeHeaderRightIfFits(&surface, ctx, 0, 12, header, reviewChangeHeaderStyle(self, pr));
+    }
+
+    const body_origin_row: u16 = 1;
+    const body_origin_col: u16 = 2;
+    const body_h: u16 = size.height -| body_origin_row -| 1;
+    const body_w: u16 = size.width -| body_origin_col -| 1;
+    if (self.review.changes_tree.rowCount() == 0) {
+        w.writeText(&surface, ctx, body_origin_col, body_origin_row, "No changes loaded.", theme.fg(theme.MUTED));
+        return surface;
+    }
+    const body_ctx = ctx.withConstraints(.{ .width = body_w, .height = body_h }, .{ .width = body_w, .height = body_h });
+    const body = try self.review.changes_scroll_bars.widget().draw(body_ctx);
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+    children[0] = .{ .origin = .{ .row = body_origin_row, .col = body_origin_col }, .surface = body };
+    surface.children = children;
+    writeReviewCursorBar(&surface, &self.review.changes_scroll_bars.scroll_view, body_origin_row, body_h);
+    return surface;
+}
+
+fn reviewChangeHeaderStyle(self: anytype, pr: *const data.PullRequestEntry) vaxis.Style {
+    if (selectedReviewChange(pr, self.review.selected_change_idx)) |change| {
+        if (change.conflict) return theme.fgBold(theme.DANGER);
+    }
+    return theme.fg(theme.MUTED);
 }
 
 fn drawReviewDiffPanel(
@@ -740,6 +875,118 @@ fn drawReviewCommentPanel(self: anytype, ctx: vxfw.DrawContext, pr: *const data.
     children[0] = .{ .origin = .{ .row = body_origin_row, .col = 2 }, .surface = body };
     surface.children = children;
     return surface;
+}
+
+fn syncReviewChangeTree(self: anytype, ctx: vxfw.DrawContext, pr: *const data.PullRequestEntry) void {
+    const allocator = self.api_state.allocator();
+    if (pr.changes.len == 0) {
+        self.review.changes_tree.sync(allocator, &.{}, &.{});
+        const empty_widgets = ctx.arena.alloc(vxfw.Widget, 0) catch return;
+        self.review.changes_scroll_bars.scroll_view.children = .{ .slice = empty_widgets };
+        self.review.changes_scroll_bars.estimated_content_height = 0;
+        self.review.selected_change_idx = 0;
+        return;
+    }
+
+    const paths = ctx.arena.alloc([]const u8, pr.changes.len) catch return;
+    const indices = ctx.arena.alloc(usize, pr.changes.len) catch return;
+    for (pr.changes, 0..) |change, idx| {
+        paths[idx] = if (change.path.len > 0)
+            change.path
+        else
+            std.fmt.allocPrint(ctx.arena, "change-{d}", .{idx + 1}) catch "change";
+        indices[idx] = idx;
+    }
+    self.review.changes_tree.sync(allocator, paths, indices);
+
+    const row_count = self.review.changes_tree.rowCount();
+    const rows = ctx.arena.alloc(w.TreeList.RowWidget, row_count) catch return;
+    const widgets = ctx.arena.alloc(vxfw.Widget, row_count) catch return;
+    self.review.changes_machine.cursor = @intCast(self.review.changes_scroll_bars.scroll_view.cursor);
+    self.review.changes_machine.sync(&self.review.changes_tree);
+    for (0..row_count) |row| {
+        const selected = row == self.review.changes_machine.cursor;
+        const row_text = self.review.changes_tree.rowText(row);
+        if (self.review.changes_tree.dirPathAt(row) != null) {
+            rows[row] = .{
+                .item = .{
+                    .text = row_text,
+                    .cursor = selected,
+                    .active = true,
+                    .style = if (selected)
+                        theme.boldOn(theme.PANEL, theme.TEXT)
+                    else
+                        theme.boldOn(theme.PANEL, theme.TEXT_SOFT),
+                },
+                .options = .{ .background = theme.PANEL, .text_col = 0, .show_cursor_marker = false },
+            };
+        } else {
+            rows[row] = .{
+                .item = .{
+                    .text = row_text,
+                    .cursor = selected,
+                    .style = if (selected)
+                        theme.boldOn(theme.PANEL, theme.TEXT)
+                    else
+                        theme.textOn(theme.PANEL, theme.TEXT_SOFT),
+                },
+                .options = .{ .background = theme.PANEL, .text_col = 0, .show_cursor_marker = false },
+            };
+        }
+        widgets[row] = rows[row].widget();
+    }
+    self.review.changes_scroll_bars.scroll_view.children = .{ .slice = widgets };
+    self.review.changes_scroll_bars.estimated_content_height = @intCast(row_count);
+    self.review.changes_scroll_bars.scroll_view.cursor = @intCast(self.review.changes_machine.cursor);
+    syncSelectedReviewChange(self);
+}
+
+fn syncSelectedReviewChange(self: anytype) void {
+    if (self.review.changes_machine.active_leaf) |idx| {
+        if (self.review.selected_change_idx != idx) {
+            self.review.selected_change_idx = idx;
+            self.review.pr_diff_view.scroll_bars.scroll_view.scroll.top = 0;
+        }
+    }
+}
+
+fn selectedReviewChange(pr: *const data.PullRequestEntry, idx: usize) ?*const data.PrChangeEntry {
+    if (pr.changes.len == 0) return null;
+    return &pr.changes[@min(idx, pr.changes.len - 1)];
+}
+
+fn selectedReviewChangeHeader(self: anytype, arena: std.mem.Allocator, pr: *const data.PullRequestEntry) std.mem.Allocator.Error![]const u8 {
+    if (pr.changes.len == 0) return "";
+    if (self.review.changes_tree.dirPathAt(self.review.changes_machine.cursor)) |dir| {
+        return std.fmt.allocPrint(arena, "{d} changes", .{self.review.changes_tree.leafCountUnderDir(dir)});
+    }
+    const change = selectedReviewChange(pr, self.review.selected_change_idx) orelse return "";
+    if (change.conflict) return std.fmt.allocPrint(arena, "{s} · conflict", .{changeOpLabel(change.op_type)});
+    return changeOpLabel(change.op_type);
+}
+
+fn selectedReviewChangeTitle(self: anytype, arena: std.mem.Allocator, pr: *const data.PullRequestEntry, fallback: []const u8) std.mem.Allocator.Error![]const u8 {
+    const change = selectedReviewChange(pr, self.review.selected_change_idx) orelse return fallback;
+    if (change.path.len == 0) return fallback;
+    const op_label = if (change.conflict)
+        try std.fmt.allocPrint(arena, "{s} · conflict", .{changeOpLabel(change.op_type)})
+    else
+        changeOpLabel(change.op_type);
+    return std.fmt.allocPrint(arena, "{s} · {s}", .{ change.path, op_label });
+}
+
+fn selectedReviewChangeSubtitle(self: anytype, pr: *const data.PullRequestEntry, fallback: []const u8) []const u8 {
+    const change = selectedReviewChange(pr, self.review.selected_change_idx) orelse return fallback;
+    if (change.base_hash.len > 0) return change.base_hash;
+    return fallback;
+}
+
+fn changeOpLabel(op_type: []const u8) []const u8 {
+    if (std.mem.eql(u8, op_type, "modify")) return "update";
+    if (std.mem.eql(u8, op_type, "bundle_add")) return "update";
+    if (std.mem.eql(u8, op_type, "bundle_remove")) return "update";
+    if (std.mem.eql(u8, op_type, "bundle_create")) return "create";
+    return op_type;
 }
 
 fn writeReviewCursorBar(
@@ -892,7 +1139,10 @@ fn clearFocusedFilterFacet(self: anytype) void {
 
 fn resetReviewSelection(self: anytype) void {
     self.review.selected_pr_idx = 0;
+    self.review.selected_change_idx = 0;
     self.review.pr_scroll_bars.scroll_view.cursor = 0;
+    self.review.changes_scroll_bars.scroll_view.cursor = 0;
+    self.review.changes_machine.reset();
     self.review.pr_diff_view.scroll_bars.scroll_view.scroll.top = 0;
     self.review.pr_discussion_view.scroll_bars.scroll_view.scroll.top = 0;
     api.state.resetPrDetailState(self.api_state);
@@ -913,7 +1163,10 @@ fn handleReviewPrListEvent(
     if (key.matches(vaxis.Key.enter, .{})) {
         self.review.mode = .detail;
         self.review.focus = .detail;
-        self.review.detail_pane = .diff;
+        self.review.detail_pane = .changes;
+        self.review.selected_change_idx = 0;
+        self.review.changes_scroll_bars.scroll_view.cursor = 0;
+        self.review.changes_machine.reset();
         self.review.pr_diff_view.scroll_bars.scroll_view.scroll.top = 0;
         self.review.pr_discussion_view.scroll_bars.scroll_view.scroll.top = 0;
         fetchSelectedReviewPrDetail(self);
@@ -929,6 +1182,9 @@ fn handleReviewPrListEvent(
     if (self.review.pr_indices[pos]) |idx| {
         if (self.review.selected_pr_idx != idx) {
             self.review.selected_pr_idx = idx;
+            self.review.selected_change_idx = 0;
+            self.review.changes_scroll_bars.scroll_view.cursor = 0;
+            self.review.changes_machine.reset();
             api.state.resetPrDetailState(self.api_state);
             fetchSelectedReviewPrDetail(self);
         }
@@ -1234,7 +1490,7 @@ pub fn syncReviewPrWidgets(self: anytype) void {
             .{ .text = target_label, .flex = 0, .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT), .gap_after = 0 },
             .{ .text = pr.title, .flex = 1, .min_width = 12, .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT) },
             .{ .text = status, .flex = 0, .min_width = 8, .alignment = .right, .style = reviewStatusStyle(pr.status) },
-            .{ .text = op_label, .flex = 0, .min_width = 10, .alignment = .right, .style = reviewOpStyle() },
+            .{ .text = op_label, .flex = 0, .min_width = 10, .alignment = .right, .style = reviewOpStyle(pr.has_conflict) },
             .{ .text = comments_label, .flex = 0, .min_width = 10, .alignment = .right, .style = reviewCommentsStyle() },
         };
         self.review.pr_table_rows[pi] = .{
@@ -1297,7 +1553,8 @@ fn reviewStatusStyle(status: []const u8) vaxis.Style {
     return theme.fgBold(theme.MUTED);
 }
 
-fn reviewOpStyle() vaxis.Style {
+fn reviewOpStyle(has_conflict: bool) vaxis.Style {
+    if (has_conflict) return theme.fgBold(theme.DANGER);
     return theme.fg(theme.TEXT);
 }
 
@@ -1306,6 +1563,7 @@ fn reviewCommentsStyle() vaxis.Style {
 }
 
 fn reviewOpLabel(allocator: std.mem.Allocator, pr: data.PullRequestEntry) std.mem.Allocator.Error![]const u8 {
+    if (pr.has_conflict) return allocator.dupe(u8, "conflict");
     if (pr.target_kind == .bundle) {
         const op_label = reviewBundleOpLabel(pr.op_type);
         if (op_label.len > 0) return allocator.dupe(u8, op_label);
@@ -1385,6 +1643,14 @@ pub fn syncReviewPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) 
 }
 
 fn syncReviewDetailRows(self: anytype, allocator: std.mem.Allocator, pr: *const data.PullRequestEntry) void {
+    if (selectedReviewChange(pr, self.review.selected_change_idx)) |change| {
+        const proposed = if (change.proposed_content.len > 0 or change.target_kind != .bundle)
+            change.proposed_content
+        else
+            std.fmt.allocPrint(allocator, "bundle: {s}\noperation: {s}\n", .{ change.path, changeOpLabel(change.op_type) }) catch "";
+        self.review.pr_diff_view.syncBytes(allocator, change.base_content, proposed);
+        return;
+    }
     self.review.pr_diff_view.syncBytes(allocator, pr.base_content, pr.proposed_content);
 }
 

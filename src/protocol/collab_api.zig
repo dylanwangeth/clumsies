@@ -11,6 +11,7 @@ pub const RulePrListItem = struct {
     operation_count: i64 = 0,
     op_type: []const u8 = "",
     comment_count: i64 = 0,
+    has_conflict: bool = false,
 };
 
 pub const RulePrListResponse = struct {
@@ -26,6 +27,7 @@ pub const RulePrChange = struct {
     path: ?[]const u8 = null,
     base_content: ?[]const u8 = null,
     current_path: ?[]const u8 = null,
+    conflict: bool = false,
 };
 
 pub const RulePrUsageSummary = struct {
@@ -76,6 +78,7 @@ pub const ReviewPrListItem = struct {
     operation_count: i64 = 0,
     op_type: []const u8 = "",
     comment_count: i64 = 0,
+    has_conflict: bool = false,
 };
 
 pub const ReviewPrListResponse = struct {

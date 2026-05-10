@@ -72,6 +72,7 @@ pub const RulePr = struct {
     operation_count: i32 = 0,
     op_type: []const u8 = "",
     comment_count: i32 = 0,
+    has_conflict: bool = false,
 };
 
 pub const OperationTarget = struct {
