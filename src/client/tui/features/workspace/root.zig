@@ -951,11 +951,12 @@ pub fn syncWsRows(self: anytype) void {
     switch (self.workspace.tab) {
         .context => {
             const context_count = if (live_ws) |ws_d| ws_d.workspace_context.len else 0;
-            item_count = context_count;
             if (live_ws) |ws_d| {
-                for (0..item_count) |i| {
-                    paths_buf[i] = ws_d.workspace_context[i].path;
-                    orig_idx[i] = i;
+                for (ws_d.workspace_context, 0..) |item, i| {
+                    if (!self.searchMatches(item.path)) continue;
+                    paths_buf[item_count] = item.path;
+                    orig_idx[item_count] = i;
+                    item_count += 1;
                 }
             }
             // Append local create-op context drafts as virtual rows.
@@ -964,6 +965,7 @@ pub fn syncWsRows(self: anytype) void {
             // create-only drafts.
             const create_paths = self.drafts.create_context_paths;
             for (create_paths, 0..) |path, k| {
+                if (!self.searchMatches(path)) continue;
                 paths_buf[item_count] = path;
                 orig_idx[item_count] = context_count + k;
                 item_count += 1;
@@ -972,11 +974,12 @@ pub fn syncWsRows(self: anytype) void {
         .rules => {
             const rule_count = if (live_ws) |ws_d| ws_d.workspace_rules.len else 0;
             if (live_ws) |ws_d| {
-                item_count = rule_count;
-                for (0..item_count) |i| {
-                    const wp = ws_d.workspace_rules[i];
-                    paths_buf[i] = self.pathForWorkspaceRule(wp);
-                    orig_idx[i] = i;
+                for (ws_d.workspace_rules, 0..) |wp, i| {
+                    const path = self.pathForWorkspaceRule(wp);
+                    if (!self.searchMatches(path)) continue;
+                    paths_buf[item_count] = path;
+                    orig_idx[item_count] = i;
+                    item_count += 1;
                 }
             }
             // Append local create-op rule drafts as virtual rows so
@@ -984,6 +987,7 @@ pub fn syncWsRows(self: anytype) void {
             // hub manifest knows about them.
             const create_paths = self.drafts.create_rule_paths;
             for (create_paths, 0..) |path, k| {
+                if (!self.searchMatches(path)) continue;
                 paths_buf[item_count] = path;
                 orig_idx[item_count] = rule_count + k;
                 item_count += 1;

@@ -131,6 +131,30 @@ fn keyTextLen(key: vaxis.Key) usize {
     return 0;
 }
 
+fn containsSearchText(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (std.mem.indexOf(u8, haystack, needle) != null) return true;
+    if (needle.len > haystack.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (asciiEqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ca, cb| {
+        if (asciiLower(ca) != asciiLower(cb)) return false;
+    }
+    return true;
+}
+
+fn asciiLower(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + ('a' - 'A') else c;
+}
+
 const top_tabs = [_]TopModule{ .dashboard, .workspace, .artifact, .review, .analysis };
 
 const WORKSPACE_METADATA_REFRESH_TICKS = 600;
@@ -186,6 +210,9 @@ pub const Shell = struct {
     last_workspace_id: ?[]const u8 = null,
     workspace_pref_applied: bool = false,
     tick_count: u64 = 0,
+    search_active: bool = false,
+    search_buf: [160]u8 = .{0} ** 160,
+    search_len: usize = 0,
     login_hub_url_buf: [160]u8 = .{0} ** 160,
     login_hub_url_len: usize = 0,
     login_username_buf: [80]u8 = .{0} ** 80,
@@ -437,6 +464,11 @@ pub const Shell = struct {
                     return;
                 }
 
+                if (self.search_active) {
+                    self.handleSearchKey(ctx, key);
+                    return;
+                }
+
                 // Global quit
                 if (key.matches('c', .{ .ctrl = true })) {
                     log.info("quit_direct", .{});
@@ -457,6 +489,13 @@ pub const Shell = struct {
                 if (key.matches('?', .{})) {
                     log.info("help_open", .{});
                     self.show_help = true;
+                    ctx.consumeAndRedraw();
+                    return;
+                }
+
+                if (self.searchAvailable() and key.matches('/', .{})) {
+                    log.info("search_open module={s}", .{moduleName(self.selected_module)});
+                    self.search_active = true;
                     ctx.consumeAndRedraw();
                     return;
                 }
@@ -835,7 +874,7 @@ pub const Shell = struct {
 
     fn drawHeader(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
-        w.fillSurface(&surface, theme.PANEL_ALT);
+        w.fillSurface(&surface, theme.PANEL);
 
         // Row 0: Accent band with org/user context
         w.paintBand(&surface, 0, theme.ACCENT, theme.PANEL);
@@ -863,8 +902,26 @@ pub const Shell = struct {
             col = w.drawTabBadge(&surface, ctx, 2, col, label, is_active);
             col +|= 1;
         }
+        self.drawSearchBar(&surface, ctx, 2, col +| 1);
 
         return surface;
+    }
+
+    fn drawSearchBar(
+        self: *Shell,
+        surface: *vxfw.Surface,
+        ctx: vxfw.DrawContext,
+        row: u16,
+        min_col: u16,
+    ) void {
+        if (!self.searchAvailable()) return;
+        var bar = w.SearchBar{
+            .buf = &self.search_buf,
+            .len = &self.search_len,
+            .active = self.search_active,
+            .placeholder = self.searchPlaceholder(),
+        };
+        bar.drawRight(surface, ctx, row, min_col, 34);
     }
 
     fn drawBody(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -1056,6 +1113,76 @@ pub const Shell = struct {
         };
     }
 
+    fn searchAvailable(self: *const Shell) bool {
+        if (self.show_settings) return false;
+        return self.selected_module == .workspace or self.selected_module == .artifact;
+    }
+
+    fn searchPlaceholder(self: *const Shell) []const u8 {
+        return switch (self.selected_module) {
+            .workspace => "Search context or rules...",
+            .artifact => "Search rules...",
+            else => "Search",
+        };
+    }
+
+    pub fn searchQuery(self: *const Shell) []const u8 {
+        if (!self.searchAvailable()) return "";
+        return std.mem.trim(u8, self.search_buf[0..self.search_len], " \t\r\n");
+    }
+
+    pub fn searchMatches(self: *const Shell, text: []const u8) bool {
+        return containsSearchText(text, self.searchQuery());
+    }
+
+    fn handleSearchKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (key.matches('c', .{ .ctrl = true })) {
+            log.info("quit_direct", .{});
+            ctx.consumeEvent();
+            ctx.quit = true;
+            return;
+        }
+        if (!self.searchAvailable()) {
+            self.search_active = false;
+            ctx.consumeAndRedraw();
+            return;
+        }
+
+        var bar = w.SearchBar{
+            .buf = &self.search_buf,
+            .len = &self.search_len,
+            .active = true,
+        };
+        const before = self.search_len;
+        switch (bar.handleKey(key)) {
+            .submit => {
+                self.search_active = false;
+                ctx.consumeAndRedraw();
+            },
+            .cancel => {
+                self.search_active = false;
+                if (self.search_len != 0) {
+                    self.search_len = 0;
+                    self.refreshSearchResults();
+                }
+                ctx.consumeAndRedraw();
+            },
+            .consumed => {
+                if (self.search_len != before) self.refreshSearchResults();
+                ctx.consumeAndRedraw();
+            },
+            .ignored => ctx.consumeEvent(),
+        }
+    }
+
+    fn refreshSearchResults(self: *Shell) void {
+        switch (self.selected_module) {
+            .artifact => artifact_panel.syncArtifactTree(self),
+            .workspace => workspace_panel.syncWsRows(self),
+            else => {},
+        }
+    }
+
     fn hasNativeCursorInput(self: *const Shell) bool {
         if (self.shouldShowLoginPanel()) return true;
         if (self.review.show_comment_editor) return true;
@@ -1064,6 +1191,7 @@ pub const Shell = struct {
         if (self.drafts.show_new_draft_form) return true;
         if (self.drafts.show_pr_composer) return self.drafts.pr_composer_focus == .title or self.drafts.pr_composer_focus == .body;
         if (self.workspace.show_create) return self.workspace.create_focus == .name or self.workspace.create_focus == .description;
+        if (self.search_active) return true;
         return false;
     }
 
@@ -6841,6 +6969,7 @@ pub const Shell = struct {
     fn selectTab(self: *Shell, ctx: *vxfw.EventContext, tab: TopModule) void {
         const previous = self.selected_module;
         self.selected_module = tab;
+        if (!self.searchAvailable()) self.search_active = false;
         log.info("tab_select from={s} to={s}", .{ moduleName(previous), moduleName(tab) });
         self.analysis.show_member_detail = false;
         self.analysis.expanded_rule = null;
@@ -6879,6 +7008,7 @@ pub const Shell = struct {
         if (self.review.show_comment_editor) return "comment_editor";
         if (self.drafts.show_pr_composer) return "pr_composer";
         if (self.drafts.show_new_draft_form) return "new_draft_form";
+        if (self.search_active) return "search";
         if (self.show_settings) return "settings";
         return "module";
     }
