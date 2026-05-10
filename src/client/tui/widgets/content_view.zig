@@ -149,7 +149,12 @@ fn appendWrappedDiffLines(
         const lineno = row.new_line orelse row.old_line orelse 0;
         const prefix = try std.fmt.allocPrint(arena, "{d:>4} {c} ", .{ lineno, marker });
         const continuation = "       ";
-        try appendWrappedLine(out, arena, ctx, prefix, continuation, row.text, gutterStyle(), gutterRowStyle(row.marker), max_width);
+        const row_style = gutterRowStyle(row.marker);
+        const prefix_style = switch (row.marker) {
+            .unchanged => gutterStyle(),
+            .added, .removed => row_style,
+        };
+        try appendWrappedLine(out, arena, ctx, prefix, continuation, row.text, prefix_style, row_style, max_width);
     }
 }
 
