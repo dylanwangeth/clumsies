@@ -5,7 +5,7 @@ const theme = @import("../theme.zig");
 const draw = @import("draw.zig");
 
 const CAPACITY = 8;
-const TRANSIENT_TICKS = 100;
+const TRANSIENT_TICKS = 67;
 const WIDTH: u16 = 56;
 const MIN_WIDTH: u16 = 28;
 const MAX_VISIBLE_HEIGHT: u16 = 18;
