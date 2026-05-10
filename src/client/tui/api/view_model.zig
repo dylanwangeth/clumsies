@@ -204,10 +204,13 @@ fn toPrChangeEntries(
         const target: ?model.OperationTarget = if (idx < targets.len) targets[idx] else null;
         const raw_kind = if (target) |t| t.target_kind else fallback_kind;
         const raw_path = op.path orelse op.current_path orelse if (target) |t| t.target_path else fallback_path;
-        const display_path = changeDisplayPath(alloc, parseTargetKind(raw_kind), raw_path) catch raw_path;
+        const target_kind = parseTargetKind(raw_kind);
+        const display_path = changeDisplayPath(alloc, target_kind, raw_path) catch raw_path;
         list.append(alloc, .{
-            .target_kind = parseTargetKind(raw_kind),
+            .target_kind = target_kind,
             .path = display_path,
+            .bundle_name = if (target_kind == .bundle) raw_path else "",
+            .rule_path = op.current_path orelse "",
             .op_type = op.type,
             .base_hash = op.base_hash orelse "",
             .base_content = op.base_content orelse "",

@@ -432,12 +432,26 @@ fn nextReviewDetailPane(pane: ReviewDetailPane) ReviewDetailPane {
     };
 }
 
+fn nextReviewDetailPaneForPr(pr: *const data.PullRequestEntry, pane: ReviewDetailPane) ReviewDetailPane {
+    if (!isBundleReviewPr(pr)) return nextReviewDetailPane(pane);
+    return switch (pane) {
+        .changes, .comments => .diff,
+        .diff => .comments,
+    };
+}
+
 fn handleReviewDetailEvent(
     self: anytype,
     ctx: *vxfw.EventContext,
     event: vxfw.Event,
     key: vaxis.Key,
 ) anyerror!void {
+    const current_pr = selectedReviewPr(self);
+    if (current_pr) |pr| {
+        if (isBundleReviewPr(pr) and self.review.detail_pane == .changes) {
+            self.review.detail_pane = .diff;
+        }
+    }
     if (key.matches('a', .{})) {
         self.doPrAction("accept");
         ctx.consumeAndRedraw();
@@ -455,7 +469,10 @@ fn handleReviewDetailEvent(
         return;
     }
     if (key.matches(vaxis.Key.tab, .{})) {
-        self.review.detail_pane = nextReviewDetailPane(self.review.detail_pane);
+        self.review.detail_pane = if (current_pr) |pr|
+            nextReviewDetailPaneForPr(pr, self.review.detail_pane)
+        else
+            nextReviewDetailPane(self.review.detail_pane);
         ctx.consumeAndRedraw();
         return;
     }
@@ -471,6 +488,12 @@ fn handleReviewDetailEvent(
             try self.review.pr_discussion_view.handleEvent(ctx, event);
         },
     }
+}
+
+fn selectedReviewPr(self: anytype) ?*const data.PullRequestEntry {
+    const prs = self.getReviewPrs();
+    if (prs.len == 0) return null;
+    return &prs[@min(self.review.selected_pr_idx, prs.len - 1)];
 }
 
 fn handleReviewChangesEvent(self: anytype, ctx: *vxfw.EventContext, key: vaxis.Key) anyerror!void {
@@ -725,6 +748,9 @@ fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator
     syncReviewPrDiffAndComments(self, ctx.arena);
     const body_h: u16 = size.height;
     const body_w: u16 = size.width;
+    if (isBundleReviewPr(pr)) {
+        return drawBundleReviewDetailPanel(self, ctx, pr, body_w, body_h);
+    }
 
     const widths = reviewDetailPanelWidths(body_w);
     const changes_w = widths.changes;
@@ -743,6 +769,35 @@ fn drawReviewDetailPanel(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator
     children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = changes_panel };
     children[1] = .{ .origin = .{ .row = 0, .col = @as(i17, @intCast(changes_w + 1)) }, .surface = diff_panel };
     children[2] = .{ .origin = .{ .row = 0, .col = @as(i17, @intCast(changes_w + diff_w + 2)) }, .surface = comment_panel };
+    surface.children = children;
+    return surface;
+}
+
+fn drawBundleReviewDetailPanel(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+    pr: *const data.PullRequestEntry,
+    body_w: u16,
+    body_h: u16,
+) std.mem.Allocator.Error!vxfw.Surface {
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), ctx.max.size());
+    w.fillSurface(&surface, theme.PANEL);
+
+    const comment_w = reviewCommentPanelWidth(body_w);
+    const change_w = body_w -| comment_w -| 1;
+    const change_ctx = ctx.withConstraints(.{ .width = change_w, .height = body_h }, .{ .width = change_w, .height = body_h });
+    const comment_ctx = ctx.withConstraints(.{ .width = comment_w, .height = body_h }, .{ .width = comment_w, .height = body_h });
+    const op_label = bundlePrOpLabel(pr);
+    const bundle_title = if (op_label.len > 0)
+        try std.fmt.allocPrint(ctx.arena, "Bundle Change · {s}", .{op_label})
+    else
+        "Bundle Change";
+    const change_panel = try drawReviewDiffPanel(self, change_ctx, bundle_title, bundleNameForPr(pr));
+    const comment_panel = try drawReviewCommentPanel(self, comment_ctx, pr);
+
+    const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+    children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = change_panel };
+    children[1] = .{ .origin = .{ .row = 0, .col = @as(i17, @intCast(change_w + 1)) }, .surface = comment_panel };
     surface.children = children;
     return surface;
 }
@@ -1163,7 +1218,11 @@ fn handleReviewPrListEvent(
     if (key.matches(vaxis.Key.enter, .{})) {
         self.review.mode = .detail;
         self.review.focus = .detail;
-        self.review.detail_pane = .changes;
+        const pr = selectedReviewPr(self);
+        self.review.detail_pane = if (pr) |p|
+            if (isBundleReviewPr(p)) .diff else .changes
+        else
+            .changes;
         self.review.selected_change_idx = 0;
         self.review.changes_scroll_bars.scroll_view.cursor = 0;
         self.review.changes_machine.reset();
@@ -1643,6 +1702,11 @@ pub fn syncReviewPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) 
 }
 
 fn syncReviewDetailRows(self: anytype, allocator: std.mem.Allocator, pr: *const data.PullRequestEntry) void {
+    if (isBundleReviewPr(pr)) {
+        const summary = buildBundleReviewSummary(allocator, pr) catch "";
+        self.review.pr_diff_view.syncBytes(allocator, summary, null);
+        return;
+    }
     if (selectedReviewChange(pr, self.review.selected_change_idx)) |change| {
         const proposed = if (change.proposed_content.len > 0 or change.target_kind != .bundle)
             change.proposed_content
@@ -1652,6 +1716,99 @@ fn syncReviewDetailRows(self: anytype, allocator: std.mem.Allocator, pr: *const 
         return;
     }
     self.review.pr_diff_view.syncBytes(allocator, pr.base_content, pr.proposed_content);
+}
+
+fn isBundleReviewPr(pr: *const data.PullRequestEntry) bool {
+    if (pr.target_kind == .bundle) return true;
+    for (pr.changes) |change| {
+        if (change.target_kind == .bundle) return true;
+    }
+    return false;
+}
+
+fn bundleNameForPr(pr: *const data.PullRequestEntry) []const u8 {
+    for (pr.changes) |change| {
+        if (change.bundle_name.len > 0) return change.bundle_name;
+    }
+    if (pr.target_path.len > 0) return pr.target_path;
+    return pr.title;
+}
+
+fn bundlePrOpLabel(pr: *const data.PullRequestEntry) []const u8 {
+    var has_create = false;
+    var has_add = false;
+    var has_remove = false;
+    for (pr.changes) |change| {
+        if (std.mem.eql(u8, change.op_type, "bundle_create")) has_create = true;
+        if (std.mem.eql(u8, change.op_type, "bundle_add")) has_add = true;
+        if (std.mem.eql(u8, change.op_type, "bundle_remove")) has_remove = true;
+    }
+    if (has_create) return "create";
+    if (has_add or has_remove) return "update";
+    return changeOpLabel(pr.op_type);
+}
+
+fn buildBundleReviewSummary(
+    allocator: std.mem.Allocator,
+    pr: *const data.PullRequestEntry,
+) std.mem.Allocator.Error![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(allocator, "Bundle\n");
+    try out.appendSlice(allocator, bundleNameForPr(pr));
+    try out.appendSlice(allocator, "\n\n");
+
+    const label = bundlePrOpLabel(pr);
+    if (label.len > 0) {
+        try out.appendSlice(allocator, "Operation\n");
+        try out.appendSlice(allocator, label);
+        try out.appendSlice(allocator, "\n\n");
+    }
+
+    const add_count = countBundleOps(pr, "bundle_add");
+    const remove_count = countBundleOps(pr, "bundle_remove");
+    if (std.mem.eql(u8, label, "create")) {
+        try appendBundleRuleSection(allocator, &out, "Included rules", pr, "bundle_add", add_count);
+    } else {
+        try appendBundleRuleSection(allocator, &out, "Added rules", pr, "bundle_add", add_count);
+        try out.appendSlice(allocator, "\n");
+        try appendBundleRuleSection(allocator, &out, "Removed rules", pr, "bundle_remove", remove_count);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn countBundleOps(pr: *const data.PullRequestEntry, op_type: []const u8) usize {
+    var count: usize = 0;
+    for (pr.changes) |change| {
+        if (std.mem.eql(u8, change.op_type, op_type)) count += 1;
+    }
+    return count;
+}
+
+fn appendBundleRuleSection(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    title: []const u8,
+    pr: *const data.PullRequestEntry,
+    op_type: []const u8,
+    count: usize,
+) std.mem.Allocator.Error!void {
+    try out.appendSlice(allocator, title);
+    try out.appendSlice(allocator, "\n");
+    if (count == 0) {
+        try out.appendSlice(allocator, "none\n");
+        return;
+    }
+    for (pr.changes) |change| {
+        if (!std.mem.eql(u8, change.op_type, op_type)) continue;
+        const rule_path = if (change.rule_path.len > 0) change.rule_path else change.base_hash;
+        if (std.mem.eql(u8, op_type, "bundle_remove")) {
+            try out.appendSlice(allocator, "- ");
+        } else {
+            try out.appendSlice(allocator, "+ ");
+        }
+        try out.appendSlice(allocator, rule_path);
+        try out.appendSlice(allocator, "\n");
+    }
 }
 
 fn syncReviewDiscussionView(
