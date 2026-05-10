@@ -166,6 +166,22 @@ pub fn buildAdaptPlan(
 
         if (existing) |content| {
             const managed_update = isManagedPlainFileUpdate(allocator, loaded_opt, asset, absolute_path, content);
+            if (managed_update == null and is_update and isAdoptableCoreSkillAsset(asset, content)) {
+                try steps.append(allocator, .{
+                    .step_id = try allocator.dupe(u8, asset.resource_id),
+                    .resource_id = try allocator.dupe(u8, asset.resource_id),
+                    .resource_kind = asset.resource_kind,
+                    .relative_path = try allocator.dupe(u8, asset.relative_path),
+                    .absolute_path = if (asset.absolute_path) |_| try allocator.dupe(u8, absolute_path) else null,
+                    .ownership = asset.ownership,
+                    .action = if (std.mem.eql(u8, content, asset.content)) "keep" else "update",
+                    .label = try allocator.dupe(u8, asset.label),
+                    .content = try allocator.dupe(u8, asset.content),
+                    .managed_content = null,
+                    .file_mode = asset.file_mode,
+                });
+                continue;
+            }
             if (isSharedWorkflowSkillAsset(asset) and managed_update == null) {
                 try steps.append(allocator, .{
                     .step_id = try allocator.dupe(u8, asset.resource_id),
@@ -327,6 +343,20 @@ fn isManagedPlainFileUpdate(
 
 fn isSharedWorkflowSkillAsset(asset: model.RenderedAsset) bool {
     return std.mem.indexOf(u8, asset.resource_id, ".skills.workflow.") != null;
+}
+
+fn isAdoptableCoreSkillAsset(asset: model.RenderedAsset, existing_content: []const u8) bool {
+    if (!std.mem.eql(u8, asset.resource_kind, "plain_file")) return false;
+    if (std.mem.indexOf(u8, asset.resource_id, ".skills.") == null) return false;
+    if (isSharedWorkflowSkillAsset(asset)) return false;
+
+    const parent = std.fs.path.dirname(asset.relative_path) orelse return false;
+    const slug = std.fs.path.basename(parent);
+    if (slug.len == 0 or std.mem.eql(u8, slug, "skills")) return false;
+
+    var name_buf: [128]u8 = undefined;
+    const expected_name = std.fmt.bufPrint(&name_buf, "name: {s}", .{slug}) catch return false;
+    return std.mem.indexOf(u8, existing_content, expected_name) != null;
 }
 
 fn resourcePathMatches(

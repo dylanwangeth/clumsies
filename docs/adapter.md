@@ -78,6 +78,14 @@ In the current implementation, the adapter manages at least:
 
 The point is not just that Codex and Claude Code use different file names. The point is that Adapter absorbs those host differences behind one command surface.
 
+## Skills are workflow proxies
+
+Clumsies skills should stay thin. A skill installed into Codex, Claude Code, or another host is only a host-native entry point that loads a Clumsies workflow through MCP and then follows it.
+
+That indirection is the design advantage. The workflow content remains an Artifact object, so the team can update the real process through the normal review flow without asking every user to reinstall or hand-edit host skill files. The adapter only needs to keep the proxy stable.
+
+Workflow proxies should load by workflow name or path alias, such as `workflow:GEN_COMMIT_MSG`, rather than requiring the generated skill author to know a Hub `p-*` id. The proxy should pass a remembered hash to `memload` when it has one, and use an empty string only when the hash is unknown.
+
 ## Install, update, remove
 
 Adapter is also responsible for lifecycle discipline. It needs to detect available host capabilities, plan what should be installed, write only the managed resources it owns, update those resources later, and remove them cleanly.

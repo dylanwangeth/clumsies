@@ -145,6 +145,28 @@ pub const CODING_WORKFLOW_CONTENT =
     \\- Keep commits buildable and split by concern.
 ;
 
+pub const CLUMSIES_ERROR_PRONE_WORKFLOW_CONTENT =
+    \\# Clumsies Error Prone
+    \\
+    \\Workflow for recording recurring or high-risk agent mistakes as durable Clumsies Context.
+    \\
+    \\## Steps
+    \\
+    \\1. Understand the recurring mistake, not just the latest incident.
+    \\2. Discover existing pitfall context with `memdisc({kind: "context", query: "<topic>"})`.
+    \\3. Prefer updating an existing `pitfall/` context when the pattern already exists.
+    \\4. Create a new context under `pitfall/` only when the mistake is materially different.
+    \\5. Use `artifact()` with `resource: "context"`; do not write pitfall files directly.
+    \\
+    \\## Pitfall content
+    \\
+    \\Each pitfall should include the recurring error pattern, the trigger or situation where it happens, why it is dangerous or costly, the correct behavior, and a concrete verification step.
+    \\
+    \\## Writing style
+    \\
+    \\Keep the text factual and reusable. Do not write an apology, transcript, or one-off incident report.
+;
+
 pub const TRACE_DISCIPLINE_CONTENT =
     \\# Attestation Discipline
     \\
@@ -233,6 +255,7 @@ pub const USERS = [_]UserFixture{
 pub const RULES = [_]RuleFixture{
     .{ .id = "p-seed-meta", .path = "META_PROMPT.md", .content = META_PROMPT_CONTENT },
     .{ .id = "p-seed-coding", .path = "workflow/00_CODING.md", .content = CODING_WORKFLOW_CONTENT },
+    .{ .id = "p-seed-clumsies-error-prone", .path = "workflow/CLUMSIES_ERROR_PRONE.md", .content = CLUMSIES_ERROR_PRONE_WORKFLOW_CONTENT },
     .{ .id = "p-seed-trace", .path = "rule/trace/TRACE_DISCIPLINE.md", .content = TRACE_DISCIPLINE_CONTENT },
     .{ .id = "p-seed-hub", .path = "rule/architecture/HUB_SINGLE_SOURCE.md", .content = HUB_SINGLE_SOURCE_CONTENT },
     .{ .id = "p-seed-build", .path = "rule/build/ZIG_TOOLCHAIN.md", .content = ZIG_TOOLCHAIN_CONTENT },
@@ -261,18 +284,22 @@ pub const WORKSPACE_MEMBERS = [_]WorkspaceMemberFixture{
 pub const WORKSPACE_RULES = [_]WorkspaceRuleFixture{
     .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-meta" },
     .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-coding" },
+    .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-clumsies-error-prone" },
     .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-trace" },
     .{ .ws_id = "ws-seed-sandbox", .rule_id = "p-seed-build" },
     .{ .ws_id = "ws-seed-hub", .rule_id = "p-seed-meta" },
     .{ .ws_id = "ws-seed-hub", .rule_id = "p-seed-coding" },
+    .{ .ws_id = "ws-seed-hub", .rule_id = "p-seed-clumsies-error-prone" },
     .{ .ws_id = "ws-seed-hub", .rule_id = "p-seed-trace" },
     .{ .ws_id = "ws-seed-hub", .rule_id = "p-seed-hub" },
     .{ .ws_id = "ws-seed-tui", .rule_id = "p-seed-meta" },
     .{ .ws_id = "ws-seed-tui", .rule_id = "p-seed-coding" },
+    .{ .ws_id = "ws-seed-tui", .rule_id = "p-seed-clumsies-error-prone" },
     .{ .ws_id = "ws-seed-tui", .rule_id = "p-seed-trace" },
     .{ .ws_id = "ws-seed-tui", .rule_id = "p-seed-hub" },
     .{ .ws_id = "ws-seed-plugin", .rule_id = "p-seed-meta" },
     .{ .ws_id = "ws-seed-plugin", .rule_id = "p-seed-coding" },
+    .{ .ws_id = "ws-seed-plugin", .rule_id = "p-seed-clumsies-error-prone" },
     .{ .ws_id = "ws-seed-plugin", .rule_id = "p-seed-trace" },
 };
 
