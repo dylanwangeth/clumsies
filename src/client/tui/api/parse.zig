@@ -294,6 +294,7 @@ pub fn parseReviewPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model
             .pr_id = alloc.dupe(u8, pr.pr_id) catch continue,
             .target_kind = alloc.dupe(u8, pr.target_kind) catch continue,
             .target_path = alloc.dupe(u8, pr.target_path) catch continue,
+            .operation_targets = dupeOperationTargets(alloc, pr.operation_targets),
             .ws_id = if (pr.ws_id) |ws| alloc.dupe(u8, ws) catch null else null,
             .status = alloc.dupe(u8, pr.status) catch continue,
             .title = alloc.dupe(u8, pr.title) catch continue,
@@ -306,6 +307,21 @@ pub fn parseReviewPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch return null;
+}
+
+fn dupeOperationTargets(alloc: std.mem.Allocator, targets: []const collab_api.ReviewPrOperationTarget) []const model.OperationTarget {
+    if (targets.len == 0) return &.{};
+    const out = alloc.alloc(model.OperationTarget, targets.len) catch return &.{};
+    var count: usize = 0;
+    for (targets) |target| {
+        out[count] = .{
+            .target_kind = alloc.dupe(u8, target.target_kind) catch continue,
+            .target_path = alloc.dupe(u8, target.target_path) catch continue,
+            .type = alloc.dupe(u8, target.type) catch "",
+        };
+        count += 1;
+    }
+    return out[0..count];
 }
 
 test "parseWorkspaceContext accepts content_hash from hub response" {
@@ -393,7 +409,7 @@ test "parseComments reads wrapped comments response" {
 test "parseReviewPrs reads target-aware review list" {
     const testing = std.testing;
     const body =
-        \\{"prs":[{"pr_id":"pr-1","target_kind":"mpf","target_path":"META_PROMPT.md","status":"open","title":"update bootstrap","body":"update bootstrap","created_at":"2026-05-02T00:00:00Z","author":"alice","operation_count":1,"op_type":"update","comment_count":3},{"pr_id":"pr-2","target_kind":"context","target_path":"spec/s1.md","ws_id":"ws-1","status":"merged","title":"merge spec","body":"merge spec","created_at":"2026-05-01T00:00:00Z","author":"bob","operation_count":2,"op_type":"rename","comment_count":0}]}
+        \\{"prs":[{"pr_id":"pr-1","target_kind":"mpf","target_path":"META_PROMPT.md","status":"open","title":"update bootstrap","body":"update bootstrap","created_at":"2026-05-02T00:00:00Z","author":"alice","operation_count":1,"op_type":"update","comment_count":3},{"pr_id":"pr-2","target_kind":"context","target_path":"spec/s1.md","operation_targets":[{"target_kind":"context","target_path":"spec/s1.md","type":"modify"},{"target_kind":"context","target_path":"spec/s2.md","type":"create"}],"ws_id":"ws-1","status":"merged","title":"merge spec","body":"merge spec","created_at":"2026-05-01T00:00:00Z","author":"bob","operation_count":2,"op_type":"rename","comment_count":0}]}
     ;
 
     const prs = parseReviewPrs(testing.allocator, body) orelse return error.TestUnexpectedResult;
@@ -402,6 +418,12 @@ test "parseReviewPrs reads target-aware review list" {
             testing.allocator.free(pr.pr_id);
             testing.allocator.free(pr.target_kind);
             testing.allocator.free(pr.target_path);
+            for (pr.operation_targets) |target| {
+                testing.allocator.free(target.target_kind);
+                testing.allocator.free(target.target_path);
+                testing.allocator.free(target.type);
+            }
+            if (pr.operation_targets.len > 0) testing.allocator.free(pr.operation_targets);
             if (pr.ws_id) |ws_id| testing.allocator.free(ws_id);
             testing.allocator.free(pr.status);
             testing.allocator.free(pr.title);
@@ -422,6 +444,8 @@ test "parseReviewPrs reads target-aware review list" {
     try testing.expectEqualStrings("ws-1", prs[1].ws_id.?);
     try testing.expectEqualStrings("rename", prs[1].op_type);
     try testing.expectEqual(@as(i32, 0), prs[1].comment_count);
+    try testing.expectEqual(@as(usize, 2), prs[1].operation_targets.len);
+    try testing.expectEqualStrings("spec/s2.md", prs[1].operation_targets[1].target_path);
 }
 
 test "parseBundles uses rule_count when server provides it" {

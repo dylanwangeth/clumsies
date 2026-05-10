@@ -48,6 +48,13 @@ pub const DraftEntry = struct {
     description: ?[]const u8 = null,
 };
 
+fn isTerminalStatus(status: DraftStatus) bool {
+    return switch (status) {
+        .applied, .declined, .conflicted => true,
+        .draft, .in_review => false,
+    };
+}
+
 /// Parsed drafts index. Strings borrow from an arena; deinit drops the arena.
 pub const DraftsIndex = struct {
     arena_state: *std.heap.ArenaAllocator,
@@ -296,6 +303,7 @@ pub fn createDraft(
 
     for (index.entries.items) |entry| {
         if (entry.category != params.category) continue;
+        if (isTerminalStatus(entry.status)) continue;
         if (std.mem.eql(u8, entry.draft_path, params.draft_path)) return error.DraftAlreadyExists;
     }
 
@@ -970,6 +978,36 @@ test "createDraft: rejects duplicate draft for same (category, draft_path)" {
         .operation = .create,
         .draft_path = "spec/NEW.md",
     }, "# NEW again\n"));
+}
+
+test "createDraft: terminal entries do not block a new draft for same path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .create,
+        .draft_path = "coding/NEW.md",
+    }, "# NEW\n");
+    try setDraftStatus(testing.allocator, root, .rule, "coding/NEW.md", .applied);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .modify,
+        .draft_path = "coding/NEW.md",
+        .current_path = "coding/NEW.md",
+        .rule_id = "p-new",
+        .base_hash = "sha256:abc",
+    }, "# NEW modified\n");
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), index.entries.items.len);
+    try testing.expectEqual(DraftStatus.applied, index.entries.items[0].status);
+    try testing.expectEqual(DraftStatus.draft, index.entries.items[1].status);
 }
 
 test "createDraft: delete operation does not write a content file" {

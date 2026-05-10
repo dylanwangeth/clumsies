@@ -747,17 +747,6 @@ pub fn handleModuleEvent(
         .list => try handleListFocusEvent(self, ctx, key),
         .content => try handleContentFocusEvent(self, ctx, key),
     }
-
-    if (key.matches('r', .{})) {
-        self.invalidateRemoteDetailRequests();
-        self.resetLocalWorkspaceDetail();
-        if (self.activeWsId()) |ws_id| {
-            self.ensureActiveWorkspaceDetailRequested();
-            refreshWorkspaceDetail(self, ws_id);
-        }
-        api.fetch.refetchAllAsync(self.api_state);
-        ctx.consumeAndRedraw();
-    }
 }
 
 pub fn shortcuts(self: anytype) []const w.Shortcut {

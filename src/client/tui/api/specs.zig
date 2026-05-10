@@ -101,6 +101,22 @@ pub const CreateContextPrParams = struct {
     base_hash: ?[]const u8 = null,
 };
 
+pub const CreateContextPrOperation = struct {
+    operation_type: []const u8,
+    context_id: ?[]const u8 = null,
+    base_hash: ?[]const u8 = null,
+    content: []const u8,
+    path: ?[]const u8 = null,
+    new_path: ?[]const u8 = null,
+};
+
+pub const CreateContextPrBatchParams = struct {
+    ws_id: []const u8,
+    title: []const u8,
+    body: []const u8,
+    operations: []const CreateContextPrOperation,
+};
+
 pub const artifact_rule_content = dispatcher.RequestSpec(
     RuleContentParams,
     artifact_api.RuleContentResponse,
@@ -356,6 +372,13 @@ pub const create_context_pr = dispatcher.RequestSpec(CreateContextPrParams, Crea
     .parse_ok = dispatcher.jsonParser(CreateContextPrParams, CreateContextPrResponse),
 };
 
+pub const create_context_pr_batch = dispatcher.RequestSpec(CreateContextPrBatchParams, CreateContextPrResponse){
+    .method = .POST,
+    .path_builder = createContextPrBatchPath,
+    .body_builder = createContextPrBatchBody,
+    .parse_ok = dispatcher.jsonParser(CreateContextPrBatchParams, CreateContextPrResponse),
+};
+
 fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]const u8 {
     // Every op-type field is optional on the wire — the hub tolerates
     // `"field": null` as equivalent to "field absent" (see
@@ -429,6 +452,10 @@ fn createContextPrPath(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
     return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs", .{p.ws_id});
 }
 
+fn createContextPrBatchPath(alloc: std.mem.Allocator, p: CreateContextPrBatchParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs", .{p.ws_id});
+}
+
 fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyerror![]const u8 {
     const Op = struct {
         type: []const u8,
@@ -455,6 +482,39 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         .title = p.title,
         .body = p.body,
         .operations = &ops,
+    }, .{});
+}
+
+fn createContextPrBatchBody(alloc: std.mem.Allocator, p: CreateContextPrBatchParams) anyerror![]const u8 {
+    const Op = struct {
+        type: []const u8,
+        context_id: ?[]const u8,
+        base_hash: ?[]const u8,
+        content: []const u8,
+        path: ?[]const u8,
+        new_path: ?[]const u8,
+    };
+    const Body = struct {
+        title: []const u8,
+        body: []const u8,
+        operations: []const Op,
+    };
+    var ops: std.ArrayList(Op) = .empty;
+    defer ops.deinit(alloc);
+    for (p.operations) |op| {
+        try ops.append(alloc, .{
+            .type = op.operation_type,
+            .context_id = op.context_id,
+            .base_hash = op.base_hash,
+            .content = op.content,
+            .path = op.path,
+            .new_path = op.new_path,
+        });
+    }
+    return std.json.Stringify.valueAlloc(alloc, Body{
+        .title = p.title,
+        .body = p.body,
+        .operations = ops.items,
     }, .{});
 }
 

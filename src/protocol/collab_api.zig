@@ -34,6 +34,12 @@ pub const RulePrUsageSummary = struct {
     last_referred: ?[]const u8 = null,
 };
 
+pub const ReviewPrOperationTarget = struct {
+    target_kind: []const u8,
+    target_path: []const u8,
+    type: []const u8 = "",
+};
+
 pub const RulePrDetailResponse = struct {
     pr_id: []const u8,
     status: []const u8,
@@ -60,6 +66,7 @@ pub const ReviewPrListItem = struct {
     pr_id: []const u8,
     target_kind: []const u8,
     target_path: []const u8,
+    operation_targets: []const ReviewPrOperationTarget = &.{},
     ws_id: ?[]const u8 = null,
     status: []const u8,
     title: []const u8,
