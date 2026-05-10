@@ -552,6 +552,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     var ops: std.ArrayList(RulePrChange) = .empty;
     var op_result = conn.query(
         \\SELECT op.op_index, op.type, op.rule_id, op.base_hash, op.base_content, op.content, op.path,
+        \\  COALESCE(r.path, op.rule_id, '') as current_path,
         \\  COALESCE($2 = 'open'
         \\    AND op.type IN ('modify', 'rename')
         \\    AND op.base_hash IS NOT NULL
@@ -590,7 +591,8 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
             try req.arena.dupe(u8, v)
         else |_|
             null;
-        const op_conflict = try orow.get(bool, 7);
+        const op_current_path = try req.arena.dupe(u8, try orow.get([]const u8, 7));
+        const op_conflict = try orow.get(bool, 8);
 
         try ops.append(req.arena, .{
             .op_index = op_index,
@@ -600,6 +602,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
             .content = op_content,
             .path = op_path,
             .base_content = op_base_content,
+            .current_path = op_current_path,
             .conflict = op_conflict,
         });
     }
