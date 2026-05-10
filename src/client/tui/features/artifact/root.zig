@@ -392,6 +392,7 @@ pub fn syncArtifactTree(self: anytype) void {
         if (selected_bundle_rule_ids) |rule_ids| {
             if (!bundleContainsRule(rule_ids, p.rule_id)) continue;
         }
+        if (!self.searchMatches(p.path)) continue;
         filtered_paths[filtered_len] = p.path;
         filtered_orig[filtered_len] = pidx;
         filtered_len += 1;
@@ -403,6 +404,7 @@ pub fn syncArtifactTree(self: anytype) void {
         // this bundle"; showing unrelated draft rows there makes a
         // partially-loaded bundle look like it contains only the draft.
         for (create_paths, 0..) |path, k| {
+            if (!self.searchMatches(path)) continue;
             filtered_paths[filtered_len] = path;
             filtered_orig[filtered_len] = rules.len + k;
             filtered_len += 1;
