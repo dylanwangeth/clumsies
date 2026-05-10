@@ -869,10 +869,14 @@ fn handleProposeCreate(
     const description = optionalString(args, "description");
     if (category == .meta_prompt and !std.mem.eql(u8, path, "META_PROMPT.md")) return error.InvalidParams;
 
+    const local_temp_id = try drafts_mod.createDraftLocalTempId(allocator, category, path);
+    defer allocator.free(local_temp_id);
+
     try drafts_mod.createDraft(allocator, workspace_root, .{
         .category = category,
         .operation = .create,
         .draft_path = path,
+        .local_temp_id = local_temp_id,
         .description = description,
     }, body);
 
@@ -883,7 +887,7 @@ fn handleProposeCreate(
     };
     session.recordEvent(allocator, payload);
 
-    return buildOkDraftPath(allocator, path);
+    return buildOkDraftIdentity(allocator, path, local_temp_id);
 }
 
 fn handleProposeUpdate(
@@ -903,8 +907,24 @@ fn handleProposeUpdate(
     defer manifest.deinit(allocator);
 
     const m_entry: workspace_rule.ManifestEntry = switch (category) {
-        .context => manifest.context.get(id) orelse return error.FileNotFound,
-        .rule => manifest.rules.get(id) orelse return error.FileNotFound,
+        .context => manifest.context.get(id) orelse {
+            if (try drafts_mod.updateCreateDraftContentById(allocator, workspace_root, category, id, body, description)) |draft| {
+                defer draft.deinit(allocator);
+                const event_id = draft.local_temp_id orelse id;
+                session.recordEvent(allocator, .{ .context_propose_update = .{ .id = event_id, .path = draft.draft_path } });
+                return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
+            }
+            return error.FileNotFound;
+        },
+        .rule => manifest.rules.get(id) orelse {
+            if (try drafts_mod.updateCreateDraftContentById(allocator, workspace_root, category, id, body, description)) |draft| {
+                defer draft.deinit(allocator);
+                const event_id = draft.local_temp_id orelse id;
+                session.recordEvent(allocator, .{ .rule_propose_update = .{ .id = event_id, .path = draft.draft_path } });
+                return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
+            }
+            return error.FileNotFound;
+        },
         .meta_prompt => .{ .path = "META_PROMPT.md", .hash = "" },
     };
     const draft_category = if ((category == .rule and isMetaPromptPath(m_entry.path)) or category == .meta_prompt)
@@ -1096,9 +1116,21 @@ fn isMetaPromptPath(path: []const u8) bool {
 }
 
 fn buildOkDraftPath(allocator: std.mem.Allocator, draft_path: []const u8) ![]u8 {
+    return buildOkDraftIdentity(allocator, draft_path, null);
+}
+
+fn buildOkDraftIdentity(
+    allocator: std.mem.Allocator,
+    draft_path: []const u8,
+    local_temp_id: ?[]const u8,
+) ![]u8 {
     const esc = try encoding.jsonEscapeAlloc(allocator, draft_path);
     defer allocator.free(esc);
-    const structured = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"draft_path\":\"{s}\"}}", .{esc});
+    const structured = if (local_temp_id) |id| blk: {
+        const esc_id = try encoding.jsonEscapeAlloc(allocator, id);
+        defer allocator.free(esc_id);
+        break :blk try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"draft_path\":\"{s}\",\"id\":\"{s}\"}}", .{ esc, esc_id });
+    } else try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"draft_path\":\"{s}\"}}", .{esc});
     defer allocator.free(structured);
     return try tool_result.buildSuccessResult(allocator, structured);
 }
@@ -1256,11 +1288,75 @@ test "artifact tool creates context change through tagged op" {
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"id\":\"tmp-context-") != null);
 
     var index = try drafts_mod.loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
     const entry = index.findCreateByDraftPath("research/new-context.md") orelse return error.TestUnexpectedResult;
     try testing.expectEqual(drafts_mod.DraftCategory.context, entry.category);
+}
+
+test "artifact tool updates newly created context draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, root),
+    };
+    defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
+
+    const create_json =
+        \\{
+        \\  "resource": "context",
+        \\  "op": {
+        \\    "create": {
+        \\      "path": "research/new-context.md",
+        \\      "body": "first body",
+        \\      "description": "first"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const create = try std.json.parseFromSlice(std.json.Value, testing.allocator, create_json, .{});
+    defer create.deinit();
+    const create_result = try handleArtifact(testing.allocator, root, &session, create.value.object);
+    defer testing.allocator.free(create_result);
+    try testing.expect(std.mem.indexOf(u8, create_result, "\"id\":\"tmp-context-") != null);
+
+    const update_json =
+        \\{
+        \\  "resource": "context",
+        \\  "op": {
+        \\    "update": {
+        \\      "id": "research/new-context.md",
+        \\      "body": "second body",
+        \\      "description": "second"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const update = try std.json.parseFromSlice(std.json.Value, testing.allocator, update_json, .{});
+    defer update.deinit();
+    const update_result = try handleArtifact(testing.allocator, root, &session, update.value.object);
+    defer testing.allocator.free(update_result);
+    try testing.expect(std.mem.indexOf(u8, update_result, "\"ok\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, update_result, "\"id\":\"tmp-context-") != null);
+
+    const content = try drafts_mod.readDraftFile(testing.allocator, root, .context, "research/new-context.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("second body", content);
+
+    var index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.findCreateByDraftPath("research/new-context.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(drafts_mod.DraftOperation.create, entry.operation);
+    try testing.expectEqualStrings("second", entry.description.?);
 }
 
 test "artifact tool discards rule change by local temp id" {
