@@ -97,7 +97,7 @@ pub const CreateContextPrParams = struct {
     context_id: ?[]const u8 = null,
     path: ?[]const u8 = null,
     new_path: ?[]const u8 = null,
-    content: []const u8,
+    content: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
 };
 
@@ -105,7 +105,7 @@ pub const CreateContextPrOperation = struct {
     operation_type: []const u8,
     context_id: ?[]const u8 = null,
     base_hash: ?[]const u8 = null,
-    content: []const u8,
+    content: ?[]const u8 = null,
     path: ?[]const u8 = null,
     new_path: ?[]const u8 = null,
 };
@@ -461,7 +461,7 @@ fn createContextPrBody(alloc: std.mem.Allocator, p: CreateContextPrParams) anyer
         type: []const u8,
         context_id: ?[]const u8,
         base_hash: ?[]const u8,
-        content: []const u8,
+        content: ?[]const u8,
         path: ?[]const u8,
         new_path: ?[]const u8,
     };
@@ -490,7 +490,7 @@ fn createContextPrBatchBody(alloc: std.mem.Allocator, p: CreateContextPrBatchPar
         type: []const u8,
         context_id: ?[]const u8,
         base_hash: ?[]const u8,
-        content: []const u8,
+        content: ?[]const u8,
         path: ?[]const u8,
         new_path: ?[]const u8,
     };

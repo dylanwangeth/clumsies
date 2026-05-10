@@ -551,8 +551,17 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
 
     var ops: std.ArrayList(RulePrChange) = .empty;
     var op_result = conn.query(
-        "SELECT op_index, type, rule_id, base_hash, base_content, content, path FROM rule_pr_operations WHERE pr_id = $1 ORDER BY op_index",
-        .{pr_id},
+        \\SELECT op.op_index, op.type, op.rule_id, op.base_hash, op.base_content, op.content, op.path,
+        \\  COALESCE($2 = 'open'
+        \\    AND op.type IN ('modify', 'rename')
+        \\    AND op.base_hash IS NOT NULL
+        \\    AND r.content_hash <> op.base_hash, false) as conflict
+        \\FROM rule_pr_operations op
+        \\LEFT JOIN rules r ON r.rule_id = op.rule_id
+        \\WHERE op.pr_id = $1
+        \\ORDER BY op.op_index
+    ,
+        .{ pr_id, status },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
     };
@@ -581,6 +590,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
             try req.arena.dupe(u8, v)
         else |_|
             null;
+        const op_conflict = try orow.get(bool, 7);
 
         try ops.append(req.arena, .{
             .op_index = op_index,
@@ -590,6 +600,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
             .content = op_content,
             .path = op_path,
             .base_content = op_base_content,
+            .conflict = op_conflict,
         });
     }
 

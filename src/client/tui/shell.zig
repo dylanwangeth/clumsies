@@ -264,6 +264,7 @@ pub const Shell = struct {
         self.releasePendingDiscardTarget();
         self.releasePendingPrAction();
         const alloc = self.api_state.allocator();
+        self.review.deinit(alloc);
         self.workspace.deinit(alloc);
         self.artifact.deinit(alloc);
         self.drafts.deinit();
@@ -706,7 +707,8 @@ pub const Shell = struct {
             child_idx += 1;
         }
         if (allow_regular_overlays and self.review.show_comment_editor) {
-            const box_w = @min(size.width -| 4, @as(u16, 60));
+            const detail_widths = review_panel.reviewDetailPanelWidths(size.width);
+            const box_w = @min(size.width -| 4, @max(@as(u16, 24), detail_widths.comments -| 4));
             const box_h: u16 = 8;
             const full_ctx = ctx.withConstraints(
                 .{ .width = box_w, .height = box_h },
@@ -5554,7 +5556,7 @@ pub const Shell = struct {
         target: DraftTarget,
     ) ?struct {
         ws_dir: []const u8,
-        content: []const u8,
+        content: ?[]const u8,
         entry: ?DraftSubmitEntry,
     } {
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch {
@@ -5575,11 +5577,14 @@ pub const Shell = struct {
         };
         const draft_path = alloc.dupe(u8, draft_entry.draft_path) catch return null;
         errdefer alloc.free(draft_path);
-        const content = drafts_mod.readDraftFile(alloc, ws_dir, target.category, draft_path) catch |err| {
-            self.notifyOp(.failure, @errorName(err));
-            return null;
-        };
-        errdefer alloc.free(content);
+        const content: ?[]const u8 = if (draft_entry.operation == .delete)
+            null
+        else
+            drafts_mod.readDraftFile(alloc, ws_dir, target.category, draft_path) catch |err| {
+                self.notifyOp(.failure, @errorName(err));
+                return null;
+            };
+        errdefer if (content) |value| alloc.free(value);
         const entry_out = DraftSubmitEntry{
             .operation = draft_entry.operation,
             .draft_path = draft_path,
@@ -5599,7 +5604,7 @@ pub const Shell = struct {
         const alloc = self.api_state.allocator();
         const read = self.readDraftForSubmit(alloc, target) orelse return;
         defer alloc.free(read.ws_dir);
-        defer alloc.free(read.content);
+        defer if (read.content) |content| alloc.free(content);
         defer if (read.entry) |e| {
             alloc.free(e.draft_path);
             if (e.base_hash) |h| alloc.free(h);
@@ -5625,7 +5630,10 @@ pub const Shell = struct {
         const content_copy: ?[]const u8 = if (entry.operation == .delete)
             null
         else
-            (alloc.dupe(u8, read.content) catch return);
+            (alloc.dupe(u8, read.content orelse {
+                self.notifyOp(.warning, "Draft content missing.");
+                return;
+            }) catch return);
         defer if (content_copy) |c| alloc.free(c);
 
         // Modify/rename/delete need rule_id; resolve from the draft
@@ -5714,7 +5722,7 @@ pub const Shell = struct {
             const read = self.readDraftForSubmit(alloc, target) orelse return;
             defer alloc.free(read.ws_dir);
             const entry = read.entry orelse {
-                alloc.free(read.content);
+                if (read.content) |content| alloc.free(content);
                 self.notifyOp(.warning, "Draft entry missing; try again.");
                 return;
             };
@@ -5724,10 +5732,7 @@ pub const Shell = struct {
                 .rename => "rename",
                 .delete => "delete",
             };
-            const content_copy: ?[]const u8 = if (entry.operation == .delete) blk: {
-                alloc.free(read.content);
-                break :blk null;
-            } else read.content;
+            const content_copy: ?[]const u8 = if (entry.operation == .delete) null else read.content;
             if (content_copy) |content| owned.append(alloc, content) catch return;
 
             const rule_id = if (entry.operation == .create)
@@ -6211,7 +6216,7 @@ pub const Shell = struct {
         const alloc = self.api_state.allocator();
         const read = self.readDraftForSubmit(alloc, target) orelse return;
         defer alloc.free(read.ws_dir);
-        defer alloc.free(read.content);
+        defer if (read.content) |content| alloc.free(content);
         defer if (read.entry) |e| {
             alloc.free(e.draft_path);
             if (e.base_hash) |h| alloc.free(h);
@@ -6232,8 +6237,14 @@ pub const Shell = struct {
         defer alloc.free(title_copy);
         const body_copy = alloc.dupe(u8, self.drafts.pr_composer_body_buf[0..self.drafts.pr_composer_body_len]) catch return;
         defer alloc.free(body_copy);
-        const content_copy = alloc.dupe(u8, read.content) catch return;
-        defer alloc.free(content_copy);
+        const content_copy: ?[]const u8 = if (entry.operation == .delete)
+            null
+        else
+            (alloc.dupe(u8, read.content orelse {
+                self.notifyOp(.warning, "Draft content missing.");
+                return;
+            }) catch return);
+        defer if (content_copy) |content| alloc.free(content);
         const ws_id_copy = alloc.dupe(u8, target.ws_id) catch return;
         defer alloc.free(ws_id_copy);
         const path_copy_opt: ?[]const u8 = switch (entry.operation) {
@@ -6298,7 +6309,7 @@ pub const Shell = struct {
             const read = self.readDraftForSubmit(alloc, target) orelse return;
             defer alloc.free(read.ws_dir);
             const entry = read.entry orelse {
-                alloc.free(read.content);
+                if (read.content) |content| alloc.free(content);
                 self.notifyOp(.warning, "Draft entry missing; try again.");
                 return;
             };
@@ -6308,7 +6319,7 @@ pub const Shell = struct {
                 .rename => "rename",
                 .delete => "delete",
             };
-            owned.append(alloc, read.content) catch return;
+            if (read.content) |content| owned.append(alloc, content) catch return;
 
             const context_id = if (entry.operation == .create)
                 null

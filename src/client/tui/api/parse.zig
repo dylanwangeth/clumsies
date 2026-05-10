@@ -276,6 +276,7 @@ pub fn parseRulePrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model.R
             .operation_count = @intCast(@min(pr.operation_count, std.math.maxInt(i32))),
             .op_type = alloc.dupe(u8, pr.op_type) catch "",
             .comment_count = @intCast(@min(pr.comment_count, std.math.maxInt(i32))),
+            .has_conflict = pr.has_conflict,
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch return null;
@@ -304,6 +305,7 @@ pub fn parseReviewPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model
             .operation_count = @intCast(@min(pr.operation_count, std.math.maxInt(i32))),
             .op_type = alloc.dupe(u8, pr.op_type) catch "",
             .comment_count = @intCast(@min(pr.comment_count, std.math.maxInt(i32))),
+            .has_conflict = pr.has_conflict,
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch return null;
@@ -311,17 +313,38 @@ pub fn parseReviewPrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model
 
 fn dupeOperationTargets(alloc: std.mem.Allocator, targets: []const collab_api.ReviewPrOperationTarget) []const model.OperationTarget {
     if (targets.len == 0) return &.{};
-    const out = alloc.alloc(model.OperationTarget, targets.len) catch return &.{};
-    var count: usize = 0;
+    var out: std.ArrayList(model.OperationTarget) = .empty;
     for (targets) |target| {
-        out[count] = .{
-            .target_kind = alloc.dupe(u8, target.target_kind) catch continue,
-            .target_path = alloc.dupe(u8, target.target_path) catch continue,
-            .type = alloc.dupe(u8, target.type) catch "",
+        const target_kind = alloc.dupe(u8, target.target_kind) catch continue;
+        const target_path = alloc.dupe(u8, target.target_path) catch {
+            alloc.free(target_kind);
+            continue;
         };
-        count += 1;
+        const op_type = alloc.dupe(u8, target.type) catch {
+            alloc.free(target_kind);
+            alloc.free(target_path);
+            continue;
+        };
+        out.append(alloc, .{
+            .target_kind = target_kind,
+            .target_path = target_path,
+            .type = op_type,
+        }) catch {
+            alloc.free(target_kind);
+            alloc.free(target_path);
+            alloc.free(op_type);
+            continue;
+        };
     }
-    return out[0..count];
+    return out.toOwnedSlice(alloc) catch {
+        for (out.items) |target| {
+            alloc.free(target.target_kind);
+            alloc.free(target.target_path);
+            alloc.free(target.type);
+        }
+        out.deinit(alloc);
+        return &.{};
+    };
 }
 
 test "parseWorkspaceContext accepts content_hash from hub response" {

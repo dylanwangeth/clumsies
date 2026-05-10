@@ -32,6 +32,16 @@ pub const CommentEntry = struct {
     created: []const u8,
 };
 
+pub const PrChangeEntry = struct {
+    target_kind: PrTargetKind = .rule,
+    path: []const u8 = "",
+    op_type: []const u8 = "",
+    base_hash: []const u8 = "",
+    base_content: []const u8 = "",
+    proposed_content: []const u8 = "",
+    conflict: bool = false,
+};
+
 pub const PrTargetKind = enum {
     context,
     rule,
@@ -63,6 +73,7 @@ pub const PullRequestEntry = struct {
     base_content: []const u8 = "",
     proposed_content: []const u8 = "",
     comments: []const CommentEntry = &.{},
+    changes: []const PrChangeEntry = &.{},
     comment_count: u16 = 0,
     attestation_refers: u16,
     attestation_sessions: u8,
@@ -71,6 +82,7 @@ pub const PullRequestEntry = struct {
     op_current_path: []const u8 = "",
     op_new_path: []const u8 = "",
     op_index: u16 = 0,
+    has_conflict: bool = false,
 };
 
 pub const AccessLevel = enum {
