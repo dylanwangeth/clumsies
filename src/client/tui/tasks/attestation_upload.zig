@@ -17,9 +17,15 @@ fn worker(api_state: *state.ApiState, gen: u64) void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const workspaces = workspace_config.listWorkspaces(alloc) catch |err| {
-        api_state.attestation_upload_pending.complete(gen, .{ .failed = @errorName(err) });
-        return;
+    const workspaces = workspace_config.listWorkspaces(alloc) catch |err| switch (err) {
+        error.NoConfigFound => {
+            api_state.attestation_upload_pending.complete(gen, .{ .ok = .{} });
+            return;
+        },
+        else => {
+            api_state.attestation_upload_pending.complete(gen, .{ .failed = @errorName(err) });
+            return;
+        },
     };
 
     var summary: state.AttestationUploadSummary = .{ .workspace_count = workspaces.len };

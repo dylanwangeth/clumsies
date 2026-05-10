@@ -1776,6 +1776,14 @@ pub const Shell = struct {
         }
     }
 
+    fn refreshActiveWorkspaceOnEnter(self: *Shell) void {
+        const ws_id = self.activeWsId() orelse return;
+        self.resetLocalWorkspaceDetail();
+        self.ensureLocalWorkspaceDetail(ws_id);
+        api.state.invalidateRemoteCaches(self.api_state, .workspace_detail);
+        workspace_panel.refreshWorkspaceDetail(self, ws_id);
+    }
+
     pub fn resetWorkspaceTrees(self: *Shell) void {
         const allocator = self.api_state.allocator();
         self.workspace.context_tree.reset(allocator);
@@ -2734,8 +2742,17 @@ pub const Shell = struct {
                 self.api_state.review_prs_cache.store(.{ .value = "review" }, prs);
                 self.reconcileTerminalPrDrafts(prs);
             },
-            else => {
+            .api_error => |e| {
                 self.api_state.review_prs_cache.markFailed(.{ .value = "review" });
+                self.notifyOp(.failure, writeErrorStatus(self, "Review queue failed", e));
+            },
+            .network_error => {
+                self.api_state.review_prs_cache.markFailed(.{ .value = "review" });
+                self.notifyOp(.failure, "Review queue failed: network error.");
+            },
+            .invalid_response => {
+                self.api_state.review_prs_cache.markFailed(.{ .value = "review" });
+                self.notifyOp(.failure, "Review queue failed: malformed response.");
             },
         }
     }
@@ -2745,10 +2762,15 @@ pub const Shell = struct {
         var changed = false;
         for (prs) |pr| {
             const next_status = draftStatusForTerminalPr(pr.status) orelse continue;
-            const category = draftCategoryForPrTargetKind(pr.target_kind) orelse continue;
-            if (pr.ws_id) |ws_id| {
-                changed = self.reconcileTerminalPrDraftInWorkspace(ws_id, category, pr.target_path, next_status) or changed;
-            } else if (active_ws_id) |ws_id| {
+            const ws_id = pr.ws_id orelse active_ws_id orelse continue;
+            if (pr.operation_targets.len > 0) {
+                for (pr.operation_targets) |target| {
+                    const category = draftCategoryForPrTargetKind(target.target_kind) orelse continue;
+                    if (target.target_path.len == 0) continue;
+                    changed = self.reconcileTerminalPrDraftInWorkspace(ws_id, category, target.target_path, next_status) or changed;
+                }
+            } else {
+                const category = draftCategoryForPrTargetKind(pr.target_kind) orelse continue;
                 changed = self.reconcileTerminalPrDraftInWorkspace(ws_id, category, pr.target_path, next_status) or changed;
             }
         }
@@ -4937,16 +4959,22 @@ pub const Shell = struct {
         switch (self.selected_module) {
             .artifact => {
                 const rules = self.getRules();
-                if (self.artifact.selected_rule >= rules.len) return null;
-                return self.lookupRuleId(rules[self.artifact.selected_rule].path);
+                if (self.artifact.selected_rule < rules.len) {
+                    const path = rules[self.artifact.selected_rule].path;
+                    return self.lookupRuleId(path) orelse self.draftLocalIdFor(self.artifactCategoryForPath(path), path);
+                }
+                const k = self.artifact.selected_rule - rules.len;
+                if (k >= self.drafts.create_rule_paths.len) return null;
+                const path = self.drafts.create_rule_paths[k];
+                return self.draftLocalIdFor(.rule, path);
             },
             .workspace => {
                 const ws_id = self.activeWsId() orelse return null;
                 const live = self.workspaceDetailForView(ws_id);
                 const selection = self.currentWorkspaceFileSelection(live) orelse return null;
                 return switch (selection) {
-                    .context => |c| c.context_id,
-                    .rule => |r| r.rule_id,
+                    .context => |c| c.context_id orelse self.draftLocalIdFor(.context, c.path),
+                    .rule => |r| r.rule_id orelse self.draftLocalIdFor(r.category, r.path),
                 };
             },
             else => return null,
@@ -5232,12 +5260,12 @@ pub const Shell = struct {
         }
     }
 
-    /// Handler for the `p` key. Opens the PR Composer when the
-    /// selected file has a local draft. The composer is intentionally
-    /// single-op for the initial cut — multi-draft select is deferred
-    /// to a follow-up.
+    /// Handler for the `p` key. Opens the PR Composer for either the
+    /// focused draft or the selected draft set when selector mode is active.
     pub fn openPrComposer(self: *Shell) void {
         self.refreshDraftsCache();
+        if (self.openSelectedDraftsPrComposer()) return;
+
         const target = self.selectedDraftTarget() orelse {
             self.notifyOp(.warning, "No editable selection.");
             return;
@@ -5281,6 +5309,169 @@ pub const Shell = struct {
         self.drafts.show_pr_composer = true;
     }
 
+    fn openSelectedDraftsPrComposer(self: *Shell) bool {
+        const selection_mode = switch (self.selected_module) {
+            .artifact => self.artifact.list_machine.selection_mode,
+            .workspace => self.workspace.list_machine.selection_mode,
+            else => false,
+        };
+        if (!selection_mode) return false;
+
+        const alloc = self.api_state.allocator();
+        const targets = self.collectSelectedDraftTargetsForComposer(alloc) orelse return true;
+        if (targets.len == 0) {
+            self.notifyOp(.warning, "Select draft files first.");
+            alloc.free(targets);
+            return true;
+        }
+
+        self.releaseComposerTarget();
+        self.drafts.pr_composer_batch_targets = targets;
+        self.drafts.pr_composer_target = targets[0];
+        self.drafts.pr_composer_operation = self.lookupDraftOperation(targets[0]) orelse .modify;
+        self.drafts.pr_composer_title_len = 0;
+        self.drafts.pr_composer_body_len = 0;
+        self.drafts.pr_composer_focus = .title;
+        self.drafts.pr_composer_submitting = false;
+        self.drafts.show_pr_composer = true;
+        return true;
+    }
+
+    fn collectSelectedDraftTargetsForComposer(self: *Shell, alloc: std.mem.Allocator) ?[]DraftTarget {
+        var targets: std.ArrayList(DraftTarget) = .empty;
+        var success = false;
+        defer if (!success) {
+            for (targets.items) |target| freeDraftTarget(alloc, target);
+            targets.deinit(alloc);
+        };
+
+        switch (self.selected_module) {
+            .artifact => {
+                const ws_id = self.activeWsId() orelse return null;
+                const rules = self.getRules();
+                for (rules, 0..) |rule, idx| {
+                    if (!self.artifact.list_machine.selected_leaves.contains(idx)) continue;
+                    const target = DraftTarget{
+                        .ws_id = ws_id,
+                        .category = self.artifactCategoryForPath(rule.path),
+                        .path = rule.path,
+                        .rule_id = self.lookupRuleId(rule.path),
+                    };
+                    if (!self.appendComposerDraftTarget(alloc, &targets, target)) return null;
+                }
+                for (self.drafts.create_rule_paths, 0..) |path, idx| {
+                    const leaf = rules.len + idx;
+                    if (!self.artifact.list_machine.selected_leaves.contains(leaf)) continue;
+                    const target = DraftTarget{
+                        .ws_id = ws_id,
+                        .category = .rule,
+                        .path = path,
+                    };
+                    if (!self.appendComposerDraftTarget(alloc, &targets, target)) return null;
+                }
+            },
+            .workspace => {
+                const ws_id = self.activeWsId() orelse return null;
+                const live = self.workspaceDetailForView(ws_id);
+                var it = self.workspace.list_machine.selected_leaves.keyIterator();
+                while (it.next()) |leaf_ptr| {
+                    const leaf = leaf_ptr.*;
+                    const selection = self.workspaceFileAtLeaf(leaf, live) orelse continue;
+                    const target = switch (selection) {
+                        .context => |c| DraftTarget{
+                            .ws_id = ws_id,
+                            .category = .context,
+                            .path = c.path,
+                            .context_id = c.context_id,
+                        },
+                        .rule => |r| DraftTarget{
+                            .ws_id = ws_id,
+                            .category = r.category,
+                            .path = r.path,
+                            .rule_id = if (r.is_create_draft) null else self.lookupRuleId(r.path),
+                        },
+                    };
+                    if (!self.appendComposerDraftTarget(alloc, &targets, target)) return null;
+                }
+            },
+            else => return null,
+        }
+
+        if (!self.validateComposerBatchTargets(targets.items)) {
+            return null;
+        }
+        const owned = targets.toOwnedSlice(alloc) catch return null;
+        success = true;
+        return owned;
+    }
+
+    fn appendComposerDraftTarget(
+        self: *Shell,
+        alloc: std.mem.Allocator,
+        targets: *std.ArrayList(DraftTarget),
+        target: DraftTarget,
+    ) bool {
+        const status = self.draftStatusFor(target.category, target.path) orelse {
+            self.notifyOp(.warning, "Select draft files only.");
+            return false;
+        };
+        if (status != .draft) {
+            self.notifyOp(.warning, "Selected draft is not editable.");
+            return false;
+        }
+        const copy = copyDraftTarget(alloc, target) catch {
+            self.notifyOp(.failure, "Out of memory opening composer.");
+            return false;
+        };
+        targets.append(alloc, copy) catch {
+            freeDraftTarget(alloc, copy);
+            self.notifyOp(.failure, "Out of memory opening composer.");
+            return false;
+        };
+        return true;
+    }
+
+    fn validateComposerBatchTargets(self: *Shell, targets: []const DraftTarget) bool {
+        if (targets.len == 0) return true;
+        const first_is_context = targets[0].category == .context;
+        const ws_id = targets[0].ws_id;
+        for (targets) |target| {
+            if (!std.mem.eql(u8, target.ws_id, ws_id)) {
+                self.notifyOp(.warning, "Selected drafts must belong to one workspace.");
+                return false;
+            }
+            if ((target.category == .context) != first_is_context) {
+                self.notifyOp(.warning, "Context and rule drafts need separate PRs.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn copyDraftTarget(alloc: std.mem.Allocator, target: DraftTarget) !DraftTarget {
+        const ws_id = try alloc.dupe(u8, target.ws_id);
+        errdefer alloc.free(ws_id);
+        const path = try alloc.dupe(u8, target.path);
+        errdefer alloc.free(path);
+        const rule_id = if (target.rule_id) |id| try alloc.dupe(u8, id) else null;
+        errdefer if (rule_id) |id| alloc.free(id);
+        const context_id = if (target.context_id) |id| try alloc.dupe(u8, id) else null;
+        return .{
+            .ws_id = ws_id,
+            .category = target.category,
+            .path = path,
+            .rule_id = rule_id,
+            .context_id = context_id,
+        };
+    }
+
+    fn freeDraftTarget(alloc: std.mem.Allocator, target: DraftTarget) void {
+        alloc.free(target.ws_id);
+        alloc.free(target.path);
+        if (target.rule_id) |id| alloc.free(id);
+        if (target.context_id) |id| alloc.free(id);
+    }
+
     fn lookupDraftOperation(self: *Shell, target: DraftTarget) ?drafts_mod.DraftOperation {
         return self.draftOperationForWorkspace(target.ws_id, target.category, target.path);
     }
@@ -5312,8 +5503,16 @@ pub const Shell = struct {
     /// Free the duped strings backing pr_composer_target, if any.
     /// Safe to call when no composer is open.
     fn releaseComposerTarget(self: *Shell) void {
+        const alloc = self.api_state.allocator();
+        for (self.drafts.pr_composer_batch_targets) |target| {
+            freeDraftTarget(alloc, target);
+        }
+        if (self.drafts.pr_composer_batch_targets.len > 0) {
+            alloc.free(self.drafts.pr_composer_batch_targets);
+            self.drafts.pr_composer_batch_targets = &.{};
+        }
         if (self.drafts.pr_composer_path_owned) |p| {
-            self.api_state.allocator().free(p);
+            alloc.free(p);
             self.drafts.pr_composer_path_owned = null;
         }
         self.drafts.pr_composer_target = null;
@@ -5332,6 +5531,10 @@ pub const Shell = struct {
         if (self.drafts.pr_composer_submitting) return;
         if (self.drafts.pr_composer_title_len == 0) {
             self.notifyOp(.warning, "Title is required.");
+            return;
+        }
+        if (self.drafts.pr_composer_batch_targets.len > 0) {
+            self.submitBatchPr(self.drafts.pr_composer_batch_targets);
             return;
         }
         const target = self.drafts.pr_composer_target orelse {
@@ -5479,6 +5682,99 @@ pub const Shell = struct {
                 .new_path = new_path_copy_opt,
                 .content = content_copy,
                 .base_hash = base_hash_copy_opt,
+            },
+        );
+        self.drafts.pr_composer_submitting = true;
+        self.notifyOp(.loading, "Submitting PR...");
+    }
+
+    fn submitBatchPr(self: *Shell, targets: []const DraftTarget) void {
+        if (targets.len == 0) {
+            self.notifyOp(.warning, "No composer target set.");
+            return;
+        }
+        if (targets[0].category == .context) {
+            self.submitContextPrBatch(targets);
+        } else {
+            self.submitRulePrBatch(targets);
+        }
+    }
+
+    fn submitRulePrBatch(self: *Shell, targets: []const DraftTarget) void {
+        const alloc = self.api_state.allocator();
+        var ops: std.ArrayList(api.specs.CreateRulePrOperation) = .empty;
+        defer ops.deinit(alloc);
+        var owned: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (owned.items) |value| alloc.free(value);
+            owned.deinit(alloc);
+        }
+
+        for (targets) |target| {
+            const read = self.readDraftForSubmit(alloc, target) orelse return;
+            defer alloc.free(read.ws_dir);
+            const entry = read.entry orelse {
+                alloc.free(read.content);
+                self.notifyOp(.warning, "Draft entry missing; try again.");
+                return;
+            };
+            const operation_type: []const u8 = switch (entry.operation) {
+                .create => "create",
+                .modify => "modify",
+                .rename => "rename",
+                .delete => "delete",
+            };
+            const content_copy: ?[]const u8 = if (entry.operation == .delete) blk: {
+                alloc.free(read.content);
+                break :blk null;
+            } else read.content;
+            if (content_copy) |content| owned.append(alloc, content) catch return;
+
+            const rule_id = if (entry.operation == .create)
+                null
+            else
+                target.rule_id orelse self.lookupRuleId(target.path) orelse {
+                    alloc.free(entry.draft_path);
+                    if (entry.base_hash) |h| alloc.free(h);
+                    self.notifyOp(.warning, "Unknown rule id for a selected draft.");
+                    return;
+                };
+            const path: ?[]const u8 = if (entry.operation == .create) entry.draft_path else null;
+            const new_path: ?[]const u8 = if (entry.operation == .rename) entry.draft_path else null;
+            if (path == null and new_path == null) alloc.free(entry.draft_path) else owned.append(alloc, entry.draft_path) catch return;
+            if ((entry.operation == .modify or entry.operation == .rename) and entry.base_hash == null) {
+                self.notifyOp(.warning, "Missing base_hash for a selected draft.");
+                return;
+            }
+            if (entry.base_hash) |h| owned.append(alloc, h) catch return;
+
+            ops.append(alloc, .{
+                .operation_type = operation_type,
+                .rule_id = rule_id,
+                .path = path,
+                .new_path = new_path,
+                .content = content_copy,
+                .base_hash = entry.base_hash,
+            }) catch {
+                self.notifyOp(.failure, "Out of memory creating PR.");
+                return;
+            };
+        }
+
+        const title_copy = alloc.dupe(u8, self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len]) catch return;
+        defer alloc.free(title_copy);
+        const body_copy = alloc.dupe(u8, self.drafts.pr_composer_body_buf[0..self.drafts.pr_composer_body_len]) catch return;
+        defer alloc.free(body_copy);
+        api.specs.dispatchFromState(
+            api.specs.CreateRulePrBatchParams,
+            api.specs.CreateRulePrResponse,
+            api.specs.create_rule_pr_batch,
+            &self.api_state.create_rule_pr_pending,
+            self.api_state,
+            .{
+                .title = title_copy,
+                .body = body_copy,
+                .operations = ops.items,
             },
         );
         self.drafts.pr_composer_submitting = true;
@@ -5988,6 +6284,80 @@ pub const Shell = struct {
         self.notifyOp(.loading, "Submitting PR...");
     }
 
+    fn submitContextPrBatch(self: *Shell, targets: []const DraftTarget) void {
+        const alloc = self.api_state.allocator();
+        var ops: std.ArrayList(api.specs.CreateContextPrOperation) = .empty;
+        defer ops.deinit(alloc);
+        var owned: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (owned.items) |value| alloc.free(value);
+            owned.deinit(alloc);
+        }
+
+        for (targets) |target| {
+            const read = self.readDraftForSubmit(alloc, target) orelse return;
+            defer alloc.free(read.ws_dir);
+            const entry = read.entry orelse {
+                alloc.free(read.content);
+                self.notifyOp(.warning, "Draft entry missing; try again.");
+                return;
+            };
+            const operation_type: []const u8 = switch (entry.operation) {
+                .create => "create",
+                .modify => "modify",
+                .rename => "rename",
+                .delete => "delete",
+            };
+            owned.append(alloc, read.content) catch return;
+
+            const context_id = if (entry.operation == .create)
+                null
+            else
+                target.context_id orelse {
+                    alloc.free(entry.draft_path);
+                    if (entry.base_hash) |h| alloc.free(h);
+                    self.notifyOp(.warning, "Missing context_id for a selected draft.");
+                    return;
+                };
+            const path: ?[]const u8 = if (entry.operation == .create) entry.draft_path else null;
+            const new_path: ?[]const u8 = if (entry.operation == .rename) entry.draft_path else null;
+            if (path == null and new_path == null) alloc.free(entry.draft_path) else owned.append(alloc, entry.draft_path) catch return;
+            if (entry.base_hash) |h| owned.append(alloc, h) catch return;
+
+            ops.append(alloc, .{
+                .operation_type = operation_type,
+                .context_id = context_id,
+                .path = path,
+                .new_path = new_path,
+                .content = read.content,
+                .base_hash = entry.base_hash,
+            }) catch {
+                self.notifyOp(.failure, "Out of memory creating PR.");
+                return;
+            };
+        }
+
+        const title_copy = alloc.dupe(u8, self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len]) catch return;
+        defer alloc.free(title_copy);
+        const body_copy = alloc.dupe(u8, self.drafts.pr_composer_body_buf[0..self.drafts.pr_composer_body_len]) catch return;
+        defer alloc.free(body_copy);
+        api.specs.dispatchFromState(
+            api.specs.CreateContextPrBatchParams,
+            api.specs.CreateContextPrResponse,
+            api.specs.create_context_pr_batch,
+            &self.api_state.create_context_pr_pending,
+            self.api_state,
+            .{
+                .ws_id = targets[0].ws_id,
+                .title = title_copy,
+                .body = body_copy,
+                .operations = ops.items,
+            },
+        );
+        self.drafts.pr_composer_submitting = true;
+        self.notifyOp(.loading, "Submitting PR...");
+    }
+
     fn handlePrComposerKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
         if (self.drafts.pr_composer_submitting) {
             if (key.matches(vaxis.Key.escape, .{})) {
@@ -6419,13 +6789,25 @@ pub const Shell = struct {
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
         defer alloc.free(ws_dir);
-        drafts_mod.setDraftStatus(
-            alloc,
-            ws_dir,
-            target.category,
-            self.draftPathForSelection(target.category, target.path),
-            .in_review,
-        ) catch {};
+        if (self.drafts.pr_composer_batch_targets.len > 0) {
+            for (self.drafts.pr_composer_batch_targets) |batch_target| {
+                drafts_mod.setDraftStatus(
+                    alloc,
+                    ws_dir,
+                    batch_target.category,
+                    self.draftPathForSelection(batch_target.category, batch_target.path),
+                    .in_review,
+                ) catch {};
+            }
+        } else {
+            drafts_mod.setDraftStatus(
+                alloc,
+                ws_dir,
+                target.category,
+                self.draftPathForSelection(target.category, target.path),
+                .in_review,
+            ) catch {};
+        }
         self.refreshDraftsCache();
         // A new PR exists on the hub, but rule_prs_cache still
         // holds the pre-submit snapshot — the Pull Requests tab
@@ -6463,7 +6845,7 @@ pub const Shell = struct {
                 }
             },
             .workspace => {
-                self.ensureActiveWorkspaceDetailRequested();
+                if (previous != .workspace) self.refreshActiveWorkspaceOnEnter();
             },
             .review => {
                 api.state.invalidateRemoteCaches(self.api_state, .pr_lists);

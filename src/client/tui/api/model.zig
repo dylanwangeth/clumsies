@@ -62,6 +62,7 @@ pub const RulePr = struct {
     pr_id: []const u8,
     target_kind: []const u8 = "rule",
     target_path: []const u8 = "",
+    operation_targets: []const OperationTarget = &.{},
     ws_id: ?[]const u8 = null,
     status: []const u8,
     title: []const u8,
@@ -71,6 +72,12 @@ pub const RulePr = struct {
     operation_count: i32 = 0,
     op_type: []const u8 = "",
     comment_count: i32 = 0,
+};
+
+pub const OperationTarget = struct {
+    target_kind: []const u8,
+    target_path: []const u8,
+    type: []const u8 = "",
 };
 
 pub const RuleStats = struct {

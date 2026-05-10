@@ -51,6 +51,7 @@ pub const State = struct {
     pr_composer_target: ?DraftTarget = null,
     pr_composer_operation: drafts_mod.DraftOperation = .modify,
     pr_composer_path_owned: ?[]const u8 = null,
+    pr_composer_batch_targets: []DraftTarget = &.{},
     pr_composer_submitting: bool = false,
 
     show_new_draft_form: bool = false,
