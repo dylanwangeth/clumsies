@@ -792,7 +792,7 @@ fn drawBundleReviewDetailPanel(
         try std.fmt.allocPrint(ctx.arena, "Bundle Change · {s}", .{op_label})
     else
         "Bundle Change";
-    const change_panel = try drawReviewDiffPanel(self, change_ctx, bundle_title, bundleNameForPr(pr));
+    const change_panel = try drawBundleChangePanel(self, change_ctx, pr, bundle_title);
     const comment_panel = try drawReviewCommentPanel(self, comment_ctx, pr);
 
     const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
@@ -800,6 +800,92 @@ fn drawBundleReviewDetailPanel(
     children[1] = .{ .origin = .{ .row = 0, .col = @as(i17, @intCast(change_w + 1)) }, .surface = comment_panel };
     surface.children = children;
     return surface;
+}
+
+fn drawBundleChangePanel(
+    self: anytype,
+    ctx: vxfw.DrawContext,
+    pr: *const data.PullRequestEntry,
+    title: []const u8,
+) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(self.review.detail_pane == .diff), theme.PANEL);
+    w.writeText(&surface, ctx, 2, 0, title, theme.boldOn(theme.PANEL, theme.TEXT));
+    const bundle_name = bundleNameForPr(pr);
+    const meta_min_col: u16 = @intCast(2 + ctx.stringWidth(title) + 2);
+    if (bundle_name.len > 0) {
+        _ = w.writeHeaderRightIfFits(&surface, ctx, 0, meta_min_col, bundle_name, theme.fg(theme.MUTED));
+    }
+
+    const body_col: u16 = 2;
+    const body_w = size.width -| 4;
+    var row: u16 = 2;
+    row = writeBundleField(&surface, ctx, row, body_col, body_w, "Bundle", bundle_name);
+    const op_label = bundlePrOpLabel(pr);
+    if (op_label.len > 0) {
+        row = writeBundleField(&surface, ctx, row + 1, body_col, body_w, "Operation", op_label);
+    }
+    row += 1;
+
+    const add_count = countBundleOps(pr, "bundle_add");
+    const remove_count = countBundleOps(pr, "bundle_remove");
+    if (std.mem.eql(u8, op_label, "create")) {
+        _ = writeBundleRuleSection(&surface, ctx, row, body_col, body_w, "Included rules", pr, "bundle_add", add_count);
+    } else {
+        row = writeBundleRuleSection(&surface, ctx, row, body_col, body_w, "Added rules", pr, "bundle_add", add_count);
+        _ = writeBundleRuleSection(&surface, ctx, row + 1, body_col, body_w, "Removed rules", pr, "bundle_remove", remove_count);
+    }
+    return surface;
+}
+
+fn writeBundleField(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    row: u16,
+    col: u16,
+    width: u16,
+    label: []const u8,
+    value: []const u8,
+) u16 {
+    if (row >= surface.size.height -| 1) return row;
+    return w.writeKvMax(surface, ctx, col, row, width, label, value, 10);
+}
+
+fn writeBundleRuleSection(
+    surface: *vxfw.Surface,
+    ctx: vxfw.DrawContext,
+    start_row: u16,
+    col: u16,
+    width: u16,
+    title: []const u8,
+    pr: *const data.PullRequestEntry,
+    op_type: []const u8,
+    count: usize,
+) u16 {
+    var row = start_row;
+    if (row >= surface.size.height -| 1) return row;
+    w.writeTextMax(surface, ctx, col, row, width, title, theme.fg(theme.MUTED));
+    row += 1;
+    if (count == 0) {
+        if (row < surface.size.height -| 1) w.writeTextMax(surface, ctx, col, row, width, "none", theme.fg(theme.TEXT_SOFT));
+        return row + 1;
+    }
+    for (pr.changes) |change| {
+        if (!std.mem.eql(u8, change.op_type, op_type)) continue;
+        if (row >= surface.size.height -| 1) break;
+        const marker = if (std.mem.eql(u8, op_type, "bundle_remove")) "- " else "+ ";
+        const rule_path = if (change.rule_path.len > 0) change.rule_path else change.base_hash;
+        const line = std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ marker, rule_path }) catch rule_path;
+        const style = if (std.mem.eql(u8, op_type, "bundle_remove"))
+            theme.fg(theme.DANGER)
+        else
+            theme.fg(theme.TEXT_SOFT);
+        w.writeTextMax(surface, ctx, col, row, width, line, style);
+        row += 1;
+    }
+    return row;
 }
 
 pub fn reviewChangesPanelWidth(body_w: u16) u16 {
