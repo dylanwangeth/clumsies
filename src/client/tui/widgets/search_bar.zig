@@ -39,7 +39,7 @@ pub const SearchBar = struct {
         paintSlot(surface, col, row - 1, width, bg);
         paintSlot(surface, col, row, width, bg);
         paintSlot(surface, col, row + 1, width, bg);
-        drawFrame(surface, col, row - 1, width, 3, bg, theme.ACCENT_SOFT);
+        drawFrame(surface, col, row - 1, width, 3, bg, theme.focusBorder(self.active));
 
         const icon = "⌕";
         const is_placeholder = self.len.* == 0 and !self.active;
