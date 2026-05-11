@@ -3,6 +3,7 @@ const testing = std.testing;
 const flag = @import("../flags.zig");
 const hub_client = @import("../hub_client.zig");
 const auth_mod = @import("../auth.zig");
+const workspace_config = @import("../workspace_config.zig");
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 const LoginResponse = auth_api.LoginResponse;
 const HubClient = hub_client.HubClient;
@@ -47,7 +48,10 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
     defer result.deinit(allocator);
 
-    const hub_url = normalizeHubUrl(allocator, result.value(0) orelse DEFAULT_HUB_URL) catch |err| switch (err) {
+    const hub_url_raw = try resolveHubUrlRaw(allocator, result.value(0));
+    defer allocator.free(hub_url_raw);
+
+    const hub_url = normalizeHubUrl(allocator, hub_url_raw) catch |err| switch (err) {
         error.InvalidHubUrl => {
             try stderr.print("{s}{s}{s}Error:{s} Invalid hub URL. Use a full URL like http://127.0.0.1:8400 or localhost:8400.\n", .{
                 P,
@@ -332,6 +336,15 @@ fn normalizeHubUrl(allocator: std.mem.Allocator, raw: []const u8) HubUrlError![]
     return normalized;
 }
 
+fn resolveHubUrlRaw(allocator: std.mem.Allocator, explicit: ?[]const u8) ![]const u8 {
+    if (explicit) |value| return try allocator.dupe(u8, value);
+
+    return workspace_config.loadServerUrl(allocator) catch |err| switch (err) {
+        error.NoConfigFound => try allocator.dupe(u8, DEFAULT_HUB_URL),
+        else => return err,
+    };
+}
+
 test "LoginResponse parsing ignores expires_in" {
     const body =
         \\{"access_token":"acc","refresh_token":"ref","expires_in":3600}
@@ -373,6 +386,13 @@ test "normalizeHubUrl rejects unsupported schemes" {
     try testing.expectError(error.UnsupportedHubUrlScheme, normalizeHubUrl(testing.allocator, "ftp://localhost:8410"));
 }
 
+test "resolveHubUrlRaw prefers explicit value" {
+    const resolved = try resolveHubUrlRaw(testing.allocator, "http://example.test:8400");
+    defer testing.allocator.free(resolved);
+
+    try testing.expectEqualStrings("http://example.test:8400", resolved);
+}
+
 test "printHubRequestError formats connection refused without stack-oriented detail" {
     var capture = std.Io.Writer.Allocating.init(testing.allocator);
     defer capture.deinit();
@@ -412,6 +432,6 @@ fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies login [--hub-url <url>] [--username <user>]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Authenticate with a Clumsies Hub instance.\n", .{P});
     try out.print("{s}Flags:\n", .{P});
-    try out.print("{s}  {s}--hub-url <url>{s}   Hub URL (default: {s})\n", .{ P, Color.cyan, Color.reset, DEFAULT_HUB_URL });
+    try out.print("{s}  {s}--hub-url <url>{s}   Hub URL (default: configured server URL, then {s})\n", .{ P, Color.cyan, Color.reset, DEFAULT_HUB_URL });
     try out.print("{s}  {s}--username <user>{s} Username (prompted if omitted)\n", .{ P, Color.cyan, Color.reset });
 }

@@ -33,6 +33,7 @@ const util_hash = @import("clumsies_lib").util.hash;
 const tui_prefs = @import("prefs.zig");
 
 const log = std.log.scoped(.tui_event);
+const DEFAULT_HUB_URL = "http://127.0.0.1:8400";
 
 const editor_host = runtime.editor_host;
 const attestation_reader = runtime.attestation_reader;
@@ -1085,9 +1086,13 @@ pub const Shell = struct {
     }
 
     fn seedLoginDefaults(self: *Shell) void {
-        const default_url = "http://127.0.0.1:8400";
-        @memcpy(self.login_hub_url_buf[0..default_url.len], default_url);
-        self.login_hub_url_len = default_url.len;
+        const alloc = self.api_state.backing_allocator;
+        const configured_url = workspace_config.loadServerUrl(alloc) catch null;
+        defer if (configured_url) |url| alloc.free(url);
+        const default_url = configured_url orelse DEFAULT_HUB_URL;
+        const url = if (default_url.len <= self.login_hub_url_buf.len) default_url else DEFAULT_HUB_URL;
+        @memcpy(self.login_hub_url_buf[0..url.len], url);
+        self.login_hub_url_len = url.len;
         self.login_focus = .username;
     }
 
