@@ -285,10 +285,12 @@ fn localTempIdPrefix(category: DraftCategory) []const u8 {
 
 pub const DraftIdentity = struct {
     draft_path: []const u8,
+    previous_path: ?[]const u8 = null,
     local_temp_id: ?[]const u8 = null,
 
     pub fn deinit(self: DraftIdentity, allocator: std.mem.Allocator) void {
         allocator.free(self.draft_path);
+        if (self.previous_path) |path| allocator.free(path);
         if (self.local_temp_id) |id| allocator.free(id);
     }
 };
@@ -483,7 +485,7 @@ pub fn renameCreateDraftById(
     }
 
     const old_path = try allocator.dupe(u8, entry.draft_path);
-    defer allocator.free(old_path);
+    errdefer allocator.free(old_path);
     const local_temp_id = if (entry.local_temp_id) |temp_id|
         try allocator.dupe(u8, temp_id)
     else
@@ -495,18 +497,21 @@ pub fn renameCreateDraftById(
     const content = try readDraftFile(allocator, ws_dir, category, old_path);
     defer allocator.free(content);
     try writeDraftFileAbs(allocator, ws_dir, category, new_path, content);
-    discardDraftFile(allocator, ws_dir, category, old_path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
-    };
+    errdefer discardDraftFile(allocator, ws_dir, category, new_path) catch {};
 
     entry.draft_path = new_path;
     if (description) |desc| entry.description = desc;
     entry.status = .draft;
     try writeIndexAtomic(allocator, ws_dir, index.entries.items);
 
+    discardDraftFile(allocator, ws_dir, category, old_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+
     return .{
         .draft_path = new_path_owned,
+        .previous_path = old_path,
         .local_temp_id = local_temp_id,
     };
 }
