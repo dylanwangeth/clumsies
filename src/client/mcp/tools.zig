@@ -745,7 +745,7 @@ fn handleReject(
 fn proposeErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
     return tool_result.buildErrorResult(allocator, switch (err) {
         error.InvalidParams => "invalid parameters",
-        error.FileNotFound => "file not found in cache",
+        error.FileNotFound => "artifact or draft not found",
         error.DraftAlreadyExists => "draft already exists for this path",
         error.DraftOperationConflict => "artifact already has an incompatible local change",
         error.UnsafeDraftPath => "unsafe path",
@@ -827,7 +827,10 @@ fn handleDraftDiscard(
     const id = resourceId(args, category) orelse return error.InvalidParams;
     if (id.len == 0) return error.InvalidParams;
 
-    const draft_path = try drafts_mod.discardDraftById(allocator, workspace_root, category, id) orelse return error.FileNotFound;
+    const draft_path = (try drafts_mod.discardDraftById(allocator, workspace_root, category, id)) orelse blk: {
+        if (category != .meta_prompt) return error.FileNotFound;
+        break :blk (try drafts_mod.discardDraftById(allocator, workspace_root, category, "META_PROMPT.md")) orelse return error.FileNotFound;
+    };
     defer allocator.free(draft_path);
 
     session.recordEvent(allocator, .{ .draft_discard = .{
@@ -993,8 +996,24 @@ fn handleProposeRename(
     defer manifest.deinit(allocator);
 
     const m_entry = switch (category) {
-        .context => manifest.context.get(id) orelse return error.FileNotFound,
-        .rule => manifest.rules.get(id) orelse return error.FileNotFound,
+        .context => manifest.context.get(id) orelse {
+            if (try drafts_mod.renameCreateDraftById(allocator, workspace_root, category, id, new_path, description)) |draft| {
+                defer draft.deinit(allocator);
+                const event_id = draft.local_temp_id orelse id;
+                session.recordEvent(allocator, .{ .context_propose_rename = .{ .id = event_id, .path = id, .new_path = draft.draft_path } });
+                return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
+            }
+            return error.FileNotFound;
+        },
+        .rule => manifest.rules.get(id) orelse {
+            if (try drafts_mod.renameCreateDraftById(allocator, workspace_root, category, id, new_path, description)) |draft| {
+                defer draft.deinit(allocator);
+                const event_id = draft.local_temp_id orelse id;
+                session.recordEvent(allocator, .{ .rule_propose_rename = .{ .id = event_id, .path = id, .new_path = draft.draft_path } });
+                return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
+            }
+            return error.FileNotFound;
+        },
         .meta_prompt => return error.InvalidParams,
     };
 
@@ -1359,6 +1378,63 @@ test "artifact tool updates newly created context draft" {
     try testing.expectEqualStrings("second", entry.description.?);
 }
 
+test "artifact tool renames newly created context draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try drafts_mod.createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "notes/UI.md",
+        .local_temp_id = "tmp-context-1",
+        .description = "first",
+    }, "draft body");
+
+    const args_json =
+        \\{
+        \\  "resource": "context",
+        \\  "op": {
+        \\    "rename": {
+        \\      "id": "tmp-context-1",
+        \\      "new_path": "specs/UI_MODULE_PLAN.md",
+        \\      "description": "move to specs"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, root),
+    };
+    defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
+
+    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"id\":\"tmp-context-1\"") != null);
+
+    const content = try drafts_mod.readDraftFile(testing.allocator, root, .context, "specs/UI_MODULE_PLAN.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("draft body", content);
+
+    try testing.expectError(error.FileNotFound, drafts_mod.readDraftFile(testing.allocator, root, .context, "notes/UI.md"));
+
+    var index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expect(index.findCreateByDraftPath("notes/UI.md") == null);
+    const entry = index.findCreateByDraftPath("specs/UI_MODULE_PLAN.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("tmp-context-1", entry.local_temp_id.?);
+    try testing.expectEqualStrings("move to specs", entry.description.?);
+}
+
 test "artifact tool discards rule change by local temp id" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1401,6 +1477,51 @@ test "artifact tool discards rule change by local temp id" {
     var index = try drafts_mod.loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
     try testing.expect(index.findByLocalTempId("tmp-rule-1") == null);
+}
+
+test "artifact tool discards MPF draft by manifest id" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try drafts_mod.createDraft(testing.allocator, root, .{
+        .category = .meta_prompt,
+        .operation = .modify,
+        .draft_path = "META_PROMPT.md",
+        .current_path = "META_PROMPT.md",
+        .base_hash = "sha256:old",
+    }, "draft mpf");
+
+    const args_json =
+        \\{
+        \\  "resource": "mpf",
+        \\  "op": {
+        \\    "discard": {
+        \\      "id": "p-0cba8168-fcc6-4151-b06b-b5e1b1c6bc29"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, root),
+    };
+    defer session.deinit(testing.allocator);
+    try session.bind(testing.allocator, "test-session");
+
+    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+
+    var index = try drafts_mod.loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expect(index.findByCurrentPath(.meta_prompt, "META_PROMPT.md") == null);
 }
 
 test "artifact tool updates MPF change" {

@@ -439,6 +439,78 @@ pub fn updateCreateDraftContentById(
     };
 }
 
+pub fn renameCreateDraftById(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    id: []const u8,
+    new_path: []const u8,
+    description: ?[]const u8,
+) !?DraftIdentity {
+    if (!path_util.isSafeRelative(new_path)) return error.UnsafeDraftPath;
+
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    var entry_opt: ?*DraftEntry = null;
+    for (index.entries.items) |*candidate| {
+        if (candidate.category != category) continue;
+        if (std.mem.eql(u8, candidate.draft_path, id)) {
+            entry_opt = candidate;
+            break;
+        }
+        if (candidate.local_temp_id) |value| {
+            if (std.mem.eql(u8, value, id)) {
+                entry_opt = candidate;
+                break;
+            }
+        }
+        if (candidate.current_path) |value| {
+            if (std.mem.eql(u8, value, id)) {
+                entry_opt = candidate;
+                break;
+            }
+        }
+    }
+    const entry = entry_opt orelse return null;
+    if (entry.operation != .create) return null;
+
+    for (index.entries.items) |*other| {
+        if (other == entry) continue;
+        if (other.category != category) continue;
+        if (isTerminalStatus(other.status)) continue;
+        if (std.mem.eql(u8, other.draft_path, new_path)) return error.DraftAlreadyExists;
+    }
+
+    const old_path = try allocator.dupe(u8, entry.draft_path);
+    defer allocator.free(old_path);
+    const local_temp_id = if (entry.local_temp_id) |temp_id|
+        try allocator.dupe(u8, temp_id)
+    else
+        null;
+    errdefer if (local_temp_id) |temp_id| allocator.free(temp_id);
+    const new_path_owned = try allocator.dupe(u8, new_path);
+    errdefer allocator.free(new_path_owned);
+
+    const content = try readDraftFile(allocator, ws_dir, category, old_path);
+    defer allocator.free(content);
+    try writeDraftFileAbs(allocator, ws_dir, category, new_path, content);
+    discardDraftFile(allocator, ws_dir, category, old_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+
+    entry.draft_path = new_path;
+    if (description) |desc| entry.description = desc;
+    entry.status = .draft;
+    try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+
+    return .{
+        .draft_path = new_path_owned,
+        .local_temp_id = local_temp_id,
+    };
+}
+
 /// Remove a draft: delete its content file (if any) and drop its entry
 /// from the index. Idempotent when the entry is already absent.
 pub fn discardDraft(
@@ -465,6 +537,15 @@ pub fn discardDraft(
 
     if (removed) try writeIndexAtomic(allocator, ws_dir, kept.items);
 
+    try discardDraftFile(allocator, ws_dir, category, draft_path);
+}
+
+fn discardDraftFile(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+) !void {
     const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString(), draft_path });
     defer allocator.free(abs_path);
     std.fs.deleteFileAbsolute(abs_path) catch |err| switch (err) {
