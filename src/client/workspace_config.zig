@@ -87,6 +87,13 @@ pub fn listWorkspaces(allocator: std.mem.Allocator) ![]WorkspaceListEntry {
     return try list.toOwnedSlice(allocator);
 }
 
+pub fn loadServerUrl(allocator: std.mem.Allocator) ![]const u8 {
+    var parsed = try loadConfig(allocator);
+    defer parsed.deinit();
+
+    return try allocator.dupe(u8, parsed.value.server.url);
+}
+
 pub fn deinitWorkspaceList(allocator: std.mem.Allocator, list: []WorkspaceListEntry) void {
     for (list) |entry| {
         allocator.free(entry.ws_id);
