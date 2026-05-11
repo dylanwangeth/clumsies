@@ -380,6 +380,7 @@ pub fn syncArtifactTree(self: anytype) void {
     const rules = self.getRules();
     const create_paths = self.drafts.create_rule_paths;
     const selected_bundle_rule_ids = selectedBundleRuleIds(self);
+    const search_query = self.searchQuery();
 
     const allocator = self.api_state.allocator();
     const path_capacity = rules.len + create_paths.len;
@@ -392,7 +393,7 @@ pub fn syncArtifactTree(self: anytype) void {
         if (selected_bundle_rule_ids) |rule_ids| {
             if (!bundleContainsRule(rule_ids, p.rule_id)) continue;
         }
-        if (!self.searchMatches(p.path)) continue;
+        if (search_query.len > 0 and !self.searchMatchesQuery(p.path, search_query)) continue;
         filtered_paths[filtered_len] = p.path;
         filtered_orig[filtered_len] = pidx;
         filtered_len += 1;
@@ -404,7 +405,7 @@ pub fn syncArtifactTree(self: anytype) void {
         // this bundle"; showing unrelated draft rows there makes a
         // partially-loaded bundle look like it contains only the draft.
         for (create_paths, 0..) |path, k| {
-            if (!self.searchMatches(path)) continue;
+            if (search_query.len > 0 and !self.searchMatchesQuery(path, search_query)) continue;
             filtered_paths[filtered_len] = path;
             filtered_orig[filtered_len] = rules.len + k;
             filtered_len += 1;

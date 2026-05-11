@@ -138,21 +138,9 @@ fn containsSearchText(haystack: []const u8, needle: []const u8) bool {
 
     var i: usize = 0;
     while (i + needle.len <= haystack.len) : (i += 1) {
-        if (asciiEqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
     }
     return false;
-}
-
-fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |ca, cb| {
-        if (asciiLower(ca) != asciiLower(cb)) return false;
-    }
-    return true;
-}
-
-fn asciiLower(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + ('a' - 'A') else c;
 }
 
 const top_tabs = [_]TopModule{ .dashboard, .workspace, .artifact, .review, .analysis };
@@ -1133,6 +1121,11 @@ pub const Shell = struct {
 
     pub fn searchMatches(self: *const Shell, text: []const u8) bool {
         return containsSearchText(text, self.searchQuery());
+    }
+
+    pub fn searchMatchesQuery(self: *const Shell, text: []const u8, query: []const u8) bool {
+        _ = self;
+        return containsSearchText(text, query);
     }
 
     fn handleSearchKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {

@@ -930,6 +930,7 @@ pub fn syncWsRows(self: anytype) void {
         self.workspaceDetailForView(ws_id)
     else
         null;
+    const search_query = self.searchQuery();
 
     const allocator = self.api_state.allocator();
     const path_capacity = switch (self.workspace.tab) {
@@ -953,7 +954,7 @@ pub fn syncWsRows(self: anytype) void {
             const context_count = if (live_ws) |ws_d| ws_d.workspace_context.len else 0;
             if (live_ws) |ws_d| {
                 for (ws_d.workspace_context, 0..) |item, i| {
-                    if (!self.searchMatches(item.path)) continue;
+                    if (search_query.len > 0 and !self.searchMatchesQuery(item.path, search_query)) continue;
                     paths_buf[item_count] = item.path;
                     orig_idx[item_count] = i;
                     item_count += 1;
@@ -965,7 +966,7 @@ pub fn syncWsRows(self: anytype) void {
             // create-only drafts.
             const create_paths = self.drafts.create_context_paths;
             for (create_paths, 0..) |path, k| {
-                if (!self.searchMatches(path)) continue;
+                if (search_query.len > 0 and !self.searchMatchesQuery(path, search_query)) continue;
                 paths_buf[item_count] = path;
                 orig_idx[item_count] = context_count + k;
                 item_count += 1;
@@ -976,7 +977,7 @@ pub fn syncWsRows(self: anytype) void {
             if (live_ws) |ws_d| {
                 for (ws_d.workspace_rules, 0..) |wp, i| {
                     const path = self.pathForWorkspaceRule(wp);
-                    if (!self.searchMatches(path)) continue;
+                    if (search_query.len > 0 and !self.searchMatchesQuery(path, search_query)) continue;
                     paths_buf[item_count] = path;
                     orig_idx[item_count] = i;
                     item_count += 1;
@@ -987,7 +988,7 @@ pub fn syncWsRows(self: anytype) void {
             // hub manifest knows about them.
             const create_paths = self.drafts.create_rule_paths;
             for (create_paths, 0..) |path, k| {
-                if (!self.searchMatches(path)) continue;
+                if (search_query.len > 0 and !self.searchMatchesQuery(path, search_query)) continue;
                 paths_buf[item_count] = path;
                 orig_idx[item_count] = rule_count + k;
                 item_count += 1;
