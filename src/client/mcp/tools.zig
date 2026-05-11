@@ -1000,7 +1000,7 @@ fn handleProposeRename(
             if (try drafts_mod.renameCreateDraftById(allocator, workspace_root, category, id, new_path, description)) |draft| {
                 defer draft.deinit(allocator);
                 const event_id = draft.local_temp_id orelse id;
-                session.recordEvent(allocator, .{ .context_propose_rename = .{ .id = event_id, .path = id, .new_path = draft.draft_path } });
+                session.recordEvent(allocator, .{ .context_propose_rename = .{ .id = event_id, .path = draft.previous_path.?, .new_path = draft.draft_path } });
                 return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
             }
             return error.FileNotFound;
@@ -1009,7 +1009,7 @@ fn handleProposeRename(
             if (try drafts_mod.renameCreateDraftById(allocator, workspace_root, category, id, new_path, description)) |draft| {
                 defer draft.deinit(allocator);
                 const event_id = draft.local_temp_id orelse id;
-                session.recordEvent(allocator, .{ .rule_propose_rename = .{ .id = event_id, .path = id, .new_path = draft.draft_path } });
+                session.recordEvent(allocator, .{ .rule_propose_rename = .{ .id = event_id, .path = draft.previous_path.?, .new_path = draft.draft_path } });
                 return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
             }
             return error.FileNotFound;
@@ -1165,6 +1165,21 @@ fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !vo
 
 fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {
     return tmp.dir.realpath(".", buf) catch "";
+}
+
+fn draftRenameEventUsesPath(
+    allocator: std.mem.Allocator,
+    ws_id: []const u8,
+    session_id: []const u8,
+    path: []const u8,
+) bool {
+    const attestation_path = attestation.sessionAttestationFilePath(allocator, ws_id, session_id) catch return false;
+    defer allocator.free(attestation_path);
+    const content = std.fs.cwd().readFileAlloc(allocator, attestation_path, 1024 * 1024) catch return false;
+    defer allocator.free(content);
+    const needle = std.fmt.allocPrint(allocator, "\"path\":\"{s}\"", .{path}) catch return false;
+    defer allocator.free(needle);
+    return std.mem.indexOf(u8, content, needle) != null;
 }
 
 test "buildListResult: exposes memory tools and unified artifact tool" {
@@ -1426,6 +1441,7 @@ test "artifact tool renames newly created context draft" {
     try testing.expectEqualStrings("draft body", content);
 
     try testing.expectError(error.FileNotFound, drafts_mod.readDraftFile(testing.allocator, root, .context, "notes/UI.md"));
+    try testing.expect(draftRenameEventUsesPath(testing.allocator, "ws-test", "test-session", "notes/UI.md"));
 
     var index = try drafts_mod.loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
