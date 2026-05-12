@@ -16,6 +16,7 @@ const ApiStateUploader = struct {
         const snapshot = try self.snapshotAuth();
 
         var client = HubClient.init(self.allocator, snapshot.hub_url, snapshot.access_token);
+        client.client_id = self.api_state.clientIdHex();
         defer client.deinit();
         var response = client.post("/api/attestations", body) catch |err| {
             log.warn("POST /api/attestations transport error: {}", .{err});
@@ -34,6 +35,7 @@ const ApiStateUploader = struct {
             response_active = false;
 
             var retry_client = HubClient.init(self.allocator, snapshot.hub_url, tokens.access_token);
+            retry_client.client_id = self.api_state.clientIdHex();
             defer retry_client.deinit();
             response = retry_client.post("/api/attestations", body) catch |err| {
                 log.warn("POST /api/attestations transport error: {}", .{err});

@@ -54,72 +54,13 @@ pub fn main() !void {
 }
 
 fn loadEnvMap(allocator: std.mem.Allocator) !std.process.EnvMap {
-    var env_map = try std.process.getEnvMap(allocator);
-    errdefer env_map.deinit();
-
-    loadDotEnv(allocator, &env_map);
-    return env_map;
-}
-
-fn loadDotEnv(allocator: std.mem.Allocator, env_map: *std.process.EnvMap) void {
-    const file = std.fs.cwd().openFile(".env", .{}) catch return;
-    defer file.close();
-
-    const size = file.getEndPos() catch return;
-    if (size == 0) return;
-    const alloc_size = std.math.cast(usize, size) orelse return;
-    const contents = allocator.alloc(u8, alloc_size) catch return;
-    defer allocator.free(contents);
-
-    var buf: [4096]u8 = undefined;
-    var reader = std.fs.File.Reader.init(file, &buf);
-    reader.interface.readSliceAll(contents) catch return;
-
-    var iter = std.mem.splitSequence(u8, contents, "\n");
-    while (iter.next()) |line| {
-        applyEnvLine(allocator, env_map, line);
-    }
-}
-
-fn applyEnvLine(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, line: []const u8) void {
-    const trimmed = std.mem.trim(u8, line, " \t\r");
-    if (trimmed.len == 0 or trimmed[0] == '#') return;
-    const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return;
-    const key = std.mem.trim(u8, trimmed[0..eq], " \t");
-    const raw_value = std.mem.trim(u8, trimmed[eq + 1 ..], " \t");
-    const value = stripQuotes(raw_value);
-    if (env_map.get(key) != null) return;
-
-    const key_owned = allocator.dupe(u8, key) catch return;
-    const val_owned = allocator.dupe(u8, value) catch {
-        allocator.free(key_owned);
-        return;
-    };
-    env_map.put(key_owned, val_owned) catch {
-        allocator.free(key_owned);
-        allocator.free(val_owned);
-    };
-}
-
-fn stripQuotes(s: []const u8) []const u8 {
-    if (s.len >= 2 and ((s[0] == '"' and s[s.len - 1] == '"') or (s[0] == '\'' and s[s.len - 1] == '\''))) {
-        return s[1 .. s.len - 1];
-    }
-    return s;
+    return logger.loadEnvMap(allocator);
 }
 
 fn initHubLogger(env_map: *const std.process.EnvMap) void {
-    var level: std.log.Level = .info;
-    var invalid_level: ?[]const u8 = null;
-    if (env_map.get("CLUMSIES_LOG_LEVEL")) |raw| {
-        if (logger.parseLevel(raw)) |parsed| {
-            level = parsed;
-        } else {
-            invalid_level = raw;
-        }
-    }
-    logger.initBestEffort(.{ .level = level, .sink = .stderr });
-    if (invalid_level) |raw| logger.noteInvalidLevel(raw);
+    const config = logger.configFromEnvMap(env_map);
+    logger.initBestEffort(.{ .level = config.level, .sink = .stderr });
+    if (config.invalid_level) |raw| logger.noteInvalidLevel(raw);
 }
 
 test {

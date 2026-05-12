@@ -12,7 +12,13 @@ pub const Sink = union(enum) {
 pub const Options = struct {
     level: std.log.Level,
     sink: Sink,
+    rotate: bool = true,
+    max_bytes: u64 = DEFAULT_LOG_MAX_BYTES,
+    backups: usize = DEFAULT_LOG_BACKUPS,
 };
+
+pub const DEFAULT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub const DEFAULT_LOG_BACKUPS: usize = 10;
 
 var mutex: std.Thread.Mutex = .{};
 var active_level: std.log.Level = .warn;
@@ -49,6 +55,9 @@ pub fn init(options: Options) !void {
         },
         .file => |path| {
             try ensureParentDir(path);
+            if (options.rotate) {
+                try rotateLogFileIfNeeded(path, options.max_bytes, options.backups);
+            }
             const file = try std.fs.createFileAbsolute(path, .{ .truncate = false, .read = true });
             errdefer file.close();
             var writer = std.fs.File.Writer.init(file, &writer_buffer);
@@ -101,6 +110,34 @@ pub fn resolveLogFilePath(allocator: std.mem.Allocator, raw_path: []const u8) ![
     return std.fs.path.join(allocator, &.{ cwd, raw_path });
 }
 
+pub fn loadEnvMap(allocator: std.mem.Allocator) !std.process.EnvMap {
+    var env_map = try std.process.getEnvMap(allocator);
+    errdefer env_map.deinit();
+
+    loadDotEnv(allocator, &env_map);
+    return env_map;
+}
+
+pub fn loadDotEnv(allocator: std.mem.Allocator, env_map: *std.process.EnvMap) void {
+    const file = std.fs.cwd().openFile(".env", .{}) catch return;
+    defer file.close();
+
+    const size = file.getEndPos() catch return;
+    if (size == 0) return;
+    const alloc_size = std.math.cast(usize, size) orelse return;
+    const contents = allocator.alloc(u8, alloc_size) catch return;
+    defer allocator.free(contents);
+
+    var buf: [4096]u8 = undefined;
+    var reader = std.fs.File.Reader.init(file, &buf);
+    reader.interface.readSliceAll(contents) catch return;
+
+    var iter = std.mem.splitSequence(u8, contents, "\n");
+    while (iter.next()) |line| {
+        applyEnvLine(allocator, env_map, line);
+    }
+}
+
 pub fn logFn(
     comptime message_level: std.log.Level,
     comptime scope: @TypeOf(.enum_literal),
@@ -119,6 +156,36 @@ pub fn logFn(
     };
 
     writeLogLine(&writer.interface, message_level, scope, format, args, color_enabled) catch {
+        disableLocked();
+        return;
+    };
+    writer.interface.flush() catch {
+        disableLocked();
+        return;
+    };
+}
+
+pub fn httpAccessLogFn(
+    message_level: std.log.Level,
+    status: u16,
+    elapsed_ns: i128,
+    ip: []const u8,
+    client_id: []const u8,
+    method: []const u8,
+    path: []const u8,
+) void {
+    mutex.lock();
+    defer mutex.unlock();
+
+    if (active_sink == .disabled) return;
+    if (@intFromEnum(message_level) > @intFromEnum(active_level)) return;
+
+    const writer = if (active_writer) |*writer| writer else {
+        active_sink = .disabled;
+        return;
+    };
+
+    writeHttpAccessLine(&writer.interface, status, elapsed_ns, ip, client_id, method, path, color_enabled) catch {
         disableLocked();
         return;
     };
@@ -151,6 +218,41 @@ pub fn writeLogLine(
     }
 }
 
+pub fn writeHttpAccessLine(
+    writer: *std.Io.Writer,
+    status: u16,
+    elapsed_ns: i128,
+    ip: []const u8,
+    client_id: []const u8,
+    method: []const u8,
+    path: []const u8,
+    use_color: bool,
+) std.Io.Writer.Error!void {
+    var ts_buf: [19]u8 = undefined;
+    formatTimestamp(&ts_buf);
+    var duration_buf: [16]u8 = undefined;
+    const duration = formatDuration(&duration_buf, elapsed_ns);
+    const show_client_id = client_id.len > 0 and !std.mem.eql(u8, client_id, "-");
+
+    if (use_color) {
+        const dim = "\x1b[2m";
+        const reset = "\x1b[0m";
+        try writer.print(
+            dim ++ "{s}" ++ reset ++ " |{s} {d: >3} {s}| {s: >8} | {s} |{s} {s: ^6} {s}| {s}",
+            .{ ts_buf, statusColor(status), status, reset, duration, ip, methodColor(method), method, reset, path },
+        );
+    } else {
+        try writer.print(
+            "{s} | {d: >3} | {s: >8} | {s} | {s: <6} {s}",
+            .{ ts_buf, status, duration, ip, method, path },
+        );
+    }
+    if (show_client_id) {
+        try writer.print(" client_id={s}", .{client_id});
+    }
+    try writer.writeByte('\n');
+}
+
 pub fn noteInvalidLevel(raw: []const u8) void {
     if (failure_reported) return;
     const log = std.log.scoped(.logger);
@@ -166,22 +268,86 @@ pub fn redactedPath(path: []const u8) []const u8 {
 pub const EnvConfig = struct {
     level: std.log.Level,
     invalid_level: ?[]const u8,
+    rotate: bool,
+    max_bytes: u64,
+    backups: usize,
 };
 
-pub fn configFromEnv(allocator: std.mem.Allocator) EnvConfig {
-    var log_level: std.log.Level = .info;
-    var invalid_level: ?[]u8 = null;
+pub fn defaultEnvConfig() EnvConfig {
+    return .{
+        .level = .info,
+        .invalid_level = null,
+        .rotate = true,
+        .max_bytes = DEFAULT_LOG_MAX_BYTES,
+        .backups = DEFAULT_LOG_BACKUPS,
+    };
+}
 
-    if (std.process.getEnvVarOwned(allocator, "CLUMSIES_LOG_LEVEL")) |raw| {
+pub fn configFromEnvMap(env_map: *const std.process.EnvMap) EnvConfig {
+    var log_level: std.log.Level = .info;
+    var invalid_level: ?[]const u8 = null;
+    var rotate = true;
+    var max_bytes = DEFAULT_LOG_MAX_BYTES;
+    var backups = DEFAULT_LOG_BACKUPS;
+
+    if (env_map.get("CLUMSIES_LOG_LEVEL")) |raw| {
         if (parseLevel(raw)) |parsed| {
             log_level = parsed;
-            allocator.free(raw);
         } else {
             invalid_level = raw;
         }
-    } else |_| {}
+    }
 
-    return .{ .level = log_level, .invalid_level = invalid_level };
+    if (env_map.get("CLUMSIES_LOG_ROTATE")) |raw| {
+        rotate = !isFalseEnvValue(raw);
+    }
+
+    if (env_map.get("CLUMSIES_LOG_MAX_BYTES")) |raw| {
+        if (std.fmt.parseUnsigned(u64, raw, 10)) |parsed| {
+            max_bytes = parsed;
+        } else |_| {}
+    }
+
+    if (env_map.get("CLUMSIES_LOG_BACKUPS")) |raw| {
+        if (std.fmt.parseUnsigned(usize, raw, 10)) |parsed| {
+            backups = parsed;
+        } else |_| {}
+    }
+
+    return .{
+        .level = log_level,
+        .invalid_level = invalid_level,
+        .rotate = rotate,
+        .max_bytes = max_bytes,
+        .backups = backups,
+    };
+}
+
+fn applyEnvLine(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, line: []const u8) void {
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    if (trimmed.len == 0 or trimmed[0] == '#') return;
+    const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return;
+    const key = std.mem.trim(u8, trimmed[0..eq], " \t");
+    const raw_value = std.mem.trim(u8, trimmed[eq + 1 ..], " \t");
+    const value = stripQuotes(raw_value);
+    if (env_map.get(key) != null) return;
+
+    const key_owned = allocator.dupe(u8, key) catch return;
+    const val_owned = allocator.dupe(u8, value) catch {
+        allocator.free(key_owned);
+        return;
+    };
+    env_map.put(key_owned, val_owned) catch {
+        allocator.free(key_owned);
+        allocator.free(val_owned);
+    };
+}
+
+fn stripQuotes(s: []const u8) []const u8 {
+    if (s.len >= 2 and ((s[0] == '"' and s[s.len - 1] == '"') or (s[0] == '\'' and s[s.len - 1] == '\''))) {
+        return s[1 .. s.len - 1];
+    }
+    return s;
 }
 
 fn levelColor(comptime level: std.log.Level) []const u8 {
@@ -191,6 +357,24 @@ fn levelColor(comptime level: std.log.Level) []const u8 {
         .info => "\x1b[32m",
         .debug => "\x1b[36m",
     };
+}
+
+fn statusColor(status: u16) []const u8 {
+    if (status >= 500) return "\x1b[97;41m";
+    if (status >= 400) return "\x1b[30;43m";
+    if (status >= 300) return "\x1b[30;47m";
+    if (status >= 200) return "\x1b[30;42m";
+    return "\x1b[30;46m";
+}
+
+fn methodColor(method: []const u8) []const u8 {
+    if (std.mem.eql(u8, method, "GET")) return "\x1b[97;44m";
+    if (std.mem.eql(u8, method, "POST")) return "\x1b[30;46m";
+    if (std.mem.eql(u8, method, "PUT")) return "\x1b[30;43m";
+    if (std.mem.eql(u8, method, "DELETE")) return "\x1b[97;41m";
+    if (std.mem.eql(u8, method, "PATCH")) return "\x1b[30;42m";
+    if (std.mem.eql(u8, method, "HEAD")) return "\x1b[97;45m";
+    return "\x1b[30;47m";
 }
 
 fn levelText(comptime level: std.log.Level) []const u8 {
@@ -224,6 +408,24 @@ fn formatTimestamp(buf: *[19]u8) void {
     writeDigits2(buf[17..19], ds.getSecondsIntoMinute());
 }
 
+fn formatDuration(buf: *[16]u8, ns: i128) []const u8 {
+    const value: u128 = @intCast(@max(ns, 0));
+    var writer: std.Io.Writer = .fixed(buf);
+    if (value < std.time.ns_per_us) {
+        writer.print("{d}ns", .{value}) catch return "";
+    } else if (value < std.time.ns_per_ms) {
+        const us = value / std.time.ns_per_us;
+        writer.print("{d}us", .{us}) catch return "";
+    } else if (value < std.time.ns_per_s) {
+        const hundredths = value / (std.time.ns_per_ms / 100);
+        writer.print("{d}.{d:0>2}ms", .{ hundredths / 100, hundredths % 100 }) catch return "";
+    } else {
+        const hundredths = value / (std.time.ns_per_s / 100);
+        writer.print("{d}.{d:0>2}s", .{ hundredths / 100, hundredths % 100 }) catch return "";
+    }
+    return writer.buffered();
+}
+
 fn writeDigits2(buf: *[2]u8, val: anytype) void {
     const v: u8 = @intCast(val);
     buf[0] = '0' + v / 10;
@@ -236,6 +438,171 @@ fn writeDigits4(buf: *[4]u8, val: u16) void {
     buf[1] = @intCast('0' + (v / 100) % 10);
     buf[2] = @intCast('0' + (v / 10) % 10);
     buf[3] = @intCast('0' + v % 10);
+}
+
+fn rotateLogFileIfNeeded(path: []const u8, max_bytes: u64, backups: usize) !void {
+    if (max_bytes == 0 or backups == 0) return;
+
+    var file = std.fs.openFileAbsolute(path, .{ .mode = .read_only }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer file.close();
+
+    const stat = try file.stat();
+    if (stat.size == 0) return;
+
+    var current_date: [10]u8 = undefined;
+    formatDateFromSeconds(&current_date, @intCast(@max(std.time.milliTimestamp(), 0) / 1000));
+
+    var log_date: [10]u8 = undefined;
+    const archive_date = if (readLogDate(file, &log_date) or formatDateFromNs(stat.mtime, &log_date))
+        log_date[0..]
+    else
+        current_date[0..];
+
+    const stale_date = !std.mem.eql(u8, archive_date, current_date[0..]);
+    if (!stale_date and stat.size < max_bytes) return;
+
+    const allocator = std.heap.page_allocator;
+    const archive_path = try nextArchivePath(allocator, path, archive_date);
+    defer allocator.free(archive_path);
+
+    std.fs.renameAbsolute(path, archive_path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    try pruneLogArchives(allocator, path, backups);
+}
+
+fn readLogDate(file: std.fs.File, out: *[10]u8) bool {
+    var buf: [10]u8 = undefined;
+    const n = file.readAll(&buf) catch return false;
+    if (n != buf.len or !isDateStamp(buf[0..])) return false;
+    @memcpy(out, &buf);
+    return true;
+}
+
+fn formatDateFromNs(ns: i128, out: *[10]u8) bool {
+    if (ns < 0) return false;
+    const secs_i128 = @divFloor(ns, std.time.ns_per_s);
+    const secs = std.math.cast(u64, secs_i128) orelse return false;
+    formatDateFromSeconds(out, secs);
+    return true;
+}
+
+fn formatDateFromSeconds(out: *[10]u8, secs: u64) void {
+    const epoch_secs: epoch.EpochSeconds = .{ .secs = secs };
+    const ed = epoch_secs.getEpochDay();
+    const yd = ed.calculateYearDay();
+    const md = yd.calculateMonthDay();
+
+    writeDigits4(out[0..4], yd.year);
+    out[4] = '-';
+    writeDigits2(out[5..7], md.month.numeric());
+    out[7] = '-';
+    writeDigits2(out[8..10], md.day_index + 1);
+}
+
+fn isDateStamp(value: []const u8) bool {
+    if (value.len != 10) return false;
+    return std.ascii.isDigit(value[0]) and
+        std.ascii.isDigit(value[1]) and
+        std.ascii.isDigit(value[2]) and
+        std.ascii.isDigit(value[3]) and
+        value[4] == '-' and
+        std.ascii.isDigit(value[5]) and
+        std.ascii.isDigit(value[6]) and
+        value[7] == '-' and
+        std.ascii.isDigit(value[8]) and
+        std.ascii.isDigit(value[9]);
+}
+
+fn nextArchivePath(allocator: std.mem.Allocator, path: []const u8, date: []const u8) ![]u8 {
+    var suffix: usize = 0;
+    while (suffix < 10_000) : (suffix += 1) {
+        const candidate = try archivePath(allocator, path, date, suffix);
+        std.fs.accessAbsolute(candidate, .{}) catch |err| switch (err) {
+            error.FileNotFound => return candidate,
+            else => {
+                allocator.free(candidate);
+                return err;
+            },
+        };
+        allocator.free(candidate);
+    }
+    return error.NoAvailableArchiveName;
+}
+
+fn archivePath(allocator: std.mem.Allocator, path: []const u8, date: []const u8, suffix: usize) ![]u8 {
+    const dir = std.fs.path.dirname(path);
+    const base = std.fs.path.basename(path);
+    const stem = if (std.mem.endsWith(u8, base, ".log")) base[0 .. base.len - ".log".len] else base;
+    const archive_name = if (suffix == 0)
+        try std.fmt.allocPrint(allocator, "{s}-{s}.log", .{ stem, date })
+    else
+        try std.fmt.allocPrint(allocator, "{s}-{s}.{d}.log", .{ stem, date, suffix });
+    defer allocator.free(archive_name);
+
+    if (dir) |parent| return std.fs.path.join(allocator, &.{ parent, archive_name });
+    return allocator.dupe(u8, archive_name);
+}
+
+fn pruneLogArchives(allocator: std.mem.Allocator, active_path: []const u8, backups: usize) !void {
+    const dir_path = std.fs.path.dirname(active_path) orelse ".";
+    const base = std.fs.path.basename(active_path);
+    const stem = if (std.mem.endsWith(u8, base, ".log")) base[0 .. base.len - ".log".len] else base;
+    const prefix = try std.fmt.allocPrint(allocator, "{s}-", .{stem});
+    defer allocator.free(prefix);
+
+    var dir = try std.fs.openDirAbsolute(dir_path, .{ .iterate = true });
+    defer dir.close();
+
+    var archives: std.ArrayList(LogArchive) = .empty;
+    defer {
+        for (archives.items) |item| allocator.free(item.name);
+        archives.deinit(allocator);
+    }
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.startsWith(u8, entry.name, prefix)) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".log")) continue;
+        const stat = dir.statFile(entry.name) catch continue;
+        try archives.append(allocator, .{
+            .name = try allocator.dupe(u8, entry.name),
+            .mtime = stat.mtime,
+        });
+    }
+
+    if (archives.items.len <= backups) return;
+    std.mem.sort(LogArchive, archives.items, {}, logArchiveOlderThan);
+
+    const remove_count = archives.items.len - backups;
+    for (archives.items[0..remove_count]) |item| {
+        dir.deleteFile(item.name) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+    }
+}
+
+const LogArchive = struct {
+    name: []u8,
+    mtime: i128,
+};
+
+fn logArchiveOlderThan(_: void, lhs: LogArchive, rhs: LogArchive) bool {
+    if (lhs.mtime != rhs.mtime) return lhs.mtime < rhs.mtime;
+    return std.mem.lessThan(u8, lhs.name, rhs.name);
+}
+
+fn isFalseEnvValue(raw: []const u8) bool {
+    return std.mem.eql(u8, raw, "0") or
+        std.ascii.eqlIgnoreCase(raw, "false") or
+        std.ascii.eqlIgnoreCase(raw, "no") or
+        std.ascii.eqlIgnoreCase(raw, "off");
 }
 
 fn detectColor() bool {
@@ -329,6 +696,40 @@ test "writeLogLine omits ANSI codes when color disabled" {
     try testing.expect(std.mem.indexOf(u8, output, "[ERROR]") != null);
 }
 
+test "writeHttpAccessLine omits application log prefix" {
+    var buffer: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+
+    try writeHttpAccessLine(&writer, 400, 1_234_000, "127.0.0.1:8400", "client-1", "GET", "/bad", false);
+    const output = writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, output, "[WARN ]") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "(hub_request)") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "| 400 |   1.23ms | 127.0.0.1:8400") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "client_id=client-1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "| GET    /bad") != null);
+}
+
+test "writeHttpAccessLine colors only status and method" {
+    var buffer: [512]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+
+    try writeHttpAccessLine(&writer, 200, 7_917_000, "127.0.0.1:8400", "-", "GET", "/api/auth/me", true);
+    const output = writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[30;42m 200 \x1b[0m") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[97;44m  GET   \x1b[0m| /api/auth/me") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "|\x1b[30;42m 200 \x1b[0m|   7.91ms") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "127.0.0.1:8400") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "client_id=") == null);
+}
+
+test "formatDuration adapts units" {
+    var buf: [16]u8 = undefined;
+    try testing.expectEqualStrings("999ns", formatDuration(&buf, 999));
+    try testing.expectEqualStrings("742us", formatDuration(&buf, 742_000));
+    try testing.expectEqualStrings("7.91ms", formatDuration(&buf, 7_917_000));
+    try testing.expectEqualStrings("1.25s", formatDuration(&buf, 1_250_000_000));
+}
+
 test "clientDefaultLogPath uses local runtime logs directory" {
     const path = try clientDefaultLogPath(testing.allocator);
     defer testing.allocator.free(path);
@@ -337,4 +738,55 @@ test "clientDefaultLogPath uses local runtime logs directory" {
     defer testing.allocator.free(suffix);
 
     try testing.expect(std.mem.endsWith(u8, path, suffix));
+}
+
+test "file sink rotates stale dated client log on init" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestFile(tmp.dir, "client.log", "2000-01-01 00:00:00 [INFO ] (test): old\n");
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp.dir.realpath("client.log", &path_buf);
+
+    try init(.{ .level = .info, .sink = .{ .file = path }, .max_bytes = 1024, .backups = 3 });
+    defer deinit();
+
+    try tmp.dir.access("client-2000-01-01.log", .{});
+    try tmp.dir.access("client.log", .{});
+}
+
+test "file sink rotates oversized current client log on init" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var current_date: [10]u8 = undefined;
+    formatDateFromSeconds(&current_date, @intCast(@max(std.time.milliTimestamp(), 0) / 1000));
+    const content = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s} 00:00:00 [INFO ] (test): oversized\n",
+        .{current_date},
+    );
+    defer testing.allocator.free(content);
+    try writeTestFile(tmp.dir, "client.log", content);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp.dir.realpath("client.log", &path_buf);
+
+    try init(.{ .level = .info, .sink = .{ .file = path }, .max_bytes = 8, .backups = 3 });
+    defer deinit();
+
+    const archive_name = try std.fmt.allocPrint(testing.allocator, "client-{s}.log", .{current_date});
+    defer testing.allocator.free(archive_name);
+    try tmp.dir.access(archive_name, .{});
+    try tmp.dir.access("client.log", .{});
+}
+
+fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
+    const file = try dir.createFile(sub_path, .{});
+    defer file.close();
+    var write_buf: [4096]u8 = undefined;
+    var fw = std.fs.File.Writer.init(file, &write_buf);
+    defer fw.interface.flush() catch {};
+    try fw.interface.writeAll(content);
 }

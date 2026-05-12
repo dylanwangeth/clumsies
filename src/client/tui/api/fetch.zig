@@ -131,6 +131,7 @@ fn fetchAll(
     log.info("bootstrap_local_state_refreshed", .{});
 
     var client = HubClient.init(alloc, hub_url, access_token);
+    client.client_id = api_state.clientIdHex();
     defer client.deinit();
 
     var me_resp = client.get("/api/auth/me") catch {
@@ -152,6 +153,7 @@ fn fetchAll(
         me_resp_active = false;
 
         var retry_client = HubClient.init(alloc, hub_url, tokens.access_token);
+        retry_client.client_id = api_state.clientIdHex();
         defer retry_client.deinit();
         me_resp = retry_client.get("/api/auth/me") catch {
             log.warn("bootstrap_auth_me network_error", .{});
