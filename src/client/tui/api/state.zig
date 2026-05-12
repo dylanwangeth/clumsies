@@ -7,6 +7,8 @@ const collab_api = @import("clumsies_lib").protocol.collab_api;
 const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
+const auth_mod = @import("../../auth.zig");
+const HubClient = @import("../../hub_client.zig").HubClient;
 const data = @import("../models/view_types.zig");
 const drafts_reader = @import("../runtime/drafts_reader.zig");
 const attestation_reader = @import("../runtime/attestation_reader.zig");
@@ -96,8 +98,14 @@ pub const AttestationUploadResult = union(enum) {
     failed: []const u8,
 };
 
+pub const AuthTokenPair = struct {
+    access_token: []const u8,
+    refresh_token: []const u8,
+};
+
 pub const ApiState = struct {
     mutex: std.Thread.Mutex = .{},
+    auth_refresh_mutex: std.Thread.Mutex = .{},
     status: ConnectionStatus = .disconnected,
     current_user: ?model.UserData = null,
     directory: ?model.DirectoryData = null,
@@ -281,6 +289,87 @@ pub const ApiState = struct {
         self.mutex.unlock();
         if (old_access) |token| alloc.free(token);
         if (old_refresh) |token| alloc.free(token);
+    }
+
+    pub fn refreshAuthTokens(self: *ApiState, alloc: std.mem.Allocator, previous_access_token: []const u8) !AuthTokenPair {
+        self.auth_refresh_mutex.lock();
+        defer self.auth_refresh_mutex.unlock();
+
+        self.mutex.lock();
+        if (self.access_token) |current_access| {
+            if (!std.mem.eql(u8, current_access, previous_access_token)) {
+                const access_copy = alloc.dupe(u8, current_access) catch |err| {
+                    self.mutex.unlock();
+                    return err;
+                };
+                errdefer alloc.free(access_copy);
+                const current_refresh = self.refresh_token orelse {
+                    self.mutex.unlock();
+                    return error.NotAuthenticated;
+                };
+                const refresh_copy = alloc.dupe(u8, current_refresh) catch |err| {
+                    self.mutex.unlock();
+                    return err;
+                };
+                self.mutex.unlock();
+                return .{ .access_token = access_copy, .refresh_token = refresh_copy };
+            }
+        }
+
+        const hub_url = if (self.hub_url) |value| alloc.dupe(u8, value) catch |err| {
+            self.mutex.unlock();
+            return err;
+        } else {
+            self.mutex.unlock();
+            return error.NotAuthenticated;
+        };
+        errdefer alloc.free(hub_url);
+        const username = if (self.username) |value| alloc.dupe(u8, value) catch |err| {
+            self.mutex.unlock();
+            return err;
+        } else {
+            self.mutex.unlock();
+            return error.NotAuthenticated;
+        };
+        errdefer alloc.free(username);
+        const refresh_token = if (self.refresh_token) |value| alloc.dupe(u8, value) catch |err| {
+            self.mutex.unlock();
+            return err;
+        } else {
+            self.mutex.unlock();
+            return error.NotAuthenticated;
+        };
+        self.mutex.unlock();
+        errdefer alloc.free(refresh_token);
+
+        var client = HubClient.init(alloc, hub_url, null);
+        defer client.deinit();
+
+        const body = try std.json.Stringify.valueAlloc(
+            alloc,
+            auth_api.RefreshRequest{ .refresh_token = refresh_token },
+            .{},
+        );
+        defer alloc.free(body);
+
+        const resp = try client.post("/api/auth/refresh", body);
+        defer resp.deinit();
+        if (resp.status != .ok) return error.NotAuthenticated;
+
+        const parsed = std.json.parseFromSlice(auth_api.RefreshResponse, alloc, resp.body, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch return error.NotAuthenticated;
+        defer parsed.deinit();
+
+        const access_copy = try alloc.dupe(u8, parsed.value.access_token);
+        errdefer alloc.free(access_copy);
+        const next_refresh_copy = try alloc.dupe(u8, parsed.value.refresh_token);
+        errdefer alloc.free(next_refresh_copy);
+
+        self.updateAuthTokens(access_copy, next_refresh_copy);
+        auth_mod.persistRotatedTokens(alloc, hub_url, username, access_copy, next_refresh_copy) catch {};
+        return .{ .access_token = access_copy, .refresh_token = next_refresh_copy };
     }
 };
 
