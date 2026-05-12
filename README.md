@@ -45,17 +45,11 @@ Workspace view:
 
 ![TUI workspace view](assets/screenshots/tui_workspace.png)
 
-## Documentation
-
-For the full documentation site content, start here:
-
-- [Documentation site](https://lilhammerfun.github.io/clumsies/)
-- [Overview](https://lilhammerfun.github.io/clumsies/overview/)
-- [Architecture](https://lilhammerfun.github.io/clumsies/architecture/)
-- [Guides](https://lilhammerfun.github.io/clumsies/guides/)
-- [Reference](https://lilhammerfun.github.io/clumsies/reference/)
-
 ## Quick start
+
+This gets a local clumsies install running for one project. For the product
+model and system shape, see the [overview](https://lilhammerfun.github.io/clumsies/overview/)
+and [architecture](https://lilhammerfun.github.io/clumsies/architecture/).
 
 Build from source (requires [Zig 0.15+](https://ziglang.org/download/); add `zig-out/bin` to your `PATH` for convenience):
 
@@ -72,7 +66,8 @@ Start local PostgreSQL:
 docker compose up -d
 ```
 
-Start the Hub:
+Start the Hub. See the [deployment guide](https://lilhammerfun.github.io/clumsies/guides/deploy-for-an-org/)
+for organization bootstrap and self-hosted deployment notes.
 
 ```bash
 clumsies-hub
@@ -101,7 +96,9 @@ clumsies
 ```
 
 Use the TUI whenever you want to inspect workspace context, review rules,
-check activity, or manage workspaces and members.
+check activity, or manage workspaces and members. The
+[member workflow guide](https://lilhammerfun.github.io/clumsies/guides/how-to-use-clumsies/)
+walks through that day-to-day flow.
 
 `clumsies init` and `clumsies sync` still exist for explicit setup and
 automation, but they are no longer required for the normal quick start.
@@ -115,6 +112,7 @@ clumsies adapt --agent codex --scope workspace --yes
 Inside the TUI, use Workspace to inspect local context and rules, Artifact to
 browse shared rules and bundles, Review to handle PRs, and Settings to manage
 account, organization, tokens, members, workspaces, and local path bindings.
+For exact command flags, use the [CLI reference](https://lilhammerfun.github.io/clumsies/guides/cli-commands/).
 
 > [!TIP]
 > For iterative development, `just dev` spins up the Hub, seeds representative
