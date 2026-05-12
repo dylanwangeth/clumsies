@@ -42,9 +42,9 @@ pub fn run() !void {
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
 
-    var dashboard = Shell.init(&api_state, &app, &env_map);
+    var dashboard = Shell.init(&api_state, app, &env_map);
     defer dashboard.deinit();
-    try app.run(dashboard.widget(), .{ .mouse = false });
+    try app.run(dashboard.widget(), .{});
 }
 
 pub fn main() !void {

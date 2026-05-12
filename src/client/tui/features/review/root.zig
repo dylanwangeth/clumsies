@@ -219,6 +219,7 @@ fn buildRuleDetailBody(
             };
         },
         .pull_requests => {
+            self.requestSelectedRulePrs();
             const prs = self.getPrsForRule(rule.path);
             if (prs.len == 0) return .pull_request_empty;
 
@@ -1397,7 +1398,7 @@ pub fn fetchSelectedReviewPrDetail(self: anytype) void {
 
 pub fn syncContentWidget(self: anytype) void {
     syncContentWidgetForMode(self, !self.review.hide_diff);
-    self.requestSelectedRuleDetail();
+    self.requestSelectedRuleContent();
 }
 
 pub fn syncContentWidgetForMode(self: anytype, show_diff: bool) void {
@@ -1524,6 +1525,7 @@ pub fn syncPrWidgets(self: anytype) void {
         self.review.pr_scroll_bars.estimated_content_height = 0;
         return;
     }
+    self.requestSelectedRulePrs();
     const sel_idx = @min(self.artifact.selected_rule, all_rules.len - 1);
     const p = &all_rules[sel_idx];
     const prs = self.getPrsForRule(p.path);

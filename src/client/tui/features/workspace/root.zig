@@ -48,6 +48,8 @@ pub const State = struct {
     list_scroll_bars: vxfw.ScrollBars,
     context_tree: PathTreeState = .{},
     rules_tree: PathTreeState = .{},
+    rows_signature: u64 = 0,
+    rows_signature_valid: bool = false,
     local_arena: std.heap.ArenaAllocator,
     local_cache_id: ?[]const u8 = null,
     local_detail: ?api.model.WorkspaceDetail = null,
@@ -866,6 +868,8 @@ pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
     const dispatch_manifest =
         self.api_state.workspace_manifest_cache.shouldDispatch(.{ .value = ws_id }) and
         !self.api_state.workspace_manifest_pending.isInflight();
+    if (!dispatch_context and !dispatch_manifest) return;
+
     log.info("requestWorkspaceDetail module={s} ws_id={s} context={} manifest={}", .{
         @tagName(self.selected_module),
         ws_id,
@@ -931,6 +935,8 @@ pub fn syncWsRows(self: anytype) void {
     else
         null;
     const search_query = self.searchQuery();
+    const signature = workspaceRowsSignature(self, live_ws, search_query);
+    if (self.workspace.rows_signature_valid and self.workspace.rows_signature == signature) return;
 
     const allocator = self.api_state.allocator();
     const path_capacity = switch (self.workspace.tab) {
@@ -1007,6 +1013,63 @@ pub fn syncWsRows(self: anytype) void {
         self.workspace.list_scroll_bars.scroll_view.cursor = @intCast(self.workspace.list_sel);
         w.scrollCursorIntoView(&self.workspace.list_scroll_bars.scroll_view, ws_tree.rowCount());
     }
+    self.workspace.rows_signature = signature;
+    self.workspace.rows_signature_valid = true;
+}
+
+pub fn invalidateRows(self: anytype) void {
+    self.workspace.rows_signature_valid = false;
+}
+
+fn workspaceRowsSignature(
+    self: anytype,
+    live_ws: ?api.model.WorkspaceDetail,
+    search_query: []const u8,
+) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(@tagName(self.workspace.tab));
+    hasher.update(search_query);
+    if (self.activeWsId()) |ws_id| hasher.update(ws_id);
+    hashInt(&hasher, self.currentWsTree().expanded.count());
+    hashInt(&hasher, self.drafts.create_context_paths.len);
+    hashInt(&hasher, self.drafts.create_rule_paths.len);
+
+    switch (self.workspace.tab) {
+        .context => {
+            if (live_ws) |ws_d| {
+                hashInt(&hasher, ws_d.workspace_context.len);
+                for (ws_d.workspace_context) |item| {
+                    hasher.update(item.context_id);
+                    hasher.update(item.path);
+                    hasher.update(item.hash);
+                }
+            } else {
+                hashInt(&hasher, 0);
+            }
+            for (self.drafts.create_context_paths) |path| hasher.update(path);
+        },
+        .rules => {
+            if (live_ws) |ws_d| {
+                hashInt(&hasher, ws_d.workspace_rules.len);
+                for (ws_d.workspace_rules) |item| {
+                    hasher.update(item.rule_id);
+                    hasher.update(self.pathForWorkspaceRule(item));
+                    hasher.update(item.content_hash);
+                }
+            } else {
+                hashInt(&hasher, 0);
+            }
+            for (self.drafts.create_rule_paths) |path| hasher.update(path);
+        },
+    }
+
+    return hasher.final();
+}
+
+fn hashInt(hasher: *std.hash.Wyhash, value: usize) void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buf, @intCast(value), .little);
+    hasher.update(&buf);
 }
 
 fn resetScrollView(scroll_view: *vxfw.ScrollView) void {

@@ -32,10 +32,8 @@ pub const create_workspace = dispatcher.RequestSpec(
 };
 
 pub const PathParams = struct { path: []const u8 };
-pub const RuleContentParams = struct { path: []const u8, rule_id: ?[]const u8 = null };
 pub const BatchRuleContentParams = struct { rule_ids: []const []const u8 };
 pub const RulePrsParams = struct { rule_id: []const u8 };
-pub const WorkspaceContextContentParams = struct { ws_id: []const u8, path: []const u8 };
 pub const BatchWorkspaceContextContentParams = struct { ws_id: []const u8, paths: []const []const u8 };
 pub const WorkspaceIdParams = struct { ws_id: []const u8 };
 pub const WorkspaceRulesParams = struct { ws_id: []const u8, rule_ids: []const []const u8 };
@@ -46,7 +44,6 @@ pub const ReviewPrsParams = struct { target_kind: ?data.PrTargetKind = null, sta
 pub const RulePrsPayload = state.RulePrsPayload;
 pub const WorkspaceContextPayload = state.WorkspaceContextPayload;
 pub const WorkspaceManifestPayload = state.WorkspaceManifestPayload;
-pub const WorkspaceContextContentPayload = state.WorkspaceContextContentPayload;
 pub const WorkspaceContextContentBatchPayload = state.WorkspaceContextContentBatchPayload;
 pub const WorkspaceMembersPayload = state.WorkspaceMembersPayload;
 pub const PrCommentsPayload = state.PrCommentsPayload;
@@ -118,15 +115,6 @@ pub const CreateContextPrBatchParams = struct {
     operations: []const CreateContextPrOperation,
 };
 
-pub const artifact_rule_content = dispatcher.RequestSpec(
-    RuleContentParams,
-    artifact_api.RuleContentResponse,
-){
-    .method = .GET,
-    .path_builder = ruleContentPath,
-    .parse_ok = dispatcher.jsonParser(RuleContentParams, artifact_api.RuleContentResponse),
-};
-
 pub const artifact_rule_content_batch = dispatcher.RequestSpec(
     BatchRuleContentParams,
     artifact_api.BatchRuleContentResponse,
@@ -153,15 +141,6 @@ pub const review_prs = dispatcher.RequestSpec(
     .method = .GET,
     .path_builder = reviewPrsPath,
     .parse_ok = parseReviewPrsPayload,
-};
-
-pub const workspace_context_content = dispatcher.RequestSpec(
-    WorkspaceContextContentParams,
-    WorkspaceContextContentPayload,
-){
-    .method = .GET,
-    .path_builder = workspaceContextContentPath,
-    .parse_ok = parseWorkspaceContextContentPayload,
 };
 
 pub const workspace_context_content_batch = dispatcher.RequestSpec(
@@ -587,21 +566,6 @@ fn workspaceMemberPath(comptime ReqT: type) *const fn (std.mem.Allocator, ReqT) 
     }.build;
 }
 
-fn ruleContentPath(alloc: std.mem.Allocator, p: RuleContentParams) anyerror![]const u8 {
-    if (p.rule_id) |rule_id| {
-        const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
-            std.fmt.alt(std.Uri.Component{ .raw = rule_id }, .formatQuery),
-        });
-        defer alloc.free(encoded);
-        return std.fmt.allocPrint(alloc, "/api/org/artifact/rule/content?rule_id={s}", .{encoded});
-    }
-    const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
-        std.fmt.alt(std.Uri.Component{ .raw = p.path }, .formatQuery),
-    });
-    defer alloc.free(encoded);
-    return std.fmt.allocPrint(alloc, "/api/org/artifact/rule/content?path={s}", .{encoded});
-}
-
 fn batchRuleContentBody(alloc: std.mem.Allocator, p: BatchRuleContentParams) anyerror![]const u8 {
     return std.json.Stringify.valueAlloc(alloc, artifact_api.BatchRuleContentRequest{
         .rule_ids = p.rule_ids,
@@ -615,14 +579,6 @@ fn rulePrsPath(alloc: std.mem.Allocator, p: RulePrsParams) anyerror![]const u8 {
 fn reviewPrsPath(alloc: std.mem.Allocator, p: ReviewPrsParams) anyerror![]const u8 {
     const target = if (p.target_kind) |kind| kind.label() else "";
     return std.fmt.allocPrint(alloc, "/api/org/review/prs?target={s}&status={s}", .{ target, p.status });
-}
-
-fn workspaceContextContentPath(alloc: std.mem.Allocator, p: WorkspaceContextContentParams) anyerror![]const u8 {
-    const encoded = try std.fmt.allocPrint(alloc, "{f}", .{
-        std.fmt.alt(std.Uri.Component{ .raw = p.path }, .formatQuery),
-    });
-    defer alloc.free(encoded);
-    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/file/content?path={s}", .{ p.ws_id, encoded });
 }
 
 fn workspaceContextContentBatchPath(alloc: std.mem.Allocator, p: BatchWorkspaceContextContentParams) anyerror![]const u8 {
@@ -818,18 +774,6 @@ fn parseWorkspaceMembersPayload(
     return .{
         .ws_id = try alloc.dupe(u8, req.ws_id),
         .members = members,
-    };
-}
-
-fn parseWorkspaceContextContentPayload(
-    alloc: std.mem.Allocator,
-    req: WorkspaceContextContentParams,
-    body: []const u8,
-) anyerror!WorkspaceContextContentPayload {
-    return .{
-        .ws_id = try alloc.dupe(u8, req.ws_id),
-        .path = try alloc.dupe(u8, req.path),
-        .body = try alloc.dupe(u8, body),
     };
 }
 

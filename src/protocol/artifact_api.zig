@@ -27,10 +27,8 @@ pub const RuleContentResponse = struct {
     body: []const u8,
 };
 
-/// Batch rule content fetch. Used by `clumsies sync` to pull many
-/// rules in one request instead of one GET per rule. The single
-/// RuleContentResponse endpoint (used by TUI on-demand loads)
-/// remains; this is an additive sync-oriented path.
+/// Batch rule content fetch. Clients use this endpoint for both
+/// on-demand and bulk content loads, including one-item requests.
 pub const BatchRuleContentRequest = struct {
     rule_ids: []const []const u8,
 };

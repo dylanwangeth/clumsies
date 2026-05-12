@@ -58,57 +58,10 @@ pub fn handleListFiles(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     try res.json(ContextFilesResponse{ .files = list.items }, .{});
 }
 
-pub fn handleGetFileContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-    if (!auth.requireScope(user, "workspace:read", res)) return;
-
-    const ws_id = req.param("ws_id") orelse {
-        return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
-    };
-
-    const qs = req.query() catch {
-        return apiError(res, 400, "BAD_REQUEST", "invalid query string");
-    };
-    const context_id_q = qs.get("context_id");
-    const path_q = qs.get("path");
-    if (context_id_q == null and path_q == null) {
-        return apiError(res, 400, "BAD_REQUEST", "context_id or path query parameter is required");
-    }
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
-        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
-    }
-
-    var row = (if (context_id_q) |cid| conn.row(
-        "SELECT content FROM workspace_context WHERE ws_id = $1 AND context_id = $2",
-        .{ ws_id, cid },
-    ) else conn.row(
-        "SELECT content FROM workspace_context WHERE ws_id = $1 AND path = $2",
-        .{ ws_id, path_q.? },
-    )) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    } orelse {
-        return apiError(res, 404, "NOT_FOUND", "file not found");
-    };
-
-    const content = try req.arena.dupe(u8, try row.get([]const u8, 0));
-    row.deinit() catch {};
-
-    res.header("Content-Type", "application/octet-stream");
-    res.body = content;
-}
-
 /// Batch context content fetch. Paths are scoped to the caller's
 /// workspace membership; same-per-item error model as the artifact
-/// batch endpoint. Replaces the N-GET pattern used by `clumsies
-/// sync` for context files.
+/// batch endpoint. TUI and sync both use this endpoint for single and
+/// bulk context file loads.
 pub fn handleBatchFileContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");

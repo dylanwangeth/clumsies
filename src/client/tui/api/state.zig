@@ -50,12 +50,6 @@ pub const WorkspaceManifestPayload = struct {
     rules: []const model.WorkspaceRuleData,
 };
 
-pub const WorkspaceContextContentPayload = struct {
-    ws_id: []const u8,
-    path: []const u8,
-    body: []const u8,
-};
-
 pub const WorkspaceContextContentBatchPayload = struct {
     ws_id: []const u8,
     items: []const workspace_api.BatchContextItem,
@@ -128,7 +122,7 @@ pub const ApiState = struct {
     // request was issued for so the consumer stores under the correct
     // cache key even if the UI's rule selection changed mid-flight.
     rule_prs_pending: request.PendingRequest(dispatcher.Result(RulePrsPayload)) = .{},
-    rule_prs_cache: cache.CacheSlot(cache.StringKey, []const model.RulePr) = .{},
+    rule_prs_cache: cache.MultiCacheSlot(cache.StringKey, []const model.RulePr) = .{},
     review_prs_pending: request.PendingRequest(dispatcher.Result([]const model.RulePr)) = .{},
     review_prs_cache: cache.CacheSlot(cache.StringKey, []const model.RulePr) = .{},
 

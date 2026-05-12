@@ -82,7 +82,6 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.delete("/api/workspaces/:ws_id/rules/:rule_id", workspace_handler.handleRemoveRule, .{});
     // Context
     router.get("/api/workspaces/:ws_id/context/files", context_handler.handleListFiles, .{});
-    router.get("/api/workspaces/:ws_id/context/file/content", context_handler.handleGetFileContent, .{});
     router.post("/api/workspaces/:ws_id/context/files/content", context_handler.handleBatchFileContent, .{});
     router.post("/api/workspaces/:ws_id/context/prs", context_handler.handleCreatePr, .{});
     router.get("/api/workspaces/:ws_id/context/prs", context_handler.handleListPrs, .{});
@@ -101,7 +100,6 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
     router.get("/api/org/artifact/manifest", artifact_handler.handleGetManifest, .{});
     router.get("/api/org/artifact/rules", artifact_handler.handleListRules, .{});
     router.get("/api/org/artifact/rule", artifact_handler.handleGetRule, .{});
-    router.get("/api/org/artifact/rule/content", artifact_handler.handleGetRuleContent, .{});
     router.post("/api/org/artifact/rules/content", artifact_handler.handleBatchRuleContent, .{});
     router.get("/api/org/bundles", artifact_handler.handleListBundles, .{});
     router.get("/api/org/bundles/:name", artifact_handler.handleGetBundle, .{});

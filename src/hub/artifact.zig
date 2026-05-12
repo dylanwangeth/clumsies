@@ -13,7 +13,6 @@ const BundleMeta = artifact_api.BundleMeta;
 const ArtifactManifestResponse = artifact_api.ArtifactManifestResponse;
 const RuleListResponse = artifact_api.RuleListResponse;
 const RuleMeta = artifact_api.RuleMeta;
-const RuleContentResponse = artifact_api.RuleContentResponse;
 const BatchRuleContentRequest = artifact_api.BatchRuleContentRequest;
 const BatchRuleContentResponse = artifact_api.BatchRuleContentResponse;
 const BatchRuleItem = artifact_api.BatchRuleItem;
@@ -214,67 +213,11 @@ pub fn handleGetRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Resp
     }, .{});
 }
 
-pub fn handleGetRuleContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-    if (!auth.requireScope(user, "artifact:read", res)) return;
-
-    const qs = req.query() catch {
-        return apiError(res, 400, "BAD_REQUEST", "invalid query string");
-    };
-    const rule_id_q = qs.get("rule_id");
-    const path_q = qs.get("path");
-    if (rule_id_q == null and path_q == null) {
-        return apiError(res, 400, "BAD_REQUEST", "rule_id or path query parameter is required");
-    }
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    var row = (if (rule_id_q) |pid| conn.row(
-        "SELECT rule_id, content_hash, content, path FROM rules WHERE org_id = $1::uuid AND rule_id = $2",
-        .{ user.org_id, pid },
-    ) else conn.row(
-        "SELECT rule_id, content_hash, content, path FROM rules WHERE org_id = $1::uuid AND path = $2",
-        .{ user.org_id, path_q.? },
-    )) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    } orelse {
-        return apiError(res, 404, "NOT_FOUND", "rule not found");
-    };
-
-    const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 1));
-
-    if (req.header("if-none-match")) |etag| {
-        if (std.mem.eql(u8, etag, content_hash)) {
-            row.deinit() catch {};
-            res.status = 304;
-            return;
-        }
-    }
-
-    const rule_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
-    const body = try req.arena.dupe(u8, try row.get([]const u8, 2));
-    const path = try req.arena.dupe(u8, try row.get([]const u8, 3));
-    row.deinit() catch {};
-
-    res.header("ETag", content_hash);
-    try res.json(RuleContentResponse{
-        .rule_id = rule_id,
-        .path = path,
-        .content_hash = content_hash,
-        .body = body,
-    }, .{});
-}
-
-/// Batch rule content fetch. Clients (notably `clumsies sync`)
-/// send a list of rule_ids in one POST; the response carries a
-/// per-id item, each either populated or tagged with a per-item
-/// error. A single fetch replaces what used to be N sequential GETs
-/// and dominates sync wall time over tunneled links.
+/// Batch rule content fetch. Clients send one or more rule_ids in a
+/// POST; the response carries a per-id item, each either populated or
+/// tagged with a per-item error. TUI also uses this endpoint for
+/// single selected-rule loads so content traffic has one request
+/// shape.
 pub fn handleBatchRuleContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
