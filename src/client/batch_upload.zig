@@ -121,14 +121,20 @@ fn flushLogFile(
     defer file.close();
 
     const stat = file.stat() catch return error.ReadAttestationFailed;
-    if (start_offset > stat.size) start_offset = 0;
+    if (start_offset > stat.size) {
+        log.warn(
+            "attestation cursor beyond log size; clamping cursor_path={s} cursor={d} size={d}",
+            .{ cursor_path, start_offset, stat.size },
+        );
+        writeCursorPath(allocator, cursor_path, stat.size) catch return error.WriteCursorFailed;
+        start_offset = stat.size;
+    }
     if (start_offset >= stat.size) return result;
-
-    file.seekTo(start_offset) catch return error.ReadAttestationFailed;
 
     const read_buf = allocator.alloc(u8, READ_BUFFER_BYTES) catch return error.OutOfMemory;
     defer allocator.free(read_buf);
     var reader = std.fs.File.Reader.initSize(file, read_buf, stat.size);
+    reader.seekTo(start_offset) catch return error.ReadAttestationFailed;
 
     var cursor_offset: u64 = start_offset;
 
@@ -305,7 +311,7 @@ test "buildBatchBody wraps lines in events array" {
     try testing.expectEqual(@as(usize, 1), comma_count);
 }
 
-test "flushLogFile resets cursor after log truncation" {
+test "flushLogFile clamps cursor after log truncation" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -337,10 +343,9 @@ test "flushLogFile resets cursor after log truncation" {
 
     const result = try flushLogFile(testing.allocator, path, cursor_path, uploader.uploader());
 
-    try testing.expectEqual(@as(usize, 1), result.events_sent);
-    try testing.expectEqual(@as(usize, 1), result.batches_sent);
-    try testing.expectEqual(@as(usize, 1), captured.items.len);
-    try testing.expect(std.mem.indexOf(u8, captured.items[0], "after-truncate") != null);
+    try testing.expectEqual(@as(usize, 0), result.events_sent);
+    try testing.expectEqual(@as(usize, 0), result.batches_sent);
+    try testing.expectEqual(@as(usize, 0), captured.items.len);
     try testing.expectEqual(@as(u64, 45), try readCursorPath(testing.allocator, cursor_path));
 }
 
@@ -383,6 +388,55 @@ test "flushLogFile handles event lines larger than small read buffers" {
     try testing.expectEqual(@as(usize, 1), captured.items.len);
     try testing.expect(std.mem.indexOf(u8, captured.items[0], "\"type\":\"user_prompt\"") != null);
     try testing.expectEqual(@as(u64, @intCast(event.items.len)), try readCursorPath(testing.allocator, cursor_path));
+}
+
+test "flushLogFile resumes from cursor without double-counting offset" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const first =
+        \\{"type":"refer","event_id":"already-sent"}
+        \\
+    ;
+    const second =
+        \\{"type":"refer","event_id":"pending"}
+        \\
+    ;
+
+    {
+        const file = try tmp.dir.createFile("events.jsonl", .{});
+        defer file.close();
+        try file.writeAll(first);
+        try file.writeAll(second);
+    }
+    {
+        const file = try tmp.dir.createFile("events.cursor", .{});
+        defer file.close();
+        var buf: [32]u8 = undefined;
+        var writer = file.writer(&buf);
+        try writer.interface.print("{d}\n", .{first.len});
+        try writer.interface.flush();
+    }
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var cursor_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp.dir.realpath("events.jsonl", &path_buf);
+    const cursor_path = try tmp.dir.realpath("events.cursor", &cursor_buf);
+
+    var captured: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (captured.items) |body| testing.allocator.free(body);
+        captured.deinit(testing.allocator);
+    }
+    var uploader = TestUploader{ .captured = &captured, .allocator = testing.allocator };
+
+    const result = try flushLogFile(testing.allocator, path, cursor_path, uploader.uploader());
+
+    try testing.expectEqual(@as(usize, 1), result.events_sent);
+    try testing.expectEqual(@as(usize, 1), captured.items.len);
+    try testing.expect(std.mem.indexOf(u8, captured.items[0], "pending") != null);
+    try testing.expect(std.mem.indexOf(u8, captured.items[0], "already-sent") == null);
+    try testing.expectEqual(@as(u64, first.len + second.len), try readCursorPath(testing.allocator, cursor_path));
 }
 
 test "collectBatch stops at event count limit" {

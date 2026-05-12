@@ -16,8 +16,8 @@
             .hash = "toml-0.3.0-bV14Be6EAQDr0fkyURz4jYFyTAMPcwlNN0FEPVjDnXTR",
         },
         .vaxis = .{
-            .url = "git+https://github.com/lilhammerfun/libvaxis#cd7b43644ed44b162f8e4f6c05f3acef14e4bdb1",
-            .hash = "vaxis-0.5.1-BWNV_OlOCQB_X0W04dSAXCa9epdfsve7AYg3-eILkyLw",
+            .url = "https://github.com/rockorager/libvaxis/archive/626e88455eaf455d6c8a896a51679e5ea9656edb.tar.gz",
+            .hash = "vaxis-0.5.1-BWNV_IE2CQArML5X0nuN7xX6HsWeQGBMz9fTzWGn_LH0",
         },
     },
     .paths = .{

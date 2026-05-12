@@ -6,3 +6,4 @@ pub const request = @import("api/request.zig");
 pub const cache = @import("api/cache.zig");
 pub const dispatcher = @import("api/dispatcher.zig");
 pub const specs = @import("api/specs.zig");
+pub const request_scheduler = @import("api/request_scheduler.zig");

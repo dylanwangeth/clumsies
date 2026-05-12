@@ -151,6 +151,7 @@ const WORKSPACE_METADATA_REFRESH_TICKS = 600;
 const GLOBAL_METADATA_REFRESH_TICKS = 3000;
 const HEALTH_CHECK_TICKS = 300;
 const ATTESTATION_UPLOAD_TICKS = 600;
+const CONTENT_REQUEST_DEBOUNCE_TICKS = 2;
 const PathTreeState = workspace_panel.PathTreeState;
 
 const DraftTarget = features.drafts.DraftTarget;
@@ -164,6 +165,39 @@ const MemberDialogScope = enum { org, workspace };
 const RoleDialogKind = enum { invite, change };
 const ORG_ROLE_OPTIONS = [_][]const u8{ "member", "maintainer" };
 const WORKSPACE_ROLE_OPTIONS = [_][]const u8{ "member", "admin" };
+
+const PendingContentRequest = union(enum) {
+    artifact_rule: struct {
+        selected_idx: usize,
+        path: []const u8,
+    },
+    workspace_context: struct {
+        ws_id: []const u8,
+        path: []const u8,
+    },
+    workspace_rule: struct {
+        ws_id: []const u8,
+        path: []const u8,
+        rule_id: []const u8,
+    },
+
+    pub fn eql(self: PendingContentRequest, other: PendingContentRequest) bool {
+        return switch (self) {
+            .artifact_rule => |a| switch (other) {
+                .artifact_rule => |b| a.selected_idx == b.selected_idx and std.mem.eql(u8, a.path, b.path),
+                else => false,
+            },
+            .workspace_context => |a| switch (other) {
+                .workspace_context => |b| std.mem.eql(u8, a.ws_id, b.ws_id) and std.mem.eql(u8, a.path, b.path),
+                else => false,
+            },
+            .workspace_rule => |a| switch (other) {
+                .workspace_rule => |b| std.mem.eql(u8, a.ws_id, b.ws_id) and std.mem.eql(u8, a.path, b.path) and std.mem.eql(u8, a.rule_id, b.rule_id),
+                else => false,
+            },
+        };
+    }
+};
 
 pub const Shell = struct {
     api_state: *api.state.ApiState,
@@ -200,6 +234,15 @@ pub const Shell = struct {
     last_workspace_id: ?[]const u8 = null,
     workspace_pref_applied: bool = false,
     tick_count: u64 = 0,
+    last_logged_screen_width: u16 = 0,
+    last_logged_screen_height: u16 = 0,
+    last_logged_screen_width_pix: u16 = 0,
+    last_logged_screen_height_pix: u16 = 0,
+    last_logged_draw_raw_width: u16 = 0,
+    last_logged_draw_raw_height: u16 = 0,
+    last_logged_draw_safe_width: u16 = 0,
+    last_logged_draw_safe_height: u16 = 0,
+    content_request_scheduler: api.request_scheduler.CoalescedRequest(PendingContentRequest) = .{},
     search_active: bool = false,
     search_buf: [160]u8 = .{0} ** 160,
     search_len: usize = 0,
@@ -332,7 +375,6 @@ pub const Shell = struct {
     }
 
     fn handleEvent(self: *Shell, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
-        _ = self.view_arena.reset(.retain_capacity);
         switch (event) {
             .key_press => |key| {
                 self.logKeyEvent(self.activeInputLayer(), key);
@@ -577,6 +619,7 @@ pub const Shell = struct {
                 self.consumeRemoveWorkspaceMemberResult();
                 self.consumeAttestationUploadResult();
                 self.consumeHealthResult();
+                self.dispatchDebouncedContentRequest();
 
                 self.reconcileWorkspaceSelection();
                 if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.analysis.breathing_phase == 0 or self.analysis.breathing_phase == 10)) {
@@ -589,6 +632,7 @@ pub const Shell = struct {
                     self.ensureActiveWorkspaceDetailRequested();
                 }
                 self.maybeRefreshMetadata();
+                self.logScreenProbe("tick", null, null);
                 const is_login_panel = self.shouldShowLoginPanel();
                 const is_native_cursor_input = self.hasNativeCursorInput();
                 ctx.redraw = !is_native_cursor_input or was_login_panel != is_login_panel or was_native_cursor_input != is_native_cursor_input;
@@ -600,7 +644,9 @@ pub const Shell = struct {
 
     fn draw(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         _ = self.view_arena.reset(.retain_capacity);
-        const size = self.sanitizeLayoutSize(ctx.max.size());
+        const raw_size = ctx.max.size();
+        const size = self.sanitizeLayoutSize(raw_size);
+        self.logScreenProbe("draw", raw_size, size);
         if (size.width < 96 or size.height < 24) {
             return self.drawTooSmall(ctx, size);
         }
@@ -861,6 +907,71 @@ pub const Shell = struct {
 
         self.last_safe_layout_size = size;
         return size;
+    }
+
+    fn logScreenProbe(self: *Shell, phase: []const u8, raw_size: ?vxfw.Size, safe_size: ?vxfw.Size) void {
+        const screen = self.app.vx.screen;
+        var changed =
+            screen.width != self.last_logged_screen_width or
+            screen.height != self.last_logged_screen_height or
+            screen.width_pix != self.last_logged_screen_width_pix or
+            screen.height_pix != self.last_logged_screen_height_pix;
+
+        if (raw_size) |raw| {
+            const safe = safe_size orelse raw;
+            changed = changed or
+                raw.width != self.last_logged_draw_raw_width or
+                raw.height != self.last_logged_draw_raw_height or
+                safe.width != self.last_logged_draw_safe_width or
+                safe.height != self.last_logged_draw_safe_height;
+            self.last_logged_draw_raw_width = raw.width;
+            self.last_logged_draw_raw_height = raw.height;
+            self.last_logged_draw_safe_width = safe.width;
+            self.last_logged_draw_safe_height = safe.height;
+        }
+
+        if (!changed) return;
+
+        self.last_logged_screen_width = screen.width;
+        self.last_logged_screen_height = screen.height;
+        self.last_logged_screen_width_pix = screen.width_pix;
+        self.last_logged_screen_height_pix = screen.height_pix;
+
+        const cells = @as(usize, screen.width) * screen.height;
+        if (raw_size) |raw| {
+            const safe = safe_size orelse raw;
+            log.info(
+                "screen_probe phase={s} tick={d} module={s} screen={d}x{d} pix={d}x{d} cells={d} raw={d}x{d} safe={d}x{d}",
+                .{
+                    phase,
+                    self.tick_count,
+                    moduleName(self.selected_module),
+                    screen.width,
+                    screen.height,
+                    screen.width_pix,
+                    screen.height_pix,
+                    cells,
+                    raw.width,
+                    raw.height,
+                    safe.width,
+                    safe.height,
+                },
+            );
+        } else {
+            log.info(
+                "screen_probe phase={s} tick={d} module={s} screen={d}x{d} pix={d}x{d} cells={d}",
+                .{
+                    phase,
+                    self.tick_count,
+                    moduleName(self.selected_module),
+                    screen.width,
+                    screen.height,
+                    screen.width_pix,
+                    screen.height_pix,
+                    cells,
+                },
+            );
+        }
     }
 
     fn drawHeader(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -1697,7 +1808,6 @@ pub const Shell = struct {
 
     pub fn ensureActiveWorkspaceDetailRequested(self: *Shell) void {
         const ws_id = self.activeWsId() orelse return;
-        log.info("ensureActiveWorkspaceDetailRequested module={s}", .{moduleName(self.selected_module)});
         self.ensureLocalWorkspaceDetail(ws_id);
         workspace_panel.requestWorkspaceDetail(self, ws_id);
     }
@@ -1928,6 +2038,7 @@ pub const Shell = struct {
         self.workspace.rules_tree.reset(allocator);
         self.workspace.list_sel = 0;
         self.workspace.list_machine.reset();
+        workspace_panel.invalidateRows(self);
     }
 
     fn currentWsDirSelection(self: *Shell) ?[]const u8 {
@@ -2460,7 +2571,7 @@ pub const Shell = struct {
         };
 
         const resp = self.api_state.rule_content_cache.lookup(.{ .value = rule.path }) orelse {
-            self.requestSelectedRuleDetail();
+            self.requestSelectedRuleContent();
             self.notifyOp(.loading, "Fetching selected content; pull again after it loads.");
             return;
         };
@@ -2490,17 +2601,55 @@ pub const Shell = struct {
         api.state.invalidateRemoteCaches(self.api_state, .all_on_demand);
     }
 
-    pub fn requestSelectedRuleDetail(self: *Shell) void {
+    pub fn requestSelectedRuleContent(self: *Shell) void {
+        const rules = self.getRules();
+        if (self.artifact.selected_rule >= rules.len) return;
+
+        const path = rules[self.artifact.selected_rule].path;
+        self.scheduleContentRequest(.{ .artifact_rule = .{
+            .selected_idx = self.artifact.selected_rule,
+            .path = path,
+        } });
+    }
+
+    fn scheduleContentRequest(self: *Shell, request: PendingContentRequest) void {
+        self.content_request_scheduler.schedule(self.tick_count, CONTENT_REQUEST_DEBOUNCE_TICKS, request);
+    }
+
+    fn dispatchDebouncedContentRequest(self: *Shell) void {
+        const request = self.content_request_scheduler.ready(self.tick_count) orelse return;
+
+        switch (request) {
+            .artifact_rule => |payload| {
+                if (self.api_state.rule_content_batch_pending.isInflight()) return;
+                const rules = self.getRules();
+                if (payload.selected_idx < rules.len and std.mem.eql(u8, rules[payload.selected_idx].path, payload.path)) {
+                    self.requestRuleContentBatchAround(payload.selected_idx, rules);
+                }
+            },
+            .workspace_context => |payload| {
+                if (self.api_state.workspace_context_content_batch_pending.isInflight()) return;
+                const ws_d = self.workspaceDetailForView(payload.ws_id) orelse return;
+                self.requestWorkspaceContextContentBatchAround(&ws_d, payload.path);
+            },
+            .workspace_rule => |payload| {
+                if (self.api_state.rule_content_batch_pending.isInflight()) return;
+                self.requestWorkspaceRuleContentBatchAround(payload.path, payload.rule_id);
+            },
+        }
+        self.content_request_scheduler.clear();
+    }
+
+    pub fn requestSelectedRulePrs(self: *Shell) void {
+        if (self.api_state.rule_prs_pending.isInflight()) return;
         const rules = self.getRules();
         if (self.artifact.selected_rule >= rules.len) return;
 
         const sel_path = rules[self.artifact.selected_rule].path;
         const key = api.cache.StringKey{ .value = sel_path };
-
-        self.requestRuleContentBatchAround(self.artifact.selected_rule, rules);
-
         if (self.api_state.rule_prs_cache.shouldDispatch(key)) {
             const rule_id = self.lookupRuleId(sel_path) orelse return;
+            if (!self.api_state.rule_prs_cache.reserve(self.api_state.allocator(), key)) return;
             api.specs.dispatchFromState(
                 api.specs.RulePrsParams,
                 api.specs.RulePrsPayload,
@@ -2581,17 +2730,6 @@ pub const Shell = struct {
         return null;
     }
 
-    /// Path of the currently selected artifact rule, or null when no
-    /// rule is in focus. Used by failure-caching in the on-demand
-    /// consumers, which do not have a request-scoped key to attribute
-    /// the failure to and fall back to the current UI selection.
-    fn selectedRulePath(self: *Shell) ?[]const u8 {
-        const rules = self.getRules();
-        if (rules.len == 0) return null;
-        const idx = @min(self.artifact.selected_rule, rules.len - 1);
-        return rules[idx].path;
-    }
-
     fn requestWorkspaceSelectionContent(self: *Shell, ws_d: *const api.model.WorkspaceDetail, selection: WorkspaceFileSelection) void {
         switch (self.workspace.tab) {
             .context => {
@@ -2612,7 +2750,10 @@ pub const Shell = struct {
                     }
                 }
                 if (!self.api_state.workspace_context_content_cache.shouldDispatch(key)) return;
-                self.requestWorkspaceContextContentBatchAround(ws_d);
+                self.scheduleContentRequest(.{ .workspace_context = .{
+                    .ws_id = ws_d.ws_id,
+                    .path = context.path,
+                } });
             },
             .rules => {
                 const rule = switch (selection) {
@@ -2633,60 +2774,12 @@ pub const Shell = struct {
                     }
                 }
                 if (!self.api_state.rule_content_cache.shouldDispatch(key)) return;
-                self.requestWorkspaceRuleContentBatchAround(ws_d);
+                self.scheduleContentRequest(.{ .workspace_rule = .{
+                    .ws_id = ws_d.ws_id,
+                    .path = remote_path,
+                    .rule_id = remote.rule_id,
+                } });
             },
-        }
-    }
-
-    fn collectWorkspaceContextPathsAround(
-        self: *Shell,
-        ws_d: *const api.model.WorkspaceDetail,
-        out: *[CONTENT_PREFETCH_LIMIT][]const u8,
-        out_len: *usize,
-    ) void {
-        const tree = self.currentWsTree();
-        const row_count = tree.rowCount();
-        const start = contentPrefetchPageStart(self.workspace.list_sel);
-        const end = @min(row_count, start + CONTENT_PREFETCH_LIMIT);
-        var row = start;
-        while (row < end) : (row += 1) {
-            const selection = self.workspaceFileAtRow(row, ws_d.*) orelse continue;
-            const context = switch (selection) {
-                .context => |c| c,
-                .rule => continue,
-            };
-            if (context.is_create_draft) continue;
-            const key = api.state.WorkspacePathKey{ .ws_id = ws_d.ws_id, .path = context.path };
-            if (!self.api_state.workspace_context_content_cache.reserve(self.api_state.allocator(), key)) continue;
-            appendUniqueString(out, out_len, context.path);
-        }
-    }
-
-    fn collectWorkspaceRuleIdsAround(
-        self: *Shell,
-        ws_d: *const api.model.WorkspaceDetail,
-        out: *[CONTENT_PREFETCH_LIMIT][]const u8,
-        out_len: *usize,
-    ) void {
-        const remote_items = self.api_state.workspace_manifest_cache.lookup(.{ .value = ws_d.ws_id }) orelse return;
-        const tree = self.currentWsTree();
-        const row_count = tree.rowCount();
-        const start = contentPrefetchPageStart(self.workspace.list_sel);
-        const end = @min(row_count, start + CONTENT_PREFETCH_LIMIT);
-        var row = start;
-        while (row < end) : (row += 1) {
-            const selection = self.workspaceFileAtRow(row, ws_d.*) orelse continue;
-            const rule = switch (selection) {
-                .context => continue,
-                .rule => |r| r,
-            };
-            if (rule.is_create_draft) continue;
-            const remote = self.findRuleFor(remote_items, rule.path, rule.rule_id) orelse continue;
-            if (remote.rule_id.len == 0) continue;
-            const remote_path = self.pathForWorkspaceRule(remote);
-            const key = api.cache.StringKey{ .value = remote_path };
-            if (!self.api_state.rule_content_cache.reserve(self.api_state.allocator(), key)) continue;
-            appendUniqueString(out, out_len, remote.rule_id);
         }
     }
 
@@ -2711,13 +2804,14 @@ pub const Shell = struct {
     fn requestWorkspaceContextContentBatchAround(
         self: *Shell,
         ws_d: *const api.model.WorkspaceDetail,
+        path: []const u8,
     ) void {
         if (self.api_state.workspace_context_content_batch_pending.isInflight()) return;
 
         var paths_buf: [CONTENT_PREFETCH_LIMIT][]const u8 = undefined;
-        var paths_len: usize = 0;
-        self.collectWorkspaceContextPathsAround(ws_d, &paths_buf, &paths_len);
-        if (paths_len == 0) return;
+        const key = api.state.WorkspacePathKey{ .ws_id = ws_d.ws_id, .path = path };
+        if (!self.api_state.workspace_context_content_cache.reserve(self.api_state.allocator(), key)) return;
+        paths_buf[0] = path;
 
         api.specs.dispatchFromState(
             api.specs.BatchWorkspaceContextContentParams,
@@ -2725,20 +2819,21 @@ pub const Shell = struct {
             api.specs.workspace_context_content_batch,
             &self.api_state.workspace_context_content_batch_pending,
             self.api_state,
-            .{ .ws_id = ws_d.ws_id, .paths = paths_buf[0..paths_len] },
+            .{ .ws_id = ws_d.ws_id, .paths = paths_buf[0..1] },
         );
     }
 
     fn requestWorkspaceRuleContentBatchAround(
         self: *Shell,
-        ws_d: *const api.model.WorkspaceDetail,
+        path: []const u8,
+        rule_id: []const u8,
     ) void {
         if (self.api_state.rule_content_batch_pending.isInflight()) return;
 
         var ids_buf: [CONTENT_PREFETCH_LIMIT][]const u8 = undefined;
-        var ids_len: usize = 0;
-        self.collectWorkspaceRuleIdsAround(ws_d, &ids_buf, &ids_len);
-        if (ids_len == 0) return;
+        const key = api.cache.StringKey{ .value = path };
+        if (!self.api_state.rule_content_cache.reserve(self.api_state.allocator(), key)) return;
+        ids_buf[0] = rule_id;
 
         api.specs.dispatchFromState(
             api.specs.BatchRuleContentParams,
@@ -2746,7 +2841,7 @@ pub const Shell = struct {
             api.specs.artifact_rule_content_batch,
             &self.api_state.rule_content_batch_pending,
             self.api_state,
-            .{ .rule_ids = ids_buf[0..ids_len] },
+            .{ .rule_ids = ids_buf[0..1] },
         );
     }
 
@@ -2757,7 +2852,6 @@ pub const Shell = struct {
             self.workspaceDetailForView(ws_id)
         else
             null;
-        workspace_panel.syncWsRows(self);
         const current_row_file_sel = self.workspaceFileAtRow(self.workspace.list_sel, live_ws);
         const current_file_sel = current_row_file_sel orelse self.currentWorkspaceFileSelection(live_ws);
         const file_sel = current_file_sel orelse self.lastWorkspaceFileSelection(live_ws);
@@ -2990,14 +3084,11 @@ pub const Shell = struct {
         const result = self.api_state.rule_prs_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
+                self.api_state.rule_prs_cache.markInflightFailed();
                 const path = self.lookupRulePath(payload.rule_id) orelse return;
-                self.api_state.rule_prs_cache.store(.{ .value = path }, payload.prs);
+                self.api_state.rule_prs_cache.store(self.api_state.allocator(), .{ .value = path }, payload.prs);
             },
-            else => {
-                if (self.selectedRulePath()) |path| {
-                    self.api_state.rule_prs_cache.markFailed(.{ .value = path });
-                }
-            },
+            else => self.api_state.rule_prs_cache.markInflightFailed(),
         }
     }
 

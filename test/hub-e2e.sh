@@ -286,10 +286,11 @@ parse_response "$RAW"
 assert_status "get by path" "200" "$STATUS"
 assert_json "contains rule_id" "p-test-001" "$BODY"
 
-step "Artifact: get rule content by rule_id"
-RAW=$(call GET "/api/org/artifact/rule/content?rule_id=p-test-001")
+step "Artifact: batch get rule content"
+RAW=$(call POST "/api/org/artifact/rules/content" '{"rule_ids":["p-test-001"]}')
 parse_response "$RAW"
-assert_status "get content" "200" "$STATUS"
+assert_status "batch get content" "200" "$STATUS"
+assert_json "contains rule_id" "p-test-001" "$BODY"
 assert_json "contains body" "STYLE" "$BODY"
 
 step "Artifact: manifest"
@@ -340,9 +341,9 @@ assert_status "accept rule PR" "200" "$STATUS"
 assert_json "status accepted" "accepted" "$BODY"
 
 step "Rule PR: artifact now reflects accepted content"
-RAW=$(call GET "/api/org/artifact/rule/content?rule_id=p-test-001")
+RAW=$(call POST "/api/org/artifact/rules/content" '{"rule_ids":["p-test-001"]}')
 parse_response "$RAW"
-assert_status "get updated content" "200" "$STATUS"
+assert_status "batch get updated content" "200" "$STATUS"
 assert_json "contains Tightened" "Tightened" "$BODY"
 
 step "Rule PR: create with rename operation"
@@ -640,25 +641,23 @@ assert_json "main has spec/API.md" "spec/API.md" "$BODY"
 assert_json "file has context_id" "context_id" "$BODY"
 CTX_ID=$(echo "$BODY" | grep -o '"context_id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
-step "Context: read file content by path"
-RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?path=spec/API.md" \
-    -H "Authorization: Bearer $TOKEN")
+step "Context: batch read file content by path"
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/files/content" '{"paths":["spec/API.md"]}')
 parse_response "$RAW"
-assert_status "read file content by path" "200" "$STATUS"
+assert_status "batch read file content by path" "200" "$STATUS"
 assert_json "content matches" "API Design" "$BODY"
 
-step "Context: read file content by context_id"
-RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?context_id=$CTX_ID" \
-    -H "Authorization: Bearer $TOKEN")
+step "Context: batch content keys are paths, not context_ids"
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/files/content" "{\"paths\":[\"$CTX_ID\"]}")
 parse_response "$RAW"
-assert_status "read by context_id" "200" "$STATUS"
-assert_json "content matches" "API Design" "$BODY"
+assert_status "context_id no longer accepted as content key" "200" "$STATUS"
+assert_json "context_id item marked not found" "NOT_FOUND" "$BODY"
 
-step "Context: read nonexistent file"
-RAW=$(curl -s -w "\n%{http_code}" -X GET "$BASE/api/workspaces/$CTX_WS/context/file/content?path=nope.md" \
-    -H "Authorization: Bearer $TOKEN")
+step "Context: batch read nonexistent file"
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/files/content" '{"paths":["nope.md"]}')
 parse_response "$RAW"
-assert_status "nonexistent file returns 404" "404" "$STATUS"
+assert_status "batch nonexistent file returns item error" "200" "$STATUS"
+assert_json "nonexistent item marked not found" "NOT_FOUND" "$BODY"
 
 step "Context: manifest reflects context"
 RAW=$(call GET "/api/workspaces/$CTX_WS/manifest")
