@@ -1,9 +1,14 @@
 const std = @import("std");
 const flag = @import("../flags.zig");
+const auth_mod = @import("../auth.zig");
 const adapter = @import("../adapter/root.zig");
 const adapter_cli = @import("adapter_cli.zig");
 const styles = @import("../styles.zig");
 const workspace_config = @import("../workspace_config.zig");
+const HubClient = @import("../hub_client.zig").HubClient;
+const workspace_api = @import("clumsies_lib").protocol.workspace_api;
+const api_error = @import("clumsies_lib").protocol.api_error;
+const sync_cmd = @import("sync_cmd.zig");
 
 const FLAG_REMOVE: usize = 0;
 const FLAG_LIST: usize = 1;
@@ -88,7 +93,7 @@ fn runInstall(
         try printInstallHeader(stdout);
     }
 
-    const workspace_root_opt = try workspace_config.resolveCurrentWorkspaceRoot(allocator);
+    var workspace_root_opt = try workspace_config.resolveCurrentWorkspaceRoot(allocator);
     defer if (workspace_root_opt) |workspace_root| allocator.free(workspace_root);
 
     const pkg = if (parsed.value(FLAG_AGENT)) |agent_name|
@@ -98,18 +103,37 @@ fn runInstall(
     else
         try adapter_cli.choosePackage(stdout, allocator, "Which agent do you want to adapt for?");
 
-    const workspace_target_root_opt = try pkg.resolveTargetRoot(allocator, .workspace, workspace_root_opt);
+    const explicit_scope = if (parsed.value(FLAG_SCOPE)) |raw_scope|
+        adapter_cli.parseScopeOrPrint(raw_scope, stderr) orelse return
+    else
+        null;
+
+    var workspace_target_root_opt = try pkg.resolveTargetRoot(allocator, .workspace, workspace_root_opt);
     defer if (workspace_target_root_opt) |path| allocator.free(path);
 
     const user_target_root_opt = try pkg.resolveTargetRoot(allocator, .user, workspace_root_opt);
     defer if (user_target_root_opt) |path| allocator.free(path);
 
-    const scope = if (parsed.value(FLAG_SCOPE)) |raw_scope|
-        adapter_cli.parseScopeOrPrint(raw_scope, stderr) orelse return
+    const scope = if (explicit_scope) |value|
+        value
     else if (parsed.boolean(FLAG_YES))
         if (workspaceTargetAvailable(workspace_target_root_opt)) adapter.model.Scope.workspace else adapter.model.Scope.user
     else
         try chooseInstallScope(stdout, allocator, pkg, workspace_target_root_opt, user_target_root_opt);
+
+    if (scope == .workspace and workspace_target_root_opt == null) {
+        workspace_root_opt = createAndBindCurrentWorkspace(stdout, stderr, allocator) catch |err| {
+            switch (err) {
+                error.NotAuthenticated, error.WorkspaceCreateFailed => {},
+                else => try stderr.print(
+                    "{s}{s}{s}Error:{s} Failed to create workspace binding: {s}\n",
+                    .{ P, Color.bold, Color.red, Color.reset, @errorName(err) },
+                ),
+            }
+            return;
+        };
+        workspace_target_root_opt = try pkg.resolveTargetRoot(allocator, .workspace, workspace_root_opt);
+    }
 
     const selected_target_root = switch (scope) {
         .workspace => workspace_target_root_opt,
@@ -466,6 +490,118 @@ fn workspaceTargetAvailable(workspace_target_root_opt: ?[]const u8) bool {
     return workspace_target_root_opt != null;
 }
 
+fn createAndBindCurrentWorkspace(
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+) ![]const u8 {
+    const auth_info = auth_mod.loadAuth(allocator) catch {
+        try stderr.print(
+            "{s}{s}{s}Error:{s} Cannot create a workspace because you are not logged in. Run {s}clumsies login{s} first, or choose user scope.\n",
+            .{ P, Color.bold, Color.red, Color.reset, Color.cyan, Color.reset },
+        );
+        return error.NotAuthenticated;
+    };
+    defer auth_info.deinit(allocator);
+
+    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+    errdefer allocator.free(cwd_path);
+    const workspace_name = try directoryNameFromPath(allocator, cwd_path);
+    defer allocator.free(workspace_name);
+    const description = try std.fmt.allocPrint(allocator, "Workspace for {s}", .{cwd_path});
+    defer allocator.free(description);
+
+    var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
+    defer hub.deinit();
+    try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
+
+    const body = try std.json.Stringify.valueAlloc(
+        allocator,
+        workspace_api.CreateWorkspaceRequest{ .name = workspace_name, .description = description },
+        .{ .emit_null_optional_fields = false },
+    );
+    defer allocator.free(body);
+
+    const response = try hub.post("/api/workspaces", body);
+    defer response.deinit();
+    if (response.status != .ok and response.status != .created) {
+        try reportApiError(stderr, allocator, "Failed to create workspace", response.status, response.body);
+        return error.WorkspaceCreateFailed;
+    }
+
+    const parsed = try std.json.parseFromSlice(
+        workspace_api.CreateWorkspaceResponse,
+        allocator,
+        response.body,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    try workspace_config.addWorkspace(allocator, auth_info.hub_url, parsed.value.name, parsed.value.ws_id, cwd_path);
+    try stdout.print(
+        "{s}{s}{s}Workspace {s} bound to current directory (ws_id: {s}){s}\n",
+        .{ P, Color.bold, Color.green, parsed.value.name, parsed.value.ws_id, Color.reset },
+    );
+
+    const summary = sync_cmd.materializeWorkspace(allocator, &hub, parsed.value.ws_id, .{ .errors = stderr }) catch |err| {
+        try stderr.print(
+            "{s}{s}{s}Warning:{s} Initial sync failed: {s}. The adapter install will continue.\n",
+            .{ P, Color.bold, Color.orange, Color.reset, @errorName(err) },
+        );
+        return cwd_path;
+    };
+    try stdout.print(
+        "{s}{s}{s}Synced:{s} {d} rules, {d} context files into local cache\n",
+        .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total },
+    );
+    return cwd_path;
+}
+
+fn currentDirectoryName(allocator: std.mem.Allocator) ![]const u8 {
+    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(cwd_path);
+    return directoryNameFromPath(allocator, cwd_path);
+}
+
+fn directoryNameFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const base = std.fs.path.basename(path);
+    if (base.len == 0) return allocator.dupe(u8, "workspace");
+    return allocator.dupe(u8, base);
+}
+
+fn reportApiError(
+    stderr: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    context: []const u8,
+    status: std.http.Status,
+    body: []const u8,
+) !void {
+    const parsed = std.json.parseFromSlice(
+        api_error.ApiErrorEnvelope,
+        allocator,
+        body,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch {
+        try stderr.print("{s}{s}{s}Error:{s} {s} (HTTP {d})\n", .{
+            P, Color.bold, Color.red, Color.reset, context, @intFromEnum(status),
+        });
+        if (body.len > 0) {
+            try stderr.print("{s}{s}\n", .{ P, body });
+        }
+        return;
+    };
+    defer parsed.deinit();
+    try stderr.print("{s}{s}{s}Error:{s} {s}: {s} ({s})\n", .{
+        P,
+        Color.bold,
+        Color.red,
+        Color.reset,
+        context,
+        parsed.value.@"error".message,
+        parsed.value.@"error".code,
+    });
+}
+
 fn chooseInstallScope(
     stdout: *std.Io.Writer,
     allocator: std.mem.Allocator,
@@ -480,16 +616,26 @@ fn chooseInstallScope(
     var user_description_owned: ?[]u8 = null;
     defer if (user_description_owned) |description| allocator.free(description);
 
-    if (workspace_target_root_opt) |workspace_target_root| {
-        _ = workspace_target_root;
-        workspace_description_owned = try allocator.dupe(u8, pkg.workspace_scope_description orelse "Only this workspace");
-        choices[count] = .{
-            .key = "workspace",
-            .label = "Workspace",
-            .description = workspace_description_owned.?,
-        };
-        count += 1;
+    if (workspace_target_root_opt != null) {
+        workspace_description_owned = try allocator.dupe(
+            u8,
+            pkg.workspace_scope_description orelse "Only this workspace",
+        );
+    } else {
+        const cwd_name = try currentDirectoryName(allocator);
+        defer allocator.free(cwd_name);
+        workspace_description_owned = try std.fmt.allocPrint(
+            allocator,
+            "Create and bind workspace \"{s}\" for this directory",
+            .{cwd_name},
+        );
     }
+    choices[count] = .{
+        .key = "workspace",
+        .label = "Workspace",
+        .description = workspace_description_owned.?,
+    };
+    count += 1;
 
     if (user_target_root_opt) |user_target_root| {
         _ = user_target_root;
@@ -505,7 +651,7 @@ fn chooseInstallScope(
     const rule = "Where should Clumsies be installed?";
     const index = try adapter.ui.promptChoice(stdout, allocator, rule, choices[0..count], 0);
 
-    return if (workspace_target_root_opt != null and index == 0) .workspace else .user;
+    return if (index == 0) .workspace else .user;
 }
 
 fn chooseRemoveScope(
