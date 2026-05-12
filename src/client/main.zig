@@ -175,8 +175,13 @@ fn canLaunchTui() bool {
 }
 
 fn initClientLogger(allocator: std.mem.Allocator) void {
-    const config = logger.configFromEnv(allocator);
-    defer if (config.invalid_level) |raw| allocator.free(raw);
+    var env_map = logger.loadEnvMap(allocator) catch {
+        logger.initBestEffort(.{ .level = .info, .sink = .disabled });
+        return;
+    };
+    defer env_map.deinit();
+
+    const config = logger.configFromEnvMap(&env_map);
 
     const log_file_path = clientLogFilePath(allocator) catch {
         logger.initBestEffort(.{ .level = config.level, .sink = .disabled });
@@ -184,7 +189,13 @@ fn initClientLogger(allocator: std.mem.Allocator) void {
     };
     defer allocator.free(log_file_path);
 
-    logger.initBestEffort(.{ .level = config.level, .sink = .{ .file = log_file_path } });
+    logger.initBestEffort(.{
+        .level = config.level,
+        .sink = .{ .file = log_file_path },
+        .rotate = config.rotate,
+        .max_bytes = config.max_bytes,
+        .backups = config.backups,
+    });
     std.log.scoped(.client_logger).info("client log file={s}", .{log_file_path});
     if (config.invalid_level) |raw| logger.noteInvalidLevel(raw);
 }

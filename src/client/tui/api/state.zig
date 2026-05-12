@@ -343,6 +343,7 @@ pub const ApiState = struct {
         errdefer alloc.free(refresh_token);
 
         var client = HubClient.init(alloc, hub_url, null);
+        client.client_id = self.clientIdHex();
         defer client.deinit();
 
         const body = try std.json.Stringify.valueAlloc(

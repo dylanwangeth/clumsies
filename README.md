@@ -56,6 +56,7 @@ Build from source (requires [Zig 0.15+](https://ziglang.org/download/); add `zig
 ```bash
 git clone https://github.com/lilhammerfun/clumsies.git
 cd clumsies
+cp .env.example .env
 zig build -Doptimize=ReleaseFast
 export PATH="$PWD/zig-out/bin:$PATH"
 ```

@@ -74,7 +74,13 @@ This is a local development default. It is not a production database deployment 
 
 ## Step 3: configure the Hub and bootstrap identity
 
-The Hub reads its runtime config from environment variables.
+The Hub reads its runtime config from environment variables and from `.env` in
+the current directory. Shell environment variables win over `.env` values.
+Start from the checked-in example:
+
+```bash
+cp .env.example .env
+```
 
 | Variable | Default |
 | --- | --- |
@@ -86,6 +92,21 @@ The Hub reads its runtime config from environment variables.
 | `HUB_DB_PASSWORD` | `clumsies` |
 | `HUB_TOKEN_TTL` | `3600` |
 | `HUB_REFRESH_TOKEN_TTL` | `7776000` |
+| `CLUMSIES_LOG_LEVEL` | `info` |
+| `CLUMSIES_LOG_ROTATE` | `1` |
+| `CLUMSIES_LOG_MAX_BYTES` | `10485760` |
+| `CLUMSIES_LOG_BACKUPS` | `10` |
+
+Hub writes application logs and access logs to the configured log sink.
+Application logs keep the `[INFO]`, `[WARN]`, and `[ERROR]` prefix. Access
+logs use a request-oriented format with status, latency, client, method, and
+path. `CLUMSIES_LOG_LEVEL` filters both layers; access logs map 2xx/3xx to
+info, 4xx to warn, and 5xx to error.
+
+Client file logging keeps `client.log` as the active file and archives old logs
+as dated files such as `client-2026-05-12.log`. The client also reads `.env`
+for `CLUMSIES_LOG_*` values, so local log behavior can be configured in the
+same file.
 
 Bootstrap user and org settings:
 
