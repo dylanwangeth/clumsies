@@ -34,6 +34,7 @@ const tui_prefs = @import("prefs.zig");
 
 const log = std.log.scoped(.tui_event);
 const DEFAULT_HUB_URL = "http://127.0.0.1:8400";
+const CONTENT_PREFETCH_LIMIT: usize = 24;
 
 const editor_host = runtime.editor_host;
 const attestation_reader = runtime.attestation_reader;
@@ -2496,16 +2497,7 @@ pub const Shell = struct {
         const sel_path = rules[self.artifact.selected_rule].path;
         const key = api.cache.StringKey{ .value = sel_path };
 
-        if (self.api_state.rule_content_cache.shouldDispatch(key)) {
-            api.specs.dispatchFromState(
-                api.specs.RuleContentParams,
-                @import("clumsies_lib").protocol.artifact_api.RuleContentResponse,
-                api.specs.artifact_rule_content,
-                &self.api_state.rule_content_pending,
-                self.api_state,
-                .{ .path = sel_path, .rule_id = self.lookupRuleId(sel_path) },
-            );
-        }
+        self.requestRuleContentBatchAround(self.artifact.selected_rule, rules);
 
         if (self.api_state.rule_prs_cache.shouldDispatch(key)) {
             const rule_id = self.lookupRuleId(sel_path) orelse return;
@@ -2518,6 +2510,40 @@ pub const Shell = struct {
                 .{ .rule_id = rule_id },
             );
         }
+    }
+
+    fn requestRuleContentBatchAround(
+        self: *Shell,
+        selected_idx: usize,
+        rules: []const data.RuleEntry,
+    ) void {
+        if (self.api_state.rule_content_batch_pending.isInflight()) return;
+
+        var ids_buf: [CONTENT_PREFETCH_LIMIT][]const u8 = undefined;
+        var ids_len: usize = 0;
+        const start = contentPrefetchPageStart(selected_idx);
+        const end = @min(rules.len, start + CONTENT_PREFETCH_LIMIT);
+        var i = start;
+        while (i < end) : (i += 1) {
+            const path = rules[i].path;
+            const rule_id = self.lookupRuleId(path) orelse {
+                continue;
+            };
+            if (rule_id.len == 0) continue;
+            const key = api.cache.StringKey{ .value = path };
+            if (!self.api_state.rule_content_cache.reserve(self.api_state.allocator(), key)) continue;
+            appendUniqueString(&ids_buf, &ids_len, rule_id);
+        }
+        if (ids_len == 0) return;
+
+        api.specs.dispatchFromState(
+            api.specs.BatchRuleContentParams,
+            artifact_api.BatchRuleContentResponse,
+            api.specs.artifact_rule_content_batch,
+            &self.api_state.rule_content_batch_pending,
+            self.api_state,
+            .{ .rule_ids = ids_buf[0..ids_len] },
+        );
     }
 
     /// Look up the rule_id that corresponds to `path` in the cached
@@ -2581,20 +2607,12 @@ pub const Shell = struct {
                     if (self.remoteWorkspaceContextBody(ws_d.ws_id, context.path)) |body| {
                         const body_hash = util_hash.contentHash(body);
                         if (local_content.hashesEqual(body_hash[0..], remote.hash)) return;
-                        self.api_state.workspace_context_content_cache.invalidate();
-                        self.api_state.workspace_context_content_pending.cancel();
+                        self.api_state.workspace_context_content_cache.invalidateKey(key);
+                        self.api_state.workspace_context_content_batch_pending.cancel();
                     }
                 }
                 if (!self.api_state.workspace_context_content_cache.shouldDispatch(key)) return;
-
-                api.specs.dispatchFromState(
-                    api.specs.WorkspaceContextContentParams,
-                    api.specs.WorkspaceContextContentPayload,
-                    api.specs.workspace_context_content,
-                    &self.api_state.workspace_context_content_pending,
-                    self.api_state,
-                    .{ .ws_id = ws_d.ws_id, .path = context.path },
-                );
+                self.requestWorkspaceContextContentBatchAround(ws_d);
             },
             .rules => {
                 const rule = switch (selection) {
@@ -2610,22 +2628,126 @@ pub const Shell = struct {
                     if (self.remoteArtifactRuleBody(self.artifactCategoryForPath(remote_path), remote_path)) |body| {
                         const body_hash = util_hash.contentHash(body);
                         if (local_content.hashesEqual(body_hash[0..], remote.content_hash)) return;
-                        self.api_state.rule_content_cache.invalidate();
-                        self.api_state.rule_content_pending.cancel();
+                        self.api_state.rule_content_cache.invalidateKey(key);
+                        self.api_state.rule_content_batch_pending.cancel();
                     }
                 }
                 if (!self.api_state.rule_content_cache.shouldDispatch(key)) return;
-
-                api.specs.dispatchFromState(
-                    api.specs.RuleContentParams,
-                    @import("clumsies_lib").protocol.artifact_api.RuleContentResponse,
-                    api.specs.artifact_rule_content,
-                    &self.api_state.rule_content_pending,
-                    self.api_state,
-                    .{ .path = remote_path, .rule_id = remote.rule_id },
-                );
+                self.requestWorkspaceRuleContentBatchAround(ws_d);
             },
         }
+    }
+
+    fn collectWorkspaceContextPathsAround(
+        self: *Shell,
+        ws_d: *const api.model.WorkspaceDetail,
+        out: *[CONTENT_PREFETCH_LIMIT][]const u8,
+        out_len: *usize,
+    ) void {
+        const tree = self.currentWsTree();
+        const row_count = tree.rowCount();
+        const start = contentPrefetchPageStart(self.workspace.list_sel);
+        const end = @min(row_count, start + CONTENT_PREFETCH_LIMIT);
+        var row = start;
+        while (row < end) : (row += 1) {
+            const selection = self.workspaceFileAtRow(row, ws_d.*) orelse continue;
+            const context = switch (selection) {
+                .context => |c| c,
+                .rule => continue,
+            };
+            if (context.is_create_draft) continue;
+            const key = api.state.WorkspacePathKey{ .ws_id = ws_d.ws_id, .path = context.path };
+            if (!self.api_state.workspace_context_content_cache.reserve(self.api_state.allocator(), key)) continue;
+            appendUniqueString(out, out_len, context.path);
+        }
+    }
+
+    fn collectWorkspaceRuleIdsAround(
+        self: *Shell,
+        ws_d: *const api.model.WorkspaceDetail,
+        out: *[CONTENT_PREFETCH_LIMIT][]const u8,
+        out_len: *usize,
+    ) void {
+        const remote_items = self.api_state.workspace_manifest_cache.lookup(.{ .value = ws_d.ws_id }) orelse return;
+        const tree = self.currentWsTree();
+        const row_count = tree.rowCount();
+        const start = contentPrefetchPageStart(self.workspace.list_sel);
+        const end = @min(row_count, start + CONTENT_PREFETCH_LIMIT);
+        var row = start;
+        while (row < end) : (row += 1) {
+            const selection = self.workspaceFileAtRow(row, ws_d.*) orelse continue;
+            const rule = switch (selection) {
+                .context => continue,
+                .rule => |r| r,
+            };
+            if (rule.is_create_draft) continue;
+            const remote = self.findRuleFor(remote_items, rule.path, rule.rule_id) orelse continue;
+            if (remote.rule_id.len == 0) continue;
+            const remote_path = self.pathForWorkspaceRule(remote);
+            const key = api.cache.StringKey{ .value = remote_path };
+            if (!self.api_state.rule_content_cache.reserve(self.api_state.allocator(), key)) continue;
+            appendUniqueString(out, out_len, remote.rule_id);
+        }
+    }
+
+    fn appendUniqueString(
+        out: *[CONTENT_PREFETCH_LIMIT][]const u8,
+        out_len: *usize,
+        value: []const u8,
+    ) void {
+        if (value.len == 0) return;
+        for (out[0..out_len.*]) |existing| {
+            if (std.mem.eql(u8, existing, value)) return;
+        }
+        if (out_len.* >= out.len) return;
+        out[out_len.*] = value;
+        out_len.* += 1;
+    }
+
+    fn contentPrefetchPageStart(index: usize) usize {
+        return (index / CONTENT_PREFETCH_LIMIT) * CONTENT_PREFETCH_LIMIT;
+    }
+
+    fn requestWorkspaceContextContentBatchAround(
+        self: *Shell,
+        ws_d: *const api.model.WorkspaceDetail,
+    ) void {
+        if (self.api_state.workspace_context_content_batch_pending.isInflight()) return;
+
+        var paths_buf: [CONTENT_PREFETCH_LIMIT][]const u8 = undefined;
+        var paths_len: usize = 0;
+        self.collectWorkspaceContextPathsAround(ws_d, &paths_buf, &paths_len);
+        if (paths_len == 0) return;
+
+        api.specs.dispatchFromState(
+            api.specs.BatchWorkspaceContextContentParams,
+            api.specs.WorkspaceContextContentBatchPayload,
+            api.specs.workspace_context_content_batch,
+            &self.api_state.workspace_context_content_batch_pending,
+            self.api_state,
+            .{ .ws_id = ws_d.ws_id, .paths = paths_buf[0..paths_len] },
+        );
+    }
+
+    fn requestWorkspaceRuleContentBatchAround(
+        self: *Shell,
+        ws_d: *const api.model.WorkspaceDetail,
+    ) void {
+        if (self.api_state.rule_content_batch_pending.isInflight()) return;
+
+        var ids_buf: [CONTENT_PREFETCH_LIMIT][]const u8 = undefined;
+        var ids_len: usize = 0;
+        self.collectWorkspaceRuleIdsAround(ws_d, &ids_buf, &ids_len);
+        if (ids_len == 0) return;
+
+        api.specs.dispatchFromState(
+            api.specs.BatchRuleContentParams,
+            artifact_api.BatchRuleContentResponse,
+            api.specs.artifact_rule_content_batch,
+            &self.api_state.rule_content_batch_pending,
+            self.api_state,
+            .{ .rule_ids = ids_buf[0..ids_len] },
+        );
     }
 
     // Workspace content pane: shows selected item's content
@@ -2831,23 +2953,30 @@ pub const Shell = struct {
         return &.{};
     }
 
-    /// Pump the artifact rule content pending slot: on .ok, stash the
-    /// response in the cache keyed by path so subsequent draws can
-    /// retrieve it synchronously. On any error outcome, record the
-    /// failure against the selected path so widget sync does not
-    /// re-dispatch on every tick; the next remote cache invalidation
-    /// or a navigation to a different rule clears the marker.
+    /// Pump the artifact rule content batch slot. The TUI previews
+    /// content by windowed prefetch, so one response may satisfy the
+    /// selected row and nearby rows from the same list.
     fn consumeRuleContentResult(self: *Shell) void {
-        const result = self.api_state.rule_content_pending.consume() orelse return;
+        const result = self.api_state.rule_content_batch_pending.consume() orelse return;
         switch (result) {
             .ok => |resp| {
-                self.api_state.rule_content_cache.store(.{ .value = resp.path }, resp);
-            },
-            else => {
-                if (self.selectedRulePath()) |path| {
-                    self.api_state.rule_content_cache.markFailed(.{ .value = path });
+                self.api_state.rule_content_cache.markInflightFailed();
+                for (resp.items) |item| {
+                    const key_path = if (item.path.len > 0) item.path else self.lookupRulePath(item.rule_id) orelse continue;
+                    const key = api.cache.StringKey{ .value = key_path };
+                    if (item.@"error".len > 0) {
+                        self.api_state.rule_content_cache.markFailed(self.api_state.allocator(), key);
+                        continue;
+                    }
+                    self.api_state.rule_content_cache.store(self.api_state.allocator(), key, .{
+                        .rule_id = item.rule_id,
+                        .path = key_path,
+                        .content_hash = item.content_hash,
+                        .body = item.body,
+                    });
                 }
             },
+            else => self.api_state.rule_content_cache.markInflightFailed(),
         }
     }
 
@@ -3484,34 +3613,30 @@ pub const Shell = struct {
         return std.fmt.allocPrint(alloc, "{s}: {s} ({s})", .{ context, err.message, err.code }) catch context;
     }
 
-    /// Pump the workspace context file content pending slot. The
-    /// payload carries the (ws_id, path) key the request was issued
-    /// for, so the cache entry is routed against the request rather
-    /// than against whatever the user now has selected. On error,
-    /// mark the currently selected (ws_id, path) as failed to stop the
-    /// widget loop from re-dispatching on every tick.
+    /// Pump the workspace context content batch slot. Each item is
+    /// stored under its workspace/path key; failed in-flight items are
+    /// remembered so a disconnected Hub does not trigger a retry loop.
     fn consumeWsContextContentResult(self: *Shell) void {
-        const result = self.api_state.workspace_context_content_pending.consume() orelse return;
+        const result = self.api_state.workspace_context_content_batch_pending.consume() orelse return;
         switch (result) {
-            .ok => |payload| {
-                self.api_state.workspace_context_content_cache.store(
-                    .{ .ws_id = payload.ws_id, .path = payload.path },
-                    payload.body,
-                );
+            .ok => |resp| {
+                self.api_state.workspace_context_content_cache.markInflightFailed();
+                for (resp.items) |item| {
+                    const key = api.state.WorkspacePathKey{ .ws_id = resp.ws_id, .path = item.path };
+                    if (item.@"error".len > 0) {
+                        self.api_state.workspace_context_content_cache.markFailed(self.api_state.allocator(), key);
+                        continue;
+                    }
+                    self.api_state.workspace_context_content_cache.store(
+                        self.api_state.allocator(),
+                        key,
+                        item.body,
+                    );
+                }
                 self.system_notices.clear(.workspace_context_content);
             },
             else => {
-                const ws_id = self.activeWsId() orelse return;
-                const ws_d = self.workspaceDetailForView(ws_id) orelse return;
-                const selection = self.currentWorkspaceFileSelection(ws_d) orelse return;
-                const context = switch (selection) {
-                    .context => |c| c,
-                    .rule => return,
-                };
-                if (context.is_create_draft) return;
-                self.api_state.workspace_context_content_cache.markFailed(
-                    .{ .ws_id = ws_d.ws_id, .path = context.path },
-                );
+                self.api_state.workspace_context_content_cache.markInflightFailed();
                 if (!self.isHubConnected()) return;
                 self.system_notices.push(.workspace_context_content, .failure, .persistent, "Workspace context content failed; showing local cache when available.");
             },

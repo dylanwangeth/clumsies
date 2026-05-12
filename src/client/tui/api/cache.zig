@@ -152,6 +152,151 @@ pub const StringKey = struct {
     }
 };
 
+pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
+    return struct {
+        mutex: std.Thread.Mutex = .{},
+        entries: std.ArrayList(Entry) = .empty,
+
+        const Self = @This();
+
+        const EntryState = union(enum) {
+            ok: V,
+            failed,
+            inflight,
+        };
+
+        const Entry = struct {
+            key: K,
+            state: EntryState,
+        };
+
+        pub fn lookup(self: *Self, k: K) ?V {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            const idx = self.findIndexLocked(k) orelse return null;
+            return switch (self.entries.items[idx].state) {
+                .ok => |value| value,
+                else => null,
+            };
+        }
+
+        pub fn isFailed(self: *Self, k: K) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            const idx = self.findIndexLocked(k) orelse return false;
+            return self.entries.items[idx].state == .failed;
+        }
+
+        pub fn shouldDispatch(self: *Self, k: K) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            return self.findIndexLocked(k) == null;
+        }
+
+        pub fn reserve(self: *Self, allocator: std.mem.Allocator, k: K) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            if (self.findIndexLocked(k) != null) return false;
+            self.entries.append(allocator, .{
+                .key = k,
+                .state = .inflight,
+            }) catch return false;
+            return true;
+        }
+
+        pub fn store(self: *Self, allocator: std.mem.Allocator, k: K, v: V) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            if (self.findIndexLocked(k)) |idx| {
+                self.entries.items[idx].state = .{ .ok = v };
+                return;
+            }
+            self.entries.append(allocator, .{
+                .key = k,
+                .state = .{ .ok = v },
+            }) catch {};
+        }
+
+        pub fn markFailed(self: *Self, allocator: std.mem.Allocator, k: K) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            if (self.findIndexLocked(k)) |idx| {
+                self.entries.items[idx].state = .failed;
+                return;
+            }
+            self.entries.append(allocator, .{
+                .key = k,
+                .state = .failed,
+            }) catch {};
+        }
+
+        pub fn invalidate(self: *Self) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.entries.clearRetainingCapacity();
+        }
+
+        pub fn invalidateKey(self: *Self, k: K) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            const idx = self.findIndexLocked(k) orelse return;
+            _ = self.entries.orderedRemove(idx);
+        }
+
+        pub fn clearFailure(self: *Self) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            var i: usize = 0;
+            while (i < self.entries.items.len) {
+                if (self.entries.items[i].state == .failed) {
+                    _ = self.entries.orderedRemove(i);
+                    continue;
+                }
+                i += 1;
+            }
+        }
+
+        pub fn markInflightFailed(self: *Self) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            for (self.entries.items) |*entry| {
+                if (entry.state == .inflight) entry.state = .failed;
+            }
+        }
+
+        pub fn isPopulated(self: *Self) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            return self.entries.items.len > 0;
+        }
+
+        fn findIndexLocked(self: *Self, k: K) ?usize {
+            for (self.entries.items, 0..) |entry, idx| {
+                if (keysEqual(entry.key, k)) return idx;
+            }
+            return null;
+        }
+
+        fn keysEqual(a: K, b: K) bool {
+            const info = @typeInfo(K);
+            const has_eql = switch (info) {
+                .@"struct", .@"enum", .@"union", .@"opaque" => @hasDecl(K, "eql"),
+                else => false,
+            };
+            if (has_eql) return a.eql(b);
+            return std.meta.eql(a, b);
+        }
+    };
+}
+
 test "CacheSlot scalar key: miss, store, hit, invalidate" {
     var cache: CacheSlot(u32, u32) = .{};
 
@@ -245,4 +390,38 @@ test "CacheSlot clearFailure preserves ok values" {
     cache.clearFailure();
     try std.testing.expect(cache.lookup(1) == null);
     try std.testing.expect(cache.shouldDispatch(1));
+}
+
+test "MultiCacheSlot keeps multiple keys and gates inflight retries" {
+    var cache: MultiCacheSlot(StringKey, u32) = .{};
+    const alloc = std.testing.allocator;
+
+    try std.testing.expect(cache.reserve(alloc, .{ .value = "a" }));
+    try std.testing.expect(!cache.shouldDispatch(.{ .value = "a" }));
+    try std.testing.expect(cache.reserve(alloc, .{ .value = "b" }));
+
+    cache.store(alloc, .{ .value = "a" }, 10);
+    cache.store(alloc, .{ .value = "b" }, 20);
+    try std.testing.expectEqual(@as(u32, 10), cache.lookup(.{ .value = "a" }).?);
+    try std.testing.expectEqual(@as(u32, 20), cache.lookup(.{ .value = "b" }).?);
+
+    cache.invalidate();
+    cache.entries.deinit(alloc);
+}
+
+test "MultiCacheSlot converts unresolved inflight entries to failures" {
+    var cache: MultiCacheSlot(StringKey, u32) = .{};
+    const alloc = std.testing.allocator;
+
+    try std.testing.expect(cache.reserve(alloc, .{ .value = "a" }));
+    try std.testing.expect(cache.reserve(alloc, .{ .value = "b" }));
+    cache.store(alloc, .{ .value = "a" }, 10);
+
+    cache.markInflightFailed();
+    try std.testing.expectEqual(@as(u32, 10), cache.lookup(.{ .value = "a" }).?);
+    try std.testing.expect(cache.isFailed(.{ .value = "b" }));
+    try std.testing.expect(!cache.shouldDispatch(.{ .value = "b" }));
+
+    cache.invalidate();
+    cache.entries.deinit(alloc);
 }

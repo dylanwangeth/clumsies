@@ -56,6 +56,11 @@ pub const WorkspaceContextContentPayload = struct {
     body: []const u8,
 };
 
+pub const WorkspaceContextContentBatchPayload = struct {
+    ws_id: []const u8,
+    items: []const workspace_api.BatchContextItem,
+};
+
 pub const WorkspaceMembersPayload = struct {
     ws_id: []const u8,
     members: []const model.WorkspaceMemberData,
@@ -116,8 +121,8 @@ pub const ApiState = struct {
     drafts: ?[]const DraftEntry = null,
 
     // Artifact rule content, keyed by rule path.
-    rule_content_pending: request.PendingRequest(dispatcher.Result(artifact_api.RuleContentResponse)) = .{},
-    rule_content_cache: cache.CacheSlot(cache.StringKey, artifact_api.RuleContentResponse) = .{},
+    rule_content_batch_pending: request.PendingRequest(dispatcher.Result(artifact_api.BatchRuleContentResponse)) = .{},
+    rule_content_cache: cache.MultiCacheSlot(cache.StringKey, artifact_api.RuleContentResponse) = .{},
 
     // Artifact rule PR list. Pending result carries the rule_id the
     // request was issued for so the consumer stores under the correct
@@ -130,8 +135,8 @@ pub const ApiState = struct {
     // Workspace context file content, keyed by (ws_id, path). Payload
     // includes both halves of the key so the consumer routes the body
     // to the exact request that produced it.
-    workspace_context_content_pending: request.PendingRequest(dispatcher.Result(WorkspaceContextContentPayload)) = .{},
-    workspace_context_content_cache: cache.CacheSlot(WorkspacePathKey, []const u8) = .{},
+    workspace_context_content_batch_pending: request.PendingRequest(dispatcher.Result(WorkspaceContextContentBatchPayload)) = .{},
+    workspace_context_content_cache: cache.MultiCacheSlot(WorkspacePathKey, []const u8) = .{},
 
     // Workspace detail (compound): two independent fetches keyed by ws_id,
     // combined on read via `workspaceDetail(ws_id)`. Each pending payload carries
@@ -409,7 +414,7 @@ pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) voi
         },
         .artifact_detail => {
             api_state.rule_content_cache.invalidate();
-            api_state.rule_content_pending.cancel();
+            api_state.rule_content_batch_pending.cancel();
         },
         .workspace_detail => {
             invalidateWorkspaceDetail(api_state);
@@ -418,7 +423,7 @@ pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) voi
             invalidatePrLifecycle(api_state);
             api_state.rule_content_cache.invalidate();
             invalidateWorkspaceDetail(api_state);
-            api_state.rule_content_pending.cancel();
+            api_state.rule_content_batch_pending.cancel();
             resetPrDetailState(api_state);
         },
     }
@@ -451,7 +456,7 @@ fn invalidateWorkspaceDetail(api_state: *ApiState) void {
     api_state.workspace_context_content_cache.invalidate();
     api_state.workspace_context_cache.clearFailure();
     api_state.workspace_manifest_cache.clearFailure();
-    api_state.workspace_context_content_pending.cancel();
+    api_state.workspace_context_content_batch_pending.cancel();
     api_state.workspace_context_pending.cancel();
     api_state.workspace_manifest_pending.cancel();
 }
