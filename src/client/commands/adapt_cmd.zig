@@ -122,6 +122,9 @@ fn runInstall(
         try chooseInstallScope(stdout, allocator, pkg, workspace_target_root_opt, user_target_root_opt);
 
     if (scope == .workspace and workspace_target_root_opt == null) {
+        if (!parsed.boolean(FLAG_YES) and (explicit_scope == null or parsed.value(FLAG_AGENT) == null)) {
+            try stdout.writeAll("\n");
+        }
         workspace_root_opt = createAndBindCurrentWorkspace(stdout, stderr, allocator) catch |err| {
             switch (err) {
                 error.NotAuthenticated, error.WorkspaceCreateFailed => {},
@@ -133,6 +136,7 @@ fn runInstall(
             return;
         };
         workspace_target_root_opt = try pkg.resolveTargetRoot(allocator, .workspace, workspace_root_opt);
+        try stdout.writeAll("\n");
     }
 
     const selected_target_root = switch (scope) {
@@ -203,7 +207,7 @@ fn runInstall(
             }
 
             const peer_active = try peerScopeActive(allocator, pkg, scope, workspace_target_root_opt, user_target_root_opt);
-            try printInstallPlan(stdout, allocator, pkg, &plan, peer_active);
+            try printInstallPlan(stdout, allocator, pkg, &plan, peer_active, parsed.boolean(FLAG_YES));
 
             if (!parsed.boolean(FLAG_YES)) {
                 const confirm_prompt = if (std.mem.eql(u8, plan.mode, "update"))
@@ -253,8 +257,16 @@ fn runRemove(
         try printRemoveHeader(stdout);
     }
 
-    const workspace_root_opt = try workspace_config.resolveCurrentWorkspaceRoot(allocator);
-    defer if (workspace_root_opt) |workspace_root| allocator.free(workspace_root);
+    const configured_workspace_root_opt = try workspace_config.resolveCurrentWorkspaceRoot(allocator);
+    defer if (configured_workspace_root_opt) |workspace_root| allocator.free(workspace_root);
+
+    const cwd_workspace_root_opt: ?[]const u8 = if (configured_workspace_root_opt == null)
+        try std.fs.cwd().realpathAlloc(allocator, ".")
+    else
+        null;
+    defer if (cwd_workspace_root_opt) |workspace_root| allocator.free(workspace_root);
+
+    const workspace_root_opt = configured_workspace_root_opt orelse cwd_workspace_root_opt;
 
     const pkg = if (parsed.value(FLAG_AGENT)) |agent_name|
         adapter_cli.resolvePackageOrPrint(agent_name, stderr) orelse return
@@ -308,7 +320,11 @@ fn runRemove(
     defer loaded_opt.?.deinit();
 
     const manifest = loaded_opt.?.parsed.value;
-    try stdout.print("{s}{s}{s}Clumsies Remove Adapter{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    if (parsed.boolean(FLAG_YES)) {
+        try stdout.print("{s}{s}{s}Clumsies Remove Adapter{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    } else {
+        try adapter_cli.printSectionTitle(stdout, "Remove preview");
+    }
     try stdout.print("{s}Agent: {s}{s}{s}\n", .{ P, Color.cyan, pkg.display_name, Color.reset });
     try stdout.print(
         "{s}Target: {s}{s} ({s}){s}\n\n",
@@ -495,6 +511,8 @@ fn createAndBindCurrentWorkspace(
     stderr: *std.Io.Writer,
     allocator: std.mem.Allocator,
 ) ![]const u8 {
+    try adapter_cli.printSectionTitle(stdout, "Workspace setup");
+
     const auth_info = auth_mod.loadAuth(allocator) catch {
         try stderr.print(
             "{s}{s}{s}Error:{s} Cannot create a workspace because you are not logged in. Run {s}clumsies login{s} first, or choose user scope.\n",
@@ -539,7 +557,7 @@ fn createAndBindCurrentWorkspace(
 
     try workspace_config.addWorkspace(allocator, auth_info.hub_url, parsed.value.name, parsed.value.ws_id, cwd_path);
     try stdout.print(
-        "{s}{s}{s}Workspace {s} bound to current directory (ws_id: {s}){s}\n",
+        "{s}  {s}{s}Workspace \"{s}\" bound to current directory (ws_id: {s}){s}\n",
         .{ P, Color.bold, Color.green, parsed.value.name, parsed.value.ws_id, Color.reset },
     );
 
@@ -551,7 +569,7 @@ fn createAndBindCurrentWorkspace(
         return cwd_path;
     };
     try stdout.print(
-        "{s}{s}{s}Synced:{s} {d} rules, {d} context files into local cache\n",
+        "{s}  {s}{s}Synced:{s} {d} rules, {d} context files into local cache\n",
         .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total },
     );
     return cwd_path;
@@ -789,11 +807,16 @@ fn printInstallPlan(
     pkg: adapter.packages.AdapterPackage,
     plan: *const adapter.model.Plan,
     peer_scope_active: bool,
+    show_title: bool,
 ) !void {
     const state_path = try adapter.store.adaptersBasePath(allocator);
     defer allocator.free(state_path);
 
-    try stdout.print("{s}{s}{s}Clumsies Adapt{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    if (show_title) {
+        try stdout.print("{s}{s}{s}Clumsies Adapt{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    } else {
+        try adapter_cli.printSectionTitle(stdout, "Install preview");
+    }
     try stdout.print("{s}Agent: {s}{s}{s}\n", .{ P, Color.cyan, pkg.display_name, Color.reset });
     try stdout.print(
         "{s}Target: {s}{s} ({s}){s}\n",
@@ -812,7 +835,7 @@ fn printInstallPlan(
     if (countWorkflowSkills(plan) > 0) {
         try adapter_cli.printDetailLine(stdout, "Import {d} workflow skill(s) from the current workspace cache", .{countWorkflowSkills(plan)});
     }
-    try adapter_cli.printDetailLine(stdout, "Record install state in {s} for safe removal", .{state_path});
+    try adapter_cli.printDetailLine(stdout, "Record adapter state in {s} for safe removal", .{state_path});
     for (plan.notes) |note| {
         try adapter_cli.printDetailLine(stdout, "{s}", .{note});
     }

@@ -313,12 +313,16 @@ fn shiftSettingsTab(self: anytype, delta: i8) void {
     const SettingsTab = @TypeOf(self.settings.tab);
     const settings_tabs = [_]SettingsTab{ .account, .workspaces, .organization, .token };
 
+    const previous_tab = self.settings.tab;
     const current: i8 = @intCast(@intFromEnum(self.settings.tab));
     const count: i8 = @intCast(settings_tabs.len);
     const next = @mod(current + delta + count, count);
     self.settings.tab = @enumFromInt(@as(u8, @intCast(next)));
     self.settings.workspace_focus = .list;
     self.settings.workspace_member_sel = 0;
+    if (previous_tab != self.settings.tab and self.settings.tab == .workspaces) {
+        self.refreshSettingsWorkspaces();
+    }
 }
 
 fn orgMemberCount(self: anytype) usize {

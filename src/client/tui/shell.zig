@@ -499,6 +499,7 @@ pub const Shell = struct {
                 if (key.matches('S', .{})) {
                     log.info("settings_open", .{});
                     self.show_settings = true;
+                    self.refreshSettingsWorkspaces();
                     ctx.consumeAndRedraw();
                     return;
                 }
@@ -1737,6 +1738,14 @@ pub const Shell = struct {
 
     pub fn openCreateWorkspace(self: *Shell) void {
         workspace_panel.openCreate(self);
+    }
+
+    pub fn refreshSettingsWorkspaces(self: *Shell) void {
+        if (!self.show_settings or self.settings.tab != .workspaces) return;
+        self.api_state.workspace_paths_cache.invalidate();
+        self.resetLocalWorkspaceDetail();
+        api.fetch.refetchAllAsync(self.api_state);
+        log.info("settings_workspaces_refresh", .{});
     }
 
     pub fn openRenameWorkspace(self: *Shell) void {

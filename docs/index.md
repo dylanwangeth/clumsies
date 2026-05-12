@@ -7,10 +7,10 @@ hero:
   tagline: Building the context infrastructure that coexists with agents' self-managed memory.
   actions:
     - theme: brand
-      text: Read the Overview
-      link: /overview
+      text: Get Started
+      link: /guides/how-to-use-clumsies
     - theme: alt
-      text: See the Architecture
+      text: Architecture
       link: /architecture
 ---
 
@@ -36,10 +36,10 @@ hero:
         <span class="home-terminal-host">lilhammer@longde</span>
         <span class="home-terminal-path">clumsies</span>
         <span class="home-terminal-prompt">%</span>
-        <span class="home-terminal-text">clumsies --help</span>
+        <span class="home-terminal-text">clumsies -h</span>
       </div>
       <div class="home-terminal-line is-output">
-        <span class="home-terminal-output"><span class="home-terminal-token is-orange">clumsies</span> - Context infrastructure for coding agents</span>
+        <span class="home-terminal-output"><span class="home-terminal-token is-orange">clumsies</span> - Building the persistent, observable, and collaborative context infrastructure that coexists with agents' self-managed memory.</span>
       </div>
       <div class="home-terminal-line is-output">
         <span class="home-terminal-output"><span class="home-terminal-token is-orange">Usage:</span></span>
@@ -57,10 +57,7 @@ hero:
         <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies sync</span>         Sync local cache from Hub</span>
       </div>
       <div class="home-terminal-line is-output">
-        <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies adapt</span>        Interactively install or update an agent adapter</span>
-      </div>
-      <div class="home-terminal-line is-output">
-        <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies remove-adapter</span> Remove an installed agent adapter</span>
+        <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies adapt</span>        Install, update, remove, or list agent adapters</span>
       </div>
       <div class="home-terminal-line is-output">
         <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies mcp serve</span>    Start MCP server for AI agents</span>
@@ -72,7 +69,7 @@ hero:
         <span class="home-terminal-host">lilhammer@longde</span>
         <span class="home-terminal-path">clumsies</span>
         <span class="home-terminal-prompt">%</span>
-        <span class="home-terminal-text">clumsies</span>
+        <span class="home-terminal-text">clumsies login --hub-url localhost:8400 -u lilhammer</span>
       </div>
       <div class="home-terminal-line is-output">
         <span class="home-terminal-output is-dim">Password:</span>
@@ -84,28 +81,31 @@ hero:
         <span class="home-terminal-host">lilhammer@longde</span>
         <span class="home-terminal-path">clumsies</span>
         <span class="home-terminal-prompt">%</span>
-        <span class="home-terminal-text">clumsies init --create clumsiesws</span>
+        <span class="home-terminal-text">clumsies adapt --agent codex --scope workspace --yes</span>
       </div>
       <div class="home-terminal-line is-output">
-        <span class="home-terminal-output is-success">Workspace clumsiesws bound to current directory (ws_id: ws-0f6a12ce83db4a7fb2d4e9aa38e1b6c2)</span>
-      </div>
-      <div class="home-terminal-line is-command">
-        <span class="home-terminal-host">lilhammer@longde</span>
-        <span class="home-terminal-path">clumsies</span>
-        <span class="home-terminal-prompt">%</span>
-        <span class="home-terminal-text">clumsies sync</span>
+        <span class="home-terminal-output"><span class="home-terminal-token is-orange">Workspace setup</span></span>
       </div>
       <div class="home-terminal-line is-output">
-        <span class="home-terminal-output">→ META_PROMPT.md: unchanged</span>
+        <span class="home-terminal-output is-success">  Workspace "clumsiesws" bound to current directory (ws_id: ws-0f6a12ce83db4a7fb2d4e9aa38e1b6c2)</span>
       </div>
       <div class="home-terminal-line is-output">
-        <span class="home-terminal-output">→ Rules: 24 unchanged, 0 to fetch</span>
+        <span class="home-terminal-output is-success">  Synced: 0 rules, 0 context files into local cache</span>
       </div>
       <div class="home-terminal-line is-output">
-        <span class="home-terminal-output">→ Context: 6 unchanged, 0 to fetch</span>
+        <span class="home-terminal-output"><span class="home-terminal-token is-orange">Clumsies Adapt</span></span>
       </div>
       <div class="home-terminal-line is-output">
-        <span class="home-terminal-output is-success">Synced: 25 rules, 6 context files (24 rules + 6 context unchanged)</span>
+        <span class="home-terminal-output">Agent: <span class="home-terminal-token is-cyan">Codex</span></span>
+      </div>
+      <div class="home-terminal-line is-output">
+        <span class="home-terminal-output">Target: <span class="home-terminal-token is-cyan">Workspace (/Users/lilhammer/workspace/clumsies/.codex)</span></span>
+      </div>
+      <div class="home-terminal-line is-output">
+        <span class="home-terminal-output">Mode: <span class="home-terminal-token is-cyan">install</span></span>
+      </div>
+      <div class="home-terminal-line is-output">
+        <span class="home-terminal-output is-success">Clumsies adapted Codex. Wrote 10 file(s), left 0 unchanged.</span>
       </div>
       <div class="home-terminal-line is-command is-idle">
         <span class="home-terminal-host">lilhammer@longde</span>
