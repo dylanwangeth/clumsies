@@ -78,44 +78,38 @@ Start the Hub:
 clumsies-hub
 ```
 
-Launch the TUI and sign in when prompted:
-
-```bash
-clumsies
-```
-
-The CLI login wrapper remains available for scripts and direct credential
-management:
+Sign in:
 
 ```bash
 clumsies login --hub-url http://127.0.0.1:8400 --username admin
 ```
 
-Bind the current directory to a workspace:
+Set up the current project for your agent:
 
 ```bash
-clumsies init --create my-workspace
+clumsies adapt
 ```
 
-The TUI can also create a workspace, choose an initial bundle, and bind a local
-path from Settings > Workspaces.
-
-Sync local cache:
-
-```bash
-clumsies sync
-```
-
-Install the Codex adapter in workspace scope:
-
-```bash
-clumsies adapt --agent codex --scope workspace --yes
-```
+`adapt` installs the selected agent integration. If the current directory is
+not bound to a workspace, the workspace scope can create and bind one for this
+project before installing.
 
 Launch the TUI:
 
 ```bash
 clumsies
+```
+
+Use the TUI whenever you want to inspect workspace context, review rules,
+check activity, or manage workspaces and members.
+
+`clumsies init` and `clumsies sync` still exist for explicit setup and
+automation, but they are no longer required for the normal quick start.
+
+Non-interactive adapter installs are still available:
+
+```bash
+clumsies adapt --agent codex --scope workspace --yes
 ```
 
 Inside the TUI, use Workspace to inspect local context and rules, Artifact to
