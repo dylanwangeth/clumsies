@@ -73,6 +73,8 @@ fn promptChoiceLine(
     choices: []const Choice,
     default_index: usize,
 ) !usize {
+    if (choices.len == 0) return error.NoChoices;
+    const initial_index = if (default_index < choices.len) default_index else 0;
     try stdout.print("{s}{s}{s}{s}{s}\n", .{ P, Color.bold, Color.orange, prompt, Color.reset });
     for (choices, 0..) |choice, idx| {
         if (choice.description.len != 0) {
@@ -88,7 +90,7 @@ fn promptChoiceLine(
                     Color.reset,
                     Color.dim,
                     choice.description,
-                    if (idx == default_index) " [default]" else "",
+                    if (idx == initial_index) " [default]" else "",
                     Color.reset,
                 },
             );
@@ -102,7 +104,7 @@ fn promptChoiceLine(
                     Color.reset,
                     Color.bold,
                     choice.label,
-                    if (idx == default_index) " [default]" else "",
+                    if (idx == initial_index) " [default]" else "",
                     Color.reset,
                 },
             );
@@ -110,13 +112,13 @@ fn promptChoiceLine(
     }
 
     while (true) {
-        try stdout.print("{s}Enter choice {s}[{d}]{s}: ", .{ P, Color.dim, default_index + 1, Color.reset });
+        try stdout.print("{s}Enter choice {s}[{d}]{s}: ", .{ P, Color.dim, initial_index + 1, Color.reset });
         try stdout.flush();
         const line_opt = try readLineTrimmedAlloc(allocator);
-        if (line_opt == null) return default_index;
+        if (line_opt == null) return initial_index;
         const line = line_opt.?;
         defer allocator.free(line);
-        if (line.len == 0) return default_index;
+        if (line.len == 0) return initial_index;
 
         const parsed_index = std.fmt.parseInt(usize, line, 10) catch null;
         if (parsed_index) |index| {
