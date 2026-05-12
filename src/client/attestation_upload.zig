@@ -58,7 +58,11 @@ pub fn flushWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) FlushOutc
     hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens) catch |err| return .{ .failed = err };
     var adapter: HubUploader = .{ .allocator = allocator, .client = &hub };
 
-    const result = upload_worker.flushOnce(allocator, ws_id, adapter.uploader()) catch |err| {
+    return flushWorkspaceWithUploader(allocator, ws_id, adapter.uploader());
+}
+
+pub fn flushWorkspaceWithUploader(allocator: std.mem.Allocator, ws_id: []const u8, uploader: upload_worker.Uploader) FlushOutcome {
+    const result = upload_worker.flushOnce(allocator, ws_id, uploader) catch |err| {
         return .{ .failed = err };
     };
     return .{ .flushed = result };

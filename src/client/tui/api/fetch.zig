@@ -4,7 +4,6 @@
 //! and org stats without blocking workspace selection.
 
 const std = @import("std");
-const auth_mod = @import("../../auth.zig");
 const HubClient = @import("../../hub_client.zig").HubClient;
 const logger = @import("clumsies_lib").logger;
 const model = @import("model.zig");
@@ -91,6 +90,8 @@ fn fetchAll(
     access_token: []const u8,
     refresh_token: []const u8,
 ) void {
+    _ = username;
+    _ = refresh_token;
     defer {
         var next_hub_url: ?[]const u8 = null;
         var next_username: ?[]const u8 = null;
@@ -131,23 +132,34 @@ fn fetchAll(
 
     var client = HubClient.init(alloc, hub_url, access_token);
     defer client.deinit();
-    client.enableRefresh(refresh_token, username, auth_mod.persistRotatedTokens) catch |err| {
-        log.warn("bootstrap_refresh_setup_failed error={s}", .{@errorName(err)});
-        setStatus(api_state, .error_network);
-        return;
-    };
 
-    const me_resp = client.get("/api/auth/me") catch {
+    var me_resp = client.get("/api/auth/me") catch {
         log.warn("bootstrap_auth_me network_error", .{});
         setStatus(api_state, .error_network);
         return;
     };
-    defer me_resp.deinit();
+    var me_resp_active = true;
+    defer if (me_resp_active) me_resp.deinit();
 
     if (me_resp.status == .unauthorized) {
-        log.warn("bootstrap_auth_me unauthorized", .{});
-        setStatus(api_state, .error_auth);
-        return;
+        log.info("bootstrap_refresh_token path=/api/auth/me", .{});
+        const tokens = api_state.refreshAuthTokens(alloc, access_token) catch |err| {
+            log.warn("bootstrap_refresh_token_failed path=/api/auth/me error={s}", .{@errorName(err)});
+            setStatus(api_state, .error_auth);
+            return;
+        };
+        me_resp.deinit();
+        me_resp_active = false;
+
+        var retry_client = HubClient.init(alloc, hub_url, tokens.access_token);
+        defer retry_client.deinit();
+        me_resp = retry_client.get("/api/auth/me") catch {
+            log.warn("bootstrap_auth_me network_error", .{});
+            setStatus(api_state, .error_network);
+            return;
+        };
+        me_resp_active = true;
+        client.access_token = tokens.access_token;
     }
     if (me_resp.status != .ok) {
         log.warn("bootstrap_auth_me status={d}", .{@intFromEnum(me_resp.status)});
@@ -160,7 +172,6 @@ fn fetchAll(
         setStatus(api_state, .error_network);
         return;
     };
-    updateRotatedTokens(api_state, &client, access_token);
     log.info("bootstrap_auth_me ok", .{});
 
     api_state.mutex.lock();
@@ -203,20 +214,12 @@ fn fetchAll(
     if (bundles) |value| api_state.bundles = value;
     if (org_stats) |value| api_state.org_stats = value;
     api_state.mutex.unlock();
-    updateRotatedTokens(api_state, &client, access_token);
     log.info("bootstrap_complete directory={} rules={} bundles={} org_stats={}", .{
         directory != null,
         rules_list != null,
         bundles != null,
         org_stats != null,
     });
-}
-
-fn updateRotatedTokens(api_state: *state.ApiState, client: *HubClient, previous_access_token: []const u8) void {
-    const access_token = client.currentAccessToken() orelse return;
-    if (std.mem.eql(u8, access_token, previous_access_token)) return;
-    const refresh_token = client.currentRefreshToken() orelse return;
-    api_state.updateAuthTokens(access_token, refresh_token);
 }
 
 fn setStatus(api_state: *state.ApiState, status: state.ConnectionStatus) void {

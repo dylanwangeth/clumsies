@@ -9,7 +9,6 @@
 //! no boilerplate.
 
 const std = @import("std");
-const auth_mod = @import("../../auth.zig");
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 const collab_api = @import("clumsies_lib").protocol.collab_api;
 const artifact_api = @import("clumsies_lib").protocol.artifact_api;
@@ -844,7 +843,6 @@ pub fn dispatchFromState(
 ) void {
     const token_alloc = api_state.backing_allocator;
     var access_token_copy: ?[]const u8 = null;
-    var refresh_token_copy: ?[]const u8 = null;
 
     api_state.mutex.lock();
     const hub_url = api_state.hub_url;
@@ -854,12 +852,9 @@ pub fn dispatchFromState(
     if (access_token) |token| {
         access_token_copy = token_alloc.dupe(u8, token) catch null;
     }
-    if (refresh_token) |token| {
-        refresh_token_copy = token_alloc.dupe(u8, token) catch null;
-    }
+    const has_refresh = username != null and refresh_token != null;
     api_state.mutex.unlock();
     defer if (access_token_copy) |token| token_alloc.free(token);
-    defer if (refresh_token_copy) |token| token_alloc.free(token);
 
     if (hub_url == null or access_token_copy == null) {
         const gen = pending.tryBegin() orelse return;
@@ -877,12 +872,9 @@ pub fn dispatchFromState(
         hub_url.?,
         access_token_copy.?,
         api_state.clientIdHex(),
-        if (username != null and refresh_token_copy != null) .{
-            .username = username.?,
-            .refresh_token = refresh_token_copy.?,
-            .persist_fn = auth_mod.persistRotatedTokens,
+        if (has_refresh) .{
             .update_ctx = api_state,
-            .update_fn = updateAuthTokens,
+            .refresh_fn = refreshAuthTokens,
         } else null,
         api_state.backing_allocator,
         api_state.allocator(),
@@ -890,9 +882,10 @@ pub fn dispatchFromState(
     );
 }
 
-fn updateAuthTokens(ctx: *anyopaque, access_token: []const u8, refresh_token: []const u8) void {
+fn refreshAuthTokens(ctx: *anyopaque, alloc: std.mem.Allocator, previous_access_token: []const u8) anyerror!dispatcher.RefreshTokens {
     const api_state: *state.ApiState = @ptrCast(@alignCast(ctx));
-    api_state.updateAuthTokens(access_token, refresh_token);
+    const tokens = try api_state.refreshAuthTokens(alloc, previous_access_token);
+    return .{ .access_token = tokens.access_token, .refresh_token = tokens.refresh_token };
 }
 
 pub const health = dispatcher.RequestSpec(EmptyParams, void){
