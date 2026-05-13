@@ -328,7 +328,7 @@ fn shiftSettingsTab(self: anytype, delta: i8) void {
 fn orgMemberCount(self: anytype) usize {
     self.api_state.mutex.lock();
     defer self.api_state.mutex.unlock();
-    if (self.api_state.directory) |dir| return dir.members.len;
+    if (self.api_state.members) |dir| return dir.members.len;
     return 0;
 }
 
@@ -809,7 +809,8 @@ fn drawSettingsWorkspaces(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
 
 fn requestWorkspaceMembers(self: anytype, ws_id: []const u8) void {
     const key: api.cache.StringKey = .{ .value = ws_id };
-    if (!self.api_state.workspace_members_cache.shouldDispatch(key)) return;
+    if (self.api_state.workspace_members_pending.isInflight()) return;
+    if (!self.api_state.workspace_members_cache.beginRefresh(key, self.tick_count, api.cache.DEFAULT_SNAPSHOT_REFRESH_TICKS)) return;
     api.specs.dispatchFromState(
         api.specs.WorkspaceIdParams,
         api.specs.WorkspaceMembersPayload,
@@ -850,7 +851,7 @@ fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error
     const sel = self.settings.content_sel;
 
     self.api_state.mutex.lock();
-    const live_dir = self.api_state.directory;
+    const live_dir = self.api_state.members;
     self.api_state.mutex.unlock();
 
     const MemberView = struct { username: []const u8, role: []const u8, status: []const u8, joined: []const u8 };

@@ -1,6 +1,6 @@
 //! Bootstrap and warmup fetch loop for the TUI. This module owns the
 //! coarse-grained authenticated fetch that seeds `/api/auth/me` first,
-//! then fills slower module metadata such as directory, rules, bundles,
+//! then fills slower module metadata such as members, rules, bundles,
 //! and org stats without blocking workspace selection.
 
 const std = @import("std");
@@ -181,17 +181,17 @@ fn fetchAll(
     api_state.status = .connected;
     api_state.mutex.unlock();
 
-    const directory = doFetchParse(
+    const members = doFetchParse(
         &client,
         alloc,
-        "/api/org/directory",
-        model.DirectoryData,
-        parse.parseDirectory,
+        "/api/members",
+        model.OrgMembersData,
+        parse.parseMembers,
     );
     const rules_list = doFetchParse(
         &client,
         alloc,
-        "/api/org/artifact/rules",
+        "/api/artifact/rules",
         []const model.ArtifactRule,
         parse.parseArtifactRules,
     );
@@ -205,19 +205,19 @@ fn fetchAll(
     const bundles = doFetchParse(
         &client,
         alloc,
-        "/api/org/bundles",
+        "/api/bundles",
         []const model.BundleData,
         parse.parseBundles,
     );
 
     api_state.mutex.lock();
-    if (directory) |value| api_state.directory = value;
+    if (members) |value| api_state.members = value;
     if (rules_list) |value| api_state.rules = value;
     if (bundles) |value| api_state.bundles = value;
     if (org_stats) |value| api_state.org_stats = value;
     api_state.mutex.unlock();
-    log.info("bootstrap_complete directory={} rules={} bundles={} org_stats={}", .{
-        directory != null,
+    log.info("bootstrap_complete members={} rules={} bundles={} org_stats={}", .{
+        members != null,
         rules_list != null,
         bundles != null,
         org_stats != null,

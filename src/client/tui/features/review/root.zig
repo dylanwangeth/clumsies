@@ -12,6 +12,20 @@ const cursor_mod = @import("../../widgets/cursor.zig");
 const drafts_mod = @import("../../../drafts.zig");
 const PathTreeState = @import("../../models.zig").path_tree.State(128, 96);
 
+pub const PrDetailRequest = struct {
+    pr_id: []const u8,
+    target_kind: data.PrTargetKind,
+    ws_id: ?[]const u8 = null,
+
+    pub fn eql(self: PrDetailRequest, other: PrDetailRequest) bool {
+        if (!std.mem.eql(u8, self.pr_id, other.pr_id)) return false;
+        if (self.target_kind != other.target_kind) return false;
+        if (self.ws_id == null and other.ws_id == null) return true;
+        if (self.ws_id == null or other.ws_id == null) return false;
+        return std.mem.eql(u8, self.ws_id.?, other.ws_id.?);
+    }
+};
+
 const RuleDetailLayout = struct {
     inner_h_pad: u16,
     inner_w_pad: u16,
@@ -66,22 +80,7 @@ pub const FilterCursor = struct {
     chip_idx: usize = 0,
 };
 
-pub const DetailTab = enum(u8) {
-    content,
-    pull_requests,
-
-    pub fn label(self: DetailTab) []const u8 {
-        return switch (self) {
-            .content => "Content",
-            .pull_requests => "Pull Requests",
-        };
-    }
-};
-
-pub const detail_tabs = [_]DetailTab{ .content, .pull_requests };
-
 pub const State = struct {
-    detail_tab: DetailTab = .content,
     detail_focus_content: bool = false,
     hide_diff: bool = false,
     content_view: w.ContentView,
@@ -140,12 +139,6 @@ const embedded_layout: RuleDetailLayout = .{
 
 const DetailBody = union(enum) {
     content: vxfw.Surface,
-    pull_request_diff: struct {
-        title: []const u8,
-        op_line: ?[]const u8,
-        surface: vxfw.Surface,
-    },
-    pull_request_empty,
 };
 
 pub fn drawEmbeddedEmpty(
@@ -187,13 +180,8 @@ pub fn handleEmbeddedPaneEvent(
         ctx.consumeAndRedraw();
         return;
     }
-    switch (self.review.detail_tab) {
-        .content => {
-            if (@import("../content_actions.zig").handle(self, ctx, key, .artifact)) return;
-            try self.review.content_view.handleEvent(ctx, event);
-        },
-        .pull_requests => try handlePrDiffEvent(self, ctx, event, key),
-    }
+    if (@import("../content_actions.zig").handle(self, ctx, key, .artifact)) return;
+    try self.review.content_view.handleEvent(ctx, event);
 }
 
 fn buildRuleContentSurface(
@@ -212,97 +200,10 @@ fn buildRuleDetailBody(
     rule: *const data.RuleEntry,
     layout: RuleDetailLayout,
 ) std.mem.Allocator.Error!DetailBody {
-    switch (self.review.detail_tab) {
-        .content => {
-            return .{
-                .content = try buildRuleContentSurface(self, ctx, layout.inner_w_pad, ctx.max.height.? -| 2),
-            };
-        },
-        .pull_requests => {
-            self.requestSelectedRulePrs();
-            const prs = self.getPrsForRule(rule.path);
-            if (prs.len == 0) return .pull_request_empty;
-
-            const inner_h = ctx.max.height.? -| layout.inner_h_pad;
-            const inner_w = ctx.max.width.? -| layout.inner_w_pad;
-
-            const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
-            const pr = &prs[pr_idx];
-            // Title matches design/04 drill-down layout:
-            // "{pr_id} ─ {rule_path} ─ {status} ─ {author} ─ {created}"
-            // Dropped `refer:N` — it's not in the design.
-            const created_short = w.formatShortTimestamp(ctx.arena, pr.created) catch pr.created;
-            const title = try std.fmt.allocPrint(
-                ctx.arena,
-                "{s} ─ {s} ─ {s} ─ {s} ─ {s}",
-                .{ pr.id, pr.rule_name, pr.status, pr.author, created_short },
-            );
-            const op_line = try buildPrSubtitle(ctx.arena, pr);
-
-            syncPrDiffAndComments(self, ctx.arena);
-            const diff_h = inner_h -| 2;
-            const diff_ctx = ctx.withConstraints(
-                .{ .width = inner_w, .height = diff_h },
-                .{ .width = inner_w, .height = diff_h },
-            );
-            return .{
-                .pull_request_diff = .{
-                    .title = title,
-                    .op_line = op_line,
-                    .surface = try self.review.pr_diff_view.buildSurface(ctx.arena, diff_ctx, 0, diff_h),
-                },
-            };
-        },
-    }
-}
-
-/// Compose the PR drill-down subtitle in the design/04 shape:
-/// "{op_desc}   base: sha256:abc…   comments: N". When the operation
-/// metadata has not been populated yet (detail fetch in flight),
-/// fall back to just the base_hash + comments segment so the bar
-/// still conveys review-context even with op fields empty.
-fn buildPrSubtitle(
-    arena: std.mem.Allocator,
-    pr: *const data.PullRequestEntry,
-) std.mem.Allocator.Error![]const u8 {
-    var parts: std.ArrayListUnmanaged([]const u8) = .empty;
-    if (pr.operation_count > 0) {
-        try parts.append(arena, try opDescriptor(arena, pr));
-    }
-    if (pr.base_hash.len > 0) {
-        try parts.append(arena, try std.fmt.allocPrint(arena, "base: {s}", .{shortHash(pr.base_hash)}));
-    }
-    try parts.append(arena, try std.fmt.allocPrint(arena, "comments: {d}", .{pr.comments.len}));
-    return std.mem.join(arena, "   ", parts.items);
-}
-
-fn opDescriptor(
-    arena: std.mem.Allocator,
-    pr: *const data.PullRequestEntry,
-) std.mem.Allocator.Error![]const u8 {
-    const position = if (pr.operation_count > 1)
-        try std.fmt.allocPrint(arena, "op {d}/{d}", .{ pr.op_index + 1, pr.operation_count })
-    else
-        "op";
-    if (pr.op_type.len == 0) return position;
-    if (std.mem.eql(u8, pr.op_type, "rename")) {
-        return std.fmt.allocPrint(
-            arena,
-            "{s}: rename {s} → {s}",
-            .{ position, pr.op_current_path, pr.op_new_path },
-        );
-    }
-    const target = if (pr.op_current_path.len > 0) pr.op_current_path else pr.op_new_path;
-    return std.fmt.allocPrint(arena, "{s}: {s} {s}", .{ position, pr.op_type, target });
-}
-
-/// Trim a "sha256:HEX…" hash to the first 7 hex chars, matching the
-/// workspace panel header convention (see workspace.zig::hashBadge).
-fn shortHash(raw: []const u8) []const u8 {
-    const colon = std.mem.indexOfScalar(u8, raw, ':');
-    const start = if (colon) |c| c + 1 else 0;
-    const slice = raw[start..];
-    return slice[0..@min(7, slice.len)];
+    _ = rule;
+    return .{
+        .content = try buildRuleContentSurface(self, ctx, layout.inner_w_pad, ctx.max.height.? -| 2),
+    };
 }
 
 fn fillRuleDetailSurface(
@@ -337,26 +238,6 @@ fn fillRuleDetailSurface(
                     .col = layout.content_origin_col,
                 },
                 .surface = content_surface,
-            };
-            surface.children = children;
-        },
-        .pull_request_empty => {
-            w.writeText(surface, ctx, 2, 0, "Pull Requests", theme.boldOn(theme.PANEL, theme.TEXT));
-            w.writeText(surface, ctx, 2, 1, "No pull requests for this rule.", theme.fg(theme.MUTED));
-        },
-        .pull_request_diff => |diff| {
-            w.writeText(surface, ctx, 2, 0, diff.title, theme.boldOn(theme.PANEL, theme.TEXT));
-            if (diff.op_line) |line| {
-                w.writeText(surface, ctx, 2, 1, line, theme.fg(theme.TEXT_SOFT));
-            }
-
-            const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-            children[0] = .{
-                .origin = .{
-                    .row = layout.pr_diff_origin_row,
-                    .col = layout.pr_diff_origin_col,
-                },
-                .surface = diff.surface,
             };
             surface.children = children;
         },
@@ -1338,62 +1219,11 @@ fn handleReviewPrListEvent(
     ctx.consumeAndRedraw();
 }
 
-pub fn fetchSelectedPrDetail(self: anytype) void {
-    const rules = self.getRules();
-    const rule_idx = @min(self.artifact.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
-    if (rules.len == 0) return;
-
-    const prs = self.getPrsForRule(rules[rule_idx].path);
-    const pr_idx = @min(self.review.selected_pr_idx, if (prs.len > 0) prs.len - 1 else 0);
-    if (prs.len == 0) return;
-
-    const pr_id = prs[pr_idx].id;
-    if (self.api_state.pr_detail_cache.shouldDispatch(.{ .value = pr_id })) {
-        api.specs.dispatchFromState(
-            api.specs.PrIdParams,
-            @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
-            api.specs.pr_detail,
-            &self.api_state.pr_detail_pending,
-            self.api_state,
-            .{ .pr_id = pr_id },
-        );
-    }
-    if (self.api_state.pr_comments_cache.shouldDispatch(.{ .value = pr_id })) {
-        api.specs.dispatchFromState(
-            api.specs.PrIdParams,
-            api.specs.PrCommentsPayload,
-            api.specs.pr_comments,
-            &self.api_state.pr_comments_pending,
-            self.api_state,
-            .{ .pr_id = pr_id },
-        );
-    }
-}
-
 pub fn fetchSelectedReviewPrDetail(self: anytype) void {
     const prs = self.getReviewPrs();
     if (prs.len == 0) return;
     const pr = prs[@min(self.review.selected_pr_idx, prs.len - 1)];
-    if (self.api_state.pr_detail_cache.shouldDispatch(.{ .value = pr.id })) {
-        api.specs.dispatchFromState(
-            api.specs.PrIdParams,
-            @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
-            api.specs.pr_detail,
-            &self.api_state.pr_detail_pending,
-            self.api_state,
-            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
-        );
-    }
-    if (self.api_state.pr_comments_cache.shouldDispatch(.{ .value = pr.id })) {
-        api.specs.dispatchFromState(
-            api.specs.PrIdParams,
-            api.specs.PrCommentsPayload,
-            api.specs.pr_comments,
-            &self.api_state.pr_comments_pending,
-            self.api_state,
-            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
-        );
-    }
+    self.schedulePrDetailRequest(pr.id, pr.target_kind, pr.workspace_id);
 }
 
 pub fn syncContentWidget(self: anytype) void {
@@ -1515,86 +1345,6 @@ pub fn buildContentSurface(
     child_height: u16,
 ) std.mem.Allocator.Error!vxfw.Surface {
     return self.review.content_view.buildSurface(self.viewAllocator(), ctx, width_pad, child_height);
-}
-
-pub fn syncPrWidgets(self: anytype) void {
-    const all_rules = self.getRules();
-    if (all_rules.len == 0) {
-        self.review.pr_row_count = 0;
-        self.review.pr_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_widgets[0..0] };
-        self.review.pr_scroll_bars.estimated_content_height = 0;
-        return;
-    }
-    self.requestSelectedRulePrs();
-    const sel_idx = @min(self.artifact.selected_rule, all_rules.len - 1);
-    const p = &all_rules[sel_idx];
-    const prs = self.getPrsForRule(p.path);
-    const view_alloc = self.viewAllocator();
-    var row_idx: usize = 0;
-    for (prs, 0..) |pr, pi| {
-        if (row_idx + 1 >= self.review.pr_widgets.len) break;
-        const show = switch (self.review.pr_filter) {
-            .open => std.mem.eql(u8, pr.status, "open"),
-            .closed => !std.mem.eql(u8, pr.status, "open"),
-            .all => true,
-        };
-        if (!show) continue;
-        const sel = pi == self.review.selected_pr_idx;
-        const created_short = w.formatShortTimestamp(view_alloc, pr.created) catch pr.created;
-        // Row 1: id, status, author, created. padding_left = 0 so
-        // the first cell of the row sits immediately to the right
-        // of the cursor bar, matching the Artifact file list.
-        self.review.pr_table_cols[pi] = .{
-            .{ .text = pr.id, .flex = 0 },
-            .{ .text = pr.status, .flex = 0 },
-            .{ .text = pr.author, .flex = 0 },
-            .{ .text = created_short, .flex = 1, .alignment = .right },
-            .{ .text = "", .flex = 0 },
-            .{ .text = "", .flex = 0 },
-        };
-        self.review.pr_table_rows[pi] = .{
-            .columns = self.review.pr_table_cols[pi][0..4],
-            .style = theme.textOn(theme.PANEL, if (sel) theme.TEXT else theme.TEXT_SOFT),
-            .gap = 2,
-            .padding_left = 0,
-        };
-        self.review.pr_widgets[row_idx] = self.review.pr_table_rows[pi].widget();
-        self.review.pr_indices[row_idx] = pi;
-        row_idx += 1;
-        // Row 2: title + multi-op hint (muted)
-        const desc_text: []const u8 = if (pr.operation_count > 1) blk: {
-            const buf = &self.review.pr_desc_bufs[pi];
-            const written = std.fmt.bufPrint(buf, "{s}  \xc2\xb7 {d} ops", .{ pr.title, pr.operation_count }) catch break :blk pr.title;
-            break :blk written;
-        } else pr.title;
-        self.review.pr_text_rows[pi] = .{
-            .text = desc_text,
-            .style = theme.textOn(theme.PANEL, theme.MUTED),
-        };
-        self.review.pr_widgets[row_idx] = self.review.pr_text_rows[pi].widget();
-        self.review.pr_indices[row_idx] = null; // skip on cursor
-        row_idx += 1;
-    }
-    self.review.pr_row_count = row_idx;
-    self.review.pr_scroll_bars.scroll_view.children = .{ .slice = self.review.pr_widgets[0..row_idx] };
-    self.review.pr_scroll_bars.estimated_content_height = @intCast(row_idx);
-    // Ensure cursor is on a TableRow, not a title row
-    var cur = @as(usize, @intCast(self.review.pr_scroll_bars.scroll_view.cursor));
-    while (cur < row_idx and self.review.pr_indices[cur] == null) cur += 1;
-    self.review.pr_scroll_bars.scroll_view.cursor = @intCast(cur);
-    if (cur < row_idx) {
-        if (self.review.pr_indices[cur]) |pi| {
-            if (self.review.selected_pr_idx != pi) {
-                self.review.selected_pr_idx = pi;
-                api.state.resetPrDetailState(self.api_state);
-            }
-        }
-    }
-    // Kick a detail fetch for the current selection so the diff /
-    // title / comment count populate without requiring the
-    // user to move the cursor or press Enter. shouldDispatch de-dupes
-    // concurrent requests, so this is cheap on re-renders.
-    if (row_idx > 0) fetchSelectedPrDetail(self);
 }
 
 pub fn syncReviewPrWidgets(self: anytype) void {
@@ -1759,24 +1509,6 @@ fn sortReviewPrIndices(prs: []const data.PullRequestEntry, indices: []usize, sor
         }
     };
     std.mem.sort(usize, indices, Ctx{ .prs = prs, .sort = sort }, Ctx.lessThan);
-}
-
-pub fn syncPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {
-    const all_rules = self.getRules();
-    if (all_rules.len == 0) {
-        self.review.pr_diff_view.syncBytes(allocator, "", null);
-        return;
-    }
-    const sel_idx = @min(self.artifact.selected_rule, all_rules.len - 1);
-    const p = &all_rules[sel_idx];
-    const prs = self.getPrsForRule(p.path);
-    if (prs.len == 0) {
-        self.review.pr_diff_view.syncBytes(allocator, "", null);
-        return;
-    }
-    const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
-    const pr = &prs[pr_idx];
-    self.review.pr_diff_view.syncBytes(allocator, pr.base_content, pr.proposed_content);
 }
 
 pub fn syncReviewPrDiffAndComments(self: anytype, allocator: std.mem.Allocator) void {

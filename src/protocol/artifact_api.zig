@@ -1,12 +1,6 @@
 //! Artifact API response shapes. The Artifact is the org's rule collection (single source of
 //! truth). These types describe rule metadata, content, and bundle membership used by CLI
 //! sync and TUI display.
-const manifest = @import("manifest.zig");
-
-pub const ArtifactManifestResponse = struct {
-    revision: i32,
-    rules: manifest.ManifestMap,
-};
 
 pub const RuleMeta = struct {
     rule_id: []const u8,

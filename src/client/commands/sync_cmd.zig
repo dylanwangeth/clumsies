@@ -198,7 +198,7 @@ pub fn materializeWorkspace(
         var start: usize = 0;
         while (start < rule_to_fetch.items.len) {
             const end = @min(start + BATCH_CHUNK_SIZE, rule_to_fetch.items.len);
-            rule_fetched += fetchRuleBatch(allocator, hub, options.errors, cache_dir, rule_to_fetch.items[start..end], &rule_path_for_id) catch |err| {
+            rule_fetched += fetchRuleBatch(allocator, hub, options.errors, cache_dir, ws_id, rule_to_fetch.items[start..end], &rule_path_for_id) catch |err| {
                 if (options.errors) |writer| try writer.print("{s}{s}{s}Error:{s} Rule batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
                 return error.RuleBatchFetchFailed;
             };
@@ -268,6 +268,7 @@ fn fetchRuleBatch(
     hub: *HubClient,
     stderr: ?*std.Io.Writer,
     cache_dir: []const u8,
+    ws_id: []const u8,
     rule_ids: []const []const u8,
     path_for_id: *const std.StringHashMapUnmanaged([]const u8),
 ) !usize {
@@ -278,7 +279,10 @@ fn fetchRuleBatch(
     );
     defer allocator.free(body_json);
 
-    const resp = try hub.post("/api/org/artifact/rules/content", body_json);
+    const api_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/rules/content", .{ws_id});
+    defer allocator.free(api_path);
+
+    const resp = try hub.post(api_path, body_json);
     defer resp.deinit();
     if (resp.status != .ok) return error.BatchFetchFailed;
 
@@ -341,7 +345,7 @@ fn fetchContextBatch(
     );
     defer allocator.free(body_json);
 
-    const api_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/context/files/content", .{ws_id});
+    const api_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/context/content", .{ws_id});
     defer allocator.free(api_path);
 
     const resp = try hub.post(api_path, body_json);

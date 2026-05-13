@@ -1,90 +1,20 @@
 //! Hub Artifact endpoints. The Artifact is the org's rule collection and single source of truth.
-//! Serves the artifact manifest (content index), rule metadata, rule content by hash, and
-//! bundle definitions.
+//! Serves rule metadata, batched rule content, and bundle definitions.
 const std = @import("std");
 const httpz = @import("httpz");
 const artifact_api = @import("clumsies_lib").protocol.artifact_api;
-const manifest = @import("clumsies_lib").protocol.manifest;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
 const apiError = @import("api_error.zig").send;
 const BundleListResponse = artifact_api.BundleListResponse;
 const BundleMeta = artifact_api.BundleMeta;
-const ArtifactManifestResponse = artifact_api.ArtifactManifestResponse;
 const RuleListResponse = artifact_api.RuleListResponse;
 const RuleMeta = artifact_api.RuleMeta;
 const BatchRuleContentRequest = artifact_api.BatchRuleContentRequest;
 const BatchRuleContentResponse = artifact_api.BatchRuleContentResponse;
 const BatchRuleItem = artifact_api.BatchRuleItem;
-const ManifestMap = manifest.ManifestMap;
-const ManifestItem = manifest.ManifestItem;
 
 const BATCH_MAX_IDS: usize = 1024;
-
-pub fn handleGetManifest(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-    if (!auth.requireScope(user, "artifact:read", res)) return;
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    var rev_row = conn.row(
-        "SELECT revision FROM artifact_manifest WHERE org_id = $1::uuid",
-        .{user.org_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    } orelse {
-        try res.json(ArtifactManifestResponse{
-            .revision = @as(i32, 0),
-            .rules = ManifestMap{ .items = &.{} },
-        }, .{});
-        return;
-    };
-
-    const revision = try rev_row.get(i32, 0);
-    rev_row.deinit() catch {};
-
-    if (req.header("if-none-match")) |etag| {
-        var etag_buf: [32]u8 = undefined;
-        const expected = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
-        if (std.mem.eql(u8, etag, expected)) {
-            res.status = 304;
-            return;
-        }
-    }
-
-    var result = conn.query(
-        "SELECT rule_id, path, content_hash FROM rules WHERE org_id = $1::uuid",
-        .{user.org_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-    defer result.deinit();
-
-    var items: std.ArrayList(ManifestItem) = .empty;
-    while (try result.next()) |row| {
-        try items.append(req.arena, .{
-            .key = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-            .value = .{
-                .path = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-                .hash = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            },
-        });
-    }
-
-    var etag_buf: [32]u8 = undefined;
-    const etag_slice = std.fmt.bufPrint(&etag_buf, "\"rev-{d}\"", .{revision}) catch "";
-    res.header("ETag", try req.arena.dupe(u8, etag_slice));
-
-    try res.json(ArtifactManifestResponse{
-        .revision = revision,
-        .rules = ManifestMap{ .items = items.items },
-    }, .{});
-}
 
 pub fn handleListRules(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -130,87 +60,6 @@ pub fn handleListRules(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Re
     }
 
     try res.json(RuleListResponse{ .rules = list.items }, .{});
-}
-
-const HistoryEntry = struct {
-    content_hash: []const u8,
-    path: []const u8,
-    merged_at: []const u8,
-    pr_id: ?[]const u8,
-};
-
-pub fn handleGetRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-    if (!auth.requireScope(user, "artifact:read", res)) return;
-
-    const qs = req.query() catch {
-        return apiError(res, 400, "BAD_REQUEST", "invalid query string");
-    };
-    const rule_id_q = qs.get("rule_id");
-    const path_q = qs.get("path");
-    if (rule_id_q == null and path_q == null) {
-        return apiError(res, 400, "BAD_REQUEST", "rule_id or path query parameter is required");
-    }
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    var row = (if (rule_id_q) |pid| conn.row(
-        "SELECT p.rule_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM rules p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.rule_id = $2",
-        .{ user.org_id, pid },
-    ) else conn.row(
-        "SELECT p.rule_id, p.path, p.content_hash, p.updated_at::text, o.name as source FROM rules p JOIN orgs o ON o.org_id = p.org_id WHERE p.org_id = $1::uuid AND p.path = $2",
-        .{ user.org_id, path_q.? },
-    )) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    } orelse {
-        return apiError(res, 404, "NOT_FOUND", "rule not found");
-    };
-
-    const rule_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
-    const path = try req.arena.dupe(u8, try row.get([]const u8, 1));
-    const content_hash = try req.arena.dupe(u8, try row.get([]const u8, 2));
-    const updated_at = try req.arena.dupe(u8, try row.get([]const u8, 3));
-    const source = try req.arena.dupe(u8, try row.get([]const u8, 4));
-    row.deinit() catch {};
-
-    var history_result = conn.query(
-        "SELECT content_hash, path, merged_at::text, pr_id FROM rule_history WHERE rule_id = $1 ORDER BY merged_at DESC",
-        .{rule_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-    defer history_result.deinit();
-
-    var history: std.ArrayList(HistoryEntry) = .empty;
-    while (try history_result.next()) |hrow| {
-        const h_hash = try req.arena.dupe(u8, try hrow.get([]const u8, 0));
-        const h_path = try req.arena.dupe(u8, try hrow.get([]const u8, 1));
-        const h_merged = try req.arena.dupe(u8, try hrow.get([]const u8, 2));
-        const h_pr_id: ?[]const u8 = if (hrow.get([]const u8, 3)) |v|
-            try req.arena.dupe(u8, v)
-        else |_|
-            null;
-        try history.append(req.arena, .{
-            .content_hash = h_hash,
-            .path = h_path,
-            .merged_at = h_merged,
-            .pr_id = h_pr_id,
-        });
-    }
-
-    try res.json(.{
-        .rule_id = rule_id,
-        .path = path,
-        .content_hash = content_hash,
-        .updated_at = updated_at,
-        .source = source,
-        .history = history.items,
-    }, .{});
 }
 
 /// Batch rule content fetch. Clients send one or more rule_ids in a

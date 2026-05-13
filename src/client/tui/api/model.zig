@@ -26,7 +26,7 @@ pub const WorkspaceMemberData = struct {
     joined_at: []const u8,
 };
 
-pub const DirectoryMember = struct {
+pub const OrgMemberData = struct {
     user_id: []const u8,
     username: []const u8,
     role: []const u8,
@@ -34,8 +34,8 @@ pub const DirectoryMember = struct {
     joined_at: []const u8,
 };
 
-pub const DirectoryData = struct {
-    members: []const DirectoryMember,
+pub const OrgMembersData = struct {
+    members: []const OrgMemberData,
 };
 
 pub const ArtifactRule = struct {

@@ -1,7 +1,7 @@
 //! Auth API request and response shapes. MeResponse carries the authenticated user's profile
 //! plus their accessible workspaces — the first call every client makes after login.
 //! LoginResponse / RefreshRequest / RefreshResponse describe the token lifecycle.
-//! DirectoryResponse lists org members for workspace access management.
+//! MembersResponse lists org members for workspace access management.
 pub const LoginResponse = struct {
     access_token: []const u8,
     refresh_token: []const u8,
@@ -79,7 +79,7 @@ pub const ChangeMemberRoleRequest = struct {
     role: []const u8,
 };
 
-pub const DirectoryMember = struct {
+pub const Member = struct {
     user_id: []const u8,
     username: []const u8,
     role: []const u8,
@@ -87,6 +87,6 @@ pub const DirectoryMember = struct {
     joined_at: []const u8,
 };
 
-pub const DirectoryResponse = struct {
-    members: []const DirectoryMember,
+pub const MembersResponse = struct {
+    members: []const Member,
 };

@@ -213,13 +213,13 @@ assert_status "password restore succeeds" "200" "$STATUS"
 
 # Org Members
 step "Org Members: list"
-RAW=$(call GET "/api/org/members")
+RAW=$(call GET "/api/members")
 parse_response "$RAW"
 assert_status "list members" "200" "$STATUS"
 assert_json "contains alice" "alice" "$BODY"
 
 step "Org Members: invite"
-RAW=$(call POST "/api/org/members" '{"username":"carol","role":"member"}')
+RAW=$(call POST "/api/members" '{"username":"carol","role":"member"}')
 parse_response "$RAW"
 assert_status "invite member" "201" "$STATUS"
 assert_json "returns carol" "carol" "$BODY"
@@ -245,66 +245,45 @@ parse_response "$RAW"
 assert_status "activated user can login" "200" "$STATUS"
 
 step "Invite: reissue fails for active user"
-RAW=$(call POST "/api/org/members/$CAROL_ID/reissue-invite" '{}')
+RAW=$(call POST "/api/members/$CAROL_ID/reissue-invite" '{}')
 parse_response "$RAW"
 assert_status "reissue fails for active" "400" "$STATUS"
 
 step "Org Members: list shows status"
-RAW=$(call GET "/api/org/members")
+RAW=$(call GET "/api/members")
 parse_response "$RAW"
 assert_status "list members with status" "200" "$STATUS"
 assert_json "contains status field" "status" "$BODY"
 
 step "Org Members: change role"
-RAW=$(call PATCH "/api/org/members/$CAROL_ID" '{"role":"maintainer"}')
+RAW=$(call PATCH "/api/members/$CAROL_ID" '{"role":"maintainer"}')
 parse_response "$RAW"
 assert_status "change role" "200" "$STATUS"
 assert_json "role is maintainer" "maintainer" "$BODY"
 
 step "Org Members: remove"
-RAW=$(call DELETE "/api/org/members/$CAROL_ID")
+RAW=$(call DELETE "/api/members/$CAROL_ID")
 parse_response "$RAW"
 assert_status "remove member" "204" "$STATUS"
 
 # Artifact
 step "Artifact: list rules"
-RAW=$(call GET "/api/org/artifact/rules")
+RAW=$(call GET "/api/artifact/rules")
 parse_response "$RAW"
 assert_status "list rules" "200" "$STATUS"
 assert_json "contains STYLE path" "rule/coding/STYLE.md" "$BODY"
 assert_json "returns path field" '"path":' "$BODY"
 
-step "Artifact: get rule by rule_id"
-RAW=$(call GET "/api/org/artifact/rule?rule_id=p-test-001")
-parse_response "$RAW"
-assert_status "get by rule_id" "200" "$STATUS"
-assert_json "contains path" "rule/coding/STYLE.md" "$BODY"
-
-step "Artifact: get rule by path"
-RAW=$(call GET "/api/org/artifact/rule?path=rule/coding/STYLE.md")
-parse_response "$RAW"
-assert_status "get by path" "200" "$STATUS"
-assert_json "contains rule_id" "p-test-001" "$BODY"
-
 step "Artifact: batch get rule content"
-RAW=$(call POST "/api/org/artifact/rules/content" '{"rule_ids":["p-test-001"]}')
+RAW=$(call POST "/api/artifact/rules/content" '{"rule_ids":["p-test-001"]}')
 parse_response "$RAW"
 assert_status "batch get content" "200" "$STATUS"
 assert_json "contains rule_id" "p-test-001" "$BODY"
 assert_json "contains body" "STYLE" "$BODY"
 
-step "Artifact: manifest"
-RAW=$(call GET "/api/org/artifact/manifest")
-parse_response "$RAW"
-assert_status "get manifest" "200" "$STATUS"
-assert_json "contains revision" "revision" "$BODY"
-assert_json "rule entries carry path" '"path":"rule/coding/STYLE.md"' "$BODY"
-assert_json "rule entries carry hash" '"hash":"sha256:abc123"' "$BODY"
-assert_json "includes reserved MPF path" '"path":"META_PROMPT.md"' "$BODY"
-
 # Rule PRs (multi-operation model)
 step "Rule PR: create with modify operation"
-RAW=$(call POST "/api/org/rule-prs" '{"title":"Tighten STYLE rules","body":"Tighten STYLE rules","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened.\n\n## Rules\n\n- Rule one"}]}')
+RAW=$(call POST "/api/prs" '{"title":"Tighten STYLE rules","body":"Tighten STYLE rules","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened.\n\n## Rules\n\n- Rule one"}]}')
 parse_response "$RAW"
 assert_status "create rule PR" "201" "$STATUS"
 assert_json "returns pr_id" "pr_id" "$BODY"
@@ -312,64 +291,75 @@ assert_json "status open" "open" "$BODY"
 PPR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 
 step "Rule PR: reject empty operations"
-RAW=$(call POST "/api/org/rule-prs" '{"title":"empty","body":"empty","operations":[]}')
+RAW=$(call POST "/api/prs" '{"title":"empty","body":"empty","operations":[]}')
 parse_response "$RAW"
 assert_status "empty ops rejected" "400" "$STATUS"
 
 step "Rule PR: reject stale base_hash"
-RAW=$(call POST "/api/org/rule-prs" '{"title":"stale","body":"stale","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:wrong","content":"# X\n\nD\n\n## S\n\n- R"}]}')
+RAW=$(call POST "/api/prs" '{"title":"stale","body":"stale","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:wrong","content":"# X\n\nD\n\n## S\n\n- R"}]}')
 parse_response "$RAW"
 assert_status "stale base_hash 409" "409" "$STATUS"
 
 step "Rule PR: list"
-RAW=$(call GET "/api/org/rule-prs")
+RAW=$(call GET "/api/prs")
 parse_response "$RAW"
 assert_status "list rule PRs" "200" "$STATUS"
 assert_json "contains PR" "$PPR_ID" "$BODY"
 
+step "Rule PR: old artifact-scoped list endpoint is gone"
+RAW=$(call GET "/api/artifact/prs")
+parse_response "$RAW"
+assert_status "old artifact PR list endpoint 404" "404" "$STATUS"
+
+step "Rule PR: old review-scoped list endpoint is gone"
+RAW=$(call GET "/api/review/prs")
+parse_response "$RAW"
+assert_status "old review PR list endpoint 404" "404" "$STATUS"
+
 step "Rule PR: get detail"
-RAW=$(call GET "/api/org/rule-prs/$PPR_ID")
+RAW=$(call GET "/api/prs/$PPR_ID")
 parse_response "$RAW"
 assert_status "get rule PR" "200" "$STATUS"
 assert_json "has operations" "operations" "$BODY"
 assert_json "operation type modify" '"type":"modify"' "$BODY"
 
 step "Rule PR: accept as maintainer"
-RAW=$(call PUT "/api/org/rule-prs/$PPR_ID" '{"action":"accept"}')
+RAW=$(call PUT "/api/prs/$PPR_ID" '{"action":"accept"}')
 parse_response "$RAW"
 assert_status "accept rule PR" "200" "$STATUS"
 assert_json "status accepted" "accepted" "$BODY"
 
 step "Rule PR: artifact now reflects accepted content"
-RAW=$(call POST "/api/org/artifact/rules/content" '{"rule_ids":["p-test-001"]}')
+RAW=$(call POST "/api/artifact/rules/content" '{"rule_ids":["p-test-001"]}')
 parse_response "$RAW"
 assert_status "batch get updated content" "200" "$STATUS"
 assert_json "contains Tightened" "Tightened" "$BODY"
 
 step "Rule PR: create with rename operation"
 # First get current hash of p-test-002
-RAW=$(call GET "/api/org/artifact/rule?rule_id=p-test-002")
+RAW=$(call POST "/api/artifact/rules/content" '{"rule_ids":["p-test-002"]}')
 parse_response "$RAW"
 P002_HASH=$(echo "$BODY" | grep -o '"content_hash":"[^"]*"' | cut -d'"' -f4)
-RAW=$(call POST "/api/org/rule-prs" "{\"title\":\"Relocate COMMIT\",\"body\":\"Relocate COMMIT\",\"operations\":[{\"type\":\"rename\",\"rule_id\":\"p-test-002\",\"base_hash\":\"$P002_HASH\",\"new_path\":\"workflow/git/COMMIT.md\"}]}")
+RAW=$(call POST "/api/prs" "{\"title\":\"Relocate COMMIT\",\"body\":\"Relocate COMMIT\",\"operations\":[{\"type\":\"rename\",\"rule_id\":\"p-test-002\",\"base_hash\":\"$P002_HASH\",\"new_path\":\"workflow/git/COMMIT.md\"}]}")
 parse_response "$RAW"
 assert_status "create rename PR" "201" "$STATUS"
 RENAME_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
 
 step "Rule PR: accept rename"
-RAW=$(call PUT "/api/org/rule-prs/$RENAME_PR_ID" '{"action":"accept"}')
+RAW=$(call PUT "/api/prs/$RENAME_PR_ID" '{"action":"accept"}')
 parse_response "$RAW"
 assert_status "accept rename" "200" "$STATUS"
 
 step "Rule PR: path updated, rule_id preserved"
-RAW=$(call GET "/api/org/artifact/rule?rule_id=p-test-002")
+RAW=$(call GET "/api/artifact/rules")
 parse_response "$RAW"
-assert_status "get by id after rename" "200" "$STATUS"
+assert_status "list rules after rename" "200" "$STATUS"
+assert_json "rule_id preserved" "p-test-002" "$BODY"
 assert_json "path is new" "workflow/git/COMMIT.md" "$BODY"
 
 # Bundles
 step "Bundle: create"
-RAW=$(call POST "/api/org/bundles" '{"name":"'"$BUNDLE_NAME"'","description":"test","rule_ids":["p-test-001","p-test-002"]}')
+RAW=$(call POST "/api/bundles" '{"name":"'"$BUNDLE_NAME"'","description":"test","rule_ids":["p-test-001","p-test-002"]}')
 parse_response "$RAW"
 assert_status "create bundle" "201" "$STATUS"
 assert_json "returns name" "$BUNDLE_NAME" "$BODY"
@@ -380,7 +370,7 @@ if [ -z "$BUNDLE_ID" ]; then
 fi
 
 step "Bundle: list"
-RAW=$(call GET "/api/org/bundles")
+RAW=$(call GET "/api/bundles")
 parse_response "$RAW"
 assert_status "list bundles" "200" "$STATUS"
 assert_json "contains test bundle" "$BUNDLE_NAME" "$BODY"
@@ -399,18 +389,18 @@ assert_json "manifest contains first bundle rule" "p-test-001" "$BODY"
 assert_json "manifest contains second bundle rule" "p-test-002" "$BODY"
 
 step "Bundle: get"
-RAW=$(call GET "/api/org/bundles/$BUNDLE_NAME")
+RAW=$(call GET "/api/bundles/$BUNDLE_NAME")
 parse_response "$RAW"
 assert_status "get bundle" "200" "$STATUS"
 assert_json "contains rule_ids" "p-test-001" "$BODY"
 
 step "Bundle: update"
-RAW=$(call PUT "/api/org/bundles/$BUNDLE_NAME" '{"description":"updated desc","rule_ids":["p-test-001"]}')
+RAW=$(call PUT "/api/bundles/$BUNDLE_NAME" '{"description":"updated desc","rule_ids":["p-test-001"]}')
 parse_response "$RAW"
 assert_status "update bundle" "200" "$STATUS"
 
 step "Bundle: delete"
-RAW=$(call DELETE "/api/org/bundles/$BUNDLE_NAME")
+RAW=$(call DELETE "/api/bundles/$BUNDLE_NAME")
 parse_response "$RAW"
 assert_status "delete bundle" "204" "$STATUS"
 
@@ -440,6 +430,13 @@ parse_response "$RAW"
 assert_status "get imported manifest" "200" "$STATUS"
 assert_json "manifest contains imported rule" "p-test-001" "$BODY"
 assert_json "manifest contains second imported rule" "p-test-002" "$BODY"
+
+step "Workspace: batch get attached rule content"
+RAW=$(call POST "/api/workspaces/$WS_ID/rules/content" '{"rule_ids":["p-test-001"]}')
+parse_response "$RAW"
+assert_status "batch get attached rule content" "200" "$STATUS"
+assert_json "contains attached rule id" "p-test-001" "$BODY"
+assert_json "contains attached rule body" "Tightened" "$BODY"
 
 step "Workspace: detach imported rule"
 RAW=$(call POST "/api/workspaces/$WS_ID/rules/detach" '{"rule_ids":["p-test-001"]}')
@@ -538,12 +535,12 @@ parse_response "$RAW"
 BOB_TOKEN=$(echo "$BODY" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 TOKEN="$BOB_TOKEN"
 
-RAW=$(call POST "/api/org/members" '{"username":"dave","role":"member"}')
+RAW=$(call POST "/api/members" '{"username":"dave","role":"member"}')
 parse_response "$RAW"
 assert_status "member cannot invite" "403" "$STATUS"
 
 step "Permission: member cannot delete bundle"
-RAW=$(call DELETE "/api/org/bundles/nonexistent")
+RAW=$(call DELETE "/api/bundles/nonexistent")
 parse_response "$RAW"
 assert_status "member cannot delete bundle" "403" "$STATUS"
 
@@ -562,7 +559,7 @@ assert_status "me with scopes" "200" "$STATUS"
 assert_json "scopes field present" "artifact:read" "$BODY"
 
 step "Scope: limited token cannot create bundle"
-RAW=$(call POST "/api/org/bundles" '{"name":"scope-test","description":"test","rule_ids":[]}')
+RAW=$(call POST "/api/bundles" '{"name":"scope-test","description":"test","rule_ids":[]}')
 parse_response "$RAW"
 assert_status "limited scope blocked" "403" "$STATUS"
 
@@ -581,7 +578,7 @@ parse_response "$RAW"
 assert_status "add bob to context ws" "201" "$STATUS"
 
 step "Context: list files on main (empty)"
-RAW=$(call GET "/api/workspaces/$CTX_WS/context/files")
+RAW=$(call GET "/api/workspaces/$CTX_WS/context")
 parse_response "$RAW"
 assert_status "list files on main" "200" "$STATUS"
 assert_json "returns files array" "files" "$BODY"
@@ -634,7 +631,7 @@ assert_status "merge PR" "200" "$STATUS"
 assert_json "status merged" "merged" "$BODY"
 
 step "Context: file now on main after merge"
-RAW=$(call GET "/api/workspaces/$CTX_WS/context/files")
+RAW=$(call GET "/api/workspaces/$CTX_WS/context")
 parse_response "$RAW"
 assert_status "list main after merge" "200" "$STATUS"
 assert_json "main has spec/API.md" "spec/API.md" "$BODY"
@@ -642,19 +639,19 @@ assert_json "file has context_id" "context_id" "$BODY"
 CTX_ID=$(echo "$BODY" | grep -o '"context_id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
 step "Context: batch read file content by path"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/files/content" '{"paths":["spec/API.md"]}')
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/content" '{"paths":["spec/API.md"]}')
 parse_response "$RAW"
 assert_status "batch read file content by path" "200" "$STATUS"
 assert_json "content matches" "API Design" "$BODY"
 
 step "Context: batch content keys are paths, not context_ids"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/files/content" "{\"paths\":[\"$CTX_ID\"]}")
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/content" "{\"paths\":[\"$CTX_ID\"]}")
 parse_response "$RAW"
 assert_status "context_id no longer accepted as content key" "200" "$STATUS"
 assert_json "context_id item marked not found" "NOT_FOUND" "$BODY"
 
 step "Context: batch read nonexistent file"
-RAW=$(call POST "/api/workspaces/$CTX_WS/context/files/content" '{"paths":["nope.md"]}')
+RAW=$(call POST "/api/workspaces/$CTX_WS/context/content" '{"paths":["nope.md"]}')
 parse_response "$RAW"
 assert_status "batch nonexistent file returns item error" "200" "$STATUS"
 assert_json "nonexistent item marked not found" "NOT_FOUND" "$BODY"
@@ -671,8 +668,8 @@ RAW=$(call GET "/api/workspaces/$CTX_WS/context/branches")
 parse_response "$RAW"
 assert_status "branches endpoint 404" "404" "$STATUS"
 
-step "Context: PUT /context/file endpoint is gone"
-RAW=$(curl -s -w "\n%{http_code}" -X PUT "$BASE/api/workspaces/$CTX_WS/context/file?path=x.md" \
+step "Context: PUT /context endpoint is gone"
+RAW=$(curl -s -w "\n%{http_code}" -X PUT "$BASE/api/workspaces/$CTX_WS/context?path=x.md" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/octet-stream" \
     -d "junk")

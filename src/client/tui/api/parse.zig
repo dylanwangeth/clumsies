@@ -99,14 +99,14 @@ pub fn parseUser(alloc: std.mem.Allocator, body: []const u8) ?model.UserData {
     };
 }
 
-pub fn parseDirectory(alloc: std.mem.Allocator, body: []const u8) ?model.DirectoryData {
-    const parsed = std.json.parseFromSlice(auth_api.DirectoryResponse, alloc, body, .{
+pub fn parseMembers(alloc: std.mem.Allocator, body: []const u8) ?model.OrgMembersData {
+    const parsed = std.json.parseFromSlice(auth_api.MembersResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     }) catch return null;
     defer parsed.deinit();
 
-    var members: std.ArrayList(model.DirectoryMember) = .empty;
+    var members: std.ArrayList(model.OrgMemberData) = .empty;
     for (parsed.value.members) |m| {
         members.append(alloc, .{
             .user_id = alloc.dupe(u8, m.user_id) catch continue,
@@ -252,31 +252,6 @@ pub fn parseBundles(alloc: std.mem.Allocator, body: []const u8) ?[]const model.B
             .description = alloc.dupe(u8, b.description) catch continue,
             .rule_count = rule_count,
             .rule_ids = owned_rule_ids,
-        }) catch continue;
-    }
-    return list.toOwnedSlice(alloc) catch return null;
-}
-
-pub fn parseRulePrs(alloc: std.mem.Allocator, body: []const u8) ?[]const model.RulePr {
-    const parsed = std.json.parseFromSlice(collab_api.RulePrListResponse, alloc, body, .{
-        .allocate = .alloc_always,
-        .ignore_unknown_fields = true,
-    }) catch return null;
-    defer parsed.deinit();
-
-    var list: std.ArrayList(model.RulePr) = .empty;
-    for (parsed.value.prs) |pr| {
-        list.append(alloc, .{
-            .pr_id = alloc.dupe(u8, pr.pr_id) catch continue,
-            .status = alloc.dupe(u8, pr.status) catch continue,
-            .title = alloc.dupe(u8, pr.title) catch continue,
-            .body = alloc.dupe(u8, pr.body) catch continue,
-            .created_at = alloc.dupe(u8, pr.created_at) catch continue,
-            .author = alloc.dupe(u8, pr.author) catch continue,
-            .operation_count = @intCast(@min(pr.operation_count, std.math.maxInt(i32))),
-            .op_type = alloc.dupe(u8, pr.op_type) catch "",
-            .comment_count = @intCast(@min(pr.comment_count, std.math.maxInt(i32))),
-            .has_conflict = pr.has_conflict,
         }) catch continue;
     }
     return list.toOwnedSlice(alloc) catch return null;

@@ -20,6 +20,8 @@
 
 const std = @import("std");
 
+pub const DEFAULT_SNAPSHOT_REFRESH_TICKS: u64 = 600;
+
 pub fn CacheSlot(comptime K: type, comptime V: type) type {
     return struct {
         mutex: std.Thread.Mutex = .{},
@@ -35,8 +37,20 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
         /// clears both `ok` and `failed`.
         pub const State = union(enum) {
             empty,
-            ok: struct { key: K, value: V },
-            failed: struct { key: K },
+            ok: Entry,
+            ok_refreshing: Entry,
+            failed: FailedEntry,
+        };
+
+        const Entry = struct {
+            key: K,
+            value: V,
+            updated_tick: u64 = 0,
+        };
+
+        const FailedEntry = struct {
+            key: K,
+            updated_tick: u64 = 0,
         };
 
         /// Look up the cached value for `k`. Returns null on miss or
@@ -47,7 +61,7 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
             self.mutex.lock();
             defer self.mutex.unlock();
             switch (self.state) {
-                .ok => |entry| if (keysEqual(entry.key, k)) return entry.value,
+                .ok, .ok_refreshing => |entry| if (keysEqual(entry.key, k)) return entry.value,
                 else => {},
             }
             return null;
@@ -73,25 +87,80 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
             defer self.mutex.unlock();
             return switch (self.state) {
                 .empty => true,
-                .ok => |entry| !keysEqual(entry.key, k),
+                .ok, .ok_refreshing => |entry| !keysEqual(entry.key, k),
                 .failed => |entry| !keysEqual(entry.key, k),
+            };
+        }
+
+        /// Whether the cached entry is missing or stale enough for a
+        /// background refresh. Unlike `invalidate`, this preserves the
+        /// current value so UI can keep drawing old data while the new
+        /// request is in flight.
+        pub fn shouldRefresh(self: *Self, k: K, now_tick: u64, ttl_ticks: u64) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            return switch (self.state) {
+                .empty => true,
+                .ok => |entry| !keysEqual(entry.key, k) or isStale(entry.updated_tick, now_tick, ttl_ticks),
+                .ok_refreshing => |entry| !keysEqual(entry.key, k),
+                .failed => |entry| !keysEqual(entry.key, k) or isStale(entry.updated_tick, now_tick, ttl_ticks),
             };
         }
 
         /// Store a value, replacing any previous entry or failure.
         pub fn store(self: *Self, k: K, v: V) void {
+            self.storeAt(k, v, 0);
+        }
+
+        /// Store a value and remember the UI tick that produced it.
+        pub fn storeAt(self: *Self, k: K, v: V, now_tick: u64) void {
             self.mutex.lock();
             defer self.mutex.unlock();
-            self.state = .{ .ok = .{ .key = k, .value = v } };
+            self.state = .{ .ok = .{ .key = k, .value = v, .updated_tick = now_tick } };
+        }
+
+        /// Mark a stale value as being refreshed. The old value remains
+        /// visible through `lookup`; callers use this before dispatching
+        /// a stale-while-revalidate request.
+        pub fn beginRefresh(self: *Self, k: K, now_tick: u64, ttl_ticks: u64) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            switch (self.state) {
+                .empty => return true,
+                .ok => |entry| {
+                    if (!keysEqual(entry.key, k)) return true;
+                    if (!isStale(entry.updated_tick, now_tick, ttl_ticks)) return false;
+                    self.state = .{ .ok_refreshing = entry };
+                    return true;
+                },
+                .ok_refreshing => |entry| return !keysEqual(entry.key, k),
+                .failed => |entry| return !keysEqual(entry.key, k) or isStale(entry.updated_tick, now_tick, ttl_ticks),
+            }
         }
 
         /// Remember that a fetch for `k` failed. Subsequent
         /// `shouldDispatch(k)` calls return false until `invalidate`
         /// clears the slot or a different key is requested.
         pub fn markFailed(self: *Self, k: K) void {
+            self.markFailedAt(k, 0);
+        }
+
+        /// Remember a failed fetch and the tick that observed it.
+        pub fn markFailedAt(self: *Self, k: K, now_tick: u64) void {
             self.mutex.lock();
             defer self.mutex.unlock();
-            self.state = .{ .failed = .{ .key = k } };
+            switch (self.state) {
+                .ok => |entry| if (keysEqual(entry.key, k)) {
+                    self.state = .{ .ok = .{ .key = entry.key, .value = entry.value, .updated_tick = now_tick } };
+                    return;
+                },
+                .ok_refreshing => |entry| if (keysEqual(entry.key, k)) {
+                    self.state = .{ .ok = .{ .key = entry.key, .value = entry.value, .updated_tick = now_tick } };
+                    return;
+                },
+                else => {},
+            }
+            self.state = .{ .failed = .{ .key = k, .updated_tick = now_tick } };
         }
 
         /// Drop any cached entry or remembered failure.
@@ -138,6 +207,10 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
             if (has_eql) return a.eql(b);
             return std.meta.eql(a, b);
         }
+
+        fn isStale(updated_tick: u64, now_tick: u64, ttl_ticks: u64) bool {
+            return ttl_ticks == 0 or now_tick -% updated_tick >= ttl_ticks;
+        }
     };
 }
 
@@ -159,10 +232,18 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
 
         const Self = @This();
 
+        const ValueEntry = struct {
+            value: V,
+            updated_tick: u64 = 0,
+        };
+
         const EntryState = union(enum) {
-            ok: V,
+            ok: ValueEntry,
+            ok_refreshing: ValueEntry,
             failed,
+            failed_at: u64,
             inflight,
+            inflight_at: u64,
         };
 
         const Entry = struct {
@@ -176,7 +257,7 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
 
             const idx = self.findIndexLocked(k) orelse return null;
             return switch (self.entries.items[idx].state) {
-                .ok => |value| value,
+                .ok, .ok_refreshing => |entry| entry.value,
                 else => null,
             };
         }
@@ -186,7 +267,10 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
             defer self.mutex.unlock();
 
             const idx = self.findIndexLocked(k) orelse return false;
-            return self.entries.items[idx].state == .failed;
+            return switch (self.entries.items[idx].state) {
+                .failed, .failed_at => true,
+                else => false,
+            };
         }
 
         pub fn shouldDispatch(self: *Self, k: K) bool {
@@ -195,43 +279,111 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
             return self.findIndexLocked(k) == null;
         }
 
+        pub fn shouldRefresh(self: *Self, k: K, now_tick: u64, ttl_ticks: u64) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            const idx = self.findIndexLocked(k) orelse return true;
+            return switch (self.entries.items[idx].state) {
+                .ok => |entry| isStale(entry.updated_tick, now_tick, ttl_ticks),
+                .ok_refreshing => false,
+                .failed => ttl_ticks == 0,
+                .failed_at => |updated_tick| isStale(updated_tick, now_tick, ttl_ticks),
+                .inflight, .inflight_at => false,
+            };
+        }
+
+        pub fn beginRefreshAt(self: *Self, allocator: std.mem.Allocator, k: K, now_tick: u64, ttl_ticks: u64) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            const idx = self.findIndexLocked(k) orelse {
+                self.entries.append(allocator, .{
+                    .key = k,
+                    .state = .{ .inflight_at = now_tick },
+                }) catch return false;
+                return true;
+            };
+            switch (self.entries.items[idx].state) {
+                .ok => |entry| {
+                    if (!isStale(entry.updated_tick, now_tick, ttl_ticks)) return false;
+                    self.entries.items[idx].state = .{ .ok_refreshing = entry };
+                    return true;
+                },
+                .failed => {
+                    if (ttl_ticks != 0) return false;
+                    self.entries.items[idx].state = .{ .inflight_at = now_tick };
+                    return true;
+                },
+                .failed_at => |updated_tick| {
+                    if (!isStale(updated_tick, now_tick, ttl_ticks)) return false;
+                    self.entries.items[idx].state = .{ .inflight_at = now_tick };
+                    return true;
+                },
+                .inflight, .inflight_at, .ok_refreshing => return false,
+            }
+        }
+
         pub fn reserve(self: *Self, allocator: std.mem.Allocator, k: K) bool {
+            return self.reserveAt(allocator, k, 0);
+        }
+
+        pub fn reserveAt(self: *Self, allocator: std.mem.Allocator, k: K, now_tick: u64) bool {
             self.mutex.lock();
             defer self.mutex.unlock();
 
             if (self.findIndexLocked(k) != null) return false;
             self.entries.append(allocator, .{
                 .key = k,
-                .state = .inflight,
+                .state = .{ .inflight_at = now_tick },
             }) catch return false;
             return true;
         }
 
         pub fn store(self: *Self, allocator: std.mem.Allocator, k: K, v: V) void {
+            self.storeAt(allocator, k, v, 0);
+        }
+
+        pub fn storeAt(self: *Self, allocator: std.mem.Allocator, k: K, v: V, now_tick: u64) void {
             self.mutex.lock();
             defer self.mutex.unlock();
 
             if (self.findIndexLocked(k)) |idx| {
-                self.entries.items[idx].state = .{ .ok = v };
+                self.entries.items[idx].state = .{ .ok = .{ .value = v, .updated_tick = now_tick } };
                 return;
             }
             self.entries.append(allocator, .{
                 .key = k,
-                .state = .{ .ok = v },
+                .state = .{ .ok = .{ .value = v, .updated_tick = now_tick } },
             }) catch {};
         }
 
         pub fn markFailed(self: *Self, allocator: std.mem.Allocator, k: K) void {
+            self.markFailedAt(allocator, k, 0);
+        }
+
+        pub fn markFailedAt(self: *Self, allocator: std.mem.Allocator, k: K, now_tick: u64) void {
             self.mutex.lock();
             defer self.mutex.unlock();
 
             if (self.findIndexLocked(k)) |idx| {
-                self.entries.items[idx].state = .failed;
+                switch (self.entries.items[idx].state) {
+                    .ok => |entry| {
+                        self.entries.items[idx].state = .{ .ok = .{ .value = entry.value, .updated_tick = now_tick } };
+                        return;
+                    },
+                    .ok_refreshing => |entry| {
+                        self.entries.items[idx].state = .{ .ok = .{ .value = entry.value, .updated_tick = now_tick } };
+                        return;
+                    },
+                    else => {},
+                }
+                self.entries.items[idx].state = .{ .failed_at = now_tick };
                 return;
             }
             self.entries.append(allocator, .{
                 .key = k,
-                .state = .failed,
+                .state = .{ .failed_at = now_tick },
             }) catch {};
         }
 
@@ -255,9 +407,12 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
 
             var i: usize = 0;
             while (i < self.entries.items.len) {
-                if (self.entries.items[i].state == .failed) {
-                    _ = self.entries.orderedRemove(i);
-                    continue;
+                switch (self.entries.items[i].state) {
+                    .failed, .failed_at => {
+                        _ = self.entries.orderedRemove(i);
+                        continue;
+                    },
+                    else => {},
                 }
                 i += 1;
             }
@@ -268,7 +423,12 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
             defer self.mutex.unlock();
 
             for (self.entries.items) |*entry| {
-                if (entry.state == .inflight) entry.state = .failed;
+                switch (entry.state) {
+                    .inflight => entry.state = .failed,
+                    .inflight_at => |updated_tick| entry.state = .{ .failed_at = updated_tick },
+                    .ok_refreshing => |entry_value| entry.state = .{ .ok = entry_value },
+                    else => {},
+                }
             }
         }
 
@@ -293,6 +453,10 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
             };
             if (has_eql) return a.eql(b);
             return std.meta.eql(a, b);
+        }
+
+        fn isStale(updated_tick: u64, now_tick: u64, ttl_ticks: u64) bool {
+            return ttl_ticks == 0 or now_tick -% updated_tick >= ttl_ticks;
         }
     };
 }
@@ -388,8 +552,29 @@ test "CacheSlot clearFailure preserves ok values" {
 
     cache.markFailed(1);
     cache.clearFailure();
+    try std.testing.expectEqual(@as(u32, 100), cache.lookup(1).?);
+    try std.testing.expect(!cache.shouldDispatch(1));
+
+    cache.invalidate();
+    cache.markFailed(1);
+    cache.clearFailure();
     try std.testing.expect(cache.lookup(1) == null);
     try std.testing.expect(cache.shouldDispatch(1));
+}
+
+test "CacheSlot refresh preserves stale value while refreshing" {
+    var cache: CacheSlot(u32, u32) = .{};
+    cache.storeAt(1, 100, 10);
+
+    try std.testing.expect(!cache.beginRefresh(1, 14, 5));
+    try std.testing.expect(cache.beginRefresh(1, 15, 5));
+    try std.testing.expectEqual(@as(u32, 100), cache.lookup(1).?);
+    try std.testing.expect(!cache.beginRefresh(1, 16, 5));
+
+    cache.markFailedAt(1, 16);
+    try std.testing.expectEqual(@as(u32, 100), cache.lookup(1).?);
+    try std.testing.expect(!cache.beginRefresh(1, 20, 5));
+    try std.testing.expect(cache.beginRefresh(1, 21, 5));
 }
 
 test "MultiCacheSlot keeps multiple keys and gates inflight retries" {
@@ -407,6 +592,25 @@ test "MultiCacheSlot keeps multiple keys and gates inflight retries" {
 
     cache.invalidate();
     cache.entries.deinit(alloc);
+}
+
+test "MultiCacheSlot refresh preserves stale value while refreshing" {
+    var cache: MultiCacheSlot(StringKey, u32) = .{};
+    const alloc = std.testing.allocator;
+    defer cache.entries.deinit(alloc);
+
+    const key = StringKey{ .value = "a" };
+    cache.storeAt(alloc, key, 10, 10);
+
+    try std.testing.expect(!cache.beginRefreshAt(alloc, key, 14, 5));
+    try std.testing.expect(cache.beginRefreshAt(alloc, key, 15, 5));
+    try std.testing.expectEqual(@as(u32, 10), cache.lookup(key).?);
+    try std.testing.expect(!cache.beginRefreshAt(alloc, key, 16, 5));
+
+    cache.markFailedAt(alloc, key, 16);
+    try std.testing.expectEqual(@as(u32, 10), cache.lookup(key).?);
+    try std.testing.expect(!cache.beginRefreshAt(alloc, key, 20, 5));
+    try std.testing.expect(cache.beginRefreshAt(alloc, key, 21, 5));
 }
 
 test "MultiCacheSlot converts unresolved inflight entries to failures" {
