@@ -3202,6 +3202,7 @@ pub const Shell = struct {
         switch (result) {
             .ok => |payload| {
                 self.api_state.workspace_manifest_cache.storeAt(.{ .value = payload.ws_id }, payload.rules, self.tick_count);
+                self.settlePendingWorkspacePrAction(payload.ws_id);
                 self.system_notices.clear(.workspace_manifest);
             },
             else => {
@@ -5524,12 +5525,12 @@ pub const Shell = struct {
 
     fn shouldSettlePrActionAfterWorkspaceRefresh(self: *const Shell) bool {
         const pending = self.drafts.pending_pr_action orelse return false;
-        return pending.target.category == .context and pending.status_on_success == .applied;
+        return pending.status_on_success == .applied and
+            (pending.target.category == .context or pending.target.category == .rule or pending.target.category == .meta_prompt);
     }
 
     fn settlePendingWorkspacePrAction(self: *Shell, ws_id: []const u8) void {
         const pending = self.drafts.pending_pr_action orelse return;
-        if (pending.target.category != .context) return;
         if (pending.status_on_success != .applied) return;
         if (!std.mem.eql(u8, pending.target.ws_id, ws_id)) return;
         self.settlePendingPrActionDraft();
@@ -6002,6 +6003,7 @@ pub const Shell = struct {
             &self.api_state.create_rule_pr_pending,
             self.api_state,
             .{
+                .ws_id = target.ws_id,
                 .title = title_copy,
                 .body = body_copy,
                 .operation_type = operation_type,
@@ -6097,6 +6099,7 @@ pub const Shell = struct {
             &self.api_state.create_rule_pr_pending,
             self.api_state,
             .{
+                .ws_id = targets[0].ws_id,
                 .title = title_copy,
                 .body = body_copy,
                 .operations = ops.items,
@@ -6284,6 +6287,7 @@ pub const Shell = struct {
             &self.api_state.create_bundle_rule_pr_pending,
             self.api_state,
             .{
+                .ws_id = null,
                 .title = title,
                 .body = body,
                 .operations = ops.items,

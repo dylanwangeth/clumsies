@@ -27,6 +27,7 @@ pub const ReviewPrOperationTarget = struct {
 
 pub const RulePrDetailResponse = struct {
     pr_id: []const u8,
+    ws_id: ?[]const u8 = null,
     status: []const u8,
     title: []const u8,
     body: []const u8,

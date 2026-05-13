@@ -257,7 +257,7 @@ const migration_sql =
     \\
     \\CREATE TABLE IF NOT EXISTS workspace_rules (
     \\    ws_id TEXT NOT NULL REFERENCES workspaces(ws_id),
-    \\    rule_id TEXT NOT NULL REFERENCES rules(rule_id),
+    \\    rule_id TEXT NOT NULL REFERENCES rules(rule_id) ON DELETE CASCADE,
     \\    PRIMARY KEY (ws_id, rule_id)
     \\);
     \\
@@ -320,13 +320,14 @@ const migration_sql =
     \\
     \\CREATE TABLE IF NOT EXISTS bundle_rules (
     \\    bundle_id TEXT NOT NULL REFERENCES bundles(bundle_id),
-    \\    rule_id TEXT NOT NULL REFERENCES rules(rule_id),
+    \\    rule_id TEXT NOT NULL REFERENCES rules(rule_id) ON DELETE CASCADE,
     \\    PRIMARY KEY (bundle_id, rule_id)
     \\);
     \\
     \\CREATE TABLE IF NOT EXISTS rule_prs (
     \\    pr_id TEXT PRIMARY KEY,
     \\    org_id UUID NOT NULL REFERENCES orgs(org_id),
+    \\    ws_id TEXT REFERENCES workspaces(ws_id) ON DELETE SET NULL,
     \\    author_id TEXT NOT NULL REFERENCES users(user_id),
     \\    title TEXT NOT NULL DEFAULT '',
     \\    body TEXT NOT NULL DEFAULT '',
@@ -334,6 +335,13 @@ const migration_sql =
     \\    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     \\    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     \\);
+    \\ALTER TABLE rule_prs
+    \\    ADD COLUMN IF NOT EXISTS ws_id TEXT;
+    \\ALTER TABLE rule_prs
+    \\    DROP CONSTRAINT IF EXISTS rule_prs_ws_id_fkey;
+    \\ALTER TABLE rule_prs
+    \\    ADD CONSTRAINT rule_prs_ws_id_fkey
+    \\    FOREIGN KEY (ws_id) REFERENCES workspaces(ws_id) ON DELETE SET NULL;
     \\
     \\CREATE TABLE IF NOT EXISTS rule_pr_operations (
     \\    pr_id TEXT NOT NULL REFERENCES rule_prs(pr_id) ON DELETE CASCADE,
@@ -397,7 +405,7 @@ const migration_sql =
     \\);
     \\
     \\CREATE TABLE IF NOT EXISTS rule_history (
-    \\    rule_id TEXT NOT NULL REFERENCES rules(rule_id),
+    \\    rule_id TEXT NOT NULL REFERENCES rules(rule_id) ON DELETE CASCADE,
     \\    content_hash TEXT NOT NULL,
     \\    path TEXT NOT NULL DEFAULT '',
     \\    content TEXT NOT NULL DEFAULT '',
@@ -405,6 +413,27 @@ const migration_sql =
     \\    pr_id TEXT,
     \\    PRIMARY KEY (rule_id, content_hash)
     \\);
+    \\ALTER TABLE workspace_rules
+    \\    DROP CONSTRAINT IF EXISTS workspace_prompts_prompt_id_fkey;
+    \\ALTER TABLE workspace_rules
+    \\    DROP CONSTRAINT IF EXISTS workspace_rules_rule_id_fkey;
+    \\ALTER TABLE workspace_rules
+    \\    ADD CONSTRAINT workspace_rules_rule_id_fkey
+    \\    FOREIGN KEY (rule_id) REFERENCES rules(rule_id) ON DELETE CASCADE;
+    \\ALTER TABLE bundle_rules
+    \\    DROP CONSTRAINT IF EXISTS bundle_prompts_prompt_id_fkey;
+    \\ALTER TABLE bundle_rules
+    \\    DROP CONSTRAINT IF EXISTS bundle_rules_rule_id_fkey;
+    \\ALTER TABLE bundle_rules
+    \\    ADD CONSTRAINT bundle_rules_rule_id_fkey
+    \\    FOREIGN KEY (rule_id) REFERENCES rules(rule_id) ON DELETE CASCADE;
+    \\ALTER TABLE rule_history
+    \\    DROP CONSTRAINT IF EXISTS prompt_history_prompt_id_fkey;
+    \\ALTER TABLE rule_history
+    \\    DROP CONSTRAINT IF EXISTS rule_history_rule_id_fkey;
+    \\ALTER TABLE rule_history
+    \\    ADD CONSTRAINT rule_history_rule_id_fkey
+    \\    FOREIGN KEY (rule_id) REFERENCES rules(rule_id) ON DELETE CASCADE;
 ;
 
 test "validateContentFormat accepts valid markdown" {

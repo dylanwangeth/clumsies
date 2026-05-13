@@ -25,6 +25,7 @@ const Operation = struct {
 };
 
 const CreatePrRequest = struct {
+    ws_id: ?[]const u8 = null,
     title: []const u8,
     body: []const u8,
     operations: []const Operation,
@@ -55,6 +56,10 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     };
     defer conn.release();
 
+    if (req_body.ws_id) |ws_id| {
+        if (!try validateSourceWorkspace(conn, user.org_id, user.user_id, ws_id, res)) return;
+    }
+
     for (req_body.operations, 0..) |op, idx| {
         if (!isValidType(op.type)) {
             return apiError(res, 400, "BAD_REQUEST", "operation type is not supported");
@@ -81,9 +86,9 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     const pr_id: []const u8 = &id_buf;
 
     _ = conn.exec(
-        \\INSERT INTO rule_prs (pr_id, org_id, author_id, title, body)
-        \\VALUES ($1, $2::uuid, $3, $4, $5)
-    , .{ pr_id, user.org_id, user.user_id, req_body.title, req_body.body }) catch {
+        \\INSERT INTO rule_prs (pr_id, org_id, ws_id, author_id, title, body)
+        \\VALUES ($1, $2::uuid, $3, $4, $5, $6)
+    , .{ pr_id, user.org_id, req_body.ws_id, user.user_id, req_body.title, req_body.body }) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "failed to create rule PR");
     };
 
@@ -392,6 +397,24 @@ fn validateNoIntraPrPathConflict(arena: std.mem.Allocator, ops: []const Operatio
     return true;
 }
 
+fn validateSourceWorkspace(conn: anytype, org_id: []const u8, user_id: []const u8, ws_id: []const u8, res: *httpz.Response) !bool {
+    var row = conn.row(
+        \\SELECT 1
+        \\FROM workspaces ws
+        \\JOIN workspace_members wm ON wm.ws_id = ws.ws_id AND wm.user_id = $3
+        \\WHERE ws.ws_id = $1 AND ws.org_id = $2::uuid
+    , .{ ws_id, org_id, user_id }) catch {
+        try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+        return false;
+    };
+    if (row) |*r| {
+        r.deinit() catch {};
+        return true;
+    }
+    try apiError(res, 404, "NOT_FOUND", "workspace not found");
+    return false;
+}
+
 pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
@@ -408,7 +431,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     defer conn.release();
 
     var row = conn.row(
-        "SELECT pr_id, status, title, body, created_at::text FROM rule_prs WHERE pr_id = $1 AND org_id = $2::uuid",
+        "SELECT pr_id, ws_id, status, title, body, created_at::text FROM rule_prs WHERE pr_id = $1 AND org_id = $2::uuid",
         .{ id, user.org_id },
     ) catch {
         return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
@@ -417,10 +440,14 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
     };
 
     const pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
-    const status = try req.arena.dupe(u8, try row.get([]const u8, 1));
-    const pr_title = try req.arena.dupe(u8, try row.get([]const u8, 2));
-    const pr_body = try req.arena.dupe(u8, try row.get([]const u8, 3));
-    const created_at = try req.arena.dupe(u8, try row.get([]const u8, 4));
+    const pr_ws_id: ?[]const u8 = if (row.get([]const u8, 1)) |v|
+        try req.arena.dupe(u8, v)
+    else |_|
+        null;
+    const status = try req.arena.dupe(u8, try row.get([]const u8, 2));
+    const pr_title = try req.arena.dupe(u8, try row.get([]const u8, 3));
+    const pr_body = try req.arena.dupe(u8, try row.get([]const u8, 4));
+    const created_at = try req.arena.dupe(u8, try row.get([]const u8, 5));
     row.deinit() catch {};
 
     var ops: std.ArrayList(RulePrChange) = .empty;
@@ -500,6 +527,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
 
     try res.json(RulePrDetailResponse{
         .pr_id = pr_id,
+        .ws_id = pr_ws_id,
         .status = status,
         .title = pr_title,
         .body = pr_body,
@@ -589,6 +617,21 @@ const LoadedOp = struct {
 };
 
 fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: []const u8, res: *httpz.Response) !bool {
+    const source_ws_id: ?[]const u8 = blk: {
+        var row = conn.row(
+            "SELECT ws_id FROM rule_prs WHERE pr_id = $1 AND org_id = $2::uuid",
+            .{ pr_id, org_id },
+        ) catch {
+            try apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+            return false;
+        } orelse break :blk null;
+        defer row.deinit() catch {};
+        break :blk if (row.get([]const u8, 0)) |v|
+            arena.dupe(u8, v) catch null
+        else |_|
+            null;
+    };
+
     var ops: std.ArrayList(LoadedOp) = .empty;
     {
         var op_result = conn.query(
@@ -791,8 +834,17 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                 "INSERT INTO rule_history (rule_id, content_hash, path, content, pr_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
                 .{ new_pid, hash_slice, path, new_content, pr_id },
             ) catch {};
+            if (source_ws_id) |ws_id| {
+                _ = conn.exec(
+                    "INSERT INTO workspace_rules (ws_id, rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    .{ ws_id, new_pid },
+                ) catch {};
+                bumpWorkspaceRevision(conn, ws_id);
+            }
         } else if (std.mem.eql(u8, op.type, "delete")) {
             const pid = op.rule_id.?;
+            bumpWorkspaceRevisions(conn, pid);
+            _ = conn.exec("DELETE FROM rule_history WHERE rule_id = $1", .{pid}) catch {};
             _ = conn.exec("DELETE FROM workspace_rules WHERE rule_id = $1", .{pid}) catch {};
             _ = conn.exec("DELETE FROM bundle_rules WHERE rule_id = $1", .{pid}) catch {};
             _ = conn.exec("DELETE FROM rules WHERE rule_id = $1", .{pid}) catch {
@@ -910,6 +962,13 @@ fn bumpWorkspaceRevisions(conn: anytype, rule_id: []const u8) void {
     _ = conn.exec(
         "UPDATE workspaces SET revision = revision + 1 WHERE ws_id IN (SELECT ws_id FROM workspace_rules WHERE rule_id = $1)",
         .{rule_id},
+    ) catch {};
+}
+
+fn bumpWorkspaceRevision(conn: anytype, ws_id: []const u8) void {
+    _ = conn.exec(
+        "UPDATE workspaces SET revision = revision + 1 WHERE ws_id = $1",
+        .{ws_id},
     ) catch {};
 }
 

@@ -57,6 +57,7 @@ pub const CreateContextPrResponse = state.CreateContextPrResponse;
 /// rename, and delete carry `rule_id`; create carries `path`; rename
 /// carries `new_path`; modify and rename carry `base_hash`.
 pub const CreateRulePrParams = struct {
+    ws_id: ?[]const u8 = null,
     title: []const u8,
     body: []const u8,
     operation_type: []const u8,
@@ -77,6 +78,7 @@ pub const CreateRulePrOperation = struct {
 };
 
 pub const CreateRulePrBatchParams = struct {
+    ws_id: ?[]const u8 = null,
     title: []const u8,
     body: []const u8,
     operations: []const CreateRulePrOperation,
@@ -386,6 +388,7 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         new_path: ?[]const u8 = null,
     };
     const Body = struct {
+        ws_id: ?[]const u8 = null,
         title: []const u8,
         body: []const u8,
         operations: []const Op,
@@ -399,6 +402,7 @@ fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]
         .new_path = p.new_path,
     }};
     return std.json.Stringify.valueAlloc(alloc, Body{
+        .ws_id = p.ws_id,
         .title = p.title,
         .body = p.body,
         .operations = &ops,
@@ -415,6 +419,7 @@ fn createRulePrBatchBody(alloc: std.mem.Allocator, p: CreateRulePrBatchParams) a
         new_path: ?[]const u8 = null,
     };
     const Body = struct {
+        ws_id: ?[]const u8 = null,
         title: []const u8,
         body: []const u8,
         operations: []const Op,
@@ -432,6 +437,7 @@ fn createRulePrBatchBody(alloc: std.mem.Allocator, p: CreateRulePrBatchParams) a
     }
     defer ops.deinit(alloc);
     return std.json.Stringify.valueAlloc(alloc, Body{
+        .ws_id = p.ws_id,
         .title = p.title,
         .body = p.body,
         .operations = ops.items,

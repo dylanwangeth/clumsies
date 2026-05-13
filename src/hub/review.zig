@@ -15,6 +15,7 @@ const OperationTargetMap = std.StringHashMap(std.ArrayList(ReviewPrOperationTarg
 
 const RulePrListRow = struct {
     pr_id: []const u8,
+    ws_id: ?[]const u8 = null,
     target_kind: []const u8,
     target_path: []const u8,
     status: []const u8,
@@ -125,7 +126,7 @@ fn appendRulePrs(
 ) !void {
     var rows: std.ArrayList(RulePrListRow) = .empty;
     var result = conn.query(
-        \\SELECT pp.pr_id, pp.status, pp.title, pp.body, pp.created_at::text, u.username,
+        \\SELECT pp.pr_id, pp.ws_id, pp.status, pp.title, pp.body, pp.created_at::text, u.username,
         \\  (SELECT count(*) FROM rule_pr_operations op WHERE op.pr_id = pp.pr_id) as op_count,
         \\  COALESCE((
         \\    SELECT op.type
@@ -164,10 +165,10 @@ fn appendRulePrs(
     errdefer result.deinit();
 
     while (try result.next()) |row| {
-        const status = try arena.dupe(u8, try row.get([]const u8, 1));
+        const status = try arena.dupe(u8, try row.get([]const u8, 2));
         if (!statusMatches(status_filter, status)) continue;
-        const target_path = try arena.dupe(u8, try row.get([]const u8, 10));
-        const op_type = try arena.dupe(u8, try row.get([]const u8, 7));
+        const target_path = try arena.dupe(u8, try row.get([]const u8, 11));
+        const op_type = try arena.dupe(u8, try row.get([]const u8, 8));
         const target_kind = if (std.mem.startsWith(u8, op_type, "bundle_"))
             "bundle"
         else if (std.mem.eql(u8, target_path, "META_PROMPT.md"))
@@ -179,17 +180,18 @@ fn appendRulePrs(
         }
         try rows.append(arena, .{
             .pr_id = try arena.dupe(u8, try row.get([]const u8, 0)),
+            .ws_id = if (row.get([]const u8, 1)) |v| try arena.dupe(u8, v) else |_| null,
             .target_kind = target_kind,
             .target_path = target_path,
             .status = status,
-            .title = try arena.dupe(u8, try row.get([]const u8, 2)),
-            .body = try arena.dupe(u8, try row.get([]const u8, 3)),
-            .created_at = try arena.dupe(u8, try row.get([]const u8, 4)),
-            .author = try arena.dupe(u8, try row.get([]const u8, 5)),
-            .operation_count = try row.get(i64, 6),
+            .title = try arena.dupe(u8, try row.get([]const u8, 3)),
+            .body = try arena.dupe(u8, try row.get([]const u8, 4)),
+            .created_at = try arena.dupe(u8, try row.get([]const u8, 5)),
+            .author = try arena.dupe(u8, try row.get([]const u8, 6)),
+            .operation_count = try row.get(i64, 7),
             .op_type = op_type,
-            .comment_count = try row.get(i64, 8),
-            .has_conflict = try row.get(bool, 9),
+            .comment_count = try row.get(i64, 9),
+            .has_conflict = try row.get(bool, 10),
         });
     }
     result.deinit();
@@ -203,6 +205,7 @@ fn appendRulePrs(
             .target_kind = row.target_kind,
             .target_path = row.target_path,
             .operation_targets = try takeOperationTargets(arena, &targets_by_pr, row.pr_id),
+            .ws_id = row.ws_id,
             .status = row.status,
             .title = row.title,
             .body = row.body,
