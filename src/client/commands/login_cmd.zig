@@ -230,13 +230,13 @@ fn printHubRequestError(stderr: *std.Io.Writer, hub_url: []const u8, err: anyerr
     switch (err) {
         error.ConnectionRefused => {
             try stderr.print(
-                "{s}{s}{s}Error:{s} Failed to reach hub at {s} (connection refused). Start clumsies-hub or pass --hub-url.\n",
+                "{s}{s}{s}Error:{s} Failed to reach hub at {s} (connection refused). Start `clumsies hub` or pass --hub-url.\n",
                 .{ P, Color.bold, Color.red, Color.reset, hub_url },
             );
         },
         error.ConnectionTimedOut => {
             try stderr.print(
-                "{s}{s}{s}Error:{s} Hub request to {s} timed out. Check that clumsies-hub is reachable or pass --hub-url.\n",
+                "{s}{s}{s}Error:{s} Hub request to {s} timed out. Check that `clumsies hub` is reachable or pass --hub-url.\n",
                 .{ P, Color.bold, Color.red, Color.reset, hub_url },
             );
         },
@@ -254,7 +254,7 @@ fn printHubRequestError(stderr: *std.Io.Writer, hub_url: []const u8, err: anyerr
         },
         error.ConnectionResetByPeer => {
             try stderr.print(
-                "{s}{s}{s}Error:{s} Hub connection to {s} was reset. Check that clumsies-hub is healthy.\n",
+                "{s}{s}{s}Error:{s} Hub connection to {s} was reset. Check that `clumsies hub` is healthy.\n",
                 .{ P, Color.bold, Color.red, Color.reset, hub_url },
             );
         },
@@ -272,7 +272,7 @@ fn printHubRequestError(stderr: *std.Io.Writer, hub_url: []const u8, err: anyerr
         },
         error.UnexpectedConnectFailure => {
             try stderr.print(
-                "{s}{s}{s}Error:{s} Failed to open a network connection to hub {s}. Start clumsies-hub or pass --hub-url.\n",
+                "{s}{s}{s}Error:{s} Failed to open a network connection to hub {s}. Start `clumsies hub` or pass --hub-url.\n",
                 .{ P, Color.bold, Color.red, Color.reset, hub_url },
             );
         },
@@ -402,7 +402,7 @@ test "printHubRequestError formats connection refused without stack-oriented det
     defer testing.allocator.free(output);
 
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "Failed to reach hub at http://127.0.0.1:8400"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "Start clumsies-hub or pass --hub-url."));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "Start `clumsies hub` or pass --hub-url."));
 }
 
 test "printHubRequestError formats bad host" {

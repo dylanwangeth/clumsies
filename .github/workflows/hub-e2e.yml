@@ -33,10 +33,10 @@ jobs:
         with:
           version: 0.15.1
 
-      - name: Build Hub Server
+      - name: Build clumsies
         run: zig build
 
       - name: Run Hub E2E tests
-        run: ./test/hub-e2e.sh ./zig-out/bin/clumsies-hub
+        run: ./test/hub-e2e.sh ./zig-out/bin/clumsies
         env:
           PGPASSWORD: clumsies

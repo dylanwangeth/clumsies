@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Hub Server e2e tests. Requires PostgreSQL running (docker-compose up -d).
-# Usage: ./test/hub-e2e.sh [hub-binary-path]
+# Usage: ./test/hub-e2e.sh [clumsies-binary-path]
 
-HUB="${1:-./zig-out/bin/clumsies-hub}"
+CLUMSIES="${1:-./zig-out/bin/clumsies}"
 HUB_PORT="${HUB_E2E_PORT:-8400}"
 BASE="http://127.0.0.1:${HUB_PORT}"
 RUN_ID="${HUB_E2E_RUN_ID:-$$}"
@@ -111,7 +111,7 @@ start_hub() {
     export HUB_DB_USER=clumsies
     export HUB_DB_PASSWORD=clumsies
 
-    "$HUB" &
+    "$CLUMSIES" hub &
     HUB_PID=$!
 
     local attempts=150

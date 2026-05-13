@@ -10,11 +10,20 @@ pub const std_options: std.Options = .{
 
 const log = std.log.scoped(.hub);
 
-pub fn main() !void {
+pub fn main() void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
-    const allocator = da.allocator();
 
+    run(da.allocator()) catch |err| {
+        var stderr_buffer: [4096]u8 = undefined;
+        var stderr_file_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buffer);
+        defer stderr_file_writer.interface.flush() catch {};
+        stderr_file_writer.interface.print("Error: {s}\n", .{@errorName(err)}) catch {};
+        std.process.exit(1);
+    };
+}
+
+pub fn run(allocator: std.mem.Allocator) !void {
     var env_map = try loadEnvMap(allocator);
     defer env_map.deinit();
 
@@ -23,7 +32,7 @@ pub fn main() !void {
 
     const config = hub.Config.fromEnv(&env_map);
 
-    log.info("clumsies-hub v{s} starting on {s}:{d}", .{ build_options.version, config.host, config.port });
+    log.info("clumsies hub v{s} starting on {s}:{d}", .{ build_options.version, config.host, config.port });
 
     var pool = hub.db.initPool(allocator, config) catch |err| {
         log.err("database connection failed for user \"{s}\" at {s}:{d}/{s}: {}", .{
@@ -48,8 +57,14 @@ pub fn main() !void {
     log.info("listening on http://{s}:{d}", .{ config.host, config.port });
 
     server.listen() catch |err| {
-        log.err("server error: {}", .{err});
-        return err;
+        switch (err) {
+            error.AddressInUse => log.err(
+                "failed to listen on {s}:{d}: address already in use",
+                .{ config.host, config.port },
+            ),
+            else => log.err("server error: {}", .{err}),
+        }
+        std.process.exit(1);
     };
 }
 
