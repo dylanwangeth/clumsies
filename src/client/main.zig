@@ -142,7 +142,10 @@ fn run() !void {
             try stderr_writer.print("{s}{s}{s}Error:{s} unknown hub argument: {s}\n", .{ P, Color.bold, Color.red, Color.reset, cmd_args[0] });
             return error.CommandFailed;
         }
-        try hub_main.run(allocator);
+        hub_main.run(allocator) catch |err| switch (err) {
+            error.HubStartupFailed => return error.CommandFailed,
+            else => return err,
+        };
         return;
     }
 
