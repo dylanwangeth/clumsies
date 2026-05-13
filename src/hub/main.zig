@@ -10,6 +10,8 @@ pub const std_options: std.Options = .{
 
 const log = std.log.scoped(.hub);
 
+const StartupError = error{HubStartupFailed};
+
 pub fn main() void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
@@ -42,7 +44,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
             config.db_name,
             err,
         });
-        std.process.exit(1);
+        return StartupError.HubStartupFailed;
     };
     defer pool.deinit();
 
@@ -64,7 +66,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
             ),
             else => log.err("server error: {}", .{err}),
         }
-        std.process.exit(1);
+        return StartupError.HubStartupFailed;
     };
 }
 
