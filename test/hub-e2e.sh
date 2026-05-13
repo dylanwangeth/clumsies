@@ -357,9 +357,24 @@ assert_status "list rules after rename" "200" "$STATUS"
 assert_json "rule_id preserved" "p-test-002" "$BODY"
 assert_json "path is new" "workflow/git/COMMIT.md" "$BODY"
 
+step "Rule PR: delete rule with history"
+RAW=$(call POST "/api/prs" '{"title":"Delete COMMIT","body":"Delete COMMIT","operations":[{"type":"delete","rule_id":"p-test-002"}]}')
+parse_response "$RAW"
+assert_status "create delete PR" "201" "$STATUS"
+DELETE_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
+RAW=$(call PUT "/api/prs/$DELETE_PR_ID" '{"action":"accept"}')
+parse_response "$RAW"
+assert_status "accept delete" "200" "$STATUS"
+
+step "Rule PR: deleted rule removed from artifact"
+RAW=$(call GET "/api/artifact/rules")
+parse_response "$RAW"
+assert_status "list rules after delete" "200" "$STATUS"
+assert_json_absent "deleted rule removed" "p-test-002" "$BODY"
+
 # Bundles
 step "Bundle: create"
-RAW=$(call POST "/api/bundles" '{"name":"'"$BUNDLE_NAME"'","description":"test","rule_ids":["p-test-001","p-test-002"]}')
+RAW=$(call POST "/api/bundles" '{"name":"'"$BUNDLE_NAME"'","description":"test","rule_ids":["p-test-001","p-test-mpf"]}')
 parse_response "$RAW"
 assert_status "create bundle" "201" "$STATUS"
 assert_json "returns name" "$BUNDLE_NAME" "$BODY"
@@ -386,7 +401,7 @@ RAW=$(call GET "/api/workspaces/$BUNDLE_WS_ID/manifest")
 parse_response "$RAW"
 assert_status "get bundle-seeded manifest" "200" "$STATUS"
 assert_json "manifest contains first bundle rule" "p-test-001" "$BODY"
-assert_json "manifest contains second bundle rule" "p-test-002" "$BODY"
+assert_json "manifest contains second bundle rule" "p-test-mpf" "$BODY"
 
 step "Bundle: get"
 RAW=$(call GET "/api/bundles/$BUNDLE_NAME")
@@ -419,7 +434,7 @@ assert_status "get workspace" "200" "$STATUS"
 assert_json "returns name" "$WS_NAME" "$BODY"
 
 step "Workspace: import rules"
-RAW=$(call POST "/api/workspaces/$WS_ID/rules" '{"rule_ids":["p-test-001","p-test-002"]}')
+RAW=$(call POST "/api/workspaces/$WS_ID/rules" '{"rule_ids":["p-test-001","p-test-mpf"]}')
 parse_response "$RAW"
 assert_status "import workspace rules" "200" "$STATUS"
 assert_json "returns revision" "revision" "$BODY"
@@ -429,7 +444,23 @@ RAW=$(call GET "/api/workspaces/$WS_ID/manifest")
 parse_response "$RAW"
 assert_status "get imported manifest" "200" "$STATUS"
 assert_json "manifest contains imported rule" "p-test-001" "$BODY"
-assert_json "manifest contains second imported rule" "p-test-002" "$BODY"
+assert_json "manifest contains second imported rule" "p-test-mpf" "$BODY"
+
+step "Rule PR: workspace-scoped create attaches accepted rule"
+NEW_RULE_PATH="e2e/RULE_FROM_WORKSPACE_${RUN_ID}.md"
+RAW=$(call POST "/api/prs" "{\"ws_id\":\"$WS_ID\",\"title\":\"Create workspace rule\",\"body\":\"Create workspace rule\",\"operations\":[{\"type\":\"create\",\"path\":\"$NEW_RULE_PATH\",\"content\":\"# Workspace Rule\\n\\nCreated from workspace.\\n\\n## Rules\\n\\n- Keep it attached.\"}]}")
+parse_response "$RAW"
+assert_status "create workspace-scoped rule PR" "201" "$STATUS"
+WORKSPACE_RULE_PR_ID=$(echo "$BODY" | grep -o '"pr_id":"[^"]*"' | cut -d'"' -f4)
+RAW=$(call PUT "/api/prs/$WORKSPACE_RULE_PR_ID" '{"action":"accept"}')
+parse_response "$RAW"
+assert_status "accept workspace-scoped rule PR" "200" "$STATUS"
+
+step "Rule PR: workspace manifest includes accepted create"
+RAW=$(call GET "/api/workspaces/$WS_ID/manifest")
+parse_response "$RAW"
+assert_status "get manifest after workspace-scoped rule create" "200" "$STATUS"
+assert_json "manifest contains workspace-created rule" "$NEW_RULE_PATH" "$BODY"
 
 step "Workspace: batch get attached rule content"
 RAW=$(call POST "/api/workspaces/$WS_ID/rules/content" '{"rule_ids":["p-test-001"]}')
@@ -449,7 +480,7 @@ RAW=$(call GET "/api/workspaces/$WS_ID/manifest")
 parse_response "$RAW"
 assert_status "get detached manifest" "200" "$STATUS"
 assert_json_absent "manifest removed detached rule" "p-test-001" "$BODY"
-assert_json "manifest keeps other imported rule" "p-test-002" "$BODY"
+assert_json "manifest keeps other imported rule" "p-test-mpf" "$BODY"
 
 step "Workspace: list members"
 RAW=$(call GET "/api/workspaces/$WS_ID/members")

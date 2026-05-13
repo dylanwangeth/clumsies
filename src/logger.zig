@@ -238,12 +238,12 @@ pub fn writeHttpAccessLine(
         const dim = "\x1b[2m";
         const reset = "\x1b[0m";
         try writer.print(
-            dim ++ "{s}" ++ reset ++ " |{s} {d: >3} {s}| {s: >8} | {s} |{s} {s: ^6} {s}| {s}",
+            dim ++ "{s}" ++ reset ++ " |{s} {d: >3} {s}| {s: >8} | {s: <15} |{s} {s: ^6} {s}| {s}",
             .{ ts_buf, statusColor(status), status, reset, duration, ip, methodColor(method), method, reset, path },
         );
     } else {
         try writer.print(
-            "{s} | {d: >3} | {s: >8} | {s} | {s: <6} {s}",
+            "{s} | {d: >3} | {s: >8} | {s: <15} | {s: <6} {s}",
             .{ ts_buf, status, duration, ip, method, path },
         );
     }
@@ -704,11 +704,11 @@ test "writeHttpAccessLine omits application log prefix" {
     var buffer: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
 
-    try writeHttpAccessLine(&writer, 400, 1_234_000, "127.0.0.1:8400", "client-1", "GET", "/bad", false);
+    try writeHttpAccessLine(&writer, 400, 1_234_000, "127.0.0.1", "client-1", "GET", "/bad", false);
     const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "[WARN ]") == null);
     try testing.expect(std.mem.indexOf(u8, output, "(hub_request)") == null);
-    try testing.expect(std.mem.indexOf(u8, output, "| 400 |   1.23ms | 127.0.0.1:8400") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "| 400 |   1.23ms | 127.0.0.1       |") != null);
     try testing.expect(std.mem.indexOf(u8, output, "client_id=client-1") != null);
     try testing.expect(std.mem.indexOf(u8, output, "| GET    /bad") != null);
 }
@@ -717,12 +717,12 @@ test "writeHttpAccessLine colors only status and method" {
     var buffer: [512]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
 
-    try writeHttpAccessLine(&writer, 200, 7_917_000, "127.0.0.1:8400", "-", "GET", "/api/auth/me", true);
+    try writeHttpAccessLine(&writer, 200, 7_917_000, "127.0.0.1", "-", "GET", "/api/auth/me", true);
     const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[30;42m 200 \x1b[0m") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[97;44m  GET   \x1b[0m| /api/auth/me") != null);
     try testing.expect(std.mem.indexOf(u8, output, "|\x1b[30;42m 200 \x1b[0m|   7.91ms") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "127.0.0.1:8400") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "127.0.0.1       ") != null);
     try testing.expect(std.mem.indexOf(u8, output, "client_id=") == null);
 }
 

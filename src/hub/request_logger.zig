@@ -63,12 +63,23 @@ fn clientIp(req: *const httpz.Request, buf: *[128]u8) []const u8 {
 
     var writer: std.Io.Writer = .fixed(buf);
     req.address.format(&writer) catch return "-";
-    return writer.buffered();
+    return remoteHost(writer.buffered());
 }
 
 fn firstForwardedFor(raw: []const u8) []const u8 {
     const comma = std.mem.indexOfScalar(u8, raw, ',') orelse return raw;
     return raw[0..comma];
+}
+
+fn remoteHost(raw: []const u8) []const u8 {
+    if (raw.len == 0) return raw;
+    if (raw[0] == '[') {
+        const end = std.mem.indexOfScalar(u8, raw, ']') orelse return raw;
+        return raw[1..end];
+    }
+    const colon = std.mem.lastIndexOfScalar(u8, raw, ':') orelse return raw;
+    if (std.mem.indexOfScalar(u8, raw[0..colon], ':') != null) return raw;
+    return raw[0..colon];
 }
 
 fn sanitizedText(raw: []const u8, buf: []u8) []const u8 {
@@ -85,4 +96,11 @@ test "requestLogLevel maps HTTP status classes to severity" {
     try std.testing.expectEqual(std.log.Level.warn, requestLogLevel(400));
     try std.testing.expectEqual(std.log.Level.warn, requestLogLevel(404));
     try std.testing.expectEqual(std.log.Level.err, requestLogLevel(500));
+}
+
+test "remoteHost strips ephemeral ports" {
+    try std.testing.expectEqualStrings("127.0.0.1", remoteHost("127.0.0.1:59579"));
+    try std.testing.expectEqualStrings("192.168.10.127", remoteHost("192.168.10.127:56669"));
+    try std.testing.expectEqualStrings("::1", remoteHost("[::1]:8400"));
+    try std.testing.expectEqualStrings("fe80::1", remoteHost("fe80::1"));
 }
