@@ -960,9 +960,9 @@ fn handleProposeUpdate(
     defer draft.deinit(allocator);
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
-        .context => .{ .context_propose_update = .{ .id = id, .path = m_entry.path } },
-        .rule => .{ .rule_propose_update = .{ .id = id, .path = m_entry.path } },
-        .meta_prompt => .{ .mpf_propose_update = .{ .id = id, .path = m_entry.path } },
+        .context => .{ .context_propose_update = .{ .id = id, .path = draft.draft_path } },
+        .rule => .{ .rule_propose_update = .{ .id = id, .path = draft.draft_path } },
+        .meta_prompt => .{ .mpf_propose_update = .{ .id = id, .path = draft.draft_path } },
     };
     session.recordEvent(allocator, payload);
 

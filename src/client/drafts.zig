@@ -374,7 +374,7 @@ pub fn upsertUpdateDraft(
             entry.current_path = params.current_path;
         }
         try writeIndexAtomic(allocator, ws_dir, index.entries.items);
-        return try identityFromEntry(allocator, entry.*, entry.current_path);
+        return try identityFromEntry(allocator, entry.*, null);
     }
 
     try createDraft(allocator, ws_dir, .{
@@ -478,7 +478,7 @@ pub fn upsertDeleteDraft(
         if (params.description) |desc| entry.description = desc;
         entry.status = .draft;
         try writeIndexAtomic(allocator, ws_dir, index.entries.items);
-        return try identityFromEntry(allocator, entry.*, params.current_path);
+        return try identityFromEntry(allocator, entry.*, null);
     }
 
     try createDraft(allocator, ws_dir, .{
@@ -491,10 +491,7 @@ pub fn upsertDeleteDraft(
         .context_id = params.context_id,
         .description = params.description,
     }, "");
-    return .{
-        .draft_path = try allocator.dupe(u8, params.current_path),
-        .previous_path = try allocator.dupe(u8, params.current_path),
-    };
+    return .{ .draft_path = try allocator.dupe(u8, params.current_path) };
 }
 
 /// Create a new draft entry and write its initial content file. Fails
@@ -1704,6 +1701,8 @@ test "upsertRenameDraft: folds update draft into rename draft" {
         .base_hash = "sha256:base",
     }, "updated body");
     defer update_identity.deinit(testing.allocator);
+    try testing.expectEqualStrings("design/UI.md", update_identity.draft_path);
+    try testing.expect(update_identity.previous_path == null);
 
     var rename_identity = try upsertRenameDraft(testing.allocator, root, .{
         .category = .rule,
@@ -1727,6 +1726,46 @@ test "upsertRenameDraft: folds update draft into rename draft" {
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("updated body", content);
     try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .rule, "design/UI.md"));
+}
+
+test "upsertUpdateDraft: updates rename draft without previous path identity" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var rename_identity = try upsertRenameDraft(testing.allocator, root, .{
+        .category = .rule,
+        .current_path = "design/UI.md",
+        .rule_id = "p-ui",
+        .base_hash = "sha256:base",
+    }, "design/UIUX.md", "base body");
+    defer rename_identity.deinit(testing.allocator);
+    try testing.expectEqualStrings("design/UIUX.md", rename_identity.draft_path);
+    try testing.expectEqualStrings("design/UI.md", rename_identity.previous_path.?);
+
+    var update_identity = try upsertUpdateDraft(testing.allocator, root, .{
+        .category = .rule,
+        .current_path = "design/UI.md",
+        .rule_id = "p-ui",
+        .base_hash = "sha256:base",
+    }, "renamed and updated body");
+    defer update_identity.deinit(testing.allocator);
+    try testing.expectEqualStrings("design/UIUX.md", update_identity.draft_path);
+    try testing.expect(update_identity.previous_path == null);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.entries.items[0];
+    try testing.expectEqual(DraftOperation.rename, entry.operation);
+    try testing.expectEqualStrings("design/UI.md", entry.current_path.?);
+    try testing.expectEqualStrings("design/UIUX.md", entry.draft_path);
+
+    const content = try readDraftFile(testing.allocator, root, .rule, "design/UIUX.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("renamed and updated body", content);
 }
 
 test "normalizeDrafts: folds duplicate update and rename entries" {
@@ -1782,6 +1821,7 @@ test "upsertDeleteDraft: folds update draft into delete draft" {
         .base_hash = "sha256:base",
     }, "updated body");
     defer update_identity.deinit(testing.allocator);
+    try testing.expect(update_identity.previous_path == null);
 
     var delete_identity = try upsertDeleteDraft(testing.allocator, root, .{
         .category = .context,
@@ -1790,6 +1830,8 @@ test "upsertDeleteDraft: folds update draft into delete draft" {
         .base_hash = "sha256:base",
     });
     defer delete_identity.deinit(testing.allocator);
+    try testing.expectEqualStrings("spec/API.md", delete_identity.draft_path);
+    try testing.expect(delete_identity.previous_path == null);
 
     var index = try loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
@@ -1799,6 +1841,32 @@ test "upsertDeleteDraft: folds update draft into delete draft" {
     try testing.expectEqualStrings("spec/API.md", entry.current_path.?);
     try testing.expectEqualStrings("spec/API.md", entry.draft_path);
     try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .context, "spec/API.md"));
+}
+
+test "upsertDeleteDraft: new delete draft has no previous path identity" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var delete_identity = try upsertDeleteDraft(testing.allocator, root, .{
+        .category = .context,
+        .current_path = "spec/API.md",
+        .context_id = "ctx-api",
+        .base_hash = "sha256:base",
+    });
+    defer delete_identity.deinit(testing.allocator);
+    try testing.expectEqualStrings("spec/API.md", delete_identity.draft_path);
+    try testing.expect(delete_identity.previous_path == null);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.entries.items[0];
+    try testing.expectEqual(DraftOperation.delete, entry.operation);
+    try testing.expectEqualStrings("spec/API.md", entry.current_path.?);
+    try testing.expectEqualStrings("spec/API.md", entry.draft_path);
 }
 
 test "discardDraftById: accepts rule id for update draft" {
