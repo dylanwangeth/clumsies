@@ -29,17 +29,6 @@ pub const WorkspacePathKey = struct {
     }
 };
 
-/// Response wrappers for endpoints whose wire response is a bare list
-/// (or raw body) and thus carries no request key of its own. The
-/// dispatcher parser dupes the relevant request field into the
-/// long-lived allocator and returns it alongside the parsed body, so
-/// the consumer can route the cache write against the request rather
-/// than against whatever the UI happens to select at consume time.
-pub const RulePrsPayload = struct {
-    rule_id: []const u8,
-    prs: []const model.RulePr,
-};
-
 pub const WorkspaceContextPayload = struct {
     ws_id: []const u8,
     files: []const model.WorkspaceContextData,
@@ -107,7 +96,7 @@ pub const ApiState = struct {
     auth_refresh_mutex: std.Thread.Mutex = .{},
     status: ConnectionStatus = .disconnected,
     current_user: ?model.UserData = null,
-    directory: ?model.DirectoryData = null,
+    members: ?model.OrgMembersData = null,
     rules: ?[]const model.ArtifactRule = null,
     bundles: ?[]const model.BundleData = null,
     org_stats: ?model.OrgStats = null,
@@ -118,11 +107,7 @@ pub const ApiState = struct {
     rule_content_batch_pending: request.PendingRequest(dispatcher.Result(artifact_api.BatchRuleContentResponse)) = .{},
     rule_content_cache: cache.MultiCacheSlot(cache.StringKey, artifact_api.RuleContentResponse) = .{},
 
-    // Artifact rule PR list. Pending result carries the rule_id the
-    // request was issued for so the consumer stores under the correct
-    // cache key even if the UI's rule selection changed mid-flight.
-    rule_prs_pending: request.PendingRequest(dispatcher.Result(RulePrsPayload)) = .{},
-    rule_prs_cache: cache.MultiCacheSlot(cache.StringKey, []const model.RulePr) = .{},
+    // PR queue list, keyed by the queue view name.
     review_prs_pending: request.PendingRequest(dispatcher.Result([]const model.RulePr)) = .{},
     review_prs_cache: cache.CacheSlot(cache.StringKey, []const model.RulePr) = .{},
 
@@ -193,7 +178,7 @@ pub const ApiState = struct {
     username: ?[]const u8 = null,
     access_token: ?[]const u8 = null,
     refresh_token: ?[]const u8 = null,
-    /// True while the compound bootstrap fetch (/me + directory + rules
+    /// True while the compound bootstrap fetch (/me + members + rules
     /// + bundles + stats) is running. Prevents overlapping bootstrap
     /// triggers; does not gate any other endpoint, which now run
     /// independently via their own PendingRequest slots.
@@ -424,10 +409,8 @@ pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) voi
 }
 
 fn invalidatePrLists(api_state: *ApiState) void {
-    api_state.rule_prs_cache.invalidate();
     api_state.review_prs_cache.invalidate();
 
-    api_state.rule_prs_pending.cancel();
     api_state.review_prs_pending.cancel();
 }
 

@@ -1,23 +1,6 @@
 //! Collaboration API response shapes. Pull requests carry workspace local edits back to the
 //! Artifact for review. Each PR contains RulePrChanges (add/modify/delete) and a
 //! RulePrUsageSummary showing how much the changed rule has been referred.
-pub const RulePrListItem = struct {
-    pr_id: []const u8,
-    status: []const u8,
-    title: []const u8,
-    body: []const u8,
-    created_at: []const u8,
-    author: []const u8 = "",
-    operation_count: i64 = 0,
-    op_type: []const u8 = "",
-    comment_count: i64 = 0,
-    has_conflict: bool = false,
-};
-
-pub const RulePrListResponse = struct {
-    prs: []const RulePrListItem = &.{},
-};
-
 pub const RulePrChange = struct {
     op_index: i32 = 0,
     type: []const u8 = "",

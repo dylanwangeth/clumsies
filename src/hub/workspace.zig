@@ -4,6 +4,7 @@
 const std = @import("std");
 const httpz = @import("httpz");
 const manifest = @import("clumsies_lib").protocol.manifest;
+const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
@@ -15,6 +16,11 @@ const CreateWorkspaceRequest = workspace_api.CreateWorkspaceRequest;
 const CreateWorkspaceResponse = workspace_api.CreateWorkspaceResponse;
 const WorkspaceRulesRequest = workspace_api.WorkspaceRulesRequest;
 const WorkspaceRulesResponse = workspace_api.WorkspaceRulesResponse;
+const BatchRuleContentRequest = artifact_api.BatchRuleContentRequest;
+const BatchRuleContentResponse = artifact_api.BatchRuleContentResponse;
+const BatchRuleItem = artifact_api.BatchRuleItem;
+
+const BATCH_MAX_IDS: usize = 1024;
 
 pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = auth.authenticate(ctx, req) catch {
@@ -289,6 +295,75 @@ pub fn handleRemoveRule(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
 
     const rule_ids = [_][]const u8{rule_id};
     try mutateWorkspaceRules(ctx, req, res, user, ws_id, &rule_ids, .detach);
+}
+
+/// Batch content fetch for rules attached to a workspace. The rule
+/// bodies still come from Artifact, but this endpoint enforces the
+/// workspace membership and attachment boundary so Workspace UI does
+/// not need to call the org-scoped Artifact content route directly.
+pub fn handleBatchRuleContent(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
+    const user = auth.authenticate(ctx, req) catch {
+        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
+    };
+    if (!auth.requireScope(user, "workspace:read", res)) return;
+
+    const ws_id = req.param("ws_id") orelse {
+        return apiError(res, 400, "BAD_REQUEST", "ws_id is required");
+    };
+
+    const body = req.json(BatchRuleContentRequest) catch {
+        return apiError(res, 400, "BAD_REQUEST", "invalid JSON body");
+    } orelse {
+        return apiError(res, 400, "BAD_REQUEST", "missing request body");
+    };
+
+    if (body.rule_ids.len > BATCH_MAX_IDS) {
+        return apiError(res, 400, "BAD_REQUEST", "too many rule_ids");
+    }
+
+    const conn = ctx.pool.acquire() catch {
+        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
+    };
+    defer conn.release();
+
+    if (!auth.checkWorkspaceMember(conn, ws_id, user.user_id)) {
+        return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
+    }
+
+    var items: std.ArrayList(BatchRuleItem) = .empty;
+    for (body.rule_ids) |rule_id| {
+        const row_result = conn.row(
+            \\SELECT p.rule_id, p.content_hash, p.content, p.path
+            \\FROM workspace_rules wr
+            \\JOIN rules p ON p.rule_id = wr.rule_id
+            \\WHERE wr.ws_id = $1 AND p.org_id = $2::uuid AND p.rule_id = $3
+        ,
+            .{ ws_id, user.org_id, rule_id },
+        ) catch {
+            try items.append(req.arena, .{
+                .rule_id = try req.arena.dupe(u8, rule_id),
+                .@"error" = "INTERNAL_ERROR",
+            });
+            continue;
+        };
+        var row = row_result orelse {
+            try items.append(req.arena, .{
+                .rule_id = try req.arena.dupe(u8, rule_id),
+                .@"error" = "NOT_FOUND",
+            });
+            continue;
+        };
+        defer row.deinit() catch {};
+
+        try items.append(req.arena, .{
+            .rule_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+            .content_hash = try req.arena.dupe(u8, try row.get([]const u8, 1)),
+            .body = try req.arena.dupe(u8, try row.get([]const u8, 2)),
+            .path = try req.arena.dupe(u8, try row.get([]const u8, 3)),
+        });
+    }
+
+    try res.json(BatchRuleContentResponse{ .items = items.items }, .{});
 }
 
 pub fn handleDetachRules(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {

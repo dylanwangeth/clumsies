@@ -130,7 +130,6 @@ pub fn handleModuleEvent(
     event: vxfw.Event,
     key: vaxis.Key,
 ) anyerror!void {
-    self.review.detail_tab = .content;
     if (self.artifact.show_bundle_drawer) {
         handleBundleDrawerKey(self, ctx, key);
         return;
@@ -329,49 +328,6 @@ fn handleFileListEvent(
         }
     } else if (self.artifact.list_machine.active_leaf != old_active_leaf) {
         if (self.artifact.list_machine.active_leaf) |rule_idx| self.artifact.selected_rule = rule_idx;
-    }
-    ctx.consumeAndRedraw();
-}
-
-fn handlePrListEvent(
-    self: anytype,
-    ctx: *vxfw.EventContext,
-    event: vxfw.Event,
-    key: vaxis.Key,
-) anyerror!void {
-    _ = event;
-    if (key.matches('f', .{})) {
-        self.review.pr_filter = switch (self.review.pr_filter) {
-            .open => .all,
-            .all => .closed,
-            .closed => .open,
-        };
-        self.review.pr_scroll_bars.scroll_view.cursor = 0;
-        self.review.selected_pr_idx = 0;
-        rule_detail_panel.fetchSelectedPrDetail(self);
-        ctx.consumeAndRedraw();
-        return;
-    }
-
-    rule_detail_panel.syncPrWidgets(self);
-    if (self.review.pr_row_count == 0) {
-        ctx.consumeEvent();
-        return;
-    }
-
-    var pos = @as(usize, @intCast(self.review.pr_scroll_bars.scroll_view.cursor));
-    if (pos >= self.review.pr_row_count) pos = if (self.review.pr_row_count > 0) self.review.pr_row_count - 1 else 0;
-    const step = w.stepForKey(key, &self.review.pr_scroll_bars.scroll_view) orelse return;
-    pos = w.moveSelectableRowByVisualRows(pos, self.review.pr_row_count, self.review.pr_indices[0..self.review.pr_row_count], step);
-    self.review.pr_scroll_bars.scroll_view.cursor = @intCast(pos);
-    w.scrollCursorIntoView(&self.review.pr_scroll_bars.scroll_view, self.review.pr_row_count);
-    if (pos < self.review.pr_row_count) {
-        if (self.review.pr_indices[pos]) |pr_idx| {
-            if (self.review.selected_pr_idx != pr_idx) {
-                self.review.selected_pr_idx = pr_idx;
-                rule_detail_panel.fetchSelectedPrDetail(self);
-            }
-        }
     }
     ctx.consumeAndRedraw();
 }

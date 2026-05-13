@@ -33,7 +33,7 @@ pub const create_workspace = dispatcher.RequestSpec(
 
 pub const PathParams = struct { path: []const u8 };
 pub const BatchRuleContentParams = struct { rule_ids: []const []const u8 };
-pub const RulePrsParams = struct { rule_id: []const u8 };
+pub const BatchWorkspaceRuleContentParams = struct { ws_id: []const u8, rule_ids: []const []const u8 };
 pub const BatchWorkspaceContextContentParams = struct { ws_id: []const u8, paths: []const []const u8 };
 pub const WorkspaceIdParams = struct { ws_id: []const u8 };
 pub const WorkspaceRulesParams = struct { ws_id: []const u8, rule_ids: []const []const u8 };
@@ -41,7 +41,6 @@ pub const UpdateWorkspaceParams = struct { ws_id: []const u8, name: []const u8, 
 pub const PrIdParams = struct { pr_id: []const u8, target_kind: data.PrTargetKind = .rule, ws_id: ?[]const u8 = null };
 pub const ReviewPrsParams = struct { target_kind: ?data.PrTargetKind = null, status: []const u8 = "open" };
 
-pub const RulePrsPayload = state.RulePrsPayload;
 pub const WorkspaceContextPayload = state.WorkspaceContextPayload;
 pub const WorkspaceManifestPayload = state.WorkspaceManifestPayload;
 pub const WorkspaceContextContentBatchPayload = state.WorkspaceContextContentBatchPayload;
@@ -120,18 +119,19 @@ pub const artifact_rule_content_batch = dispatcher.RequestSpec(
     artifact_api.BatchRuleContentResponse,
 ){
     .method = .POST,
-    .path_builder = dispatcher.staticPath(BatchRuleContentParams, "/api/org/artifact/rules/content"),
+    .path_builder = dispatcher.staticPath(BatchRuleContentParams, "/api/artifact/rules/content"),
     .body_builder = batchRuleContentBody,
     .parse_ok = dispatcher.jsonParser(BatchRuleContentParams, artifact_api.BatchRuleContentResponse),
 };
 
-pub const artifact_rule_prs = dispatcher.RequestSpec(
-    RulePrsParams,
-    RulePrsPayload,
+pub const workspace_rule_content_batch = dispatcher.RequestSpec(
+    BatchWorkspaceRuleContentParams,
+    artifact_api.BatchRuleContentResponse,
 ){
-    .method = .GET,
-    .path_builder = rulePrsPath,
-    .parse_ok = parseRulePrsPayload,
+    .method = .POST,
+    .path_builder = workspaceRuleContentBatchPath,
+    .body_builder = batchWorkspaceRuleContentBody,
+    .parse_ok = dispatcher.jsonParser(BatchWorkspaceRuleContentParams, artifact_api.BatchRuleContentResponse),
 };
 
 pub const review_prs = dispatcher.RequestSpec(
@@ -287,7 +287,7 @@ pub const update_profile = dispatcher.RequestSpec(auth_api.UpdateProfileRequest,
 
 pub const invite_member = dispatcher.RequestSpec(auth_api.InviteMemberRequest, auth_api.InviteMemberResponse){
     .method = .POST,
-    .path_builder = dispatcher.staticPath(auth_api.InviteMemberRequest, "/api/org/members"),
+    .path_builder = dispatcher.staticPath(auth_api.InviteMemberRequest, "/api/members"),
     .body_builder = dispatcher.jsonBody(auth_api.InviteMemberRequest),
     .parse_ok = dispatcher.jsonParser(auth_api.InviteMemberRequest, auth_api.InviteMemberResponse),
 };
@@ -343,14 +343,14 @@ pub const pr_action = dispatcher.RequestSpec(PrActionParams, void){
 
 pub const create_rule_pr = dispatcher.RequestSpec(CreateRulePrParams, CreateRulePrResponse){
     .method = .POST,
-    .path_builder = dispatcher.staticPath(CreateRulePrParams, "/api/org/rule-prs"),
+    .path_builder = dispatcher.staticPath(CreateRulePrParams, "/api/prs"),
     .body_builder = createRulePrBody,
     .parse_ok = dispatcher.jsonParser(CreateRulePrParams, CreateRulePrResponse),
 };
 
 pub const create_rule_pr_batch = dispatcher.RequestSpec(CreateRulePrBatchParams, CreateRulePrResponse){
     .method = .POST,
-    .path_builder = dispatcher.staticPath(CreateRulePrBatchParams, "/api/org/rule-prs"),
+    .path_builder = dispatcher.staticPath(CreateRulePrBatchParams, "/api/prs"),
     .body_builder = createRulePrBatchBody,
     .parse_ok = dispatcher.jsonParser(CreateRulePrBatchParams, CreateRulePrResponse),
 };
@@ -512,7 +512,7 @@ fn submitCommentPath(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror!
     if (p.target_kind == .context) {
         return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}/comments", .{ try requireContextWsId(p.ws_id), p.pr_id });
     }
-    return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}/comments", .{p.pr_id});
+    return std.fmt.allocPrint(alloc, "/api/prs/{s}/comments", .{p.pr_id});
 }
 
 fn submitCommentBody(alloc: std.mem.Allocator, p: SubmitCommentParams) anyerror![]const u8 {
@@ -524,7 +524,7 @@ fn prActionPath(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8
     if (p.target_kind == .context) {
         return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}", .{ try requireContextWsId(p.ws_id), p.pr_id });
     }
-    return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}", .{p.pr_id});
+    return std.fmt.allocPrint(alloc, "/api/prs/{s}", .{p.pr_id});
 }
 
 fn prActionBody(alloc: std.mem.Allocator, p: PrActionParams) anyerror![]const u8 {
@@ -549,7 +549,7 @@ fn workspaceMemberChangeRoleBody(alloc: std.mem.Allocator, p: WorkspaceMemberRol
 fn memberPath(comptime ReqT: type) *const fn (std.mem.Allocator, ReqT) anyerror![]const u8 {
     return struct {
         fn build(alloc: std.mem.Allocator, p: ReqT) anyerror![]const u8 {
-            return std.fmt.allocPrint(alloc, "/api/org/members/{s}", .{p.user_id});
+            return std.fmt.allocPrint(alloc, "/api/members/{s}", .{p.user_id});
         }
     }.build;
 }
@@ -572,17 +572,23 @@ fn batchRuleContentBody(alloc: std.mem.Allocator, p: BatchRuleContentParams) any
     }, .{});
 }
 
-fn rulePrsPath(alloc: std.mem.Allocator, p: RulePrsParams) anyerror![]const u8 {
-    return std.fmt.allocPrint(alloc, "/api/org/rule-prs?rule_id={s}", .{p.rule_id});
+fn workspaceRuleContentBatchPath(alloc: std.mem.Allocator, p: BatchWorkspaceRuleContentParams) anyerror![]const u8 {
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/rules/content", .{p.ws_id});
+}
+
+fn batchWorkspaceRuleContentBody(alloc: std.mem.Allocator, p: BatchWorkspaceRuleContentParams) anyerror![]const u8 {
+    return std.json.Stringify.valueAlloc(alloc, artifact_api.BatchRuleContentRequest{
+        .rule_ids = p.rule_ids,
+    }, .{});
 }
 
 fn reviewPrsPath(alloc: std.mem.Allocator, p: ReviewPrsParams) anyerror![]const u8 {
     const target = if (p.target_kind) |kind| kind.label() else "";
-    return std.fmt.allocPrint(alloc, "/api/org/review/prs?target={s}&status={s}", .{ target, p.status });
+    return std.fmt.allocPrint(alloc, "/api/prs?target={s}&status={s}", .{ target, p.status });
 }
 
 fn workspaceContextContentBatchPath(alloc: std.mem.Allocator, p: BatchWorkspaceContextContentParams) anyerror![]const u8 {
-    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/files/content", .{p.ws_id});
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/content", .{p.ws_id});
 }
 
 fn batchWorkspaceContextContentBody(alloc: std.mem.Allocator, p: BatchWorkspaceContextContentParams) anyerror![]const u8 {
@@ -592,7 +598,7 @@ fn batchWorkspaceContextContentBody(alloc: std.mem.Allocator, p: BatchWorkspaceC
 }
 
 fn workspaceContextFilesPath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror![]const u8 {
-    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/files", .{p.ws_id});
+    return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context", .{p.ws_id});
 }
 
 fn workspaceManifestPath(alloc: std.mem.Allocator, p: WorkspaceIdParams) anyerror![]const u8 {
@@ -636,14 +642,14 @@ fn prDetailPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
     if (p.target_kind == .context) {
         return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}", .{ try requireContextWsId(p.ws_id), p.pr_id });
     }
-    return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}", .{p.pr_id});
+    return std.fmt.allocPrint(alloc, "/api/prs/{s}", .{p.pr_id});
 }
 
 fn prCommentsPath(alloc: std.mem.Allocator, p: PrIdParams) anyerror![]const u8 {
     if (p.target_kind == .context) {
         return std.fmt.allocPrint(alloc, "/api/workspaces/{s}/context/prs/{s}/comments", .{ try requireContextWsId(p.ws_id), p.pr_id });
     }
-    return std.fmt.allocPrint(alloc, "/api/org/rule-prs/{s}/comments", .{p.pr_id});
+    return std.fmt.allocPrint(alloc, "/api/prs/{s}/comments", .{p.pr_id});
 }
 
 fn requireContextWsId(ws_id: ?[]const u8) anyerror![]const u8 {
@@ -714,22 +720,6 @@ test "rename PR bodies include new_path" {
     });
     defer alloc.free(context_body);
     try std.testing.expect(std.mem.indexOf(u8, context_body, "\"new_path\":\"new/context.md\"") != null);
-}
-
-/// Wrap the existing `parse.parseRulePrs` into the payload shape that
-/// carries the requested `rule_id` alongside the parsed list. The
-/// server response is a bare array, so the key is duped out of the
-/// request into the long-lived allocator before returning.
-fn parseRulePrsPayload(
-    alloc: std.mem.Allocator,
-    req: RulePrsParams,
-    body: []const u8,
-) anyerror!RulePrsPayload {
-    const prs = parse.parseRulePrs(alloc, body) orelse return error.ParseFailed;
-    return .{
-        .rule_id = try alloc.dupe(u8, req.rule_id),
-        .prs = prs,
-    };
 }
 
 fn parseReviewPrsPayload(

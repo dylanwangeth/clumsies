@@ -12,8 +12,6 @@ const apiError = @import("api_error.zig").send;
 const RulePrComment = collab_api.RulePrComment;
 const RulePrCommentsResponse = collab_api.RulePrCommentsResponse;
 const RulePrDetailResponse = collab_api.RulePrDetailResponse;
-const RulePrListItem = collab_api.RulePrListItem;
-const RulePrListResponse = collab_api.RulePrListResponse;
 const RulePrChange = collab_api.RulePrChange;
 const RulePrUsageSummary = collab_api.RulePrUsageSummary;
 
@@ -392,130 +390,6 @@ fn validateNoIntraPrPathConflict(arena: std.mem.Allocator, ops: []const Operatio
         try seen.append(arena, path);
     }
     return true;
-}
-
-pub fn handleListPrs(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = auth.authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-    if (!auth.requireScope(user, "pr:read", res)) return;
-
-    const qs = req.query() catch {
-        return apiError(res, 400, "BAD_REQUEST", "invalid query");
-    };
-    const status_filter = qs.get("status");
-    const rule_filter = qs.get("rule_id");
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    var list: std.ArrayList(RulePrListItem) = .empty;
-
-    const base_sql =
-        \\SELECT pp.pr_id, pp.status, pp.title, pp.body, pp.created_at::text, u.username,
-        \\  (SELECT count(*) FROM rule_pr_operations op WHERE op.pr_id = pp.pr_id) as op_count,
-        \\  COALESCE((
-        \\    SELECT op.type
-        \\    FROM rule_pr_operations op
-        \\    WHERE op.pr_id = pp.pr_id
-        \\    ORDER BY op.op_index
-        \\    LIMIT 1
-        \\  ), '') as op_type,
-        \\  (SELECT count(*) FROM rule_pr_comments c WHERE c.pr_id = pp.pr_id) as comment_count
-        \\FROM rule_prs pp JOIN users u ON u.user_id = pp.author_id
-    ;
-
-    if (status_filter != null and rule_filter != null) {
-        var result = conn.query(base_sql ++
-            \\ WHERE pp.org_id = $1::uuid AND pp.status = $2
-            \\ AND pp.pr_id IN (SELECT pr_id FROM rule_pr_operations WHERE rule_id = $3)
-            \\ ORDER BY pp.created_at DESC
-        , .{ user.org_id, status_filter.?, rule_filter.? }) catch {
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        };
-        defer result.deinit();
-        while (try result.next()) |row| {
-            try list.append(req.arena, .{
-                .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-                .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-                .title = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .body = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
-                .operation_count = try row.get(i64, 6),
-                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 7)),
-                .comment_count = try row.get(i64, 8),
-            });
-        }
-    } else if (status_filter) |sf| {
-        var result = conn.query(base_sql ++
-            \\ WHERE pp.org_id = $1::uuid AND pp.status = $2
-            \\ ORDER BY pp.created_at DESC
-        , .{ user.org_id, sf }) catch {
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        };
-        defer result.deinit();
-        while (try result.next()) |row| {
-            try list.append(req.arena, .{
-                .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-                .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-                .title = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .body = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
-                .operation_count = try row.get(i64, 6),
-                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 7)),
-                .comment_count = try row.get(i64, 8),
-            });
-        }
-    } else if (rule_filter) |pf| {
-        var result = conn.query(base_sql ++
-            \\ WHERE pp.org_id = $1::uuid
-            \\ AND pp.pr_id IN (SELECT pr_id FROM rule_pr_operations WHERE rule_id = $2)
-            \\ ORDER BY pp.created_at DESC
-        , .{ user.org_id, pf }) catch {
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        };
-        defer result.deinit();
-        while (try result.next()) |row| {
-            try list.append(req.arena, .{
-                .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-                .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-                .title = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .body = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
-                .operation_count = try row.get(i64, 6),
-                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 7)),
-                .comment_count = try row.get(i64, 8),
-            });
-        }
-    } else {
-        var result = conn.query(base_sql ++
-            \\ WHERE pp.org_id = $1::uuid
-            \\ ORDER BY pp.created_at DESC
-        , .{user.org_id}) catch {
-            return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-        };
-        defer result.deinit();
-        while (try result.next()) |row| {
-            try list.append(req.arena, .{
-                .pr_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-                .status = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-                .title = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-                .body = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-                .created_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-                .author = try req.arena.dupe(u8, try row.get([]const u8, 5)),
-                .operation_count = try row.get(i64, 6),
-                .op_type = try req.arena.dupe(u8, try row.get([]const u8, 7)),
-                .comment_count = try row.get(i64, 8),
-            });
-        }
-    }
-
-    try res.json(RulePrListResponse{ .prs = list.items }, .{});
 }
 
 pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {

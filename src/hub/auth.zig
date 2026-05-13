@@ -608,14 +608,6 @@ fn hexEncode(input: []const u8, output: []u8) void {
 
 // Org Member management
 
-const MemberInfo = struct {
-    user_id: []const u8,
-    username: []const u8,
-    role: []const u8,
-    status: []const u8,
-    joined_at: []const u8,
-};
-
 pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
     const user = authenticate(ctx, req) catch {
         return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
@@ -638,7 +630,7 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
     };
     defer result.deinit();
 
-    var list: std.ArrayList(MemberInfo) = .empty;
+    var list: std.ArrayList(auth_api.Member) = .empty;
     while (try result.next()) |row| {
         try list.append(req.arena, .{
             .user_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
@@ -649,7 +641,7 @@ pub fn handleListMembers(ctx: *Server.Context, req: *httpz.Request, res: *httpz.
         });
     }
 
-    try res.json(.{ .members = list.items }, .{});
+    try res.json(auth_api.MembersResponse{ .members = list.items }, .{});
 }
 
 pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -1009,41 +1001,4 @@ pub fn handleReissueInvite(ctx: *Server.Context, req: *httpz.Request, res: *http
         .invite_token = invite_token,
         .invite_expires_at = expires_at,
     }, .{});
-}
-
-// GET /api/org/directory
-pub fn handleDirectory(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Response) !void {
-    const user = authenticate(ctx, req) catch {
-        return apiError(res, 401, "UNAUTHORIZED", "invalid or missing token");
-    };
-    if (!requireScope(user, "members:read", res)) return;
-    if (!std.mem.eql(u8, user.role, "maintainer")) {
-        return apiError(res, 403, "FORBIDDEN", "maintainer role required");
-    }
-
-    const conn = ctx.pool.acquire() catch {
-        return apiError(res, 503, "SERVICE_UNAVAILABLE", "database unavailable");
-    };
-    defer conn.release();
-
-    var members: std.ArrayList(auth_api.DirectoryMember) = .empty;
-    var result = conn.query(
-        "SELECT user_id, username, role, status, created_at::text FROM users WHERE org_id = $1::uuid ORDER BY username",
-        .{user.org_id},
-    ) catch {
-        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
-    };
-    defer result.deinit();
-
-    while (try result.next()) |row| {
-        try members.append(req.arena, .{
-            .user_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
-            .username = try req.arena.dupe(u8, try row.get([]const u8, 1)),
-            .role = try req.arena.dupe(u8, try row.get([]const u8, 2)),
-            .status = try req.arena.dupe(u8, try row.get([]const u8, 3)),
-            .joined_at = try req.arena.dupe(u8, try row.get([]const u8, 4)),
-        });
-    }
-
-    try res.json(auth_api.DirectoryResponse{ .members = members.items }, .{});
 }

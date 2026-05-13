@@ -152,6 +152,7 @@ const GLOBAL_METADATA_REFRESH_TICKS = 3000;
 const HEALTH_CHECK_TICKS = 300;
 const ATTESTATION_UPLOAD_TICKS = 600;
 const CONTENT_REQUEST_DEBOUNCE_TICKS = 2;
+const PR_DETAIL_REQUEST_DEBOUNCE_TICKS = 2;
 const PathTreeState = workspace_panel.PathTreeState;
 
 const DraftTarget = features.drafts.DraftTarget;
@@ -243,6 +244,7 @@ pub const Shell = struct {
     last_logged_draw_safe_width: u16 = 0,
     last_logged_draw_safe_height: u16 = 0,
     content_request_scheduler: api.request_scheduler.CoalescedRequest(PendingContentRequest) = .{},
+    pr_detail_request_scheduler: api.request_scheduler.CoalescedRequest(review_panel.PrDetailRequest) = .{},
     search_active: bool = false,
     search_buf: [160]u8 = .{0} ** 160,
     search_len: usize = 0,
@@ -589,7 +591,6 @@ pub const Shell = struct {
                 self.consumeUpdateWorkspaceResult();
                 self.consumeDeleteWorkspaceResult();
                 self.consumeRuleContentResult();
-                self.consumeRulePrsResult();
                 self.consumeReviewPrsResult();
                 self.consumeWsContextContentResult();
                 self.consumeWorkspaceContextResult();
@@ -620,6 +621,7 @@ pub const Shell = struct {
                 self.consumeAttestationUploadResult();
                 self.consumeHealthResult();
                 self.dispatchDebouncedContentRequest();
+                self.dispatchDebouncedPrDetailRequest();
 
                 self.reconcileWorkspaceSelection();
                 if ((self.selected_module == .dashboard or self.selected_module == .analysis) and (self.analysis.breathing_phase == 0 or self.analysis.breathing_phase == 10)) {
@@ -1596,7 +1598,6 @@ pub const Shell = struct {
     }
 
     fn drawReview(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        self.ensureReviewPrsRequested();
         return review_panel.drawRoot(self, ctx);
     }
 
@@ -2634,29 +2635,49 @@ pub const Shell = struct {
             },
             .workspace_rule => |payload| {
                 if (self.api_state.rule_content_batch_pending.isInflight()) return;
-                self.requestWorkspaceRuleContentBatchAround(payload.path, payload.rule_id);
+                self.requestWorkspaceRuleContentBatchAround(payload.ws_id, payload.path, payload.rule_id);
             },
         }
         self.content_request_scheduler.clear();
     }
 
-    pub fn requestSelectedRulePrs(self: *Shell) void {
-        if (self.api_state.rule_prs_pending.isInflight()) return;
-        const rules = self.getRules();
-        if (self.artifact.selected_rule >= rules.len) return;
+    pub fn schedulePrDetailRequest(self: *Shell, pr_id: []const u8, target_kind: data.PrTargetKind, ws_id: ?[]const u8) void {
+        self.pr_detail_request_scheduler.schedule(self.tick_count, PR_DETAIL_REQUEST_DEBOUNCE_TICKS, .{
+            .pr_id = pr_id,
+            .target_kind = target_kind,
+            .ws_id = ws_id,
+        });
+    }
 
-        const sel_path = rules[self.artifact.selected_rule].path;
-        const key = api.cache.StringKey{ .value = sel_path };
-        if (self.api_state.rule_prs_cache.shouldDispatch(key)) {
-            const rule_id = self.lookupRuleId(sel_path) orelse return;
-            if (!self.api_state.rule_prs_cache.reserve(self.api_state.allocator(), key)) return;
+    fn dispatchDebouncedPrDetailRequest(self: *Shell) void {
+        const request = self.pr_detail_request_scheduler.ready(self.tick_count) orelse return;
+        if (self.api_state.pr_detail_pending.isInflight() or self.api_state.pr_comments_pending.isInflight()) return;
+        self.requestPrDetailPair(request.pr_id, request.target_kind, request.ws_id);
+        self.pr_detail_request_scheduler.clear();
+    }
+
+    fn requestPrDetailPair(self: *Shell, pr_id: []const u8, target_kind: data.PrTargetKind, ws_id: ?[]const u8) void {
+        const key = api.cache.StringKey{ .value = pr_id };
+        const params = api.specs.PrIdParams{ .pr_id = pr_id, .target_kind = target_kind, .ws_id = ws_id };
+
+        if (self.api_state.pr_detail_cache.beginRefresh(key, self.tick_count, api.cache.DEFAULT_SNAPSHOT_REFRESH_TICKS)) {
             api.specs.dispatchFromState(
-                api.specs.RulePrsParams,
-                api.specs.RulePrsPayload,
-                api.specs.artifact_rule_prs,
-                &self.api_state.rule_prs_pending,
+                api.specs.PrIdParams,
+                @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
+                api.specs.pr_detail,
+                &self.api_state.pr_detail_pending,
                 self.api_state,
-                .{ .rule_id = rule_id },
+                params,
+            );
+        }
+        if (self.api_state.pr_comments_cache.beginRefresh(key, self.tick_count, api.cache.DEFAULT_SNAPSHOT_REFRESH_TICKS)) {
+            api.specs.dispatchFromState(
+                api.specs.PrIdParams,
+                api.specs.PrCommentsPayload,
+                api.specs.pr_comments,
+                &self.api_state.pr_comments_pending,
+                self.api_state,
+                params,
             );
         }
     }
@@ -2716,10 +2737,9 @@ pub const Shell = struct {
         return null;
     }
 
-    /// Inverse of `lookupRuleId`: given a rule_id, return the path
-    /// that the rule_prs cache is keyed by. Used by the rule-prs
-    /// consumer so it can route a completed response against its
-    /// request id rather than against the UI's current selection.
+    /// Inverse of `lookupRuleId`: given a rule_id, return the current
+    /// artifact path. Used by draft and PR detail code that needs to
+    /// map operation metadata back to the visible rule tree.
     fn lookupRulePath(self: *Shell, rule_id: []const u8) ?[]const u8 {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
@@ -2825,6 +2845,7 @@ pub const Shell = struct {
 
     fn requestWorkspaceRuleContentBatchAround(
         self: *Shell,
+        ws_id: []const u8,
         path: []const u8,
         rule_id: []const u8,
     ) void {
@@ -2836,12 +2857,12 @@ pub const Shell = struct {
         ids_buf[0] = rule_id;
 
         api.specs.dispatchFromState(
-            api.specs.BatchRuleContentParams,
+            api.specs.BatchWorkspaceRuleContentParams,
             artifact_api.BatchRuleContentResponse,
-            api.specs.artifact_rule_content_batch,
+            api.specs.workspace_rule_content_batch,
             &self.api_state.rule_content_batch_pending,
             self.api_state,
-            .{ .rule_ids = ids_buf[0..1] },
+            .{ .ws_id = ws_id, .rule_ids = ids_buf[0..1] },
         );
     }
 
@@ -3000,13 +3021,6 @@ pub const Shell = struct {
         return count;
     }
 
-    pub fn getPrsForRule(self: *Shell, rule_path: []const u8) []const data.PullRequestEntry {
-        const prs = self.api_state.rule_prs_cache.lookup(.{ .value = rule_path }) orelse return &.{};
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
-        return api.view_model.toPrEntries(self.viewAllocator(), prs, rule_path, self.api_state);
-    }
-
     pub fn getReviewPrs(self: *Shell) []const data.PullRequestEntry {
         const prs = self.api_state.review_prs_cache.lookup(.{ .value = "review" }) orelse return &.{};
         self.api_state.mutex.lock();
@@ -3015,7 +3029,8 @@ pub const Shell = struct {
     }
 
     fn ensureReviewPrsRequested(self: *Shell) void {
-        if (!self.api_state.review_prs_cache.shouldDispatch(.{ .value = "review" })) return;
+        if (self.api_state.review_prs_pending.isInflight()) return;
+        if (!self.api_state.review_prs_cache.beginRefresh(.{ .value = "review" }, self.tick_count, api.cache.DEFAULT_SNAPSHOT_REFRESH_TICKS)) return;
         api.specs.dispatchFromState(
             api.specs.ReviewPrsParams,
             []const api.model.RulePr,
@@ -3074,41 +3089,23 @@ pub const Shell = struct {
         }
     }
 
-    /// Pump the artifact rule PR list pending slot. Routes the cache
-    /// write against `payload.rule_id` — the id the request was
-    /// issued for — rather than the current UI selection, so a rule
-    /// switch mid-flight cannot store the list under the wrong path.
-    /// On error, mark the currently selected rule as failed so the
-    /// widget loop does not re-dispatch on every tick.
-    fn consumeRulePrsResult(self: *Shell) void {
-        const result = self.api_state.rule_prs_pending.consume() orelse return;
-        switch (result) {
-            .ok => |payload| {
-                self.api_state.rule_prs_cache.markInflightFailed();
-                const path = self.lookupRulePath(payload.rule_id) orelse return;
-                self.api_state.rule_prs_cache.store(self.api_state.allocator(), .{ .value = path }, payload.prs);
-            },
-            else => self.api_state.rule_prs_cache.markInflightFailed(),
-        }
-    }
-
     fn consumeReviewPrsResult(self: *Shell) void {
         const result = self.api_state.review_prs_pending.consume() orelse return;
         switch (result) {
             .ok => |prs| {
-                self.api_state.review_prs_cache.store(.{ .value = "review" }, prs);
+                self.api_state.review_prs_cache.storeAt(.{ .value = "review" }, prs, self.tick_count);
                 self.reconcileTerminalPrDrafts(prs);
             },
             .api_error => |e| {
-                self.api_state.review_prs_cache.markFailed(.{ .value = "review" });
+                self.api_state.review_prs_cache.markFailedAt(.{ .value = "review" }, self.tick_count);
                 self.notifyOp(.failure, writeErrorStatus(self, "Review queue failed", e));
             },
             .network_error => {
-                self.api_state.review_prs_cache.markFailed(.{ .value = "review" });
+                self.api_state.review_prs_cache.markFailedAt(.{ .value = "review" }, self.tick_count);
                 self.notifyOp(.failure, "Review queue failed: network error.");
             },
             .invalid_response => {
-                self.api_state.review_prs_cache.markFailed(.{ .value = "review" });
+                self.api_state.review_prs_cache.markFailedAt(.{ .value = "review" }, self.tick_count);
                 self.notifyOp(.failure, "Review queue failed: malformed response.");
             },
         }
@@ -3179,14 +3176,14 @@ pub const Shell = struct {
         const result = self.api_state.workspace_context_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
-                self.api_state.workspace_context_cache.store(.{ .value = payload.ws_id }, payload.files);
+                self.api_state.workspace_context_cache.storeAt(.{ .value = payload.ws_id }, payload.files, self.tick_count);
                 self.settlePendingWorkspacePrAction(payload.ws_id);
                 self.system_notices.clear(.workspace_context);
             },
             else => {
                 if (self.activeWsId()) |ws_id| {
                     const has_remote_snapshot = self.api_state.workspace_context_cache.lookup(.{ .value = ws_id }) != null;
-                    if (!has_remote_snapshot) self.api_state.workspace_context_cache.markFailed(.{ .value = ws_id });
+                    self.api_state.workspace_context_cache.markFailedAt(.{ .value = ws_id }, self.tick_count);
                     if (!self.isHubConnected()) return;
                     const text: []const u8 = if (has_remote_snapshot)
                         "Workspace context refresh failed; showing latest remote snapshot."
@@ -3204,13 +3201,13 @@ pub const Shell = struct {
         const result = self.api_state.workspace_manifest_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
-                self.api_state.workspace_manifest_cache.store(.{ .value = payload.ws_id }, payload.rules);
+                self.api_state.workspace_manifest_cache.storeAt(.{ .value = payload.ws_id }, payload.rules, self.tick_count);
                 self.system_notices.clear(.workspace_manifest);
             },
             else => {
                 if (self.activeWsId()) |ws_id| {
                     const has_remote_snapshot = self.api_state.workspace_manifest_cache.lookup(.{ .value = ws_id }) != null;
-                    if (!has_remote_snapshot) self.api_state.workspace_manifest_cache.markFailed(.{ .value = ws_id });
+                    self.api_state.workspace_manifest_cache.markFailedAt(.{ .value = ws_id }, self.tick_count);
                     if (!self.isHubConnected()) return;
                     const text: []const u8 = if (has_remote_snapshot)
                         "Workspace manifest refresh failed; showing latest remote snapshot."
@@ -3228,11 +3225,11 @@ pub const Shell = struct {
         const result = self.api_state.workspace_members_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
-                self.api_state.workspace_members_cache.store(.{ .value = payload.ws_id }, payload.members);
+                self.api_state.workspace_members_cache.storeAt(.{ .value = payload.ws_id }, payload.members, self.tick_count);
             },
             else => {
                 if (self.selectedSettingsWorkspaceId()) |ws_id| {
-                    self.api_state.workspace_members_cache.markFailed(.{ .value = ws_id });
+                    self.api_state.workspace_members_cache.markFailedAt(.{ .value = ws_id }, self.tick_count);
                 }
             },
         }
@@ -3247,12 +3244,12 @@ pub const Shell = struct {
         const result = self.api_state.pr_detail_pending.consume() orelse return;
         switch (result) {
             .ok => |resp| {
-                self.api_state.pr_detail_cache.store(.{ .value = resp.pr_id }, resp);
+                self.api_state.pr_detail_cache.storeAt(.{ .value = resp.pr_id }, resp, self.tick_count);
                 self.refreshPrDetailDerivedFields(resp.pr_id, resp);
             },
             else => {
                 if (self.activePrId()) |pr_id| {
-                    self.api_state.pr_detail_cache.markFailed(.{ .value = pr_id });
+                    self.api_state.pr_detail_cache.markFailedAt(.{ .value = pr_id }, self.tick_count);
                 }
             },
         }
@@ -3262,11 +3259,11 @@ pub const Shell = struct {
         const result = self.api_state.pr_comments_pending.consume() orelse return;
         switch (result) {
             .ok => |payload| {
-                self.api_state.pr_comments_cache.store(.{ .value = payload.pr_id }, payload.comments);
+                self.api_state.pr_comments_cache.storeAt(.{ .value = payload.pr_id }, payload.comments, self.tick_count);
             },
             else => {
                 if (self.activePrId()) |pr_id| {
-                    self.api_state.pr_comments_cache.markFailed(.{ .value = pr_id });
+                    self.api_state.pr_comments_cache.markFailedAt(.{ .value = pr_id }, self.tick_count);
                 }
             },
         }
@@ -3281,19 +3278,11 @@ pub const Shell = struct {
             const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
             return prs[pr_idx].id;
         }
-        const rules = self.getRules();
-        const rule_idx = @min(self.artifact.selected_rule, if (rules.len > 0) rules.len - 1 else 0);
-        if (rules.len == 0) return null;
-        const prs = self.getPrsForRule(rules[rule_idx].path);
-        if (prs.len == 0) return null;
-        const pr_idx = @min(self.review.selected_pr_idx, prs.len - 1);
-        return prs[pr_idx].id;
+        return null;
     }
 
-    /// Recompute the 8 derived pr_detail_* fields from the just-fetched
-    /// response. Picking the active operation requires the currently
-    /// cached artifact PR list so the op matching the selected rule
-    /// is surfaced first.
+    /// Recompute the derived pr_detail_* fields from the just-fetched
+    /// response.
     fn refreshPrDetailDerivedFields(
         self: *Shell,
         pr_id: []const u8,
@@ -3776,22 +3765,7 @@ pub const Shell = struct {
     }
 
     fn fetchPrDetailForEntry(self: *Shell, pr: data.PullRequestEntry) void {
-        api.specs.dispatchFromState(
-            api.specs.PrIdParams,
-            @import("clumsies_lib").protocol.collab_api.RulePrDetailResponse,
-            api.specs.pr_detail,
-            &self.api_state.pr_detail_pending,
-            self.api_state,
-            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
-        );
-        api.specs.dispatchFromState(
-            api.specs.PrIdParams,
-            api.specs.PrCommentsPayload,
-            api.specs.pr_comments,
-            &self.api_state.pr_comments_pending,
-            self.api_state,
-            .{ .pr_id = pr.id, .target_kind = pr.target_kind, .ws_id = pr.workspace_id },
-        );
+        self.schedulePrDetailRequest(pr.id, pr.target_kind, pr.workspace_id);
     }
 
     pub fn doPrAction(self: *Shell, action: []const u8) void {
@@ -3817,12 +3791,7 @@ pub const Shell = struct {
             if (prs.len == 0) return null;
             return prs[@min(self.review.selected_pr_idx, prs.len - 1)];
         }
-        const all_p = self.getRules();
-        const si = @min(self.artifact.selected_rule, if (all_p.len > 0) all_p.len - 1 else 0);
-        if (all_p.len == 0) return null;
-        const prs_for = self.getPrsForRule(all_p[si].path);
-        if (prs_for.len == 0) return null;
-        return prs_for[@min(self.review.selected_pr_idx, prs_for.len - 1)];
+        return null;
     }
 
     pub fn wsCount(self: *Shell) usize {
@@ -4580,7 +4549,7 @@ pub const Shell = struct {
 
     pub fn openChangeMemberRoleDialog(self: *Shell) void {
         if (!self.ensureMemberManagementAllowed()) return;
-        const member = self.selectedDirectoryMember() orelse {
+        const member = self.selectedOrgMemberData() orelse {
             self.notifyOp(.warning, "No member selected.");
             return;
         };
@@ -4631,7 +4600,7 @@ pub const Shell = struct {
 
     pub fn openRemoveMemberConfirm(self: *Shell) void {
         if (!self.ensureMemberManagementAllowed()) return;
-        const member = self.selectedDirectoryMember() orelse {
+        const member = self.selectedOrgMemberData() orelse {
             self.notifyOp(.warning, "No member selected.");
             return;
         };
@@ -4962,10 +4931,10 @@ pub const Shell = struct {
         return 0;
     }
 
-    fn selectedDirectoryMember(self: *Shell) ?api.model.DirectoryMember {
+    fn selectedOrgMemberData(self: *Shell) ?api.model.OrgMemberData {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        const dir = self.api_state.directory orelse return null;
+        const dir = self.api_state.members orelse return null;
         if (dir.members.len == 0) return null;
         const idx = @min(self.settings.content_sel, dir.members.len - 1);
         return dir.members[idx];
@@ -4987,7 +4956,7 @@ pub const Shell = struct {
     fn resolveOrgUserIdByUsername(self: *Shell, username: []const u8) ?[]const u8 {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
-        const dir = self.api_state.directory orelse return null;
+        const dir = self.api_state.members orelse return null;
         for (dir.members) |member| {
             if (std.mem.eql(u8, member.username, username)) return member.user_id;
         }
@@ -7171,10 +7140,6 @@ pub const Shell = struct {
             ) catch {};
         }
         self.refreshDraftsCache();
-        // A new PR exists on the hub, but rule_prs_cache still
-        // holds the pre-submit snapshot — the Pull Requests tab
-        // would render stale rows until a manual `r` refresh. Drop
-        // the cached details so the next render re-fetches.
         self.invalidateRemoteDetailRequests();
         self.drafts.show_pr_composer = false;
         self.drafts.pr_composer_title_len = 0;
@@ -7191,6 +7156,8 @@ pub const Shell = struct {
 
     fn selectTab(self: *Shell, ctx: *vxfw.EventContext, tab: TopModule) void {
         const previous = self.selected_module;
+        if (previous == tab) return;
+
         self.selected_module = tab;
         if (!self.searchAvailable()) self.search_active = false;
         log.info("tab_select from={s} to={s}", .{ moduleName(previous), moduleName(tab) });
@@ -7211,7 +7178,6 @@ pub const Shell = struct {
                 if (previous != .workspace) self.refreshActiveWorkspaceOnEnter();
             },
             .review => {
-                api.state.invalidateRemoteCaches(self.api_state, .pr_lists);
                 self.ensureReviewPrsRequested();
             },
             else => {},
@@ -7246,18 +7212,6 @@ pub const Shell = struct {
             key.mods.alt,
             key.mods.shift,
         });
-    }
-
-    pub fn shiftDetailTab(self: *Shell, delta: i8) void {
-        const current: i8 = @intCast(@intFromEnum(self.review.detail_tab));
-        const count: i8 = @intCast(rule_detail_panel.detail_tabs.len);
-        const next = @mod(current + delta + count, count);
-        self.review.detail_tab = @enumFromInt(@as(u8, @intCast(next)));
-        self.review.show_comment_editor = false;
-        self.review.pr_filter = .open;
-        self.review.selected_pr_idx = 0;
-        self.review.hide_diff = false;
-        self.review.pr_scroll_bars.scroll_view.cursor = 0;
     }
 
     pub fn shiftWsTab(self: *Shell, delta: i8) void {

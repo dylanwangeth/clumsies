@@ -30,14 +30,15 @@ This is the real product core. CLI, MCP, TUI, and adapters matter, but they orbi
 The current HTTP server wiring in `src/hub/server.zig` makes that split concrete. The server exposes route groups for:
 
 - `/api/auth/*`
-- `/api/org/members*` and `/api/org/directory`
+- `/api/members*`
 - `/api/workspaces/*`
+- `/api/workspaces/:ws_id/rules/*`
 - `/api/workspaces/:ws_id/context/*`
-- `/api/org/artifact/*`
-- `/api/org/bundles*`
+- `/api/artifact/*`
+- `/api/bundles*`
 - `/api/attestations`
 - `/api/stats*`
-- `/api/org/rule-prs*`
+- `/api/prs*`
 
 That list matters because it shows what Hub really is in the current implementation: not just a login endpoint and a manifest service, but the place where identities, artifact state, workspace state, review state, and attestation ingestion are all coordinated.
 
@@ -50,11 +51,12 @@ These are the route families that matter most in the current implementation:
 | Domain | Route family | Used by |
 | --- | --- | --- |
 | auth | `/api/auth/*` | CLI, TUI, adapters |
-| org membership | `/api/org/members*`, `/api/org/directory` | org administration, TUI |
+| membership | `/api/members*` | org administration, TUI |
 | workspace | `/api/workspaces/*` | CLI init, sync, TUI |
+| workspace rules | `/api/workspaces/:ws_id/rules*` | sync, TUI |
 | workspace context | `/api/workspaces/:ws_id/context/*` | sync, TUI, agent proposals |
-| Artifact | `/api/org/artifact/*`, `/api/org/bundles*` | sync, TUI, CLI |
-| rule review | `/api/org/rule-prs*` | TUI, collaboration flow |
+| Artifact | `/api/artifact/*`, `/api/bundles*` | sync, TUI, CLI |
+| PR review | `/api/prs*`, `/api/workspaces/:ws_id/context/prs*` | TUI, collaboration flow |
 | attestation and stats | `/api/attestations`, `/api/stats*` | TUI startup upload, TUI analysis |
 
 The important point is architectural. Hub is not "the place that sometimes answers manifest requests." It owns the wire contract that every serious client surface already depends on.
@@ -124,24 +126,6 @@ Two details matter here:
 
 That is why `manifest.json` in local runtime should be understood as a cached Hub snapshot, not as a source of truth invented on the machine.
 
-### `GET /api/org/artifact/manifest`
-
-Hub also exposes the Artifact-level content index:
-
-```json
-{
-  "revision": 34,
-  "rules": {
-    "p-e2cf9316-3a30-4b66-9598-53bcb6e88769": {
-      "path": "arch/TECH_WRITING.md",
-      "hash": "sha256:..."
-    }
-  }
-}
-```
-
-This endpoint mirrors the same revision-and-hash model as workspace manifest, but at org Artifact scope. It is the backend surface that lets Artifact stay authoritative without forcing every runtime path to fetch individual rule objects one by one.
-
 ## Hub and content retrieval
 
 Manifest answers "what exists." The content endpoints answer "what does it contain."
@@ -152,14 +136,15 @@ The current Artifact endpoints separate metadata from full content:
 
 | Endpoint | What it returns |
 | --- | --- |
-| `GET /api/org/artifact/rules` | metadata list for Artifact rules |
-| `GET /api/org/artifact/rule` | one rule with history metadata |
-| `GET /api/org/artifact/rule/content` | one rule body |
-| `POST /api/org/artifact/rules/content` | batch rule content fetch |
+| `GET /api/artifact/rules` | metadata list for Artifact rules |
+| `POST /api/artifact/rules/content` | batch rule content fetch |
 
-The split is intentional. TUI often wants metadata-first browsing. `sync` wants batch content delivery.
+The split is intentional. TUI often wants metadata-first browsing, while sync
+and preview panes need content by stable rule id. Content loads always go
+through the batch endpoint, even for a single selected rule, so fast scrolling
+can be debounced and coalesced behind one request shape.
 
-A simplified `GET /api/org/artifact/rules` response looks like:
+A simplified `GET /api/artifact/rules` response looks like:
 
 ```json
 {
@@ -175,18 +160,37 @@ A simplified `GET /api/org/artifact/rules` response looks like:
 }
 ```
 
-And the single-content endpoint returns:
+And the batch content endpoint returns:
 
 ```json
 {
-  "rule_id": "p-e2cf9316-3a30-4b66-9598-53bcb6e88769",
-  "path": "arch/TECH_WRITING.md",
-  "content_hash": "sha256:...",
-  "body": "# Technical Writing\n..."
+  "items": [
+    {
+      "rule_id": "p-e2cf9316-3a30-4b66-9598-53bcb6e88769",
+      "path": "arch/TECH_WRITING.md",
+      "content_hash": "sha256:...",
+      "body": "# Technical Writing\n...",
+      "error": ""
+    }
+  ]
 }
 ```
 
-The content endpoint also supports `If-None-Match` against `content_hash`, which keeps on-demand fetches cheap.
+### Workspace rule endpoints
+
+Workspace rules are the subset of Artifact rules attached to a workspace. The
+workspace route keeps the permission and attachment boundary explicit:
+
+| Endpoint | What it returns |
+| --- | --- |
+| `GET /api/workspaces/:ws_id/manifest` | revisioned workspace rule and context metadata |
+| `POST /api/workspaces/:ws_id/rules` | attach Artifact rules to a workspace |
+| `POST /api/workspaces/:ws_id/rules/content` | batch content fetch for attached rules |
+| `POST /api/workspaces/:ws_id/rules/detach` | detach Artifact rules from a workspace |
+
+The content response uses the same item shape as
+`POST /api/artifact/rules/content`, but it only serves rules attached to the
+requested workspace.
 
 ### Workspace context endpoints
 
@@ -194,11 +198,10 @@ Workspace context follows the same overall pattern, but it stays workspace-scope
 
 | Endpoint | What it returns |
 | --- | --- |
-| `GET /api/workspaces/:ws_id/context/files` | metadata list for context files |
-| `GET /api/workspaces/:ws_id/context/file/content` | one context file body |
-| `POST /api/workspaces/:ws_id/context/files/content` | batch context content fetch |
+| `GET /api/workspaces/:ws_id/context` | metadata list for context entries |
+| `POST /api/workspaces/:ws_id/context/content` | batch context content fetch |
 
-A simplified `GET /api/workspaces/:ws_id/context/files` response looks like:
+A simplified `GET /api/workspaces/:ws_id/context` response looks like:
 
 ```json
 {
@@ -223,10 +226,11 @@ Hub is also where collaboration becomes a product feature rather than a side eff
 
 Two review paths matter. Rule-oriented work flows back toward Artifact. Context-oriented work flows into workspace-owned context mainline.
 
-The current route split reflects that design:
+The current route split reflects that design while keeping the main review
+queue under a single resource:
 
-- Artifact-side review goes through `/api/org/rule-prs*`
-- workspace context review goes through `/api/workspaces/:ws_id/context/prs*`
+- PR listing, rule PR create/detail/action/comment flows go through `/api/prs*`
+- workspace context PR create/detail/action/comment flows go through `/api/workspaces/:ws_id/context/prs*`
 
 That separation is one of the most important boundaries in the product. Rules are shared organizational behavior assets. Context is workspace-owned project knowledge. Both need review semantics, but they do not belong to the same authority domain.
 
@@ -239,7 +243,7 @@ The difference becomes clearer when you look at the actual create-PR request sha
 Rule PR creation goes to:
 
 ```text
-POST /api/org/rule-prs
+POST /api/prs
 ```
 
 with an operation-based body:
@@ -292,7 +296,7 @@ There are two membership layers in the current implementation:
 
 | Scope | Route family | What it controls |
 | --- | --- | --- |
-| org membership | `/api/org/members*` | who belongs to the organization and what org role they have |
+| org membership | `/api/members*` | who belongs to the organization and what org role they have |
 | workspace membership | `/api/workspaces/:ws_id/members*` | who can access a specific workspace and what role they have there |
 
 This is why a workspace is not only a local path binding. The server-side object has members, revisioned state, and policy boundaries. Local runtime can cache that state, but it should not invent it.

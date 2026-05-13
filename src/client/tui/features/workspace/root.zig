@@ -863,11 +863,11 @@ fn handleContentFocusEvent(
 /// both caches are populated via `state.wsDetail`.
 pub fn requestWorkspaceDetail(self: anytype, ws_id: []const u8) void {
     const dispatch_context =
-        self.api_state.workspace_context_cache.shouldDispatch(.{ .value = ws_id }) and
-        !self.api_state.workspace_context_pending.isInflight();
+        !self.api_state.workspace_context_pending.isInflight() and
+        self.api_state.workspace_context_cache.beginRefresh(.{ .value = ws_id }, self.tick_count, api.cache.DEFAULT_SNAPSHOT_REFRESH_TICKS);
     const dispatch_manifest =
-        self.api_state.workspace_manifest_cache.shouldDispatch(.{ .value = ws_id }) and
-        !self.api_state.workspace_manifest_pending.isInflight();
+        !self.api_state.workspace_manifest_pending.isInflight() and
+        self.api_state.workspace_manifest_cache.beginRefresh(.{ .value = ws_id }, self.tick_count, api.cache.DEFAULT_SNAPSHOT_REFRESH_TICKS);
     if (!dispatch_context and !dispatch_manifest) return;
 
     log.info("requestWorkspaceDetail module={s} ws_id={s} context={} manifest={}", .{
