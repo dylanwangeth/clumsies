@@ -1726,7 +1726,7 @@ fn proposeChangeSummary(
         .create => createdSummary(ctx, draft),
         .delete => deletedSummary(ctx, entry.current_path orelse entry.draft_path),
         .rename => renameSummary(ctx, entry.current_path, entry.draft_path, cache, draft),
-        .modify => modifySummary(ctx, cache, draft),
+        .update => updateSummary(ctx, cache, draft),
     };
 }
 
@@ -1816,7 +1816,7 @@ fn renameSummary(
     draft: ?[]const u8,
 ) ?[]const u8 {
     if (cache != null and draft != null and !std.mem.eql(u8, cache.?, draft.?)) {
-        return modifySummary(ctx, cache, draft);
+        return updateSummary(ctx, cache, draft);
     }
     if (current_path) |from| {
         return std.fmt.allocPrint(ctx.arena, "renamed {s} -> {s}", .{ from, draft_path }) catch null;
@@ -1824,7 +1824,7 @@ fn renameSummary(
     return std.fmt.allocPrint(ctx.arena, "renamed to {s}", .{draft_path}) catch null;
 }
 
-fn modifySummary(ctx: vxfw.DrawContext, cache: ?[]const u8, draft: ?[]const u8) ?[]const u8 {
+fn updateSummary(ctx: vxfw.DrawContext, cache: ?[]const u8, draft: ?[]const u8) ?[]const u8 {
     const before = cache orelse return createdSummary(ctx, draft);
     const after = draft orelse return null;
     if (std.mem.eql(u8, before, after)) return "no content changes";

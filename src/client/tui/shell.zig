@@ -2279,8 +2279,9 @@ pub const Shell = struct {
                 const context_count = if (live_ws) |ws_d| ws_d.workspace_context.len else 0;
                 if (live_ws) |ws_d| if (leaf < ws_d.workspace_context.len) {
                     const file = ws_d.workspace_context[leaf];
+                    const path = self.displayPathForWorkspaceContext(file.path);
                     return .{ .context = .{
-                        .path = file.path,
+                        .path = path,
                         .context_id = file.context_id,
                         .idx = leaf,
                         .hash = file.hash,
@@ -2299,7 +2300,7 @@ pub const Shell = struct {
                 const rule_count = if (live_ws) |ws_d| ws_d.workspace_rules.len else 0;
                 if (live_ws) |ws_d| if (leaf < ws_d.workspace_rules.len) {
                     const wp = ws_d.workspace_rules[leaf];
-                    const path = self.pathForWorkspaceRule(wp);
+                    const path = self.displayPathForWorkspaceRule(wp);
                     return .{ .rule = .{
                         .path = path,
                         .rule_id = wp.rule_id,
@@ -2341,6 +2342,15 @@ pub const Shell = struct {
             if (std.mem.eql(u8, lp.content_hash, wp.content_hash)) return lp.path;
         }
         return wp.rule_id;
+    }
+
+    pub fn displayPathForWorkspaceContext(self: *Shell, path: []const u8) []const u8 {
+        return self.draftPathForSelection(.context, path);
+    }
+
+    pub fn displayPathForWorkspaceRule(self: *Shell, wp: api.model.WorkspaceRuleData) []const u8 {
+        const raw_path = self.pathForWorkspaceRule(wp);
+        return self.draftPathForSelection(self.artifactCategoryForPath(raw_path), raw_path);
     }
 
     pub fn remoteRuleBody(self: *Shell, path: []const u8) ?[]const u8 {
@@ -5067,6 +5077,7 @@ pub const Shell = struct {
         self.drafts.cache_ws_id = api_alloc.dupe(u8, ws_id) catch ws_id;
 
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return;
+        drafts_mod.normalizeDrafts(self.api_state.backing_allocator, ws_dir) catch {};
         const signature = draftIndexSignature(arena, ws_dir);
         self.drafts.index_size = signature.size;
         self.drafts.index_mtime = signature.mtime;
@@ -5101,6 +5112,11 @@ pub const Shell = struct {
                 .meta_prompt => &self.drafts.by_meta_prompt_draft_path,
             };
             draft_path_map.put(arena, key, draft_path) catch {};
+            if (!std.mem.eql(u8, key_src, entry.draft_path)) {
+                const draft_key = arena.dupe(u8, entry.draft_path) catch continue;
+                target_map.put(arena, draft_key, entry.status) catch {};
+                draft_path_map.put(arena, draft_key, draft_path) catch {};
+            }
             if (entry.operation == .create and entry.category != .meta_prompt) {
                 const local_id = entry.local_temp_id orelse continue;
                 const local_key = arena.dupe(u8, key_src) catch continue;
@@ -5270,7 +5286,7 @@ pub const Shell = struct {
                         .ws_id = ws_id,
                         .category = r.category,
                         .path = r.path,
-                        .rule_id = if (r.is_create_draft) null else self.lookupRuleId(r.path),
+                        .rule_id = r.rule_id orelse if (r.is_create_draft) null else self.lookupRuleId(r.path),
                     },
                 };
             },
@@ -5311,7 +5327,7 @@ pub const Shell = struct {
         return true;
     }
 
-    /// Entry point for the `e` key. Finds or creates a modify-draft for
+    /// Entry point for the `e` key. Finds or creates an update draft for
     /// the currently selected file, shells out to $EDITOR, then
     /// refreshes caches so the right panel picks up the new draft
     /// bytes on the next render.
@@ -5343,7 +5359,7 @@ pub const Shell = struct {
             const seed_hash = util_hash.contentHash(base_content);
             drafts_mod.createDraft(alloc, ws_dir, .{
                 .category = target.category,
-                .operation = .modify,
+                .operation = .update,
                 .draft_path = target.path,
                 .current_path = target.path,
                 .rule_id = target.rule_id,
@@ -5382,7 +5398,7 @@ pub const Shell = struct {
         };
         switch (result) {
             .completed => {
-                const unchanged = drafts_mod.discardUnchangedModifyDraft(
+                const unchanged = drafts_mod.discardUnchangedUpdateDraft(
                     alloc,
                     ws_dir,
                     target.category,
@@ -5406,7 +5422,7 @@ pub const Shell = struct {
         self.refreshDraftsCache();
     }
 
-    /// Seed a modify draft from the base bytes used by the active
+    /// Seed an update draft from the base bytes used by the active
     /// editing surface. Workspace edits use the materialized local
     /// cache so remote awareness does not silently rebase a draft.
     fn seedContentForTarget(self: *Shell, target: DraftTarget) ?[]const u8 {
@@ -5620,11 +5636,11 @@ pub const Shell = struct {
         };
         self.drafts.pr_composer_path_owned = path_copy;
         // Capture the draft's operation so the overlay can label
-        // `op:` correctly (create / modify / rename / delete). Falls
-        // back to .modify when the index lookup fails, which is the
-        // historical default and keeps the overlay usable if the
+        // `op:` correctly (create / update / rename / delete). Falls
+        // back to .update when the index lookup fails, which keeps
+        // the overlay usable if the
         // draft file was tampered with out of band.
-        self.drafts.pr_composer_operation = self.lookupDraftOperation(target) orelse .modify;
+        self.drafts.pr_composer_operation = self.lookupDraftOperation(target) orelse .update;
         self.drafts.pr_composer_title_len = 0;
         self.drafts.pr_composer_body_len = 0;
         self.drafts.pr_composer_focus = .title;
@@ -5651,7 +5667,7 @@ pub const Shell = struct {
         self.releaseComposerTarget();
         self.drafts.pr_composer_batch_targets = targets;
         self.drafts.pr_composer_target = targets[0];
-        self.drafts.pr_composer_operation = self.lookupDraftOperation(targets[0]) orelse .modify;
+        self.drafts.pr_composer_operation = self.lookupDraftOperation(targets[0]) orelse .update;
         self.drafts.pr_composer_title_len = 0;
         self.drafts.pr_composer_body_len = 0;
         self.drafts.pr_composer_focus = .title;
@@ -5939,7 +5955,7 @@ pub const Shell = struct {
         // create operations carry the new path and content.
         const operation_type: []const u8 = switch (entry.operation) {
             .create => "create",
-            .modify => "modify",
+            .update => "update",
             .rename => "rename",
             .delete => "delete",
         };
@@ -5957,7 +5973,7 @@ pub const Shell = struct {
             }) catch return);
         defer if (content_copy) |c| alloc.free(c);
 
-        // Modify/rename/delete need rule_id; resolve from the draft
+        // Update/rename/delete need rule_id; resolve from the draft
         // target first (authoritative) then fall back to an artifact
         // lookup by path. Create drafts have neither — that's the
         // expected missing rule_id, not an error.
@@ -5989,9 +6005,9 @@ pub const Shell = struct {
             null;
         defer if (base_hash_copy_opt) |h| alloc.free(h);
 
-        if (entry.operation == .modify or entry.operation == .rename) {
+        if (entry.operation == .update or entry.operation == .rename) {
             if (base_hash_copy_opt == null) {
-                self.notifyOp(.warning, "Missing base_hash for modify/rename draft.");
+                self.notifyOp(.warning, "Missing base_hash for update/rename draft.");
                 return;
             }
         }
@@ -6050,7 +6066,7 @@ pub const Shell = struct {
             };
             const operation_type: []const u8 = switch (entry.operation) {
                 .create => "create",
-                .modify => "modify",
+                .update => "update",
                 .rename => "rename",
                 .delete => "delete",
             };
@@ -6069,7 +6085,7 @@ pub const Shell = struct {
             const path: ?[]const u8 = if (entry.operation == .create) entry.draft_path else null;
             const new_path: ?[]const u8 = if (entry.operation == .rename) entry.draft_path else null;
             if (path == null and new_path == null) alloc.free(entry.draft_path) else owned.append(alloc, entry.draft_path) catch return;
-            if ((entry.operation == .modify or entry.operation == .rename) and entry.base_hash == null) {
+            if ((entry.operation == .update or entry.operation == .rename) and entry.base_hash == null) {
                 self.notifyOp(.warning, "Missing base_hash for a selected draft.");
                 return;
             }
@@ -6552,7 +6568,7 @@ pub const Shell = struct {
         };
         const operation_type: []const u8 = switch (entry.operation) {
             .create => "create",
-            .modify => "modify",
+            .update => "update",
             .rename => "rename",
             .delete => "delete",
         };
@@ -6593,7 +6609,7 @@ pub const Shell = struct {
         defer if (base_hash_copy_opt) |h| alloc.free(h);
 
         if (entry.operation != .create and context_id_copy_opt == null) {
-            self.notifyOp(.warning, "Missing context_id for modify/rename/delete.");
+            self.notifyOp(.warning, "Missing context_id for update/rename/delete.");
             return;
         }
 
@@ -6639,7 +6655,7 @@ pub const Shell = struct {
             };
             const operation_type: []const u8 = switch (entry.operation) {
                 .create => "create",
-                .modify => "modify",
+                .update => "update",
                 .rename => "rename",
                 .delete => "delete",
             };

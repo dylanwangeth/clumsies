@@ -1005,7 +1005,7 @@ fn selectedReviewChangeSubtitle(self: anytype, pr: *const data.PullRequestEntry,
 }
 
 fn changeOpLabel(op_type: []const u8) []const u8 {
-    if (std.mem.eql(u8, op_type, "modify")) return "update";
+    if (std.mem.eql(u8, op_type, "update")) return "update";
     if (std.mem.eql(u8, op_type, "bundle_add")) return "update";
     if (std.mem.eql(u8, op_type, "bundle_remove")) return "update";
     if (std.mem.eql(u8, op_type, "bundle_create")) return "create";
@@ -1476,8 +1476,8 @@ fn reviewOpLabel(allocator: std.mem.Allocator, pr: data.PullRequestEntry) std.me
 
 fn reviewBundleOpLabel(op_type: []const u8) []const u8 {
     if (std.mem.eql(u8, op_type, "bundle_create")) return "create";
-    if (std.mem.eql(u8, op_type, "bundle_add")) return "modify";
-    if (std.mem.eql(u8, op_type, "bundle_remove")) return "modify";
+    if (std.mem.eql(u8, op_type, "bundle_add")) return "update";
+    if (std.mem.eql(u8, op_type, "bundle_remove")) return "update";
     return "";
 }
 
@@ -1851,7 +1851,7 @@ test "review labels normalize terminal state and op display" {
     };
     const bundle_add_label = try reviewOpLabel(testing.allocator, bundle_add);
     defer testing.allocator.free(bundle_add_label);
-    try testing.expectEqualStrings("modify", bundle_add_label);
+    try testing.expectEqualStrings("update", bundle_add_label);
 }
 
 test "review filter cursor navigation clamps across groups and chips" {

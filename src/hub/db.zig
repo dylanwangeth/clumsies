@@ -289,7 +289,7 @@ const migration_sql =
     \\CREATE TABLE IF NOT EXISTS context_pr_operations (
     \\    pr_id TEXT NOT NULL REFERENCES context_prs(pr_id) ON DELETE CASCADE,
     \\    op_index INTEGER NOT NULL,
-    \\    type TEXT NOT NULL CHECK (type IN ('modify', 'rename', 'create', 'delete')),
+    \\    type TEXT NOT NULL CHECK (type IN ('update', 'rename', 'create', 'delete')),
     \\    context_id TEXT,
     \\    base_hash TEXT,
     \\    base_content TEXT,
@@ -299,6 +299,11 @@ const migration_sql =
     \\);
     \\CREATE INDEX IF NOT EXISTS context_pr_operations_context_id_idx
     \\    ON context_pr_operations(context_id);
+    \\ALTER TABLE context_pr_operations
+    \\    DROP CONSTRAINT IF EXISTS context_pr_operations_type_check;
+    \\ALTER TABLE context_pr_operations
+    \\    ADD CONSTRAINT context_pr_operations_type_check
+    \\    CHECK (type IN ('update', 'rename', 'create', 'delete')) NOT VALID;
     \\
     \\CREATE TABLE IF NOT EXISTS context_pr_comments (
     \\    comment_id TEXT PRIMARY KEY,
@@ -346,7 +351,7 @@ const migration_sql =
     \\CREATE TABLE IF NOT EXISTS rule_pr_operations (
     \\    pr_id TEXT NOT NULL REFERENCES rule_prs(pr_id) ON DELETE CASCADE,
     \\    op_index INTEGER NOT NULL,
-    \\    type TEXT NOT NULL CHECK (type IN ('modify', 'rename', 'create', 'delete', 'bundle_create', 'bundle_add', 'bundle_remove')),
+    \\    type TEXT NOT NULL CHECK (type IN ('update', 'rename', 'create', 'delete', 'bundle_create', 'bundle_add', 'bundle_remove')),
     \\    rule_id TEXT,
     \\    base_hash TEXT,
     \\    base_content TEXT,
@@ -360,7 +365,7 @@ const migration_sql =
     \\    DROP CONSTRAINT IF EXISTS rule_pr_operations_type_check;
     \\ALTER TABLE rule_pr_operations
     \\    ADD CONSTRAINT rule_pr_operations_type_check
-    \\    CHECK (type IN ('modify', 'rename', 'create', 'delete', 'bundle_create', 'bundle_add', 'bundle_remove'));
+    \\    CHECK (type IN ('update', 'rename', 'create', 'delete', 'bundle_create', 'bundle_add', 'bundle_remove')) NOT VALID;
     \\
     \\CREATE TABLE IF NOT EXISTS rule_pr_comments (
     \\    comment_id TEXT PRIMARY KEY,

@@ -178,7 +178,7 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 
     for (req_body.operations) |op| {
         if (!isValidType(op.type)) {
-            return apiError(res, 400, "BAD_REQUEST", "operation type must be modify, rename, create, or delete");
+            return apiError(res, 400, "BAD_REQUEST", "operation type must be update, rename, create, or delete");
         }
         if (!try validateOperation(conn, ws_id, op, res)) return;
     }
@@ -234,24 +234,24 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 }
 
 fn isValidType(t: []const u8) bool {
-    return std.mem.eql(u8, t, "modify") or
+    return std.mem.eql(u8, t, "update") or
         std.mem.eql(u8, t, "rename") or
         std.mem.eql(u8, t, "create") or
         std.mem.eql(u8, t, "delete");
 }
 
 fn validateOperation(conn: anytype, ws_id: []const u8, op: Operation, res: *httpz.Response) !bool {
-    if (std.mem.eql(u8, op.type, "modify")) {
+    if (std.mem.eql(u8, op.type, "update")) {
         const cid = op.context_id orelse {
-            try apiError(res, 400, "BAD_REQUEST", "modify requires context_id");
+            try apiError(res, 400, "BAD_REQUEST", "update requires context_id");
             return false;
         };
         const base_hash = op.base_hash orelse {
-            try apiError(res, 400, "BAD_REQUEST", "modify requires base_hash");
+            try apiError(res, 400, "BAD_REQUEST", "update requires base_hash");
             return false;
         };
         const content = op.content orelse {
-            try apiError(res, 400, "BAD_REQUEST", "modify requires content");
+            try apiError(res, 400, "BAD_REQUEST", "update requires content");
             return false;
         };
         db_mod.validateContentFormat(content) catch {
@@ -734,7 +734,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
     };
 
     for (ops.items) |op| {
-        if (std.mem.eql(u8, op.type, "modify")) {
+        if (std.mem.eql(u8, op.type, "update")) {
             const cid = op.context_id.?;
             const bh = op.base_hash.?;
             const new_content = op.content.?;

@@ -22,7 +22,7 @@ pub const DraftCategory = enum {
 
 pub const DraftOperation = enum {
     create,
-    modify,
+    update,
     rename,
     delete,
 };
@@ -176,8 +176,8 @@ fn parseEntry(obj: std.json.ObjectMap) ?DraftEntry {
     const op_str = stringField(obj, "operation") orelse return null;
     const operation: DraftOperation = if (std.mem.eql(u8, op_str, "create"))
         .create
-    else if (std.mem.eql(u8, op_str, "modify"))
-        .modify
+    else if (std.mem.eql(u8, op_str, "update"))
+        .update
     else if (std.mem.eql(u8, op_str, "rename"))
         .rename
     else if (std.mem.eql(u8, op_str, "delete"))
@@ -243,7 +243,7 @@ pub fn readDraftFile(
 
 /// Parameters for creating a new draft entry. `draft_path` is the target
 /// path inside `drafts/{category}/`; `current_path` is null for
-/// `create` operations and equals the cache path for `modify` / `delete`
+/// `create` operations and equals the cache path for `update` / `delete`
 /// (and equals the source path for `rename`; `draft_path` then carries
 /// the new path).
 pub const CreateDraftParams = struct {
@@ -294,6 +294,208 @@ pub const DraftIdentity = struct {
         if (self.local_temp_id) |id| allocator.free(id);
     }
 };
+
+pub const ExistingDraftParams = struct {
+    category: DraftCategory,
+    current_path: []const u8,
+    base_hash: ?[]const u8 = null,
+    rule_id: ?[]const u8 = null,
+    context_id: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+};
+
+fn findExistingDraftIndex(entries: []DraftEntry, params: ExistingDraftParams) ?usize {
+    for (entries, 0..) |entry, i| {
+        if (entry.category != params.category) continue;
+        if (isTerminalStatus(entry.status)) continue;
+        if (entry.operation == .create) continue;
+        if (params.rule_id) |rule_id| {
+            if (entry.rule_id) |entry_rule_id| {
+                if (std.mem.eql(u8, entry_rule_id, rule_id)) return i;
+            }
+        }
+        if (params.context_id) |context_id| {
+            if (entry.context_id) |entry_context_id| {
+                if (std.mem.eql(u8, entry_context_id, context_id)) return i;
+            }
+        }
+        if (entry.current_path) |current_path| {
+            if (std.mem.eql(u8, current_path, params.current_path)) return i;
+        }
+    }
+    return null;
+}
+
+fn draftPathAvailable(entries: []const DraftEntry, category: DraftCategory, draft_path: []const u8, skip_index: ?usize) bool {
+    for (entries, 0..) |entry, i| {
+        if (skip_index != null and i == skip_index.?) continue;
+        if (entry.category != category) continue;
+        if (isTerminalStatus(entry.status)) continue;
+        if (std.mem.eql(u8, entry.draft_path, draft_path)) return false;
+    }
+    return true;
+}
+
+fn identityFromEntry(allocator: std.mem.Allocator, entry: DraftEntry, previous_path: ?[]const u8) !DraftIdentity {
+    const draft_path = try allocator.dupe(u8, entry.draft_path);
+    errdefer allocator.free(draft_path);
+    const previous_path_owned = if (previous_path) |path| try allocator.dupe(u8, path) else null;
+    errdefer if (previous_path_owned) |path| allocator.free(path);
+    const local_temp_id = if (entry.local_temp_id) |id| try allocator.dupe(u8, id) else null;
+    errdefer if (local_temp_id) |id| allocator.free(id);
+    return .{
+        .draft_path = draft_path,
+        .previous_path = previous_path_owned,
+        .local_temp_id = local_temp_id,
+    };
+}
+
+pub fn upsertUpdateDraft(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    params: ExistingDraftParams,
+    content: []const u8,
+) !DraftIdentity {
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    if (findExistingDraftIndex(index.entries.items, params)) |entry_index| {
+        var entry = &index.entries.items[entry_index];
+        if (entry.operation == .delete) return error.DraftOperationConflict;
+
+        try writeDraftFileAbs(allocator, ws_dir, params.category, entry.draft_path, content);
+        if (params.description) |desc| entry.description = desc;
+        if (entry.rule_id == null) entry.rule_id = params.rule_id;
+        if (entry.context_id == null) entry.context_id = params.context_id;
+        if (entry.base_hash == null) entry.base_hash = params.base_hash;
+        entry.status = .draft;
+        if (entry.operation != .rename) {
+            entry.operation = .update;
+            entry.current_path = params.current_path;
+        }
+        try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+        return try identityFromEntry(allocator, entry.*, entry.current_path);
+    }
+
+    try createDraft(allocator, ws_dir, .{
+        .category = params.category,
+        .operation = .update,
+        .draft_path = params.current_path,
+        .current_path = params.current_path,
+        .base_hash = params.base_hash,
+        .rule_id = params.rule_id,
+        .context_id = params.context_id,
+        .description = params.description,
+    }, content);
+    return .{ .draft_path = try allocator.dupe(u8, params.current_path) };
+}
+
+pub fn upsertRenameDraft(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    params: ExistingDraftParams,
+    new_path: []const u8,
+    base_content: []const u8,
+) !DraftIdentity {
+    if (!path_util.isSafeRelative(new_path)) return error.UnsafeDraftPath;
+
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    if (findExistingDraftIndex(index.entries.items, params)) |entry_index| {
+        var entry = &index.entries.items[entry_index];
+        if (entry.operation == .delete) return error.DraftOperationConflict;
+        if (!draftPathAvailable(index.entries.items, params.category, new_path, entry_index)) return error.DraftAlreadyExists;
+
+        const old_path = try allocator.dupe(u8, entry.draft_path);
+        defer allocator.free(old_path);
+        const content = readDraftFile(allocator, ws_dir, params.category, old_path) catch |err| switch (err) {
+            error.FileNotFound => try allocator.dupe(u8, base_content),
+            else => return err,
+        };
+        defer allocator.free(content);
+
+        try writeDraftFileAbs(allocator, ws_dir, params.category, new_path, content);
+        errdefer discardDraftFile(allocator, ws_dir, params.category, new_path) catch {};
+
+        entry.operation = .rename;
+        entry.current_path = params.current_path;
+        entry.draft_path = new_path;
+        if (entry.rule_id == null) entry.rule_id = params.rule_id;
+        if (entry.context_id == null) entry.context_id = params.context_id;
+        if (entry.base_hash == null) entry.base_hash = params.base_hash;
+        if (params.description) |desc| entry.description = desc;
+        entry.status = .draft;
+        try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+
+        if (!std.mem.eql(u8, old_path, new_path)) {
+            discardDraftFile(allocator, ws_dir, params.category, old_path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => return err,
+            };
+        }
+        return try identityFromEntry(allocator, entry.*, params.current_path);
+    }
+
+    try createDraft(allocator, ws_dir, .{
+        .category = params.category,
+        .operation = .rename,
+        .draft_path = new_path,
+        .current_path = params.current_path,
+        .base_hash = params.base_hash,
+        .rule_id = params.rule_id,
+        .context_id = params.context_id,
+        .description = params.description,
+    }, base_content);
+    return .{
+        .draft_path = try allocator.dupe(u8, new_path),
+        .previous_path = try allocator.dupe(u8, params.current_path),
+    };
+}
+
+pub fn upsertDeleteDraft(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    params: ExistingDraftParams,
+) !DraftIdentity {
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    if (findExistingDraftIndex(index.entries.items, params)) |entry_index| {
+        var entry = &index.entries.items[entry_index];
+        if (entry.operation != .delete) {
+            discardDraftFile(allocator, ws_dir, params.category, entry.draft_path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => return err,
+            };
+        }
+        entry.operation = .delete;
+        entry.current_path = params.current_path;
+        entry.draft_path = params.current_path;
+        if (entry.rule_id == null) entry.rule_id = params.rule_id;
+        if (entry.context_id == null) entry.context_id = params.context_id;
+        if (entry.base_hash == null) entry.base_hash = params.base_hash;
+        if (params.description) |desc| entry.description = desc;
+        entry.status = .draft;
+        try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+        return try identityFromEntry(allocator, entry.*, params.current_path);
+    }
+
+    try createDraft(allocator, ws_dir, .{
+        .category = params.category,
+        .operation = .delete,
+        .draft_path = params.current_path,
+        .current_path = params.current_path,
+        .base_hash = params.base_hash,
+        .rule_id = params.rule_id,
+        .context_id = params.context_id,
+        .description = params.description,
+    }, "");
+    return .{
+        .draft_path = try allocator.dupe(u8, params.current_path),
+        .previous_path = try allocator.dupe(u8, params.current_path),
+    };
+}
 
 /// Create a new draft entry and write its initial content file. Fails
 /// if a draft for the same (category, draft_path) already exists —
@@ -360,11 +562,11 @@ pub fn saveDraftContent(
     try writeDraftFileAbs(allocator, ws_dir, category, draft_path, content);
 }
 
-/// Overwrite an existing modify draft and refresh its index metadata.
+/// Overwrite an existing update draft and refresh its index metadata.
 /// Returns false when no matching draft exists. Other draft operations
 /// are intentionally rejected so create/rename/delete semantics remain
 /// explicit.
-pub fn updateModifyDraftContent(
+pub fn replaceUpdateDraftContent(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
     category: DraftCategory,
@@ -380,7 +582,7 @@ pub fn updateModifyDraftContent(
     for (index.entries.items) |*entry| {
         if (entry.category != category) continue;
         if (!std.mem.eql(u8, entry.draft_path, draft_path)) continue;
-        if (entry.operation != .modify) return error.DraftOperationConflict;
+        if (entry.operation != .update) return error.DraftOperationConflict;
 
         try writeDraftFileAbs(allocator, ws_dir, category, draft_path, content);
         if (description) |desc| entry.description = desc;
@@ -559,6 +761,105 @@ fn discardDraftFile(
     };
 }
 
+pub fn normalizeDrafts(allocator: std.mem.Allocator, ws_dir: []const u8) !void {
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+    if (index.entries.items.len < 2) return;
+
+    const arena = index.arena_state.allocator();
+    const dropped = try arena.alloc(bool, index.entries.items.len);
+    @memset(dropped, false);
+
+    var changed = false;
+    for (index.entries.items, 0..) |*entry, i| {
+        if (dropped[i] or !isMergeableDraft(entry.*)) continue;
+        var j = i + 1;
+        while (j < index.entries.items.len) : (j += 1) {
+            var next = &index.entries.items[j];
+            if (dropped[j] or !isMergeableDraft(next.*)) continue;
+            if (!sameExistingDraft(entry.*, next.*)) continue;
+
+            changed = true;
+            switch (next.operation) {
+                .delete => {
+                    discardDraftFile(allocator, ws_dir, entry.category, entry.draft_path) catch |err| switch (err) {
+                        error.FileNotFound => {},
+                        else => return err,
+                    };
+                    dropped[i] = true;
+                    break;
+                },
+                .rename => {
+                    const content = readDraftFile(allocator, ws_dir, entry.category, entry.draft_path) catch |err| switch (err) {
+                        error.FileNotFound => null,
+                        else => return err,
+                    };
+                    defer if (content) |body| allocator.free(body);
+                    if (content) |body| {
+                        try writeDraftFileAbs(allocator, ws_dir, next.category, next.draft_path, body);
+                    }
+                    if (!std.mem.eql(u8, entry.draft_path, next.draft_path)) {
+                        discardDraftFile(allocator, ws_dir, entry.category, entry.draft_path) catch |err| switch (err) {
+                            error.FileNotFound => {},
+                            else => return err,
+                        };
+                    }
+                    if (next.current_path == null) next.current_path = entry.current_path;
+                    if (next.rule_id == null) next.rule_id = entry.rule_id;
+                    if (next.context_id == null) next.context_id = entry.context_id;
+                    if (next.base_hash == null) next.base_hash = entry.base_hash;
+                    dropped[i] = true;
+                    break;
+                },
+                .update => {
+                    if (entry.operation == .rename) {
+                        const content = readDraftFile(allocator, ws_dir, next.category, next.draft_path) catch |err| switch (err) {
+                            error.FileNotFound => null,
+                            else => return err,
+                        };
+                        defer if (content) |body| allocator.free(body);
+                        if (content) |body| {
+                            try writeDraftFileAbs(allocator, ws_dir, entry.category, entry.draft_path, body);
+                        }
+                        if (!std.mem.eql(u8, entry.draft_path, next.draft_path)) {
+                            discardDraftFile(allocator, ws_dir, next.category, next.draft_path) catch |err| switch (err) {
+                                error.FileNotFound => {},
+                                else => return err,
+                            };
+                        }
+                        dropped[j] = true;
+                    }
+                },
+                .create => unreachable,
+            }
+        }
+    }
+
+    if (!changed) return;
+    var kept: std.ArrayListUnmanaged(DraftEntry) = .empty;
+    for (index.entries.items, 0..) |entry, i| {
+        if (dropped[i]) continue;
+        try kept.append(arena, entry);
+    }
+    try writeIndexAtomic(allocator, ws_dir, kept.items);
+}
+
+fn isMergeableDraft(entry: DraftEntry) bool {
+    if (isTerminalStatus(entry.status)) return false;
+    return switch (entry.operation) {
+        .update, .rename, .delete => true,
+        .create => false,
+    };
+}
+
+fn sameExistingDraft(a: DraftEntry, b: DraftEntry) bool {
+    if (a.category != b.category) return false;
+    if (a.rule_id != null and b.rule_id != null and std.mem.eql(u8, a.rule_id.?, b.rule_id.?)) return true;
+    if (a.context_id != null and b.context_id != null and std.mem.eql(u8, a.context_id.?, b.context_id.?)) return true;
+    if (a.current_path != null and b.current_path != null and std.mem.eql(u8, a.current_path.?, b.current_path.?)) return true;
+    return false;
+}
+
 /// Discard a draft by id, local temp id, current path, or draft path.
 /// Returns the discarded draft path, or null when no draft matched.
 pub fn discardDraftById(
@@ -578,9 +879,9 @@ pub fn discardDraftById(
     return draft_path;
 }
 
-/// Discard a modify draft when its file content still matches the base
+/// Discard an update draft when its file content still matches the base
 /// content. Returns true only when a matching draft was removed.
-pub fn discardUnchangedModifyDraft(
+pub fn discardUnchangedUpdateDraft(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
     category: DraftCategory,
@@ -596,7 +897,7 @@ pub fn discardUnchangedModifyDraft(
         for (index.entries.items) |entry| {
             if (entry.category != category) continue;
             if (!std.mem.eql(u8, entry.draft_path, draft_path)) continue;
-            if (entry.operation != .modify) break :blk false;
+            if (entry.operation != .update) break :blk false;
 
             const content = try readDraftFile(allocator, ws_dir, category, draft_path);
             defer allocator.free(content);
@@ -637,7 +938,7 @@ pub const ReconcileSummary = struct {
 };
 
 /// Re-run drift detection on every non-terminal draft in
-/// `{ws_dir}/drafts/index.json`. When a modify / rename / delete draft's
+/// `{ws_dir}/drafts/index.json`. When an update / rename / delete draft's
 /// `base_hash` no longer matches the current cache content at
 /// `current_path`, the entry is moved to `.conflicted`. Create-ops
 /// have no cache base to compare against and are skipped. Drafts
@@ -876,7 +1177,7 @@ fn appendJsonEscaped(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(
 fn operationToString(op: DraftOperation) []const u8 {
     return switch (op) {
         .create => "create",
-        .modify => "modify",
+        .update => "update",
         .rename => "rename",
         .delete => "delete",
     };
@@ -931,7 +1232,7 @@ test "loadIndex: parses rule and context entries" {
         \\      "rule_id": "p-style",
         \\      "current_path": "coding/STYLE.md",
         \\      "draft_path": "coding/STYLE.md",
-        \\      "operation": "modify",
+        \\      "operation": "update",
         \\      "base_hash": "sha256:abc",
         \\      "status": "draft"
         \\    },
@@ -940,7 +1241,7 @@ test "loadIndex: parses rule and context entries" {
         \\      "context_id": "c-spec",
         \\      "current_path": "spec/API.md",
         \\      "draft_path": "spec/API.md",
-        \\      "operation": "modify",
+        \\      "operation": "update",
         \\      "base_hash": "sha256:xyz",
         \\      "status": "draft"
         \\    }
@@ -957,7 +1258,7 @@ test "loadIndex: parses rule and context entries" {
     try testing.expectEqual(@as(usize, 2), index.entries.items.len);
 
     const rule_entry = index.findByCurrentPath(.rule, "coding/STYLE.md").?;
-    try testing.expectEqual(DraftOperation.modify, rule_entry.operation);
+    try testing.expectEqual(DraftOperation.update, rule_entry.operation);
     try testing.expectEqualStrings("p-style", rule_entry.rule_id.?);
 
     const ctx_entry = index.findByCurrentPath(.context, "spec/API.md").?;
@@ -1083,7 +1384,7 @@ test "findCreateByDraftPath: only matches create operation" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "coding/STYLE.md",
         .current_path = "coding/STYLE.md",
         .base_hash = "sha256:abc",
@@ -1122,7 +1423,7 @@ test "createDraft: writes file and index entry round-trip" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "coding/STYLE.md",
         .current_path = "coding/STYLE.md",
         .base_hash = "sha256:abc",
@@ -1137,7 +1438,7 @@ test "createDraft: writes file and index entry round-trip" {
     defer index.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), index.entries.items.len);
     const entry = index.findByCurrentPath(.rule, "coding/STYLE.md").?;
-    try testing.expectEqual(DraftOperation.modify, entry.operation);
+    try testing.expectEqual(DraftOperation.update, entry.operation);
     try testing.expectEqualStrings("p-style", entry.rule_id.?);
     try testing.expectEqualStrings("sha256:abc", entry.base_hash.?);
     try testing.expectEqual(DraftStatus.draft, entry.status);
@@ -1179,7 +1480,7 @@ test "createDraft: terminal entries do not block a new draft for same path" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "coding/NEW.md",
         .current_path = "coding/NEW.md",
         .rule_id = "p-new",
@@ -1225,7 +1526,7 @@ test "saveDraftContent: overwrites existing draft file" {
 
     try createDraft(testing.allocator, root, .{
         .category = .context,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "spec/API.md",
         .current_path = "spec/API.md",
     }, "first version\n");
@@ -1237,7 +1538,7 @@ test "saveDraftContent: overwrites existing draft file" {
     try testing.expectEqualStrings("second version\n", content);
 }
 
-test "updateModifyDraftContent: overwrites existing modify draft and metadata" {
+test "replaceUpdateDraftContent: overwrites existing update draft and metadata" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1246,14 +1547,14 @@ test "updateModifyDraftContent: overwrites existing modify draft and metadata" {
 
     try createDraft(testing.allocator, root, .{
         .category = .context,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "spec/API.md",
         .current_path = "spec/API.md",
         .description = "first description",
     }, "first version\n");
     try setDraftStatus(testing.allocator, root, .context, "spec/API.md", .conflicted);
 
-    const updated = try updateModifyDraftContent(
+    const updated = try replaceUpdateDraftContent(
         testing.allocator,
         root,
         .context,
@@ -1271,12 +1572,12 @@ test "updateModifyDraftContent: overwrites existing modify draft and metadata" {
     defer index.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), index.entries.items.len);
     const entry = index.findByCurrentPath(.context, "spec/API.md").?;
-    try testing.expectEqual(DraftOperation.modify, entry.operation);
+    try testing.expectEqual(DraftOperation.update, entry.operation);
     try testing.expectEqual(DraftStatus.draft, entry.status);
     try testing.expectEqualStrings("second description", entry.description.?);
 }
 
-test "updateModifyDraftContent: rejects non-modify draft" {
+test "replaceUpdateDraftContent: rejects non-update draft" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1291,7 +1592,7 @@ test "updateModifyDraftContent: rejects non-modify draft" {
 
     try testing.expectError(
         error.DraftOperationConflict,
-        updateModifyDraftContent(
+        replaceUpdateDraftContent(
             testing.allocator,
             root,
             .context,
@@ -1381,7 +1682,7 @@ test "discardCreateDraftById: ignores non-create drafts" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "coding/STYLE.md",
         .current_path = "coding/STYLE.md",
     }, "draft body");
@@ -1389,7 +1690,46 @@ test "discardCreateDraftById: ignores non-create drafts" {
     try testing.expect(try discardCreateDraftById(testing.allocator, root, .rule, "coding/STYLE.md") == null);
 }
 
-test "discardDraftById: accepts rule id for modify draft" {
+test "upsertRenameDraft: folds update draft into rename draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var update_identity = try upsertUpdateDraft(testing.allocator, root, .{
+        .category = .rule,
+        .current_path = "design/UI.md",
+        .rule_id = "p-ui",
+        .base_hash = "sha256:base",
+    }, "updated body");
+    defer update_identity.deinit(testing.allocator);
+
+    var rename_identity = try upsertRenameDraft(testing.allocator, root, .{
+        .category = .rule,
+        .current_path = "design/UI.md",
+        .rule_id = "p-ui",
+        .base_hash = "sha256:base",
+    }, "design/UIUX.md", "base body");
+    defer rename_identity.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("design/UIUX.md", rename_identity.draft_path);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.entries.items[0];
+    try testing.expectEqual(DraftOperation.rename, entry.operation);
+    try testing.expectEqualStrings("design/UI.md", entry.current_path.?);
+    try testing.expectEqualStrings("design/UIUX.md", entry.draft_path);
+
+    const content = try readDraftFile(testing.allocator, root, .rule, "design/UIUX.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("updated body", content);
+    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .rule, "design/UI.md"));
+}
+
+test "normalizeDrafts: folds duplicate update and rename entries" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1398,7 +1738,79 @@ test "discardDraftById: accepts rule id for modify draft" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
+        .draft_path = "design/UI.md",
+        .current_path = "design/UI.md",
+        .rule_id = "p-ui",
+        .base_hash = "sha256:base",
+    }, "updated body");
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .rename,
+        .draft_path = "design/UIUX.md",
+        .current_path = "design/UI.md",
+        .rule_id = "p-ui",
+        .base_hash = "sha256:base",
+    }, "");
+
+    try normalizeDrafts(testing.allocator, root);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.entries.items[0];
+    try testing.expectEqual(DraftOperation.rename, entry.operation);
+    try testing.expectEqualStrings("design/UI.md", entry.current_path.?);
+    try testing.expectEqualStrings("design/UIUX.md", entry.draft_path);
+
+    const content = try readDraftFile(testing.allocator, root, .rule, "design/UIUX.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("updated body", content);
+}
+
+test "upsertDeleteDraft: folds update draft into delete draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var update_identity = try upsertUpdateDraft(testing.allocator, root, .{
+        .category = .context,
+        .current_path = "spec/API.md",
+        .context_id = "ctx-api",
+        .base_hash = "sha256:base",
+    }, "updated body");
+    defer update_identity.deinit(testing.allocator);
+
+    var delete_identity = try upsertDeleteDraft(testing.allocator, root, .{
+        .category = .context,
+        .current_path = "spec/API.md",
+        .context_id = "ctx-api",
+        .base_hash = "sha256:base",
+    });
+    defer delete_identity.deinit(testing.allocator);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.entries.items[0];
+    try testing.expectEqual(DraftOperation.delete, entry.operation);
+    try testing.expectEqualStrings("spec/API.md", entry.current_path.?);
+    try testing.expectEqualStrings("spec/API.md", entry.draft_path);
+    try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .context, "spec/API.md"));
+}
+
+test "discardDraftById: accepts rule id for update draft" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .update,
         .draft_path = "coding/STYLE.md",
         .current_path = "coding/STYLE.md",
         .rule_id = "p-style",
@@ -1415,7 +1827,7 @@ test "discardDraftById: accepts rule id for modify draft" {
     try testing.expect(index.findDraftById(.rule, "p-style") == null);
 }
 
-test "discardUnchangedModifyDraft: removes modify draft matching base content" {
+test "discardUnchangedUpdateDraft: removes update draft matching base content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1424,12 +1836,12 @@ test "discardUnchangedModifyDraft: removes modify draft matching base content" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "adr/ADR-003.md",
         .current_path = "adr/ADR-003.md",
     }, "# ADR-003\n");
 
-    try testing.expect(try discardUnchangedModifyDraft(
+    try testing.expect(try discardUnchangedUpdateDraft(
         testing.allocator,
         root,
         .rule,
@@ -1444,7 +1856,7 @@ test "discardUnchangedModifyDraft: removes modify draft matching base content" {
     try testing.expect(index.findDraftById(.rule, "adr/ADR-003.md") == null);
 }
 
-test "discardUnchangedModifyDraft: keeps modify draft with changed content" {
+test "discardUnchangedUpdateDraft: keeps update draft with changed content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1453,12 +1865,12 @@ test "discardUnchangedModifyDraft: keeps modify draft with changed content" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "adr/ADR-003.md",
         .current_path = "adr/ADR-003.md",
     }, "# ADR-003\n\nChanged.\n");
 
-    try testing.expect(!try discardUnchangedModifyDraft(
+    try testing.expect(!try discardUnchangedUpdateDraft(
         testing.allocator,
         root,
         .rule,
@@ -1471,7 +1883,7 @@ test "discardUnchangedModifyDraft: keeps modify draft with changed content" {
     try testing.expectEqualStrings("# ADR-003\n\nChanged.\n", content);
 }
 
-test "discardUnchangedModifyDraft: ignores create draft" {
+test "discardUnchangedUpdateDraft: ignores create draft" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1484,7 +1896,7 @@ test "discardUnchangedModifyDraft: ignores create draft" {
         .draft_path = "adr/ADR-004.md",
     }, "# ADR-004\n");
 
-    try testing.expect(!try discardUnchangedModifyDraft(
+    try testing.expect(!try discardUnchangedUpdateDraft(
         testing.allocator,
         root,
         .rule,
@@ -1516,7 +1928,7 @@ test "setDraftStatus: transitions draft to in_review and back" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "x/Y.md",
         .current_path = "x/Y.md",
         .rule_id = "p-y",
@@ -1558,7 +1970,7 @@ test "transitionDraftStatus: only updates expected status" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "x/Y.md",
         .current_path = "x/Y.md",
         .rule_id = "p-y",
@@ -1585,7 +1997,7 @@ test "reconcileDrafts: leaves matching base_hash untouched" {
     const seed_hash = util_hash.contentHash(seed);
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "coding/A.md",
         .current_path = "coding/A.md",
         .rule_id = "p-a",
@@ -1617,7 +2029,7 @@ test "reconcileDrafts: marks conflicted when cache drifted" {
     const seed_hash = util_hash.contentHash(seed);
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "coding/A.md",
         .current_path = "coding/A.md",
         .rule_id = "p-a",
@@ -1673,7 +2085,7 @@ test "reconcileDrafts: leaves terminal states sticky" {
     const seed_hash = util_hash.contentHash(seed);
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "coding/A.md",
         .current_path = "coding/A.md",
         .rule_id = "p-a",
@@ -1704,7 +2116,7 @@ test "index serialization: multiple entries survive round-trip" {
 
     try createDraft(testing.allocator, root, .{
         .category = .rule,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "a/A.md",
         .current_path = "a/A.md",
         .rule_id = "p-a",

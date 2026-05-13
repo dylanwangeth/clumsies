@@ -1,5 +1,5 @@
 //! Collaboration API response shapes. Pull requests carry workspace local edits back to the
-//! Artifact for review. Each PR contains RulePrChanges (add/modify/delete) and a
+//! Artifact for review. Each PR contains RulePrChanges (add/update/delete) and a
 //! RulePrUsageSummary showing how much the changed rule has been referred.
 pub const RulePrChange = struct {
     op_index: i32 = 0,
