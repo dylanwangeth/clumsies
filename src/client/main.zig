@@ -72,6 +72,9 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
 
 pub fn main() void {
     run() catch |err| {
+        if (err == error.CommandFailed) {
+            std.process.exit(1);
+        }
         var stderr_buffer: [4096]u8 = undefined;
         var stderr_file_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buffer);
         defer stderr_file_writer.interface.flush() catch {};
@@ -137,8 +140,7 @@ fn run() !void {
                 return;
             }
             try stderr_writer.print("{s}{s}{s}Error:{s} unknown hub argument: {s}\n", .{ P, Color.bold, Color.red, Color.reset, cmd_args[0] });
-            stderr_file_writer.interface.flush() catch {};
-            std.process.exit(1);
+            return error.CommandFailed;
         }
         try hub_main.run(allocator);
         return;
@@ -159,8 +161,7 @@ fn run() !void {
             try cmd_submit_check.run(stdout_writer, stderr_writer, allocator);
         } else {
             try stderr_writer.print("{s}{s}{s}Error:{s} unknown agent command: {s}\n", .{ P, Color.bold, Color.red, Color.reset, subcmd });
-            stderr_file_writer.interface.flush() catch {};
-            std.process.exit(1);
+            return error.CommandFailed;
         }
         return;
     }
@@ -171,10 +172,7 @@ fn run() !void {
         },
         .help => try cmd_help.run(stdout_writer),
         .login => cmd_login.run(stdout_writer, stderr_writer, allocator, cmd_args) catch |err| switch (err) {
-            error.CommandFailed => {
-                stderr_file_writer.interface.flush() catch {};
-                std.process.exit(1);
-            },
+            error.CommandFailed => return error.CommandFailed,
             else => return err,
         },
         .init_cmd => try cmd_init.run(stdout_writer, stderr_writer, allocator, cmd_args),
@@ -187,8 +185,7 @@ fn run() !void {
                 // Unknown command
                 try stderr_writer.print("{s}{s}{s}Error:{s} unknown command '{s}'\n\n", .{ P, Color.bold, Color.red, Color.reset, args[1] });
                 try cmd_help.run(stderr_writer);
-                stderr_file_writer.interface.flush() catch {};
-                std.process.exit(1);
+                return error.CommandFailed;
             } else {
                 if (canLaunchTui()) {
                     try tui.run();

@@ -13,16 +13,20 @@ const log = std.log.scoped(.hub);
 const StartupError = error{HubStartupFailed};
 
 pub fn main() void {
-    var da: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = da.deinit();
+    const exit_code: u8 = blk: {
+        var da: std.heap.DebugAllocator(.{}) = .init;
+        defer _ = da.deinit();
 
-    run(da.allocator()) catch |err| {
-        var stderr_buffer: [4096]u8 = undefined;
-        var stderr_file_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buffer);
-        defer stderr_file_writer.interface.flush() catch {};
-        stderr_file_writer.interface.print("Error: {s}\n", .{@errorName(err)}) catch {};
-        std.process.exit(1);
+        run(da.allocator()) catch |err| {
+            var stderr_buffer: [4096]u8 = undefined;
+            var stderr_file_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buffer);
+            defer stderr_file_writer.interface.flush() catch {};
+            stderr_file_writer.interface.print("Error: {s}\n", .{@errorName(err)}) catch {};
+            break :blk 1;
+        };
+        break :blk 0;
     };
+    std.process.exit(exit_code);
 }
 
 pub fn run(allocator: std.mem.Allocator) !void {
