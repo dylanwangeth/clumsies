@@ -18,6 +18,7 @@ pub fn main() void {
         defer _ = da.deinit();
 
         run(da.allocator()) catch |err| {
+            if (err == StartupError.HubStartupFailed) break :blk 1;
             var stderr_buffer: [4096]u8 = undefined;
             var stderr_file_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buffer);
             defer stderr_file_writer.interface.flush() catch {};
