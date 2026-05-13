@@ -16,7 +16,8 @@ For the current local bring-up path, you need:
 
 | Requirement | Notes |
 | --- | --- |
-| [Zig 0.15+](https://ziglang.org/download/) | required to build from source |
+| `curl` or `wget` | required by the release installer |
+| [Zig 0.15+](https://ziglang.org/download/) | only required when building from source |
 | [PostgreSQL](https://www.postgresql.org/docs/current/) 16 or [Docker Compose](https://docs.docker.com/compose/) | the repo ships a local Postgres compose file |
 | free local ports `5432` and `8400` | defaults for Postgres and Hub |
 | a shell environment where you can export variables | used for Hub and bootstrap configuration |
@@ -26,18 +27,23 @@ For the current local bring-up path, you need:
 The minimum stack described here is:
 
 1. PostgreSQL
-2. `clumsies-hub`
+2. `clumsies hub`
 3. one bootstrap org and one bootstrap maintainer
 
 After that, you can verify login, then hand off to the member workflow.
 
-## Step 1: build the binaries
+## Step 1: install clumsies
 
-The source repository is:
+Install the latest release:
 
-<https://github.com/lilhammerfun/clumsies>
+```bash
+curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
+```
 
-Build from source:
+The same `clumsies` binary contains the member CLI, TUI, MCP server, adapter
+installer, and Hub server command.
+
+If you are developing clumsies itself, build from source instead:
 
 ```bash
 git clone https://github.com/lilhammerfun/clumsies.git
@@ -45,13 +51,6 @@ cd clumsies
 zig build -Doptimize=ReleaseFast
 export PATH="$PWD/zig-out/bin:$PATH"
 ```
-
-The main binaries you care about here are:
-
-| Binary | Role |
-| --- | --- |
-| `clumsies-hub` | Hub server |
-| `clumsies` | member CLI and TUI |
 
 ## Step 2: start PostgreSQL for local bring-up
 
@@ -136,7 +135,7 @@ export HUB_BOOTSTRAP_ORG=my-org
 Run:
 
 ```bash
-clumsies-hub
+clumsies hub
 ```
 
 On first start, the Hub runs migrations and bootstraps the first org and first maintainer if the database is empty.

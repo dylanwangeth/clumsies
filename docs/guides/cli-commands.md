@@ -11,7 +11,7 @@ This page is the command surface in one place. Every command listed here is base
 | `clumsies init` | bind the current directory to a workspace |
 | `clumsies sync` | sync local cache from Hub |
 | `clumsies adapt` | install or update an adapter |
-| `clumsies remove-adapter` | remove an adapter |
+| `clumsies hub` | start the Hub server |
 | `clumsies mcp serve` | start the MCP server |
 
 ## login
@@ -90,19 +90,16 @@ clumsies adapt --agent codex --scope workspace --yes
 
 If multiple adapter packages are available, omitting `--agent` leaves package selection to the interactive flow.
 
-## remove-adapter
+## hub
 
 Usage:
 
 ```bash
-clumsies remove-adapter [--agent <name>] [--scope workspace|user] [--yes]
+clumsies hub
 ```
 
-| Flag | Meaning |
-| --- | --- |
-| `--agent <name>` | adapter package to remove |
-| `--scope workspace|user` | scope to remove from |
-| `--yes` | skip confirmation |
+This starts the Hub HTTP server. It reads configuration from environment
+variables and `.env`, including PostgreSQL connection settings.
 
 ## mcp serve
 

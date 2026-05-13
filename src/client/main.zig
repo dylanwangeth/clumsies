@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const build_options = @import("build_options");
+const hub_main = @import("clumsies_hub_main");
 const logger = @import("clumsies_lib").logger;
 const styles = @import("styles.zig");
 
@@ -25,8 +26,6 @@ fn recoverPanic(msg: []const u8, ra: ?usize) noreturn {
 
 pub const panic = std.debug.FullPanic(recoverPanic);
 
-// Public re-exports for cross-artifact consumers (e.g., seed).
-pub const attestation = @import("attestation.zig");
 const tui = @import("tui/main.zig");
 
 const cmd_login = @import("commands/login_cmd.zig");
@@ -51,6 +50,7 @@ const Command = enum {
     sync,
     adapt,
     mcp,
+    hub,
     help,
     version,
     none,
@@ -62,6 +62,7 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "sync", .sync },
     .{ "adapt", .adapt },
     .{ "mcp", .mcp },
+    .{ "hub", .hub },
     .{ "help", .help },
     .{ "-h", .help },
     .{ "--help", .help },
@@ -69,7 +70,23 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "--version", .version },
 });
 
-pub fn main() !void {
+pub fn main() void {
+    run() catch |err| {
+        var stderr_buffer: [4096]u8 = undefined;
+        var stderr_file_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buffer);
+        defer stderr_file_writer.interface.flush() catch {};
+        stderr_file_writer.interface.print("{s}{s}{s}Error:{s} {s}\n", .{
+            P,
+            Color.bold,
+            Color.red,
+            Color.reset,
+            @errorName(err),
+        }) catch {};
+        std.process.exit(1);
+    };
+}
+
+fn run() !void {
     var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
     var stdout_file_writer = std.fs.File.Writer.init(std.fs.File.stdout(), &stdout_buffer);
@@ -88,9 +105,6 @@ pub fn main() !void {
         debug_alloc.allocator()
     else
         std.heap.smp_allocator;
-
-    initClientLogger(allocator);
-    defer logger.deinit();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -115,6 +129,23 @@ pub fn main() !void {
     }
 
     const cmd_args = args[cmd_args_start..];
+
+    if (cmd == .hub) {
+        if (cmd_args.len > 0) {
+            if (std.mem.eql(u8, cmd_args[0], "-h") or std.mem.eql(u8, cmd_args[0], "--help")) {
+                try printHubHelp(stdout_writer);
+                return;
+            }
+            try stderr_writer.print("{s}{s}{s}Error:{s} unknown hub argument: {s}\n", .{ P, Color.bold, Color.red, Color.reset, cmd_args[0] });
+            stderr_file_writer.interface.flush() catch {};
+            std.process.exit(1);
+        }
+        try hub_main.run(allocator);
+        return;
+    }
+
+    initClientLogger(allocator);
+    defer logger.deinit();
 
     if (is_agent_cmd) {
         const subcmd = if (cmd_args.len > 0) cmd_args[0] else "";
@@ -150,6 +181,7 @@ pub fn main() !void {
         .sync => try cmd_sync.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .adapt => try cmd_adapt.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
+        .hub => unreachable,
         .none => {
             if (args.len > 1) {
                 // Unknown command
@@ -200,6 +232,12 @@ fn initClientLogger(allocator: std.mem.Allocator) void {
     if (config.invalid_level) |raw| logger.noteInvalidLevel(raw);
 }
 
+fn printHubHelp(stdout: *std.Io.Writer) !void {
+    try stdout.print("{s}{s}{s}Usage:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
+    try stdout.print("{s}    {s}clumsies hub{s}    Start Hub server\n\n", .{ P, Color.cyan, Color.reset });
+    try stdout.print("Hub reads configuration from environment variables and .env.\n", .{});
+}
+
 fn clientLogFilePath(allocator: std.mem.Allocator) ![]const u8 {
     const env_path = std.process.getEnvVarOwned(allocator, "CLUMSIES_LOG_FILE") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return logger.clientDefaultLogPath(allocator),
@@ -216,6 +254,7 @@ test "command_map: all commands resolve" {
         .{ .str = "sync", .cmd = .sync },
         .{ .str = "adapt", .cmd = .adapt },
         .{ .str = "mcp", .cmd = .mcp },
+        .{ .str = "hub", .cmd = .hub },
         .{ .str = "help", .cmd = .help },
         .{ .str = "-h", .cmd = .help },
         .{ .str = "--help", .cmd = .help },

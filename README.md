@@ -51,14 +51,10 @@ This gets a local clumsies install running for one project. For the product
 model and system shape, see the [overview](https://lilhammerfun.github.io/clumsies/overview/)
 and [architecture](https://lilhammerfun.github.io/clumsies/architecture/).
 
-Build from source (requires [Zig 0.15+](https://ziglang.org/download/); add `zig-out/bin` to your `PATH` for convenience):
+Install the latest release:
 
 ```bash
-git clone https://github.com/lilhammerfun/clumsies.git
-cd clumsies
-cp .env.example .env
-zig build -Doptimize=ReleaseFast
-export PATH="$PWD/zig-out/bin:$PATH"
+curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
 ```
 
 Start local PostgreSQL:
@@ -71,7 +67,7 @@ Start the Hub. See the [deployment guide](https://lilhammerfun.github.io/clumsie
 for organization bootstrap and self-hosted deployment notes.
 
 ```bash
-clumsies-hub
+clumsies hub
 ```
 
 Sign in:
@@ -115,10 +111,15 @@ browse shared rules and bundles, Review to handle PRs, and Settings to manage
 account, organization, tokens, members, workspaces, and local path bindings.
 For exact command flags, use the [CLI reference](https://lilhammerfun.github.io/clumsies/guides/cli-commands/).
 
-> [!TIP]
-> For iterative development, `just dev` spins up the Hub, seeds representative
-> data, and launches the TUI in one command — no need to run the steps above
-> manually. Requires [just](https://github.com/casey/just).
+Development from source requires [Zig 0.15+](https://ziglang.org/download/):
+
+```bash
+git clone https://github.com/lilhammerfun/clumsies.git
+cd clumsies
+cp .env.example .env
+zig build -Doptimize=ReleaseFast
+export PATH="$PWD/zig-out/bin:$PATH"
+```
 
 ## License
 

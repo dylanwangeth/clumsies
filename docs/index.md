@@ -60,6 +60,9 @@ hero:
         <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies adapt</span>        Install, update, remove, or list agent adapters</span>
       </div>
       <div class="home-terminal-line is-output">
+        <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies hub</span>          Start Hub server</span>
+      </div>
+      <div class="home-terminal-line is-output">
         <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies mcp serve</span>    Start MCP server for AI agents</span>
       </div>
       <div class="home-terminal-line is-output">

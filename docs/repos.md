@@ -11,7 +11,6 @@ The current docs branch lives inside a single repository. The important boundary
 | `src/hub/` | Hub server modules and REST handlers |
 | `src/client/` | CLI, MCP runtime, adapter engine, TUI |
 | `src/protocol/` | shared API and protocol types |
-| `src/seed/` | seed and data pump tooling |
 | `assets/adapters/` | runtime assets installed into agent hosts |
 | `docs/` | VitePress documentation site |
 
