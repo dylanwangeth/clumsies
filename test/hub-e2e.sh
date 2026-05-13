@@ -282,8 +282,8 @@ assert_json "contains rule_id" "p-test-001" "$BODY"
 assert_json "contains body" "STYLE" "$BODY"
 
 # Rule PRs (multi-operation model)
-step "Rule PR: create with modify operation"
-RAW=$(call POST "/api/prs" '{"title":"Tighten STYLE rules","body":"Tighten STYLE rules","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened.\n\n## Rules\n\n- Rule one"}]}')
+step "Rule PR: create with update operation"
+RAW=$(call POST "/api/prs" '{"title":"Tighten STYLE rules","body":"Tighten STYLE rules","operations":[{"type":"update","rule_id":"p-test-001","base_hash":"sha256:abc123","content":"# STYLE\n\nTightened.\n\n## Rules\n\n- Rule one"}]}')
 parse_response "$RAW"
 assert_status "create rule PR" "201" "$STATUS"
 assert_json "returns pr_id" "pr_id" "$BODY"
@@ -296,7 +296,7 @@ parse_response "$RAW"
 assert_status "empty ops rejected" "400" "$STATUS"
 
 step "Rule PR: reject stale base_hash"
-RAW=$(call POST "/api/prs" '{"title":"stale","body":"stale","operations":[{"type":"modify","rule_id":"p-test-001","base_hash":"sha256:wrong","content":"# X\n\nD\n\n## S\n\n- R"}]}')
+RAW=$(call POST "/api/prs" '{"title":"stale","body":"stale","operations":[{"type":"update","rule_id":"p-test-001","base_hash":"sha256:wrong","content":"# X\n\nD\n\n## S\n\n- R"}]}')
 parse_response "$RAW"
 assert_status "stale base_hash 409" "409" "$STATUS"
 
@@ -321,7 +321,7 @@ RAW=$(call GET "/api/prs/$PPR_ID")
 parse_response "$RAW"
 assert_status "get rule PR" "200" "$STATUS"
 assert_json "has operations" "operations" "$BODY"
-assert_json "operation type modify" '"type":"modify"' "$BODY"
+assert_json "operation type update" '"type":"update"' "$BODY"
 
 step "Rule PR: accept as maintainer"
 RAW=$(call PUT "/api/prs/$PPR_ID" '{"action":"accept"}')

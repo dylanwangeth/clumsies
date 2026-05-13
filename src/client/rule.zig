@@ -410,7 +410,7 @@ fn resolveLoadId(
 /// their path's first component.
 ///
 /// Drafts are merged into the result: delete-drafts hide their manifest
-/// entries, modify/rename drafts set has_draft = true, and create-drafts
+/// entries, update/rename drafts set has_draft = true, and create-drafts
 /// (which have no manifest entry) are appended using local_temp_id as id.
 pub fn discoverSearchable(
     allocator: std.mem.Allocator,
@@ -1506,7 +1506,7 @@ test "loadRules: draft content overrides cache when indexed" {
         \\      "rule_id": "p-style",
         \\      "current_path": "coding/STYLE.md",
         \\      "draft_path": "coding/STYLE.md",
-        \\      "operation": "modify",
+        \\      "operation": "update",
         \\      "base_hash": "sha256:original",
         \\      "status": "draft"
         \\    }
@@ -1552,7 +1552,7 @@ test "loadRules: rule draft change ignores matching manifest known hash" {
         \\      "rule_id": "p-style",
         \\      "current_path": "coding/STYLE.md",
         \\      "draft_path": "coding/STYLE.md",
-        \\      "operation": "modify",
+        \\      "operation": "update",
         \\      "base_hash": "sha256:manifest",
         \\      "status": "draft"
         \\    }
@@ -1606,7 +1606,7 @@ test "loadRules: context draft change ignores matching manifest known hash" {
         \\      "context_id": "c-api",
         \\      "current_path": "spec/API.md",
         \\      "draft_path": "spec/API.md",
-        \\      "operation": "modify",
+        \\      "operation": "update",
         \\      "base_hash": "sha256:manifest",
         \\      "status": "draft"
         \\    }
@@ -1746,7 +1746,7 @@ test "loadMpf: draft content overrides cache" {
         \\      "category": "meta_prompt",
         \\      "current_path": "META_PROMPT.md",
         \\      "draft_path": "META_PROMPT.md",
-        \\      "operation": "modify",
+        \\      "operation": "update",
         \\      "status": "draft"
         \\    }
         \\  ]
@@ -1813,7 +1813,7 @@ test "loadMpf: delta works with draft content" {
         \\      "category": "meta_prompt",
         \\      "current_path": "META_PROMPT.md",
         \\      "draft_path": "META_PROMPT.md",
-        \\      "operation": "modify",
+        \\      "operation": "update",
         \\      "status": "draft"
         \\    }
         \\  ]

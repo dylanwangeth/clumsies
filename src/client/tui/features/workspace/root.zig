@@ -435,7 +435,7 @@ fn workspaceDetailDraftLabel(
 fn draftOperationLabel(op: drafts_mod.DraftOperation) []const u8 {
     return switch (op) {
         .create => "create",
-        .modify => "modify",
+        .update => "update",
         .rename => "rename",
         .delete => "delete",
     };
@@ -960,8 +960,9 @@ pub fn syncWsRows(self: anytype) void {
             const context_count = if (live_ws) |ws_d| ws_d.workspace_context.len else 0;
             if (live_ws) |ws_d| {
                 for (ws_d.workspace_context, 0..) |item, i| {
-                    if (search_query.len > 0 and !self.searchMatchesQuery(item.path, search_query)) continue;
-                    paths_buf[item_count] = item.path;
+                    const path = self.displayPathForWorkspaceContext(item.path);
+                    if (search_query.len > 0 and !self.searchMatchesQuery(path, search_query)) continue;
+                    paths_buf[item_count] = path;
                     orig_idx[item_count] = i;
                     item_count += 1;
                 }
@@ -982,7 +983,7 @@ pub fn syncWsRows(self: anytype) void {
             const rule_count = if (live_ws) |ws_d| ws_d.workspace_rules.len else 0;
             if (live_ws) |ws_d| {
                 for (ws_d.workspace_rules, 0..) |wp, i| {
-                    const path = self.pathForWorkspaceRule(wp);
+                    const path = self.displayPathForWorkspaceRule(wp);
                     if (search_query.len > 0 and !self.searchMatchesQuery(path, search_query)) continue;
                     paths_buf[item_count] = path;
                     orig_idx[item_count] = i;
@@ -1043,7 +1044,7 @@ fn workspaceRowsSignature(
                 hashInt(&hasher, ws_d.workspace_context.len);
                 for (ws_d.workspace_context) |item| {
                     hasher.update(item.context_id);
-                    hasher.update(item.path);
+                    hasher.update(self.displayPathForWorkspaceContext(item.path));
                     hasher.update(item.hash);
                 }
             } else {
@@ -1056,7 +1057,7 @@ fn workspaceRowsSignature(
                 hashInt(&hasher, ws_d.workspace_rules.len);
                 for (ws_d.workspace_rules) |item| {
                     hasher.update(item.rule_id);
-                    hasher.update(self.pathForWorkspaceRule(item));
+                    hasher.update(self.displayPathForWorkspaceRule(item));
                     hasher.update(item.content_hash);
                 }
             } else {

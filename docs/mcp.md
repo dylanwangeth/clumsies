@@ -385,12 +385,12 @@ Creates a new local artifact change.
 
 ### `update`
 
-Creates or updates a modify change against an existing object. For `context` and
+Creates or updates an `update` change against an existing object. For `context` and
 `rule`, the implementation resolves `id` through the manifest, reads the
 current cached file, computes a base hash, and writes the local draft form. For
 MPF, `id` should be `META_PROMPT.md`.
 
-If a matching modify draft already exists, `update` replaces its content and
+If a matching update draft already exists, `update` replaces its content and
 keeps it in draft state. This is what allows agents to refine a local context
 or rule draft through MCP instead of writing draft files directly.
 
@@ -449,7 +449,7 @@ Several validation and runtime errors are already stable enough to document:
 | `memref` receives an invalid constraint ID | structured `code: "unknown_constraint"`, `retryable: true`, `retryAction: "retry_with_valid_constraint"`, optional `validConstraints` |
 | artifact path is unsafe | `unsafe path` |
 | artifact target is missing | `file not found in cache` |
-| artifact update conflicts with a non-modify local draft | `artifact already has an incompatible local change` |
+| artifact update conflicts with a non-update local draft | `artifact already has an incompatible local change` |
 | artifact delete targets a create-only draft by path | `file not found in cache` |
 | create collides with an existing draft | `draft already exists` |
 

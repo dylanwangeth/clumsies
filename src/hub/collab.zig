@@ -1,6 +1,6 @@
 //! Hub collaboration endpoints. Implements the Pull Request lifecycle: create PR from workspace
 //! local edit, list/get PR details, add review comments, accept/reject, and track PR operations
-//! (add/modify/delete rules). PRs are the only path for changes to enter the Artifact.
+//! (add/update/delete rules). PRs are the only path for changes to enter the Artifact.
 const std = @import("std");
 const httpz = @import("httpz");
 const collab_api = @import("clumsies_lib").protocol.collab_api;
@@ -130,7 +130,7 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
 }
 
 fn isValidType(t: []const u8) bool {
-    return std.mem.eql(u8, t, "modify") or
+    return std.mem.eql(u8, t, "update") or
         std.mem.eql(u8, t, "rename") or
         std.mem.eql(u8, t, "create") or
         std.mem.eql(u8, t, "delete") or
@@ -140,17 +140,17 @@ fn isValidType(t: []const u8) bool {
 }
 
 fn validateOperation(conn: anytype, org_id: []const u8, op: Operation, ops: []const Operation, op_index: usize, res: *httpz.Response) !bool {
-    if (std.mem.eql(u8, op.type, "modify")) {
+    if (std.mem.eql(u8, op.type, "update")) {
         const pid = op.rule_id orelse {
-            try apiError(res, 400, "BAD_REQUEST", "modify requires rule_id");
+            try apiError(res, 400, "BAD_REQUEST", "update requires rule_id");
             return false;
         };
         const base_hash = op.base_hash orelse {
-            try apiError(res, 400, "BAD_REQUEST", "modify requires base_hash");
+            try apiError(res, 400, "BAD_REQUEST", "update requires base_hash");
             return false;
         };
         const content = op.content orelse {
-            try apiError(res, 400, "BAD_REQUEST", "modify requires content");
+            try apiError(res, 400, "BAD_REQUEST", "update requires content");
             return false;
         };
         db_mod.validateContentFormat(content) catch {
@@ -455,7 +455,7 @@ pub fn handleGetPr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respon
         \\SELECT op.op_index, op.type, op.rule_id, op.base_hash, op.base_content, op.content, op.path,
         \\  COALESCE(r.path, op.rule_id, '') as current_path,
         \\  COALESCE($2 = 'open'
-        \\    AND op.type IN ('modify', 'rename')
+        \\    AND op.type IN ('update', 'rename')
         \\    AND op.base_hash IS NOT NULL
         \\    AND r.content_hash <> op.base_hash, false) as conflict
         \\FROM rule_pr_operations op
@@ -678,7 +678,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
     };
 
     for (ops.items) |op| {
-        if (std.mem.eql(u8, op.type, "modify")) {
+        if (std.mem.eql(u8, op.type, "update")) {
             const pid = op.rule_id.?;
             const bh = op.base_hash.?;
             const new_content = op.content.?;

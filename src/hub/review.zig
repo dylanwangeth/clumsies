@@ -142,7 +142,7 @@ fn appendRulePrs(
         \\    JOIN rules r ON r.rule_id = op.rule_id
         \\    WHERE op.pr_id = pp.pr_id
         \\      AND pp.status = 'open'
-        \\      AND op.type IN ('modify', 'rename')
+        \\      AND op.type IN ('update', 'rename')
         \\      AND op.base_hash IS NOT NULL
         \\      AND r.content_hash <> op.base_hash
         \\  ) as has_conflict,

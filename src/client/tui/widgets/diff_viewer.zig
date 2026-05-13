@@ -265,7 +265,7 @@ test "computeInlineGutter: pure deletion" {
     }
 }
 
-test "computeInlineGutter: middle-line modify" {
+test "computeInlineGutter: middle-line update" {
     const rows = (try computeInlineGutter(std.testing.allocator, "a\nold\nc\n", "a\nnew\nc\n")).?;
     defer std.testing.allocator.free(rows);
     try std.testing.expectEqual(Marker.unchanged, rows[0].marker);

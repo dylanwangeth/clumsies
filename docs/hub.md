@@ -253,7 +253,7 @@ with an operation-based body:
   "description": "Split the adapter guidance into host-specific sections.",
   "operations": [
     {
-      "type": "modify",
+      "type": "update",
       "rule_id": "p-adapter",
       "base_hash": "sha256:old",
       "content": "# Adapter\n..."
@@ -262,7 +262,7 @@ with an operation-based body:
 }
 ```
 
-The operation types are `modify`, `rename`, `create`, and `delete`. Validation is hash-bound. If `base_hash` no longer matches current Artifact state, Hub returns `409`.
+The operation types are `update`, `rename`, `create`, and `delete`. Validation is hash-bound. If `base_hash` no longer matches current Artifact state, Hub returns `409`.
 
 Context PR creation follows the same operation model, but at workspace scope:
 
@@ -277,7 +277,7 @@ with context-specific identity fields:
   "description": "Update the architecture note for the new MCP flow.",
   "operations": [
     {
-      "type": "modify",
+      "type": "update",
       "context_id": "ctx-architecture",
       "base_hash": "sha256:old",
       "content": "# Architecture\n..."

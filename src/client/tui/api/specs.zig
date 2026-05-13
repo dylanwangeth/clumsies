@@ -53,9 +53,9 @@ pub const CreateContextPrResponse = state.CreateContextPrResponse;
 /// Mirrors CreateContextPrParams so the composer submit path is
 /// symmetric across the two categories. Multi-op PRs remain a
 /// follow-up; the composer UI submits one draft at a time. Which
-/// fields must be non-null depends on `operation_type`: modify,
+/// fields must be non-null depends on `operation_type`: update,
 /// rename, and delete carry `rule_id`; create carries `path`; rename
-/// carries `new_path`; modify and rename carry `base_hash`.
+/// carries `new_path`; update and rename carry `base_hash`.
 pub const CreateRulePrParams = struct {
     ws_id: ?[]const u8 = null,
     title: []const u8,
@@ -86,7 +86,7 @@ pub const CreateRulePrBatchParams = struct {
 
 /// Parameters for creating a context PR. Mirrors the rule PR shape
 /// but against a workspace-scoped endpoint. `context_id` identifies
-/// an existing file (modify/rename/delete); create-ops leave it null
+/// an existing file (update/rename/delete); create-ops leave it null
 /// and populate `path` instead. Rename ops populate `new_path`.
 pub const CreateContextPrParams = struct {
     ws_id: []const u8,

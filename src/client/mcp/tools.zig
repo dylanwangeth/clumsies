@@ -779,6 +779,8 @@ fn handleArtifact(
         else => return error.InvalidParams,
     };
 
+    try drafts_mod.normalizeDrafts(allocator, workspace_root);
+
     return switch (parsed) {
         .create => handleProposeCreate(allocator, workspace_root, session, op_args, category),
         .update => handleProposeUpdate(allocator, workspace_root, session, op_args, category),
@@ -947,26 +949,15 @@ fn handleProposeUpdate(
 
     const base_hash = util_hash.contentHash(cache_content);
 
-    const updated = try drafts_mod.updateModifyDraftContent(
-        allocator,
-        workspace_root,
-        draft_category,
-        m_entry.path,
-        body,
-        description,
-    );
-    if (!updated) {
-        try drafts_mod.createDraft(allocator, workspace_root, .{
-            .category = draft_category,
-            .operation = .modify,
-            .draft_path = m_entry.path,
-            .current_path = m_entry.path,
-            .base_hash = base_hash[0..],
-            .rule_id = if (category == .rule and draft_category == .rule) id else null,
-            .context_id = if (category == .context) id else null,
-            .description = description,
-        }, body);
-    }
+    const draft = try drafts_mod.upsertUpdateDraft(allocator, workspace_root, .{
+        .category = draft_category,
+        .current_path = m_entry.path,
+        .base_hash = base_hash[0..],
+        .rule_id = if (category == .rule and draft_category == .rule) id else null,
+        .context_id = if (category == .context) id else null,
+        .description = description,
+    }, body);
+    defer draft.deinit(allocator);
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_update = .{ .id = id, .path = m_entry.path } },
@@ -975,7 +966,7 @@ fn handleProposeUpdate(
     };
     session.recordEvent(allocator, payload);
 
-    return buildOkDraftPath(allocator, m_entry.path);
+    return buildOkDraftPath(allocator, draft.draft_path);
 }
 
 fn handleProposeRename(
@@ -1026,16 +1017,15 @@ fn handleProposeRename(
 
     const base_hash = util_hash.contentHash(cache_content);
 
-    try drafts_mod.createDraft(allocator, workspace_root, .{
+    const draft = try drafts_mod.upsertRenameDraft(allocator, workspace_root, .{
         .category = category,
-        .operation = .rename,
-        .draft_path = new_path,
         .current_path = m_entry.path,
         .base_hash = base_hash[0..],
         .rule_id = if (category == .rule) id else null,
         .context_id = if (category == .context) id else null,
         .description = description,
-    }, "");
+    }, new_path, cache_content);
+    defer draft.deinit(allocator);
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_rename = .{ .id = id, .path = m_entry.path, .new_path = new_path } },
@@ -1044,7 +1034,7 @@ fn handleProposeRename(
     };
     session.recordEvent(allocator, payload);
 
-    return buildOkDraftPath(allocator, new_path);
+    return buildOkDraftPath(allocator, draft.draft_path);
 }
 
 fn handleProposeDelete(
@@ -1081,15 +1071,14 @@ fn handleProposeDelete(
         .meta_prompt => .{ .path = "META_PROMPT.md", .hash = "" },
     };
 
-    try drafts_mod.createDraft(allocator, workspace_root, .{
+    const draft = try drafts_mod.upsertDeleteDraft(allocator, workspace_root, .{
         .category = category,
-        .operation = .delete,
-        .draft_path = m_entry.path,
         .current_path = m_entry.path,
         .rule_id = if (category == .rule) id else null,
         .context_id = if (category == .context) id else null,
         .description = description,
-    }, "");
+    });
+    defer draft.deinit(allocator);
 
     const payload: attestation.AttestationEvent.Payload = switch (category) {
         .context => .{ .context_propose_delete = .{ .id = id, .path = m_entry.path } },
@@ -1098,7 +1087,7 @@ fn handleProposeDelete(
     };
     session.recordEvent(allocator, payload);
 
-    return buildOkDraftPath(allocator, m_entry.path);
+    return buildOkDraftPath(allocator, draft.draft_path);
 }
 
 fn requiredString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -1504,7 +1493,7 @@ test "artifact tool discards MPF draft by manifest id" {
 
     try drafts_mod.createDraft(testing.allocator, root, .{
         .category = .meta_prompt,
-        .operation = .modify,
+        .operation = .update,
         .draft_path = "META_PROMPT.md",
         .current_path = "META_PROMPT.md",
         .base_hash = "sha256:old",
@@ -1578,10 +1567,10 @@ test "artifact tool updates MPF change" {
     var index = try drafts_mod.loadIndex(testing.allocator, root);
     defer index.deinit(testing.allocator);
     const entry = index.findByCurrentPath(.meta_prompt, "META_PROMPT.md") orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(drafts_mod.DraftOperation.modify, entry.operation);
+    try testing.expectEqual(drafts_mod.DraftOperation.update, entry.operation);
 }
 
-test "artifact update overwrites existing context modify draft" {
+test "artifact update overwrites existing context update draft" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1650,7 +1639,7 @@ test "artifact update overwrites existing context modify draft" {
     defer index.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), index.entries.items.len);
     const entry = index.findByCurrentPath(.context, "spec/API.md") orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(drafts_mod.DraftOperation.modify, entry.operation);
+    try testing.expectEqual(drafts_mod.DraftOperation.update, entry.operation);
     try testing.expectEqualStrings("second", entry.description.?);
 }
 
