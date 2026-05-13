@@ -772,13 +772,13 @@ fn parseWorkspaceContextContentBatchPayload(
     req: BatchWorkspaceContextContentParams,
     body: []const u8,
 ) anyerror!WorkspaceContextContentBatchPayload {
-    const parsed = try std.json.parseFromSlice(workspace_api.BatchContextContentResponse, alloc, body, .{
+    const parsed = try std.json.parseFromSliceLeaky(workspace_api.BatchContextContentResponse, alloc, body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     });
     return .{
         .ws_id = try alloc.dupe(u8, req.ws_id),
-        .items = parsed.value.items,
+        .items = parsed.items,
     };
 }
 

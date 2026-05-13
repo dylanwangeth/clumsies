@@ -330,37 +330,38 @@ pub fn handleBatchRuleContent(ctx: *Server.Context, req: *httpz.Request, res: *h
         return apiError(res, 403, "FORBIDDEN", "not a member of this workspace");
     }
 
-    var items: std.ArrayList(BatchRuleItem) = .empty;
-    for (body.rule_ids) |rule_id| {
-        const row_result = conn.row(
-            \\SELECT p.rule_id, p.content_hash, p.content, p.path
-            \\FROM workspace_rules wr
-            \\JOIN rules p ON p.rule_id = wr.rule_id
-            \\WHERE wr.ws_id = $1 AND p.org_id = $2::uuid AND p.rule_id = $3
-        ,
-            .{ ws_id, user.org_id, rule_id },
-        ) catch {
-            try items.append(req.arena, .{
-                .rule_id = try req.arena.dupe(u8, rule_id),
-                .@"error" = "INTERNAL_ERROR",
-            });
-            continue;
-        };
-        var row = row_result orelse {
-            try items.append(req.arena, .{
-                .rule_id = try req.arena.dupe(u8, rule_id),
-                .@"error" = "NOT_FOUND",
-            });
-            continue;
-        };
-        defer row.deinit() catch {};
-
-        try items.append(req.arena, .{
-            .rule_id = try req.arena.dupe(u8, try row.get([]const u8, 0)),
+    var rows_by_rule_id = std.StringHashMap(BatchRuleItem).init(req.arena);
+    var result = conn.query(
+        \\SELECT p.rule_id, p.content_hash, p.content, p.path
+        \\FROM workspace_rules wr
+        \\JOIN rules p ON p.rule_id = wr.rule_id
+        \\WHERE wr.ws_id = $1 AND p.org_id = $2::uuid AND p.rule_id = ANY($3)
+    ,
+        .{ ws_id, user.org_id, body.rule_ids },
+    ) catch {
+        return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
+    };
+    defer result.deinit();
+    while (try result.next()) |row| {
+        const rule_id = try req.arena.dupe(u8, try row.get([]const u8, 0));
+        try rows_by_rule_id.put(rule_id, .{
+            .rule_id = rule_id,
             .content_hash = try req.arena.dupe(u8, try row.get([]const u8, 1)),
             .body = try req.arena.dupe(u8, try row.get([]const u8, 2)),
             .path = try req.arena.dupe(u8, try row.get([]const u8, 3)),
         });
+    }
+
+    var items: std.ArrayList(BatchRuleItem) = .empty;
+    for (body.rule_ids) |rule_id| {
+        if (rows_by_rule_id.get(rule_id)) |item| {
+            try items.append(req.arena, item);
+        } else {
+            try items.append(req.arena, .{
+                .rule_id = try req.arena.dupe(u8, rule_id),
+                .@"error" = "NOT_FOUND",
+            });
+        }
     }
 
     try res.json(BatchRuleContentResponse{ .items = items.items }, .{});

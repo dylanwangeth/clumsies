@@ -1030,7 +1030,10 @@ fn workspaceRowsSignature(
     hasher.update(@tagName(self.workspace.tab));
     hasher.update(search_query);
     if (self.activeWsId()) |ws_id| hasher.update(ws_id);
-    hashInt(&hasher, self.currentWsTree().expanded.count());
+    const expanded = &self.currentWsTree().expanded;
+    hashInt(&hasher, expanded.count());
+    var expanded_it = expanded.keyIterator();
+    while (expanded_it.next()) |key| hasher.update(key.*);
     hashInt(&hasher, self.drafts.create_context_paths.len);
     hashInt(&hasher, self.drafts.create_rule_paths.len);
 

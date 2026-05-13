@@ -443,24 +443,28 @@ fn writeDigits4(buf: *[4]u8, val: u16) void {
 fn rotateLogFileIfNeeded(path: []const u8, max_bytes: u64, backups: usize) !void {
     if (max_bytes == 0 or backups == 0) return;
 
-    var file = std.fs.openFileAbsolute(path, .{ .mode = .read_only }) catch |err| switch (err) {
-        error.FileNotFound => return,
-        else => return err,
-    };
-    defer file.close();
-
-    const stat = try file.stat();
-    if (stat.size == 0) return;
-
     var current_date: [10]u8 = undefined;
     formatDateFromSeconds(&current_date, @intCast(@max(std.time.milliTimestamp(), 0) / 1000));
 
     var log_date: [10]u8 = undefined;
-    const archive_date = if (readLogDate(file, &log_date) or formatDateFromNs(stat.mtime, &log_date))
-        log_date[0..]
-    else
-        current_date[0..];
+    const stat = blk: {
+        var file = std.fs.openFileAbsolute(path, .{ .mode = .read_only }) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return err,
+        };
+        defer file.close();
 
+        const stat = try file.stat();
+        if (stat.size == 0) return;
+        if (!readLogDate(file, &log_date)) {
+            if (!formatDateFromNs(stat.mtime, &log_date)) {
+                @memcpy(&log_date, &current_date);
+            }
+        }
+        break :blk stat;
+    };
+
+    const archive_date = log_date[0..];
     const stale_date = !std.mem.eql(u8, archive_date, current_date[0..]);
     if (!stale_date and stat.size < max_bytes) return;
 
