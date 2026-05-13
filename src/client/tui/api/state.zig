@@ -312,7 +312,6 @@ pub const ApiState = struct {
             self.mutex.unlock();
             return error.NotAuthenticated;
         };
-        errdefer alloc.free(hub_url);
         defer alloc.free(hub_url);
         const username = if (self.username) |value| alloc.dupe(u8, value) catch |err| {
             self.mutex.unlock();
@@ -321,7 +320,6 @@ pub const ApiState = struct {
             self.mutex.unlock();
             return error.NotAuthenticated;
         };
-        errdefer alloc.free(username);
         defer alloc.free(username);
         const refresh_token = if (self.refresh_token) |value| alloc.dupe(u8, value) catch |err| {
             self.mutex.unlock();
@@ -331,7 +329,6 @@ pub const ApiState = struct {
             return error.NotAuthenticated;
         };
         self.mutex.unlock();
-        errdefer alloc.free(refresh_token);
         defer alloc.free(refresh_token);
 
         var client = HubClient.init(alloc, hub_url, null);
