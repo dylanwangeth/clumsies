@@ -89,6 +89,11 @@ pub const AttestationUploadResult = union(enum) {
 pub const AuthTokenPair = struct {
     access_token: []const u8,
     refresh_token: []const u8,
+
+    pub fn deinit(self: AuthTokenPair, alloc: std.mem.Allocator) void {
+        alloc.free(self.access_token);
+        alloc.free(self.refresh_token);
+    }
 };
 
 pub const ApiState = struct {
@@ -308,6 +313,7 @@ pub const ApiState = struct {
             return error.NotAuthenticated;
         };
         errdefer alloc.free(hub_url);
+        defer alloc.free(hub_url);
         const username = if (self.username) |value| alloc.dupe(u8, value) catch |err| {
             self.mutex.unlock();
             return err;
@@ -316,6 +322,7 @@ pub const ApiState = struct {
             return error.NotAuthenticated;
         };
         errdefer alloc.free(username);
+        defer alloc.free(username);
         const refresh_token = if (self.refresh_token) |value| alloc.dupe(u8, value) catch |err| {
             self.mutex.unlock();
             return err;
@@ -325,6 +332,7 @@ pub const ApiState = struct {
         };
         self.mutex.unlock();
         errdefer alloc.free(refresh_token);
+        defer alloc.free(refresh_token);
 
         var client = HubClient.init(alloc, hub_url, null);
         client.client_id = self.clientIdHex();

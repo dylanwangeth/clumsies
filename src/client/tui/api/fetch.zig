@@ -149,6 +149,7 @@ fn fetchAll(
             setStatus(api_state, .error_auth);
             return;
         };
+        defer tokens.deinit(alloc);
         me_resp.deinit();
         me_resp_active = false;
 

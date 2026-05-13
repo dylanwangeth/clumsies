@@ -11,9 +11,20 @@ const ApiStateUploader = struct {
     api_state: *state.ApiState,
     last_status: ?std.http.Status = null,
 
+    const AuthSnapshot = struct {
+        hub_url: []const u8,
+        access_token: []const u8,
+
+        fn deinit(self: AuthSnapshot, allocator: std.mem.Allocator) void {
+            allocator.free(self.hub_url);
+            allocator.free(self.access_token);
+        }
+    };
+
     fn post(ctx: *anyopaque, body: []const u8) !bool {
         const self: *ApiStateUploader = @ptrCast(@alignCast(ctx));
         const snapshot = try self.snapshotAuth();
+        defer snapshot.deinit(self.allocator);
 
         var client = HubClient.init(self.allocator, snapshot.hub_url, snapshot.access_token);
         client.client_id = self.api_state.clientIdHex();
@@ -31,6 +42,7 @@ const ApiStateUploader = struct {
                 self.last_status = response.status;
                 return false;
             };
+            defer tokens.deinit(self.allocator);
             response.deinit();
             response_active = false;
 
@@ -59,7 +71,7 @@ const ApiStateUploader = struct {
         return .{ .ctx = @ptrCast(self), .postFn = ApiStateUploader.post };
     }
 
-    fn snapshotAuth(self: *ApiStateUploader) !struct { hub_url: []const u8, access_token: []const u8 } {
+    fn snapshotAuth(self: *ApiStateUploader) !AuthSnapshot {
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         const hub_url = self.api_state.hub_url orelse return error.NotAuthenticated;

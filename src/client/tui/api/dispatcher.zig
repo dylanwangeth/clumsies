@@ -26,6 +26,11 @@ const log = std.log.scoped(.tui_api);
 pub const RefreshTokens = struct {
     access_token: []const u8,
     refresh_token: []const u8,
+
+    pub fn deinit(self: RefreshTokens, alloc: std.mem.Allocator) void {
+        alloc.free(self.access_token);
+        alloc.free(self.refresh_token);
+    }
 };
 pub const RefreshFn = *const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!RefreshTokens;
 
@@ -292,6 +297,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
                     });
                     break :refresh_blk;
                 };
+                defer tokens.deinit(t_alloc);
                 resp.deinit();
                 resp_active = false;
 
