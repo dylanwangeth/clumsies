@@ -12,6 +12,16 @@ const state = @import("state.zig");
 
 const log = std.log.scoped(.tui_api);
 
+const AuthSnapshot = struct {
+    hub_url: []const u8,
+    access_token: []const u8,
+
+    fn deinit(self: AuthSnapshot, alloc: std.mem.Allocator) void {
+        alloc.free(self.hub_url);
+        alloc.free(self.access_token);
+    }
+};
+
 /// Seed api_state with the auth credentials and kick off the initial
 /// compound bootstrap fetch. The spawned worker registers itself to
 /// the shared thread registry so main.zig's exit path joins it.
@@ -31,6 +41,9 @@ pub fn startFetch(
         token_alloc.free(token_copy);
         return err;
     };
+    const worker_auth = try dupeAuthSnapshot(token_alloc, hub_url, access_token);
+    errdefer worker_auth.deinit(token_alloc);
+
     log.info("bootstrap_start", .{});
     api_state.mutex.lock();
     const old_access = api_state.access_token;
@@ -44,7 +57,7 @@ pub fn startFetch(
     if (old_access) |token| token_alloc.free(token);
     if (old_refresh) |token| token_alloc.free(token);
 
-    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, url_copy, username_copy, token_copy, refresh_copy }) catch |err| {
+    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, worker_auth }) catch |err| {
         log.warn("bootstrap_spawn_failed error={s}", .{@errorName(err)});
         api_state.mutex.lock();
         api_state.bootstrap_inflight = false;
@@ -55,25 +68,13 @@ pub fn startFetch(
 }
 
 pub fn refetchAllAsync(api_state: *state.ApiState) void {
-    api_state.mutex.lock();
-    if (api_state.hub_url == null or api_state.username == null or api_state.access_token == null or api_state.refresh_token == null) {
-        api_state.mutex.unlock();
+    const auth = beginRefetch(api_state) catch |err| {
+        log.warn("bootstrap_refetch_prepare_failed error={s}", .{@errorName(err)});
         return;
-    }
-    if (api_state.bootstrap_inflight) {
-        log.info("bootstrap_refetch_queued", .{});
-        api_state.bootstrap_refetch_requested = true;
-        api_state.mutex.unlock();
-        return;
-    }
-    api_state.bootstrap_inflight = true;
-    const hub_url = api_state.hub_url.?;
-    const username = api_state.username.?;
-    const access_token = api_state.access_token.?;
-    const refresh_token = api_state.refresh_token.?;
-    api_state.mutex.unlock();
+    } orelse return;
 
-    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, hub_url, username, access_token, refresh_token }) catch {
+    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, auth }) catch {
+        auth.deinit(api_state.backing_allocator);
         log.warn("bootstrap_refetch_spawn_failed", .{});
         api_state.mutex.lock();
         api_state.bootstrap_inflight = false;
@@ -85,36 +86,17 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
 
 fn fetchAll(
     api_state: *state.ApiState,
-    hub_url: []const u8,
-    username: []const u8,
-    access_token: []const u8,
-    refresh_token: []const u8,
+    auth: AuthSnapshot,
 ) void {
-    _ = username;
-    _ = refresh_token;
+    const hub_url = auth.hub_url;
+    const access_token = auth.access_token;
+    defer auth.deinit(api_state.backing_allocator);
     defer {
-        var next_hub_url: ?[]const u8 = null;
-        var next_username: ?[]const u8 = null;
-        var next_access_token: ?[]const u8 = null;
-        var next_refresh_token: ?[]const u8 = null;
-        api_state.mutex.lock();
-        if (api_state.bootstrap_refetch_requested and api_state.hub_url != null and api_state.username != null and api_state.access_token != null and api_state.refresh_token != null) {
-            api_state.bootstrap_refetch_requested = false;
-            next_hub_url = api_state.hub_url.?;
-            next_username = api_state.username.?;
-            next_access_token = api_state.access_token.?;
-            next_refresh_token = api_state.refresh_token.?;
-        } else {
-            api_state.bootstrap_inflight = false;
-        }
-        api_state.mutex.unlock();
-        if (next_hub_url) |url| {
-            const next_user = next_username.?;
-            const token = next_access_token.?;
-            const refresh = next_refresh_token.?;
-            if (std.Thread.spawn(.{}, fetchAll, .{ api_state, url, next_user, token, refresh })) |thread| {
+        if (takeQueuedRefetch(api_state)) |next_auth| {
+            if (std.Thread.spawn(.{}, fetchAll, .{ api_state, next_auth })) |thread| {
                 api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
             } else |_| {
+                next_auth.deinit(api_state.backing_allocator);
                 api_state.mutex.lock();
                 api_state.bootstrap_inflight = false;
                 api_state.mutex.unlock();
@@ -223,6 +205,71 @@ fn fetchAll(
         bundles != null,
         org_stats != null,
     });
+}
+
+fn dupeAuthSnapshot(
+    alloc: std.mem.Allocator,
+    hub_url: []const u8,
+    access_token: []const u8,
+) !AuthSnapshot {
+    const hub_url_copy = try alloc.dupe(u8, hub_url);
+    errdefer alloc.free(hub_url_copy);
+    const access_copy = try alloc.dupe(u8, access_token);
+    return .{
+        .hub_url = hub_url_copy,
+        .access_token = access_copy,
+    };
+}
+
+fn beginRefetch(api_state: *state.ApiState) !?AuthSnapshot {
+    const alloc = api_state.backing_allocator;
+    api_state.mutex.lock();
+    defer api_state.mutex.unlock();
+
+    if (api_state.hub_url == null or api_state.username == null or api_state.access_token == null or api_state.refresh_token == null) {
+        return null;
+    }
+    if (api_state.bootstrap_inflight) {
+        log.info("bootstrap_refetch_queued", .{});
+        api_state.bootstrap_refetch_requested = true;
+        return null;
+    }
+
+    const auth = try dupeAuthSnapshot(
+        alloc,
+        api_state.hub_url.?,
+        api_state.access_token.?,
+    );
+    api_state.bootstrap_inflight = true;
+    return auth;
+}
+
+fn takeQueuedRefetch(api_state: *state.ApiState) ?AuthSnapshot {
+    const alloc = api_state.backing_allocator;
+    api_state.mutex.lock();
+    defer api_state.mutex.unlock();
+
+    if (!api_state.bootstrap_refetch_requested) {
+        api_state.bootstrap_inflight = false;
+        return null;
+    }
+    if (api_state.hub_url == null or api_state.username == null or api_state.access_token == null or api_state.refresh_token == null) {
+        api_state.bootstrap_refetch_requested = false;
+        api_state.bootstrap_inflight = false;
+        return null;
+    }
+
+    const auth = dupeAuthSnapshot(
+        alloc,
+        api_state.hub_url.?,
+        api_state.access_token.?,
+    ) catch {
+        api_state.bootstrap_refetch_requested = false;
+        api_state.bootstrap_inflight = false;
+        return null;
+    };
+    api_state.bootstrap_refetch_requested = false;
+    return auth;
 }
 
 fn setStatus(api_state: *state.ApiState, status: state.ConnectionStatus) void {
