@@ -86,6 +86,16 @@ That indirection is the design advantage. The workflow content remains an Artifa
 
 Workflow proxies should load by workflow name or path alias, such as `workflow:GEN_COMMIT_MSG`, rather than requiring the generated skill author to know a Hub `p-*` id. The proxy should pass a remembered hash to `memload` when it has one, and use an empty string only when the hash is unknown.
 
+## Workflow skill auto-import
+
+Workflow-backed skills are imported when the adapter is installed or updated. For workspace-scoped installs, the adapter scans the local workspace cache manifest for files under `workflow/*.md`, turns each workflow filename into a host skill name, and writes a thin skill proxy into the host's skill directory.
+
+For example, `workflow/STUDY.md` becomes a `study` skill. The generated skill does not embed the workflow body. It calls `memload` with `workflow:STUDY` and then tells the agent to follow the loaded workflow. The same rule applies to other workflow files, such as `workflow/ERROR_PRONE.md` becoming `error-prone`.
+
+This import path runs during `clumsies adapt` or `clumsies adapt --update`. It is not part of the Codex `SessionStart` hook. The Codex hook only bootstraps the MCP protocol by injecting the `memsetup` instruction for the current host session.
+
+The import source is the synchronized local cache, not the review draft list. A newly created workflow draft may be visible through MCP tools, but it will not necessarily produce a host skill until the workflow is accepted into the cache and the adapter is updated.
+
 ## Install, update, remove
 
 Adapter is also responsible for lifecycle discipline. It needs to detect available host capabilities, plan what should be installed, write only the managed resources it owns, update those resources later, and remove them cleanly.

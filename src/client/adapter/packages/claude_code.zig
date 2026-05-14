@@ -90,15 +90,6 @@ pub fn renderRuntimeAssets(
         .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_skill_discover),
     });
     try assets.append(allocator, .{
-        .resource_id = "claude-code.skills.clumsies_error_prone",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, scope, "skills/clumsies-error-prone/SKILL.md"),
-        .ownership = "exclusive",
-        .label = "Claude Code clumsies-error-prone skill",
-        .file_mode = 0o644,
-        .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_skill_clumsies_error_prone),
-    });
-    try assets.append(allocator, .{
         .resource_id = "claude-code.skills.ntmd",
         .resource_kind = "plain_file",
         .relative_path = try scopedRelativePath(allocator, scope, "skills/ntmd/SKILL.md"),

@@ -1364,12 +1364,12 @@ test "loadRules: alias known hash suppresses unchanged content" {
     defer tmp.cleanup();
 
     try tmp.dir.makePath("cache/rule/workflow");
-    try writeFile(tmp.dir, "cache/rule/workflow/CLUMSIES_ERROR_PRONE.md", "error workflow");
+    try writeFile(tmp.dir, "cache/rule/workflow/ERROR_PRONE.md", "error workflow");
 
     try writeTestManifest(tmp.dir,
         \\{
         \\  "rules": {
-        \\    "p-error": {"path": "workflow/CLUMSIES_ERROR_PRONE.md", "hash": "sha256:error"}
+        \\    "p-error": {"path": "workflow/ERROR_PRONE.md", "hash": "sha256:error"}
         \\  }
         \\}
     );
@@ -1377,8 +1377,8 @@ test "loadRules: alias known hash suppresses unchanged content" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    const known = [_]KnownHash{.{ .id = "workflow:CLUMSIES_ERROR_PRONE", .hash = "sha256:error" }};
-    var result = try loadRules(testing.allocator, root, &.{"workflow:CLUMSIES_ERROR_PRONE"}, &known);
+    const known = [_]KnownHash{.{ .id = "workflow:ERROR_PRONE", .hash = "sha256:error" }};
+    var result = try loadRules(testing.allocator, root, &.{"workflow:ERROR_PRONE"}, &known);
     defer result.deinit(testing.allocator);
 
     try testing.expectEqualStrings("p-error", result.items.items[0].id);
@@ -1396,16 +1396,16 @@ test "loadRules: create draft alias known hash suppresses unchanged content" {
     try drafts.createDraft(testing.allocator, root, .{
         .category = .rule,
         .operation = .create,
-        .draft_path = "workflow/CLUMSIES_ERROR_PRONE.md",
+        .draft_path = "workflow/ERROR_PRONE.md",
         .local_temp_id = "tmp-rule-error",
         .description = "error workflow",
     }, "draft workflow");
 
     const hash = try util_hash.sha256HexAlloc(testing.allocator, "draft workflow");
     defer testing.allocator.free(hash);
-    const known = [_]KnownHash{.{ .id = "workflow:clumsies-error-prone", .hash = hash }};
+    const known = [_]KnownHash{.{ .id = "workflow:error-prone", .hash = hash }};
 
-    var result = try loadRules(testing.allocator, root, &.{"workflow:clumsies-error-prone"}, &known);
+    var result = try loadRules(testing.allocator, root, &.{"workflow:error-prone"}, &known);
     defer result.deinit(testing.allocator);
 
     try testing.expectEqualStrings("tmp-rule-error", result.items.items[0].id);
