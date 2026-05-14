@@ -42,7 +42,8 @@ pub fn startFetch(
         return err;
     };
     const worker_auth = try dupeAuthSnapshot(token_alloc, hub_url, access_token);
-    errdefer worker_auth.deinit(token_alloc);
+    var worker_auth_owned = true;
+    errdefer if (worker_auth_owned) worker_auth.deinit(token_alloc);
 
     log.info("bootstrap_start", .{});
     api_state.mutex.lock();
@@ -64,7 +65,8 @@ pub fn startFetch(
         api_state.mutex.unlock();
         return err;
     };
-    try api_state.thread_registry.register(thread, api_state.backing_allocator);
+    worker_auth_owned = false;
+    try registerFetchThread(api_state, thread, "bootstrap");
 }
 
 pub fn refetchAllAsync(api_state: *state.ApiState) void {
@@ -81,7 +83,7 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
         api_state.mutex.unlock();
         return;
     };
-    api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
+    registerFetchThread(api_state, thread, "bootstrap_refetch") catch {};
 }
 
 fn fetchAll(
@@ -94,7 +96,7 @@ fn fetchAll(
     defer {
         if (takeQueuedRefetch(api_state)) |next_auth| {
             if (std.Thread.spawn(.{}, fetchAll, .{ api_state, next_auth })) |thread| {
-                api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
+                registerFetchThread(api_state, thread, "bootstrap_refetch_queued") catch {};
             } else |_| {
                 next_auth.deinit(api_state.backing_allocator);
                 api_state.mutex.lock();
@@ -241,6 +243,7 @@ fn beginRefetch(api_state: *state.ApiState) !?AuthSnapshot {
         api_state.access_token.?,
     );
     api_state.bootstrap_inflight = true;
+    api_state.bootstrap_refetch_requested = false;
     return auth;
 }
 
@@ -263,13 +266,25 @@ fn takeQueuedRefetch(api_state: *state.ApiState) ?AuthSnapshot {
         alloc,
         api_state.hub_url.?,
         api_state.access_token.?,
-    ) catch {
-        api_state.bootstrap_refetch_requested = false;
+    ) catch |err| {
+        log.warn("bootstrap_refetch_queued_prepare_failed error={s}", .{@errorName(err)});
         api_state.bootstrap_inflight = false;
         return null;
     };
     api_state.bootstrap_refetch_requested = false;
     return auth;
+}
+
+fn registerFetchThread(
+    api_state: *state.ApiState,
+    thread: std.Thread,
+    comptime context: []const u8,
+) !void {
+    api_state.thread_registry.register(thread, api_state.backing_allocator) catch |err| {
+        log.warn("{s}_thread_register_failed error={s}", .{ context, @errorName(err) });
+        thread.join();
+        return err;
+    };
 }
 
 fn setStatus(api_state: *state.ApiState, status: state.ConnectionStatus) void {
