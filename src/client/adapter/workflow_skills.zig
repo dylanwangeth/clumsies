@@ -46,12 +46,13 @@ pub fn renderImportedWorkflowSkills(
         if (!std.mem.endsWith(u8, workflow_path, ".md")) continue;
 
         const filename = std.fs.path.basename(workflow_path);
+        const workflow_name = workflowNameFromFilename(filename);
+
         const base_slug = try workflowSlugFromFilename(allocator, filename);
         defer allocator.free(base_slug);
         const slug = try uniqueSlug(allocator, &slug_counts, base_slug);
         defer allocator.free(slug);
 
-        const workflow_name = workflowNameFromFilename(filename);
         const skill_content = try renderSkillContent(allocator, host, slug, filename, workflow_name);
         const relative_path = try skillFilePath(allocator, host, skill_root_display, slug);
         const absolute_path = try skillFilePath(allocator, host, skill_root_absolute, slug);
@@ -254,4 +255,28 @@ test "renderSkillContent loads workflow by name alias" {
     try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow:GEN_COMMIT_MSG\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "<remembered_hash_or_empty_string>") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "workflow/GEN_COMMIT_MSG.md") == null);
+}
+
+test "study workflow renders as auto-imported workflow skill proxy" {
+    const slug = try workflowSlugFromFilename(std.testing.allocator, "STUDY.md");
+    defer std.testing.allocator.free(slug);
+    try std.testing.expectEqualStrings("study", slug);
+
+    const content = try renderSkillContent(std.testing.allocator, .codex, slug, "STUDY.md", "STUDY");
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "name: study") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow:STUDY\"]") != null);
+}
+
+test "error prone workflow renders as auto-imported workflow skill proxy" {
+    const slug = try workflowSlugFromFilename(std.testing.allocator, "ERROR_PRONE.md");
+    defer std.testing.allocator.free(slug);
+    try std.testing.expectEqualStrings("error-prone", slug);
+
+    const content = try renderSkillContent(std.testing.allocator, .codex, slug, "ERROR_PRONE.md", "ERROR_PRONE");
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "name: error-prone") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow:ERROR_PRONE\"]") != null);
 }

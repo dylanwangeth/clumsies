@@ -235,10 +235,6 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/skills/discover/SKILL.md",
     ));
-    options.addOption([]const u8, "adapter_claude_code_runtime_skill_clumsies_error_prone", readSourceAsset(
-        b,
-        "assets/adapters/claude-code/runtime/skills/clumsies-error-prone/SKILL.md",
-    ));
     options.addOption([]const u8, "adapter_claude_code_runtime_skill_ntmd", readSourceAsset(
         b,
         "assets/adapters/claude-code/runtime/skills/ntmd/SKILL.md",
@@ -250,10 +246,6 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
     options.addOption([]const u8, "adapter_codex_runtime_skill_discover", readSourceAsset(
         b,
         "assets/adapters/codex/runtime/skills/discover/SKILL.md",
-    ));
-    options.addOption([]const u8, "adapter_codex_runtime_skill_clumsies_error_prone", readSourceAsset(
-        b,
-        "assets/adapters/codex/runtime/skills/clumsies-error-prone/SKILL.md",
     ));
     options.addOption([]const u8, "adapter_codex_runtime_skill_ntmd", readSourceAsset(
         b,
@@ -289,10 +281,6 @@ fn addGeminiCliAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Optio
     options.addOption([]const u8, "adapter_gemini_cli_runtime_skill_discover", readSourceAsset(
         b,
         "assets/adapters/gemini-cli/runtime/skills/discover/SKILL.toml",
-    ));
-    options.addOption([]const u8, "adapter_gemini_cli_runtime_skill_clumsies_error_prone", readSourceAsset(
-        b,
-        "assets/adapters/gemini-cli/runtime/skills/clumsies-error-prone/SKILL.toml",
     ));
     options.addOption([]const u8, "adapter_gemini_cli_runtime_skill_ntmd", readSourceAsset(
         b,
