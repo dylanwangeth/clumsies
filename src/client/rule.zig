@@ -274,16 +274,23 @@ fn groupFromPath(path: []const u8) ?[]const u8 {
     const first_slash = std.mem.indexOfScalar(u8, path, '/') orelse return null;
     if (std.mem.startsWith(u8, path, "workflow/")) {
         const after_kind = path[first_slash + 1 ..];
-        const next_slash = std.mem.indexOfScalar(u8, after_kind, '/') orelse return null;
-        return after_kind[0..next_slash];
+        const last_slash = std.mem.lastIndexOfScalar(u8, after_kind, '/') orelse return null;
+        return after_kind[0..last_slash];
     }
-    return path[0..first_slash];
+    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return null;
+    return path[0..last_slash];
 }
 
 fn matchesGroup(item_group: []const u8, filter: []const u8) bool {
     if (std.mem.eql(u8, item_group, filter)) return true;
-    if (std.mem.startsWith(u8, item_group, filter) and filter.len < item_group.len and item_group[filter.len] == '/') return true;
-    return false;
+    var item_it = std.mem.splitScalar(u8, item_group, '/');
+    var filter_it = std.mem.splitScalar(u8, filter, '/');
+    while (filter_it.next()) |filter_part| {
+        if (filter_part.len == 0) return false;
+        const item_part = item_it.next() orelse return false;
+        if (!normalizedIdentifierEqual(item_part, filter_part)) return false;
+    }
+    return true;
 }
 
 fn matchesQuery(haystack: []const u8, query: []const u8) bool {
@@ -356,6 +363,14 @@ fn loadAliasMatchesPath(alias: LoadAlias, path: []const u8, kind: RuleKind) bool
     return normalizedNameMatches(path, alias.target);
 }
 
+fn effectivePath(manifest_path: []const u8, draft_entry: ?*const drafts.DraftEntry) []const u8 {
+    const entry = draft_entry orelse return manifest_path;
+    return switch (entry.operation) {
+        .rename => entry.draft_path,
+        else => manifest_path,
+    };
+}
+
 fn resolveLoadId(
     id: []const u8,
     manifest: *const Manifest,
@@ -368,7 +383,12 @@ fn resolveLoadId(
 
     var rule_it = manifest.rules.iterator();
     while (rule_it.next()) |entry| {
-        const path = entry.value_ptr.path;
+        const manifest_path = entry.value_ptr.path;
+        const draft_entry = draft_index.findByCurrentPath(.rule, manifest_path);
+        if (draft_entry) |de| {
+            if (de.operation == .delete) continue;
+        }
+        const path = effectivePath(manifest_path, draft_entry);
         const kind = kindFromPath(path) orelse continue;
         if (loadAliasMatchesPath(alias, path, kind)) return .{
             .requested_id = id,
@@ -379,7 +399,13 @@ fn resolveLoadId(
     if (alias.kind == null or alias.kind.? == .context) {
         var ctx_it = manifest.context.iterator();
         while (ctx_it.next()) |entry| {
-            if (loadAliasMatchesPath(alias, entry.value_ptr.path, .context)) return .{
+            const manifest_path = entry.value_ptr.path;
+            const draft_entry = draft_index.findByCurrentPath(.context, manifest_path);
+            if (draft_entry) |de| {
+                if (de.operation == .delete) continue;
+            }
+            const path = effectivePath(manifest_path, draft_entry);
+            if (loadAliasMatchesPath(alias, path, .context)) return .{
                 .requested_id = id,
                 .actual_id = entry.key_ptr.*,
             };
@@ -434,18 +460,19 @@ pub fn discoverSearchable(
 
         if (std.mem.eql(u8, m_entry.path, "META_PROMPT.md")) continue;
 
-        const kind = kindFromPath(m_entry.path) orelse continue;
-        if (kind_filter) |kf| {
-            if (kf != kind) continue;
-        }
-
         // Check for a delete draft — hide this entry
         const draft_entry = draft_index.findByCurrentPath(.rule, m_entry.path);
         if (draft_entry) |de| {
             if (de.operation == .delete) continue;
         }
 
-        const group_slice = groupFromPath(m_entry.path);
+        const path = effectivePath(m_entry.path, draft_entry);
+        const kind = kindFromPath(path) orelse continue;
+        if (kind_filter) |kf| {
+            if (kf != kind) continue;
+        }
+
+        const group_slice = groupFromPath(path);
         if (group_filter) |gf| {
             const g = group_slice orelse continue;
             if (!matchesGroup(g, gf)) continue;
@@ -456,17 +483,17 @@ pub fn discoverSearchable(
             if (trimmed.len == 0) {
                 // empty/whitespace-only query is treated as no filter
             } else {
-                const in_path = matchesQuery(m_entry.path, trimmed);
+                const in_path = matchesQuery(path, trimmed);
                 const in_desc = m_entry.description.len > 0 and matchesQuery(m_entry.description, trimmed);
                 if (!in_path and !in_desc) continue;
             }
         }
 
-        const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
+        const display_name = displayNameFromFilename(std.fs.path.basename(path));
 
         const id_owned = try allocator.dupe(u8, entry.key_ptr.*);
         errdefer allocator.free(id_owned);
-        const path_owned = try allocator.dupe(u8, m_entry.path);
+        const path_owned = try allocator.dupe(u8, path);
         errdefer allocator.free(path_owned);
         const name_owned = try allocator.dupe(u8, display_name);
         errdefer allocator.free(name_owned);
@@ -501,23 +528,27 @@ pub fn discoverSearchable(
                 if (de.operation == .delete) continue;
             }
 
-            const group_slice = groupFromPath(m_entry.path);
+            const path = effectivePath(m_entry.path, draft_entry);
+            const group_slice = groupFromPath(path);
             if (group_filter) |gf| {
                 const g = group_slice orelse continue;
                 if (!matchesGroup(g, gf)) continue;
             }
 
             if (query_filter) |q| {
-                const in_path = matchesQuery(m_entry.path, q);
-                const in_desc = m_entry.description.len > 0 and matchesQuery(m_entry.description, q);
-                if (!in_path and !in_desc) continue;
+                const trimmed = std.mem.trim(u8, q, " \t");
+                if (trimmed.len > 0) {
+                    const in_path = matchesQuery(path, trimmed);
+                    const in_desc = m_entry.description.len > 0 and matchesQuery(m_entry.description, trimmed);
+                    if (!in_path and !in_desc) continue;
+                }
             }
 
-            const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
+            const display_name = displayNameFromFilename(std.fs.path.basename(path));
 
             const id_owned = try allocator.dupe(u8, entry.key_ptr.*);
             errdefer allocator.free(id_owned);
-            const path_owned = try allocator.dupe(u8, m_entry.path);
+            const path_owned = try allocator.dupe(u8, path);
             errdefer allocator.free(path_owned);
             const name_owned = try allocator.dupe(u8, display_name);
             errdefer allocator.free(name_owned);
@@ -644,13 +675,13 @@ pub fn loadRules(
         };
 
         if (manifest.rules.get(resolved_id.actual_id)) |m_entry| {
-            const kind = kindFromPath(m_entry.path) orelse return error.UnknownRuleId;
-
             const known_hash = knownHashFor(resolved_id.actual_id, known) orelse knownHashFor(resolved_id.requested_id, known);
             const draft_entry = draft_index.findByCurrentPath(.rule, m_entry.path);
             if (draft_entry) |entry| {
                 if (entry.operation == .delete) return error.UnknownRuleId;
             }
+            const path = effectivePath(m_entry.path, draft_entry);
+            const kind = kindFromPath(path) orelse return error.UnknownRuleId;
 
             var resolved = try resolveLoadContent(
                 allocator,
@@ -663,8 +694,8 @@ pub fn loadRules(
             );
             errdefer resolved.deinit(allocator);
 
-            const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
-            const group_slice = groupFromPath(m_entry.path);
+            const display_name = displayNameFromFilename(std.fs.path.basename(path));
+            const group_slice = groupFromPath(path);
 
             const has_draft = draft_entry != null;
             const draft_base = if (draft_entry) |entry|
@@ -676,7 +707,7 @@ pub fn loadRules(
             try result.items.append(allocator, .{
                 .id = try allocator.dupe(u8, resolved_id.actual_id),
                 .kind = kind,
-                .path = try allocator.dupe(u8, m_entry.path),
+                .path = try allocator.dupe(u8, path),
                 .name = try allocator.dupe(u8, display_name),
                 .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
                 .hash = resolved.hash,
@@ -691,6 +722,7 @@ pub fn loadRules(
             if (draft_entry) |entry| {
                 if (entry.operation == .delete) return error.UnknownRuleId;
             }
+            const path = effectivePath(m_entry.path, draft_entry);
 
             var resolved = try resolveLoadContent(
                 allocator,
@@ -703,8 +735,8 @@ pub fn loadRules(
             );
             errdefer resolved.deinit(allocator);
 
-            const display_name = displayNameFromFilename(std.fs.path.basename(m_entry.path));
-            const group_slice = groupFromPath(m_entry.path);
+            const display_name = displayNameFromFilename(std.fs.path.basename(path));
+            const group_slice = groupFromPath(path);
 
             const has_draft = draft_entry != null;
             const draft_base = if (draft_entry) |entry|
@@ -716,7 +748,7 @@ pub fn loadRules(
             try result.items.append(allocator, .{
                 .id = try allocator.dupe(u8, resolved_id.actual_id),
                 .kind = .context,
-                .path = try allocator.dupe(u8, m_entry.path),
+                .path = try allocator.dupe(u8, path),
                 .name = try allocator.dupe(u8, display_name),
                 .group = if (group_slice) |g| try allocator.dupe(u8, g) else null,
                 .hash = resolved.hash,
@@ -1233,7 +1265,7 @@ test "discoverSearchable: kind filter narrows results" {
     try testing.expectEqualStrings("p-style", rules.items[0].id);
 }
 
-test "discoverSearchable: group filter matches first path component" {
+test "discoverSearchable: group filter matches nested path groups" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1241,7 +1273,8 @@ test "discoverSearchable: group filter matches first path component" {
         \\{
         \\  "rules": {
         \\    "p-1": {"path": "coding/STYLE.md", "hash": "sha256:1"},
-        \\    "p-2": {"path": "zig/NAMING.md", "hash": "sha256:2"}
+        \\    "p-2": {"path": "zig/NAMING.md", "hash": "sha256:2"},
+        \\    "p-3": {"path": "book-writing/scaffold/VITEPRESS_BOOK_SITE.md", "hash": "sha256:3"}
         \\  }
         \\}
     );
@@ -1254,6 +1287,64 @@ test "discoverSearchable: group filter matches first path component" {
 
     try testing.expectEqual(@as(usize, 1), zig_rules.items.len);
     try testing.expectEqualStrings("p-2", zig_rules.items[0].id);
+
+    var scaffold_rules = try discoverSearchable(testing.allocator, root, .rule, "book-writing/scaffold", null);
+    defer deinitRuleItems(testing.allocator, &scaffold_rules);
+
+    try testing.expectEqual(@as(usize, 1), scaffold_rules.items.len);
+    try testing.expectEqualStrings("p-3", scaffold_rules.items[0].id);
+    try testing.expectEqualStrings("book-writing/scaffold", scaffold_rules.items[0].group.?);
+
+    var book_rules = try discoverSearchable(testing.allocator, root, .rule, "book-writing", null);
+    defer deinitRuleItems(testing.allocator, &book_rules);
+
+    try testing.expectEqual(@as(usize, 1), book_rules.items.len);
+    try testing.expectEqualStrings("p-3", book_rules.items[0].id);
+}
+
+test "discoverSearchable: rename draft uses effective path for filtering" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "rules": {
+        \\    "p-site": {"path": "coding/STYLE.md", "hash": "sha256:1", "description": "old style"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var identity = try drafts.upsertRenameDraft(testing.allocator, root, .{
+        .category = .rule,
+        .current_path = "coding/STYLE.md",
+        .rule_id = "p-site",
+        .base_hash = "sha256:1",
+        .description = "VitePress booklet scaffold",
+    }, "book-writing/scaffold/VITEPRESS_BOOK_SITE.md", "draft body");
+    defer identity.deinit(testing.allocator);
+
+    var scaffold_rules = try discoverSearchable(testing.allocator, root, .rule, "book-writing/scaffold", null);
+    defer deinitRuleItems(testing.allocator, &scaffold_rules);
+
+    try testing.expectEqual(@as(usize, 1), scaffold_rules.items.len);
+    try testing.expectEqualStrings("p-site", scaffold_rules.items[0].id);
+    try testing.expectEqualStrings("book_writing/scaffold/VITEPRESS_BOOK_SITE.md", scaffold_rules.items[0].path);
+    try testing.expectEqualStrings("book_writing/scaffold", scaffold_rules.items[0].group.?);
+    try testing.expect(scaffold_rules.items[0].has_draft);
+
+    var query_rules = try discoverSearchable(testing.allocator, root, .rule, null, "VITEPRESS_BOOK_SITE");
+    defer deinitRuleItems(testing.allocator, &query_rules);
+
+    try testing.expectEqual(@as(usize, 1), query_rules.items.len);
+    try testing.expectEqualStrings("p-site", query_rules.items[0].id);
+
+    var old_group_rules = try discoverSearchable(testing.allocator, root, .rule, "coding", null);
+    defer deinitRuleItems(testing.allocator, &old_group_rules);
+
+    try testing.expectEqual(@as(usize, 0), old_group_rules.items.len);
 }
 
 test "discoverSearchable: META_PROMPT.md is excluded" {
@@ -1411,6 +1502,41 @@ test "loadRules: create draft alias known hash suppresses unchanged content" {
     try testing.expectEqualStrings("tmp-rule-error", result.items.items[0].id);
     try testing.expect(!result.items.items[0].changed);
     try testing.expect(result.items.items[0].content == null);
+}
+
+test "loadRules: alias resolves renamed draft effective path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestManifest(tmp.dir,
+        \\{
+        \\  "rules": {
+        \\    "p-site": {"path": "coding/STYLE.md", "hash": "sha256:style"}
+        \\  }
+        \\}
+    );
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var identity = try drafts.upsertRenameDraft(testing.allocator, root, .{
+        .category = .rule,
+        .current_path = "coding/STYLE.md",
+        .rule_id = "p-site",
+        .base_hash = "sha256:style",
+    }, "book-writing/scaffold/VITEPRESS_BOOK_SITE.md", "draft body");
+    defer identity.deinit(testing.allocator);
+
+    var result = try loadRules(testing.allocator, root, &.{"rule:vitepress book site"}, &.{});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.items.items.len);
+    const item = result.items.items[0];
+    try testing.expectEqualStrings("p-site", item.id);
+    try testing.expectEqualStrings("book_writing/scaffold/VITEPRESS_BOOK_SITE.md", item.path);
+    try testing.expectEqualStrings("book_writing/scaffold", item.group.?);
+    try testing.expect(item.has_draft);
+    try testing.expectEqualStrings("draft body", item.content.?);
 }
 
 test "loadRules: unknown id returns UnknownRuleId" {
