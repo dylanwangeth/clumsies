@@ -383,6 +383,7 @@ pub fn refreshLocalState(api_state: *ApiState) void {
 pub const RemoteCacheScope = enum {
     pr_lists,
     pr_lifecycle,
+    artifact_catalog,
     artifact_detail,
     workspace_detail,
     all_on_demand,
@@ -395,6 +396,10 @@ pub fn invalidateRemoteCaches(api_state: *ApiState, scope: RemoteCacheScope) voi
         },
         .pr_lifecycle => {
             invalidatePrLifecycle(api_state);
+        },
+        .artifact_catalog => {
+            api_state.rule_content_cache.invalidate();
+            api_state.rule_content_batch_pending.cancel();
         },
         .artifact_detail => {
             api_state.rule_content_cache.invalidate();

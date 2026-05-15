@@ -578,6 +578,8 @@ pub const Shell = struct {
             .tick => {
                 const was_login_panel = self.shouldShowLoginPanel();
                 const was_native_cursor_input = self.hasNativeCursorInput();
+                const was_pr_composer_visible = self.drafts.show_pr_composer;
+                const was_pr_composer_submitting = self.drafts.pr_composer_submitting;
 
                 // Advance breathing cycle: 0→20→0 (2 seconds at 100ms intervals)
                 self.tick_count +%= 1;
@@ -618,6 +620,7 @@ pub const Shell = struct {
                 self.consumeAddWorkspaceMemberResult();
                 self.consumeChangeWorkspaceMemberRoleResult();
                 self.consumeRemoveWorkspaceMemberResult();
+                self.recoverPrComposerSubmitState();
                 self.consumeAttestationUploadResult();
                 self.consumeHealthResult();
                 self.dispatchDebouncedContentRequest();
@@ -637,7 +640,9 @@ pub const Shell = struct {
                 self.logScreenProbe("tick", null, null);
                 const is_login_panel = self.shouldShowLoginPanel();
                 const is_native_cursor_input = self.hasNativeCursorInput();
-                ctx.redraw = !is_native_cursor_input or was_login_panel != is_login_panel or was_native_cursor_input != is_native_cursor_input;
+                const pr_composer_changed = was_pr_composer_visible != self.drafts.show_pr_composer or
+                    was_pr_composer_submitting != self.drafts.pr_composer_submitting;
+                ctx.redraw = pr_composer_changed or !is_native_cursor_input or was_login_panel != is_login_panel or was_native_cursor_input != is_native_cursor_input;
                 try ctx.tick(100, self.widget());
             },
             else => {},
@@ -3638,20 +3643,10 @@ pub const Shell = struct {
         const acted_pr = self.selectedPr();
         switch (result) {
             .ok => {
-                const wait_for_workspace = self.shouldSettlePrActionAfterWorkspaceRefresh();
-                if (!wait_for_workspace) self.settlePendingPrActionDraft();
-                self.invalidateRemoteDetailRequests();
-                if (acted_pr) |pr| {
-                    if (pr.target_kind == .bundle and std.mem.eql(u8, pr.status, "open")) {
-                        api.fetch.refetchAllAsync(self.api_state);
-                    }
-                }
+                const impact = self.prMutationImpact(acted_pr);
+                if (!impact.settle_after_workspace_refresh) self.settlePendingPrActionDraft();
+                self.applyPrMutationImpact(impact);
                 self.returnReviewDetailToListAfterPrAction();
-                if (wait_for_workspace) {
-                    if (self.drafts.pending_pr_action) |pending| {
-                        workspace_panel.refreshWorkspaceDetail(self, pending.target.ws_id);
-                    }
-                }
                 self.notifyOp(.success, "PR action applied.");
             },
             .api_error => |e| {
@@ -3803,6 +3798,61 @@ pub const Shell = struct {
             return prs[@min(self.review.selected_pr_idx, prs.len - 1)];
         }
         return null;
+    }
+
+    const PrMutationImpact = struct {
+        pr_lifecycle: bool = true,
+        artifact_catalog: bool = false,
+        artifact_detail: bool = false,
+        workspace_detail_ws_id: ?[]const u8 = null,
+        settle_after_workspace_refresh: bool = false,
+    };
+
+    fn prMutationImpact(self: *Shell, acted_pr: ?data.PullRequestEntry) PrMutationImpact {
+        var impact = PrMutationImpact{};
+        if (self.drafts.pending_pr_action) |pending| {
+            if (pending.status_on_success == .applied) {
+                impact.workspace_detail_ws_id = pending.target.ws_id;
+                impact.settle_after_workspace_refresh = self.shouldSettlePrActionAfterWorkspaceRefresh();
+                switch (pending.target.category) {
+                    .rule, .meta_prompt => {
+                        impact.artifact_catalog = true;
+                        impact.artifact_detail = true;
+                    },
+                    .context => {},
+                }
+            }
+            return impact;
+        }
+
+        const pr = acted_pr orelse return impact;
+        switch (pr.target_kind) {
+            .rule, .mpf, .bundle => {
+                impact.artifact_catalog = true;
+                impact.artifact_detail = true;
+            },
+            .context => {
+                impact.workspace_detail_ws_id = pr.workspace_id orelse self.activeWsId();
+            },
+        }
+        return impact;
+    }
+
+    fn applyPrMutationImpact(self: *Shell, impact: PrMutationImpact) void {
+        if (impact.pr_lifecycle) {
+            api.state.invalidateRemoteCaches(self.api_state, .pr_lifecycle);
+            self.ensureReviewPrsRequested();
+        }
+        if (impact.artifact_detail) {
+            api.state.invalidateRemoteCaches(self.api_state, .artifact_detail);
+        }
+        if (impact.artifact_catalog) {
+            api.state.invalidateRemoteCaches(self.api_state, .artifact_catalog);
+            api.fetch.refetchAllAsync(self.api_state);
+        }
+        if (impact.workspace_detail_ws_id) |ws_id| {
+            workspace_panel.refreshWorkspaceDetail(self, ws_id);
+        }
     }
 
     pub fn wsCount(self: *Shell) usize {
@@ -5078,6 +5128,10 @@ pub const Shell = struct {
 
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return;
         drafts_mod.normalizeDrafts(self.api_state.backing_allocator, ws_dir) catch {};
+        const cache_dir = workspace_config.getCachePath(arena, ws_id) catch null;
+        if (cache_dir) |dir| {
+            _ = drafts_mod.reconcileDrafts(self.api_state.backing_allocator, ws_dir, dir) catch {};
+        }
         const signature = draftIndexSignature(arena, ws_dir);
         self.drafts.index_size = signature.size;
         self.drafts.index_mtime = signature.mtime;
@@ -5257,7 +5311,7 @@ pub const Shell = struct {
                         .ws_id = ws_id,
                         .category = self.artifactCategoryForPath(rule.path),
                         .path = rule.path,
-                        .rule_id = self.lookupRuleId(rule.path),
+                        .rule_id = if (rule.rule_id.len > 0) rule.rule_id else self.lookupRuleId(rule.path),
                     };
                 }
                 // Virtual row: a local create-op draft that has no
@@ -5694,7 +5748,7 @@ pub const Shell = struct {
                         .ws_id = ws_id,
                         .category = self.artifactCategoryForPath(rule.path),
                         .path = rule.path,
-                        .rule_id = self.lookupRuleId(rule.path),
+                        .rule_id = if (rule.rule_id.len > 0) rule.rule_id else self.lookupRuleId(rule.path),
                     };
                     if (!self.appendComposerDraftTarget(alloc, &targets, target)) return null;
                 }
@@ -5727,7 +5781,7 @@ pub const Shell = struct {
                             .ws_id = ws_id,
                             .category = r.category,
                             .path = r.path,
-                            .rule_id = if (r.is_create_draft) null else self.lookupRuleId(r.path),
+                            .rule_id = r.rule_id orelse if (r.is_create_draft) null else self.lookupRuleId(r.path),
                         },
                     };
                     if (!self.appendComposerDraftTarget(alloc, &targets, target)) return null;
@@ -5925,6 +5979,7 @@ pub const Shell = struct {
         const entry_out = DraftSubmitEntry{
             .operation = draft_entry.operation,
             .draft_path = draft_path,
+            .rule_id = if (draft_entry.rule_id) |id| (alloc.dupe(u8, id) catch null) else null,
             .base_hash = if (draft_entry.base_hash) |h| (alloc.dupe(u8, h) catch null) else null,
         };
 
@@ -5934,6 +5989,7 @@ pub const Shell = struct {
     const DraftSubmitEntry = struct {
         operation: drafts_mod.DraftOperation,
         draft_path: []const u8,
+        rule_id: ?[]const u8,
         base_hash: ?[]const u8,
     };
 
@@ -5944,6 +6000,7 @@ pub const Shell = struct {
         defer if (read.content) |content| alloc.free(content);
         defer if (read.entry) |e| {
             alloc.free(e.draft_path);
+            if (e.rule_id) |id| alloc.free(id);
             if (e.base_hash) |h| alloc.free(h);
         };
 
@@ -5980,7 +6037,7 @@ pub const Shell = struct {
         const rule_id_copy_opt: ?[]const u8 = if (entry.operation == .create)
             null
         else blk: {
-            const pid = target.rule_id orelse self.lookupRuleId(target.path) orelse {
+            const pid = target.rule_id orelse entry.rule_id orelse self.lookupRuleId(target.path) orelse {
                 self.notifyOp(.warning, "Unknown rule id for this draft.");
                 return;
             };
@@ -6064,6 +6121,7 @@ pub const Shell = struct {
                 self.notifyOp(.warning, "Draft entry missing; try again.");
                 return;
             };
+            if (entry.rule_id) |id| owned.append(alloc, id) catch return;
             const operation_type: []const u8 = switch (entry.operation) {
                 .create => "create",
                 .update => "update",
@@ -6076,7 +6134,7 @@ pub const Shell = struct {
             const rule_id = if (entry.operation == .create)
                 null
             else
-                target.rule_id orelse self.lookupRuleId(target.path) orelse {
+                target.rule_id orelse entry.rule_id orelse self.lookupRuleId(target.path) orelse {
                     alloc.free(entry.draft_path);
                     if (entry.base_hash) |h| alloc.free(h);
                     self.notifyOp(.warning, "Unknown rule id for a selected draft.");
@@ -6967,7 +7025,7 @@ pub const Shell = struct {
             .ok => |resp| {
                 self.markComposerInReview(resp.pr_id, resp.status);
             },
-            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", e)),
+            .api_error => |e| self.handlePrSubmitApiError(e),
             .network_error => self.notifyOp(.failure, "PR submit failed: network error."),
             .invalid_response => self.notifyOp(.failure, "PR submit failed: malformed response."),
         }
@@ -7126,19 +7184,56 @@ pub const Shell = struct {
             .ok => |resp| {
                 self.markComposerInReview(resp.pr_id, resp.status);
             },
-            .api_error => |e| self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", e)),
+            .api_error => |e| self.handlePrSubmitApiError(e),
             .network_error => self.notifyOp(.failure, "PR submit failed: network error."),
             .invalid_response => self.notifyOp(.failure, "PR submit failed: malformed response."),
         }
+    }
+
+    fn handlePrSubmitApiError(self: *Shell, err: api.request.ApiErrorPayload) void {
+        if (err.status == .conflict and self.markComposerDraftsStatus(.conflicted)) {
+            self.closePrComposer();
+            self.notifyOp(.failure, writeErrorStatus(self, "PR submit conflict; draft marked conflicted", err));
+            return;
+        }
+        self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", err));
+    }
+
+    fn closePrComposer(self: *Shell) void {
+        self.drafts.show_pr_composer = false;
+        self.drafts.pr_composer_submitting = false;
+        self.drafts.pr_composer_title_len = 0;
+        self.drafts.pr_composer_body_len = 0;
+        self.drafts.pr_composer_focus = .title;
+        self.releaseComposerTarget();
+    }
+
+    fn recoverPrComposerSubmitState(self: *Shell) void {
+        if (!self.drafts.show_pr_composer or !self.drafts.pr_composer_submitting) return;
+        if (self.api_state.create_rule_pr_pending.isInflight()) return;
+        if (self.api_state.create_context_pr_pending.isInflight()) return;
+        self.drafts.pr_composer_submitting = false;
     }
 
     /// Shared post-submit path for both rule and context PRs. Marks
     /// the draft as in review against disk, refreshes the in-memory
     /// cache, closes the composer, and posts a user-facing confirmation.
     fn markComposerInReview(self: *Shell, pr_id: []const u8, status: []const u8) void {
-        const target = self.drafts.pr_composer_target orelse return;
+        if (!self.markComposerDraftsStatus(.in_review)) return;
+        self.invalidateRemoteDetailRequests();
+        self.closePrComposer();
+        const message = std.fmt.allocPrint(
+            self.api_state.allocator(),
+            "PR {s} opened ({s}).",
+            .{ pr_id, status },
+        ) catch "PR opened.";
+        self.notifyOp(.success, message);
+    }
+
+    fn markComposerDraftsStatus(self: *Shell, status: drafts_mod.DraftStatus) bool {
+        const target = self.drafts.pr_composer_target orelse return false;
         const alloc = self.api_state.allocator();
-        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return;
+        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return false;
         defer alloc.free(ws_dir);
         if (self.drafts.pr_composer_batch_targets.len > 0) {
             for (self.drafts.pr_composer_batch_targets) |batch_target| {
@@ -7147,7 +7242,7 @@ pub const Shell = struct {
                     ws_dir,
                     batch_target.category,
                     self.draftPathForSelection(batch_target.category, batch_target.path),
-                    .in_review,
+                    status,
                 ) catch {};
             }
         } else {
@@ -7156,22 +7251,13 @@ pub const Shell = struct {
                 ws_dir,
                 target.category,
                 self.draftPathForSelection(target.category, target.path),
-                .in_review,
+                status,
             ) catch {};
         }
         self.refreshDraftsCache();
-        self.invalidateRemoteDetailRequests();
-        self.drafts.show_pr_composer = false;
-        self.drafts.pr_composer_title_len = 0;
-        self.drafts.pr_composer_body_len = 0;
-        self.drafts.pr_composer_focus = .title;
-        self.releaseComposerTarget();
-        const message = std.fmt.allocPrint(
-            self.api_state.allocator(),
-            "PR {s} opened ({s}).",
-            .{ pr_id, status },
-        ) catch "PR opened.";
-        self.notifyOp(.success, message);
+        workspace_panel.syncWsRows(self);
+        artifact_panel.syncArtifactTree(self);
+        return true;
     }
 
     fn selectTab(self: *Shell, ctx: *vxfw.EventContext, tab: TopModule) void {
