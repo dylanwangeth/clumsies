@@ -430,10 +430,12 @@ fn resolveLoadId(
 }
 
 /// Discover rules and context available for memdisc. Iterates the
-/// local manifest, classifies each entry by path prefix or category, and
-/// applies optional kind/group filters. Reserved paths (META_PROMPT.md) are
-/// excluded. Context entries have kind = .context and group derived from
-/// their path's first component.
+/// local manifest, overlays draft paths for renamed entries, classifies
+/// each effective path by prefix or category, and applies optional
+/// kind/group filters. Reserved paths (META_PROMPT.md) are excluded.
+/// Context entries have kind = .context. Groups are derived from the
+/// effective path's containing directory and may include nested path
+/// components.
 ///
 /// Drafts are merged into the result: delete-drafts hide their manifest
 /// entries, update/rename drafts set has_draft = true, and create-drafts
