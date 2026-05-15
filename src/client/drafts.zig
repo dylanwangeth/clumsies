@@ -275,6 +275,89 @@ pub fn createDraftLocalTempId(
     );
 }
 
+const ArtifactPathCase = enum {
+    lower_snake,
+    upper_snake,
+};
+
+pub fn canonicalArtifactDraftPath(
+    allocator: std.mem.Allocator,
+    category: DraftCategory,
+    path: []const u8,
+) ![]u8 {
+    if (category == .meta_prompt) return allocator.dupe(u8, path);
+    if (path.len == 0 or path[0] == '/') return error.UnsafeDraftPath;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var it = std.mem.splitScalar(u8, path, '/');
+    var component_count: usize = 0;
+    var pending_component: ?[]const u8 = null;
+    while (it.next()) |component| {
+        try validateArtifactPathComponent(component);
+        if (pending_component) |prev| {
+            if (component_count > 0) try out.append(allocator, '/');
+            try appendCanonicalArtifactPathComponent(allocator, &out, prev, .lower_snake);
+            component_count += 1;
+        }
+        pending_component = component;
+    }
+
+    const basename = pending_component orelse return error.UnsafeDraftPath;
+    const stem = stripMarkdownExtension(basename);
+    if (stem.len == 0) return error.UnsafeDraftPath;
+    if (component_count > 0) try out.append(allocator, '/');
+    try appendCanonicalArtifactPathComponent(allocator, &out, stem, .upper_snake);
+    try out.appendSlice(allocator, ".md");
+    return out.toOwnedSlice(allocator);
+}
+
+fn shouldCanonicalizeDraftPath(category: DraftCategory, operation: DraftOperation) bool {
+    if (category == .meta_prompt) return false;
+    return operation == .create or operation == .rename;
+}
+
+fn validateArtifactPathComponent(component: []const u8) !void {
+    if (component.len == 0) return error.UnsafeDraftPath;
+    if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.UnsafeDraftPath;
+    if (std.mem.indexOfScalar(u8, component, '\\') != null) return error.UnsafeDraftPath;
+}
+
+fn stripMarkdownExtension(basename: []const u8) []const u8 {
+    if (basename.len < ".md".len) return basename;
+    const suffix = basename[basename.len - ".md".len ..];
+    if (std.ascii.eqlIgnoreCase(suffix, ".md")) return basename[0 .. basename.len - ".md".len];
+    return basename;
+}
+
+fn appendCanonicalArtifactPathComponent(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    raw: []const u8,
+    path_case: ArtifactPathCase,
+) !void {
+    const start_len = out.items.len;
+    var last_was_separator = true;
+    for (raw) |ch| {
+        if (std.ascii.isAlphanumeric(ch)) {
+            const normalized = switch (path_case) {
+                .lower_snake => std.ascii.toLower(ch),
+                .upper_snake => std.ascii.toUpper(ch),
+            };
+            try out.append(allocator, normalized);
+            last_was_separator = false;
+        } else if (!last_was_separator) {
+            try out.append(allocator, '_');
+            last_was_separator = true;
+        }
+    }
+    while (out.items.len > 0 and out.items[out.items.len - 1] == '_') {
+        _ = out.pop();
+    }
+    if (out.items.len == start_len) return error.UnsafeDraftPath;
+}
+
 fn localTempIdPrefix(category: DraftCategory) []const u8 {
     return switch (category) {
         .rule => "rule",
@@ -397,7 +480,9 @@ pub fn upsertRenameDraft(
     new_path: []const u8,
     base_content: []const u8,
 ) !DraftIdentity {
-    if (!path_util.isSafeRelative(new_path)) return error.UnsafeDraftPath;
+    const canonical_new_path = try canonicalArtifactDraftPath(allocator, params.category, new_path);
+    defer allocator.free(canonical_new_path);
+    if (!path_util.isSafeRelative(canonical_new_path)) return error.UnsafeDraftPath;
 
     var index = try loadIndex(allocator, ws_dir);
     defer index.deinit(allocator);
@@ -405,7 +490,7 @@ pub fn upsertRenameDraft(
     if (findExistingDraftIndex(index.entries.items, params)) |entry_index| {
         var entry = &index.entries.items[entry_index];
         if (entry.operation == .delete) return error.DraftOperationConflict;
-        if (!draftPathAvailable(index.entries.items, params.category, new_path, entry_index)) return error.DraftAlreadyExists;
+        if (!draftPathAvailable(index.entries.items, params.category, canonical_new_path, entry_index)) return error.DraftAlreadyExists;
 
         const old_path = try allocator.dupe(u8, entry.draft_path);
         defer allocator.free(old_path);
@@ -415,12 +500,12 @@ pub fn upsertRenameDraft(
         };
         defer allocator.free(content);
 
-        try writeDraftFileAbs(allocator, ws_dir, params.category, new_path, content);
-        errdefer discardDraftFile(allocator, ws_dir, params.category, new_path) catch {};
+        try writeDraftFileAbs(allocator, ws_dir, params.category, canonical_new_path, content);
+        errdefer discardDraftFile(allocator, ws_dir, params.category, canonical_new_path) catch {};
 
         entry.operation = .rename;
         entry.current_path = params.current_path;
-        entry.draft_path = new_path;
+        entry.draft_path = canonical_new_path;
         if (entry.rule_id == null) entry.rule_id = params.rule_id;
         if (entry.context_id == null) entry.context_id = params.context_id;
         if (entry.base_hash == null) entry.base_hash = params.base_hash;
@@ -428,7 +513,7 @@ pub fn upsertRenameDraft(
         entry.status = .draft;
         try writeIndexAtomic(allocator, ws_dir, index.entries.items);
 
-        if (!std.mem.eql(u8, old_path, new_path)) {
+        if (!std.mem.eql(u8, old_path, canonical_new_path)) {
             discardDraftFile(allocator, ws_dir, params.category, old_path) catch |err| switch (err) {
                 error.FileNotFound => {},
                 else => return err,
@@ -440,7 +525,7 @@ pub fn upsertRenameDraft(
     try createDraft(allocator, ws_dir, .{
         .category = params.category,
         .operation = .rename,
-        .draft_path = new_path,
+        .draft_path = canonical_new_path,
         .current_path = params.current_path,
         .base_hash = params.base_hash,
         .rule_id = params.rule_id,
@@ -448,7 +533,7 @@ pub fn upsertRenameDraft(
         .description = params.description,
     }, base_content);
     return .{
-        .draft_path = try allocator.dupe(u8, new_path),
+        .draft_path = try allocator.dupe(u8, canonical_new_path),
         .previous_path = try allocator.dupe(u8, params.current_path),
     };
 }
@@ -507,7 +592,12 @@ pub fn createDraft(
     params: CreateDraftParams,
     initial_content: []const u8,
 ) !void {
-    if (!path_util.isSafeRelative(params.draft_path)) return error.UnsafeDraftPath;
+    const canonical_draft_path = if (shouldCanonicalizeDraftPath(params.category, params.operation))
+        try canonicalArtifactDraftPath(allocator, params.category, params.draft_path)
+    else
+        try allocator.dupe(u8, params.draft_path);
+    defer allocator.free(canonical_draft_path);
+    if (!path_util.isSafeRelative(canonical_draft_path)) return error.UnsafeDraftPath;
 
     var index = try loadIndex(allocator, ws_dir);
     defer index.deinit(allocator);
@@ -515,16 +605,16 @@ pub fn createDraft(
     for (index.entries.items) |entry| {
         if (entry.category != params.category) continue;
         if (isTerminalStatus(entry.status)) continue;
-        if (std.mem.eql(u8, entry.draft_path, params.draft_path)) return error.DraftAlreadyExists;
+        if (std.mem.eql(u8, entry.draft_path, canonical_draft_path)) return error.DraftAlreadyExists;
     }
 
     if (params.operation != .delete) {
-        try writeDraftFileAbs(allocator, ws_dir, params.category, params.draft_path, initial_content);
+        try writeDraftFileAbs(allocator, ws_dir, params.category, canonical_draft_path, initial_content);
     }
 
     const arena = index.arena_state.allocator();
     const local_temp_id = params.local_temp_id orelse if (params.operation == .create)
-        try createDraftLocalTempId(arena, params.category, params.draft_path)
+        try createDraftLocalTempId(arena, params.category, canonical_draft_path)
     else
         null;
 
@@ -534,7 +624,7 @@ pub fn createDraft(
         .context_id = params.context_id,
         .local_temp_id = local_temp_id,
         .current_path = params.current_path,
-        .draft_path = params.draft_path,
+        .draft_path = canonical_draft_path,
         .operation = params.operation,
         .base_hash = params.base_hash,
         .status = .draft,
@@ -648,7 +738,9 @@ pub fn renameCreateDraftById(
     new_path: []const u8,
     description: ?[]const u8,
 ) !?DraftIdentity {
-    if (!path_util.isSafeRelative(new_path)) return error.UnsafeDraftPath;
+    const canonical_new_path = try canonicalArtifactDraftPath(allocator, category, new_path);
+    defer allocator.free(canonical_new_path);
+    if (!path_util.isSafeRelative(canonical_new_path)) return error.UnsafeDraftPath;
 
     var index = try loadIndex(allocator, ws_dir);
     defer index.deinit(allocator);
@@ -680,7 +772,7 @@ pub fn renameCreateDraftById(
         if (other == entry) continue;
         if (other.category != category) continue;
         if (isTerminalStatus(other.status)) continue;
-        if (std.mem.eql(u8, other.draft_path, new_path)) return error.DraftAlreadyExists;
+        if (std.mem.eql(u8, other.draft_path, canonical_new_path)) return error.DraftAlreadyExists;
     }
 
     const old_path = try allocator.dupe(u8, entry.draft_path);
@@ -690,15 +782,15 @@ pub fn renameCreateDraftById(
     else
         null;
     errdefer if (local_temp_id) |temp_id| allocator.free(temp_id);
-    const new_path_owned = try allocator.dupe(u8, new_path);
+    const new_path_owned = try allocator.dupe(u8, canonical_new_path);
     errdefer allocator.free(new_path_owned);
 
     const content = try readDraftFile(allocator, ws_dir, category, old_path);
     defer allocator.free(content);
-    try writeDraftFileAbs(allocator, ws_dir, category, new_path, content);
-    errdefer discardDraftFile(allocator, ws_dir, category, new_path) catch {};
+    try writeDraftFileAbs(allocator, ws_dir, category, canonical_new_path, content);
+    errdefer discardDraftFile(allocator, ws_dir, category, canonical_new_path) catch {};
 
-    entry.draft_path = new_path;
+    entry.draft_path = canonical_new_path;
     if (description) |desc| entry.description = desc;
     entry.status = .draft;
     try writeIndexAtomic(allocator, ws_dir, index.entries.items);
@@ -1313,6 +1405,44 @@ test "findByLocalTempId: returns entry matching temp_id" {
     try testing.expect(index.findByLocalTempId("nonexistent") == null);
 }
 
+test "canonicalArtifactDraftPath: normalizes directories and filenames" {
+    const context_path = try canonicalArtifactDraftPath(testing.allocator, .context, "Mission/duckweed-project.md");
+    defer testing.allocator.free(context_path);
+    try testing.expectEqualStrings("mission/DUCKWEED_PROJECT.md", context_path);
+
+    const rule_path = try canonicalArtifactDraftPath(testing.allocator, .rule, "PITFALL/path format");
+    defer testing.allocator.free(rule_path);
+    try testing.expectEqualStrings("pitfall/PATH_FORMAT.md", rule_path);
+}
+
+test "canonicalArtifactDraftPath: rejects unsafe traversal" {
+    try testing.expectError(error.UnsafeDraftPath, canonicalArtifactDraftPath(testing.allocator, .context, "../MISSION.md"));
+    try testing.expectError(error.UnsafeDraftPath, canonicalArtifactDraftPath(testing.allocator, .rule, "mission/../BAD.md"));
+}
+
+test "createDraft: canonicalizes create draft artifact paths" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "Mission/duckweed-project.md",
+    }, "# Mission\n");
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    const entry = index.findCreateByDraftPath("mission/DUCKWEED_PROJECT.md") orelse return error.TestUnexpectedResult;
+    try testing.expect(entry.local_temp_id != null);
+
+    const content = try readDraftFile(testing.allocator, root, .context, "mission/DUCKWEED_PROJECT.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("# Mission\n", content);
+}
+
 test "createDraft: generates local temp id for create operation" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1641,7 +1771,7 @@ test "discardCreateDraftById: accepts local temp id and returns draft path" {
         return error.TestExpectedEqual;
     defer testing.allocator.free(draft_path);
 
-    try testing.expectEqualStrings("projects/eth-p2p-z/project-context.md", draft_path);
+    try testing.expectEqualStrings("projects/eth_p2p_z/PROJECT_CONTEXT.md", draft_path);
     try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .context, draft_path));
 
     var index = try loadIndex(testing.allocator, root);
@@ -1665,7 +1795,8 @@ test "discardCreateDraftById: rejects draft path identity" {
 
     try testing.expect(try discardCreateDraftById(testing.allocator, root, .rule, path) == null);
 
-    const content = try readDraftFile(testing.allocator, root, .rule, path);
+    const canonical_path = "learning/zig_libp2p/ETH_P2P_Z.md";
+    const content = try readDraftFile(testing.allocator, root, .rule, canonical_path);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("draft body", content);
 }
@@ -1726,6 +1857,28 @@ test "upsertRenameDraft: folds update draft into rename draft" {
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("updated body", content);
     try testing.expectError(error.FileNotFound, readDraftFile(testing.allocator, root, .rule, "design/UI.md"));
+}
+
+test "upsertRenameDraft: canonicalizes renamed artifact path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    var rename_identity = try upsertRenameDraft(testing.allocator, root, .{
+        .category = .context,
+        .current_path = "mission/OLD.md",
+        .context_id = "ctx-old",
+        .base_hash = "sha256:base",
+    }, "Mission/duckweed-project.md", "base body");
+    defer rename_identity.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("mission/DUCKWEED_PROJECT.md", rename_identity.draft_path);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqualStrings("mission/DUCKWEED_PROJECT.md", index.entries.items[0].draft_path);
 }
 
 test "upsertUpdateDraft: updates rename draft without previous path identity" {
@@ -1972,7 +2125,7 @@ test "discardUnchangedUpdateDraft: ignores create draft" {
         "# ADR-004\n",
     ));
 
-    const content = try readDraftFile(testing.allocator, root, .rule, "adr/ADR-004.md");
+    const content = try readDraftFile(testing.allocator, root, .rule, "adr/ADR_004.md");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("# ADR-004\n", content);
 }
