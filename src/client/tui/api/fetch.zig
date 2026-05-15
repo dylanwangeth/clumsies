@@ -75,9 +75,9 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
         return;
     } orelse return;
 
-    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, auth }) catch {
+    const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, auth }) catch |err| {
         auth.deinit(api_state.backing_allocator);
-        log.warn("bootstrap_refetch_spawn_failed", .{});
+        log.warn("bootstrap_refetch_spawn_failed error={s}", .{@errorName(err)});
         api_state.mutex.lock();
         api_state.bootstrap_inflight = false;
         api_state.mutex.unlock();
@@ -97,8 +97,9 @@ fn fetchAll(
         if (takeQueuedRefetch(api_state)) |next_auth| {
             if (std.Thread.spawn(.{}, fetchAll, .{ api_state, next_auth })) |thread| {
                 registerFetchThread(api_state, thread, "bootstrap_refetch_queued") catch {};
-            } else |_| {
+            } else |err| {
                 next_auth.deinit(api_state.backing_allocator);
+                log.warn("bootstrap_refetch_queued_spawn_failed error={s}", .{@errorName(err)});
                 api_state.mutex.lock();
                 api_state.bootstrap_inflight = false;
                 api_state.mutex.unlock();
@@ -313,4 +314,91 @@ fn doFetchParse(
     };
     log.info("bootstrap_fetch_ok path={s}", .{logger.redactedPath(path)});
     return parsed;
+}
+
+fn seedAuthForTest(api_state: *state.ApiState) !void {
+    api_state.hub_url = try api_state.allocator().dupe(u8, "http://127.0.0.1:8499");
+    api_state.username = try api_state.allocator().dupe(u8, "tester");
+    api_state.access_token = try api_state.backing_allocator.dupe(u8, "access-token");
+    api_state.refresh_token = try api_state.backing_allocator.dupe(u8, "refresh-token");
+}
+
+test "beginRefetch queues when bootstrap is already inflight" {
+    var api_state = state.ApiState.init(std.testing.allocator);
+    api_state.bindAllocator();
+    defer api_state.deinit();
+    try seedAuthForTest(&api_state);
+
+    api_state.bootstrap_inflight = true;
+
+    const auth = try beginRefetch(&api_state);
+
+    try std.testing.expect(auth == null);
+    try std.testing.expect(api_state.bootstrap_inflight);
+    try std.testing.expect(api_state.bootstrap_refetch_requested);
+}
+
+test "beginRefetch creates snapshot and clears queued flag" {
+    var api_state = state.ApiState.init(std.testing.allocator);
+    api_state.bindAllocator();
+    defer api_state.deinit();
+    try seedAuthForTest(&api_state);
+
+    api_state.bootstrap_refetch_requested = true;
+
+    const auth = (try beginRefetch(&api_state)).?;
+    defer auth.deinit(api_state.backing_allocator);
+
+    try std.testing.expect(api_state.bootstrap_inflight);
+    try std.testing.expect(!api_state.bootstrap_refetch_requested);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8499", auth.hub_url);
+    try std.testing.expectEqualStrings("access-token", auth.access_token);
+}
+
+test "takeQueuedRefetch consumes queued snapshot" {
+    var api_state = state.ApiState.init(std.testing.allocator);
+    api_state.bindAllocator();
+    defer api_state.deinit();
+    try seedAuthForTest(&api_state);
+
+    api_state.bootstrap_inflight = true;
+    api_state.bootstrap_refetch_requested = true;
+
+    const auth = takeQueuedRefetch(&api_state).?;
+    defer auth.deinit(api_state.backing_allocator);
+
+    try std.testing.expect(api_state.bootstrap_inflight);
+    try std.testing.expect(!api_state.bootstrap_refetch_requested);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8499", auth.hub_url);
+    try std.testing.expectEqualStrings("access-token", auth.access_token);
+}
+
+test "takeQueuedRefetch clears inflight when no queued refresh exists" {
+    var api_state = state.ApiState.init(std.testing.allocator);
+    api_state.bindAllocator();
+    defer api_state.deinit();
+    try seedAuthForTest(&api_state);
+
+    api_state.bootstrap_inflight = true;
+
+    const auth = takeQueuedRefetch(&api_state);
+
+    try std.testing.expect(auth == null);
+    try std.testing.expect(!api_state.bootstrap_inflight);
+    try std.testing.expect(!api_state.bootstrap_refetch_requested);
+}
+
+test "takeQueuedRefetch clears queued state when credentials are missing" {
+    var api_state = state.ApiState.init(std.testing.allocator);
+    api_state.bindAllocator();
+    defer api_state.deinit();
+
+    api_state.bootstrap_inflight = true;
+    api_state.bootstrap_refetch_requested = true;
+
+    const auth = takeQueuedRefetch(&api_state);
+
+    try std.testing.expect(auth == null);
+    try std.testing.expect(!api_state.bootstrap_inflight);
+    try std.testing.expect(!api_state.bootstrap_refetch_requested);
 }
