@@ -95,6 +95,18 @@ pub fn PendingRequest(comptime T: type) type {
             defer self.mutex.unlock();
             return self.state == .inflight;
         }
+
+        pub fn hasPendingResult(self: *@This()) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            return self.state == .ready;
+        }
+
+        pub fn isIdle(self: *@This()) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            return self.state == .idle;
+        }
     };
 }
 
@@ -148,12 +160,18 @@ test "PendingRequest consume returns null when idle or inflight" {
 test "PendingRequest isInflight tracks state transitions" {
     var pending: PendingRequest(u32) = .{};
     try std.testing.expect(!pending.isInflight());
+    try std.testing.expect(pending.isIdle());
+    try std.testing.expect(!pending.hasPendingResult());
 
     const gen = pending.tryBegin() orelse return error.TestUnexpectedNull;
     try std.testing.expect(pending.isInflight());
+    try std.testing.expect(!pending.isIdle());
+    try std.testing.expect(!pending.hasPendingResult());
 
     pending.complete(gen, 1);
     try std.testing.expect(!pending.isInflight());
+    try std.testing.expect(!pending.isIdle());
+    try std.testing.expect(pending.hasPendingResult());
 }
 
 test "PendingRequest carries Result(T) for classified outcomes" {

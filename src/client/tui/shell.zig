@@ -3851,6 +3851,7 @@ pub const Shell = struct {
             api.fetch.refetchAllAsync(self.api_state);
         }
         if (impact.workspace_detail_ws_id) |ws_id| {
+            api.state.invalidateRemoteCaches(self.api_state, .workspace_detail);
             workspace_panel.refreshWorkspaceDetail(self, ws_id);
         }
     }
@@ -5130,7 +5131,9 @@ pub const Shell = struct {
         drafts_mod.normalizeDrafts(self.api_state.backing_allocator, ws_dir) catch {};
         const cache_dir = workspace_config.getCachePath(arena, ws_id) catch null;
         if (cache_dir) |dir| {
-            _ = drafts_mod.reconcileDrafts(self.api_state.backing_allocator, ws_dir, dir) catch {};
+            _ = drafts_mod.reconcileDrafts(self.api_state.backing_allocator, ws_dir, dir) catch |err| {
+                log.warn("draft_reconcile_failed ws_id={s} error={s}", .{ ws_id, @errorName(err) });
+            };
         }
         const signature = draftIndexSignature(arena, ws_dir);
         self.drafts.index_size = signature.size;
@@ -7210,8 +7213,8 @@ pub const Shell = struct {
 
     fn recoverPrComposerSubmitState(self: *Shell) void {
         if (!self.drafts.show_pr_composer or !self.drafts.pr_composer_submitting) return;
-        if (self.api_state.create_rule_pr_pending.isInflight()) return;
-        if (self.api_state.create_context_pr_pending.isInflight()) return;
+        if (!self.api_state.create_rule_pr_pending.isIdle()) return;
+        if (!self.api_state.create_context_pr_pending.isIdle()) return;
         self.drafts.pr_composer_submitting = false;
     }
 
@@ -7243,7 +7246,17 @@ pub const Shell = struct {
                     batch_target.category,
                     self.draftPathForSelection(batch_target.category, batch_target.path),
                     status,
-                ) catch {};
+                ) catch |err| {
+                    log.warn("draft_status_update_failed path={s} status={s} error={s}", .{
+                        batch_target.path,
+                        @tagName(status),
+                        @errorName(err),
+                    });
+                    self.refreshDraftsCache();
+                    workspace_panel.syncWsRows(self);
+                    artifact_panel.syncArtifactTree(self);
+                    return false;
+                };
             }
         } else {
             drafts_mod.setDraftStatus(
@@ -7252,7 +7265,17 @@ pub const Shell = struct {
                 target.category,
                 self.draftPathForSelection(target.category, target.path),
                 status,
-            ) catch {};
+            ) catch |err| {
+                log.warn("draft_status_update_failed path={s} status={s} error={s}", .{
+                    target.path,
+                    @tagName(status),
+                    @errorName(err),
+                });
+                self.refreshDraftsCache();
+                workspace_panel.syncWsRows(self);
+                artifact_panel.syncArtifactTree(self);
+                return false;
+            };
         }
         self.refreshDraftsCache();
         workspace_panel.syncWsRows(self);
