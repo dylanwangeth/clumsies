@@ -476,11 +476,12 @@ fn methodName(method: std.http.Method) []const u8 {
 fn logResult(comptime RespT: type, method: std.http.Method, path: []const u8, result: Result(RespT)) void {
     switch (result) {
         .ok => log.info("result ok {s} {s}", .{ methodName(method), logger.redactedPath(path) }),
-        .api_error => |err| log.warn("result api_error {s} {s} status={d} code={s}", .{
+        .api_error => |err| log.warn("result api_error {s} {s} status={d} code={s} message=\"{s}\"", .{
             methodName(method),
             logger.redactedPath(path),
             @intFromEnum(err.status),
             err.code,
+            err.message,
         }),
         .network_error => log.warn("result network_error {s} {s}", .{ methodName(method), logger.redactedPath(path) }),
         .invalid_response => log.warn("result invalid_response {s} {s}", .{ methodName(method), logger.redactedPath(path) }),
