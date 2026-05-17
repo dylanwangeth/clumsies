@@ -7324,8 +7324,8 @@ pub const Shell = struct {
                 self.markComposerInReview(resp.pr_id, resp.status);
             },
             .api_error => |e| self.handlePrSubmitApiError(e),
-            .network_error => self.failPrComposerSubmit(.failure, "PR submit failed: network error."),
-            .invalid_response => self.failPrComposerSubmit(.failure, "PR submit failed: malformed response."),
+            .network_error => self.keepPrComposerAfterSubmitFailure(.failure, "PR submit failed: network error."),
+            .invalid_response => self.keepPrComposerAfterSubmitFailure(.failure, "PR submit failed: malformed response."),
         }
     }
 
@@ -7483,25 +7483,30 @@ pub const Shell = struct {
                 self.markComposerInReview(resp.pr_id, resp.status);
             },
             .api_error => |e| self.handlePrSubmitApiError(e),
-            .network_error => self.failPrComposerSubmit(.failure, "PR submit failed: network error."),
-            .invalid_response => self.failPrComposerSubmit(.failure, "PR submit failed: malformed response."),
+            .network_error => self.keepPrComposerAfterSubmitFailure(.failure, "PR submit failed: network error."),
+            .invalid_response => self.keepPrComposerAfterSubmitFailure(.failure, "PR submit failed: malformed response."),
         }
     }
 
     fn handlePrSubmitApiError(self: *Shell, err: api.request.ApiErrorPayload) void {
         if (err.status == .conflict and self.drafts.pr_composer_batch_targets.len > 1) {
-            self.failPrComposerSubmit(.failure, writeErrorStatus(self, "PR submit conflict; drafts unchanged", err));
+            self.keepPrComposerAfterSubmitFailure(.failure, writeErrorStatus(self, "PR submit conflict; drafts unchanged", err));
             return;
         }
         if (err.status == .conflict and self.markComposerDraftsStatus(.conflicted)) {
             self.failPrComposerSubmit(.failure, writeErrorStatus(self, "PR submit conflict; draft marked conflicted", err));
             return;
         }
-        self.failPrComposerSubmit(.failure, writeErrorStatus(self, "PR submit failed", err));
+        self.keepPrComposerAfterSubmitFailure(.failure, writeErrorStatus(self, "PR submit failed", err));
     }
 
     fn failPrComposerSubmit(self: *Shell, kind: w.SystemNoticeKind, text: []const u8) void {
         self.closePrComposer();
+        self.notifyOp(kind, text);
+    }
+
+    fn keepPrComposerAfterSubmitFailure(self: *Shell, kind: w.SystemNoticeKind, text: []const u8) void {
+        self.drafts.pr_composer_submitting = false;
         self.notifyOp(kind, text);
     }
 
