@@ -5915,6 +5915,14 @@ pub const Shell = struct {
     fn existingRuleTarget(self: *Shell, target: DraftTarget) ?ExistingRuleTarget {
         return switch (target.category) {
             .rule, .meta_prompt => blk: {
+                const remote = self.api_state.workspace_manifest_cache.lookup(.{ .value = target.ws_id });
+                if (remote) |rules| {
+                    if (self.findRuleFor(rules, target.path, target.rule_id)) |rule| {
+                        if (rule.rule_id.len > 0 and rule.content_hash.len > 0) {
+                            break :blk .{ .rule_id = rule.rule_id, .base_hash = rule.content_hash };
+                        }
+                    }
+                }
                 if (self.lookupRuleViewByPath(target.path)) |rule| {
                     if (rule.rule_id.len > 0 and rule.content_hash.len > 0) {
                         break :blk .{ .rule_id = rule.rule_id, .base_hash = rule.content_hash };
@@ -6111,7 +6119,7 @@ pub const Shell = struct {
         };
         defer index.deinit(alloc);
 
-        const draft_entry = index.findDraftById(target.category, target.path) orelse {
+        const draft_entry = self.findDraftEntryForSubmit(&index, target) orelse {
             self.notifyOp(.warning, "Draft entry missing; try again.");
             return null;
         };
@@ -6133,6 +6141,37 @@ pub const Shell = struct {
         };
 
         return .{ .ws_dir = ws_dir, .content = content, .entry = entry_out };
+    }
+
+    fn findDraftEntryForSubmit(self: *Shell, index: *const drafts_mod.DraftsIndex, target: DraftTarget) ?*const drafts_mod.DraftEntry {
+        for (index.entries.items) |*entry| {
+            if (entry.category != target.category) continue;
+            if (!self.canSubmitDraftStatus(target, entry.status)) continue;
+            if (entry.current_path) |current_path| {
+                if (std.mem.eql(u8, current_path, target.path)) return entry;
+            } else if (entry.operation == .create and std.mem.eql(u8, entry.draft_path, target.path)) {
+                return entry;
+            }
+        }
+
+        for (index.entries.items) |*entry| {
+            if (entry.category != target.category) continue;
+            if (!self.canSubmitDraftStatus(target, entry.status)) continue;
+            if (std.mem.eql(u8, entry.draft_path, target.path)) return entry;
+            if (entry.local_temp_id) |value| {
+                if (std.mem.eql(u8, value, target.path)) return entry;
+            }
+            switch (target.category) {
+                .rule, .meta_prompt => if (entry.rule_id) |value| {
+                    if (std.mem.eql(u8, value, target.path)) return entry;
+                },
+                .context => if (entry.context_id) |value| {
+                    if (std.mem.eql(u8, value, target.path)) return entry;
+                },
+            }
+        }
+
+        return null;
     }
 
     const DraftSubmitEntry = struct {
@@ -6372,6 +6411,13 @@ pub const Shell = struct {
                 self.notifyOp(.failure, "Out of memory creating PR.");
                 return;
             };
+            log.info("rule_pr_batch_op idx={d} type={s} target_path={s} rule_id={s} base_hash={s}", .{
+                ops.items.len - 1,
+                operation_type,
+                target.path,
+                rule_id orelse "",
+                base_hash orelse "",
+            });
         }
 
         const title_copy = alloc.dupe(u8, self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len]) catch return;
@@ -7443,6 +7489,10 @@ pub const Shell = struct {
     }
 
     fn handlePrSubmitApiError(self: *Shell, err: api.request.ApiErrorPayload) void {
+        if (err.status == .conflict and self.drafts.pr_composer_batch_targets.len > 1) {
+            self.failPrComposerSubmit(.failure, writeErrorStatus(self, "PR submit conflict; drafts unchanged", err));
+            return;
+        }
         if (err.status == .conflict and self.markComposerDraftsStatus(.conflicted)) {
             self.failPrComposerSubmit(.failure, writeErrorStatus(self, "PR submit conflict; draft marked conflicted", err));
             return;
