@@ -853,7 +853,6 @@ fn discardDraftFile(
 pub fn normalizeDrafts(allocator: std.mem.Allocator, ws_dir: []const u8) !void {
     var index = try loadIndex(allocator, ws_dir);
     defer index.deinit(allocator);
-    if (index.entries.items.len < 2) return;
 
     const arena = index.arena_state.allocator();
     const dropped = try arena.alloc(bool, index.entries.items.len);
@@ -861,6 +860,13 @@ pub fn normalizeDrafts(allocator: std.mem.Allocator, ws_dir: []const u8) !void {
 
     var changed = false;
     for (index.entries.items, 0..) |*entry, i| {
+        if (!isTerminalStatus(entry.status) and entry.operation != .delete) {
+            if (!try draftFileExists(allocator, ws_dir, entry.category, entry.draft_path)) {
+                dropped[i] = true;
+                changed = true;
+                continue;
+            }
+        }
         if (dropped[i] or !isMergeableDraft(entry.*)) continue;
         var j = i + 1;
         while (j < index.entries.items.len) : (j += 1) {
@@ -931,6 +937,23 @@ pub fn normalizeDrafts(allocator: std.mem.Allocator, ws_dir: []const u8) !void {
         try kept.append(arena, entry);
     }
     try writeIndexAtomic(allocator, ws_dir, kept.items);
+}
+
+fn draftFileExists(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+) !bool {
+    if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
+    const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString(), draft_path });
+    defer allocator.free(abs_path);
+    const file = std.fs.openFileAbsolute(abs_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    file.close();
+    return true;
 }
 
 fn isMergeableDraft(entry: DraftEntry) bool {
@@ -1958,6 +1981,35 @@ test "normalizeDrafts: folds duplicate update and rename entries" {
     const content = try readDraftFile(testing.allocator, root, .rule, "design/UIUX.md");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("updated body", content);
+}
+
+test "normalizeDrafts: drops active non-delete entries with missing files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "spec/MISSING.md",
+    }, "body");
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .delete,
+        .draft_path = "spec/DELETE.md",
+        .current_path = "spec/DELETE.md",
+        .context_id = "ctx-delete",
+    }, "");
+
+    try discardDraftFile(testing.allocator, root, .context, "spec/MISSING.md");
+    try normalizeDrafts(testing.allocator, root);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expect(index.findDraftById(.context, "spec/MISSING.md") == null);
+    try testing.expect(index.findDraftById(.context, "ctx-delete") != null);
 }
 
 test "upsertDeleteDraft: folds update draft into delete draft" {

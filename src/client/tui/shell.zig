@@ -5705,6 +5705,37 @@ pub const Shell = struct {
         self.drafts.show_pr_composer = true;
     }
 
+    /// Handler for the `P` key. Opens a batch PR Composer containing every
+    /// draft in the active workspace scope: Context tab gathers Context
+    /// drafts, Rules/Artifact gather Rule drafts.
+    pub fn openAllDraftsPrComposer(self: *Shell) void {
+        self.refreshDraftsCache();
+        const alloc = self.api_state.allocator();
+        const targets = self.collectAllDraftTargetsForComposer(alloc) orelse return;
+        if (targets.len == 0) {
+            self.notifyOp(.warning, switch (self.selected_module) {
+                .workspace => switch (self.workspace.tab) {
+                    .context => "No context drafts in this workspace.",
+                    .rules => "No rule drafts in this workspace.",
+                },
+                .artifact => "No rule drafts in this workspace.",
+                else => "No draft files in this workspace.",
+            });
+            alloc.free(targets);
+            return;
+        }
+
+        self.releaseComposerTarget();
+        self.drafts.pr_composer_batch_targets = targets;
+        self.drafts.pr_composer_target = targets[0];
+        self.drafts.pr_composer_operation = self.lookupDraftOperation(targets[0]) orelse .update;
+        self.drafts.pr_composer_title_len = 0;
+        self.drafts.pr_composer_body_len = 0;
+        self.drafts.pr_composer_focus = .title;
+        self.drafts.pr_composer_submitting = false;
+        self.drafts.show_pr_composer = true;
+    }
+
     fn openSelectedDraftsPrComposer(self: *Shell) bool {
         const selection_mode = switch (self.selected_module) {
             .artifact => self.artifact.list_machine.selection_mode,
@@ -5796,6 +5827,61 @@ pub const Shell = struct {
         if (!self.validateComposerBatchTargets(targets.items)) {
             return null;
         }
+        const owned = targets.toOwnedSlice(alloc) catch return null;
+        success = true;
+        return owned;
+    }
+
+    fn collectAllDraftTargetsForComposer(self: *Shell, alloc: std.mem.Allocator) ?[]DraftTarget {
+        const ws_id = self.activeWsId() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return null;
+        };
+        const category_filter: drafts_mod.DraftCategory = switch (self.selected_module) {
+            .workspace => switch (self.workspace.tab) {
+                .context => .context,
+                .rules => .rule,
+            },
+            .artifact => .rule,
+            else => {
+                self.notifyOp(.warning, "No draft list in this view.");
+                return null;
+            },
+        };
+
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
+            self.notifyOp(.failure, "Could not resolve workspace directory.");
+            return null;
+        };
+        defer alloc.free(ws_dir);
+
+        var index = drafts_mod.loadIndex(alloc, ws_dir) catch |err| {
+            self.notifyOp(.failure, @errorName(err));
+            return null;
+        };
+        defer index.deinit(alloc);
+
+        var targets: std.ArrayList(DraftTarget) = .empty;
+        var success = false;
+        defer if (!success) {
+            for (targets.items) |target| freeDraftTarget(alloc, target);
+            targets.deinit(alloc);
+        };
+
+        for (index.entries.items) |entry| {
+            if (entry.category != category_filter) continue;
+            if (entry.status != .draft) continue;
+            const target = DraftTarget{
+                .ws_id = ws_id,
+                .category = entry.category,
+                .path = entry.current_path orelse entry.draft_path,
+                .rule_id = entry.rule_id,
+                .context_id = entry.context_id,
+            };
+            if (!self.appendComposerDraftTarget(alloc, &targets, target)) return null;
+        }
+
+        if (!self.validateComposerBatchTargets(targets.items)) return null;
         const owned = targets.toOwnedSlice(alloc) catch return null;
         success = true;
         return owned;

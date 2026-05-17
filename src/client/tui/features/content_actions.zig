@@ -22,6 +22,7 @@ const workspace_context_shortcuts = [_]w.Shortcut{
     .{ .key = "y", .label = "copy id" },
     .{ .key = "e", .label = "edit" },
     .{ .key = "p", .label = "submit" },
+    .{ .key = "P", .label = "submit all" },
     .{ .key = "u", .label = "pull" },
     .{ .key = "d", .label = "toggle diff" },
     .{ .key = "D", .label = "discard draft" },
@@ -36,6 +37,7 @@ const workspace_rule_shortcuts = [_]w.Shortcut{
     .{ .key = "y", .label = "copy id" },
     .{ .key = "e", .label = "edit" },
     .{ .key = "p", .label = "submit" },
+    .{ .key = "P", .label = "submit all" },
     .{ .key = "u", .label = "pull" },
     .{ .key = "d", .label = "toggle diff" },
     .{ .key = "D", .label = "discard draft" },
@@ -51,6 +53,7 @@ const artifact_content_shortcuts = [_]w.Shortcut{
     .{ .key = "n", .label = "new rule" },
     .{ .key = "e", .label = "edit" },
     .{ .key = "p", .label = "submit" },
+    .{ .key = "P", .label = "submit all" },
     .{ .key = "u", .label = "pull" },
     .{ .key = "d", .label = "toggle diff" },
     .{ .key = "D", .label = "discard" },
@@ -117,6 +120,11 @@ pub fn handle(
     }
     if (key.matches('p', .{})) {
         self.openPrComposer();
+        ctx.consumeAndRedraw();
+        return true;
+    }
+    if (key.matches('P', .{}) or key.matches('p', .{ .shift = true })) {
+        self.openAllDraftsPrComposer();
         ctx.consumeAndRedraw();
         return true;
     }
