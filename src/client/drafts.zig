@@ -1047,15 +1047,15 @@ pub fn discardCreateDraftById(
 
 pub const ReconcileSummary = struct {
     conflicted: usize = 0,
+    restored: usize = 0,
 };
 
-/// Re-run drift detection on every non-terminal draft in
-/// `{ws_dir}/drafts/index.json`. When an update / rename / delete draft's
-/// `base_hash` no longer matches the current cache content at
-/// `current_path`, the entry is moved to `.conflicted`. Create-ops
-/// have no cache base to compare against and are skipped. Drafts
-/// already in `.applied`, `.declined`, or `.conflicted` are left
-/// untouched — terminal and already-flagged states are sticky.
+/// Re-run drift detection on active drafts in `{ws_dir}/drafts/index.json`.
+/// When an update / rename / delete draft's `base_hash` no longer matches
+/// the current cache content at `current_path`, the entry is moved to
+/// `.conflicted`. Already-conflicted entries are restored to `.draft` when
+/// sync proves they are no longer conflicted: create targets are absent from
+/// cache, and update / rename / delete bases match again.
 pub fn reconcileDrafts(
     allocator: std.mem.Allocator,
     ws_dir: []const u8,
@@ -1068,23 +1068,23 @@ pub fn reconcileDrafts(
     var changed = false;
     for (index.entries.items) |*entry| {
         switch (entry.status) {
-            .applied, .declined, .conflicted => continue,
+            .applied, .declined => continue,
             else => {},
         }
-        if (entry.operation == .create) continue;
+        if (entry.operation == .create) {
+            if (entry.status == .conflicted) {
+                if (!try cacheFileExists(allocator, cache_dir, entry.category, entry.draft_path)) {
+                    entry.status = .draft;
+                    summary.restored += 1;
+                    changed = true;
+                }
+            }
+            continue;
+        }
         const base_hash = entry.base_hash orelse continue;
         const cur = entry.current_path orelse continue;
 
-        const cache_path = if (entry.category == .meta_prompt)
-            try std.fs.path.join(allocator, &.{ cache_dir, cur })
-        else blk: {
-            const rel_dir: []const u8 = switch (entry.category) {
-                .rule => "rule",
-                .context => "context",
-                else => unreachable,
-            };
-            break :blk try std.fs.path.join(allocator, &.{ cache_dir, rel_dir, cur });
-        };
+        const cache_path = try cacheFilePath(allocator, cache_dir, entry.category, cur);
         defer allocator.free(cache_path);
 
         const file = std.fs.openFileAbsolute(cache_path, .{}) catch continue;
@@ -1096,7 +1096,13 @@ pub fn reconcileDrafts(
         defer allocator.free(content);
 
         const current_hash = util_hash.contentHash(content);
-        if (!std.mem.eql(u8, current_hash[0..], base_hash)) {
+        if (std.mem.eql(u8, current_hash[0..], base_hash)) {
+            if (entry.status == .conflicted) {
+                entry.status = .draft;
+                summary.restored += 1;
+                changed = true;
+            }
+        } else if (entry.status != .conflicted) {
             entry.status = .conflicted;
             summary.conflicted += 1;
             changed = true;
@@ -1104,6 +1110,37 @@ pub fn reconcileDrafts(
     }
     if (changed) try writeIndexAtomic(allocator, ws_dir, index.entries.items);
     return summary;
+}
+
+fn cacheFileExists(
+    allocator: std.mem.Allocator,
+    cache_dir: []const u8,
+    category: DraftCategory,
+    rel_path: []const u8,
+) !bool {
+    const path = try cacheFilePath(allocator, cache_dir, category, rel_path);
+    defer allocator.free(path);
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer file.close();
+    return true;
+}
+
+fn cacheFilePath(
+    allocator: std.mem.Allocator,
+    cache_dir: []const u8,
+    category: DraftCategory,
+    rel_path: []const u8,
+) ![]const u8 {
+    if (category == .meta_prompt) return std.fs.path.join(allocator, &.{ cache_dir, rel_path });
+    const rel_dir: []const u8 = switch (category) {
+        .rule => "rule",
+        .context => "context",
+        .meta_prompt => unreachable,
+    };
+    return std.fs.path.join(allocator, &.{ cache_dir, rel_dir, rel_path });
 }
 
 /// Transition the status of an existing draft. Fails if the draft does
@@ -2347,7 +2384,65 @@ test "reconcileDrafts: skips create-operation drafts" {
     try testing.expectEqual(DraftStatus.draft, index.entries.items[0].status);
 }
 
-test "reconcileDrafts: leaves terminal states sticky" {
+test "reconcileDrafts: restores conflicted update when base matches cache" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const seed = "v1 body\n";
+    const seed_hash = util_hash.contentHash(seed);
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .update,
+        .draft_path = "spec/API.md",
+        .current_path = "spec/API.md",
+        .context_id = "ctx-api",
+        .base_hash = seed_hash[0..],
+    }, "local edit\n");
+    try setDraftStatus(testing.allocator, root, .context, "spec/API.md", .conflicted);
+
+    try tmp.dir.makePath("cache/context/spec");
+    try writeFile(tmp.dir, "cache/context/spec/API.md", seed);
+
+    const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
+    defer testing.allocator.free(cache_dir);
+
+    const summary = try reconcileDrafts(testing.allocator, root, cache_dir);
+    try testing.expectEqual(@as(usize, 1), summary.restored);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(DraftStatus.draft, index.entries.items[0].status);
+}
+
+test "reconcileDrafts: restores conflicted create when target is absent from cache" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "todo/NEXT.md",
+    }, "new todo\n");
+    try setDraftStatus(testing.allocator, root, .context, "todo/NEXT.md", .conflicted);
+
+    const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
+    defer testing.allocator.free(cache_dir);
+
+    const summary = try reconcileDrafts(testing.allocator, root, cache_dir);
+    try testing.expectEqual(@as(usize, 1), summary.restored);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(DraftStatus.draft, index.entries.items[0].status);
+}
+
+test "reconcileDrafts: leaves terminal applied and declined statuses sticky" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 

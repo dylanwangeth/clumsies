@@ -118,13 +118,13 @@ pub fn handle(
         ctx.consumeAndRedraw();
         return true;
     }
-    if (key.matches('p', .{})) {
-        self.openPrComposer();
+    if (key.matches('P', .{}) or key.matches('p', .{ .shift = true })) {
+        self.openAllDraftsPrComposer();
         ctx.consumeAndRedraw();
         return true;
     }
-    if (key.matches('P', .{}) or key.matches('p', .{ .shift = true })) {
-        self.openAllDraftsPrComposer();
+    if (key.matches('p', .{})) {
+        self.openPrComposer();
         ctx.consumeAndRedraw();
         return true;
     }
