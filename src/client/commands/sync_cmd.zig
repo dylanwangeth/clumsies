@@ -325,7 +325,7 @@ fn pruneCacheDir(
         const rel_path = if (rel_dir.len == 0)
             try allocator.dupe(u8, entry.name)
         else
-            try std.fs.path.join(allocator, &.{ rel_dir, entry.name });
+            try joinManifestPath(allocator, rel_dir, entry.name);
         defer allocator.free(rel_path);
 
         switch (entry.kind) {
@@ -346,6 +346,10 @@ fn pruneCacheDir(
         }
     }
     return removed;
+}
+
+fn joinManifestPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, name });
 }
 
 /// Batch-fetch rule bodies in a single POST. Per-item errors from
@@ -605,6 +609,12 @@ test "cacheSubDirForRulePath routes META_PROMPT to cache root" {
 test "cacheSubDirForRulePath routes regular paths under rule/" {
     try testing.expectEqualStrings("rule", cacheSubDirForRulePath("coding/STYLE.md"));
     try testing.expectEqualStrings("rule", cacheSubDirForRulePath("workflow/CODING.md"));
+}
+
+test "joinManifestPath preserves manifest separator" {
+    const result = try joinManifestPath(testing.allocator, "keep/nested", "A.md");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("keep/nested/A.md", result);
 }
 
 test "pruneCacheNamespace removes files absent from manifest keep set" {
