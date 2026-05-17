@@ -245,6 +245,10 @@ pub fn materializeWorkspace(
         try w.interface.writeAll(manifest_response.body);
         try w.interface.flush();
     }
+    _ = pruneStaleWorkspaceCache(allocator, cache_dir, manifest) catch |err| blk: {
+        log.warn("stale_cache_prune_failed ws_id={s} error={s}", .{ ws_id, @errorName(err) });
+        break :blk 0;
+    };
 
     const reconcile = drafts_mod.reconcileDrafts(allocator, ws_dir, cache_dir) catch drafts_mod.ReconcileSummary{};
     return .{
@@ -256,6 +260,92 @@ pub fn materializeWorkspace(
         .context_unchanged = context_skipped,
         .conflicted_drafts = reconcile.conflicted,
     };
+}
+
+fn pruneStaleWorkspaceCache(
+    allocator: std.mem.Allocator,
+    cache_dir: []const u8,
+    manifest: workspace_api.WorkspaceManifestResponse,
+) !usize {
+    var context_keep: std.StringHashMapUnmanaged(void) = .empty;
+    defer context_keep.deinit(allocator);
+    for (manifest.context.items) |entry| {
+        try context_keep.put(allocator, entry.value.path, {});
+    }
+
+    var rule_keep: std.StringHashMapUnmanaged(void) = .empty;
+    defer rule_keep.deinit(allocator);
+    for (manifest.rules.items) |entry| {
+        const rule_path = entry.value.path;
+        if (std.mem.eql(u8, rule_path, "META_PROMPT.md")) continue;
+        try rule_keep.put(allocator, rule_path, {});
+    }
+
+    var removed: usize = 0;
+    const context_dir = try std.fs.path.join(allocator, &.{ cache_dir, "context" });
+    defer allocator.free(context_dir);
+    removed += try pruneCacheNamespace(allocator, context_dir, &context_keep);
+    const rule_dir = try std.fs.path.join(allocator, &.{ cache_dir, "rule" });
+    defer allocator.free(rule_dir);
+    removed += try pruneCacheNamespace(allocator, rule_dir, &rule_keep);
+    return removed;
+}
+
+fn pruneCacheNamespace(
+    allocator: std.mem.Allocator,
+    namespace_dir: []const u8,
+    keep: *const std.StringHashMapUnmanaged(void),
+) !usize {
+    var dir = std.fs.openDirAbsolute(namespace_dir, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => return err,
+    };
+    dir.close();
+    return pruneCacheDir(allocator, namespace_dir, "", keep);
+}
+
+fn pruneCacheDir(
+    allocator: std.mem.Allocator,
+    namespace_dir: []const u8,
+    rel_dir: []const u8,
+    keep: *const std.StringHashMapUnmanaged(void),
+) !usize {
+    const current_dir = if (rel_dir.len == 0)
+        try allocator.dupe(u8, namespace_dir)
+    else
+        try std.fs.path.join(allocator, &.{ namespace_dir, rel_dir });
+    defer allocator.free(current_dir);
+
+    var dir = try std.fs.openDirAbsolute(current_dir, .{ .iterate = true });
+    defer dir.close();
+
+    var removed: usize = 0;
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        const rel_path = if (rel_dir.len == 0)
+            try allocator.dupe(u8, entry.name)
+        else
+            try std.fs.path.join(allocator, &.{ rel_dir, entry.name });
+        defer allocator.free(rel_path);
+
+        switch (entry.kind) {
+            .file, .sym_link => {
+                if (!keep.contains(rel_path)) {
+                    try dir.deleteFile(entry.name);
+                    removed += 1;
+                }
+            },
+            .directory => {
+                removed += try pruneCacheDir(allocator, namespace_dir, rel_path, keep);
+                dir.deleteDir(entry.name) catch |err| switch (err) {
+                    error.DirNotEmpty, error.FileNotFound => {},
+                    else => return err,
+                };
+            },
+            else => {},
+        }
+    }
+    return removed;
 }
 
 /// Batch-fetch rule bodies in a single POST. Per-item errors from
@@ -515,6 +605,39 @@ test "cacheSubDirForRulePath routes META_PROMPT to cache root" {
 test "cacheSubDirForRulePath routes regular paths under rule/" {
     try testing.expectEqualStrings("rule", cacheSubDirForRulePath("coding/STYLE.md"));
     try testing.expectEqualStrings("rule", cacheSubDirForRulePath("workflow/CODING.md"));
+}
+
+test "pruneCacheNamespace removes files absent from manifest keep set" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("cache/context/keep");
+    try tmp.dir.makePath("cache/context/stale");
+    {
+        const f = try tmp.dir.createFile("cache/context/keep/A.md", .{});
+        defer f.close();
+        try f.writeAll("keep");
+    }
+    {
+        const f = try tmp.dir.createFile("cache/context/stale/B.md", .{});
+        defer f.close();
+        try f.writeAll("stale");
+    }
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const namespace_path = try tmp.dir.realpath("cache/context", &buf);
+
+    var keep: std.StringHashMapUnmanaged(void) = .empty;
+    defer keep.deinit(testing.allocator);
+    try keep.put(testing.allocator, "keep/A.md", {});
+
+    const removed = try pruneCacheNamespace(testing.allocator, namespace_path, &keep);
+    try testing.expectEqual(@as(usize, 1), removed);
+    {
+        const f = try tmp.dir.openFile("cache/context/keep/A.md", .{});
+        defer f.close();
+    }
+    try testing.expectError(error.FileNotFound, tmp.dir.openFile("cache/context/stale/B.md", .{}));
 }
 
 test "localFileMatchesHash returns true on hash match" {

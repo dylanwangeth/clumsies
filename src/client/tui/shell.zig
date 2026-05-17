@@ -5670,7 +5670,7 @@ pub const Shell = struct {
             self.notifyOp(.warning, "No draft for this selection.");
             return;
         };
-        if (status != .draft) {
+        if (!self.canSubmitDraftStatus(target, status)) {
             self.notifyOp(.warning, "Draft is not editable.");
             return;
         }
@@ -5870,7 +5870,6 @@ pub const Shell = struct {
 
         for (index.entries.items) |entry| {
             if (entry.category != category_filter) continue;
-            if (entry.status != .draft) continue;
             const target = DraftTarget{
                 .ws_id = ws_id,
                 .category = entry.category,
@@ -5878,6 +5877,7 @@ pub const Shell = struct {
                 .rule_id = entry.rule_id,
                 .context_id = entry.context_id,
             };
+            if (!self.canSubmitDraftStatus(target, entry.status)) continue;
             if (!self.appendComposerDraftTarget(alloc, &targets, target)) return null;
         }
 
@@ -5885,6 +5885,45 @@ pub const Shell = struct {
         const owned = targets.toOwnedSlice(alloc) catch return null;
         success = true;
         return owned;
+    }
+
+    const ExistingContextTarget = struct {
+        context_id: []const u8,
+        base_hash: []const u8,
+    };
+
+    const ExistingRuleTarget = struct {
+        rule_id: []const u8,
+        base_hash: []const u8,
+    };
+
+    fn existingContextTarget(self: *Shell, target: DraftTarget) ?ExistingContextTarget {
+        return switch (target.category) {
+            .context => blk: {
+                const remote = self.api_state.workspace_context_cache.lookup(.{ .value = target.ws_id }) orelse break :blk null;
+                if (findContextByPath(remote, target.path)) |context| {
+                    if (context.context_id.len > 0 and context.hash.len > 0) {
+                        break :blk .{ .context_id = context.context_id, .base_hash = context.hash };
+                    }
+                }
+                break :blk null;
+            },
+            .rule, .meta_prompt => null,
+        };
+    }
+
+    fn existingRuleTarget(self: *Shell, target: DraftTarget) ?ExistingRuleTarget {
+        return switch (target.category) {
+            .rule, .meta_prompt => blk: {
+                if (self.lookupRuleViewByPath(target.path)) |rule| {
+                    if (rule.rule_id.len > 0 and rule.content_hash.len > 0) {
+                        break :blk .{ .rule_id = rule.rule_id, .base_hash = rule.content_hash };
+                    }
+                }
+                break :blk null;
+            },
+            .context => null,
+        };
     }
 
     fn appendComposerDraftTarget(
@@ -5897,7 +5936,7 @@ pub const Shell = struct {
             self.notifyOp(.warning, "Select draft files only.");
             return false;
         };
-        if (status != .draft) {
+        if (!self.canSubmitDraftStatus(target, status)) {
             self.notifyOp(.warning, "Selected draft is not editable.");
             return false;
         }
@@ -5911,6 +5950,27 @@ pub const Shell = struct {
             return false;
         };
         return true;
+    }
+
+    fn canSubmitDraftStatus(
+        self: *Shell,
+        target: DraftTarget,
+        status: drafts_mod.DraftStatus,
+    ) bool {
+        return switch (status) {
+            .draft => true,
+            .conflicted => self.conflictedCreateDraftCanBecomeUpdate(target),
+            .in_review, .applied, .declined => false,
+        };
+    }
+
+    fn conflictedCreateDraftCanBecomeUpdate(self: *Shell, target: DraftTarget) bool {
+        const operation = self.lookupDraftOperation(target) orelse return false;
+        if (operation != .create) return false;
+        return switch (target.category) {
+            .context => self.existingContextTarget(target) != null,
+            .rule, .meta_prompt => self.existingRuleTarget(target) != null,
+        };
     }
 
     fn validateComposerBatchTargets(self: *Shell, targets: []const DraftTarget) bool {
@@ -6082,6 +6142,43 @@ pub const Shell = struct {
         base_hash: ?[]const u8,
     };
 
+    fn validateContentFormatForSubmit(self: *Shell, path: []const u8, content: []const u8) bool {
+        const issue = contentFormatIssue(content) orelse return true;
+        const message = std.fmt.allocPrint(
+            self.api_state.allocator(),
+            "Invalid draft {s}: {s}.",
+            .{ path, issue },
+        ) catch "Invalid draft content.";
+        self.failPrComposerSubmit(.failure, message);
+        return false;
+    }
+
+    fn contentFormatIssue(content: []const u8) ?[]const u8 {
+        var lines = std.mem.splitSequence(u8, content, "\n");
+        var found_heading = false;
+        var found_description = false;
+        var found_section = false;
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+            if (std.mem.eql(u8, trimmed, "---")) continue;
+            if (trimmed.len >= 2 and trimmed[0] == '#' and trimmed[1] == '#') {
+                found_section = true;
+                break;
+            }
+            if (!found_heading) {
+                if (trimmed[0] != '#') return "missing H1 heading";
+                found_heading = true;
+            } else {
+                found_description = true;
+            }
+        }
+        if (!found_heading) return "missing H1 heading";
+        if (!found_description) return "missing description paragraph before first H2";
+        if (!found_section) return "missing H2 section";
+        return null;
+    }
+
     fn submitRulePr(self: *Shell, target: DraftTarget) void {
         const alloc = self.api_state.allocator();
         const read = self.readDraftForSubmit(alloc, target) orelse return;
@@ -6097,9 +6194,9 @@ pub const Shell = struct {
             self.notifyOp(.warning, "Draft entry missing; try again.");
             return;
         };
-        // Existing-rule operations need identity and base metadata;
-        // create operations carry the new path and content.
-        const operation_type: []const u8 = switch (entry.operation) {
+        const existing_rule = if (entry.operation == .create) self.existingRuleTarget(target) else null;
+        const effective_operation: drafts_mod.DraftOperation = if (existing_rule != null) .update else entry.operation;
+        const operation_type: []const u8 = switch (effective_operation) {
             .create => "create",
             .update => "update",
             .rename => "rename",
@@ -6118,40 +6215,49 @@ pub const Shell = struct {
                 return;
             }) catch return);
         defer if (content_copy) |c| alloc.free(c);
+        if (content_copy) |content| {
+            if (!self.validateContentFormatForSubmit(entry.draft_path, content)) return;
+        }
 
         // Update/rename/delete need rule_id; resolve from the draft
         // target first (authoritative) then fall back to an artifact
         // lookup by path. Create drafts have neither — that's the
         // expected missing rule_id, not an error.
-        const rule_id_copy_opt: ?[]const u8 = if (entry.operation == .create)
-            null
-        else blk: {
-            const pid = target.rule_id orelse entry.rule_id orelse self.lookupRuleId(target.path) orelse {
-                self.notifyOp(.warning, "Unknown rule id for this draft.");
-                return;
-            };
-            break :blk (alloc.dupe(u8, pid) catch return);
+        const rule_id_copy_opt: ?[]const u8 = switch (effective_operation) {
+            .create => null,
+            else => blk: {
+                const pid = if (existing_rule) |rule|
+                    rule.rule_id
+                else
+                    target.rule_id orelse entry.rule_id orelse self.lookupRuleId(target.path) orelse {
+                        self.notifyOp(.warning, "Unknown rule id for this draft.");
+                        return;
+                    };
+                break :blk (alloc.dupe(u8, pid) catch return);
+            },
         };
         defer if (rule_id_copy_opt) |pid| alloc.free(pid);
 
-        const path_copy_opt: ?[]const u8 = switch (entry.operation) {
+        const path_copy_opt: ?[]const u8 = switch (effective_operation) {
             .create => alloc.dupe(u8, entry.draft_path) catch return,
             else => null,
         };
         defer if (path_copy_opt) |p| alloc.free(p);
-        const new_path_copy_opt: ?[]const u8 = switch (entry.operation) {
+        const new_path_copy_opt: ?[]const u8 = switch (effective_operation) {
             .rename => alloc.dupe(u8, entry.draft_path) catch return,
             else => null,
         };
         defer if (new_path_copy_opt) |p| alloc.free(p);
 
-        const base_hash_copy_opt: ?[]const u8 = if (entry.base_hash) |h|
+        const base_hash_copy_opt: ?[]const u8 = if (existing_rule) |rule|
+            (alloc.dupe(u8, rule.base_hash) catch return)
+        else if (entry.base_hash) |h|
             (alloc.dupe(u8, h) catch return)
         else
             null;
         defer if (base_hash_copy_opt) |h| alloc.free(h);
 
-        if (entry.operation == .update or entry.operation == .rename) {
+        if (effective_operation == .update or effective_operation == .rename) {
             if (base_hash_copy_opt == null) {
                 self.notifyOp(.warning, "Missing base_hash for update/rename draft.");
                 return;
@@ -6211,32 +6317,49 @@ pub const Shell = struct {
                 return;
             };
             if (entry.rule_id) |id| owned.append(alloc, id) catch return;
-            const operation_type: []const u8 = switch (entry.operation) {
+            const existing_rule = if (entry.operation == .create) self.existingRuleTarget(target) else null;
+            const effective_operation: drafts_mod.DraftOperation = if (existing_rule != null) .update else entry.operation;
+            const operation_type: []const u8 = switch (effective_operation) {
                 .create => "create",
                 .update => "update",
                 .rename => "rename",
                 .delete => "delete",
             };
-            const content_copy: ?[]const u8 = if (entry.operation == .delete) null else read.content;
+            const content_copy: ?[]const u8 = if (effective_operation == .delete) null else read.content;
             if (content_copy) |content| owned.append(alloc, content) catch return;
+            if (content_copy) |content| {
+                if (!self.validateContentFormatForSubmit(entry.draft_path, content)) return;
+            }
 
-            const rule_id = if (entry.operation == .create)
-                null
-            else
-                target.rule_id orelse entry.rule_id orelse self.lookupRuleId(target.path) orelse {
-                    alloc.free(entry.draft_path);
-                    if (entry.base_hash) |h| alloc.free(h);
-                    self.notifyOp(.warning, "Unknown rule id for a selected draft.");
-                    return;
-                };
-            const path: ?[]const u8 = if (entry.operation == .create) entry.draft_path else null;
-            const new_path: ?[]const u8 = if (entry.operation == .rename) entry.draft_path else null;
+            const rule_id: ?[]const u8 = switch (effective_operation) {
+                .create => null,
+                else => blk: {
+                    if (existing_rule) |rule| {
+                        const id = alloc.dupe(u8, rule.rule_id) catch return;
+                        owned.append(alloc, id) catch return;
+                        break :blk id;
+                    }
+                    break :blk target.rule_id orelse entry.rule_id orelse self.lookupRuleId(target.path) orelse {
+                        alloc.free(entry.draft_path);
+                        if (entry.base_hash) |h| alloc.free(h);
+                        self.notifyOp(.warning, "Unknown rule id for a selected draft.");
+                        return;
+                    };
+                },
+            };
+            const path: ?[]const u8 = if (effective_operation == .create) entry.draft_path else null;
+            const new_path: ?[]const u8 = if (effective_operation == .rename) entry.draft_path else null;
             if (path == null and new_path == null) alloc.free(entry.draft_path) else owned.append(alloc, entry.draft_path) catch return;
-            if ((entry.operation == .update or entry.operation == .rename) and entry.base_hash == null) {
+            const base_hash: ?[]const u8 = if (existing_rule) |rule| blk: {
+                const hash = alloc.dupe(u8, rule.base_hash) catch return;
+                owned.append(alloc, hash) catch return;
+                break :blk hash;
+            } else entry.base_hash;
+            if ((effective_operation == .update or effective_operation == .rename) and base_hash == null) {
                 self.notifyOp(.warning, "Missing base_hash for a selected draft.");
                 return;
             }
-            if (entry.base_hash) |h| owned.append(alloc, h) catch return;
+            if (existing_rule == null) if (entry.base_hash) |h| owned.append(alloc, h) catch return;
 
             ops.append(alloc, .{
                 .operation_type = operation_type,
@@ -6244,7 +6367,7 @@ pub const Shell = struct {
                 .path = path,
                 .new_path = new_path,
                 .content = content_copy,
-                .base_hash = entry.base_hash,
+                .base_hash = base_hash,
             }) catch {
                 self.notifyOp(.failure, "Out of memory creating PR.");
                 return;
@@ -6713,7 +6836,9 @@ pub const Shell = struct {
             self.notifyOp(.warning, "Draft entry missing; try again.");
             return;
         };
-        const operation_type: []const u8 = switch (entry.operation) {
+        const existing_context = if (entry.operation == .create) self.existingContextTarget(target) else null;
+        const effective_operation: drafts_mod.DraftOperation = if (existing_context != null) .update else entry.operation;
+        const operation_type: []const u8 = switch (effective_operation) {
             .create => "create",
             .update => "update",
             .rename => "rename",
@@ -6732,32 +6857,48 @@ pub const Shell = struct {
                 return;
             }) catch return);
         defer if (content_copy) |content| alloc.free(content);
+        if (content_copy) |content| {
+            if (!self.validateContentFormatForSubmit(entry.draft_path, content)) return;
+        }
         const ws_id_copy = alloc.dupe(u8, target.ws_id) catch return;
         defer alloc.free(ws_id_copy);
-        const path_copy_opt: ?[]const u8 = switch (entry.operation) {
+        const path_copy_opt: ?[]const u8 = switch (effective_operation) {
             .create => alloc.dupe(u8, entry.draft_path) catch return,
             else => null,
         };
         defer if (path_copy_opt) |p| alloc.free(p);
-        const new_path_copy_opt: ?[]const u8 = switch (entry.operation) {
+        const new_path_copy_opt: ?[]const u8 = switch (effective_operation) {
             .rename => alloc.dupe(u8, entry.draft_path) catch return,
             else => null,
         };
         defer if (new_path_copy_opt) |p| alloc.free(p);
-        const context_id_copy_opt: ?[]const u8 = if (entry.operation != .create)
-            if (target.context_id) |cid| (alloc.dupe(u8, cid) catch return) else null
-        else
-            null;
+        const context_id_copy_opt: ?[]const u8 = switch (effective_operation) {
+            .create => null,
+            else => if (existing_context) |context|
+                (alloc.dupe(u8, context.context_id) catch return)
+            else if (target.context_id) |cid|
+                (alloc.dupe(u8, cid) catch return)
+            else
+                null,
+        };
         defer if (context_id_copy_opt) |cid| alloc.free(cid);
-        const base_hash_copy_opt: ?[]const u8 = if (entry.base_hash) |h|
+        const base_hash_copy_opt: ?[]const u8 = if (existing_context) |context|
+            (alloc.dupe(u8, context.base_hash) catch return)
+        else if (entry.base_hash) |h|
             (alloc.dupe(u8, h) catch return)
         else
             null;
         defer if (base_hash_copy_opt) |h| alloc.free(h);
 
-        if (entry.operation != .create and context_id_copy_opt == null) {
+        if (effective_operation != .create and context_id_copy_opt == null) {
             self.notifyOp(.warning, "Missing context_id for update/rename/delete.");
             return;
+        }
+        if (effective_operation == .update or effective_operation == .rename) {
+            if (base_hash_copy_opt == null) {
+                self.notifyOp(.warning, "Missing base_hash for update/rename draft.");
+                return;
+            }
         }
 
         api.specs.dispatchFromState(
@@ -6800,35 +6941,57 @@ pub const Shell = struct {
                 self.notifyOp(.warning, "Draft entry missing; try again.");
                 return;
             };
-            const operation_type: []const u8 = switch (entry.operation) {
+            const existing_context = if (entry.operation == .create) self.existingContextTarget(target) else null;
+            const effective_operation: drafts_mod.DraftOperation = if (existing_context != null) .update else entry.operation;
+            const operation_type: []const u8 = switch (effective_operation) {
                 .create => "create",
                 .update => "update",
                 .rename => "rename",
                 .delete => "delete",
             };
-            if (read.content) |content| owned.append(alloc, content) catch return;
+            const content: ?[]const u8 = if (effective_operation == .delete) null else read.content;
+            if (content) |body| owned.append(alloc, body) catch return;
+            if (content) |body| {
+                if (!self.validateContentFormatForSubmit(entry.draft_path, body)) return;
+            }
 
-            const context_id = if (entry.operation == .create)
-                null
-            else
-                target.context_id orelse {
-                    alloc.free(entry.draft_path);
-                    if (entry.base_hash) |h| alloc.free(h);
-                    self.notifyOp(.warning, "Missing context_id for a selected draft.");
-                    return;
-                };
-            const path: ?[]const u8 = if (entry.operation == .create) entry.draft_path else null;
-            const new_path: ?[]const u8 = if (entry.operation == .rename) entry.draft_path else null;
+            const context_id: ?[]const u8 = switch (effective_operation) {
+                .create => null,
+                else => blk: {
+                    if (existing_context) |context| {
+                        const id = alloc.dupe(u8, context.context_id) catch return;
+                        owned.append(alloc, id) catch return;
+                        break :blk id;
+                    }
+                    break :blk target.context_id orelse {
+                        alloc.free(entry.draft_path);
+                        if (entry.base_hash) |h| alloc.free(h);
+                        self.notifyOp(.warning, "Missing context_id for a selected draft.");
+                        return;
+                    };
+                },
+            };
+            const path: ?[]const u8 = if (effective_operation == .create) entry.draft_path else null;
+            const new_path: ?[]const u8 = if (effective_operation == .rename) entry.draft_path else null;
             if (path == null and new_path == null) alloc.free(entry.draft_path) else owned.append(alloc, entry.draft_path) catch return;
-            if (entry.base_hash) |h| owned.append(alloc, h) catch return;
+            const base_hash: ?[]const u8 = if (existing_context) |context| blk: {
+                const hash = alloc.dupe(u8, context.base_hash) catch return;
+                owned.append(alloc, hash) catch return;
+                break :blk hash;
+            } else entry.base_hash;
+            if ((effective_operation == .update or effective_operation == .rename) and base_hash == null) {
+                self.notifyOp(.warning, "Missing base_hash for a selected draft.");
+                return;
+            }
+            if (existing_context == null) if (entry.base_hash) |h| owned.append(alloc, h) catch return;
 
             ops.append(alloc, .{
                 .operation_type = operation_type,
                 .context_id = context_id,
                 .path = path,
                 .new_path = new_path,
-                .content = read.content,
-                .base_hash = entry.base_hash,
+                .content = content,
+                .base_hash = base_hash,
             }) catch {
                 self.notifyOp(.failure, "Out of memory creating PR.");
                 return;
@@ -7115,8 +7278,8 @@ pub const Shell = struct {
                 self.markComposerInReview(resp.pr_id, resp.status);
             },
             .api_error => |e| self.handlePrSubmitApiError(e),
-            .network_error => self.notifyOp(.failure, "PR submit failed: network error."),
-            .invalid_response => self.notifyOp(.failure, "PR submit failed: malformed response."),
+            .network_error => self.failPrComposerSubmit(.failure, "PR submit failed: network error."),
+            .invalid_response => self.failPrComposerSubmit(.failure, "PR submit failed: malformed response."),
         }
     }
 
@@ -7274,18 +7437,22 @@ pub const Shell = struct {
                 self.markComposerInReview(resp.pr_id, resp.status);
             },
             .api_error => |e| self.handlePrSubmitApiError(e),
-            .network_error => self.notifyOp(.failure, "PR submit failed: network error."),
-            .invalid_response => self.notifyOp(.failure, "PR submit failed: malformed response."),
+            .network_error => self.failPrComposerSubmit(.failure, "PR submit failed: network error."),
+            .invalid_response => self.failPrComposerSubmit(.failure, "PR submit failed: malformed response."),
         }
     }
 
     fn handlePrSubmitApiError(self: *Shell, err: api.request.ApiErrorPayload) void {
         if (err.status == .conflict and self.markComposerDraftsStatus(.conflicted)) {
-            self.closePrComposer();
-            self.notifyOp(.failure, writeErrorStatus(self, "PR submit conflict; draft marked conflicted", err));
+            self.failPrComposerSubmit(.failure, writeErrorStatus(self, "PR submit conflict; draft marked conflicted", err));
             return;
         }
-        self.notifyOp(.failure, writeErrorStatus(self, "PR submit failed", err));
+        self.failPrComposerSubmit(.failure, writeErrorStatus(self, "PR submit failed", err));
+    }
+
+    fn failPrComposerSubmit(self: *Shell, kind: w.SystemNoticeKind, text: []const u8) void {
+        self.closePrComposer();
+        self.notifyOp(kind, text);
     }
 
     fn closePrComposer(self: *Shell) void {
