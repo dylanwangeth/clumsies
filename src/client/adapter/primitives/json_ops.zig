@@ -70,6 +70,10 @@ pub fn prepareJsonHooksRegistry(
         for (managed_items.items) |managed_item| {
             switch (inspectManagedItem(current_items.items, managed_item)) {
                 .exact => {},
+                .replace => |index| {
+                    current_items.items[index] = try cloneValue(arena, managed_item);
+                    did_change = true;
+                },
                 .absent => {
                     try current_items.append(try cloneValue(arena, managed_item));
                     did_change = true;
@@ -126,6 +130,7 @@ pub fn removeJsonHooksRegistry(
             switch (match) {
                 .exact => |index| try indexes_to_remove.append(allocator, index),
                 .absent => {},
+                .replace => return .{ .conflict = conflict_incompatible_item },
                 .conflict => return .{ .conflict = conflict_incompatible_item },
             }
         }
@@ -158,11 +163,13 @@ pub fn removeJsonHooksRegistry(
 const ItemMatch = union(enum) {
     absent,
     exact: usize,
+    replace: usize,
     conflict,
 };
 
 fn inspectManagedItem(items: []const std.json.Value, managed_item: std.json.Value) ItemMatch {
     var exact_index: ?usize = null;
+    var replace_index: ?usize = null;
     var related_non_exact = false;
 
     for (items, 0..) |item, index| {
@@ -171,13 +178,22 @@ fn inspectManagedItem(items: []const std.json.Value, managed_item: std.json.Valu
             exact_index = index;
             continue;
         }
+        if (managedHookItemCanReplace(item, managed_item)) {
+            if (replace_index != null) return .conflict;
+            replace_index = index;
+            continue;
+        }
         if (itemsOverlapOnCommand(item, managed_item)) {
+            related_non_exact = true;
+        }
+        if (itemsOverlapOnClumsiesHookKind(item, managed_item)) {
             related_non_exact = true;
         }
     }
 
     if (related_non_exact) return .conflict;
     if (exact_index) |index| return .{ .exact = index };
+    if (replace_index) |index| return .{ .replace = index };
     return .absent;
 }
 
@@ -283,6 +299,95 @@ fn itemsOverlapOnCommand(left: std.json.Value, right: std.json.Value) bool {
     return false;
 }
 
+fn itemsOverlapOnClumsiesHookKind(left: std.json.Value, right: std.json.Value) bool {
+    const left_hooks = nestedHooksArray(left) orelse return false;
+    const right_hooks = nestedHooksArray(right) orelse return false;
+
+    for (left_hooks) |left_hook| {
+        const left_command = hookCommand(left_hook) orelse continue;
+        const left_kind = clumsiesHookScriptName(left_command) orelse continue;
+        for (right_hooks) |right_hook| {
+            const right_command = hookCommand(right_hook) orelse continue;
+            const right_kind = clumsiesHookScriptName(right_command) orelse continue;
+            if (std.mem.eql(u8, left_kind, right_kind)) return true;
+        }
+    }
+    return false;
+}
+
+fn managedHookItemCanReplace(current_item: std.json.Value, managed_item: std.json.Value) bool {
+    const current_object = asObject(current_item) orelse return false;
+    const managed_object = asObject(managed_item) orelse return false;
+    if (current_object.count() != managed_object.count()) return false;
+
+    var it = managed_object.iterator();
+    while (it.next()) |entry| {
+        const current_value = current_object.get(entry.key_ptr.*) orelse return false;
+        if (std.mem.eql(u8, entry.key_ptr.*, "hooks")) {
+            if (!hookArraysCanReplace(current_value, entry.value_ptr.*)) return false;
+            continue;
+        }
+        if (!valueEql(current_value, entry.value_ptr.*)) return false;
+    }
+    return true;
+}
+
+fn hookArraysCanReplace(current_hooks_value: std.json.Value, managed_hooks_value: std.json.Value) bool {
+    const current_hooks = switch (current_hooks_value) {
+        .array => |array| array.items,
+        else => return false,
+    };
+    const managed_hooks = switch (managed_hooks_value) {
+        .array => |array| array.items,
+        else => return false,
+    };
+    if (current_hooks.len != managed_hooks.len) return false;
+
+    var replaced_command = false;
+    for (current_hooks, managed_hooks) |current_hook, managed_hook| {
+        const current_object = asObject(current_hook) orelse return false;
+        const managed_object = asObject(managed_hook) orelse return false;
+        if (current_object.count() != managed_object.count()) return false;
+
+        var it = managed_object.iterator();
+        while (it.next()) |entry| {
+            const current_value = current_object.get(entry.key_ptr.*) orelse return false;
+            if (std.mem.eql(u8, entry.key_ptr.*, "command")) {
+                const current_command = switch (current_value) {
+                    .string => |string| string,
+                    else => return false,
+                };
+                const managed_command = switch (entry.value_ptr.*) {
+                    .string => |string| string,
+                    else => return false,
+                };
+                if (std.mem.eql(u8, current_command, managed_command)) continue;
+                const current_kind = clumsiesHookScriptName(current_command) orelse return false;
+                const managed_kind = clumsiesHookScriptName(managed_command) orelse return false;
+                if (!std.mem.eql(u8, current_kind, managed_kind)) return false;
+                replaced_command = true;
+                continue;
+            }
+            if (!valueEql(current_value, entry.value_ptr.*)) return false;
+        }
+    }
+    return replaced_command;
+}
+
+fn clumsiesHookScriptName(command: []const u8) ?[]const u8 {
+    const names = [_][]const u8{
+        "session-start.sh",
+        "user-prompt-submit.sh",
+        "stop-refer-check.sh",
+    };
+    for (names) |name| {
+        const name_pos = std.mem.indexOf(u8, command, name) orelse continue;
+        if (std.mem.indexOf(u8, command[0..name_pos], "/.codex/hooks/") != null) return name;
+        if (std.mem.indexOf(u8, command[0..name_pos], "/hooks/") != null and std.mem.endsWith(u8, command, "\"")) return name;
+    }
+    return null;
+}
+
 fn nestedHooksArray(item: std.json.Value) ?[]const std.json.Value {
     const object = asObject(item) orelse return null;
     const hooks = object.get("hooks") orelse return null;
@@ -381,6 +486,105 @@ test "prepareJsonHooksRegistry appends managed entries without dropping foreign 
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "echo foreign") != null);
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "session-start.sh") != null);
         },
+    }
+}
+
+test "prepareJsonHooksRegistry replaces stale clumsies hook paths" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup|resume",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/old/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup|resume",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/new/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "/old/.codex") == null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "/new/.codex/hooks/session-start.sh") != null);
+        },
+    }
+}
+
+test "prepareJsonHooksRegistry rejects drifted stale clumsies hook entries" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "resume-only",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/old/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup|resume",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/new/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| try std.testing.expectEqualStrings(conflict_incompatible_item, message),
+        else => return error.ExpectedConflict,
     }
 }
 
