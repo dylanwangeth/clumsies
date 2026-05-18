@@ -55,7 +55,7 @@ fn isTerminalStatus(status: DraftStatus) bool {
     };
 }
 
-fn isRetiredStatus(status: DraftStatus) bool {
+pub fn isRetiredStatus(status: DraftStatus) bool {
     return switch (status) {
         .applied, .declined => true,
         .draft, .in_review, .conflicted => false,
@@ -478,7 +478,7 @@ pub fn upsertUpdateDraft(
 
     if (findDraftPathIndex(index.entries.items, params.category, params.current_path)) |entry_index| {
         var entry = &index.entries.items[entry_index];
-        if (entry.operation != .create) return error.DraftAlreadyExists;
+        if (entry.operation != .create or entry.status != .conflicted) return error.DraftAlreadyExists;
 
         try writeDraftFileAbs(allocator, ws_dir, params.category, entry.draft_path, content);
         entry.operation = .update;
@@ -1211,6 +1211,33 @@ pub fn setDraftStatus(
             found = true;
             break;
         }
+    }
+    if (!found) return error.DraftNotFound;
+
+    try writeIndexAtomic(allocator, ws_dir, index.entries.items);
+}
+
+pub fn setActiveDraftStatus(
+    allocator: std.mem.Allocator,
+    ws_dir: []const u8,
+    category: DraftCategory,
+    draft_path: []const u8,
+    new_status: DraftStatus,
+) !void {
+    if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
+
+    var index = try loadIndex(allocator, ws_dir);
+    defer index.deinit(allocator);
+
+    var found = false;
+    for (index.entries.items) |*entry| {
+        if (entry.category != category) continue;
+        if (isRetiredStatus(entry.status)) continue;
+        if (!std.mem.eql(u8, entry.draft_path, draft_path)) continue;
+        if (entry.status == new_status) return;
+        entry.status = new_status;
+        found = true;
+        break;
     }
     if (!found) return error.DraftNotFound;
 
@@ -2092,6 +2119,81 @@ test "upsertUpdateDraft: converts conflicted create with same path" {
     const content = try readDraftFile(testing.allocator, root, .context, "spec/OVERVIEW.md");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("# Updated overview\n", content);
+}
+
+test "upsertUpdateDraft: active create with same path stays create" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "spec/OVERVIEW.md",
+        .local_temp_id = "tmp-context-overview",
+    }, "# Created overview\n");
+
+    try testing.expectError(error.DraftAlreadyExists, upsertUpdateDraft(testing.allocator, root, .{
+        .category = .context,
+        .current_path = "spec/OVERVIEW.md",
+        .context_id = "ctx-overview",
+        .base_hash = "sha256:base",
+    }, "# Updated overview\n"));
+
+    try setDraftStatus(testing.allocator, root, .context, "spec/OVERVIEW.md", .in_review);
+    try testing.expectError(error.DraftAlreadyExists, upsertUpdateDraft(testing.allocator, root, .{
+        .category = .context,
+        .current_path = "spec/OVERVIEW.md",
+        .context_id = "ctx-overview",
+        .base_hash = "sha256:base",
+    }, "# Updated overview\n"));
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
+    const entry = index.entries.items[0];
+    try testing.expectEqual(DraftOperation.create, entry.operation);
+    try testing.expectEqual(DraftStatus.in_review, entry.status);
+    try testing.expect(entry.current_path == null);
+    try testing.expectEqualStrings("tmp-context-overview", entry.local_temp_id.?);
+
+    const content = try readDraftFile(testing.allocator, root, .context, "spec/OVERVIEW.md");
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("# Created overview\n", content);
+}
+
+test "setActiveDraftStatus: skips retired entries with same path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .update,
+        .draft_path = "coding/A.md",
+        .current_path = "coding/A.md",
+        .base_hash = "sha256:old",
+    }, "old");
+    try setDraftStatus(testing.allocator, root, .rule, "coding/A.md", .applied);
+    try createDraft(testing.allocator, root, .{
+        .category = .rule,
+        .operation = .update,
+        .draft_path = "coding/A.md",
+        .current_path = "coding/A.md",
+        .base_hash = "sha256:new",
+    }, "new");
+
+    try setActiveDraftStatus(testing.allocator, root, .rule, "coding/A.md", .conflicted);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), index.entries.items.len);
+    try testing.expectEqual(DraftStatus.applied, index.entries.items[0].status);
+    try testing.expectEqual(DraftStatus.conflicted, index.entries.items[1].status);
 }
 
 test "normalizeDrafts: folds duplicate update and rename entries" {

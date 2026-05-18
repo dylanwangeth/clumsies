@@ -2177,6 +2177,17 @@ pub const Shell = struct {
         return null;
     }
 
+    fn findContextAtPath(items: []const api.model.WorkspaceContextData, path: []const u8, context_id: ?[]const u8) ?api.model.WorkspaceContextData {
+        for (items) |item| {
+            if (!std.mem.eql(u8, item.path, path)) continue;
+            if (context_id) |id| {
+                if (item.context_id.len == 0 or !std.mem.eql(u8, item.context_id, id)) continue;
+            }
+            return item;
+        }
+        return null;
+    }
+
     fn localContextEntryFor(
         self: *Shell,
         path: []const u8,
@@ -2212,6 +2223,22 @@ pub const Shell = struct {
                 if (item.rule_id.len > 0 and std.mem.eql(u8, item.rule_id, id)) return item;
             }
             if (std.mem.eql(u8, self.pathForWorkspaceRule(item), path)) return item;
+        }
+        return null;
+    }
+
+    fn findRuleAtPath(
+        self: *Shell,
+        items: []const api.model.WorkspaceRuleData,
+        path: []const u8,
+        rule_id: ?[]const u8,
+    ) ?api.model.WorkspaceRuleData {
+        for (items) |item| {
+            if (!std.mem.eql(u8, self.pathForWorkspaceRule(item), path)) continue;
+            if (rule_id) |id| {
+                if (item.rule_id.len == 0 or !std.mem.eql(u8, item.rule_id, id)) continue;
+            }
+            return item;
         }
         return null;
     }
@@ -6139,6 +6166,7 @@ pub const Shell = struct {
             .operation = draft_entry.operation,
             .draft_path = draft_path,
             .rule_id = if (draft_entry.rule_id) |id| (alloc.dupe(u8, id) catch null) else null,
+            .context_id = if (draft_entry.context_id) |id| (alloc.dupe(u8, id) catch null) else null,
             .base_hash = if (draft_entry.base_hash) |h| (alloc.dupe(u8, h) catch null) else null,
         };
 
@@ -6149,6 +6177,7 @@ pub const Shell = struct {
         _ = self;
         for (index.entries.items) |*entry| {
             if (entry.category != target.category) continue;
+            if (drafts_mod.isRetiredStatus(entry.status)) continue;
             if (entry.current_path) |current_path| {
                 if (std.mem.eql(u8, current_path, target.path)) return entry;
             } else if (entry.operation == .create and std.mem.eql(u8, entry.draft_path, target.path)) {
@@ -6158,6 +6187,7 @@ pub const Shell = struct {
 
         for (index.entries.items) |*entry| {
             if (entry.category != target.category) continue;
+            if (drafts_mod.isRetiredStatus(entry.status)) continue;
             if (std.mem.eql(u8, entry.draft_path, target.path)) return entry;
             if (entry.local_temp_id) |value| {
                 if (std.mem.eql(u8, value, target.path)) return entry;
@@ -6210,8 +6240,16 @@ pub const Shell = struct {
         operation: drafts_mod.DraftOperation,
         draft_path: []const u8,
         rule_id: ?[]const u8,
+        context_id: ?[]const u8,
         base_hash: ?[]const u8,
     };
+
+    fn freeDraftSubmitEntry(alloc: std.mem.Allocator, entry: DraftSubmitEntry) void {
+        alloc.free(entry.draft_path);
+        if (entry.rule_id) |id| alloc.free(id);
+        if (entry.context_id) |id| alloc.free(id);
+        if (entry.base_hash) |h| alloc.free(h);
+    }
 
     const ConflictSettlement = struct {
         applied: usize = 0,
@@ -6235,13 +6273,15 @@ pub const Shell = struct {
                     .context => hash: {
                         const remote = self.api_state.workspace_context_cache.lookup(.{ .value = target.ws_id }) orelse break :hash null;
                         const path = if (effective_operation == .rename or effective_operation == .create) entry.draft_path else target.path;
-                        const item = findContextByPath(remote, path) orelse break :hash null;
+                        const context_id: ?[]const u8 = if (effective_operation == .create) null else target.context_id orelse entry.context_id orelse break :hash null;
+                        const item = findContextAtPath(remote, path, context_id) orelse break :hash null;
                         break :hash item.hash;
                     },
                     .rule, .meta_prompt => hash: {
                         const remote = self.api_state.workspace_manifest_cache.lookup(.{ .value = target.ws_id }) orelse break :hash null;
                         const path = if (effective_operation == .rename or effective_operation == .create) entry.draft_path else target.path;
-                        const item = self.findRuleFor(remote, path, target.rule_id orelse entry.rule_id) orelse break :hash null;
+                        const rule_id: ?[]const u8 = if (effective_operation == .create) null else target.rule_id orelse entry.rule_id orelse break :hash null;
+                        const item = self.findRuleAtPath(remote, path, rule_id) orelse break :hash null;
                         break :hash item.content_hash;
                     },
                 }) orelse break :blk false;
@@ -6260,7 +6300,7 @@ pub const Shell = struct {
         const alloc = self.api_state.allocator();
         const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return false;
         defer alloc.free(ws_dir);
-        drafts_mod.setDraftStatus(alloc, ws_dir, category, draft_path, status) catch |err| {
+        drafts_mod.setActiveDraftStatus(alloc, ws_dir, category, draft_path, status) catch |err| {
             log.warn("draft_status_update_failed path={s} status={s} error={s}", .{
                 draft_path,
                 @tagName(status),
@@ -6314,9 +6354,7 @@ pub const Shell = struct {
         defer alloc.free(read.ws_dir);
         defer if (read.content) |content| alloc.free(content);
         defer if (read.entry) |e| {
-            alloc.free(e.draft_path);
-            if (e.rule_id) |id| alloc.free(id);
-            if (e.base_hash) |h| alloc.free(h);
+            freeDraftSubmitEntry(alloc, e);
         };
 
         const entry = read.entry orelse {
@@ -6474,6 +6512,7 @@ pub const Shell = struct {
                 _ = self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied);
                 alloc.free(entry.draft_path);
                 if (entry.base_hash) |h| alloc.free(h);
+                if (entry.context_id) |id| alloc.free(id);
                 continue;
             }
 
@@ -6488,6 +6527,7 @@ pub const Shell = struct {
                     break :blk target.rule_id orelse entry.rule_id orelse self.lookupRuleId(target.path) orelse {
                         alloc.free(entry.draft_path);
                         if (entry.base_hash) |h| alloc.free(h);
+                        if (entry.context_id) |id| alloc.free(id);
                         self.notifyOp(.warning, "Unknown rule id for a selected draft.");
                         return;
                     };
@@ -6990,8 +7030,7 @@ pub const Shell = struct {
         defer alloc.free(read.ws_dir);
         defer if (read.content) |content| alloc.free(content);
         defer if (read.entry) |e| {
-            alloc.free(e.draft_path);
-            if (e.base_hash) |h| alloc.free(h);
+            freeDraftSubmitEntry(alloc, e);
         };
 
         const entry = read.entry orelse {
@@ -7114,6 +7153,7 @@ pub const Shell = struct {
                 self.notifyOp(.warning, "Draft entry missing; try again.");
                 return;
             };
+            if (entry.context_id) |id| owned.append(alloc, id) catch return;
             const existing_context = if (entry.operation == .create) self.existingContextTarget(target) else null;
             const effective_operation: drafts_mod.DraftOperation = if (existing_context != null) .update else entry.operation;
             const operation_type: []const u8 = switch (effective_operation) {
@@ -7657,6 +7697,7 @@ pub const Shell = struct {
             .operation = entry.operation,
             .draft_path = entry.draft_path,
             .rule_id = entry.rule_id,
+            .context_id = entry.context_id,
             .base_hash = entry.base_hash,
         };
         const existing_remote = switch (target.category) {
