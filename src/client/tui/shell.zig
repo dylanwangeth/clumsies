@@ -7042,6 +7042,13 @@ pub const Shell = struct {
                 self.notifyOp(.failure, "Out of memory creating PR.");
                 return;
             };
+            log.info("context_pr_batch_op idx={d} type={s} target_path={s} context_id={s} base_hash={s}", .{
+                ops.items.len - 1,
+                operation_type,
+                target.path,
+                context_id orelse "",
+                base_hash orelse "",
+            });
         }
 
         const title_copy = alloc.dupe(u8, self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len]) catch return;
@@ -7489,12 +7496,12 @@ pub const Shell = struct {
     }
 
     fn handlePrSubmitApiError(self: *Shell, err: api.request.ApiErrorPayload) void {
-        if (err.status == .conflict and self.drafts.pr_composer_batch_targets.len > 1) {
-            self.keepPrComposerAfterSubmitFailure(.failure, writeErrorStatus(self, "PR submit conflict; drafts unchanged", err));
-            return;
-        }
         if (err.status == .conflict and self.markComposerDraftsStatus(.conflicted)) {
-            self.failPrComposerSubmit(.failure, writeErrorStatus(self, "PR submit conflict; draft marked conflicted", err));
+            const message: []const u8 = if (self.drafts.pr_composer_batch_targets.len > 1)
+                "PR submit conflict; drafts marked conflicted"
+            else
+                "PR submit conflict; draft marked conflicted";
+            self.failPrComposerSubmit(.failure, writeErrorStatus(self, message, err));
             return;
         }
         self.keepPrComposerAfterSubmitFailure(.failure, writeErrorStatus(self, "PR submit failed", err));
