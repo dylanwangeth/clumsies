@@ -5131,7 +5131,9 @@ pub const Shell = struct {
         drafts_mod.normalizeDrafts(self.api_state.backing_allocator, ws_dir) catch {};
         const cache_dir = workspace_config.getCachePath(arena, ws_id) catch null;
         if (cache_dir) |dir| {
-            _ = drafts_mod.reconcileDrafts(self.api_state.backing_allocator, ws_dir, dir) catch |err| {
+            _ = drafts_mod.reconcileDraftsWithOptions(self.api_state.backing_allocator, ws_dir, dir, .{
+                .restore_conflicted = false,
+            }) catch |err| {
                 log.warn("draft_reconcile_failed ws_id={s} error={s}", .{ ws_id, @errorName(err) });
             };
         }
@@ -6143,6 +6145,36 @@ pub const Shell = struct {
         return .{ .ws_dir = ws_dir, .content = content, .entry = entry_out };
     }
 
+    fn findDraftEntryForSettlement(self: *Shell, index: *const drafts_mod.DraftsIndex, target: DraftTarget) ?*const drafts_mod.DraftEntry {
+        _ = self;
+        for (index.entries.items) |*entry| {
+            if (entry.category != target.category) continue;
+            if (entry.current_path) |current_path| {
+                if (std.mem.eql(u8, current_path, target.path)) return entry;
+            } else if (entry.operation == .create and std.mem.eql(u8, entry.draft_path, target.path)) {
+                return entry;
+            }
+        }
+
+        for (index.entries.items) |*entry| {
+            if (entry.category != target.category) continue;
+            if (std.mem.eql(u8, entry.draft_path, target.path)) return entry;
+            if (entry.local_temp_id) |value| {
+                if (std.mem.eql(u8, value, target.path)) return entry;
+            }
+            switch (target.category) {
+                .rule, .meta_prompt => if (entry.rule_id) |value| {
+                    if (std.mem.eql(u8, value, target.path)) return entry;
+                },
+                .context => if (entry.context_id) |value| {
+                    if (std.mem.eql(u8, value, target.path)) return entry;
+                },
+            }
+        }
+
+        return null;
+    }
+
     fn findDraftEntryForSubmit(self: *Shell, index: *const drafts_mod.DraftsIndex, target: DraftTarget) ?*const drafts_mod.DraftEntry {
         for (index.entries.items) |*entry| {
             if (entry.category != target.category) continue;
@@ -6180,6 +6212,64 @@ pub const Shell = struct {
         rule_id: ?[]const u8,
         base_hash: ?[]const u8,
     };
+
+    const ConflictSettlement = struct {
+        applied: usize = 0,
+        conflicted: usize = 0,
+        failed: usize = 0,
+    };
+
+    fn draftAlreadyMatchesRemote(
+        self: *Shell,
+        target: DraftTarget,
+        entry: DraftSubmitEntry,
+        effective_operation: drafts_mod.DraftOperation,
+        content: ?[]const u8,
+    ) bool {
+        return switch (effective_operation) {
+            .delete => false,
+            .create, .update, .rename => blk: {
+                const body = content orelse break :blk false;
+                const body_hash = util_hash.contentHash(body);
+                const remote_hash = (switch (target.category) {
+                    .context => hash: {
+                        const remote = self.api_state.workspace_context_cache.lookup(.{ .value = target.ws_id }) orelse break :hash null;
+                        const path = if (effective_operation == .rename or effective_operation == .create) entry.draft_path else target.path;
+                        const item = findContextByPath(remote, path) orelse break :hash null;
+                        break :hash item.hash;
+                    },
+                    .rule, .meta_prompt => hash: {
+                        const remote = self.api_state.workspace_manifest_cache.lookup(.{ .value = target.ws_id }) orelse break :hash null;
+                        const path = if (effective_operation == .rename or effective_operation == .create) entry.draft_path else target.path;
+                        const item = self.findRuleFor(remote, path, target.rule_id orelse entry.rule_id) orelse break :hash null;
+                        break :hash item.content_hash;
+                    },
+                }) orelse break :blk false;
+                break :blk local_content.hashesEqual(body_hash[0..], remote_hash);
+            },
+        };
+    }
+
+    fn markDraftStatusByPath(
+        self: *Shell,
+        ws_id: []const u8,
+        category: drafts_mod.DraftCategory,
+        draft_path: []const u8,
+        status: drafts_mod.DraftStatus,
+    ) bool {
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch return false;
+        defer alloc.free(ws_dir);
+        drafts_mod.setDraftStatus(alloc, ws_dir, category, draft_path, status) catch |err| {
+            log.warn("draft_status_update_failed path={s} status={s} error={s}", .{
+                draft_path,
+                @tagName(status),
+                @errorName(err),
+            });
+            return false;
+        };
+        return true;
+    }
 
     fn validateContentFormatForSubmit(self: *Shell, path: []const u8, content: []const u8) bool {
         const issue = contentFormatIssue(content) orelse return true;
@@ -6256,6 +6346,16 @@ pub const Shell = struct {
         defer if (content_copy) |c| alloc.free(c);
         if (content_copy) |content| {
             if (!self.validateContentFormatForSubmit(entry.draft_path, content)) return;
+        }
+
+        if (self.draftAlreadyMatchesRemote(target, entry, effective_operation, content_copy)) {
+            _ = self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied);
+            self.refreshDraftsCache();
+            workspace_panel.syncWsRows(self);
+            artifact_panel.syncArtifactTree(self);
+            self.closePrComposer();
+            self.notifyOp(.success, "Draft already applied.");
+            return;
         }
 
         // Update/rename/delete need rule_id; resolve from the draft
@@ -6370,6 +6470,13 @@ pub const Shell = struct {
                 if (!self.validateContentFormatForSubmit(entry.draft_path, content)) return;
             }
 
+            if (self.draftAlreadyMatchesRemote(target, entry, effective_operation, content_copy)) {
+                _ = self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied);
+                alloc.free(entry.draft_path);
+                if (entry.base_hash) |h| alloc.free(h);
+                continue;
+            }
+
             const rule_id: ?[]const u8 = switch (effective_operation) {
                 .create => null,
                 else => blk: {
@@ -6418,6 +6525,15 @@ pub const Shell = struct {
                 rule_id orelse "",
                 base_hash orelse "",
             });
+        }
+
+        if (ops.items.len == 0) {
+            self.refreshDraftsCache();
+            workspace_panel.syncWsRows(self);
+            artifact_panel.syncArtifactTree(self);
+            self.closePrComposer();
+            self.notifyOp(.success, "Drafts already applied.");
+            return;
         }
 
         const title_copy = alloc.dupe(u8, self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len]) catch return;
@@ -6906,6 +7022,17 @@ pub const Shell = struct {
         if (content_copy) |content| {
             if (!self.validateContentFormatForSubmit(entry.draft_path, content)) return;
         }
+
+        if (self.draftAlreadyMatchesRemote(target, entry, effective_operation, content_copy)) {
+            _ = self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied);
+            self.refreshDraftsCache();
+            workspace_panel.syncWsRows(self);
+            artifact_panel.syncArtifactTree(self);
+            self.closePrComposer();
+            self.notifyOp(.success, "Draft already applied.");
+            return;
+        }
+
         const ws_id_copy = alloc.dupe(u8, target.ws_id) catch return;
         defer alloc.free(ws_id_copy);
         const path_copy_opt: ?[]const u8 = switch (effective_operation) {
@@ -7001,6 +7128,13 @@ pub const Shell = struct {
                 if (!self.validateContentFormatForSubmit(entry.draft_path, body)) return;
             }
 
+            if (self.draftAlreadyMatchesRemote(target, entry, effective_operation, content)) {
+                _ = self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied);
+                alloc.free(entry.draft_path);
+                if (entry.base_hash) |h| alloc.free(h);
+                continue;
+            }
+
             const context_id: ?[]const u8 = switch (effective_operation) {
                 .create => null,
                 else => blk: {
@@ -7049,6 +7183,15 @@ pub const Shell = struct {
                 context_id orelse "",
                 base_hash orelse "",
             });
+        }
+
+        if (ops.items.len == 0) {
+            self.refreshDraftsCache();
+            workspace_panel.syncWsRows(self);
+            artifact_panel.syncArtifactTree(self);
+            self.closePrComposer();
+            self.notifyOp(.success, "Drafts already applied.");
+            return;
         }
 
         const title_copy = alloc.dupe(u8, self.drafts.pr_composer_title_buf[0..self.drafts.pr_composer_title_len]) catch return;
@@ -7495,14 +7638,89 @@ pub const Shell = struct {
         }
     }
 
+    fn settleDraftAfterConflict(self: *Shell, target: DraftTarget) ?drafts_mod.DraftStatus {
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, target.ws_id) catch return null;
+        defer alloc.free(ws_dir);
+
+        var index = drafts_mod.loadIndex(alloc, ws_dir) catch return null;
+        defer index.deinit(alloc);
+
+        const entry = self.findDraftEntryForSettlement(&index, target) orelse return null;
+        const content: ?[]const u8 = if (entry.operation == .delete)
+            null
+        else
+            drafts_mod.readDraftFile(alloc, ws_dir, target.category, entry.draft_path) catch null;
+        defer if (content) |value| alloc.free(value);
+
+        const submit_entry = DraftSubmitEntry{
+            .operation = entry.operation,
+            .draft_path = entry.draft_path,
+            .rule_id = entry.rule_id,
+            .base_hash = entry.base_hash,
+        };
+        const existing_remote = switch (target.category) {
+            .context => self.existingContextTarget(target) != null,
+            .rule, .meta_prompt => self.existingRuleTarget(target) != null,
+        };
+        const effective_operation: drafts_mod.DraftOperation = if (entry.operation == .create and existing_remote) .update else entry.operation;
+        const status: drafts_mod.DraftStatus = if (self.draftAlreadyMatchesRemote(target, submit_entry, effective_operation, content)) .applied else .conflicted;
+        if (!self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, status)) return null;
+        return status;
+    }
+
+    fn settleComposerDraftsAfterConflict(self: *Shell) ConflictSettlement {
+        var settlement: ConflictSettlement = .{};
+        if (self.drafts.pr_composer_batch_targets.len > 0) {
+            for (self.drafts.pr_composer_batch_targets) |target| {
+                const status = self.settleDraftAfterConflict(target) orelse {
+                    settlement.failed += 1;
+                    continue;
+                };
+                switch (status) {
+                    .applied => settlement.applied += 1,
+                    .conflicted => settlement.conflicted += 1,
+                    .draft, .in_review, .declined => {},
+                }
+            }
+        } else if (self.drafts.pr_composer_target) |target| {
+            const status = self.settleDraftAfterConflict(target) orelse {
+                settlement.failed += 1;
+                return settlement;
+            };
+            switch (status) {
+                .applied => settlement.applied += 1,
+                .conflicted => settlement.conflicted += 1,
+                .draft, .in_review, .declined => {},
+            }
+        } else {
+            settlement.failed += 1;
+        }
+        self.refreshDraftsCache();
+        workspace_panel.syncWsRows(self);
+        artifact_panel.syncArtifactTree(self);
+        return settlement;
+    }
+
     fn handlePrSubmitApiError(self: *Shell, err: api.request.ApiErrorPayload) void {
-        if (err.status == .conflict and self.markComposerDraftsStatus(.conflicted)) {
-            const message: []const u8 = if (self.drafts.pr_composer_batch_targets.len > 1)
-                "PR submit conflict; drafts marked conflicted"
-            else
-                "PR submit conflict; draft marked conflicted";
-            self.failPrComposerSubmit(.failure, writeErrorStatus(self, message, err));
-            return;
+        if (err.status == .conflict) {
+            const settlement = self.settleComposerDraftsAfterConflict();
+            if (settlement.applied > 0 and settlement.conflicted == 0 and settlement.failed == 0) {
+                self.closePrComposer();
+                const message: []const u8 = if (settlement.applied > 1) "Drafts already applied." else "Draft already applied.";
+                self.notifyOp(.success, message);
+                return;
+            }
+            if (settlement.applied > 0 or settlement.conflicted > 0) {
+                const message: []const u8 = if (settlement.applied > 0 and settlement.conflicted > 0)
+                    "PR submit conflict; matching drafts marked applied, remaining drafts marked conflicted"
+                else if (settlement.conflicted > 1)
+                    "PR submit conflict; drafts marked conflicted"
+                else
+                    "PR submit conflict; draft marked conflicted";
+                self.failPrComposerSubmit(.failure, writeErrorStatus(self, message, err));
+                return;
+            }
         }
         self.keepPrComposerAfterSubmitFailure(.failure, writeErrorStatus(self, "PR submit failed", err));
     }
