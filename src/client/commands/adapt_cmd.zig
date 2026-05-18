@@ -7,6 +7,7 @@ const styles = @import("../styles.zig");
 const workspace_config = @import("../workspace_config.zig");
 const HubClient = @import("../hub_client.zig").HubClient;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
+const auth_api = @import("clumsies_lib").protocol.auth_api;
 const api_error = @import("clumsies_lib").protocol.api_error;
 const sync_cmd = @import("sync_cmd.zig");
 
@@ -540,28 +541,35 @@ fn createAndBindCurrentWorkspace(
     );
     defer allocator.free(body);
 
-    const response = try hub.post("/api/workspaces", body);
-    defer response.deinit();
-    if (response.status != .ok and response.status != .created) {
+    const created = blk: {
+        const response = try hub.post("/api/workspaces", body);
+        defer response.deinit();
+        if (response.status == .ok or response.status == .created) {
+            const parsed = try std.json.parseFromSlice(
+                workspace_api.CreateWorkspaceResponse,
+                allocator,
+                response.body,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+            );
+            break :blk parsed;
+        }
+        if (response.status == .conflict) {
+            if (try bindExistingWorkspaceByName(stdout, stderr, allocator, &hub, auth_info.hub_url, cwd_path, workspace_name)) {
+                return cwd_path;
+            }
+        }
         try reportApiError(stderr, allocator, "Failed to create workspace", response.status, response.body);
         return error.WorkspaceCreateFailed;
-    }
+    };
+    defer created.deinit();
 
-    const parsed = try std.json.parseFromSlice(
-        workspace_api.CreateWorkspaceResponse,
-        allocator,
-        response.body,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    );
-    defer parsed.deinit();
-
-    try workspace_config.addWorkspace(allocator, auth_info.hub_url, parsed.value.name, parsed.value.ws_id, cwd_path);
+    try workspace_config.addWorkspace(allocator, auth_info.hub_url, created.value.name, created.value.ws_id, cwd_path);
     try stdout.print(
         "{s}  {s}{s}Workspace \"{s}\" bound to current directory (ws_id: {s}){s}\n",
-        .{ P, Color.bold, Color.green, parsed.value.name, parsed.value.ws_id, Color.reset },
+        .{ P, Color.bold, Color.green, created.value.name, created.value.ws_id, Color.reset },
     );
 
-    const summary = sync_cmd.materializeWorkspace(allocator, &hub, parsed.value.ws_id, .{ .errors = stderr }) catch |err| {
+    const summary = sync_cmd.materializeWorkspace(allocator, &hub, created.value.ws_id, .{ .errors = stderr }) catch |err| {
         try stderr.print(
             "{s}{s}{s}Warning:{s} Initial sync failed: {s}. The adapter install will continue.\n",
             .{ P, Color.bold, Color.orange, Color.reset, @errorName(err) },
@@ -573,6 +581,64 @@ fn createAndBindCurrentWorkspace(
         .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total },
     );
     return cwd_path;
+}
+
+fn bindExistingWorkspaceByName(
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    hub: *HubClient,
+    hub_url: []const u8,
+    cwd_path: []const u8,
+    workspace_name: []const u8,
+) !bool {
+    const me_response = hub.get("/api/auth/me") catch |err| {
+        try stderr.print(
+            "{s}{s}{s}Warning:{s} Workspace \"{s}\" already exists, but lookup failed: {s}.\n",
+            .{ P, Color.bold, Color.orange, Color.reset, workspace_name, @errorName(err) },
+        );
+        return false;
+    };
+    defer me_response.deinit();
+    if (me_response.status != .ok) return false;
+
+    const parsed = std.json.parseFromSlice(
+        auth_api.MeResponse,
+        allocator,
+        me_response.body,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return false;
+    defer parsed.deinit();
+
+    const existing = findAccessibleWorkspaceByName(parsed.value.workspaces, workspace_name) orelse return false;
+    try workspace_config.addWorkspace(allocator, hub_url, existing.name, existing.ws_id, cwd_path);
+    try stdout.print(
+        "{s}  {s}{s}Workspace \"{s}\" already exists; bound current directory (ws_id: {s}){s}\n",
+        .{ P, Color.bold, Color.green, existing.name, existing.ws_id, Color.reset },
+    );
+
+    const summary = sync_cmd.materializeWorkspace(allocator, hub, existing.ws_id, .{ .errors = stderr }) catch |err| {
+        try stderr.print(
+            "{s}{s}{s}Warning:{s} Initial sync failed: {s}. The adapter install will continue.\n",
+            .{ P, Color.bold, Color.orange, Color.reset, @errorName(err) },
+        );
+        return true;
+    };
+    try stdout.print(
+        "{s}  {s}{s}Synced:{s} {d} rules, {d} context files into local cache\n",
+        .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total },
+    );
+    return true;
+}
+
+fn findAccessibleWorkspaceByName(workspaces: []const auth_api.MeWorkspace, name: []const u8) ?auth_api.MeWorkspace {
+    var found: ?auth_api.MeWorkspace = null;
+    for (workspaces) |workspace| {
+        if (!std.mem.eql(u8, workspace.name, name)) continue;
+        if (found != null) return null;
+        found = workspace;
+    }
+    return found;
 }
 
 fn currentDirectoryName(allocator: std.mem.Allocator) ![]const u8 {
@@ -941,4 +1007,24 @@ fn countWorkflowSkills(plan: *const adapter.model.Plan) usize {
         }
     }
     return count;
+}
+
+test "findAccessibleWorkspaceByName returns unique matching workspace" {
+    const workspaces = [_]auth_api.MeWorkspace{
+        .{ .ws_id = "ws-one", .name = "duckweed", .description = "", .role = "admin", .owner = "wei" },
+        .{ .ws_id = "ws-two", .name = "okra", .description = "", .role = "admin", .owner = "wei" },
+    };
+
+    const found = findAccessibleWorkspaceByName(&workspaces, "duckweed") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("ws-one", found.ws_id);
+}
+
+test "findAccessibleWorkspaceByName rejects missing or ambiguous names" {
+    const workspaces = [_]auth_api.MeWorkspace{
+        .{ .ws_id = "ws-one", .name = "duckweed", .description = "", .role = "admin", .owner = "wei" },
+        .{ .ws_id = "ws-two", .name = "duckweed", .description = "", .role = "member", .owner = "wei" },
+    };
+
+    try std.testing.expect(findAccessibleWorkspaceByName(&workspaces, "missing") == null);
+    try std.testing.expect(findAccessibleWorkspaceByName(&workspaces, "duckweed") == null);
 }
