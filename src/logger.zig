@@ -167,12 +167,7 @@ pub fn logFn(
 
 pub fn httpAccessLogFn(
     message_level: std.log.Level,
-    status: u16,
-    elapsed_ns: i128,
-    ip: []const u8,
-    client_id: []const u8,
-    method: []const u8,
-    path: []const u8,
+    access: HttpAccess,
 ) void {
     mutex.lock();
     defer mutex.unlock();
@@ -185,7 +180,7 @@ pub fn httpAccessLogFn(
         return;
     };
 
-    writeHttpAccessLine(&writer.interface, status, elapsed_ns, ip, client_id, method, path, color_enabled) catch {
+    writeHttpAccessLine(&writer.interface, access, color_enabled) catch {
         disableLocked();
         return;
     };
@@ -194,6 +189,62 @@ pub fn httpAccessLogFn(
         return;
     };
 }
+
+pub fn hubEventLogFn(
+    message_level: std.log.Level,
+    event: HubEvent,
+) void {
+    mutex.lock();
+    defer mutex.unlock();
+
+    if (active_sink == .disabled) return;
+    if (@intFromEnum(message_level) > @intFromEnum(active_level)) return;
+
+    const writer = if (active_writer) |*writer| writer else {
+        active_sink = .disabled;
+        return;
+    };
+
+    writeHubEventLine(&writer.interface, event) catch {
+        disableLocked();
+        return;
+    };
+    writer.interface.flush() catch {
+        disableLocked();
+        return;
+    };
+}
+
+pub const HttpAccess = struct {
+    status: u16,
+    elapsed_ns: i128,
+    ip: []const u8,
+    client_id: []const u8,
+    request_id: []const u8,
+    method: []const u8,
+    path: []const u8,
+    route: []const u8,
+    ws_id: []const u8 = "-",
+    pr_id: []const u8 = "-",
+    rule_id: []const u8 = "-",
+    context_id: []const u8 = "-",
+    target_user_id: []const u8 = "-",
+    org_id: []const u8 = "-",
+    error_code: []const u8 = "-",
+    error_message: []const u8 = "-",
+};
+
+pub const HubEvent = struct {
+    name: []const u8,
+    outcome: []const u8 = "ok",
+    action: []const u8 = "-",
+    target_kind: []const u8 = "-",
+    actor_user_id: []const u8 = "-",
+    org_id: []const u8 = "-",
+    ws_id: []const u8 = "-",
+    pr_id: []const u8 = "-",
+    op_count: ?usize = null,
+};
 
 pub fn writeLogLine(
     writer: *std.Io.Writer,
@@ -220,37 +271,86 @@ pub fn writeLogLine(
 
 pub fn writeHttpAccessLine(
     writer: *std.Io.Writer,
-    status: u16,
-    elapsed_ns: i128,
-    ip: []const u8,
-    client_id: []const u8,
-    method: []const u8,
-    path: []const u8,
+    access: HttpAccess,
     use_color: bool,
 ) std.Io.Writer.Error!void {
     var ts_buf: [19]u8 = undefined;
     formatTimestamp(&ts_buf);
     var duration_buf: [16]u8 = undefined;
-    const duration = formatDuration(&duration_buf, elapsed_ns);
-    const show_client_id = client_id.len > 0 and !std.mem.eql(u8, client_id, "-");
+    const duration = formatDuration(&duration_buf, access.elapsed_ns);
+    const show_client_id = access.client_id.len > 0 and !std.mem.eql(u8, access.client_id, "-");
 
     if (use_color) {
         const dim = "\x1b[2m";
         const reset = "\x1b[0m";
         try writer.print(
             dim ++ "{s}" ++ reset ++ " |{s} {d: >3} {s}| {s: >8} | {s: <15} |{s} {s: ^6} {s}| {s}",
-            .{ ts_buf, statusColor(status), status, reset, duration, ip, methodColor(method), method, reset, path },
+            .{ ts_buf, statusColor(access.status), access.status, reset, duration, access.ip, methodColor(access.method), access.method, reset, access.path },
         );
     } else {
         try writer.print(
             "{s} | {d: >3} | {s: >8} | {s: <15} | {s: <6} {s}",
-            .{ ts_buf, status, duration, ip, method, path },
+            .{ ts_buf, access.status, duration, access.ip, access.method, access.path },
         );
     }
     if (show_client_id) {
-        try writer.print(" client_id={s}", .{client_id});
+        try writer.print(" client_id={s}", .{access.client_id});
+    }
+    try writer.print(" request_id={s} route={s}", .{ access.request_id, access.route });
+    try writeOptionalField(writer, "target_user_id", access.target_user_id);
+    try writeOptionalField(writer, "org_id", access.org_id);
+    try writeOptionalField(writer, "ws_id", access.ws_id);
+    try writeOptionalField(writer, "pr_id", access.pr_id);
+    try writeOptionalField(writer, "rule_id", access.rule_id);
+    try writeOptionalField(writer, "context_id", access.context_id);
+    if (!std.mem.eql(u8, access.error_code, "-")) {
+        try writer.print(" error_code={s}", .{access.error_code});
+    }
+    if (!std.mem.eql(u8, access.error_message, "-")) {
+        try writer.writeAll(" error_message=");
+        try writeQuotedValue(writer, access.error_message);
     }
     try writer.writeByte('\n');
+}
+
+pub fn writeHubEventLine(writer: *std.Io.Writer, event: HubEvent) std.Io.Writer.Error!void {
+    var ts_buf: [19]u8 = undefined;
+    formatTimestamp(&ts_buf);
+    try writer.print("{s} [EVENT] hub.{s} outcome={s}", .{ ts_buf, event.name, event.outcome });
+    try writeOptionalField(writer, "action", event.action);
+    try writeOptionalField(writer, "target_kind", event.target_kind);
+    try writeOptionalField(writer, "actor_user_id", event.actor_user_id);
+    try writeOptionalField(writer, "org_id", event.org_id);
+    try writeOptionalField(writer, "ws_id", event.ws_id);
+    try writeOptionalField(writer, "pr_id", event.pr_id);
+    if (event.op_count) |op_count| {
+        try writer.print(" op_count={d}", .{op_count});
+    }
+    try writer.writeByte('\n');
+}
+
+fn writeOptionalField(writer: *std.Io.Writer, name: []const u8, value: []const u8) std.Io.Writer.Error!void {
+    if (value.len == 0 or std.mem.eql(u8, value, "-")) return;
+    try writer.print(" {s}={s}", .{ name, value });
+}
+
+fn writeQuotedValue(writer: *std.Io.Writer, value: []const u8) std.Io.Writer.Error!void {
+    try writer.writeByte('"');
+    for (value) |byte| {
+        switch (byte) {
+            '\\' => try writer.writeAll("\\\\"),
+            '"' => try writer.writeAll("\\\""),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => if (byte < 0x20 or byte == 0x7f) {
+                try writer.writeByte('?');
+            } else {
+                try writer.writeByte(byte);
+            },
+        }
+    }
+    try writer.writeByte('"');
 }
 
 pub fn noteInvalidLevel(raw: []const u8) void {
@@ -701,29 +801,82 @@ test "writeLogLine omits ANSI codes when color disabled" {
 }
 
 test "writeHttpAccessLine omits application log prefix" {
-    var buffer: [256]u8 = undefined;
+    var buffer: [512]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
 
-    try writeHttpAccessLine(&writer, 400, 1_234_000, "127.0.0.1", "client-1", "GET", "/bad", false);
+    try writeHttpAccessLine(&writer, .{
+        .status = 400,
+        .elapsed_ns = 1_234_000,
+        .ip = "127.0.0.1",
+        .client_id = "client-1",
+        .request_id = "req-1",
+        .method = "GET",
+        .path = "/bad",
+        .route = "unknown.read",
+        .ws_id = "ws-1",
+        .pr_id = "ppr-1",
+        .target_user_id = "usr-1",
+        .error_code = "BAD_REQUEST",
+        .error_message = "bad \"value\"",
+    }, false);
     const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "[WARN ]") == null);
     try testing.expect(std.mem.indexOf(u8, output, "(hub_request)") == null);
     try testing.expect(std.mem.indexOf(u8, output, "| 400 |   1.23ms | 127.0.0.1       |") != null);
     try testing.expect(std.mem.indexOf(u8, output, "client_id=client-1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "request_id=req-1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "route=unknown.read") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "ws_id=ws-1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "pr_id=ppr-1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "target_user_id=usr-1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "error_code=BAD_REQUEST") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "error_message=\"bad \\\"value\\\"\"") != null);
     try testing.expect(std.mem.indexOf(u8, output, "| GET    /bad") != null);
+}
+
+test "writeHubEventLine emits business event fields" {
+    var buffer: [512]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+
+    try writeHubEventLine(&writer, .{
+        .name = "rule_pr.accepted",
+        .action = "accept",
+        .target_kind = "rule_pr",
+        .actor_user_id = "usr-1",
+        .org_id = "org-1",
+        .ws_id = "ws-1",
+        .pr_id = "ppr-1",
+        .op_count = 3,
+    });
+    const output = writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, output, "[EVENT] hub.rule_pr.accepted outcome=ok") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "action=accept") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "target_kind=rule_pr") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "actor_user_id=usr-1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "op_count=3") != null);
 }
 
 test "writeHttpAccessLine colors only status and method" {
     var buffer: [512]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
 
-    try writeHttpAccessLine(&writer, 200, 7_917_000, "127.0.0.1", "-", "GET", "/api/auth/me", true);
+    try writeHttpAccessLine(&writer, .{
+        .status = 200,
+        .elapsed_ns = 7_917_000,
+        .ip = "127.0.0.1",
+        .client_id = "-",
+        .request_id = "req-2",
+        .method = "GET",
+        .path = "/api/auth/me",
+        .route = "auth.read",
+    }, true);
     const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[30;42m 200 \x1b[0m") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[97;44m  GET   \x1b[0m| /api/auth/me") != null);
     try testing.expect(std.mem.indexOf(u8, output, "|\x1b[30;42m 200 \x1b[0m|   7.91ms") != null);
     try testing.expect(std.mem.indexOf(u8, output, "127.0.0.1       ") != null);
     try testing.expect(std.mem.indexOf(u8, output, "client_id=") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "request_id=req-2") != null);
 }
 
 test "formatDuration adapts units" {

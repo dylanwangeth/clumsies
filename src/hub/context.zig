@@ -2,6 +2,7 @@
 //! by each workspace independently. These endpoints list, serve, and track context files.
 const std = @import("std");
 const httpz = @import("httpz");
+const logger = @import("clumsies_lib").logger;
 const util_hash = @import("clumsies_lib").util.hash;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const Server = @import("server.zig");
@@ -225,6 +226,16 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     }
 
     res.status = 201;
+    logger.hubEventLogFn(.info, .{
+        .name = "context_pr.created",
+        .action = "create",
+        .target_kind = "context_pr",
+        .actor_user_id = user.user_id,
+        .org_id = user.org_id,
+        .ws_id = ws_id,
+        .pr_id = pr_id,
+        .op_count = req_body.operations.len,
+    });
     try res.json(.{
         .pr_id = pr_id,
         .status = "open",
@@ -660,12 +671,23 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         return apiError(res, 400, "BAD_REQUEST", "PR is not open");
     }
 
+    const op_count = countContextPrOperations(conn, pr_id) catch null;
     if (std.mem.eql(u8, body.action, "merge")) {
         if (!std.mem.eql(u8, user.role, "maintainer") and !auth.checkWorkspaceAdmin(conn, ws_id, user.user_id)) {
             return apiError(res, 403, "FORBIDDEN", "only maintainers or ws admins can merge");
         }
         if (!try applyPr(conn, req.arena, ws_id, pr_id, user.username, res)) return;
 
+        logger.hubEventLogFn(.info, .{
+            .name = "context_pr.merged",
+            .action = body.action,
+            .target_kind = "context_pr",
+            .actor_user_id = user.user_id,
+            .org_id = user.org_id,
+            .ws_id = ws_id,
+            .pr_id = pr_id,
+            .op_count = op_count,
+        });
         try res.json(.{ .pr_id = pr_id, .status = "merged" }, .{});
     } else {
         _ = conn.exec(
@@ -674,6 +696,16 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         ) catch {
             return apiError(res, 500, "INTERNAL_ERROR", "failed to reject PR");
         };
+        logger.hubEventLogFn(.info, .{
+            .name = "context_pr.rejected",
+            .action = body.action,
+            .target_kind = "context_pr",
+            .actor_user_id = user.user_id,
+            .org_id = user.org_id,
+            .ws_id = ws_id,
+            .pr_id = pr_id,
+            .op_count = op_count,
+        });
         try res.json(.{ .pr_id = pr_id, .status = "rejected" }, .{});
     }
 }
@@ -909,6 +941,19 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
         return false;
     };
     return true;
+}
+
+fn countContextPrOperations(conn: anytype, pr_id: []const u8) !usize {
+    var row = conn.row(
+        "SELECT count(*) FROM context_pr_operations WHERE pr_id = $1",
+        .{pr_id},
+    ) catch return error.QueryFailed;
+    if (row) |*r| {
+        defer r.deinit() catch {};
+        const count = try r.get(i64, 0);
+        return @intCast(@max(count, 0));
+    }
+    return 0;
 }
 
 const CommentRequest = struct {
