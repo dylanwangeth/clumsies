@@ -4,6 +4,7 @@
 const std = @import("std");
 const httpz = @import("httpz");
 const collab_api = @import("clumsies_lib").protocol.collab_api;
+const logger = @import("clumsies_lib").logger;
 const util_hash = @import("clumsies_lib").util.hash;
 const Server = @import("server.zig");
 const auth = @import("auth.zig");
@@ -123,6 +124,16 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     }
 
     res.status = 201;
+    logger.hubEventLogFn(.info, .{
+        .name = "rule_pr.created",
+        .action = "create",
+        .target_kind = "rule_pr",
+        .actor_user_id = user.user_id,
+        .org_id = user.org_id,
+        .ws_id = req_body.ws_id orelse "-",
+        .pr_id = pr_id,
+        .op_count = req_body.operations.len,
+    });
     try res.json(.{
         .pr_id = pr_id,
         .status = "open",
@@ -589,6 +600,7 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     }
 
     const is_accept = std.mem.eql(u8, body.action, "accept");
+    const op_count = countRulePrOperations(conn, id) catch null;
 
     if (is_accept) {
         if (!try applyPr(conn, req.arena, user.org_id, id, res)) return;
@@ -601,6 +613,15 @@ pub fn handleUpdatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
         };
     }
 
+    logger.hubEventLogFn(.info, .{
+        .name = if (is_accept) "rule_pr.accepted" else "rule_pr.rejected",
+        .action = body.action,
+        .target_kind = "rule_pr",
+        .actor_user_id = user.user_id,
+        .org_id = user.org_id,
+        .pr_id = id,
+        .op_count = op_count,
+    });
     try res.json(.{
         .pr_id = id,
         .status = if (is_accept) @as([]const u8, "accepted") else @as([]const u8, "rejected"),
@@ -970,6 +991,19 @@ fn bumpWorkspaceRevision(conn: anytype, ws_id: []const u8) void {
         "UPDATE workspaces SET revision = revision + 1 WHERE ws_id = $1",
         .{ws_id},
     ) catch {};
+}
+
+fn countRulePrOperations(conn: anytype, pr_id: []const u8) !usize {
+    var row = conn.row(
+        "SELECT count(*) FROM rule_pr_operations WHERE pr_id = $1",
+        .{pr_id},
+    ) catch return error.QueryFailed;
+    if (row) |*r| {
+        defer r.deinit() catch {};
+        const count = try r.get(i64, 0);
+        return @intCast(@max(count, 0));
+    }
+    return 0;
 }
 
 const CommentRequest = struct {
