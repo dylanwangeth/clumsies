@@ -2657,6 +2657,64 @@ test "reconcileDrafts: restores conflicted create when target is absent from cac
     try testing.expectEqual(DraftStatus.draft, index.entries.items[0].status);
 }
 
+test "reconcileDraftsWithOptions: can keep conflicted update sticky" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    const seed = "v1 body\n";
+    const seed_hash = util_hash.contentHash(seed);
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .update,
+        .draft_path = "spec/API.md",
+        .current_path = "spec/API.md",
+        .context_id = "ctx-api",
+        .base_hash = seed_hash[0..],
+    }, "local edit\n");
+    try setDraftStatus(testing.allocator, root, .context, "spec/API.md", .conflicted);
+
+    try tmp.dir.makePath("cache/context/spec");
+    try writeFile(tmp.dir, "cache/context/spec/API.md", seed);
+
+    const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
+    defer testing.allocator.free(cache_dir);
+
+    const summary = try reconcileDraftsWithOptions(testing.allocator, root, cache_dir, .{ .restore_conflicted = false });
+    try testing.expectEqual(@as(usize, 0), summary.restored);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(DraftStatus.conflicted, index.entries.items[0].status);
+}
+
+test "reconcileDraftsWithOptions: can keep conflicted create sticky" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = tmpDirAbsolutePath(&tmp, &buf);
+
+    try createDraft(testing.allocator, root, .{
+        .category = .context,
+        .operation = .create,
+        .draft_path = "todo/NEXT.md",
+    }, "new todo\n");
+    try setDraftStatus(testing.allocator, root, .context, "todo/NEXT.md", .conflicted);
+
+    const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
+    defer testing.allocator.free(cache_dir);
+
+    const summary = try reconcileDraftsWithOptions(testing.allocator, root, cache_dir, .{ .restore_conflicted = false });
+    try testing.expectEqual(@as(usize, 0), summary.restored);
+
+    var index = try loadIndex(testing.allocator, root);
+    defer index.deinit(testing.allocator);
+    try testing.expectEqual(DraftStatus.conflicted, index.entries.items[0].status);
+}
+
 test "reconcileDrafts: leaves terminal applied and declined statuses sticky" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

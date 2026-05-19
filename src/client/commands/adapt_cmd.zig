@@ -607,7 +607,10 @@ fn bindExistingWorkspaceByName(
         allocator,
         me_response.body,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return false;
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
     defer parsed.deinit();
 
     const existing = findAccessibleWorkspaceByName(parsed.value.workspaces, workspace_name) orelse return false;
