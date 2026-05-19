@@ -20,6 +20,7 @@ const workspace_context_shortcuts = [_]w.Shortcut{
     .{ .key = "n", .label = "new context" },
     .{ .key = "w", .label = "workspaces" },
     .{ .key = "y", .label = "copy id" },
+    .{ .key = "v", .label = "view" },
     .{ .key = "e", .label = "edit" },
     .{ .key = "p", .label = "submit" },
     .{ .key = "P", .label = "submit all" },
@@ -35,6 +36,7 @@ const workspace_rule_shortcuts = [_]w.Shortcut{
     .{ .key = "h/l", .label = "switch tab" },
     .{ .key = "w", .label = "workspaces" },
     .{ .key = "y", .label = "copy id" },
+    .{ .key = "v", .label = "view" },
     .{ .key = "e", .label = "edit" },
     .{ .key = "p", .label = "submit" },
     .{ .key = "P", .label = "submit all" },
@@ -50,6 +52,7 @@ const artifact_content_shortcuts = [_]w.Shortcut{
     .{ .key = "Enter", .label = "open" },
     .{ .key = "h/l", .label = "switch tab" },
     .{ .key = "y", .label = "copy id" },
+    .{ .key = "v", .label = "view" },
     .{ .key = "n", .label = "new rule" },
     .{ .key = "e", .label = "edit" },
     .{ .key = "p", .label = "submit" },
@@ -92,6 +95,11 @@ pub fn handle(
     }
     if (key.matches('e', .{})) {
         self.editSelectedDraft();
+        ctx.consumeAndRedraw();
+        return true;
+    }
+    if (key.matches('v', .{})) {
+        self.openSelectedMarkdownViewer();
         ctx.consumeAndRedraw();
         return true;
     }
