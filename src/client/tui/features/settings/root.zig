@@ -12,6 +12,7 @@ const workspace_config = @import("../../../workspace_config.zig");
 
 pub const Tab = enum(u8) {
     account,
+    preferences,
     workspaces,
     organization,
     token,
@@ -19,6 +20,7 @@ pub const Tab = enum(u8) {
     pub fn label(self: Tab) []const u8 {
         return switch (self) {
             .account => "Account",
+            .preferences => "Preferences",
             .workspaces => "Workspaces",
             .organization => "Organization",
             .token => "Token",
@@ -39,7 +41,7 @@ pub const State = struct {
 
 pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
     const SettingsTab = @TypeOf(self.settings.tab);
-    const settings_tabs = [_]SettingsTab{ .account, .workspaces, .organization, .token };
+    const settings_tabs = [_]SettingsTab{ .account, .preferences, .workspaces, .organization, .token };
 
     const size = ctx.max.size();
     var root = try vxfw.Surface.init(ctx.arena, self.widget(), size);
@@ -70,6 +72,7 @@ pub fn drawSettings(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Erro
     );
     const content = switch (self.settings.tab) {
         .account => try drawSettingsAccount(self, content_ctx),
+        .preferences => try drawSettingsPreferences(self, content_ctx),
         .workspaces => try drawSettingsWorkspaces(self, content_ctx),
         .organization => try drawSettingsOrg(self, content_ctx),
         .token => try drawSettingsToken(self, content_ctx),
@@ -157,6 +160,13 @@ pub fn shortcuts(self: anytype) []const w.Shortcut {
             .{ .key = "x", .label = "sign out" },
             .{ .key = "Esc", .label = "back" },
         },
+        .preferences => &.{
+            .{ .key = "e", .label = "edit viewer" },
+            .{ .key = "x", .label = "clear viewer" },
+            .{ .key = "t", .label = "test viewer" },
+            .{ .key = "Tab", .label = "switch focus" },
+            .{ .key = "Esc", .label = "back" },
+        },
         .workspaces => if (self.settings.workspace_focus == .members) &.{
             .{ .key = "j/k", .label = "move" },
             .{ .key = "a", .label = "add member" },
@@ -220,6 +230,23 @@ fn handlePageAction(
             }
             if (key.matches('u', .{})) {
                 self.openUsernameDialog();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+        },
+        .preferences => {
+            if (key.matches('e', .{})) {
+                self.openMarkdownViewerDialog();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('x', .{})) {
+                self.clearMarkdownViewerPreference();
+                ctx.consumeAndRedraw();
+                return true;
+            }
+            if (key.matches('t', .{})) {
+                self.testMarkdownViewerPreference();
                 ctx.consumeAndRedraw();
                 return true;
             }
@@ -311,7 +338,7 @@ fn handlePageAction(
 
 fn shiftSettingsTab(self: anytype, delta: i8) void {
     const SettingsTab = @TypeOf(self.settings.tab);
-    const settings_tabs = [_]SettingsTab{ .account, .workspaces, .organization, .token };
+    const settings_tabs = [_]SettingsTab{ .account, .preferences, .workspaces, .organization, .token };
 
     const previous_tab = self.settings.tab;
     const current: i8 = @intCast(@intFromEnum(self.settings.tab));
@@ -392,6 +419,7 @@ fn handleContentEvent(
     }
     const max_items: usize = switch (self.settings.tab) {
         .account => 0,
+        .preferences => 0,
         .workspaces => if (self.settings.workspace_focus == .members) selectedWorkspaceMemberCount(self) else accountWorkspaceCount(self),
         .organization => orgMemberCount(self),
         .token => data.ALL_SCOPES.len,
@@ -421,6 +449,7 @@ fn handleContentEvent(
 
     switch (self.settings.tab) {
         .account => handleAccountAction(self, ctx, key),
+        .preferences => handlePreferencesAction(self, ctx, key),
         .workspaces => handleWorkspacesAction(self, ctx, key),
         .organization => handleOrganizationAction(self, ctx, key),
         .token => handleTokenAction(self, ctx, key),
@@ -446,6 +475,27 @@ fn handleAccountAction(
     }
     if (key.matches('u', .{})) {
         self.openUsernameDialog();
+        ctx.consumeAndRedraw();
+    }
+}
+
+fn handlePreferencesAction(
+    self: anytype,
+    ctx: *vxfw.EventContext,
+    key: vaxis.Key,
+) void {
+    if (key.matches('e', .{})) {
+        self.openMarkdownViewerDialog();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('x', .{})) {
+        self.clearMarkdownViewerPreference();
+        ctx.consumeAndRedraw();
+        return;
+    }
+    if (key.matches('t', .{})) {
+        self.testMarkdownViewerPreference();
         ctx.consumeAndRedraw();
     }
 }
@@ -561,6 +611,7 @@ fn handleTokenAction(
 fn settingsTabLabel(tab: anytype) []const u8 {
     return switch (tab) {
         .account => "Account",
+        .preferences => "Preferences",
         .workspaces => "Workspaces",
         .organization => "Organization",
         .token => "Token",
@@ -635,6 +686,43 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
         row = w.writeSectionHeader(&surface, ctx, 2, row, "Danger Zone");
         w.writeText(&surface, ctx, 4, row, "[ Sign Out ]", theme.fg(theme.DANGER));
         w.writeText(&surface, ctx, 19, row, "Revoke current token and exit", theme.fg(theme.MUTED));
+    }
+    return surface;
+}
+
+fn drawSettingsPreferences(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+    const size = ctx.max.size();
+    const focused = self.settings.focus == .content;
+    var surface = try vxfw.Surface.init(ctx.arena, self.widget(), size);
+    w.fillSurface(&surface, theme.PANEL);
+    w.drawBorder(&surface, theme.focusBorder(focused), theme.PANEL);
+    w.writeText(&surface, ctx, 2, 0, "Preferences", theme.boldOn(theme.PANEL, theme.TEXT));
+
+    var row: u16 = 1;
+    row = w.writeSectionHeader(&surface, ctx, 2, row, "Local Viewer");
+    w.writeText(&surface, ctx, 4, row, "Markdown", theme.fg(theme.MUTED));
+    const command = self.markdownViewerCommandForView(ctx.arena) catch "$ open <preview.md>";
+    const configured = self.markdownViewerIsConfigured();
+    const command_style = theme.fg(if (configured) theme.TEXT_SOFT else theme.MUTED);
+    w.writeTextMax(&surface, ctx, 18, row, size.width -| 21, command, command_style);
+    row += 2;
+
+    w.writeText(&surface, ctx, 4, row, "[ Edit ]", theme.fg(theme.ACCENT_SOFT));
+    w.writeText(&surface, ctx, 15, row, "[ Clear ]", theme.fg(if (configured) theme.TEXT_SOFT else theme.MUTED));
+    w.writeText(&surface, ctx, 27, row, "[ Test ]", theme.fg(theme.TEXT_SOFT));
+    row += 2;
+
+    if (row < size.height -| 1) {
+        _ = w.writeWrappedTextMax(
+            &surface,
+            ctx,
+            4,
+            row,
+            size.width -| 7,
+            3,
+            "Used by the v shortcut. Configure a command prefix such as `open -a Typora`; Clumsies appends the preview file path.",
+            theme.fg(theme.MUTED),
+        );
     }
     return surface;
 }

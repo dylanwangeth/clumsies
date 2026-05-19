@@ -332,6 +332,7 @@ test {
     _ = @import("tui/runtime.zig");
     _ = @import("tui/runtime/drafts_reader.zig");
     _ = @import("tui/runtime/editor_host.zig");
+    _ = @import("tui/runtime/markdown_viewer.zig");
     _ = @import("tui/runtime/attestation_reader.zig");
     _ = @import("tui/models/path_tree.zig");
     _ = @import("tui/shell.zig");

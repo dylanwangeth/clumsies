@@ -37,6 +37,7 @@ const DEFAULT_HUB_URL = "http://127.0.0.1:8400";
 const CONTENT_PREFETCH_LIMIT: usize = 24;
 
 const editor_host = runtime.editor_host;
+const markdown_viewer = runtime.markdown_viewer;
 const attestation_reader = runtime.attestation_reader;
 const Modal = w.Modal;
 
@@ -284,6 +285,10 @@ pub const Shell = struct {
     invite_dialog_scope: MemberDialogScope = .org,
     invite_workspace_id_buf: [80]u8 = .{0} ** 80,
     invite_workspace_id_len: usize = 0,
+    show_markdown_viewer_dialog: bool = false,
+    markdown_viewer_buf: [256]u8 = .{0} ** 256,
+    markdown_viewer_len: usize = 0,
+    markdown_viewer_dialog_message: []const u8 = "",
     sign_out_should_quit: bool = false,
     quit_after_sign_out: bool = false,
 
@@ -423,6 +428,11 @@ pub const Shell = struct {
 
                 if (self.show_invite_dialog) {
                     self.handleInviteDialogKey(ctx, key);
+                    return;
+                }
+
+                if (self.show_markdown_viewer_dialog) {
+                    self.handleMarkdownViewerDialogKey(ctx, key);
                     return;
                 }
 
@@ -688,20 +698,21 @@ pub const Shell = struct {
         const show_workspace_drawer = self.workspace.show_drawer and self.selected_module == .workspace and
             !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
             !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form and
-            !self.show_profile_dialog and !self.show_invite_dialog;
+            !self.show_profile_dialog and !self.show_invite_dialog and !self.show_markdown_viewer_dialog;
         const show_artifact_bundle_drawer = self.artifact.show_bundle_drawer and self.selected_module == .artifact and
             !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
             !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form and
-            !self.show_profile_dialog and !self.show_invite_dialog;
+            !self.show_profile_dialog and !self.show_invite_dialog and !self.show_markdown_viewer_dialog;
         const show_artifact_workspace_drawer = self.artifact.show_workspace_drawer and self.selected_module == .artifact and
             !self.show_settings and !self.show_help and !self.show_confirm and !self.review.show_comment_editor and
             !self.workspace.show_create and !self.drafts.show_pr_composer and !self.drafts.show_new_draft_form and
-            !self.show_profile_dialog and !self.show_invite_dialog;
+            !self.show_profile_dialog and !self.show_invite_dialog and !self.show_markdown_viewer_dialog;
         const show_login_panel = self.shouldShowLoginPanel();
         const allow_regular_overlays = !show_login_panel;
         const modal_active = show_login_panel or self.show_help or self.show_confirm or self.review.show_comment_editor or
             self.workspace.show_create or self.drafts.show_pr_composer or
             self.drafts.show_new_draft_form or self.show_profile_dialog or self.show_invite_dialog or
+            self.show_markdown_viewer_dialog or
             show_workspace_drawer or show_artifact_bundle_drawer or show_artifact_workspace_drawer;
         const show_notice_overlay = !modal_active and self.system_notices.hasVisible();
         var child_count: usize = 3;
@@ -710,6 +721,7 @@ pub const Shell = struct {
         if (allow_regular_overlays and self.show_confirm) child_count += 1;
         if (allow_regular_overlays and self.show_profile_dialog) child_count += 1;
         if (allow_regular_overlays and self.show_invite_dialog) child_count += 1;
+        if (allow_regular_overlays and self.show_markdown_viewer_dialog) child_count += 1;
         if (allow_regular_overlays and self.review.show_comment_editor) child_count += 1;
         if (allow_regular_overlays and self.workspace.show_create) child_count += 1;
         if (allow_regular_overlays and self.drafts.show_pr_composer) child_count += 1;
@@ -786,6 +798,17 @@ pub const Shell = struct {
             children[child_idx] = .{
                 .origin = .{ .row = 0, .col = 0 },
                 .surface = try self.drawInviteDialog(full_ctx),
+            };
+            child_idx += 1;
+        }
+        if (allow_regular_overlays and self.show_markdown_viewer_dialog) {
+            const full_ctx = ctx.withConstraints(
+                .{ .width = size.width, .height = size.height },
+                .{ .width = size.width, .height = size.height },
+            );
+            children[child_idx] = .{
+                .origin = .{ .row = 0, .col = 0 },
+                .surface = try self.drawMarkdownViewerDialog(full_ctx),
             };
             child_idx += 1;
         }
@@ -1071,6 +1094,10 @@ pub const Shell = struct {
             .{ .key = "n", .label = "cancel" },
             .{ .key = "Esc", .label = "cancel" },
         };
+        if (self.show_markdown_viewer_dialog) return &.{
+            .{ .key = "Enter", .label = "save" },
+            .{ .key = "Esc", .label = "cancel" },
+        };
         if (self.show_settings) return settings_panel.shortcuts(self);
         if (self.review.show_comment_editor) return &.{
             .{ .key = "Enter", .label = "send" },
@@ -1306,6 +1333,7 @@ pub const Shell = struct {
         if (self.review.show_comment_editor) return true;
         if (self.show_profile_dialog and !self.profile_dialog_submitting) return true;
         if (self.show_invite_dialog and !self.invite_dialog_submitting) return true;
+        if (self.show_markdown_viewer_dialog) return true;
         if (self.drafts.show_new_draft_form) return true;
         if (self.drafts.show_pr_composer) return self.drafts.pr_composer_focus == .title or self.drafts.pr_composer_focus == .body;
         if (self.workspace.show_create) return self.workspace.create_focus == .name or self.workspace.create_focus == .description;
@@ -4592,6 +4620,135 @@ pub const Shell = struct {
         return surface;
     }
 
+    pub fn markdownViewerCommandForView(self: *Shell, allocator: std.mem.Allocator) ![]const u8 {
+        _ = self;
+        var prefs = tui_prefs.load(allocator) catch return markdown_viewer.systemOpenLabel();
+        defer prefs.deinit(allocator);
+        const argv = prefs.markdown_viewer_argv orelse return markdown_viewer.systemOpenLabel();
+        const command = try tui_prefs.commandLineFromArgv(allocator, argv);
+        defer allocator.free(command);
+        return std.fmt.allocPrint(allocator, "$ {s} <preview.md>", .{command});
+    }
+
+    pub fn markdownViewerIsConfigured(self: *Shell) bool {
+        const alloc = self.api_state.allocator();
+        var prefs = tui_prefs.load(alloc) catch return false;
+        defer prefs.deinit(alloc);
+        return prefs.markdown_viewer_argv != null;
+    }
+
+    pub fn openMarkdownViewerDialog(self: *Shell) void {
+        self.show_markdown_viewer_dialog = true;
+        self.markdown_viewer_len = 0;
+        self.markdown_viewer_dialog_message = "";
+        @memset(&self.markdown_viewer_buf, 0);
+        const alloc = self.api_state.allocator();
+        var prefs = tui_prefs.load(alloc) catch tui_prefs.Prefs{};
+        defer prefs.deinit(alloc);
+        if (prefs.markdown_viewer_argv) |argv| {
+            const command = tui_prefs.commandLineFromArgv(alloc, argv) catch return;
+            defer alloc.free(command);
+            const len = @min(command.len, self.markdown_viewer_buf.len);
+            @memcpy(self.markdown_viewer_buf[0..len], command[0..len]);
+            self.markdown_viewer_len = len;
+        }
+    }
+
+    pub fn clearMarkdownViewerPreference(self: *Shell) void {
+        tui_prefs.saveMarkdownViewerArgv(self.api_state.allocator(), null) catch |err| {
+            self.notifyOp(.failure, @errorName(err));
+            return;
+        };
+        self.notifyOp(.success, "Markdown viewer preference cleared.");
+    }
+
+    pub fn testMarkdownViewerPreference(self: *Shell) void {
+        self.openMarkdownViewerContent("clumsies-viewer-test.md", "# Markdown Viewer Test\n\nClumsies opened this file from Settings > Preferences.\n");
+    }
+
+    fn closeMarkdownViewerDialog(self: *Shell) void {
+        self.show_markdown_viewer_dialog = false;
+        self.markdown_viewer_len = 0;
+        self.markdown_viewer_dialog_message = "";
+        @memset(&self.markdown_viewer_buf, 0);
+    }
+
+    fn handleMarkdownViewerDialogKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
+        if (key.matches(vaxis.Key.escape, .{})) {
+            self.closeMarkdownViewerDialog();
+            ctx.consumeAndRedraw();
+            return;
+        }
+        var input = w.TextInput{ .buf = &self.markdown_viewer_buf, .len = &self.markdown_viewer_len };
+        switch (input.handleKey(key)) {
+            .consumed => ctx.consumeAndRedraw(),
+            .submit => {
+                self.submitMarkdownViewerDialog();
+                ctx.consumeAndRedraw();
+            },
+            .cancel => {
+                self.closeMarkdownViewerDialog();
+                ctx.consumeAndRedraw();
+            },
+            .ignored => {},
+        }
+    }
+
+    fn submitMarkdownViewerDialog(self: *Shell) void {
+        const command = std.mem.trim(u8, self.markdown_viewer_buf[0..self.markdown_viewer_len], " \t\r\n");
+        const alloc = self.api_state.allocator();
+        if (command.len == 0) {
+            tui_prefs.saveMarkdownViewerArgv(alloc, null) catch |err| {
+                self.markdown_viewer_dialog_message = @errorName(err);
+                return;
+            };
+            self.closeMarkdownViewerDialog();
+            self.notifyOp(.success, "Markdown viewer preference cleared.");
+            return;
+        }
+        const argv = tui_prefs.parseCommandLineArgv(alloc, command) catch |err| {
+            self.markdown_viewer_dialog_message = switch (err) {
+                error.InvalidCommandLine => "Command has an unfinished quote or escape.",
+                error.EmptyCommand => "Command is required.",
+                else => @errorName(err),
+            };
+            return;
+        };
+        defer {
+            for (argv) |arg| alloc.free(arg);
+            alloc.free(argv);
+        }
+        tui_prefs.saveMarkdownViewerArgv(alloc, argv) catch |err| {
+            self.markdown_viewer_dialog_message = @errorName(err);
+            return;
+        };
+        self.closeMarkdownViewerDialog();
+        self.notifyOp(.success, "Markdown viewer preference saved.");
+    }
+
+    fn drawMarkdownViewerDialog(self: *Shell, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const modal = Modal{
+            .title = "Markdown Viewer",
+            .box_width = 72,
+            .box_height = 11,
+        };
+        const result = try modal.draw(ctx, self.widget());
+        var surface = result.surface;
+        const col = result.content_col;
+        var row = result.content_row;
+
+        w.writeText(&surface, ctx, col, row, "Command", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        w.drawTextInputSlot(&surface, ctx, col + 10, row, result.content_width -| 12, self.markdown_viewer_buf[0..self.markdown_viewer_len], theme.TEXT, true);
+        row += 2;
+        _ = w.writeWrappedTextMax(&surface, ctx, col, row, result.content_width, 2, "Enter a command prefix. Clumsies appends the preview path, for example: open -a Typora <preview.md>. Leave empty to use the system default.", theme.textOn(theme.PANEL_ALT, theme.MUTED));
+        row += 3;
+        w.writeText(&surface, ctx, col, row, "[ Save ]", theme.boldOn(theme.PANEL_ALT, theme.TEXT));
+        if (self.markdown_viewer_dialog_message.len > 0) {
+            _ = w.writeWrappedTextMax(&surface, ctx, col, row + 2, result.content_width, 2, self.markdown_viewer_dialog_message, theme.textOn(theme.PANEL_ALT, theme.DANGER));
+        }
+        return surface;
+    }
+
     pub fn openInviteMemberDialog(self: *Shell) void {
         if (!self.ensureMemberManagementAllowed()) return;
         self.show_invite_dialog = true;
@@ -5411,6 +5568,75 @@ pub const Shell = struct {
         workspace_panel.copyTextToClipboard(self.api_state.backing_allocator, id);
         self.notifyOp(.success, "Copied id to clipboard.");
         return true;
+    }
+
+    pub fn openSelectedMarkdownViewer(self: *Shell) void {
+        self.refreshDraftsCache();
+        const target = self.selectedDraftTarget() orelse {
+            self.notifyOp(.warning, "No content selection.");
+            return;
+        };
+        const content = self.selectedEffectiveMarkdownContent(target) orelse {
+            self.notifyOp(.warning, "Selected content is not loaded.");
+            return;
+        };
+
+        self.openMarkdownViewerContent(target.path, content);
+    }
+
+    fn openMarkdownViewerContent(self: *Shell, source_path: []const u8, content: []const u8) void {
+        const ws_id = self.activeWsId() orelse {
+            self.notifyOp(.warning, "No workspace selected.");
+            return;
+        };
+        const alloc = self.api_state.allocator();
+        const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
+            self.notifyOp(.failure, "Could not resolve workspace directory.");
+            return;
+        };
+        defer alloc.free(ws_dir);
+
+        const file_path = markdown_viewer.materialize(alloc, ws_dir, source_path, content) catch |err| {
+            self.notifyOp(.failure, @errorName(err));
+            return;
+        };
+        defer alloc.free(file_path);
+
+        var prefs = tui_prefs.load(alloc) catch tui_prefs.Prefs{};
+        defer prefs.deinit(alloc);
+        const result = markdown_viewer.open(alloc, prefs.markdown_viewer_argv, file_path) catch |err| {
+            self.notifyOp(.failure, @errorName(err));
+            return;
+        };
+        switch (result) {
+            .opened => self.notifyOp(.success, "Opened Markdown viewer."),
+            .viewer_not_found => self.notifyOp(.failure, "Markdown viewer not found. Configure it in Settings > Preferences."),
+            .spawn_failed => self.notifyOp(.failure, "Markdown viewer spawn failed."),
+            .failed => self.notifyOp(.failure, "Markdown viewer exited non-zero."),
+        }
+    }
+
+    fn selectedEffectiveMarkdownContent(self: *Shell, target: DraftTarget) ?[]const u8 {
+        if (self.draftContentForView(target.category, target.path)) |draft| return draft;
+        if (self.selected_module == .workspace) {
+            const live = self.workspaceDetailForView(target.ws_id);
+            if (self.currentWorkspaceFileSelection(live)) |selection| {
+                return switch (selection) {
+                    .context => |c| blk: {
+                        const cache_path = self.workspaceLocalContextPathForView(c.path, c.context_id) orelse c.path;
+                        break :blk self.localWorkspaceContextBody(target.ws_id, cache_path) orelse
+                            self.cachedWorkspaceContextBody(target.ws_id, c.path);
+                    },
+                    .rule => |r| blk: {
+                        const cache_path = self.workspaceLocalRulePathForView(r.path, r.rule_id) orelse r.path;
+                        const cache_category = self.artifactCategoryForPath(cache_path);
+                        break :blk self.localArtifactRuleBody(cache_category, cache_path) orelse
+                            self.cachedArtifactRuleBody(r.category, r.path);
+                    },
+                };
+            }
+        }
+        return self.seedContentForTarget(target);
     }
 
     /// Entry point for the `e` key. Finds or creates an update draft for
@@ -7947,6 +8173,7 @@ pub const Shell = struct {
         if (self.show_confirm) return "confirm";
         if (self.show_profile_dialog) return "profile_dialog";
         if (self.show_invite_dialog) return "invite_dialog";
+        if (self.show_markdown_viewer_dialog) return "markdown_viewer_dialog";
         if (self.show_help) return "help";
         if (self.shouldShowLoginPanel()) return "login";
         if (self.workspace.show_drawer) return "workspace_drawer";
