@@ -113,7 +113,9 @@ pub fn parseCommandLineArgv(allocator: std.mem.Allocator, command: []const u8) !
     var escaped = false;
     var saw_arg = false;
 
-    for (command) |byte| {
+    var i: usize = 0;
+    while (i < command.len) : (i += 1) {
+        const byte = command[i];
         if (escaped) {
             try current.append(allocator, byte);
             saw_arg = true;
@@ -121,7 +123,11 @@ pub fn parseCommandLineArgv(allocator: std.mem.Allocator, command: []const u8) !
             continue;
         }
         if (byte == '\\') {
-            escaped = true;
+            if (i + 1 < command.len and shouldEscapeCommandByte(command[i + 1])) {
+                escaped = true;
+            } else {
+                try current.append(allocator, byte);
+            }
             saw_arg = true;
             continue;
         }
@@ -154,6 +160,13 @@ pub fn parseCommandLineArgv(allocator: std.mem.Allocator, command: []const u8) !
     if (saw_arg) try argv.append(allocator, try current.toOwnedSlice(allocator));
     if (argv.items.len == 0) return error.EmptyCommand;
     return try argv.toOwnedSlice(allocator);
+}
+
+fn shouldEscapeCommandByte(byte: u8) bool {
+    return switch (byte) {
+        ' ', '\t', '\r', '\n', '"', '\'', '\\' => true,
+        else => false,
+    };
 }
 
 pub fn commandLineFromArgv(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
@@ -255,4 +268,14 @@ test "commandLineFromArgv quotes whitespace" {
     const rendered = try commandLineFromArgv(std.testing.allocator, &.{ "open", "-a", "Typora Beta" });
     defer std.testing.allocator.free(rendered);
     try std.testing.expectEqualStrings("open -a \"Typora Beta\"", rendered);
+}
+
+test "parseCommandLineArgv preserves Windows path backslashes" {
+    const argv = try parseCommandLineArgv(std.testing.allocator, "\"C:\\Program Files\\Typora\\Typora.exe\"");
+    defer {
+        for (argv) |arg| std.testing.allocator.free(arg);
+        std.testing.allocator.free(argv);
+    }
+    try std.testing.expectEqual(@as(usize, 1), argv.len);
+    try std.testing.expectEqualStrings("C:\\Program Files\\Typora\\Typora.exe", argv[0]);
 }

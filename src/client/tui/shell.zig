@@ -289,6 +289,9 @@ pub const Shell = struct {
     markdown_viewer_buf: [256]u8 = .{0} ** 256,
     markdown_viewer_len: usize = 0,
     markdown_viewer_dialog_message: []const u8 = "",
+    markdown_viewer_display_buf: [256]u8 = .{0} ** 256,
+    markdown_viewer_display_len: usize = 0,
+    markdown_viewer_configured: bool = false,
     sign_out_should_quit: bool = false,
     quit_after_sign_out: bool = false,
 
@@ -322,6 +325,7 @@ pub const Shell = struct {
             .app = app,
             .env_map = env_map,
         };
+        shell.refreshMarkdownViewerPreference();
         shell.seedLoginDefaults();
         return shell;
     }
@@ -554,6 +558,7 @@ pub const Shell = struct {
                 if (key.matches('S', .{})) {
                     log.info("settings_open", .{});
                     self.show_settings = true;
+                    self.refreshMarkdownViewerPreference();
                     self.refreshSettingsWorkspaces();
                     ctx.consumeAndRedraw();
                     return;
@@ -1233,7 +1238,7 @@ pub const Shell = struct {
     }
 
     fn seedLoginDefaults(self: *Shell) void {
-        const alloc = self.api_state.backing_allocator;
+        const alloc = self.api_state.allocator();
         const configured_url = workspace_config.loadServerUrl(alloc) catch null;
         defer if (configured_url) |url| alloc.free(url);
         const default_url = configured_url orelse DEFAULT_HUB_URL;
@@ -4620,21 +4625,47 @@ pub const Shell = struct {
         return surface;
     }
 
-    pub fn markdownViewerCommandForView(self: *Shell, allocator: std.mem.Allocator) ![]const u8 {
-        _ = self;
-        var prefs = tui_prefs.load(allocator) catch return markdown_viewer.systemOpenLabel();
-        defer prefs.deinit(allocator);
-        const argv = prefs.markdown_viewer_argv orelse return markdown_viewer.systemOpenLabel();
-        const command = try tui_prefs.commandLineFromArgv(allocator, argv);
-        defer allocator.free(command);
-        return std.fmt.allocPrint(allocator, "$ {s} <preview.md>", .{command});
+    pub fn markdownViewerCommandForView(self: *Shell) []const u8 {
+        return self.markdown_viewer_display_buf[0..self.markdown_viewer_display_len];
     }
 
     pub fn markdownViewerIsConfigured(self: *Shell) bool {
-        const alloc = self.api_state.allocator();
-        var prefs = tui_prefs.load(alloc) catch return false;
+        return self.markdown_viewer_configured;
+    }
+
+    fn refreshMarkdownViewerPreference(self: *Shell) void {
+        self.markdown_viewer_display_len = 0;
+        self.markdown_viewer_configured = false;
+        @memset(&self.markdown_viewer_display_buf, 0);
+        const alloc = self.api_state.backing_allocator;
+        var prefs = tui_prefs.load(alloc) catch {
+            self.setMarkdownViewerDisplay(markdown_viewer.systemOpenLabel());
+            return;
+        };
         defer prefs.deinit(alloc);
-        return prefs.markdown_viewer_argv != null;
+        const argv = prefs.markdown_viewer_argv orelse {
+            self.setMarkdownViewerDisplay(markdown_viewer.systemOpenLabel());
+            return;
+        };
+        self.markdown_viewer_configured = true;
+        const command = tui_prefs.commandLineFromArgv(alloc, argv) catch {
+            self.setMarkdownViewerDisplay("$ <invalid viewer command>");
+            return;
+        };
+        defer alloc.free(command);
+        var display = std.ArrayList(u8).empty;
+        defer display.deinit(alloc);
+        display.writer(alloc).print("$ {s} <preview.md>", .{command}) catch {
+            self.setMarkdownViewerDisplay("$ <viewer command too large>");
+            return;
+        };
+        self.setMarkdownViewerDisplay(display.items);
+    }
+
+    fn setMarkdownViewerDisplay(self: *Shell, value: []const u8) void {
+        const len = @min(value.len, self.markdown_viewer_display_buf.len);
+        @memcpy(self.markdown_viewer_display_buf[0..len], value[0..len]);
+        self.markdown_viewer_display_len = len;
     }
 
     pub fn openMarkdownViewerDialog(self: *Shell) void {
@@ -4642,7 +4673,7 @@ pub const Shell = struct {
         self.markdown_viewer_len = 0;
         self.markdown_viewer_dialog_message = "";
         @memset(&self.markdown_viewer_buf, 0);
-        const alloc = self.api_state.allocator();
+        const alloc = self.api_state.backing_allocator;
         var prefs = tui_prefs.load(alloc) catch tui_prefs.Prefs{};
         defer prefs.deinit(alloc);
         if (prefs.markdown_viewer_argv) |argv| {
@@ -4655,10 +4686,11 @@ pub const Shell = struct {
     }
 
     pub fn clearMarkdownViewerPreference(self: *Shell) void {
-        tui_prefs.saveMarkdownViewerArgv(self.api_state.allocator(), null) catch |err| {
+        tui_prefs.saveMarkdownViewerArgv(self.api_state.backing_allocator, null) catch |err| {
             self.notifyOp(.failure, @errorName(err));
             return;
         };
+        self.refreshMarkdownViewerPreference();
         self.notifyOp(.success, "Markdown viewer preference cleared.");
     }
 
@@ -4696,13 +4728,14 @@ pub const Shell = struct {
 
     fn submitMarkdownViewerDialog(self: *Shell) void {
         const command = std.mem.trim(u8, self.markdown_viewer_buf[0..self.markdown_viewer_len], " \t\r\n");
-        const alloc = self.api_state.allocator();
+        const alloc = self.api_state.backing_allocator;
         if (command.len == 0) {
             tui_prefs.saveMarkdownViewerArgv(alloc, null) catch |err| {
                 self.markdown_viewer_dialog_message = @errorName(err);
                 return;
             };
             self.closeMarkdownViewerDialog();
+            self.refreshMarkdownViewerPreference();
             self.notifyOp(.success, "Markdown viewer preference cleared.");
             return;
         }
@@ -4723,6 +4756,7 @@ pub const Shell = struct {
             return;
         };
         self.closeMarkdownViewerDialog();
+        self.refreshMarkdownViewerPreference();
         self.notifyOp(.success, "Markdown viewer preference saved.");
     }
 
@@ -5589,7 +5623,7 @@ pub const Shell = struct {
             self.notifyOp(.warning, "No workspace selected.");
             return;
         };
-        const alloc = self.api_state.allocator();
+        const alloc = self.api_state.backing_allocator;
         const ws_dir = workspace_config.getWsDir(alloc, ws_id) catch {
             self.notifyOp(.failure, "Could not resolve workspace directory.");
             return;

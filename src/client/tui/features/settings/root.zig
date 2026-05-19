@@ -701,7 +701,7 @@ fn drawSettingsPreferences(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocat
     var row: u16 = 1;
     row = w.writeSectionHeader(&surface, ctx, 2, row, "Local Viewer");
     w.writeText(&surface, ctx, 4, row, "Markdown", theme.fg(theme.MUTED));
-    const command = self.markdownViewerCommandForView(ctx.arena) catch "$ open <preview.md>";
+    const command = self.markdownViewerCommandForView();
     const configured = self.markdownViewerIsConfigured();
     const command_style = theme.fg(if (configured) theme.TEXT_SOFT else theme.MUTED);
     w.writeTextMax(&surface, ctx, 18, row, size.width -| 21, command, command_style);
