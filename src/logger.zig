@@ -294,9 +294,10 @@ pub fn writeHttpAccessLine(
         );
     }
     if (show_client_id) {
-        try writer.print(" client_id={s}", .{access.client_id});
+        try writeField(writer, "client_id", access.client_id);
     }
-    try writer.print(" request_id={s} route={s}", .{ access.request_id, access.route });
+    try writeField(writer, "request_id", access.request_id);
+    try writeField(writer, "route", access.route);
     try writeOptionalField(writer, "target_user_id", access.target_user_id);
     try writeOptionalField(writer, "org_id", access.org_id);
     try writeOptionalField(writer, "ws_id", access.ws_id);
@@ -304,11 +305,10 @@ pub fn writeHttpAccessLine(
     try writeOptionalField(writer, "rule_id", access.rule_id);
     try writeOptionalField(writer, "context_id", access.context_id);
     if (!std.mem.eql(u8, access.error_code, "-")) {
-        try writer.print(" error_code={s}", .{access.error_code});
+        try writeField(writer, "error_code", access.error_code);
     }
     if (!std.mem.eql(u8, access.error_message, "-")) {
-        try writer.writeAll(" error_message=");
-        try writeQuotedValue(writer, access.error_message);
+        try writeField(writer, "error_message", access.error_message);
     }
     try writer.writeByte('\n');
 }
@@ -331,7 +331,24 @@ pub fn writeHubEventLine(writer: *std.Io.Writer, event: HubEvent) std.Io.Writer.
 
 fn writeOptionalField(writer: *std.Io.Writer, name: []const u8, value: []const u8) std.Io.Writer.Error!void {
     if (value.len == 0 or std.mem.eql(u8, value, "-")) return;
-    try writer.print(" {s}={s}", .{ name, value });
+    try writeField(writer, name, value);
+}
+
+fn writeField(writer: *std.Io.Writer, name: []const u8, value: []const u8) std.Io.Writer.Error!void {
+    try writer.print(" {s}=", .{name});
+    if (isBareLogValue(value)) {
+        try writer.writeAll(value);
+    } else {
+        try writeQuotedValue(writer, value);
+    }
+}
+
+fn isBareLogValue(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |byte| {
+        if (!(std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-' or byte == '.' or byte == ':' or byte == '/')) return false;
+    }
+    return true;
 }
 
 fn writeQuotedValue(writer: *std.Io.Writer, value: []const u8) std.Io.Writer.Error!void {
@@ -809,7 +826,7 @@ test "writeHttpAccessLine omits application log prefix" {
         .elapsed_ns = 1_234_000,
         .ip = "127.0.0.1",
         .client_id = "client-1",
-        .request_id = "req-1",
+        .request_id = "req-1 error_code=OK",
         .method = "GET",
         .path = "/bad",
         .route = "unknown.read",
@@ -824,7 +841,7 @@ test "writeHttpAccessLine omits application log prefix" {
     try testing.expect(std.mem.indexOf(u8, output, "(hub_request)") == null);
     try testing.expect(std.mem.indexOf(u8, output, "| 400 |   1.23ms | 127.0.0.1       |") != null);
     try testing.expect(std.mem.indexOf(u8, output, "client_id=client-1") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "request_id=req-1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "request_id=\"req-1 error_code=OK\"") != null);
     try testing.expect(std.mem.indexOf(u8, output, "route=unknown.read") != null);
     try testing.expect(std.mem.indexOf(u8, output, "ws_id=ws-1") != null);
     try testing.expect(std.mem.indexOf(u8, output, "pr_id=ppr-1") != null);
