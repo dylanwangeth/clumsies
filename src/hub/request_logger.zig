@@ -153,7 +153,7 @@ const routes = [_]Route{
     .{ .method = "GET", .pattern = "/api/stats", .name = "stats.org" },
     .{ .method = "GET", .pattern = "/api/stats/workspace/:ws_id", .name = "stats.workspace" },
     .{ .method = "GET", .pattern = "/api/stats/rule/:rule_id", .name = "stats.rule" },
-    .{ .method = "GET", .pattern = "/api/prs", .name = "rule_prs.list" },
+    .{ .method = "GET", .pattern = "/api/prs", .name = "review_prs.list" },
     .{ .method = "POST", .pattern = "/api/prs", .name = "rule_prs.create" },
     .{ .method = "GET", .pattern = "/api/prs/:id", .name = "rule_prs.read" },
     .{ .method = "PUT", .pattern = "/api/prs/:id", .name = "rule_prs.update" },
@@ -244,6 +244,8 @@ test "remoteHost strips ephemeral ports" {
 }
 
 test "classifyRoute gives stable route names" {
+    try std.testing.expectEqualStrings("review_prs.list", classifyRoute("GET", "/api/prs"));
+    try std.testing.expectEqualStrings("rule_prs.create", classifyRoute("POST", "/api/prs"));
     try std.testing.expectEqualStrings("rule_prs.update", classifyRoute("PUT", "/api/prs/ppr-1"));
     try std.testing.expectEqualStrings("workspaces.context.list", classifyRoute("GET", "/api/workspaces/ws-1/context"));
     try std.testing.expectEqualStrings("workspaces.rules.content", classifyRoute("POST", "/api/workspaces/ws-1/rules/content"));
