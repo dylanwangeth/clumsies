@@ -6162,12 +6162,42 @@ pub const Shell = struct {
                 return null;
             };
         errdefer if (content) |value| alloc.free(value);
+        var rule_id: ?[]const u8 = null;
+        errdefer if (rule_id) |id| alloc.free(id);
+        if (draft_entry.rule_id) |id| {
+            rule_id = alloc.dupe(u8, id) catch {
+                self.notifyOp(.failure, "Out of memory reading draft.");
+                return null;
+            };
+        }
+
+        var context_id: ?[]const u8 = null;
+        errdefer if (context_id) |id| alloc.free(id);
+        if (draft_entry.context_id) |id| {
+            context_id = alloc.dupe(u8, id) catch {
+                if (rule_id) |value| alloc.free(value);
+                self.notifyOp(.failure, "Out of memory reading draft.");
+                return null;
+            };
+        }
+
+        var base_hash: ?[]const u8 = null;
+        errdefer if (base_hash) |h| alloc.free(h);
+        if (draft_entry.base_hash) |h| {
+            base_hash = alloc.dupe(u8, h) catch {
+                if (rule_id) |value| alloc.free(value);
+                if (context_id) |value| alloc.free(value);
+                self.notifyOp(.failure, "Out of memory reading draft.");
+                return null;
+            };
+        }
+
         const entry_out = DraftSubmitEntry{
             .operation = draft_entry.operation,
             .draft_path = draft_path,
-            .rule_id = if (draft_entry.rule_id) |id| (alloc.dupe(u8, id) catch null) else null,
-            .context_id = if (draft_entry.context_id) |id| (alloc.dupe(u8, id) catch null) else null,
-            .base_hash = if (draft_entry.base_hash) |h| (alloc.dupe(u8, h) catch null) else null,
+            .rule_id = rule_id,
+            .context_id = context_id,
+            .base_hash = base_hash,
         };
 
         return .{ .ws_dir = ws_dir, .content = content, .entry = entry_out };
@@ -6387,7 +6417,10 @@ pub const Shell = struct {
         }
 
         if (self.draftAlreadyMatchesRemote(target, entry, effective_operation, content_copy)) {
-            _ = self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied);
+            if (!self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied)) {
+                self.keepPrComposerAfterSubmitFailure(.failure, "Draft already applied, but local draft status could not be updated.");
+                return;
+            }
             self.refreshDraftsCache();
             workspace_panel.syncWsRows(self);
             artifact_panel.syncArtifactTree(self);
@@ -6509,7 +6542,13 @@ pub const Shell = struct {
             }
 
             if (self.draftAlreadyMatchesRemote(target, entry, effective_operation, content_copy)) {
-                _ = self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied);
+                if (!self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied)) {
+                    alloc.free(entry.draft_path);
+                    if (entry.base_hash) |h| alloc.free(h);
+                    if (entry.context_id) |id| alloc.free(id);
+                    self.keepPrComposerAfterSubmitFailure(.failure, "Draft already applied, but local draft status could not be updated.");
+                    return;
+                }
                 alloc.free(entry.draft_path);
                 if (entry.base_hash) |h| alloc.free(h);
                 if (entry.context_id) |id| alloc.free(id);
@@ -7063,7 +7102,10 @@ pub const Shell = struct {
         }
 
         if (self.draftAlreadyMatchesRemote(target, entry, effective_operation, content_copy)) {
-            _ = self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied);
+            if (!self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied)) {
+                self.keepPrComposerAfterSubmitFailure(.failure, "Draft already applied, but local draft status could not be updated.");
+                return;
+            }
             self.refreshDraftsCache();
             workspace_panel.syncWsRows(self);
             artifact_panel.syncArtifactTree(self);
@@ -7169,7 +7211,12 @@ pub const Shell = struct {
             }
 
             if (self.draftAlreadyMatchesRemote(target, entry, effective_operation, content)) {
-                _ = self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied);
+                if (!self.markDraftStatusByPath(target.ws_id, target.category, entry.draft_path, .applied)) {
+                    alloc.free(entry.draft_path);
+                    if (entry.base_hash) |h| alloc.free(h);
+                    self.keepPrComposerAfterSubmitFailure(.failure, "Draft already applied, but local draft status could not be updated.");
+                    return;
+                }
                 alloc.free(entry.draft_path);
                 if (entry.base_hash) |h| alloc.free(h);
                 continue;
@@ -7746,6 +7793,14 @@ pub const Shell = struct {
     fn handlePrSubmitApiError(self: *Shell, err: api.request.ApiErrorPayload) void {
         if (err.status == .conflict) {
             const settlement = self.settleComposerDraftsAfterConflict();
+            if (settlement.failed > 0) {
+                const message: []const u8 = if (settlement.failed > 1)
+                    "PR submit conflict; some draft statuses could not be updated"
+                else
+                    "PR submit conflict; a draft status could not be updated";
+                self.keepPrComposerAfterSubmitFailure(.failure, writeErrorStatus(self, message, err));
+                return;
+            }
             if (settlement.applied > 0 and settlement.conflicted == 0 and settlement.failed == 0) {
                 self.closePrComposer();
                 const message: []const u8 = if (settlement.applied > 1) "Drafts already applied." else "Draft already applied.";

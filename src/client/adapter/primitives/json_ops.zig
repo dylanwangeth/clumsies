@@ -192,6 +192,7 @@ fn inspectManagedItem(items: []const std.json.Value, managed_item: std.json.Valu
     }
 
     if (related_non_exact) return .conflict;
+    if (exact_index != null and replace_index != null) return .conflict;
     if (exact_index) |index| return .{ .exact = index };
     if (replace_index) |index| return .{ .replace = index };
     return .absent;
@@ -552,6 +553,59 @@ test "prepareJsonHooksRegistry rejects drifted stale clumsies hook entries" {
         \\    "SessionStart": [
         \\      {
         \\        "matcher": "resume-only",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/old/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup|resume",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/new/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| try std.testing.expectEqualStrings(conflict_incompatible_item, message),
+        else => return error.ExpectedConflict,
+    }
+}
+
+test "prepareJsonHooksRegistry rejects exact hook plus stale duplicate" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "matcher": "startup|resume",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/new/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      },
+        \\      {
+        \\        "matcher": "startup|resume",
         \\        "hooks": [
         \\          {
         \\            "type": "command",
