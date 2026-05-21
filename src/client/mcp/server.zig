@@ -114,9 +114,10 @@ fn processMessage(allocator: std.mem.Allocator, state: *State, version: []const 
     }
 
     if (std.mem.eql(u8, method, "tools/call")) {
-        const result = tools.handleCall(allocator, state.workspace_root, state.session, params) catch |err| switch (err) {
-            error.InvalidParams => return try protocol.buildErrorAlloc(allocator, id.?, .invalid_params, "Invalid tool arguments"),
-            else => return err,
+        const result = tools.handleCall(allocator, state.workspace_root, state.session, params) catch |e| {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Unexpected system error: {s}", .{@errorName(e)}) catch "Unexpected system error";
+            return try protocol.buildErrorAlloc(allocator, id.?, .internal_error, msg);
         };
         defer allocator.free(result);
         return try protocol.buildResultAlloc(allocator, id.?, result);
