@@ -85,12 +85,13 @@ clumsies adapt --agent claude-code --scope user --yes
 
 That is still a user action. What changes after installation is the runtime behavior. The host can now start `clumsies mcp serve` and follow the structured `memsetup` → `memdisc` → `memload` → `memref` flow instead of treating rule and context files as ad hoc local memory.
 
-In the current implementation, the two built-in adapter packages are:
+In the current implementation, the built-in adapter packages are:
 
 | Adapter package | Display name | Role |
 | --- | --- | --- |
 | `codex` | `Codex` | installs `.codex` config, hooks, and related runtime assets |
 | `claude-code` | `Claude Code` | installs Claude Code settings, hooks, and related runtime assets |
+| `agy` | `Antigravity CLI` | installs Antigravity hooks, MCP config, and Agent Skills |
 
 Those packages are not generic installers. Each one carries host-specific resources and merge behavior, which is why adapter is a real system layer rather than a wrapper around `mcp serve`.
 

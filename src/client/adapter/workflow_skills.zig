@@ -8,7 +8,7 @@ const workspace_config = @import("../workspace_config.zig");
 pub const Host = enum {
     codex,
     claude_code,
-    gemini_cli,
+    agy,
 };
 
 pub fn renderImportedWorkflowSkills(
@@ -98,8 +98,7 @@ fn skillFilePath(
     slug: []const u8,
 ) ![]u8 {
     return switch (host) {
-        .codex, .claude_code => std.fs.path.join(allocator, &.{ root, slug, "SKILL.md" }),
-        .gemini_cli => std.fs.path.join(allocator, &.{ root, slug, "SKILL.md" }),
+        .codex, .claude_code, .agy => std.fs.path.join(allocator, &.{ root, slug, "SKILL.md" }),
     };
 }
 
@@ -204,7 +203,7 @@ fn renderSkillContent(
         ,
             .{ slug, filename, workflow_ref, workflow_ref },
         ),
-        .gemini_cli => std.fmt.allocPrint(
+        .agy => std.fmt.allocPrint(
             allocator,
             \\---
             \\name: {s}

@@ -29,6 +29,7 @@ const conflict_invalid_hooks = "Existing hooks registry has a non-object `hooks`
 const conflict_invalid_event = "Existing hooks registry has a non-array hook event entry.";
 const conflict_incompatible_item = "Existing hooks registry already contains a clumsies-managed hook entry with incompatible content.";
 const conflict_invalid_fragment = "Internal managed hooks fragment is invalid.";
+const conflict_incompatible_named_hook = "Existing hooks registry already contains a clumsies-managed named hook with incompatible content.";
 
 pub fn prepareJsonHooksRegistry(
     allocator: std.mem.Allocator,
@@ -81,6 +82,65 @@ pub fn prepareJsonHooksRegistry(
                 .conflict => return .{ .conflict = conflict_incompatible_item },
             }
         }
+    }
+
+    return .{ .prepared = .{
+        .action = if (did_change) "update" else "keep",
+        .rendered_content = if (did_change)
+            try renderPrettyJsonAlloc(allocator, current_parsed.value)
+        else
+            try allocator.dupe(u8, existing_content),
+        .managed_content = try allocator.dupe(u8, managed_fragment),
+    } };
+}
+
+pub fn prepareJsonNamedHooksRegistry(
+    allocator: std.mem.Allocator,
+    existing_content_opt: ?[]const u8,
+    managed_fragment: []const u8,
+) !HooksPlanResult {
+    const managed_parsed = std.json.parseFromSlice(std.json.Value, allocator, managed_fragment, .{
+        .allocate = .alloc_always,
+    }) catch return .{ .conflict = conflict_invalid_fragment };
+    defer managed_parsed.deinit();
+
+    const managed_root = asObject(managed_parsed.value) orelse return .{ .conflict = conflict_invalid_fragment };
+
+    if (existing_content_opt == null) {
+        return .{ .prepared = .{
+            .action = "create",
+            .rendered_content = try allocator.dupe(u8, managed_fragment),
+            .managed_content = try allocator.dupe(u8, managed_fragment),
+        } };
+    }
+
+    const existing_content = existing_content_opt.?;
+    var current_parsed = std.json.parseFromSlice(std.json.Value, allocator, existing_content, .{
+        .allocate = .alloc_always,
+    }) catch return .{ .conflict = conflict_invalid_json };
+    defer current_parsed.deinit();
+
+    const current_root = asObjectPtr(&current_parsed.value) orelse return .{ .conflict = conflict_invalid_root };
+    const arena = current_parsed.arena.allocator();
+
+    var did_change = false;
+    var it = managed_root.iterator();
+    while (it.next()) |entry| {
+        const current_value = current_root.getPtr(entry.key_ptr.*);
+        if (current_value == null) {
+            try current_root.put(
+                try arena.dupe(u8, entry.key_ptr.*),
+                try cloneValue(arena, entry.value_ptr.*),
+            );
+            did_change = true;
+            continue;
+        }
+        if (valueEql(current_value.?.*, entry.value_ptr.*)) continue;
+        if (!namedHookCanReplace(current_value.?.*, entry.value_ptr.*)) {
+            return .{ .conflict = conflict_incompatible_named_hook };
+        }
+        current_value.?.* = try cloneValue(arena, entry.value_ptr.*);
+        did_change = true;
     }
 
     return .{ .prepared = .{
@@ -156,6 +216,42 @@ pub fn removeJsonHooksRegistry(
     if (current_root.count() == 0) {
         return .delete_file;
     }
+
+    return .{ .rewrite = try renderPrettyJsonAlloc(allocator, current_parsed.value) };
+}
+
+pub fn removeJsonNamedHooksRegistry(
+    allocator: std.mem.Allocator,
+    current_content: []const u8,
+    managed_fragment: []const u8,
+) !HooksRemoveResult {
+    const managed_parsed = std.json.parseFromSlice(std.json.Value, allocator, managed_fragment, .{
+        .allocate = .alloc_always,
+    }) catch return .{ .conflict = conflict_invalid_fragment };
+    defer managed_parsed.deinit();
+
+    const managed_root = asObject(managed_parsed.value) orelse return .{ .conflict = conflict_invalid_fragment };
+
+    var current_parsed = std.json.parseFromSlice(std.json.Value, allocator, current_content, .{
+        .allocate = .alloc_always,
+    }) catch return .{ .conflict = conflict_invalid_json };
+    defer current_parsed.deinit();
+
+    const current_root = asObjectPtr(&current_parsed.value) orelse return .{ .conflict = conflict_invalid_root };
+
+    var did_remove = false;
+    var it = managed_root.iterator();
+    while (it.next()) |entry| {
+        const current_value = current_root.get(entry.key_ptr.*) orelse continue;
+        if (!valueEql(current_value, entry.value_ptr.*) and !namedHookCanReplace(current_value, entry.value_ptr.*)) {
+            return .{ .conflict = conflict_incompatible_named_hook };
+        }
+        _ = current_root.orderedRemove(entry.key_ptr.*);
+        did_remove = true;
+    }
+
+    if (!did_remove) return .already_absent;
+    if (current_root.count() == 0) return .delete_file;
 
     return .{ .rewrite = try renderPrettyJsonAlloc(allocator, current_parsed.value) };
 }
@@ -375,16 +471,46 @@ fn hookArraysCanReplace(current_hooks_value: std.json.Value, managed_hooks_value
     return replaced_command;
 }
 
+fn namedHookCanReplace(current_value: std.json.Value, managed_value: std.json.Value) bool {
+    const current_object = asObject(current_value) orelse return false;
+    const managed_object = asObject(managed_value) orelse return false;
+
+    if (!allCommandsAreClumsiesHooks(current_object)) return false;
+    if (!allCommandsAreClumsiesHooks(managed_object)) return false;
+    return true;
+}
+
+fn allCommandsAreClumsiesHooks(events: std.json.ObjectMap) bool {
+    var event_it = events.iterator();
+    while (event_it.next()) |event_entry| {
+        const handlers = asArray(event_entry.value_ptr.*) orelse return false;
+        for (handlers.items) |handler| {
+            const command = hookCommand(handler) orelse return false;
+            if (clumsiesHookScriptName(command) == null) return false;
+        }
+    }
+    return true;
+}
+
 fn clumsiesHookScriptName(command: []const u8) ?[]const u8 {
     const names = [_][]const u8{
         "session-start.sh",
         "user-prompt-submit.sh",
+        "pre-invocation.sh",
         "stop-refer-check.sh",
     };
     for (names) |name| {
         const name_pos = std.mem.indexOf(u8, command, name) orelse continue;
-        if (std.mem.indexOf(u8, command[0..name_pos], "/.codex/hooks/") != null) return name;
-        if (std.mem.indexOf(u8, command[0..name_pos], "/hooks/") != null and std.mem.endsWith(u8, command, "\"")) return name;
+        const prefix = command[0..name_pos];
+        if (std.mem.indexOf(u8, prefix, "/.codex/hooks/") != null or
+            std.mem.indexOf(u8, prefix, "/.agents/hooks/") != null or
+            std.mem.indexOf(u8, prefix, "/.gemini/config/hooks/") != null or
+            std.mem.indexOf(u8, prefix, "/.antigravity/hooks/") != null or
+            std.mem.indexOf(u8, prefix, "/.antigravitycli/hooks/") != null or
+            std.mem.indexOf(u8, prefix, "/hooks/") != null)
+        {
+            return name;
+        }
     }
     return null;
 }
@@ -740,5 +866,120 @@ test "removeJsonHooksRegistry blocks drifted managed hook entries" {
     switch (result) {
         .conflict => |message| try std.testing.expectEqualStrings(conflict_incompatible_item, message),
         else => return error.ExpectedConflict,
+    }
+}
+
+test "prepareJsonNamedHooksRegistry overwrites empty named hooks without conflict" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "clumsies": {}
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonNamedHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "pre-invocation.sh") != null);
+        },
+    }
+}
+
+test "prepareJsonNamedHooksRegistry handles robust clumsiesHookScriptName checks" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash /old/.agents/hooks/pre-invocation.sh --verbose"
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonNamedHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "/new/.agents") != null);
+        },
+    }
+}
+
+test "removeJsonNamedHooksRegistry allows removal of drifted named hook paths" {
+    const allocator = std.testing.allocator;
+    const current =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/old/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try removeJsonNamedHooksRegistry(allocator, current, managed);
+    switch (result) {
+        .delete_file => {},
+        else => return error.UnexpectedRemoveResult,
     }
 }

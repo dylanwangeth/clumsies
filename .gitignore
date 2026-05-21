@@ -39,6 +39,8 @@ prompts/
 GEMINI.md
 .mcp.json
 .gemini/
+.antigravity/
+.antigravitycli/
 
 # Local developer environment
 .env

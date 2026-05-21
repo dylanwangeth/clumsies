@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "enable_keychain", enable_keychain);
     addCodexAdapterAssetOptions(b, options);
     addClaudeCodeAdapterAssetOptions(b, options);
-    addGeminiCliAdapterAssetOptions(b, options);
+    addAgyAdapterAssetOptions(b, options);
     const build_options_module = options.createModule();
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
 
@@ -257,38 +257,38 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
     ));
 }
 
-fn addGeminiCliAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) void {
-    options.addOption([]const u8, "adapter_gemini_cli_runtime_settings_json", readSourceAsset(
+fn addAgyAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) void {
+    options.addOption([]const u8, "adapter_agy_runtime_hooks_json", readSourceAsset(
         b,
-        "assets/adapters/gemini-cli/runtime/settings.json.tpl",
+        "assets/adapters/agy/runtime/hooks.json.tpl",
     ));
-    options.addOption([]const u8, "adapter_gemini_cli_runtime_resolve_binary_sh", readSourceAsset(
+    options.addOption([]const u8, "adapter_agy_runtime_mcp_config_json", readSourceAsset(
         b,
-        "assets/adapters/gemini-cli/runtime/hooks/resolve-binary.sh.tpl",
+        "assets/adapters/agy/runtime/mcp_config.json.tpl",
     ));
-    options.addOption([]const u8, "adapter_gemini_cli_runtime_session_start_sh", readSourceAsset(
+    options.addOption([]const u8, "adapter_agy_runtime_resolve_binary_sh", readSourceAsset(
         b,
-        "assets/adapters/gemini-cli/runtime/hooks/session-start.sh.tpl",
+        "assets/adapters/agy/runtime/hooks/resolve-binary.sh.tpl",
     ));
-    options.addOption([]const u8, "adapter_gemini_cli_runtime_user_prompt_submit_sh", readSourceAsset(
+    options.addOption([]const u8, "adapter_agy_runtime_pre_invocation_sh", readSourceAsset(
         b,
-        "assets/adapters/gemini-cli/runtime/hooks/user-prompt-submit.sh.tpl",
+        "assets/adapters/agy/runtime/hooks/pre-invocation.sh.tpl",
     ));
-    options.addOption([]const u8, "adapter_gemini_cli_runtime_stop_refer_check_sh", readSourceAsset(
+    options.addOption([]const u8, "adapter_agy_runtime_stop_refer_check_sh", readSourceAsset(
         b,
-        "assets/adapters/gemini-cli/runtime/hooks/stop-refer-check.sh.tpl",
+        "assets/adapters/agy/runtime/hooks/stop-refer-check.sh.tpl",
     ));
-    options.addOption([]const u8, "adapter_gemini_cli_runtime_skill_discover", readSourceAsset(
+    options.addOption([]const u8, "adapter_agy_runtime_skill_discover", readSourceAsset(
         b,
-        "assets/adapters/gemini-cli/runtime/skills/discover/SKILL.toml",
+        "assets/adapters/agy/runtime/skills/discover/SKILL.md",
     ));
-    options.addOption([]const u8, "adapter_gemini_cli_runtime_skill_ntmd", readSourceAsset(
+    options.addOption([]const u8, "adapter_agy_runtime_skill_ntmd", readSourceAsset(
         b,
-        "assets/adapters/gemini-cli/runtime/skills/ntmd/SKILL.toml",
+        "assets/adapters/agy/runtime/skills/ntmd/SKILL.md",
     ));
-    options.addOption([]const u8, "adapter_gemini_cli_runtime_skill_setup", readSourceAsset(
+    options.addOption([]const u8, "adapter_agy_runtime_skill_setup", readSourceAsset(
         b,
-        "assets/adapters/gemini-cli/runtime/skills/setup/SKILL.toml",
+        "assets/adapters/agy/runtime/skills/setup/SKILL.md",
     ));
 }
 
