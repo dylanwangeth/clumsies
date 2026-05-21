@@ -51,10 +51,7 @@ pub fn runWithRoot(
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
 
-        const response = processLine(allocator, &state, version, line) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => try protocol.buildErrorAlloc(allocator, null, .internal_error, @errorName(err)),
-        };
+        const response = try processLine(allocator, &state, version, line);
         defer if (response) |owned| allocator.free(owned);
 
         if (response) |owned| {
