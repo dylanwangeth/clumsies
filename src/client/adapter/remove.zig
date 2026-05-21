@@ -350,6 +350,122 @@ pub fn removeInstall(
             continue;
         }
 
+        if (isJsonNamedHooksRegistryResource(resource)) {
+            const managed_hooks_content = try managedHooksContent(
+                allocator,
+                manifest.target_agent,
+                manifest.adapter_id,
+                manifest.scope,
+                manifest.target_root,
+                resource,
+            );
+            defer if (resource.managed_content == null) allocator.free(managed_hooks_content);
+            const remove_result = try json_ops.removeJsonNamedHooksRegistry(
+                allocator,
+                content.?,
+                managed_hooks_content,
+            );
+            switch (remove_result) {
+                .conflict => |message| {
+                    blocked_count += 1;
+                    try recordBlockedResource(allocator, &blocked_resources, absolute_path, message);
+                    try next_resources.append(allocator, resource);
+                    try store.appendWalEvent(allocator, .{
+                        .event_type = "step_blocked",
+                        .install_id = manifest.install_id,
+                        .revision = manifest.active_revision,
+                        .mode = "remove",
+                        .timestamp = std.time.milliTimestamp(),
+                        .step_id = resource.resource_id,
+                        .resource_id = resource.resource_id,
+                        .target = resource.relative_path,
+                        .status = "blocked",
+                        .message = message,
+                    });
+                },
+                .already_absent => {
+                    removed_count += 1;
+                    try next_resources.append(allocator, .{
+                        .resource_id = resource.resource_id,
+                        .resource_kind = resource.resource_kind,
+                        .relative_path = resource.relative_path,
+                        .absolute_path = resource.absolute_path,
+                        .ownership = resource.ownership,
+                        .fingerprint = resource.fingerprint,
+                        .managed_content = resource.managed_content,
+                        .active = false,
+                    });
+                    try store.appendWalEvent(allocator, .{
+                        .event_type = "step_reverted",
+                        .install_id = manifest.install_id,
+                        .revision = manifest.active_revision,
+                        .mode = "remove",
+                        .timestamp = std.time.milliTimestamp(),
+                        .step_id = resource.resource_id,
+                        .resource_id = resource.resource_id,
+                        .target = resource.relative_path,
+                        .status = "reverted",
+                        .message = "Managed named hooks entry already absent",
+                    });
+                },
+                .delete_file => {
+                    try std.fs.deleteFileAbsolute(absolute_path);
+                    cleanupEmptyParents(absolute_path, manifest.target_root);
+                    removed_count += 1;
+                    try next_resources.append(allocator, .{
+                        .resource_id = resource.resource_id,
+                        .resource_kind = resource.resource_kind,
+                        .relative_path = resource.relative_path,
+                        .absolute_path = resource.absolute_path,
+                        .ownership = resource.ownership,
+                        .fingerprint = resource.fingerprint,
+                        .managed_content = resource.managed_content,
+                        .active = false,
+                    });
+                    try store.appendWalEvent(allocator, .{
+                        .event_type = "step_reverted",
+                        .install_id = manifest.install_id,
+                        .revision = manifest.active_revision,
+                        .mode = "remove",
+                        .timestamp = std.time.milliTimestamp(),
+                        .step_id = resource.resource_id,
+                        .resource_id = resource.resource_id,
+                        .target = resource.relative_path,
+                        .status = "reverted",
+                        .message = "Managed named hooks registry removed",
+                    });
+                },
+                .rewrite => |rewritten| {
+                    defer allocator.free(rewritten);
+                    try writeFileAbsolute(absolute_path, rewritten, 0o644);
+                    removed_count += 1;
+                    try next_resources.append(allocator, .{
+                        .resource_id = resource.resource_id,
+                        .resource_kind = resource.resource_kind,
+                        .relative_path = resource.relative_path,
+                        .absolute_path = resource.absolute_path,
+                        .ownership = resource.ownership,
+                        .fingerprint = resource.fingerprint,
+                        .managed_content = resource.managed_content,
+                        .active = false,
+                    });
+                    try store.appendWalEvent(allocator, .{
+                        .event_type = "step_reverted",
+                        .install_id = manifest.install_id,
+                        .revision = manifest.active_revision,
+                        .mode = "remove",
+                        .timestamp = std.time.milliTimestamp(),
+                        .step_id = resource.resource_id,
+                        .resource_id = resource.resource_id,
+                        .target = resource.relative_path,
+                        .status = "reverted",
+                        .message = "Managed named hooks entry removed",
+                    });
+                },
+            }
+            continue;
+        }
+
         if (isJsonMcpRegistryResource(resource)) {
             const managed_mcp_content = resource.managed_content orelse return error.MissingManagedContent;
             const remove_result = try json_mcp_registry.removeJsonMcpRegistry(
@@ -606,6 +722,10 @@ fn writeFileAbsolute(path: []const u8, content: []const u8, mode: u16) !void {
 fn isJsonHooksRegistryResource(resource: model.ManagedResource) bool {
     return std.mem.eql(u8, resource.resource_kind, "json_hooks_registry") or
         std.mem.eql(u8, resource.resource_id, "codex.hooks.registry");
+}
+
+fn isJsonNamedHooksRegistryResource(resource: model.ManagedResource) bool {
+    return std.mem.eql(u8, resource.resource_kind, "json_named_hooks_registry");
 }
 
 fn isTomlFragmentResource(resource: model.ManagedResource) bool {

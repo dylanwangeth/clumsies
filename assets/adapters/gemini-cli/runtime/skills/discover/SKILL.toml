@@ -1,6 +1,0 @@
-description = "Discover available rules in the Library"
-prompt = """
-Call the `memdisc` MCP tool to discover available rules.
-
-{{args}}
-"""

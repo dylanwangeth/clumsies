@@ -134,6 +134,36 @@ pub fn buildAdaptPlan(
             continue;
         }
 
+        if (std.mem.eql(u8, asset.resource_kind, "json_named_hooks_registry")) {
+            const hooks_result = try json_ops.prepareJsonNamedHooksRegistry(allocator, existing, asset.content);
+            switch (hooks_result) {
+                .conflict => |message| {
+                    return .{ .conflict = .{
+                        .install_id = try allocator.dupe(u8, install_id),
+                        .target_root = try allocator.dupe(u8, target_root),
+                        .path = try allocator.dupe(u8, absolute_path),
+                        .message = try allocator.dupe(u8, message),
+                    } };
+                },
+                .prepared => |prepared| {
+                    try steps.append(allocator, .{
+                        .step_id = try allocator.dupe(u8, asset.resource_id),
+                        .resource_id = try allocator.dupe(u8, asset.resource_id),
+                        .resource_kind = asset.resource_kind,
+                        .relative_path = try allocator.dupe(u8, asset.relative_path),
+                        .absolute_path = if (asset.absolute_path) |_| try allocator.dupe(u8, absolute_path) else null,
+                        .ownership = asset.ownership,
+                        .action = prepared.action,
+                        .label = try allocator.dupe(u8, asset.label),
+                        .content = prepared.rendered_content,
+                        .managed_content = prepared.managed_content,
+                        .file_mode = asset.file_mode,
+                    });
+                },
+            }
+            continue;
+        }
+
         if (std.mem.eql(u8, asset.resource_kind, "json_mcp_registry")) {
             const mcp_result = try json_mcp_registry.prepareJsonMcpRegistry(allocator, existing, asset.content);
             switch (mcp_result) {

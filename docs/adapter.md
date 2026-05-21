@@ -104,12 +104,13 @@ That is what turns host integration into a trustworthy product feature instead o
 
 ## Current support and future targets
 
-The current implementation ships two built-in adapter packages:
+The current implementation ships three built-in adapter packages:
 
 | Adapter ID | Display name | Status |
 | --- | --- | --- |
 | `codex` | `Codex` | supported now |
 | `claude-code` | `Claude Code` | supported now |
+| `agy` | `Antigravity CLI` | supported now |
 
 Future targets will likely include more coding-agent CLIs and agentic editors. When those land, the docs should use the official product names. Examples of current external brand names include:
 

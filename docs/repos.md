@@ -48,8 +48,9 @@ This directory defines shared types and API contracts. It is the seam between cl
 
 These are the host-facing runtime assets that `clumsies adapt` installs. They matter because adapter behavior is not abstract. Real shells, hooks, config templates, and host-specific glue live here.
 
-Two subtrees matter most today:
+The built-in adapter subtrees are:
 
+- `assets/adapters/agy/`
 - `assets/adapters/codex/`
 - `assets/adapters/claude-code/`
 
