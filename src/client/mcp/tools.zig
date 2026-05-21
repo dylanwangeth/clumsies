@@ -14,41 +14,95 @@ const attestation = @import("../attestation.zig");
 const DISCOVER_RESULT_NAMES_MAX_COUNT = 20;
 const DISCOVER_RESULT_NAMES_MAX_BYTES = 1024;
 
+const ValidationError = error{
+    MissingKnownHashes,
+    KnownHashesNotObject,
+    MissingMetaPromptKey,
+    MetaPromptValueNotString,
+    InvalidKind,
+    MissingIds,
+    IdsNotArray,
+    IdsEmpty,
+    IdNotString,
+    MissingKnownHashesMap,
+    KnownHashesNotObjectMap,
+    HashNotString,
+    MissingIdHash,
+};
+
 const setup_schema =
     "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bind this MCP connection to the host agent session, then bootstrap the protocol. Pass the host session/thread id as session_id and knownHashes with a META_PROMPT.md entry. Use an empty hash when the meta-prompt hash is unknown.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"session_id\",\"knownHashes\"],\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
+    "\"session_id\":{\"type\":\"string\",\"description\":\"The host session/thread ID to bind this connection to.\"}," ++
+    "\"knownHashes\":{\"type\":\"object\",\"description\":\"A map of known file hashes. Must contain a 'META_PROMPT.md' entry (use an empty string if unknown).\",\"additionalProperties\":{\"type\":\"string\"}}" ++
+    "},\"required\":[\"session_id\",\"knownHashes\"],\"additionalProperties\":false}}";
 
 const discover_schema =
     "{\"name\":\"" ++ tool_names.discover ++ "\",\"title\":\"Discover\",\"description\":\"Discover available rules, workflows, and context files. Returns fresh metadata from the workspace.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"]},\"group\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
+    "\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"],\"description\":\"Filter results by resource kind: 'rule', 'workflow', or 'context'.\"}," ++
+    "\"group\":{\"type\":\"string\",\"description\":\"Filter results by category or folder group prefix (e.g., 'coding', 'zig').\"}," ++
+    "\"query\":{\"type\":\"string\",\"description\":\"Search query to filter resources by title, name, or content match.\"" ++
+    "}},\"additionalProperties\":false}}";
 
 const load_schema =
     "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule, workflow, or context content by ids. ids may be Hub ids, local draft temp ids, paths, or aliases such as workflow:GEN_COMMIT_MSG, rule:COMPATIBILITY, or context:pitfall. Pass knownHashes for every requested id: use the remembered hash when known, or an empty string when unknown. Returns full content only when the current hash differs from knownHashes[id]. Rule/workflow results include referable constraints parsed from H2 headings and H2 list items; context results do not include constraints.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"knownHashes\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}},\"required\":[\"ids\",\"knownHashes\"],\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
+    "\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Array of unique resource identifiers, paths, or aliases to load.\"}," ++
+    "\"knownHashes\":{\"type\":\"object\",\"description\":\"A map of last remembered hashes for each requested id. Use an empty string if unknown.\",\"additionalProperties\":{\"type\":\"string\"}}" ++
+    "},\"required\":[\"ids\",\"knownHashes\"],\"additionalProperties\":false}}";
 
 const refer_schema =
     "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare applied rule/workflow constraints. A constraint is one semantic markdown section returned in memload constraints: either a whole H2 section or one list item inside an H2 section. The constraintId wire field must be copied exactly from a returned constraint id: H2 title for a whole-section constraint, or H2/ordinal for a list-item constraint. ruleId must identify that rule/workflow, not context.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"ruleId\":{\"type\":\"string\"},\"ruleHash\":{\"type\":\"string\"},\"constraintId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}},\"required\":[\"ruleId\",\"constraintId\"]}}},\"required\":[\"refs\"],\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
+    "\"refs\":{\"type\":\"array\",\"description\":\"Array of applied rule constraint references.\",\"items\":{\"type\":\"object\",\"properties\":{" ++
+    "\"ruleId\":{\"type\":\"string\",\"description\":\"The identifier of the applied rule/workflow.\"}," ++
+    "\"ruleHash\":{\"type\":\"string\",\"description\":\"The hash of the rule version that was loaded.\"}," ++
+    "\"constraintId\":{\"type\":\"string\",\"description\":\"The exact constraint id from the parsed rule content (H2 title or H2/ordinal).\"}," ++
+    "\"reason\":{\"type\":\"string\",\"description\":\"A brief explanation of how this constraint was satisfied in your response.\"}" ++
+    "},\"required\":[\"ruleId\",\"constraintId\"]}}" ++
+    "},\"required\":[\"refs\"],\"additionalProperties\":false}}";
 
 const submit_schema =
     "{\"name\":\"" ++ tool_names.submit ++ "\",\"title\":\"Submit\",\"description\":\"Submit your turn summary. Call this before finishing to close the current turn.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"],\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
+    "\"summary\":{\"type\":\"string\",\"description\":\"A high-level human summary of the work done during this turn.\"}" ++
+    "},\"required\":[\"summary\"],\"additionalProperties\":false}}";
 
 const reject_schema =
     "{\"name\":\"" ++ tool_names.reject ++ "\",\"title\":\"Reject\",\"description\":\"Mark the current turn as unsatisfactory. Call when the user indicates the output did not follow loaded rules.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"additionalProperties\":false}}";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
+    "\"reason\":{\"type\":\"string\",\"description\":\"The explanation of why the turn output did not satisfy the loaded rules.\"" ++
+    "}},\"additionalProperties\":false}}";
 
 const artifact_schema =
     "{\"name\":\"" ++ tool_names.artifact ++ "\",\"title\":\"Artifact\"," ++
     "\"description\":\"Create, update, rename, delete, or discard a local change for context, rule, or MPF artifacts. Local changes are stored as drafts until they enter review. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
-    "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"mpf\"]}," ++
-    "\"op\":{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
-    "\"create\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}," ++
-    "\"update\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"body\"],\"additionalProperties\":false}," ++
-    "\"rename\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"new_path\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"new_path\"],\"additionalProperties\":false}," ++
-    "\"delete\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}," ++
-    "\"discard\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}" ++
+    "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"mpf\"],\"description\":\"The resource type: 'context', 'rule', or 'mpf'.\"}," ++
+    "\"op\":{\"type\":\"object\",\"description\":\"The draft operation details, containing exactly one of create, update, rename, delete, or discard.\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
+    "\"create\":{\"type\":\"object\",\"properties\":{" ++
+    "\"path\":{\"type\":\"string\",\"description\":\"Relative destination path inside the workspace (e.g., 'research/my_doc.md').\"}," ++
+    "\"body\":{\"type\":\"string\",\"description\":\"The raw content text for the new resource.\"}," ++
+    "\"description\":{\"type\":\"string\",\"description\":\"Optional explanation of the creation.\"" ++
+    "}},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}," ++
+    "\"update\":{\"type\":\"object\",\"properties\":{" ++
+    "\"id\":{\"type\":\"string\",\"description\":\"The path or local ID of the draft to update.\"}," ++
+    "\"body\":{\"type\":\"string\",\"description\":\"The updated complete raw content text.\"}," ++
+    "\"description\":{\"type\":\"string\",\"description\":\"Optional explanation of the updates made.\"" ++
+    "}},\"required\":[\"id\",\"body\"],\"additionalProperties\":false}," ++
+    "\"rename\":{\"type\":\"object\",\"properties\":{" ++
+    "\"id\":{\"type\":\"string\",\"description\":\"The current path or local ID of the draft to rename.\"}," ++
+    "\"new_path\":{\"type\":\"string\",\"description\":\"The new relative path inside the workspace.\"}," ++
+    "\"description\":{\"type\":\"string\",\"description\":\"Optional explanation of the rename.\"" ++
+    "}},\"required\":[\"id\",\"new_path\"],\"additionalProperties\":false}," ++
+    "\"delete\":{\"type\":\"object\",\"properties\":{" ++
+    "\"id\":{\"type\":\"string\",\"description\":\"The path or local ID of the resource to mark for deletion.\"}," ++
+    "\"description\":{\"type\":\"string\",\"description\":\"Optional explanation of why this resource is being deleted.\"" ++
+    "}},\"required\":[\"id\"],\"additionalProperties\":false}," ++
+    "\"discard\":{\"type\":\"object\",\"properties\":{" ++
+    "\"id\":{\"type\":\"string\",\"description\":\"The path or local ID of the draft to completely discard and discard.\"}" ++
+    "},\"required\":[\"id\"],\"additionalProperties\":false}" ++
     "},\"additionalProperties\":false}" ++
     "},\"required\":[\"resource\",\"op\"],\"additionalProperties\":false}}";
 
@@ -75,20 +129,20 @@ pub fn handleCall(
 ) ![]u8 {
     const params_obj = switch (params) {
         .object => |obj| obj,
-        else => return error.InvalidParams,
+        else => return try tool_result.buildErrorResult(allocator, "invalid request: params must be a JSON object"),
     };
 
     const name = if (params_obj.get("name")) |value| switch (value) {
         .string => |s| s,
-        else => return error.InvalidParams,
-    } else return error.InvalidParams;
+        else => return try tool_result.buildErrorResult(allocator, "invalid request: name must be a string"),
+    } else return try tool_result.buildErrorResult(allocator, "invalid request: name is required");
 
     const arguments = params_obj.get("arguments") orelse std.json.Value{
         .object = .init(allocator),
     };
     const args_obj = switch (arguments) {
         .object => |obj| obj,
-        else => return error.InvalidParams,
+        else => return try tool_result.buildErrorResult(allocator, "invalid request: arguments must be a JSON object"),
     };
 
     if (std.mem.eql(u8, name, tool_names.setup)) {
@@ -153,7 +207,13 @@ fn handleSetup(
         else => return err,
     };
 
-    const known_hash = try parseSetupKnownHash(args_obj.get("knownHashes"));
+    const known_hash = parseSetupKnownHash(args_obj.get("knownHashes")) catch |err| switch (err) {
+        error.MissingKnownHashes => return try tool_result.buildErrorResult(allocator, "knownHashes is required"),
+        error.KnownHashesNotObject => return try tool_result.buildErrorResult(allocator, "knownHashes must be an object map"),
+        error.MissingMetaPromptKey => return try tool_result.buildErrorResult(allocator, "knownHashes must contain a 'META_PROMPT.md' entry (use an empty string if unknown)"),
+        error.MetaPromptValueNotString => return try tool_result.buildErrorResult(allocator, "knownHashes['META_PROMPT.md'] must be a string"),
+        else => |e| return e,
+    };
 
     var mpf = try workspace_rule.loadMpf(allocator, workspace_root, known_hash);
     defer mpf.deinit(allocator);
@@ -202,16 +262,16 @@ fn handleSetup(
     }
 }
 
-fn parseSetupKnownHash(value_opt: ?std.json.Value) !?[]const u8 {
-    const value = value_opt orelse return error.InvalidParams;
+fn parseSetupKnownHash(value_opt: ?std.json.Value) ValidationError!?[]const u8 {
+    const value = value_opt orelse return error.MissingKnownHashes;
     const obj = switch (value) {
         .object => |o| o,
-        else => return error.InvalidParams,
+        else => return error.KnownHashesNotObject,
     };
-    const value_for_mpf = obj.get("META_PROMPT.md") orelse return error.InvalidParams;
+    const value_for_mpf = obj.get("META_PROMPT.md") orelse return error.MissingMetaPromptKey;
     const hash = switch (value_for_mpf) {
         .string => |s| s,
-        else => return error.InvalidParams,
+        else => return error.MetaPromptValueNotString,
     };
     return if (hash.len == 0) null else hash;
 }
@@ -223,16 +283,18 @@ fn handleDiscover(
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
     const kind = if (args_obj.get("kind")) |value|
-        try parseRuleKind(value)
+        parseRuleKind(value) catch |err| switch (err) {
+            error.InvalidKind => return try tool_result.buildErrorResult(allocator, "kind parameter must be a string ('rule', 'workflow', or 'context')"),
+        }
     else
         null;
     const group = if (args_obj.get("group")) |value| switch (value) {
         .string => |s| s,
-        else => return error.InvalidParams,
+        else => return try tool_result.buildErrorResult(allocator, "group parameter must be a string"),
     } else null;
     const query = if (args_obj.get("query")) |value| switch (value) {
         .string => |s| s,
-        else => return error.InvalidParams,
+        else => return try tool_result.buildErrorResult(allocator, "query parameter must be a string"),
     } else null;
 
     var items = try workspace_rule.discoverSearchable(allocator, workspace_root, kind, group, query);
@@ -307,10 +369,22 @@ fn handleLoad(
     session: *session_mod.Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
-    var ids = try parseRequiredIds(allocator, args_obj.get("ids"));
+    var ids = parseRequiredIds(allocator, args_obj.get("ids")) catch |err| switch (err) {
+        error.MissingIds => return try tool_result.buildErrorResult(allocator, "ids parameter is required and must be an array of strings"),
+        error.IdsNotArray => return try tool_result.buildErrorResult(allocator, "ids parameter must be a JSON array"),
+        error.IdsEmpty => return try tool_result.buildErrorResult(allocator, "ids parameter must contain at least one ID string"),
+        error.IdNotString => return try tool_result.buildErrorResult(allocator, "all items in the 'ids' array must be strings"),
+        else => return err,
+    };
     defer ids.deinit(allocator);
 
-    var known = try parseKnownHashes(allocator, ids.items, args_obj.get("knownHashes"));
+    var known = parseKnownHashes(allocator, ids.items, args_obj.get("knownHashes")) catch |err| switch (err) {
+        error.MissingKnownHashesMap => return try tool_result.buildErrorResult(allocator, "knownHashes parameter is required and must be a JSON object map"),
+        error.KnownHashesNotObjectMap => return try tool_result.buildErrorResult(allocator, "knownHashes parameter must be a JSON object map"),
+        error.HashNotString => return try tool_result.buildErrorResult(allocator, "all hash values in knownHashes must be strings"),
+        error.MissingIdHash => return try tool_result.buildErrorResult(allocator, "knownHashes must contain an entry for every requested ID in 'ids' (use an empty string for unknown)"),
+        else => return err,
+    };
     defer known.deinit(allocator);
 
     var result = try workspace_rule.loadRules(
@@ -341,13 +415,13 @@ fn handleRefer(
     session: *session_mod.Session,
     args_obj: std.json.ObjectMap,
 ) ![]u8 {
-    const refs_val = args_obj.get("refs") orelse return error.InvalidParams;
+    const refs_val = args_obj.get("refs") orelse return try tool_result.buildErrorResult(allocator, "refs parameter is required");
     const refs_array = switch (refs_val) {
         .array => |a| a,
-        else => return error.InvalidParams,
+        else => return try tool_result.buildErrorResult(allocator, "refs parameter must be a JSON array"),
     };
 
-    if (refs_array.items.len == 0) return error.InvalidParams;
+    if (refs_array.items.len == 0) return try tool_result.buildErrorResult(allocator, "refs parameter must contain at least one constraint reference");
 
     var count: usize = 0;
     for (refs_array.items) |ref_val| {
@@ -613,45 +687,49 @@ fn jsonEscapeAlloc(allocator: std.mem.Allocator, value: []const u8) ![]const u8 
     return @import("clumsies_lib").util.encoding.jsonEscapeAlloc(allocator, value);
 }
 
-fn parseRuleKind(value: std.json.Value) !?workspace_rule.RuleKind {
+fn parseRuleKind(value: std.json.Value) error{InvalidKind}!?workspace_rule.RuleKind {
     const str = switch (value) {
         .string => |s| s,
-        else => return error.InvalidParams,
+        else => return error.InvalidKind,
     };
 
     if (std.mem.eql(u8, str, "rule")) return .rule;
     if (std.mem.eql(u8, str, "workflow")) return .workflow;
     if (std.mem.eql(u8, str, "context")) return .context;
-    return error.InvalidParams;
+    return error.InvalidKind;
 }
 
 fn parseRequiredIds(
     allocator: std.mem.Allocator,
     value_opt: ?std.json.Value,
-) !std.ArrayList([]const u8) {
-    var ids = try parseStringList(allocator, value_opt);
+) (ValidationError || std.mem.Allocator.Error)!std.ArrayList([]const u8) {
+    const value = value_opt orelse return error.MissingIds;
+    var ids = parseStringList(allocator, value) catch |err| switch (err) {
+        error.IdsNotArray => return error.IdsNotArray,
+        error.IdNotString => return error.IdNotString,
+        else => |e| return e,
+    };
     errdefer ids.deinit(allocator);
-    if (ids.items.len == 0) return error.InvalidParams;
+    if (ids.items.len == 0) return error.IdsEmpty;
     return ids;
 }
 
 fn parseStringList(
     allocator: std.mem.Allocator,
-    value_opt: ?std.json.Value,
-) !std.ArrayList([]const u8) {
+    value: std.json.Value,
+) (ValidationError || std.mem.Allocator.Error)!std.ArrayList([]const u8) {
     var values: std.ArrayList([]const u8) = .empty;
     errdefer values.deinit(allocator);
 
-    const value = value_opt orelse return values;
     const array = switch (value) {
         .array => |items| items,
-        else => return error.InvalidParams,
+        else => return error.IdsNotArray,
     };
 
     for (array.items) |item| {
         const str = switch (item) {
             .string => |s| s,
-            else => return error.InvalidParams,
+            else => return error.IdNotString,
         };
         try values.append(allocator, str);
     }
@@ -663,21 +741,21 @@ fn parseKnownHashes(
     allocator: std.mem.Allocator,
     ids: []const []const u8,
     value_opt: ?std.json.Value,
-) !std.ArrayList(workspace_rule.KnownHash) {
+) (ValidationError || std.mem.Allocator.Error)!std.ArrayList(workspace_rule.KnownHash) {
     var known: std.ArrayList(workspace_rule.KnownHash) = .empty;
     errdefer known.deinit(allocator);
 
-    const value = value_opt orelse return error.InvalidParams;
+    const value = value_opt orelse return error.MissingKnownHashesMap;
     const obj = switch (value) {
         .object => |o| o,
-        else => return error.InvalidParams,
+        else => return error.KnownHashesNotObjectMap,
     };
 
     var iter = obj.iterator();
     while (iter.next()) |entry| {
         const hash = switch (entry.value_ptr.*) {
             .string => |s| s,
-            else => return error.InvalidParams,
+            else => return error.HashNotString,
         };
         try known.append(allocator, .{ .id = entry.key_ptr.*, .hash = hash });
     }
@@ -689,7 +767,7 @@ fn parseKnownHashes(
                 break;
             }
         }
-        if (!found) return error.InvalidParams;
+        if (!found) return error.MissingIdHash;
     }
 
     return known;
@@ -767,16 +845,16 @@ fn handleArtifact(
     session: *session_mod.Session,
     args: std.json.ObjectMap,
 ) ![]u8 {
-    const resource = requiredString(args, "resource") orelse return error.InvalidParams;
-    const category = parseDraftCategory(resource) orelse return error.InvalidParams;
-    const tagged_op = switch (args.get("op") orelse return error.InvalidParams) {
+    const resource = requiredString(args, "resource") orelse return try tool_result.buildErrorResult(allocator, "resource name is required");
+    const category = parseDraftCategory(resource) orelse return try tool_result.buildErrorResult(allocator, "resource must be 'context', 'rule', or 'mpf'");
+    const tagged_op = switch (args.get("op") orelse return try tool_result.buildErrorResult(allocator, "op is required")) {
         .object => |obj| obj,
-        else => return error.InvalidParams,
+        else => return try tool_result.buildErrorResult(allocator, "op must be a JSON object"),
     };
-    const parsed = parseDraftOp(tagged_op) orelse return error.InvalidParams;
-    const op_args = switch (tagged_op.get(draftOpName(parsed)) orelse return error.InvalidParams) {
+    const parsed = parseDraftOp(tagged_op) orelse return try tool_result.buildErrorResult(allocator, "op must contain exactly one of 'create', 'update', 'rename', 'delete', or 'discard'");
+    const op_args = switch (tagged_op.get(draftOpName(parsed)) orelse return try tool_result.buildErrorResult(allocator, "invalid draft operation details")) {
         .object => |obj| obj,
-        else => return error.InvalidParams,
+        else => return try tool_result.buildErrorResult(allocator, "operation details must be a JSON object"),
     };
 
     try drafts_mod.normalizeDrafts(allocator, workspace_root);
@@ -826,8 +904,8 @@ fn handleDraftDiscard(
     args: std.json.ObjectMap,
     category: drafts_mod.DraftCategory,
 ) ![]u8 {
-    const id = resourceId(args, category) orelse return error.InvalidParams;
-    if (id.len == 0) return error.InvalidParams;
+    const id = resourceId(args, category) orelse return try tool_result.buildErrorResult(allocator, "id is required");
+    if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
 
     const draft_path = (try drafts_mod.discardDraftById(allocator, workspace_root, category, id)) orelse blk: {
         if (category != .meta_prompt) return error.FileNotFound;
@@ -868,11 +946,12 @@ fn handleProposeCreate(
     args: std.json.ObjectMap,
     category: drafts_mod.DraftCategory,
 ) ![]u8 {
-    const path = requiredString(args, "path") orelse return error.InvalidParams;
-    const body = requiredString(args, "body") orelse return error.InvalidParams;
-    if (path.len == 0 or body.len == 0) return error.InvalidParams;
+    const path = requiredString(args, "path") orelse return try tool_result.buildErrorResult(allocator, "path is required and must not be empty");
+    const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
+    if (path.len == 0) return try tool_result.buildErrorResult(allocator, "path must not be empty");
+    if (body.len == 0) return try tool_result.buildErrorResult(allocator, "body must not be empty");
     const description = optionalString(args, "description");
-    if (category == .meta_prompt and !std.mem.eql(u8, path, "META_PROMPT.md")) return error.InvalidParams;
+    if (category == .meta_prompt and !std.mem.eql(u8, path, "META_PROMPT.md")) return try tool_result.buildErrorResult(allocator, "mpf path must be 'META_PROMPT.md'");
     const draft_path = try drafts_mod.canonicalArtifactDraftPath(allocator, category, path);
     defer allocator.free(draft_path);
 
@@ -904,10 +983,10 @@ fn handleProposeUpdate(
     args: std.json.ObjectMap,
     category: drafts_mod.DraftCategory,
 ) ![]u8 {
-    const id = resourceId(args, category) orelse return error.InvalidParams;
-    if (id.len == 0) return error.InvalidParams;
-    const body = requiredString(args, "body") orelse return error.InvalidParams;
-    if (body.len == 0) return error.InvalidParams;
+    const id = resourceId(args, category) orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
+    if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
+    const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
+    if (body.len == 0) return try tool_result.buildErrorResult(allocator, "body must not be empty");
     const description = optionalString(args, "description");
 
     var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
@@ -978,11 +1057,11 @@ fn handleProposeRename(
     args: std.json.ObjectMap,
     category: drafts_mod.DraftCategory,
 ) ![]u8 {
-    const id = resourceId(args, category) orelse return error.InvalidParams;
-    if (id.len == 0) return error.InvalidParams;
-    const new_path = requiredString(args, "new_path") orelse return error.InvalidParams;
-    if (new_path.len == 0) return error.InvalidParams;
-    if (category == .meta_prompt) return error.InvalidParams;
+    const id = resourceId(args, category) orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
+    if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
+    const new_path = requiredString(args, "new_path") orelse return try tool_result.buildErrorResult(allocator, "new_path is required and must not be empty");
+    if (new_path.len == 0) return try tool_result.buildErrorResult(allocator, "new_path must not be empty");
+    if (category == .meta_prompt) return try tool_result.buildErrorResult(allocator, "mpf cannot be renamed");
     const description = optionalString(args, "description");
     const canonical_new_path = try drafts_mod.canonicalArtifactDraftPath(allocator, category, new_path);
     defer allocator.free(canonical_new_path);
@@ -1048,8 +1127,8 @@ fn handleProposeDelete(
     args: std.json.ObjectMap,
     category: drafts_mod.DraftCategory,
 ) ![]u8 {
-    const id = resourceId(args, category) orelse return error.InvalidParams;
-    if (id.len == 0) return error.InvalidParams;
+    const id = resourceId(args, category) orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
+    if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
     const description = optionalString(args, "description");
 
     var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
@@ -1205,7 +1284,7 @@ test "buildListResult: exposes memory tools and unified artifact tool" {
 }
 
 test "parseSetupKnownHash requires explicit META_PROMPT entry" {
-    try testing.expectError(error.InvalidParams, parseSetupKnownHash(null));
+    try testing.expectError(error.MissingKnownHashes, parseSetupKnownHash(null));
 
     const parsed = try std.json.parseFromSlice(
         std.json.Value,
@@ -1216,7 +1295,7 @@ test "parseSetupKnownHash requires explicit META_PROMPT entry" {
     );
     defer parsed.deinit();
 
-    try testing.expectError(error.InvalidParams, parseSetupKnownHash(parsed.value));
+    try testing.expectError(error.MissingMetaPromptKey, parseSetupKnownHash(parsed.value));
 }
 
 test "parseSetupKnownHash accepts empty or remembered mpf hash" {
@@ -1243,7 +1322,7 @@ test "parseSetupKnownHash accepts empty or remembered mpf hash" {
 
 test "parseKnownHashes requires explicit map" {
     try testing.expectError(
-        error.InvalidParams,
+        error.MissingKnownHashesMap,
         parseKnownHashes(testing.allocator, &.{"p-style"}, null),
     );
 }
@@ -1259,7 +1338,7 @@ test "parseKnownHashes requires an entry for every requested id" {
     defer parsed.deinit();
 
     try testing.expectError(
-        error.InvalidParams,
+        error.MissingIdHash,
         parseKnownHashes(testing.allocator, &.{"p-style"}, parsed.value),
     );
 }
