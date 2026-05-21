@@ -92,27 +92,63 @@ if [ -n "$prompt_text" ]; then
 fi
 
 if [ -n "$conversation_id" ] && command -v python3 >/dev/null 2>&1; then
-    python3 - "$conversation_id" <<'PY'
+    python3 - "$conversation_id" "$transcript_path" <<'PY'
 import json
 import sys
 
 session_id = sys.argv[1]
-message = (
-    "Clumsies setup required for this Antigravity CLI session. "
-    f"Use exactly this session_id value: {session_id}. "
-    "Antigravity hook input provides this value as conversationId, the unique UUID "
-    "of the active agent conversation. Before calling any other clumsies MCP tool, "
-    f'memsetup({{"session_id":"{session_id}",'
-    '"knownHashes":{"META_PROMPT.md":""}}). '
-    "Call memsetup only once for this host session. Do not call it again later "
-    "unless the user explicitly invokes the setup skill. Pass that exact value "
-    "as the memsetup session_id argument. Do not invent, shorten, replace, or "
-    "default the session_id. If this value is unavailable, do not call memsetup; "
-    "report that the required session_id is missing. After setup succeeds, reuse "
-    "the bound session and continue with memdisc/memload/memref/agentreport."
-)
-print(json.dumps({"injectSteps": [{"ephemeralMessage": message}]}))
+transcript_path = sys.argv[2] if len(sys.argv) > 2 else ""
+
+has_setup = False
+if transcript_path:
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if "memsetup" not in line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    continue
+                if item.get("source") == "MODEL":
+                    tool_calls = item.get("tool_calls", [])
+                    if isinstance(tool_calls, list):
+                        for tc in tool_calls:
+                            name = tc.get("name", "")
+                            if "memsetup" in name:
+                                has_setup = True
+                                break
+                            if name == "call_mcp_tool":
+                                args = tc.get("args", {})
+                                if isinstance(args, dict):
+                                    tool_name = args.get("ToolName", "")
+                                    if "memsetup" in tool_name:
+                                        has_setup = True
+                                        break
+                if has_setup:
+                    break
+    except Exception:
+        pass
+
+if has_setup:
+    print(json.dumps({}))
+else:
+    message = (
+        "Clumsies setup required for this Antigravity CLI session. "
+        f"Use exactly this session_id value: {session_id}. "
+        "Antigravity hook input provides this value as conversationId, the unique UUID "
+        "of the active agent conversation. Before calling any other clumsies MCP tool, "
+        f'memsetup({{"session_id":"{session_id}",'
+        '"knownHashes":{"META_PROMPT.md":""}}). '
+        "Call memsetup only once for this host session. Do not call it again later "
+        "unless the user explicitly invokes the setup skill. Pass that exact value "
+        "as the memsetup session_id argument. Do not invent, shorten, replace, or "
+        "default the session_id. If this value is unavailable, do not call memsetup; "
+        "report that the required session_id is missing. After setup succeeds, reuse "
+        "the bound session and continue with memdisc/memload/memref/agentreport."
+    )
+    print(json.dumps({"injectSteps": [{"ephemeralMessage": message}]}))
 PY
-else
+else:
     echo '{}'
 fi
