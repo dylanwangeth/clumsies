@@ -101,7 +101,7 @@ const artifact_schema =
     "\"description\":{\"type\":\"string\",\"description\":\"Optional explanation of why this resource is being deleted.\"" ++
     "}},\"required\":[\"id\"],\"additionalProperties\":false}," ++
     "\"discard\":{\"type\":\"object\",\"properties\":{" ++
-    "\"id\":{\"type\":\"string\",\"description\":\"The path or local ID of the draft to completely discard and discard.\"}" ++
+    "\"id\":{\"type\":\"string\",\"description\":\"The path or local ID of the draft to discard completely.\"}" ++
     "},\"required\":[\"id\"],\"additionalProperties\":false}" ++
     "},\"additionalProperties\":false}" ++
     "},\"required\":[\"resource\",\"op\"],\"additionalProperties\":false}}";
@@ -284,7 +284,7 @@ fn handleDiscover(
 ) ![]u8 {
     const kind = if (args_obj.get("kind")) |value|
         parseRuleKind(value) catch |err| switch (err) {
-            error.InvalidKind => return try tool_result.buildErrorResult(allocator, "kind parameter must be a string ('rule', 'workflow', or 'context')"),
+            error.InvalidKind => return try tool_result.buildErrorResult(allocator, "kind parameter must be one of 'rule', 'workflow', or 'context'"),
         }
     else
         null;
