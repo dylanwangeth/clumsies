@@ -284,7 +284,10 @@ pub fn removeJsonNamedHooksRegistry(
             if (indexes_to_remove.items.len == 0) continue;
 
             std.mem.sortUnstable(usize, indexes_to_remove.items, {}, comptime std.sort.desc(usize));
+            var last_removed_index: ?usize = null;
             for (indexes_to_remove.items) |index| {
+                if (last_removed_index == index) continue;
+                last_removed_index = index;
                 _ = current_handlers.orderedRemove(index);
                 did_remove = true;
             }
@@ -1273,6 +1276,44 @@ test "removeJsonNamedHooksRegistry preserves generic hooks paths" {
             try std.testing.expect(std.mem.indexOf(u8, content, "/workspace/hooks/pre-invocation.sh") != null);
             try std.testing.expect(std.mem.indexOf(u8, content, "/new/.agents/hooks/pre-invocation.sh") == null);
         },
+        else => return error.UnexpectedRemoveResult,
+    }
+}
+
+test "removeJsonNamedHooksRegistry skips duplicate removal indexes" {
+    const allocator = std.testing.allocator;
+    const current =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/old/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      },
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try removeJsonNamedHooksRegistry(allocator, current, managed);
+    switch (result) {
+        .delete_file => {},
         else => return error.UnexpectedRemoveResult,
     }
 }
