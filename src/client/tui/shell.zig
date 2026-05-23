@@ -2221,7 +2221,7 @@ pub const Shell = struct {
         return null;
     }
 
-    fn localContextEntryFor(
+    pub fn localContextEntryFor(
         self: *Shell,
         path: []const u8,
         context_id: ?[]const u8,
@@ -2245,7 +2245,7 @@ pub const Shell = struct {
         return local.path;
     }
 
-    fn findRuleFor(
+    pub fn findRuleFor(
         self: *Shell,
         items: []const api.model.WorkspaceRuleData,
         path: []const u8,
@@ -2276,7 +2276,7 @@ pub const Shell = struct {
         return null;
     }
 
-    fn localRuleEntryFor(
+    pub fn localRuleEntryFor(
         self: *Shell,
         path: []const u8,
         rule_id: ?[]const u8,
@@ -2622,6 +2622,10 @@ pub const Shell = struct {
 
         self.resetLocalWorkspaceDetail();
         self.notifyOp(.success, "Pulled selected content.");
+    }
+
+    pub fn pullAllWorkspaceContent(self: *Shell) void {
+        workspace_panel.pullAllWorkspaceContent(self);
     }
 
     pub fn pullSelectedArtifactContent(self: *Shell) void {
@@ -3159,8 +3163,12 @@ pub const Shell = struct {
                         .body = item.body,
                     });
                 }
+                workspace_panel.completePendingWorkspacePullAll(self, .rules);
             },
-            else => self.api_state.rule_content_cache.markInflightFailed(),
+            else => {
+                self.api_state.rule_content_cache.markInflightFailed();
+                workspace_panel.failPendingWorkspacePullAll(self, .rules, "Pull failed: rule content fetch failed.");
+            },
         }
     }
 
@@ -3780,9 +3788,11 @@ pub const Shell = struct {
                     );
                 }
                 self.system_notices.clear(.workspace_context_content);
+                workspace_panel.completePendingWorkspacePullAll(self, .context);
             },
             else => {
                 self.api_state.workspace_context_content_cache.markInflightFailed();
+                workspace_panel.failPendingWorkspacePullAll(self, .context, "Pull failed: context content fetch failed.");
                 if (!self.isHubConnected()) return;
                 self.system_notices.push(.workspace_context_content, .failure, .persistent, "Workspace context content failed; showing local cache when available.");
             },
