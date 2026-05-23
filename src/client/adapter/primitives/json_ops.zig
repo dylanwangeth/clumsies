@@ -126,6 +126,7 @@ pub fn prepareJsonNamedHooksRegistry(
     var did_change = false;
     var it = managed_root.iterator();
     while (it.next()) |entry| {
+        const managed_events = asObject(entry.value_ptr.*) orelse return .{ .conflict = conflict_invalid_fragment };
         const current_value = current_root.getPtr(entry.key_ptr.*);
         if (current_value == null) {
             try current_root.put(
@@ -135,12 +136,28 @@ pub fn prepareJsonNamedHooksRegistry(
             did_change = true;
             continue;
         }
-        if (valueEql(current_value.?.*, entry.value_ptr.*)) continue;
-        if (!namedHookCanReplace(current_value.?.*, entry.value_ptr.*)) {
-            return .{ .conflict = conflict_incompatible_named_hook };
+
+        const current_events = asObjectPtr(current_value.?) orelse return .{ .conflict = conflict_incompatible_named_hook };
+        var event_it = managed_events.iterator();
+        while (event_it.next()) |event_entry| {
+            const managed_handlers = asArray(event_entry.value_ptr.*) orelse return .{ .conflict = conflict_invalid_fragment };
+            const current_handlers = ensureEventArray(current_events, event_entry.key_ptr.*, arena) catch return .{ .conflict = conflict_incompatible_named_hook };
+
+            for (managed_handlers.items) |managed_handler| {
+                switch (inspectManagedNamedHook(current_handlers.items, managed_handler)) {
+                    .exact => {},
+                    .replace => |index| {
+                        current_handlers.items[index] = try cloneValue(arena, managed_handler);
+                        did_change = true;
+                    },
+                    .absent => {
+                        try current_handlers.append(try cloneValue(arena, managed_handler));
+                        did_change = true;
+                    },
+                    .conflict => return .{ .conflict = conflict_incompatible_named_hook },
+                }
+            }
         }
-        current_value.?.* = try cloneValue(arena, entry.value_ptr.*);
-        did_change = true;
     }
 
     return .{ .prepared = .{
@@ -242,12 +259,44 @@ pub fn removeJsonNamedHooksRegistry(
     var did_remove = false;
     var it = managed_root.iterator();
     while (it.next()) |entry| {
-        const current_value = current_root.get(entry.key_ptr.*) orelse continue;
-        if (!valueEql(current_value, entry.value_ptr.*) and !namedHookCanReplace(current_value, entry.value_ptr.*)) {
-            return .{ .conflict = conflict_incompatible_named_hook };
+        const managed_events = asObject(entry.value_ptr.*) orelse return .{ .conflict = conflict_invalid_fragment };
+        const current_value = current_root.getPtr(entry.key_ptr.*) orelse continue;
+        const current_events = asObjectPtr(current_value) orelse return .{ .conflict = conflict_incompatible_named_hook };
+
+        var event_it = managed_events.iterator();
+        while (event_it.next()) |event_entry| {
+            const managed_handlers = asArray(event_entry.value_ptr.*) orelse return .{ .conflict = conflict_invalid_fragment };
+            const current_handlers_value = current_events.getPtr(event_entry.key_ptr.*) orelse continue;
+            const current_handlers = asArrayPtr(current_handlers_value) orelse return .{ .conflict = conflict_incompatible_named_hook };
+
+            var indexes_to_remove: std.ArrayList(usize) = .empty;
+            defer indexes_to_remove.deinit(allocator);
+
+            for (managed_handlers.items) |managed_handler| {
+                switch (inspectManagedNamedHook(current_handlers.items, managed_handler)) {
+                    .exact => |index| try indexes_to_remove.append(allocator, index),
+                    .replace => |index| try indexes_to_remove.append(allocator, index),
+                    .absent => {},
+                    .conflict => return .{ .conflict = conflict_incompatible_named_hook },
+                }
+            }
+
+            if (indexes_to_remove.items.len == 0) continue;
+
+            std.mem.sortUnstable(usize, indexes_to_remove.items, {}, comptime std.sort.desc(usize));
+            for (indexes_to_remove.items) |index| {
+                _ = current_handlers.orderedRemove(index);
+                did_remove = true;
+            }
+
+            if (current_handlers.items.len == 0) {
+                _ = current_events.orderedRemove(event_entry.key_ptr.*);
+            }
         }
-        _ = current_root.orderedRemove(entry.key_ptr.*);
-        did_remove = true;
+
+        if (current_events.count() == 0) {
+            _ = current_root.orderedRemove(entry.key_ptr.*);
+        }
     }
 
     if (!did_remove) return .already_absent;
@@ -283,6 +332,37 @@ fn inspectManagedItem(items: []const std.json.Value, managed_item: std.json.Valu
             related_non_exact = true;
         }
         if (itemsOverlapOnClumsiesHookKind(item, managed_item)) {
+            related_non_exact = true;
+        }
+    }
+
+    if (related_non_exact) return .conflict;
+    if (exact_index != null and replace_index != null) return .conflict;
+    if (exact_index) |index| return .{ .exact = index };
+    if (replace_index) |index| return .{ .replace = index };
+    return .absent;
+}
+
+fn inspectManagedNamedHook(items: []const std.json.Value, managed_item: std.json.Value) ItemMatch {
+    var exact_index: ?usize = null;
+    var replace_index: ?usize = null;
+    var related_non_exact = false;
+
+    for (items, 0..) |item, index| {
+        if (valueEql(item, managed_item)) {
+            if (exact_index != null) return .conflict;
+            exact_index = index;
+            continue;
+        }
+        if (managedNamedHookCanReplace(item, managed_item)) {
+            if (replace_index != null) return .conflict;
+            replace_index = index;
+            continue;
+        }
+        if (namedHooksOverlapOnCommand(item, managed_item)) {
+            related_non_exact = true;
+        }
+        if (namedHooksOverlapOnClumsiesHookKind(item, managed_item)) {
             related_non_exact = true;
         }
     }
@@ -412,6 +492,20 @@ fn itemsOverlapOnClumsiesHookKind(left: std.json.Value, right: std.json.Value) b
     return false;
 }
 
+fn namedHooksOverlapOnCommand(left: std.json.Value, right: std.json.Value) bool {
+    const left_command = hookCommand(left) orelse return false;
+    const right_command = hookCommand(right) orelse return false;
+    return std.mem.eql(u8, left_command, right_command);
+}
+
+fn namedHooksOverlapOnClumsiesHookKind(left: std.json.Value, right: std.json.Value) bool {
+    const left_command = hookCommand(left) orelse return false;
+    const right_command = hookCommand(right) orelse return false;
+    const left_kind = clumsiesHookScriptName(left_command) orelse return false;
+    const right_kind = clumsiesHookScriptName(right_command) orelse return false;
+    return std.mem.eql(u8, left_kind, right_kind);
+}
+
 fn managedHookItemCanReplace(current_item: std.json.Value, managed_item: std.json.Value) bool {
     const current_object = asObject(current_item) orelse return false;
     const managed_object = asObject(managed_item) orelse return false;
@@ -471,23 +565,30 @@ fn hookArraysCanReplace(current_hooks_value: std.json.Value, managed_hooks_value
     return replaced_command;
 }
 
-fn namedHookCanReplace(current_value: std.json.Value, managed_value: std.json.Value) bool {
-    const current_object = asObject(current_value) orelse return false;
-    const managed_object = asObject(managed_value) orelse return false;
+fn managedNamedHookCanReplace(current_item: std.json.Value, managed_item: std.json.Value) bool {
+    const current_object = asObject(current_item) orelse return false;
+    const managed_object = asObject(managed_item) orelse return false;
+    if (current_object.count() != managed_object.count()) return false;
 
-    if (!allCommandsAreClumsiesHooks(current_object)) return false;
-    if (!allCommandsAreClumsiesHooks(managed_object)) return false;
-    return true;
-}
-
-fn allCommandsAreClumsiesHooks(events: std.json.ObjectMap) bool {
-    var event_it = events.iterator();
-    while (event_it.next()) |event_entry| {
-        const handlers = asArray(event_entry.value_ptr.*) orelse return false;
-        for (handlers.items) |handler| {
-            const command = hookCommand(handler) orelse return false;
-            if (clumsiesHookScriptName(command) == null) return false;
+    var it = managed_object.iterator();
+    while (it.next()) |entry| {
+        const current_value = current_object.get(entry.key_ptr.*) orelse return false;
+        if (std.mem.eql(u8, entry.key_ptr.*, "command")) {
+            const current_command = switch (current_value) {
+                .string => |string| string,
+                else => return false,
+            };
+            const managed_command = switch (entry.value_ptr.*) {
+                .string => |string| string,
+                else => return false,
+            };
+            if (std.mem.eql(u8, current_command, managed_command)) continue;
+            const current_kind = clumsiesHookScriptName(current_command) orelse return false;
+            const managed_kind = clumsiesHookScriptName(managed_command) orelse return false;
+            if (!std.mem.eql(u8, current_kind, managed_kind)) return false;
+            continue;
         }
+        if (!valueEql(current_value, entry.value_ptr.*)) return false;
     }
     return true;
 }
@@ -506,8 +607,7 @@ fn clumsiesHookScriptName(command: []const u8) ?[]const u8 {
             std.mem.indexOf(u8, prefix, "/.agents/hooks/") != null or
             std.mem.indexOf(u8, prefix, "/.gemini/config/hooks/") != null or
             std.mem.indexOf(u8, prefix, "/.antigravity/hooks/") != null or
-            std.mem.indexOf(u8, prefix, "/.antigravitycli/hooks/") != null or
-            std.mem.indexOf(u8, prefix, "/hooks/") != null)
+            std.mem.indexOf(u8, prefix, "/.antigravitycli/hooks/") != null)
         {
             return name;
         }
@@ -950,6 +1050,108 @@ test "prepareJsonNamedHooksRegistry handles robust clumsiesHookScriptName checks
     }
 }
 
+test "prepareJsonNamedHooksRegistry preserves extra named hook events and handlers" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "echo foreign"
+        \\      },
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/old/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ],
+        \\    "UserEvent": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "echo user-event"
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonNamedHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "echo foreign") != null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "echo user-event") != null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "/old/.agents") == null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "/new/.agents/hooks/pre-invocation.sh") != null);
+        },
+    }
+}
+
+test "prepareJsonNamedHooksRegistry preserves generic hooks paths" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/workspace/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonNamedHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "/workspace/hooks/pre-invocation.sh") != null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "/new/.agents/hooks/pre-invocation.sh") != null);
+        },
+    }
+}
+
 test "removeJsonNamedHooksRegistry allows removal of drifted named hook paths" {
     const allocator = std.testing.allocator;
     const current =
@@ -980,6 +1182,97 @@ test "removeJsonNamedHooksRegistry allows removal of drifted named hook paths" {
     const result = try removeJsonNamedHooksRegistry(allocator, current, managed);
     switch (result) {
         .delete_file => {},
+        else => return error.UnexpectedRemoveResult,
+    }
+}
+
+test "removeJsonNamedHooksRegistry preserves unrelated named hook content" {
+    const allocator = std.testing.allocator;
+    const current =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "echo foreign"
+        \\      },
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/old/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ],
+        \\    "UserEvent": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "echo user-event"
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try removeJsonNamedHooksRegistry(allocator, current, managed);
+    switch (result) {
+        .rewrite => |content| {
+            defer allocator.free(content);
+            try std.testing.expect(std.mem.indexOf(u8, content, "echo foreign") != null);
+            try std.testing.expect(std.mem.indexOf(u8, content, "echo user-event") != null);
+            try std.testing.expect(std.mem.indexOf(u8, content, "pre-invocation.sh") == null);
+        },
+        else => return error.UnexpectedRemoveResult,
+    }
+}
+
+test "removeJsonNamedHooksRegistry preserves generic hooks paths" {
+    const allocator = std.testing.allocator;
+    const current =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/workspace/hooks/pre-invocation.sh\""
+        \\      },
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "clumsies": {
+        \\    "PreInvocation": [
+        \\      {
+        \\        "type": "command",
+        \\        "command": "bash \"/new/.agents/hooks/pre-invocation.sh\""
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try removeJsonNamedHooksRegistry(allocator, current, managed);
+    switch (result) {
+        .rewrite => |content| {
+            defer allocator.free(content);
+            try std.testing.expect(std.mem.indexOf(u8, content, "/workspace/hooks/pre-invocation.sh") != null);
+            try std.testing.expect(std.mem.indexOf(u8, content, "/new/.agents/hooks/pre-invocation.sh") == null);
+        },
         else => return error.UnexpectedRemoveResult,
     }
 }
