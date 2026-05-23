@@ -9,8 +9,12 @@ const w = @import("../../widgets.zig");
 const data = @import("../../models/view_types.zig");
 const api = @import("../../api.zig");
 const drafts_mod = @import("../../../drafts.zig");
+const local_content = @import("../../../local_content.zig");
+const workspace_config = @import("../../../workspace_config.zig");
 const rule_detail = @import("../review/root.zig");
 const content_actions = @import("../content_actions.zig");
+const artifact_api = @import("clumsies_lib").protocol.artifact_api;
+const util_hash = @import("clumsies_lib").util.hash;
 const Modal = w.Modal;
 const TextInput = w.TextInput;
 const log = std.log.scoped(.tui_event);
@@ -34,6 +38,22 @@ pub const tabs = [_]Tab{ .context, .rules };
 
 pub const Focus = enum { list, content };
 
+const PendingPullAll = struct {
+    tab: Tab,
+    ws_id_buf: [80]u8 = .{0} ** 80,
+    ws_id_len: usize = 0,
+
+    pub fn wsId(self: *const PendingPullAll) []const u8 {
+        return self.ws_id_buf[0..self.ws_id_len];
+    }
+};
+
+const PullAllSummary = struct {
+    changed: usize = 0,
+    missing: usize = 0,
+    failed: usize = 0,
+};
+
 pub const State = struct {
     tab: Tab = .context,
     focus: Focus = .list,
@@ -54,6 +74,7 @@ pub const State = struct {
     local_cache_id: ?[]const u8 = null,
     local_detail: ?api.model.WorkspaceDetail = null,
     local_load_failed: bool = false,
+    pending_pull_all: ?PendingPullAll = null,
 
     show_create: bool = false,
     create_mode: CreateWsMode = .create,
@@ -855,6 +876,310 @@ fn handleContentFocusEvent(
     // the ones it knows and ignores the rest, so this is safe as a
     // catch-all.
     try self.review.content_view.handleEvent(ctx, .{ .key_press = key });
+}
+
+pub fn pullAllWorkspaceContent(self: anytype) void {
+    pullAllWorkspaceContentForTab(self, self.workspace.tab, true);
+}
+
+fn pullAllWorkspaceContentForTab(self: anytype, tab: Tab, allow_fetch: bool) void {
+    const ws_id = self.activeWsId() orelse {
+        self.notifyOp(.warning, "No workspace selected.");
+        return;
+    };
+    const ws_d = self.workspaceDetailForView(ws_id) orelse {
+        self.ensureActiveWorkspaceDetailRequested();
+        self.notifyOp(.loading, "Workspace metadata is still loading.");
+        return;
+    };
+
+    self.refreshDraftsCache();
+    const arena = self.viewAllocator();
+    const ws_dir = workspace_config.getWsDir(arena, ws_id) catch {
+        self.notifyOp(.failure, "Pull failed: local workspace path unavailable.");
+        return;
+    };
+
+    const summary = switch (tab) {
+        .context => pullAllWorkspaceContexts(self, arena, ws_dir, &ws_d),
+        .rules => pullAllWorkspaceRules(self, arena, ws_dir, &ws_d),
+    };
+
+    if (summary.changed > 0) self.resetLocalWorkspaceDetail();
+    if (summary.failed > 0) {
+        self.workspace.pending_pull_all = null;
+        self.notifyOp(.failure, formatPullAllSummary(self, "Pull finished with failures", summary));
+        return;
+    }
+    if (summary.missing > 0) {
+        if (!allow_fetch) {
+            self.workspace.pending_pull_all = null;
+            self.notifyOp(.failure, formatPullAllSummary(self, "Pull failed: content still missing", summary));
+            return;
+        }
+        rememberPendingWorkspacePullAll(self, ws_id, tab);
+        self.notifyOp(.loading, formatPullAllSummary(self, "Fetching content", summary));
+        return;
+    }
+    self.workspace.pending_pull_all = null;
+    if (summary.changed > 0) {
+        self.notifyOp(.success, formatPullAllSummary(self, "Pulled workspace content", summary));
+        return;
+    }
+    self.notifyOp(.success, "Workspace content is already current.");
+}
+
+fn rememberPendingWorkspacePullAll(self: anytype, ws_id: []const u8, tab: Tab) void {
+    var pending = PendingPullAll{ .tab = tab };
+    const len = @min(ws_id.len, pending.ws_id_buf.len);
+    @memcpy(pending.ws_id_buf[0..len], ws_id[0..len]);
+    pending.ws_id_len = len;
+    self.workspace.pending_pull_all = pending;
+}
+
+pub fn completePendingWorkspacePullAll(self: anytype, tab: Tab) void {
+    const pending = self.workspace.pending_pull_all orelse return;
+    if (pending.tab != tab) return;
+    const active_ws_id = self.activeWsId() orelse {
+        self.workspace.pending_pull_all = null;
+        return;
+    };
+    if (!std.mem.eql(u8, active_ws_id, pending.wsId())) {
+        self.workspace.pending_pull_all = null;
+        return;
+    }
+    pullAllWorkspaceContentForTab(self, tab, false);
+}
+
+pub fn failPendingWorkspacePullAll(self: anytype, tab: Tab, message: []const u8) void {
+    if (self.workspace.pending_pull_all) |pending| {
+        if (pending.tab != tab) return;
+        self.workspace.pending_pull_all = null;
+        self.notifyOp(.failure, message);
+    }
+}
+
+fn pullAllWorkspaceContexts(
+    self: anytype,
+    arena: std.mem.Allocator,
+    ws_dir: []const u8,
+    ws_d: *const api.model.WorkspaceDetail,
+) PullAllSummary {
+    var summary: PullAllSummary = .{};
+    var missing_paths: std.ArrayList([]const u8) = .empty;
+    defer missing_paths.deinit(arena);
+
+    for (ws_d.workspace_context) |remote| {
+        if (self.draftStatusFor(.context, remote.path) != null) continue;
+        const local = self.localContextEntryFor(remote.path, remote.context_id);
+        if (local) |local_item| {
+            if (self.draftStatusFor(.context, local_item.path) != null) continue;
+        }
+        if (local) |local_item| {
+            if (std.mem.eql(u8, local_item.path, remote.path) and local_content.hashesEqual(local_item.hash, remote.hash)) continue;
+        }
+
+        const body = workspaceContextBodyForPull(self, ws_d.ws_id, remote) orelse {
+            if (!appendUniquePullPath(arena, &missing_paths, remote.path)) summary.failed += 1;
+            continue;
+        };
+        local_content.write(arena, ws_dir, .context, remote.path, body) catch {
+            summary.failed += 1;
+            continue;
+        };
+        local_content.writeManifestContextEntry(arena, ws_dir, ws_d.ws_id, self.activeWorkspaceName(), remote.context_id, remote.path, remote.hash) catch {
+            summary.failed += 1;
+            continue;
+        };
+        summary.changed += 1;
+    }
+
+    if (self.workspace.local_detail) |local| {
+        for (local.workspace_context) |local_item| {
+            if (self.draftStatusFor(.context, local_item.path) != null) continue;
+            if (contextExistsRemotely(ws_d.workspace_context, local_item)) continue;
+            local_content.removeManifestContextEntry(arena, ws_dir, ws_d.ws_id, self.activeWorkspaceName(), local_item.context_id, local_item.path) catch {
+                summary.failed += 1;
+                continue;
+            };
+            summary.changed += 1;
+        }
+    }
+
+    summary.missing += missing_paths.items.len;
+    if (missing_paths.items.len > 0) requestWorkspaceContextContentBatch(self, ws_d.ws_id, missing_paths.items);
+    return summary;
+}
+
+fn pullAllWorkspaceRules(
+    self: anytype,
+    arena: std.mem.Allocator,
+    ws_dir: []const u8,
+    ws_d: *const api.model.WorkspaceDetail,
+) PullAllSummary {
+    var summary: PullAllSummary = .{};
+    var missing_rule_ids: std.ArrayList([]const u8) = .empty;
+    defer missing_rule_ids.deinit(arena);
+
+    for (ws_d.workspace_rules) |remote| {
+        const remote_path = self.pathForWorkspaceRule(remote);
+        const category = self.artifactCategoryForPath(remote_path);
+        if (self.draftStatusFor(category, remote_path) != null) continue;
+        const local = self.localRuleEntryFor(remote_path, remote.rule_id);
+        if (local) |local_item| {
+            if (self.draftStatusFor(self.artifactCategoryForPath(local_item.path), local_item.path) != null) continue;
+        }
+        if (local) |local_item| {
+            if (std.mem.eql(u8, local_item.path, remote_path) and local_content.hashesEqual(local_item.content_hash, remote.content_hash)) continue;
+        }
+
+        const body = workspaceRuleBodyForPull(self, remote_path, remote.content_hash) orelse {
+            if (remote.rule_id.len == 0) {
+                summary.failed += 1;
+                continue;
+            }
+            if (!appendUniquePullPath(arena, &missing_rule_ids, remote.rule_id)) summary.failed += 1;
+            continue;
+        };
+        local_content.write(arena, ws_dir, category, remote_path, body) catch {
+            summary.failed += 1;
+            continue;
+        };
+        local_content.writeManifestRuleEntry(arena, ws_dir, ws_d.ws_id, self.activeWorkspaceName(), remote.rule_id, remote_path, remote.content_hash) catch {
+            summary.failed += 1;
+            continue;
+        };
+        summary.changed += 1;
+    }
+
+    if (self.workspace.local_detail) |local| {
+        for (local.workspace_rules) |local_item| {
+            if (self.draftStatusFor(self.artifactCategoryForPath(local_item.path), local_item.path) != null) continue;
+            if (self.findRuleFor(ws_d.workspace_rules, local_item.path, local_item.rule_id) != null) continue;
+            local_content.removeManifestRuleEntry(arena, ws_dir, ws_d.ws_id, self.activeWorkspaceName(), local_item.rule_id, local_item.path) catch {
+                summary.failed += 1;
+                continue;
+            };
+            summary.changed += 1;
+        }
+    }
+
+    summary.missing += missing_rule_ids.items.len;
+    if (missing_rule_ids.items.len > 0) requestWorkspaceRuleContentBatch(self, ws_d.ws_id, missing_rule_ids.items);
+    return summary;
+}
+
+fn workspaceContextBodyForPull(
+    self: anytype,
+    ws_id: []const u8,
+    remote: api.model.WorkspaceContextData,
+) ?[]const u8 {
+    const key = api.state.WorkspacePathKey{ .ws_id = ws_id, .path = remote.path };
+    const body = self.api_state.workspace_context_content_cache.lookup(key) orelse return null;
+    if (remote.hash.len > 0) {
+        const body_hash = util_hash.contentHash(body);
+        if (!local_content.hashesEqual(body_hash[0..], remote.hash)) {
+            self.api_state.workspace_context_content_cache.invalidateKey(key);
+            self.api_state.workspace_context_content_batch_pending.cancel();
+            return null;
+        }
+    }
+    return body;
+}
+
+fn workspaceRuleBodyForPull(
+    self: anytype,
+    path: []const u8,
+    remote_hash: []const u8,
+) ?[]const u8 {
+    const key = api.cache.StringKey{ .value = path };
+    const resp = self.api_state.rule_content_cache.lookup(key) orelse return null;
+    if (remote_hash.len > 0) {
+        const body_hash = util_hash.contentHash(resp.body);
+        if (!local_content.hashesEqual(body_hash[0..], remote_hash)) {
+            self.api_state.rule_content_cache.invalidateKey(key);
+            self.api_state.rule_content_batch_pending.cancel();
+            return null;
+        }
+    }
+    return resp.body;
+}
+
+fn requestWorkspaceContextContentBatch(self: anytype, ws_id: []const u8, paths: []const []const u8) void {
+    if (self.api_state.workspace_context_content_batch_pending.isInflight()) return;
+    api.specs.dispatchFromState(
+        api.specs.BatchWorkspaceContextContentParams,
+        api.specs.WorkspaceContextContentBatchPayload,
+        api.specs.workspace_context_content_batch,
+        &self.api_state.workspace_context_content_batch_pending,
+        self.api_state,
+        .{ .ws_id = ws_id, .paths = paths },
+    );
+}
+
+fn requestWorkspaceRuleContentBatch(self: anytype, ws_id: []const u8, rule_ids: []const []const u8) void {
+    if (self.api_state.rule_content_batch_pending.isInflight()) return;
+    api.specs.dispatchFromState(
+        api.specs.BatchWorkspaceRuleContentParams,
+        artifact_api.BatchRuleContentResponse,
+        api.specs.workspace_rule_content_batch,
+        &self.api_state.rule_content_batch_pending,
+        self.api_state,
+        .{ .ws_id = ws_id, .rule_ids = rule_ids },
+    );
+}
+
+fn formatPullAllSummary(self: anytype, prefix: []const u8, summary: PullAllSummary) []const u8 {
+    const alloc = self.api_state.allocator();
+    if (summary.failed > 0) {
+        return std.fmt.allocPrint(alloc, "{s}: pulled {d}, fetching {d}, failed {d}.", .{
+            prefix,
+            summary.changed,
+            summary.missing,
+            summary.failed,
+        }) catch prefix;
+    }
+    if (summary.missing > 0 and summary.changed > 0) {
+        return std.fmt.allocPrint(alloc, "{s}: pulled {d}, fetching {d}.", .{
+            prefix,
+            summary.changed,
+            summary.missing,
+        }) catch prefix;
+    }
+    if (summary.missing > 0) {
+        return std.fmt.allocPrint(alloc, "{s}: {d} item(s).", .{
+            prefix,
+            summary.missing,
+        }) catch prefix;
+    }
+    return std.fmt.allocPrint(alloc, "{s}: {d} item(s).", .{
+        prefix,
+        summary.changed,
+    }) catch prefix;
+}
+
+fn appendUniquePullPath(
+    allocator: std.mem.Allocator,
+    items: *std.ArrayList([]const u8),
+    value: []const u8,
+) bool {
+    if (value.len == 0) return true;
+    for (items.items) |existing| {
+        if (std.mem.eql(u8, existing, value)) return true;
+    }
+    items.append(allocator, value) catch return false;
+    return true;
+}
+
+fn contextExistsRemotely(
+    remote_items: []const api.model.WorkspaceContextData,
+    local_item: api.model.WorkspaceContextData,
+) bool {
+    for (remote_items) |remote| {
+        if (local_item.context_id.len > 0 and remote.context_id.len > 0 and std.mem.eql(u8, local_item.context_id, remote.context_id)) return true;
+        if (std.mem.eql(u8, local_item.path, remote.path)) return true;
+    }
+    return false;
 }
 
 /// Trigger the workspace-detail compound fetch. Issues two dispatches

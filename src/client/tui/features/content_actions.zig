@@ -25,6 +25,7 @@ const workspace_context_shortcuts = [_]w.Shortcut{
     .{ .key = "p", .label = "submit" },
     .{ .key = "P", .label = "submit all" },
     .{ .key = "u", .label = "pull" },
+    .{ .key = "U", .label = "pull all" },
     .{ .key = "d", .label = "toggle diff" },
     .{ .key = "D", .label = "discard draft" },
     .{ .key = "?", .label = "help" },
@@ -41,6 +42,7 @@ const workspace_rule_shortcuts = [_]w.Shortcut{
     .{ .key = "p", .label = "submit" },
     .{ .key = "P", .label = "submit all" },
     .{ .key = "u", .label = "pull" },
+    .{ .key = "U", .label = "pull all" },
     .{ .key = "d", .label = "toggle diff" },
     .{ .key = "D", .label = "discard draft" },
     .{ .key = "?", .label = "help" },
@@ -133,6 +135,14 @@ pub fn handle(
     }
     if (key.matches('p', .{})) {
         self.openPrComposer();
+        ctx.consumeAndRedraw();
+        return true;
+    }
+    if (key.matches('U', .{}) or key.matches('u', .{ .shift = true })) {
+        switch (surface) {
+            .workspace => self.pullAllWorkspaceContent(),
+            .artifact => return false,
+        }
         ctx.consumeAndRedraw();
         return true;
     }
