@@ -20,6 +20,7 @@ const TextInput = w.TextInput;
 const log = std.log.scoped(.tui_event);
 
 const MAX_TREE_ROWS = 128;
+const MAX_PULL_ALL_RESUME_ATTEMPTS = 3;
 pub const PathTreeState = @import("../../models.zig").path_tree.State(MAX_TREE_ROWS, 96);
 
 pub const Tab = enum(u8) {
@@ -42,9 +43,16 @@ const PendingPullAll = struct {
     tab: Tab,
     ws_id_buf: [80]u8 = .{0} ** 80,
     ws_id_len: usize = 0,
+    resume_attempts: u8 = 0,
 
     pub fn wsId(self: *const PendingPullAll) []const u8 {
         return self.ws_id_buf[0..self.ws_id_len];
+    }
+
+    pub fn recordResumeAttempt(self: *PendingPullAll) bool {
+        if (self.resume_attempts >= MAX_PULL_ALL_RESUME_ATTEMPTS) return false;
+        self.resume_attempts += 1;
+        return true;
     }
 };
 
@@ -931,6 +939,11 @@ fn pullAllWorkspaceContentForTab(self: anytype, tab: Tab, allow_fetch: bool) voi
 
 fn rememberPendingWorkspacePullAll(self: anytype, ws_id: []const u8, tab: Tab) void {
     var pending = PendingPullAll{ .tab = tab };
+    if (self.workspace.pending_pull_all) |existing| {
+        if (existing.tab == tab and std.mem.eql(u8, existing.wsId(), ws_id)) {
+            pending.resume_attempts = existing.resume_attempts;
+        }
+    }
     const len = @min(ws_id.len, pending.ws_id_buf.len);
     @memcpy(pending.ws_id_buf[0..len], ws_id[0..len]);
     pending.ws_id_len = len;
@@ -948,7 +961,12 @@ pub fn completePendingWorkspacePullAll(self: anytype, tab: Tab) void {
         self.workspace.pending_pull_all = null;
         return;
     }
-    pullAllWorkspaceContentForTab(self, tab, false);
+    if (!recordPendingWorkspacePullAllResume(self)) {
+        self.workspace.pending_pull_all = null;
+        self.notifyOp(.failure, "Pull failed: content still missing after retries.");
+        return;
+    }
+    pullAllWorkspaceContentForTab(self, tab, true);
 }
 
 pub fn failPendingWorkspacePullAll(self: anytype, tab: Tab, message: []const u8) void {
@@ -957,6 +975,11 @@ pub fn failPendingWorkspacePullAll(self: anytype, tab: Tab, message: []const u8)
         self.workspace.pending_pull_all = null;
         self.notifyOp(.failure, message);
     }
+}
+
+fn recordPendingWorkspacePullAllResume(self: anytype) bool {
+    if (self.workspace.pending_pull_all) |*pending| return pending.recordResumeAttempt();
+    return false;
 }
 
 fn pullAllWorkspaceContexts(
@@ -2165,4 +2188,58 @@ test "CreateWsFocus.prev mirrors next" {
     try std.testing.expectEqual(CreateWsFocus.description, CreateWsFocus.submit.prev(0, false));
     try std.testing.expectEqual(CreateWsFocus.bundle, CreateWsFocus.submit.prev(3, false));
     try std.testing.expectEqual(CreateWsFocus.path, CreateWsFocus.submit.prev(0, true));
+}
+
+test "PendingPullAll recordResumeAttempt caps retries" {
+    var pending = PendingPullAll{ .tab = .context };
+
+    var attempt: usize = 0;
+    while (attempt < MAX_PULL_ALL_RESUME_ATTEMPTS) : (attempt += 1) {
+        try std.testing.expect(pending.recordResumeAttempt());
+    }
+
+    try std.testing.expect(!pending.recordResumeAttempt());
+    try std.testing.expectEqual(@as(u8, MAX_PULL_ALL_RESUME_ATTEMPTS), pending.resume_attempts);
+}
+
+test "appendUniquePullPath skips empty and duplicate values" {
+    var items: std.ArrayList([]const u8) = .empty;
+    defer items.deinit(std.testing.allocator);
+
+    try std.testing.expect(appendUniquePullPath(std.testing.allocator, &items, ""));
+    try std.testing.expectEqual(@as(usize, 0), items.items.len);
+
+    try std.testing.expect(appendUniquePullPath(std.testing.allocator, &items, "specs/ONE.md"));
+    try std.testing.expect(appendUniquePullPath(std.testing.allocator, &items, "specs/ONE.md"));
+    try std.testing.expect(appendUniquePullPath(std.testing.allocator, &items, "specs/TWO.md"));
+
+    try std.testing.expectEqual(@as(usize, 2), items.items.len);
+    try std.testing.expectEqualStrings("specs/ONE.md", items.items[0]);
+    try std.testing.expectEqualStrings("specs/TWO.md", items.items[1]);
+}
+
+test "contextExistsRemotely matches by context id or path" {
+    const remote = [_]api.model.WorkspaceContextData{
+        .{ .context_id = "ctx-one", .path = "specs/ONE.md", .hash = "h1", .size = 1 },
+        .{ .context_id = "ctx-two", .path = "specs/TWO.md", .hash = "h2", .size = 2 },
+    };
+
+    try std.testing.expect(contextExistsRemotely(&remote, .{
+        .context_id = "ctx-one",
+        .path = "specs/RENAMED.md",
+        .hash = "old",
+        .size = 1,
+    }));
+    try std.testing.expect(contextExistsRemotely(&remote, .{
+        .context_id = "",
+        .path = "specs/TWO.md",
+        .hash = "old",
+        .size = 2,
+    }));
+    try std.testing.expect(!contextExistsRemotely(&remote, .{
+        .context_id = "ctx-missing",
+        .path = "specs/MISSING.md",
+        .hash = "old",
+        .size = 3,
+    }));
 }
