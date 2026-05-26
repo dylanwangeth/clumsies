@@ -37,6 +37,7 @@ const cmd_setup = @import("commands/setup_cmd.zig");
 const cmd_workspace_info = @import("commands/workspace_info_cmd.zig");
 const cmd_attestation_append = @import("commands/attestation_append_cmd.zig");
 const cmd_submit_check = @import("commands/submit_check_cmd.zig");
+const cmd_ask = @import("commands/ask_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
 const Color = styles.Color;
@@ -51,6 +52,7 @@ const Command = enum {
     adapt,
     mcp,
     hub,
+    ask,
     help,
     version,
     none,
@@ -63,6 +65,7 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "adapt", .adapt },
     .{ "mcp", .mcp },
     .{ "hub", .hub },
+    .{ "ask", .ask },
     .{ "help", .help },
     .{ "-h", .help },
     .{ "--help", .help },
@@ -182,6 +185,7 @@ fn run() !void {
         .sync => try cmd_sync.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .adapt => try cmd_adapt.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
+        .ask => try cmd_ask.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .hub => unreachable,
         .none => {
             if (args.len > 1) {
@@ -255,6 +259,7 @@ test "command_map: all commands resolve" {
         .{ .str = "adapt", .cmd = .adapt },
         .{ .str = "mcp", .cmd = .mcp },
         .{ .str = "hub", .cmd = .hub },
+        .{ .str = "ask", .cmd = .ask },
         .{ .str = "help", .cmd = .help },
         .{ .str = "-h", .cmd = .help },
         .{ .str = "--help", .cmd = .help },
@@ -305,6 +310,7 @@ test {
     _ = @import("commands/init_cmd.zig");
     _ = @import("commands/login_cmd.zig");
     _ = @import("commands/sync_cmd.zig");
+    _ = @import("commands/ask_cmd.zig");
 
     _ = @import("mcp/jsonrpc.zig");
     _ = @import("mcp/server.zig");

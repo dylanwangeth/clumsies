@@ -9,6 +9,7 @@ const transcript = @import("transcript.zig");
 /// Runtime dependencies and safety bounds for one agent run.
 pub const RunOptions = struct {
     model_provider: Provider,
+    provider_options: Provider.Options = .{},
     tool_executor: tool.Executor,
     event_sink: ?event.Sink = null,
     max_turns: usize = 32,
@@ -41,7 +42,10 @@ pub fn run(
 
         // One provider response defines the full assistant turn, including any
         // unordered tool-call batch requested by the model.
-        const assistant = try options.model_provider.respond(allocator, messages.items);
+        const assistant = try options.model_provider.respond(allocator, .{
+            .messages = messages.items,
+            .options = options.provider_options,
+        });
         try messages.append(allocator, .{ .assistant = assistant });
         try emit(options.event_sink, .{ .message_append = .{ .assistant = assistant } });
 
@@ -248,7 +252,7 @@ const TestProvider = struct {
     fn respond(
         ctx: *anyopaque,
         allocator: std.mem.Allocator,
-        messages: []const transcript.Message,
+        request: Provider.Request,
     ) !transcript.AssistantMessage {
         _ = allocator;
         const self: *TestProvider = @ptrCast(@alignCast(ctx));
@@ -259,7 +263,7 @@ const TestProvider = struct {
                 .tool_calls = self.first_tool_calls,
             };
         }
-        try testing.expectEqual(@as(std.meta.Tag(transcript.Message), .tool_result), std.meta.activeTag(messages[messages.len - 1]));
+        try testing.expectEqual(@as(std.meta.Tag(transcript.Message), .tool_result), std.meta.activeTag(request.messages[request.messages.len - 1]));
         return .{ .content = "done" };
     }
 };
