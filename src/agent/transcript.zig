@@ -39,6 +39,45 @@ pub const EndReason = enum {
     terminated,
 };
 
+/// Mutable transcript under construction during one agent run.
+///
+/// The builder owns only the message array it grows. Each `Message` keeps the
+/// same borrowed payload lifetime rules documented above.
+pub const Builder = struct {
+    messages: std.ArrayList(Message) = .empty,
+
+    pub fn deinit(self: *Builder, allocator: std.mem.Allocator) void {
+        self.messages.deinit(allocator);
+    }
+
+    pub fn append(
+        self: *Builder,
+        allocator: std.mem.Allocator,
+        message: Message,
+    ) !void {
+        try self.messages.append(allocator, message);
+    }
+
+    pub fn items(self: Builder) []const Message {
+        return self.messages.items;
+    }
+
+    pub fn len(self: Builder) usize {
+        return self.messages.items.len;
+    }
+
+    pub fn finish(
+        self: *Builder,
+        allocator: std.mem.Allocator,
+        reason: EndReason,
+    ) !Transcript {
+        return .{
+            .messages = try self.messages.toOwnedSlice(allocator),
+            .end_reason = reason,
+        };
+    }
+};
+
 /// Owned transcript returned by a completed agent run.
 ///
 /// `deinit` releases only the message array. Nested slices follow the same

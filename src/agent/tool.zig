@@ -1,4 +1,4 @@
-//! Tool-call types and execution adapter for the agent loop.
+//! Tool-call types and local execution runtime for the agent loop.
 
 const std = @import("std");
 
@@ -9,10 +9,11 @@ pub const Call = struct {
     arguments: []const u8 = "",
 };
 
-/// Result of one tool invocation.
+/// Result of one local tool invocation.
 ///
-/// `control` can request that the runtime stop the agent after recording the
-/// current assistant turn's full tool-result batch.
+/// This is not a provider transcript message yet. The agent loop combines a
+/// `Call.id` with this result to produce `transcript.ToolResultMessage`, which
+/// provider adapters then serialize as request-side tool messages.
 pub const Result = struct {
     content: []const u8,
     is_error: bool = false,
@@ -36,46 +37,452 @@ pub const Control = enum {
     stop_run,
 };
 
-/// How per-tool failures should affect the rest of a batch.
+/// Static runtime metadata for one registered tool.
+pub const Definition = struct {
+    name: []const u8,
+    description: []const u8 = "",
+    scheduling: Scheduling = .parallel,
+    effects: Effects = .{},
+    failure_policy: FailurePolicy = .collect_all,
+};
+
+/// Whether calls to this tool can share an execution segment with other work.
+pub const Scheduling = enum {
+    parallel,
+    serial,
+};
+
+/// Side-effect metadata used by registries, executors, dashboards, and policy UIs.
+///
+/// The core runtime does not enforce these flags. A caller that needs
+/// permission prompts should expose only currently allowed tools through its
+/// registry, or later add an explicit pause/resume approval flow.
+pub const Effects = struct {
+    reads_workspace: bool = false,
+    writes_workspace: bool = false,
+    external_side_effect: bool = false,
+};
+
+/// How a model-visible failure should affect later calls in the same batch.
 pub const FailurePolicy = enum {
     collect_all,
     stop_on_error,
 };
 
-/// Tool adapter used by the loop to execute assistant-requested call batches.
-pub const Executor = struct {
+/// Tool definition lookup boundary shared by executors and future UIs.
+pub const Registry = struct {
     ctx: *anyopaque,
-    execute_batch_fn: *const fn (
+    lookup_fn: *const fn (
+        ctx: *anyopaque,
+        name: []const u8,
+    ) anyerror!?Definition,
+
+    pub fn lookup(self: Registry, name: []const u8) anyerror!?Definition {
+        return self.lookup_fn(self.ctx, name);
+    }
+};
+
+/// Concrete invocation boundary used by `Runtime`.
+pub const Invoker = struct {
+    ctx: *anyopaque,
+    invoke_fn: *const fn (
         ctx: *anyopaque,
         allocator: std.mem.Allocator,
-        calls: []const Call,
-        failure_policy: FailurePolicy,
-    ) anyerror![]Result,
+        call: Call,
+        definition: Definition,
+    ) anyerror!Result,
 
-    /// Executes one batch and returns one result per call in input order.
+    pub fn invoke(
+        self: Invoker,
+        allocator: std.mem.Allocator,
+        call: Call,
+        definition: Definition,
+    ) anyerror!Result {
+        return self.invoke_fn(self.ctx, allocator, call, definition);
+    }
+};
+
+/// How the runtime handles a model request for an unregistered tool.
+pub const UnknownToolPolicy = enum {
+    return_error_result,
+    fail_batch,
+};
+
+/// Registry-backed runtime for local tools.
+///
+/// `Runtime` is deliberately provider-neutral. It consumes normalized tool
+/// calls and returns normalized results; the agent loop and provider adapters
+/// handle transcript and JSON-message conversion.
+pub const Runtime = struct {
+    registry: Registry,
+    invoker: Invoker,
+    unknown_tool_policy: UnknownToolPolicy = .return_error_result,
+
+    /// Executes one assistant-requested tool batch.
     ///
-    /// A batch represents tool calls requested by one assistant turn. The calls
-    /// are not ordered by model semantics; the executor should use its tool
-    /// registry or runtime metadata to decide which calls can run in parallel
-    /// and which calls require exclusive serial execution.
-    ///
-    /// Per-tool failures that can be shown to the model should be returned as
-    /// `Result{ .is_error = true }`. Returning an error from this function
-    /// means the runtime itself cannot continue the batch.
-    ///
-    /// With `.collect_all`, the executor should produce one result for every
-    /// input call. With `.stop_on_error`, the executor may stop after the first
-    /// failure, but must still return one result per input call so the provider
-    /// can receive a response for every requested tool call id.
-    ///
-    /// The caller owns the returned result slice. Individual result payloads
-    /// follow the executor's documented lifetime rules.
+    /// The returned slice has exactly one `Result` per input `Call`, in the
+    /// same order. The agent loop relies on that invariant to attach provider
+    /// call ids when it builds tool-result messages.
     pub fn executeBatch(
-        self: Executor,
+        self: *Runtime,
         allocator: std.mem.Allocator,
         calls: []const Call,
-        failure_policy: FailurePolicy,
     ) anyerror![]Result {
-        return self.execute_batch_fn(self.ctx, allocator, calls, failure_policy);
+        // Resolve the provider-requested calls once before execution. This is
+        // where unknown tools become model-visible unavailable calls, or a
+        // batch-level error when the runtime is configured strictly.
+        const resolved = try self.resolveBatch(allocator, calls);
+        defer allocator.free(resolved);
+
+        const results = try allocator.alloc(Result, calls.len);
+        errdefer allocator.free(results);
+
+        var index: usize = 0;
+        while (index < resolved.len) {
+            // Serial calls are execution boundaries. A stop_on_error failure
+            // here prevents later calls from running.
+            if (resolved[index].scheduling() == .serial) {
+                const should_stop = try self.executeOne(
+                    allocator,
+                    resolved[index],
+                    &results[index],
+                );
+                index += 1;
+                if (should_stop) {
+                    fillSkipped(results[index..]);
+                    break;
+                }
+                continue;
+            }
+
+            // Consecutive parallel-capable calls form one deterministic
+            // segment. The current runtime still executes them in order, but a
+            // future concurrent executor can run this segment in parallel while
+            // preserving result order.
+            const segment_start = index;
+            while (index < resolved.len and resolved[index].scheduling() == .parallel) {
+                index += 1;
+            }
+
+            const should_stop = try self.executeParallelCapableSegment(
+                allocator,
+                resolved[segment_start..index],
+                results[segment_start..index],
+            );
+            if (should_stop) {
+                // The segment has completed, so every requested call up to
+                // `index` has a result. Later calls are skipped to preserve the
+                // provider invariant: one result per original tool call.
+                fillSkipped(results[index..]);
+                break;
+            }
+        }
+
+        return results;
+    }
+
+    fn resolveBatch(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        calls: []const Call,
+    ) anyerror![]ResolvedCall {
+        const resolved = try allocator.alloc(ResolvedCall, calls.len);
+        errdefer allocator.free(resolved);
+
+        // Resolve in input order before any tool has side effects. After this
+        // point execution is just a walk over already-classified calls.
+        for (calls, resolved) |call, *item| {
+            item.* = try self.resolveCall(call);
+        }
+        return resolved;
+    }
+
+    fn resolveCall(self: *Runtime, call: Call) anyerror!ResolvedCall {
+        // A resolved call is either executable with a concrete definition or a
+        // model-visible unavailable result. Keeping this decision here avoids
+        // re-looking-up metadata while tools are being invoked.
+        if (try self.registry.lookup(call.name)) |definition| {
+            return .{ .call = call, .action = .{ .invoke = definition } };
+        }
+
+        return switch (self.unknown_tool_policy) {
+            .return_error_result => .{
+                .call = call,
+                .action = .{ .unavailable = .unknown_tool },
+            },
+            .fail_batch => error.UnknownTool,
+        };
+    }
+
+    fn executeParallelCapableSegment(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        calls: []const ResolvedCall,
+        results: []Result,
+    ) anyerror!bool {
+        var should_stop_after_segment = false;
+        for (calls, results) |call, *result| {
+            if (try self.executeOne(allocator, call, result)) {
+                should_stop_after_segment = true;
+            }
+        }
+        return should_stop_after_segment;
+    }
+
+    fn executeOne(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        resolved: ResolvedCall,
+        result: *Result,
+    ) anyerror!bool {
+        switch (resolved.action) {
+            .invoke => |definition| {
+                // Tool invocation errors are converted into model-visible
+                // results. Returning an error from executeBatch is reserved for
+                // runtime failures such as registry or allocation failures.
+                result.* = self.invoker.invoke(allocator, resolved.call, definition) catch |err| .{
+                    .content = @errorName(err),
+                    .is_error = true,
+                };
+                return definition.failure_policy == .stop_on_error and result.is_error;
+            },
+            .unavailable => |reason| {
+                // Unavailable tools still produce a result slot so the agent
+                // loop can send one tool-result message per provider call id.
+                result.* = unavailableResult(reason);
+                return false;
+            },
+        }
+    }
+
+    fn unavailableResult(reason: UnavailableReason) Result {
+        return switch (reason) {
+            .unknown_tool => .{
+                .content = "unknown tool",
+                .is_error = true,
+            },
+        };
+    }
+
+    fn fillSkipped(results: []Result) void {
+        for (results) |*result| {
+            result.* = .{
+                .content = "skipped after tool failure",
+                .is_error = true,
+            };
+        }
+    }
+};
+
+const ResolvedCall = struct {
+    call: Call,
+    action: Action,
+
+    // Private type-state for runtime execution. Public API stays at Call and
+    // Result; this only prevents the executor from re-looking-up tool metadata.
+    const Action = union(enum) {
+        invoke: Definition,
+        unavailable: UnavailableReason,
+    };
+
+    fn scheduling(self: ResolvedCall) Scheduling {
+        return switch (self.action) {
+            .invoke => |definition| definition.scheduling,
+            .unavailable => .parallel,
+        };
+    }
+};
+
+const UnavailableReason = enum {
+    unknown_tool,
+};
+
+const testing = std.testing;
+
+test "tool runtime invokes registered tools" {
+    const definitions = [_]Definition{
+        .{ .name = "read" },
+        .{ .name = "grep" },
+    };
+    const calls = [_]Call{
+        .{ .id = "call_1", .name = "read" },
+        .{ .id = "call_2", .name = "grep" },
+    };
+    var registry_state: TestRegistry = .{ .definitions = &definitions };
+    var invoker_state: TestInvoker = .{};
+    var runtime: Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
+
+    const results = try runtime.executeBatch(testing.allocator, &calls);
+    defer testing.allocator.free(results);
+
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("read", results[0].content);
+    try testing.expectEqualStrings("grep", results[1].content);
+    try testing.expectEqual(@as(usize, 2), registry_state.lookups);
+    try testing.expectEqual(@as(usize, 2), invoker_state.calls);
+}
+
+test "tool runtime returns model-visible result for unknown tools by default" {
+    const calls = [_]Call{
+        .{ .id = "call_1", .name = "missing" },
+    };
+    var registry_state: TestRegistry = .{ .definitions = &.{} };
+    var invoker_state: TestInvoker = .{};
+    var runtime: Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
+
+    const results = try runtime.executeBatch(testing.allocator, &calls);
+    defer testing.allocator.free(results);
+
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expect(results[0].is_error);
+    try testing.expectEqualStrings("unknown tool", results[0].content);
+    try testing.expectEqual(@as(usize, 0), invoker_state.calls);
+}
+
+test "tool runtime can fail batch on unknown tools" {
+    const calls = [_]Call{
+        .{ .id = "call_1", .name = "missing" },
+    };
+    var registry_state: TestRegistry = .{ .definitions = &.{} };
+    var invoker_state: TestInvoker = .{};
+    var runtime: Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+        .unknown_tool_policy = .fail_batch,
+    };
+
+    try testing.expectError(error.UnknownTool, runtime.executeBatch(testing.allocator, &calls));
+}
+
+test "tool runtime stops later calls after serial stop_on_error failure" {
+    const definitions = [_]Definition{
+        .{ .name = "fail", .scheduling = .serial, .failure_policy = .stop_on_error },
+        .{ .name = "later", .scheduling = .serial },
+    };
+    const calls = [_]Call{
+        .{ .id = "call_1", .name = "fail" },
+        .{ .id = "call_2", .name = "later" },
+    };
+    var registry_state: TestRegistry = .{ .definitions = &definitions };
+    var invoker_state: TestInvoker = .{ .fail_name = "fail" };
+    var runtime: Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
+
+    const results = try runtime.executeBatch(testing.allocator, &calls);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results[0].is_error);
+    try testing.expect(results[1].is_error);
+    try testing.expectEqualStrings("skipped after tool failure", results[1].content);
+    try testing.expectEqual(@as(usize, 1), invoker_state.calls);
+}
+
+test "tool runtime completes parallel-capable segment before stop_on_error takes effect" {
+    const definitions = [_]Definition{
+        .{ .name = "fail", .scheduling = .parallel, .failure_policy = .stop_on_error },
+        .{ .name = "peer", .scheduling = .parallel },
+        .{ .name = "later", .scheduling = .serial },
+    };
+    const calls = [_]Call{
+        .{ .id = "call_1", .name = "fail" },
+        .{ .id = "call_2", .name = "peer" },
+        .{ .id = "call_3", .name = "later" },
+    };
+    var registry_state: TestRegistry = .{ .definitions = &definitions };
+    var invoker_state: TestInvoker = .{ .fail_name = "fail" };
+    var runtime: Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
+
+    const results = try runtime.executeBatch(testing.allocator, &calls);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results[0].is_error);
+    try testing.expect(!results[1].is_error);
+    try testing.expect(results[2].is_error);
+    try testing.expectEqualStrings("peer", results[1].content);
+    try testing.expectEqualStrings("skipped after tool failure", results[2].content);
+    try testing.expectEqual(@as(usize, 2), invoker_state.calls);
+}
+
+test "tool runtime resolves calls once in input order" {
+    const definitions = [_]Definition{
+        .{ .name = "read", .scheduling = .parallel },
+        .{ .name = "edit", .scheduling = .serial },
+    };
+    const calls = [_]Call{
+        .{ .id = "call_1", .name = "read" },
+        .{ .id = "call_2", .name = "edit" },
+        .{ .id = "call_3", .name = "missing" },
+    };
+    var registry_state: TestRegistry = .{ .definitions = &definitions };
+
+    var invoker_state: TestInvoker = .{};
+    var runtime: Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
+
+    const resolved = try runtime.resolveBatch(testing.allocator, &calls);
+    defer testing.allocator.free(resolved);
+
+    try testing.expectEqual(@as(usize, 3), resolved.len);
+    try testing.expectEqual(@as(usize, 3), registry_state.lookups);
+    try testing.expectEqual(ResolvedCall.Action.invoke, std.meta.activeTag(resolved[0].action));
+    try testing.expectEqual(ResolvedCall.Action.invoke, std.meta.activeTag(resolved[1].action));
+    try testing.expectEqual(ResolvedCall.Action.unavailable, std.meta.activeTag(resolved[2].action));
+    try testing.expectEqual(Scheduling.parallel, resolved[0].scheduling());
+    try testing.expectEqual(Scheduling.serial, resolved[1].scheduling());
+}
+
+const TestRegistry = struct {
+    definitions: []const Definition,
+    lookups: usize = 0,
+
+    fn registry(self: *TestRegistry) Registry {
+        return .{ .ctx = self, .lookup_fn = lookup };
+    }
+
+    fn lookup(ctx: *anyopaque, name: []const u8) !?Definition {
+        const self: *TestRegistry = @ptrCast(@alignCast(ctx));
+        self.lookups += 1;
+        for (self.definitions) |definition| {
+            if (std.mem.eql(u8, definition.name, name)) return definition;
+        }
+        return null;
+    }
+};
+
+const TestInvoker = struct {
+    calls: usize = 0,
+    fail_name: []const u8 = "",
+
+    fn invoker(self: *TestInvoker) Invoker {
+        return .{ .ctx = self, .invoke_fn = invoke };
+    }
+
+    fn invoke(
+        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        call: Call,
+        definition: Definition,
+    ) !Result {
+        _ = allocator;
+        _ = definition;
+        const self: *TestInvoker = @ptrCast(@alignCast(ctx));
+        self.calls += 1;
+        return .{
+            .content = call.name,
+            .is_error = std.mem.eql(u8, call.name, self.fail_name),
+        };
     }
 };

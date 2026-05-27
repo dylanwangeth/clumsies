@@ -10,10 +10,9 @@ const transcript = @import("transcript.zig");
 pub const RunOptions = struct {
     model_provider: Provider,
     provider_options: Provider.Options = .{},
-    tool_executor: tool.Executor,
+    tool_runtime: *tool.Runtime,
     event_sink: ?event.Sink = null,
     max_turns: usize = 32,
-    tool_failure_policy: tool.FailurePolicy = .collect_all,
 };
 
 /// Runs the provider-neutral agent loop until completion, termination, or turn
@@ -27,12 +26,12 @@ pub fn run(
     prompts: []const transcript.Message,
     options: RunOptions,
 ) !transcript.Transcript {
-    var messages: std.ArrayList(transcript.Message) = .empty;
-    errdefer messages.deinit(allocator);
+    var history: transcript.Builder = .{};
+    errdefer history.deinit(allocator);
 
     try emit(options.event_sink, .agent_start);
     for (prompts) |message| {
-        try messages.append(allocator, message);
+        try history.append(allocator, message);
         try emit(options.event_sink, .{ .message_append = message });
     }
 
@@ -43,10 +42,10 @@ pub fn run(
         // One provider response defines the full assistant turn, including any
         // unordered tool-call batch requested by the model.
         const assistant = try options.model_provider.respond(allocator, .{
-            .messages = messages.items,
+            .messages = history.items(),
             .options = options.provider_options,
         });
-        try messages.append(allocator, .{ .assistant = assistant });
+        try history.append(allocator, .{ .assistant = assistant });
         try emit(options.event_sink, .{ .message_append = .{ .assistant = assistant } });
 
         const tool_calls = assistant.tool_calls;
@@ -57,27 +56,28 @@ pub fn run(
                     .assistant = assistant,
                 },
             });
-            return finish(allocator, &messages, options.event_sink, .complete);
+            try emit(options.event_sink, .{ .agent_end = .{
+                .reason = .complete,
+                .message_count = history.len(),
+            } });
+            return history.finish(allocator, .complete);
         }
 
         for (tool_calls) |call| {
             try emit(options.event_sink, .{ .tool_start = call });
         }
 
-        // The executor owns scheduling and per-tool failure handling, but must
-        // return one result per input call so call ids stay aligned.
-        const tool_results = try options.tool_executor.executeBatch(
-            allocator,
-            tool_calls,
-            options.tool_failure_policy,
-        );
+        // The tool runtime owns scheduling and per-tool failure handling, but
+        // must return one result per input call so call ids stay aligned.
+        const tool_results = try options.tool_runtime.executeBatch(allocator, tool_calls);
         defer allocator.free(tool_results);
-        if (tool_results.len != tool_calls.len) return error.InvalidToolBatchResult;
 
         var stop_request_count: usize = 0;
         for (tool_calls, tool_results) |call, result| {
-            // Tool results are appended in request order even if the executor
-            // runs the batch concurrently.
+            // This is the provider boundary: local `tool.Result` values do not
+            // carry provider ids, so the loop attaches the original call id
+            // before the provider adapter serializes this as a role="tool"
+            // message.
             if (result.control == .stop_run) stop_request_count += 1;
             try emit(options.event_sink, .{ .tool_end = .{ .call = call, .result = result } });
 
@@ -86,7 +86,7 @@ pub fn run(
                 .tool_call_id = call.id,
                 .is_error = result.is_error,
             };
-            try messages.append(allocator, .{ .tool_result = result_message });
+            try history.append(allocator, .{ .tool_result = result_message });
             try emit(options.event_sink, .{ .message_append = .{ .tool_result = result_message } });
         }
 
@@ -98,27 +98,19 @@ pub fn run(
         });
 
         if (stop_request_count > 0) {
-            return finish(allocator, &messages, options.event_sink, .terminated);
+            try emit(options.event_sink, .{ .agent_end = .{
+                .reason = .terminated,
+                .message_count = history.len(),
+            } });
+            return history.finish(allocator, .terminated);
         }
     }
 
-    return finish(allocator, &messages, options.event_sink, .max_turns);
-}
-
-fn finish(
-    allocator: std.mem.Allocator,
-    messages: *std.ArrayList(transcript.Message),
-    event_sink: ?event.Sink,
-    reason: transcript.EndReason,
-) !transcript.Transcript {
-    try emit(event_sink, .{ .agent_end = .{
-        .reason = reason,
-        .message_count = messages.items.len,
+    try emit(options.event_sink, .{ .agent_end = .{
+        .reason = .max_turns,
+        .message_count = history.len(),
     } });
-    return .{
-        .messages = try messages.toOwnedSlice(allocator),
-        .end_reason = reason,
-    };
+    return history.finish(allocator, .max_turns);
 }
 
 fn emit(event_sink: ?event.Sink, new_event: event.Event) !void {
@@ -133,7 +125,15 @@ test "agent loop executes tools and continues until assistant completes" {
         .{ .id = "call_2", .name = "grep", .arguments = "needle" },
     };
     var provider_state: TestProvider = .{ .first_tool_calls = &calls };
-    var tool_state: TestToolExecutor = .{};
+    var invoker_state: TestInvoker = .{};
+    var registry_state: TestRegistry = .{ .definitions = &.{
+        .{ .name = "read" },
+        .{ .name = "grep" },
+    } };
+    var runtime: tool.Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
     var recorder: EventRecorder = .{};
     defer recorder.deinit(testing.allocator);
 
@@ -142,7 +142,7 @@ test "agent loop executes tools and continues until assistant completes" {
     };
     const result = try run(testing.allocator, &prompts, .{
         .model_provider = provider_state.provider(),
-        .tool_executor = tool_state.executor(),
+        .tool_runtime = &runtime,
         .event_sink = recorder.sink(),
     });
     defer result.deinit(testing.allocator);
@@ -150,7 +150,7 @@ test "agent loop executes tools and continues until assistant completes" {
     try testing.expectEqual(@as(transcript.EndReason, .complete), result.end_reason);
     try testing.expectEqual(@as(usize, 5), result.messages.len);
     try testing.expectEqual(@as(usize, 2), provider_state.calls);
-    try testing.expectEqual(@as(usize, 2), tool_state.calls);
+    try testing.expectEqual(@as(usize, 2), invoker_state.calls);
     try testing.expectEqualStrings("call_1", result.messages[2].tool_result.tool_call_id);
     try testing.expectEqualStrings("call_2", result.messages[3].tool_result.tool_call_id);
     try testing.expectEqual(@as(usize, 15), recorder.events.items.len);
@@ -161,14 +161,21 @@ test "agent loop stops when a tool result requests stop_run" {
         .{ .id = "call_1", .name = "stop" },
     };
     var provider_state: TestProvider = .{ .first_tool_calls = &calls };
-    var tool_state: TestToolExecutor = .{ .stop_run = true };
+    var invoker_state: TestInvoker = .{ .stop_run = true };
+    var registry_state: TestRegistry = .{ .definitions = &.{
+        .{ .name = "stop" },
+    } };
+    var runtime: tool.Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
     const prompts = [_]transcript.Message{
         .{ .user = .{ .content = "stop after tool" } },
     };
 
     const result = try run(testing.allocator, &prompts, .{
         .model_provider = provider_state.provider(),
-        .tool_executor = tool_state.executor(),
+        .tool_runtime = &runtime,
     });
     defer result.deinit(testing.allocator);
 
@@ -183,14 +190,22 @@ test "agent loop stops after appending all results when one result requests stop
         .{ .id = "call_2", .name = "read" },
     };
     var provider_state: TestProvider = .{ .first_tool_calls = &calls };
-    var tool_state: TestToolExecutor = .{ .stop_run_call_index = 0 };
+    var invoker_state: TestInvoker = .{ .stop_run_call_index = 0 };
+    var registry_state: TestRegistry = .{ .definitions = &.{
+        .{ .name = "stop" },
+        .{ .name = "read" },
+    } };
+    var runtime: tool.Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
     const prompts = [_]transcript.Message{
         .{ .user = .{ .content = "stop after one tool" } },
     };
 
     const result = try run(testing.allocator, &prompts, .{
         .model_provider = provider_state.provider(),
-        .tool_executor = tool_state.executor(),
+        .tool_runtime = &runtime,
     });
     defer result.deinit(testing.allocator);
 
@@ -206,14 +221,21 @@ test "agent loop returns max turns when assistant keeps calling tools" {
         .{ .id = "call_1", .name = "loop" },
     };
     var provider_state: TestProvider = .{ .first_tool_calls = &calls };
-    var tool_state: TestToolExecutor = .{};
+    var invoker_state: TestInvoker = .{};
+    var registry_state: TestRegistry = .{ .definitions = &.{
+        .{ .name = "loop" },
+    } };
+    var runtime: tool.Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
     const prompts = [_]transcript.Message{
         .{ .user = .{ .content = "loop" } },
     };
 
     const result = try run(testing.allocator, &prompts, .{
         .model_provider = provider_state.provider(),
-        .tool_executor = tool_state.executor(),
+        .tool_runtime = &runtime,
         .max_turns = 1,
     });
     defer result.deinit(testing.allocator);
@@ -222,21 +244,39 @@ test "agent loop returns max turns when assistant keeps calling tools" {
     try testing.expectEqual(@as(usize, 3), result.messages.len);
 }
 
-test "agent loop rejects tool batches with mismatched result counts" {
+test "agent loop uses the configured tool runtime" {
     const calls = [_]tool.Call{
-        .{ .id = "call_1", .name = "read" },
-        .{ .id = "call_2", .name = "grep" },
+        .{ .id = "call_1", .name = "write" },
+    };
+    const definitions = [_]tool.Definition{
+        .{
+            .name = "write",
+            .scheduling = .serial,
+            .effects = .{ .writes_workspace = true },
+            .failure_policy = .stop_on_error,
+        },
     };
     var provider_state: TestProvider = .{ .first_tool_calls = &calls };
-    var tool_state: TestToolExecutor = .{ .result_count_override = 1 };
+    var invoker_state: TestInvoker = .{
+        .expected_definition = definitions[0],
+    };
+    var registry_state: TestRegistry = .{ .definitions = &definitions };
+    var runtime: tool.Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
     const prompts = [_]transcript.Message{
-        .{ .user = .{ .content = "mismatch" } },
+        .{ .user = .{ .content = "write file" } },
     };
 
-    try testing.expectError(error.InvalidToolBatchResult, run(testing.allocator, &prompts, .{
+    const result = try run(testing.allocator, &prompts, .{
         .model_provider = provider_state.provider(),
-        .tool_executor = tool_state.executor(),
-    }));
+        .tool_runtime = &runtime,
+    });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), registry_state.lookups);
+    try testing.expectEqual(@as(transcript.EndReason, .complete), result.end_reason);
 }
 
 // Private adapters used by this file's tests. Keeping them here makes the
@@ -268,39 +308,66 @@ const TestProvider = struct {
     }
 };
 
-const TestToolExecutor = struct {
+const TestInvoker = struct {
     calls: usize = 0,
     stop_run: bool = false,
     stop_run_call_index: ?usize = null,
-    result_count_override: ?usize = null,
+    expected_definition: ?tool.Definition = null,
 
-    fn executor(self: *TestToolExecutor) tool.Executor {
-        return .{ .ctx = self, .execute_batch_fn = executeBatch };
+    fn invoker(self: *TestInvoker) tool.Invoker {
+        return .{ .ctx = self, .invoke_fn = invoke };
     }
 
-    fn executeBatch(
+    fn invoke(
         ctx: *anyopaque,
         allocator: std.mem.Allocator,
-        calls: []const tool.Call,
-        failure_policy: tool.FailurePolicy,
-    ) ![]tool.Result {
-        try testing.expectEqual(tool.FailurePolicy.collect_all, failure_policy);
-        const self: *TestToolExecutor = @ptrCast(@alignCast(ctx));
-        const result_count = self.result_count_override orelse calls.len;
-        const results = try allocator.alloc(tool.Result, result_count);
-        for (results, 0..) |*result, idx| {
-            self.calls += 1;
-            const content = if (idx < calls.len) calls[idx].name else "extra";
-            const stop_run = self.stop_run or
-                (self.stop_run_call_index != null and self.stop_run_call_index.? == idx);
-            result.* = .{
-                .content = content,
-                .control = if (stop_run) .stop_run else .continue_run,
-            };
+        call: tool.Call,
+        definition: tool.Definition,
+    ) !tool.Result {
+        _ = allocator;
+        const self: *TestInvoker = @ptrCast(@alignCast(ctx));
+        if (self.expected_definition) |expected| {
+            try expectDefinitionEqual(expected, definition);
         }
-        return results;
+
+        const call_index = self.calls;
+        self.calls += 1;
+        const stop_run = self.stop_run or
+            (self.stop_run_call_index != null and self.stop_run_call_index.? == call_index);
+        return .{
+            .content = call.name,
+            .control = if (stop_run) .stop_run else .continue_run,
+        };
     }
 };
+
+const TestRegistry = struct {
+    definitions: []const tool.Definition,
+    lookups: usize = 0,
+
+    fn registry(self: *TestRegistry) tool.Registry {
+        return .{ .ctx = self, .lookup_fn = lookup };
+    }
+
+    fn lookup(ctx: *anyopaque, name: []const u8) !?tool.Definition {
+        const self: *TestRegistry = @ptrCast(@alignCast(ctx));
+        self.lookups += 1;
+        for (self.definitions) |definition| {
+            if (std.mem.eql(u8, definition.name, name)) return definition;
+        }
+        return null;
+    }
+};
+
+fn expectDefinitionEqual(expected: tool.Definition, actual: tool.Definition) !void {
+    try testing.expectEqualStrings(expected.name, actual.name);
+    try testing.expectEqualStrings(expected.description, actual.description);
+    try testing.expectEqual(expected.scheduling, actual.scheduling);
+    try testing.expectEqual(expected.effects.reads_workspace, actual.effects.reads_workspace);
+    try testing.expectEqual(expected.effects.writes_workspace, actual.effects.writes_workspace);
+    try testing.expectEqual(expected.effects.external_side_effect, actual.effects.external_side_effect);
+    try testing.expectEqual(expected.failure_policy, actual.failure_policy);
+}
 
 const EventRecorder = struct {
     events: std.ArrayList(event.Event) = .empty,
