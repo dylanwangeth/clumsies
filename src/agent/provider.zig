@@ -1,7 +1,14 @@
 //! Provider adapter boundary for producing assistant messages.
+//!
+//! `Provider` is the agent core's model-facing port. The loop sends
+//! provider-neutral transcript messages plus available tool definitions, and a
+//! concrete adapter turns that request into the provider's wire format. The
+//! adapter returns a normalized assistant message so the loop does not know
+//! whether the backing service is OpenAI-compatible, local, or something else.
 
 const std = @import("std");
 const transcript = @import("transcript.zig");
+const tool = @import("tool.zig");
 
 const Provider = @This();
 
@@ -26,9 +33,14 @@ pub const Options = struct {
     max_output_tokens: ?u32 = null,
 };
 
-/// Provider-facing request built by the agent loop.
+/// Provider-neutral request built by the agent loop.
+///
+/// `messages` is the conversation context to send this turn. `tools` is the
+/// request-level capability declaration: adapters decide how to encode those
+/// definitions for their provider.
 pub const Request = struct {
     messages: []const transcript.Message,
+    tools: []const tool.Definition = &.{},
     options: Options = .{},
 };
 

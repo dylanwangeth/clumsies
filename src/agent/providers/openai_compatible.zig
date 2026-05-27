@@ -1,4 +1,15 @@
 //! OpenAI-compatible Chat Completions provider adapter.
+//!
+//! This module is the provider-specific translation boundary for the agent
+//! core. It consumes provider-neutral transcript messages and tool definitions,
+//! materializes the OpenAI-compatible Chat Completions request shape, then
+//! normalizes the assistant response back into `transcript.AssistantMessage`.
+//!
+//! Tool conversion happens in both directions here by design. Request-level
+//! `tools[]` declares what the model may call for the current request, while
+//! message-level `tool_calls` replays tool-call requests already made by prior
+//! assistant turns. Local tool results are represented internally as
+//! `transcript.ToolResultMessage` and serialized here as `role = "tool"`.
 
 const std = @import("std");
 const http = std.http;
@@ -40,6 +51,7 @@ pub const ProviderError = struct {
 const RequestBody = struct {
     model: []const u8,
     messages: []const MessageJson,
+    tools: ?[]const ToolDefinitionJson = null,
     temperature: ?f32 = null,
     top_p: ?f32 = null,
     max_tokens: ?u32 = null,
@@ -48,8 +60,8 @@ const RequestBody = struct {
 
 // OpenAI Chat Completions uses message-level `tool_calls` to replay prior
 // assistant tool-call requests, paired with later `role = "tool"` messages via
-// `tool_call_id`. Top-level `tools` and `tool_choice` are a separate request
-// contract for declaring what the model may call.
+// `tool_call_id`. Top-level `tools` is a separate request contract for
+// declaring what the model may call.
 const MessageJson = struct {
     role: Role,
     content: []const u8 = "",
@@ -73,9 +85,33 @@ const ToolCallType = enum {
     function,
 };
 
+const ToolDefinitionJson = struct {
+    type: ToolCallType = .function,
+    function: FunctionDefinitionJson,
+};
+
+const FunctionDefinitionJson = struct {
+    name: []const u8,
+    description: []const u8 = "",
+    parameters: std.json.Value,
+};
+
 const FunctionJson = struct {
     name: []const u8,
     arguments: []const u8,
+};
+
+const ToolDefinitionsJson = struct {
+    tools: []const ToolDefinitionJson,
+    parsed_parameters: []std.json.Parsed(std.json.Value),
+
+    fn deinit(self: ToolDefinitionsJson, allocator: std.mem.Allocator) void {
+        for (self.parsed_parameters) |parsed| {
+            parsed.deinit();
+        }
+        allocator.free(self.parsed_parameters);
+        allocator.free(self.tools);
+    }
 };
 
 const ResponseJson = struct {
@@ -146,9 +182,13 @@ fn respond(
         message_count += 1;
     }
 
+    const tools_json = try toolDefinitionsToJson(allocator, request.tools);
+    defer tools_json.deinit(allocator);
+
     const body = try std.json.Stringify.valueAlloc(allocator, RequestBody{
         .model = self.config.model,
         .messages = messages_json,
+        .tools = if (tools_json.tools.len == 0) null else tools_json.tools,
         .temperature = request.options.temperature,
         .top_p = request.options.top_p,
         .max_tokens = request.options.max_output_tokens,
@@ -174,6 +214,11 @@ fn freeMessageJson(allocator: std.mem.Allocator, messages: []const MessageJson) 
     }
 }
 
+/// Converts one core transcript message into OpenAI-compatible message JSON.
+///
+/// This is where internal message variants become provider roles. The core uses
+/// `.tool_result` to describe local semantics; only this adapter turns it into
+/// `role = "tool"` plus `tool_call_id`.
 fn messageToJson(allocator: std.mem.Allocator, message: transcript.Message) !MessageJson {
     return switch (message) {
         .user => |user| .{
@@ -193,6 +238,11 @@ fn messageToJson(allocator: std.mem.Allocator, message: transcript.Message) !Mes
     };
 }
 
+/// Serializes assistant-requested calls from prior turns.
+///
+/// These are not request-level tool declarations. They are replayed assistant
+/// messages that let a stateless provider connect later tool-result messages to
+/// the original assistant requests.
 fn toolCallsToJson(allocator: std.mem.Allocator, calls: []const tool.Call) !?[]const ToolCallJson {
     if (calls.len == 0) return null;
     const json_calls = try allocator.alloc(ToolCallJson, calls.len);
@@ -208,6 +258,63 @@ fn toolCallsToJson(allocator: std.mem.Allocator, calls: []const tool.Call) !?[]c
     return json_calls;
 }
 
+/// Serializes currently available local tools as request-level function tools.
+///
+/// Each provider owns this conversion because function/tool schemas are wire
+/// format, not core runtime data. `tool.Definition.parameters_schema` is stored
+/// as raw JSON so the provider-neutral registry does not depend on
+/// OpenAI-specific structs; this function parses it into a JSON object before
+/// request serialization.
+fn toolDefinitionsToJson(
+    allocator: std.mem.Allocator,
+    definitions: []const tool.Definition,
+) !ToolDefinitionsJson {
+    if (definitions.len == 0) {
+        return .{ .tools = &.{}, .parsed_parameters = &.{} };
+    }
+
+    const tools = try allocator.alloc(ToolDefinitionJson, definitions.len);
+    errdefer allocator.free(tools);
+    const parsed_parameters = try allocator.alloc(std.json.Parsed(std.json.Value), definitions.len);
+    errdefer allocator.free(parsed_parameters);
+
+    var count: usize = 0;
+    errdefer {
+        for (parsed_parameters[0..count]) |parsed| {
+            parsed.deinit();
+        }
+    }
+
+    for (definitions, tools, 0..) |definition, *json_tool, idx| {
+        // The API expects `parameters` to be a JSON Schema object. If we passed
+        // the schema through as a string, the model would see a malformed tool
+        // declaration instead of structured argument metadata.
+        parsed_parameters[idx] = try std.json.parseFromSlice(
+            std.json.Value,
+            allocator,
+            definition.parameters_schema,
+            .{ .allocate = .alloc_always },
+        );
+        count += 1;
+        json_tool.* = .{
+            .function = .{
+                .name = definition.name,
+                .description = definition.description,
+                .parameters = parsed_parameters[idx].value,
+            },
+        };
+    }
+
+    return .{
+        .tools = tools,
+        .parsed_parameters = parsed_parameters,
+    };
+}
+
+/// Normalizes the first provider choice into a core assistant message.
+///
+/// The returned content and tool-call fields are arena-owned by the provider so
+/// they remain valid for the transcript returned by the agent loop.
 fn assistantFromJson(
     allocator: std.mem.Allocator,
     message: AssistantJson,
@@ -313,6 +420,43 @@ test "endpointUrl appends chat completions path once" {
     const second = try endpointUrl(std.testing.allocator, "https://example.com/v1/");
     defer std.testing.allocator.free(second);
     try std.testing.expectEqualStrings("https://example.com/v1/chat/completions", second);
+}
+
+test "toolDefinitionsToJson emits request-level function tools" {
+    const allocator = std.testing.allocator;
+    const definitions = [_]tool.Definition{
+        .{
+            .name = "read_file",
+            .description = "Read a UTF-8 file from the workspace.",
+            .parameters_schema =
+            \\{
+            \\  "type": "object",
+            \\  "properties": {
+            \\    "path": { "type": "string" }
+            \\  },
+            \\  "required": ["path"]
+            \\}
+            ,
+        },
+    };
+
+    const converted = try toolDefinitionsToJson(allocator, &definitions);
+    defer converted.deinit(allocator);
+
+    const messages = [_]MessageJson{
+        .{ .role = .user, .content = "read src/root.zig" },
+    };
+    const body = try std.json.Stringify.valueAlloc(allocator, RequestBody{
+        .model = "test-model",
+        .messages = &messages,
+        .tools = converted.tools,
+    }, .{ .emit_null_optional_fields = false });
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"tools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"read_file\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"path\":{\"type\":\"string\"}") != null);
 }
 
 test "responds through configured OpenAI-compatible provider" {

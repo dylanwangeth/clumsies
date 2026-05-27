@@ -1,4 +1,10 @@
 //! Tool-call types and local execution runtime for the agent loop.
+//!
+//! This module defines the provider-neutral tool boundary. Providers produce
+//! normalized `Call` values, the runtime resolves them through a registry,
+//! invokes local implementations, and returns one `Result` per call. Provider
+//! adapters separately translate `Definition` values into their request-level
+//! tool schema format.
 
 const std = @import("std");
 
@@ -37,10 +43,17 @@ pub const Control = enum {
     stop_run,
 };
 
-/// Static runtime metadata for one registered tool.
+/// Static runtime and provider-declaration metadata for one registered tool.
+///
+/// `parameters_schema` is raw JSON Schema so the registry stays independent of
+/// any one provider's structs. Provider adapters parse and embed it in their
+/// own wire format when they declare available tools.
 pub const Definition = struct {
     name: []const u8,
     description: []const u8 = "",
+    parameters_schema: []const u8 =
+        \\{"type":"object","properties":{}}
+    ,
     scheduling: Scheduling = .parallel,
     effects: Effects = .{},
     failure_policy: FailurePolicy = .collect_all,
@@ -69,16 +82,25 @@ pub const FailurePolicy = enum {
     stop_on_error,
 };
 
-/// Tool definition lookup boundary shared by executors and future UIs.
+/// Tool definition lookup boundary shared by the runtime and future UIs.
+///
+/// `lookup` serves execution after the model requests a tool by name. `list`
+/// serves provider request construction before each model call, where adapters
+/// need the currently available tool definitions for `tools[]`.
 pub const Registry = struct {
     ctx: *anyopaque,
     lookup_fn: *const fn (
         ctx: *anyopaque,
         name: []const u8,
     ) anyerror!?Definition,
+    list_fn: *const fn (ctx: *anyopaque) anyerror![]const Definition,
 
     pub fn lookup(self: Registry, name: []const u8) anyerror!?Definition {
         return self.lookup_fn(self.ctx, name);
+    }
+
+    pub fn list(self: Registry) anyerror![]const Definition {
+        return self.list_fn(self.ctx);
     }
 };
 
@@ -117,6 +139,11 @@ pub const Runtime = struct {
     registry: Registry,
     invoker: Invoker,
     unknown_tool_policy: UnknownToolPolicy = .return_error_result,
+
+    /// Returns tool definitions currently exposed to provider requests.
+    pub fn definitions(self: *Runtime) anyerror![]const Definition {
+        return self.registry.list();
+    }
 
     /// Executes one assistant-requested tool batch.
     ///
@@ -449,7 +476,7 @@ const TestRegistry = struct {
     lookups: usize = 0,
 
     fn registry(self: *TestRegistry) Registry {
-        return .{ .ctx = self, .lookup_fn = lookup };
+        return .{ .ctx = self, .lookup_fn = lookup, .list_fn = list };
     }
 
     fn lookup(ctx: *anyopaque, name: []const u8) !?Definition {
@@ -459,6 +486,11 @@ const TestRegistry = struct {
             if (std.mem.eql(u8, definition.name, name)) return definition;
         }
         return null;
+    }
+
+    fn list(ctx: *anyopaque) ![]const Definition {
+        const self: *TestRegistry = @ptrCast(@alignCast(ctx));
+        return self.definitions;
     }
 };
 

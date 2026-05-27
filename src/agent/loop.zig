@@ -1,4 +1,9 @@
 //! Provider-neutral agent turn loop.
+//!
+//! The loop owns turn sequencing, event emission, and transcript growth. It
+//! does not know any provider wire format or local tool implementation details:
+//! provider adapters translate transcript/tool definitions for model calls, and
+//! `tool.Runtime` resolves and invokes model-requested tools.
 
 const std = @import("std");
 const event = @import("event.zig");
@@ -41,8 +46,10 @@ pub fn run(
 
         // One provider response defines the full assistant turn, including any
         // unordered tool-call batch requested by the model.
+        const available_tools = try options.tool_runtime.definitions();
         const assistant = try options.model_provider.respond(allocator, .{
             .messages = history.items(),
+            .tools = available_tools,
             .options = options.provider_options,
         });
         try history.append(allocator, .{ .assistant = assistant });
@@ -160,7 +167,10 @@ test "agent loop stops when a tool result requests stop_run" {
     const calls = [_]tool.Call{
         .{ .id = "call_1", .name = "stop" },
     };
-    var provider_state: TestProvider = .{ .first_tool_calls = &calls };
+    var provider_state: TestProvider = .{
+        .first_tool_calls = &calls,
+        .expected_tools_len = 1,
+    };
     var invoker_state: TestInvoker = .{ .stop_run = true };
     var registry_state: TestRegistry = .{ .definitions = &.{
         .{ .name = "stop" },
@@ -276,6 +286,7 @@ test "agent loop uses the configured tool runtime" {
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), registry_state.lookups);
+    try testing.expectEqual(@as(usize, 2), registry_state.lists);
     try testing.expectEqual(@as(transcript.EndReason, .complete), result.end_reason);
 }
 
@@ -284,6 +295,7 @@ test "agent loop uses the configured tool runtime" {
 const TestProvider = struct {
     calls: usize = 0,
     first_tool_calls: []const tool.Call,
+    expected_tools_len: ?usize = null,
 
     fn provider(self: *TestProvider) Provider {
         return .{ .ctx = self, .respond_fn = respond };
@@ -297,6 +309,9 @@ const TestProvider = struct {
         _ = allocator;
         const self: *TestProvider = @ptrCast(@alignCast(ctx));
         self.calls += 1;
+        if (self.expected_tools_len) |expected| {
+            try testing.expectEqual(expected, request.tools.len);
+        }
         if (self.calls == 1) {
             return .{
                 .content = "need tools",
@@ -344,9 +359,10 @@ const TestInvoker = struct {
 const TestRegistry = struct {
     definitions: []const tool.Definition,
     lookups: usize = 0,
+    lists: usize = 0,
 
     fn registry(self: *TestRegistry) tool.Registry {
-        return .{ .ctx = self, .lookup_fn = lookup };
+        return .{ .ctx = self, .lookup_fn = lookup, .list_fn = list };
     }
 
     fn lookup(ctx: *anyopaque, name: []const u8) !?tool.Definition {
@@ -356,6 +372,12 @@ const TestRegistry = struct {
             if (std.mem.eql(u8, definition.name, name)) return definition;
         }
         return null;
+    }
+
+    fn list(ctx: *anyopaque) ![]const tool.Definition {
+        const self: *TestRegistry = @ptrCast(@alignCast(ctx));
+        self.lists += 1;
+        return self.definitions;
     }
 };
 
