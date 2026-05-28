@@ -7,6 +7,13 @@
 
 const std = @import("std");
 const tool = @import("../core/tool.zig");
+const bash = @import("bash.zig");
+const discuss = @import("discuss.zig");
+const edit = @import("edit.zig");
+const glob = @import("glob.zig");
+const grep = @import("grep.zig");
+const read = @import("read.zig");
+const write = @import("write.zig");
 
 /// Minimal tool declarations exposed by the first coding-agent surface.
 ///
@@ -14,75 +21,13 @@ const tool = @import("../core/tool.zig");
 /// define the provider-facing contract only; concrete invokers can start small
 /// and grow behavior behind the same names.
 pub const DEFINITIONS = [_]tool.Definition{
-    .{
-        .name = "Discuss",
-        .description = "Discuss uncertainty, options, or feedback with the user before continuing the task.",
-        .parameters_schema =
-        \\{"type":"object","additionalProperties":false,"properties":{"topic":{"type":"string"},"message":{"type":"string"}},"required":["message"]}
-        ,
-        .kind = .interaction,
-        .scheduling = .serial,
-    },
-    .{
-        .name = "Glob",
-        .description = "Find workspace files matching a glob pattern.",
-        .parameters_schema =
-        \\{"type":"object","additionalProperties":false,"properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}
-        ,
-        .kind = .observe,
-        .effects = .{ .reads_workspace = true },
-    },
-    .{
-        .name = "Grep",
-        .description = "Search workspace files for text or a regular expression.",
-        .parameters_schema =
-        \\{"type":"object","additionalProperties":false,"properties":{"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string"}},"required":["pattern"]}
-        ,
-        .kind = .observe,
-        .effects = .{ .reads_workspace = true },
-    },
-    .{
-        .name = "Read",
-        .description = "Read a bounded range from a workspace file.",
-        .parameters_schema =
-        \\{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1}},"required":["path"]}
-        ,
-        .kind = .observe,
-        .effects = .{ .reads_workspace = true },
-    },
-    .{
-        .name = "Edit",
-        .description = "Replace one exact text occurrence in a workspace file.",
-        .parameters_schema =
-        \\{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"}},"required":["path","old","new"]}
-        ,
-        .kind = .mutate,
-        .scheduling = .serial,
-        .effects = .{ .reads_workspace = true, .writes_workspace = true },
-        .failure_policy = .stop_on_error,
-    },
-    .{
-        .name = "Write",
-        .description = "Write content to a workspace file.",
-        .parameters_schema =
-        \\{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}
-        ,
-        .kind = .mutate,
-        .scheduling = .serial,
-        .effects = .{ .writes_workspace = true },
-        .failure_policy = .stop_on_error,
-    },
-    .{
-        .name = "Bash",
-        .description = "Run a shell command in the workspace with runtime limits.",
-        .parameters_schema =
-        \\{"type":"object","additionalProperties":false,"properties":{"command":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["command"]}
-        ,
-        .kind = .command,
-        .scheduling = .serial,
-        .effects = .{ .external_side_effect = true },
-        .failure_policy = .stop_on_error,
-    },
+    discuss.DEFINITION,
+    glob.DEFINITION,
+    grep.DEFINITION,
+    read.DEFINITION,
+    edit.DEFINITION,
+    write.DEFINITION,
+    bash.DEFINITION,
 };
 
 const testing = std.testing;

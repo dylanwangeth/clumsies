@@ -20,10 +20,19 @@ pub const Call = struct {
 /// This is not a provider transcript message yet. The agent loop combines a
 /// `Call.id` with this result to produce `transcript.ToolResultMessage`, which
 /// provider adapters then serialize as request-side tool messages.
+///
+/// `owns_content` marks content allocated by the invoker with the same
+/// allocator passed to `invoke`. The agent loop copies the content into the
+/// transcript before calling `deinit`.
 pub const Result = struct {
     content: []const u8,
+    owns_content: bool = false,
     is_error: bool = false,
     control: Control = .continue_run,
+
+    pub fn deinit(self: Result, allocator: std.mem.Allocator) void {
+        if (self.owns_content) allocator.free(self.content);
+    }
 };
 
 /// Runtime control signal carried by a tool result.
@@ -169,9 +178,6 @@ pub const Runtime = struct {
         allocator: std.mem.Allocator,
         calls: []const Call,
     ) anyerror![]Result {
-        // Resolve the provider-requested calls once before execution. This is
-        // where unknown tools become model-visible unavailable calls, or a
-        // batch-level error when the runtime is configured strictly.
         const resolved = try self.resolveBatch(allocator, calls);
         defer allocator.free(resolved);
 
@@ -222,6 +228,11 @@ pub const Runtime = struct {
         return results;
     }
 
+    /// Resolves every provider-requested call before any tool can run.
+    ///
+    /// That keeps lookup errors and unknown-tool policy decisions separate
+    /// from execution side effects; after this function returns, the runtime
+    /// only walks already-classified calls.
     fn resolveBatch(
         self: *Runtime,
         allocator: std.mem.Allocator,
@@ -230,18 +241,18 @@ pub const Runtime = struct {
         const resolved = try allocator.alloc(ResolvedCall, calls.len);
         errdefer allocator.free(resolved);
 
-        // Resolve in input order before any tool has side effects. After this
-        // point execution is just a walk over already-classified calls.
         for (calls, resolved) |call, *item| {
             item.* = try self.resolveCall(call);
         }
         return resolved;
     }
 
+    /// Converts one raw provider call into executable runtime type-state.
+    ///
+    /// A resolved call is either executable with a concrete definition or a
+    /// model-visible unavailable result. Keeping this decision here avoids
+    /// re-looking-up metadata while tools are being invoked.
     fn resolveCall(self: *Runtime, call: Call) anyerror!ResolvedCall {
-        // A resolved call is either executable with a concrete definition or a
-        // model-visible unavailable result. Keeping this decision here avoids
-        // re-looking-up metadata while tools are being invoked.
         if (try self.registry.lookup(call.name)) |definition| {
             return .{ .call = call, .action = .{ .invoke = definition } };
         }
@@ -255,6 +266,11 @@ pub const Runtime = struct {
         };
     }
 
+    /// Executes one segment whose calls are all parallel-capable.
+    ///
+    /// The current implementation is deterministic and sequential. The segment
+    /// boundary exists so a future executor can run this group concurrently
+    /// while still returning results in assistant call order.
     fn executeParallelCapableSegment(
         self: *Runtime,
         allocator: std.mem.Allocator,
@@ -270,6 +286,11 @@ pub const Runtime = struct {
         return should_stop_after_segment;
     }
 
+    /// Executes or materializes one resolved call result.
+    ///
+    /// Tool invocation errors become model-visible results. Returning an error
+    /// from `executeBatch` is reserved for runtime failures such as registry or
+    /// allocation failures.
     fn executeOne(
         self: *Runtime,
         allocator: std.mem.Allocator,
@@ -278,9 +299,6 @@ pub const Runtime = struct {
     ) anyerror!bool {
         switch (resolved.action) {
             .invoke => |definition| {
-                // Tool invocation errors are converted into model-visible
-                // results. Returning an error from executeBatch is reserved for
-                // runtime failures such as registry or allocation failures.
                 result.* = self.invoker.invoke(allocator, resolved.call, definition) catch |err| .{
                     .content = @errorName(err),
                     .is_error = true,
@@ -288,14 +306,16 @@ pub const Runtime = struct {
                 return definition.failure_policy == .stop_on_error and result.is_error;
             },
             .unavailable => |reason| {
-                // Unavailable tools still produce a result slot so the agent
-                // loop can send one tool-result message per provider call id.
                 result.* = unavailableResult(reason);
                 return false;
             },
         }
     }
 
+    /// Converts a non-executable resolved call into a model-visible result.
+    ///
+    /// Unknown or unavailable tools still need a result slot so provider
+    /// `tool_call_id` ordering remains valid.
     fn unavailableResult(reason: UnavailableReason) Result {
         return switch (reason) {
             .unknown_tool => .{
@@ -305,6 +325,11 @@ pub const Runtime = struct {
         };
     }
 
+    /// Fills unexecuted result slots after `stop_on_error` halts the batch.
+    ///
+    /// The runtime preserves one result per original call even when later calls
+    /// are skipped, because provider APIs require every tool call to receive a
+    /// corresponding tool-result message.
     fn fillSkipped(results: []Result) void {
         for (results) |*result| {
             result.* = .{
@@ -319,13 +344,19 @@ const ResolvedCall = struct {
     call: Call,
     action: Action,
 
-    // Private type-state for runtime execution. Public API stays at Call and
-    // Result; this only prevents the executor from re-looking-up tool metadata.
+    /// Private type-state for runtime execution.
+    ///
+    /// Public API stays at `Call` and `Result`; this only prevents the executor
+    /// from re-looking-up tool metadata after calls have been resolved.
     const Action = union(enum) {
         invoke: Definition,
         unavailable: UnavailableReason,
     };
 
+    /// Returns execution scheduling for the resolved action.
+    ///
+    /// Unavailable calls are treated as parallel because they only materialize
+    /// local error results and have no side effects.
     fn scheduling(self: ResolvedCall) Scheduling {
         return switch (self.action) {
             .invoke => |definition| definition.scheduling,

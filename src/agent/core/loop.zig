@@ -26,9 +26,11 @@ pub const RunOptions = struct {
 /// Runs the provider-neutral agent loop until completion, termination, or turn
 /// exhaustion.
 ///
-/// Prompt messages are copied into the returned transcript array as borrowed
-/// message values. Provider and tool adapters are responsible for ensuring
-/// nested content slices remain valid for the returned transcript lifetime.
+/// `run` is the core orchestration boundary: it builds provider requests,
+/// appends assistant/tool-result messages, calls local tools, and gives memory
+/// a chance to pull/push around every provider inference. Message payloads are
+/// copied by `transcript.Builder`, so providers and tools may return temporary
+/// buffers as long as the loop appends them before deinit.
 pub fn run(
     allocator: std.mem.Allocator,
     prompts: []const transcript.Message,
@@ -86,7 +88,10 @@ pub fn run(
         // The tool runtime owns scheduling and per-tool failure handling, but
         // must return one result per input call so call ids stay aligned.
         const tool_results = try options.tool_runtime.executeBatch(allocator, tool_calls);
-        defer allocator.free(tool_results);
+        defer {
+            for (tool_results) |result| result.deinit(allocator);
+            allocator.free(tool_results);
+        }
 
         var stop_request_count: usize = 0;
         for (tool_calls, tool_results) |call, result| {
@@ -140,6 +145,11 @@ fn emit(event_sink: ?event.Sink, new_event: event.Event) !void {
     if (event_sink) |sink| try sink.emit(new_event);
 }
 
+/// Pushes post-inference evidence when a memory layer is attached.
+///
+/// Memory is deliberately optional and outside the tool runtime; the loop calls
+/// this helper after assistant messages, tool results, and run end events so a
+/// future graph-memory layer can ingest evidence without becoming model-callable.
 fn pushMemory(
     memory_layer: ?Memory,
     history: []const transcript.Message,

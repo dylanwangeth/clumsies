@@ -15,6 +15,11 @@ const PROVIDER_ENV_KEYS = [_][]const u8{
     "CLUMSIES_AGENT_PROVIDER_AUTH_HEADER",
 };
 
+/// Runs one prompt through the real agent loop and prints the final reply.
+///
+/// The command intentionally avoids a direct provider call so CLI smoke tests
+/// exercise the same tool declaration, execution, and transcript replay path
+/// that future interactive surfaces will use.
 pub fn run(
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
@@ -55,9 +60,12 @@ pub fn run(
         .{ .user = .{ .content = prompt } },
     };
 
-    const assistant = provider_state.provider().respond(allocator, .{
-        .messages = &messages,
-        .options = .{ .max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS },
+    var builtins: agent.tools.Builtin = .{};
+    var tool_runtime = builtins.runtime();
+    const transcript = agent.loop.run(allocator, &messages, .{
+        .model_provider = provider_state.provider(),
+        .tool_runtime = &tool_runtime,
+        .provider_options = .{ .max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS },
     }) catch |err| {
         if (provider_state.takeLastError()) |provider_error| {
             defer provider_error.deinit(allocator);
@@ -73,8 +81,10 @@ pub fn run(
         });
         return error.CommandFailed;
     };
+    defer transcript.deinit(allocator);
 
-    if (assistant.content.len == 0 and assistant.tool_calls.len == 0) {
+    const final_content = lastAssistantContent(transcript.messages) orelse "";
+    if (final_content.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} provider returned an empty assistant message.\n", .{
             P,
             Color.bold,
@@ -84,17 +94,7 @@ pub fn run(
         return error.CommandFailed;
     }
 
-    if (assistant.content.len > 0) {
-        try stdout.print("{s}\n", .{assistant.content});
-        return;
-    }
-
-    try stdout.print("{s}{s}No text content returned; tool calls: {d}{s}\n", .{
-        P,
-        Color.dim,
-        assistant.tool_calls.len,
-        Color.reset,
-    });
+    try stdout.print("{s}\n", .{final_content});
 }
 
 fn printHelp(stdout: *std.Io.Writer) !void {
@@ -146,6 +146,10 @@ fn loadProviderDotEnv(allocator: std.mem.Allocator, env_map: *std.process.EnvMap
     }
 }
 
+/// Applies one `.env` line when it belongs to the provider configuration.
+///
+/// `.env` is allowed to override process environment for provider keys only;
+/// this command should not silently change unrelated client behavior.
 fn applyProviderEnvLine(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, line: []const u8) !void {
     const trimmed = std.mem.trim(u8, line, " \t\r");
     if (trimmed.len == 0 or trimmed[0] == '#') return;
@@ -174,6 +178,22 @@ fn stripQuotes(s: []const u8) []const u8 {
         return s[1 .. s.len - 1];
     }
     return s;
+}
+
+/// Finds the final textual assistant response after any tool turns.
+///
+/// Earlier assistant messages may only request tools. The CLI should print the
+/// later response produced after tool results have been replayed to the model.
+fn lastAssistantContent(messages: []const agent.transcript.Message) ?[]const u8 {
+    var index = messages.len;
+    while (index > 0) {
+        index -= 1;
+        switch (messages[index]) {
+            .assistant => |assistant| if (assistant.content.len > 0) return assistant.content,
+            else => {},
+        }
+    }
+    return null;
 }
 
 fn printProviderHttpError(stderr: *std.Io.Writer, provider_error: agent.providers.OpenAICompatible.ProviderError) !void {

@@ -43,6 +43,7 @@ pub const ProviderError = struct {
     status: http.Status,
     body: []const u8,
 
+    /// Releases the retained HTTP error body.
     pub fn deinit(self: ProviderError, allocator: std.mem.Allocator) void {
         allocator.free(self.body);
     }
@@ -58,10 +59,11 @@ const RequestBody = struct {
     stream: bool = false,
 };
 
-// OpenAI Chat Completions uses message-level `tool_calls` to replay prior
-// assistant tool-call requests, paired with later `role = "tool"` messages via
-// `tool_call_id`. Top-level `tools` is a separate request contract for
-// declaring what the model may call.
+/// OpenAI-compatible message shape used inside Chat Completions requests.
+///
+/// Message-level `tool_calls` replays prior assistant tool-call requests,
+/// paired with later `role = "tool"` messages via `tool_call_id`. Top-level
+/// `tools` is a separate request contract for declaring what the model may call.
 const MessageJson = struct {
     role: Role,
     content: []const u8 = "",
@@ -105,6 +107,7 @@ const ToolDefinitionsJson = struct {
     tools: []const ToolDefinitionJson,
     parsed_parameters: []std.json.Parsed(std.json.Value),
 
+    /// Releases parsed JSON schema objects held alive for request stringify.
     fn deinit(self: ToolDefinitionsJson, allocator: std.mem.Allocator) void {
         for (self.parsed_parameters) |parsed| {
             parsed.deinit();
@@ -138,18 +141,25 @@ pub fn init(allocator: std.mem.Allocator, config: Config) OpenAICompatible {
     };
 }
 
+/// Releases provider-owned HTTP state and arena-backed assistant payloads.
 pub fn deinit(self: *OpenAICompatible) void {
     self.clearLastError();
     self.arena.deinit();
     self.transport.deinit();
 }
 
+/// Moves the last HTTP error out for CLI/UI diagnostics.
+///
+/// Non-OK provider responses return `error.ProviderRequestFailed`; this method
+/// lets callers retrieve the response status/body without making that transport
+/// shape part of the provider-neutral core interface.
 pub fn takeLastError(self: *OpenAICompatible) ?ProviderError {
     const last_error = self.last_error;
     self.last_error = null;
     return last_error;
 }
 
+/// Exposes this adapter through the provider-neutral core port.
 pub fn provider(self: *OpenAICompatible) Provider {
     return .{
         .ctx = self,
@@ -158,6 +168,7 @@ pub fn provider(self: *OpenAICompatible) Provider {
     };
 }
 
+/// Returns provider identity without coupling the core to adapter config.
 fn metadata(ctx: *anyopaque) Provider.Metadata {
     const self: *OpenAICompatible = @ptrCast(@alignCast(ctx));
     return .{
@@ -166,6 +177,11 @@ fn metadata(ctx: *anyopaque) Provider.Metadata {
     };
 }
 
+/// Executes one OpenAI-compatible chat completions request.
+///
+/// This is the adapter's main boundary: it merges transient request context
+/// before durable transcript history, declares available tools, sends the wire
+/// request, and normalizes the first assistant choice back into core types.
 fn respond(
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
@@ -215,6 +231,7 @@ fn respond(
     return assistantFromJson(self.arena.allocator(), parsed.value.choices[0].message);
 }
 
+/// Releases temporary message-level tool-call arrays created for JSON encoding.
 fn freeMessageJson(allocator: std.mem.Allocator, messages: []const MessageJson) void {
     for (messages) |message| {
         if (message.tool_calls) |calls| allocator.free(calls);
@@ -320,8 +337,8 @@ fn toolDefinitionsToJson(
 
 /// Normalizes the first provider choice into a core assistant message.
 ///
-/// The returned content and tool-call fields are arena-owned by the provider so
-/// they remain valid for the transcript returned by the agent loop.
+/// The returned content and tool-call fields are arena-owned by the provider.
+/// The agent loop copies them into its transcript builder before the next turn.
 fn assistantFromJson(
     allocator: std.mem.Allocator,
     message: AssistantJson,
@@ -352,6 +369,7 @@ fn assistantFromJson(
     };
 }
 
+/// Releases already-cloned calls during assistant parsing failure cleanup.
 fn freeOwnedCalls(allocator: std.mem.Allocator, calls: []const tool.Call) void {
     for (calls) |call| {
         allocator.free(call.id);
@@ -360,6 +378,11 @@ fn freeOwnedCalls(allocator: std.mem.Allocator, calls: []const tool.Call) void {
     }
 }
 
+/// Sends the serialized Chat Completions body and preserves non-OK responses.
+///
+/// The provider interface returns a normal Zig error on failure, while
+/// `last_error` keeps the provider-specific HTTP status/body available for
+/// diagnostics outside the core loop.
 fn fetchChatCompletions(self: *OpenAICompatible, body: []const u8) ![]const u8 {
     self.clearLastError();
 
@@ -407,6 +430,7 @@ fn fetchChatCompletions(self: *OpenAICompatible, body: []const u8) ![]const u8 {
     return response.body;
 }
 
+/// Clears any stored provider HTTP error body.
 fn clearLastError(self: *OpenAICompatible) void {
     if (self.last_error) |last_error| {
         self.allocator.free(last_error.body);
@@ -414,6 +438,7 @@ fn clearLastError(self: *OpenAICompatible) void {
     }
 }
 
+/// Builds the OpenAI-compatible chat completions endpoint from a base URL.
 fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
     const trimmed = std.mem.trimRight(u8, base_url, "/");
     return std.fmt.allocPrint(allocator, "{s}/chat/completions", .{trimmed});

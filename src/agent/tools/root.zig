@@ -4,9 +4,27 @@
 //! expose is a product/runtime decision, not part of the provider-neutral agent
 //! contract.
 
+pub const bash = @import("bash.zig");
+pub const Builtin = @import("builtin.zig");
 pub const catalog = @import("catalog.zig");
+pub const discuss = @import("discuss.zig");
+pub const edit = @import("edit.zig");
+pub const glob = @import("glob.zig");
+pub const grep = @import("grep.zig");
+pub const read = @import("read.zig");
+pub const workspace = @import("workspace.zig");
+pub const write = @import("write.zig");
 pub const DEFINITIONS = catalog.DEFINITIONS;
 
 test {
+    _ = bash;
+    _ = Builtin;
     _ = catalog;
+    _ = discuss;
+    _ = edit;
+    _ = glob;
+    _ = grep;
+    _ = read;
+    _ = workspace;
+    _ = write;
 }
