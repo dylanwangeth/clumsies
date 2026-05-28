@@ -14,9 +14,9 @@
 const std = @import("std");
 const http = std.http;
 const HttpTransport = @import("../../net/http_transport.zig");
-const Provider = @import("../provider.zig");
-const tool = @import("../tool.zig");
-const transcript = @import("../transcript.zig");
+const Provider = @import("../core/provider.zig");
+const tool = @import("../core/tool.zig");
+const transcript = @import("../core/transcript.zig");
 
 const OpenAICompatible = @This();
 
@@ -173,11 +173,18 @@ fn respond(
 ) !transcript.AssistantMessage {
     const self: *OpenAICompatible = @ptrCast(@alignCast(ctx));
 
-    const messages_json = try allocator.alloc(MessageJson, request.messages.len);
+    const messages_json = try allocator.alloc(MessageJson, request.context.len + request.messages.len);
     defer allocator.free(messages_json);
     var message_count: usize = 0;
     defer freeMessageJson(allocator, messages_json[0..message_count]);
-    for (request.messages, messages_json) |message, *message_json| {
+    for (request.context, messages_json[0..request.context.len]) |message, *message_json| {
+        message_json.* = try messageToJson(allocator, message);
+        message_count += 1;
+    }
+    for (
+        request.messages,
+        messages_json[request.context.len .. request.context.len + request.messages.len],
+    ) |message, *message_json| {
         message_json.* = try messageToJson(allocator, message);
         message_count += 1;
     }

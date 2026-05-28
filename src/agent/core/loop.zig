@@ -6,7 +6,9 @@
 //! `tool.Runtime` resolves and invokes model-requested tools.
 
 const std = @import("std");
+const Assembler = @import("assembler.zig");
 const event = @import("event.zig");
+const Memory = @import("memory.zig");
 const Provider = @import("provider.zig");
 const tool = @import("tool.zig");
 const transcript = @import("transcript.zig");
@@ -16,6 +18,7 @@ pub const RunOptions = struct {
     model_provider: Provider,
     provider_options: Provider.Options = .{},
     tool_runtime: *tool.Runtime,
+    memory: ?Memory = null,
     event_sink: ?event.Sink = null,
     max_turns: usize = 32,
 };
@@ -47,13 +50,16 @@ pub fn run(
         // One provider response defines the full assistant turn, including any
         // unordered tool-call batch requested by the model.
         const available_tools = try options.tool_runtime.definitions();
-        const assistant = try options.model_provider.respond(allocator, .{
-            .messages = history.items(),
+        const request = try (Assembler{ .memory = options.memory }).build(.{
+            .history = history.items(),
             .tools = available_tools,
-            .options = options.provider_options,
+            .provider_options = options.provider_options,
+            .turn_index = turn_index,
         });
+        const assistant = try options.model_provider.respond(allocator, request);
         try history.append(allocator, .{ .assistant = assistant });
         try emit(options.event_sink, .{ .message_append = .{ .assistant = assistant } });
+        try pushMemory(options.memory, history.items(), turn_index, .{ .assistant = assistant });
 
         const tool_calls = assistant.tool_calls;
         if (tool_calls.len == 0) {
@@ -67,7 +73,10 @@ pub fn run(
                 .reason = .complete,
                 .message_count = history.len(),
             } });
-            return history.finish(allocator, .complete);
+            var result = try history.finish(allocator, .complete);
+            errdefer result.deinit(allocator);
+            try pushMemory(options.memory, result.messages, turn_index, .{ .run_end = .complete });
+            return result;
         }
 
         for (tool_calls) |call| {
@@ -95,6 +104,7 @@ pub fn run(
             };
             try history.append(allocator, .{ .tool_result = result_message });
             try emit(options.event_sink, .{ .message_append = .{ .tool_result = result_message } });
+            try pushMemory(options.memory, history.items(), turn_index, .{ .tool_result = result_message });
         }
 
         try emit(options.event_sink, .{
@@ -109,7 +119,10 @@ pub fn run(
                 .reason = .terminated,
                 .message_count = history.len(),
             } });
-            return history.finish(allocator, .terminated);
+            var result = try history.finish(allocator, .terminated);
+            errdefer result.deinit(allocator);
+            try pushMemory(options.memory, result.messages, turn_index, .{ .run_end = .terminated });
+            return result;
         }
     }
 
@@ -117,11 +130,29 @@ pub fn run(
         .reason = .max_turns,
         .message_count = history.len(),
     } });
-    return history.finish(allocator, .max_turns);
+    var result = try history.finish(allocator, .max_turns);
+    errdefer result.deinit(allocator);
+    try pushMemory(options.memory, result.messages, turn_index, .{ .run_end = .max_turns });
+    return result;
 }
 
 fn emit(event_sink: ?event.Sink, new_event: event.Event) !void {
     if (event_sink) |sink| try sink.emit(new_event);
+}
+
+fn pushMemory(
+    memory_layer: ?Memory,
+    history: []const transcript.Message,
+    turn_index: usize,
+    push_event: Memory.PushEvent,
+) !void {
+    if (memory_layer) |memory| {
+        try memory.push(.{
+            .history = history,
+            .turn_index = turn_index,
+            .event = push_event,
+        });
+    }
 }
 
 const testing = std.testing;
@@ -290,12 +321,52 @@ test "agent loop uses the configured tool runtime" {
     try testing.expectEqual(@as(transcript.EndReason, .complete), result.end_reason);
 }
 
+test "agent loop pulls memory context for provider calls and pushes inference evidence" {
+    var memory_state: TestMemory = .{};
+    const calls = [_]tool.Call{
+        .{ .id = "call_1", .name = "read" },
+    };
+    var provider_state: TestProvider = .{
+        .first_tool_calls = &calls,
+        .expected_context_len = 1,
+    };
+    var invoker_state: TestInvoker = .{};
+    var registry_state: TestRegistry = .{ .definitions = &.{
+        .{ .name = "read" },
+    } };
+    var runtime: tool.Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
+    const prompts = [_]transcript.Message{
+        .{ .user = .{ .content = "use pulled context" } },
+    };
+
+    const result = try run(testing.allocator, &prompts, .{
+        .model_provider = provider_state.provider(),
+        .tool_runtime = &runtime,
+        .memory = memory_state.memory(),
+    });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), memory_state.pull_count);
+    try testing.expectEqual(@as(usize, 4), memory_state.push_count);
+    try testing.expect(memory_state.saw_assistant);
+    try testing.expect(memory_state.saw_tool_result);
+    try testing.expect(memory_state.saw_run_end);
+    try testing.expectEqual(@as(usize, 4), result.messages.len);
+    try testing.expectEqual(@as(std.meta.Tag(transcript.Message), .user), std.meta.activeTag(result.messages[0]));
+    try testing.expectEqualStrings("use pulled context", result.messages[0].user.content);
+    try testing.expectEqual(@as(usize, 4), memory_state.last_history_len);
+}
+
 // Private adapters used by this file's tests. Keeping them here makes the
 // provider/tool contracts executable without exporting scripted runtime types.
 const TestProvider = struct {
     calls: usize = 0,
     first_tool_calls: []const tool.Call,
     expected_tools_len: ?usize = null,
+    expected_context_len: ?usize = null,
 
     fn provider(self: *TestProvider) Provider {
         return .{ .ctx = self, .respond_fn = respond };
@@ -311,6 +382,10 @@ const TestProvider = struct {
         self.calls += 1;
         if (self.expected_tools_len) |expected| {
             try testing.expectEqual(expected, request.tools.len);
+        }
+        if (self.expected_context_len) |expected| {
+            try testing.expectEqual(expected, request.context.len);
+            try testing.expectEqualStrings("memory context", request.context[0].user.content);
         }
         if (self.calls == 1) {
             return .{
@@ -384,6 +459,7 @@ const TestRegistry = struct {
 fn expectDefinitionEqual(expected: tool.Definition, actual: tool.Definition) !void {
     try testing.expectEqualStrings(expected.name, actual.name);
     try testing.expectEqualStrings(expected.description, actual.description);
+    try testing.expectEqual(expected.kind, actual.kind);
     try testing.expectEqual(expected.scheduling, actual.scheduling);
     try testing.expectEqual(expected.effects.reads_workspace, actual.effects.reads_workspace);
     try testing.expectEqual(expected.effects.writes_workspace, actual.effects.writes_workspace);
@@ -405,5 +481,50 @@ const EventRecorder = struct {
     fn emitEvent(ctx: *anyopaque, new_event: event.Event) !void {
         const self: *EventRecorder = @ptrCast(@alignCast(ctx));
         try self.events.append(testing.allocator, new_event);
+    }
+};
+
+const TestMemory = struct {
+    pull_count: usize = 0,
+    push_count: usize = 0,
+    last_history_len: usize = 0,
+    saw_assistant: bool = false,
+    saw_tool_result: bool = false,
+    saw_run_end: bool = false,
+    context_messages: [1]transcript.Message = .{
+        .{ .user = .{ .content = "memory context" } },
+    },
+
+    fn memory(self: *TestMemory) Memory {
+        return .{
+            .ctx = self,
+            .pull_fn = pull,
+            .push_fn = push,
+        };
+    }
+
+    fn pull(
+        ctx: ?*anyopaque,
+        input: Memory.PullInput,
+    ) !Memory.PullResult {
+        const self: *TestMemory = @ptrCast(@alignCast(ctx.?));
+        self.pull_count += 1;
+        self.last_history_len = input.history.len;
+        try testing.expectEqual(self.pull_count - 1, input.turn_index);
+        return .{ .messages = self.context_messages[0..] };
+    }
+
+    fn push(
+        ctx: ?*anyopaque,
+        input: Memory.PushInput,
+    ) !void {
+        const self: *TestMemory = @ptrCast(@alignCast(ctx.?));
+        self.push_count += 1;
+        self.last_history_len = input.history.len;
+        switch (input.event) {
+            .assistant => self.saw_assistant = true,
+            .tool_result => self.saw_tool_result = true,
+            .run_end => self.saw_run_end = true,
+        }
     }
 };

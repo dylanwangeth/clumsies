@@ -54,9 +54,23 @@ pub const Definition = struct {
     parameters_schema: []const u8 =
         \\{"type":"object","properties":{}}
     ,
+    kind: Kind = .extension,
     scheduling: Scheduling = .parallel,
     effects: Effects = .{},
     failure_policy: FailurePolicy = .collect_all,
+};
+
+/// Runtime-facing tool category used by policy and UI layers.
+///
+/// Tool kinds do not create execution layers: every tool is still registered
+/// and invoked through the same flat runtime. The kind only explains what sort
+/// of action is being requested.
+pub const Kind = enum {
+    interaction,
+    observe,
+    mutate,
+    command,
+    extension,
 };
 
 /// Whether calls to this tool can share an execution segment with other work.

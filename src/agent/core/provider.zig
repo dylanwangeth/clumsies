@@ -33,13 +33,15 @@ pub const Options = struct {
     max_output_tokens: ?u32 = null,
 };
 
-/// Provider-neutral request built by the agent loop.
+/// Provider-neutral request built by the assembler.
 ///
-/// `messages` is the conversation context to send this turn. `tools` is the
-/// request-level capability declaration: adapters decide how to encode those
-/// definitions for their provider.
+/// `messages` is the durable conversation history. `context` is transient
+/// memory pulled for this inference only. `tools` is the request-level
+/// capability declaration: adapters decide how to encode those definitions for
+/// their provider.
 pub const Request = struct {
     messages: []const transcript.Message,
+    context: []const transcript.Message = &.{},
     tools: []const tool.Definition = &.{},
     options: Options = .{},
 };
