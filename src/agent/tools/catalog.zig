@@ -10,20 +10,18 @@ const tool = @import("../core/tool.zig");
 const bash = @import("bash.zig");
 const discuss = @import("discuss.zig");
 const edit = @import("edit.zig");
-const glob = @import("glob.zig");
-const grep = @import("grep.zig");
 const read = @import("read.zig");
+const search = @import("search.zig");
 const write = @import("write.zig");
 
 /// Minimal tool declarations exposed by the first coding-agent surface.
 ///
-/// These definitions intentionally use Claude Code-style one-word names. They
-/// define the provider-facing contract only; concrete invokers can start small
-/// and grow behavior behind the same names.
+/// These definitions intentionally use agent-facing one-word names. They define
+/// the provider-facing contract only; concrete invokers can start small and grow
+/// behavior behind the same names.
 pub const DEFINITIONS = [_]tool.Definition{
     discuss.DEFINITION,
-    glob.DEFINITION,
-    grep.DEFINITION,
+    search.DEFINITION,
     read.DEFINITION,
     edit.DEFINITION,
     write.DEFINITION,
@@ -35,8 +33,7 @@ const testing = std.testing;
 test "tool catalog definitions use one-word names and valid schemas" {
     const expected_names = [_][]const u8{
         "Discuss",
-        "Glob",
-        "Grep",
+        "Search",
         "Read",
         "Edit",
         "Write",

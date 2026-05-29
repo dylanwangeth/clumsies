@@ -10,9 +10,8 @@ const bash = @import("bash.zig");
 const catalog = @import("catalog.zig");
 const discuss = @import("discuss.zig");
 const edit = @import("edit.zig");
-const glob = @import("glob.zig");
-const grep = @import("grep.zig");
 const read = @import("read.zig");
+const search = @import("search.zig");
 const workspace = @import("workspace.zig");
 const write = @import("write.zig");
 
@@ -112,11 +111,8 @@ fn invoke(
     if (std.mem.eql(u8, definition.name, read.DEFINITION.name)) {
         return read.invoke(allocator, tool_context, call.arguments);
     }
-    if (std.mem.eql(u8, definition.name, glob.DEFINITION.name)) {
-        return glob.invoke(allocator, tool_context, call.arguments);
-    }
-    if (std.mem.eql(u8, definition.name, grep.DEFINITION.name)) {
-        return grep.invoke(allocator, tool_context, call.arguments);
+    if (std.mem.eql(u8, definition.name, search.DEFINITION.name)) {
+        return search.invoke(allocator, tool_context, call.arguments);
     }
     if (std.mem.eql(u8, definition.name, discuss.DEFINITION.name)) return discuss.invoke();
     if (std.mem.eql(u8, definition.name, edit.DEFINITION.name)) return edit.invoke();
@@ -163,14 +159,17 @@ test "built-in runtime dispatches read-only tools" {
     var tool_runtime = builtins.runtime();
     const calls = [_]tool.Call{
         .{ .id = "call_1", .name = "Read", .arguments = "{\"path\":\"main.zig\"}" },
+        .{ .id = "call_2", .name = "Search", .arguments = "{\"target\":\"content\",\"query\":\"std\",\"glob\":\"*.zig\"}" },
     };
 
     const results = try tool_runtime.executeBatch(testing.allocator, &calls);
     defer deinitResults(testing.allocator, results);
 
-    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqual(@as(usize, 2), results.len);
     try testing.expect(!results[0].is_error);
     try testing.expect(std.mem.indexOf(u8, results[0].content, "file: main.zig") != null);
+    try testing.expect(!results[1].is_error);
+    try testing.expect(std.mem.indexOf(u8, results[1].content, "main.zig:1:") != null);
 }
 
 test "built-in Discuss skeleton stops the run for user interaction" {
