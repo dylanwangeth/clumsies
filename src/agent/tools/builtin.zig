@@ -21,6 +21,8 @@ const Builtin = @This();
 workspace_path: []const u8 = ".",
 max_read_bytes: usize = 64 * 1024,
 max_matches: usize = 100,
+command_timeout_ms: u64 = 30 * 1000,
+max_command_output_bytes: usize = 50 * 1024,
 
 /// Exposes built-in tool definitions through the core registry port.
 ///
@@ -68,6 +70,8 @@ fn context(self: Builtin) workspace.Context {
         .workspace_path = self.workspace_path,
         .max_read_bytes = self.max_read_bytes,
         .max_matches = self.max_matches,
+        .command_timeout_ms = self.command_timeout_ms,
+        .max_command_output_bytes = self.max_command_output_bytes,
     };
 }
 
@@ -122,7 +126,9 @@ fn invoke(
     if (std.mem.eql(u8, definition.name, write.DEFINITION.name)) {
         return write.invoke(allocator, tool_context, call.arguments);
     }
-    if (std.mem.eql(u8, definition.name, bash.DEFINITION.name)) return bash.invoke(allocator);
+    if (std.mem.eql(u8, definition.name, bash.DEFINITION.name)) {
+        return bash.invoke(allocator, tool_context, call.arguments);
+    }
     return tool_result.fail(
         allocator,
         "not_implemented",
@@ -176,6 +182,30 @@ test "built-in runtime dispatches read-only tools" {
     try testing.expect(std.mem.indexOf(u8, results[0].content, "file: main.zig") != null);
     try testing.expect(!results[1].is_error);
     try testing.expect(std.mem.indexOf(u8, results[1].content, "main.zig:1:") != null);
+}
+
+test "built-in runtime dispatches Bash with workspace bounds" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "marker.txt", .data = "ok\n" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var builtins: Builtin = .{
+        .workspace_path = try tmp.dir.realpath(".", &path_buf),
+        .command_timeout_ms = 1000,
+        .max_command_output_bytes = 1024,
+    };
+    var tool_runtime = builtins.runtime();
+    const calls = [_]tool.Call{
+        .{ .id = "call_1", .name = "Bash", .arguments = "{\"command\":\"cat marker.txt\"}" },
+    };
+
+    const results = try tool_runtime.executeBatch(testing.allocator, &calls);
+    defer deinitResults(testing.allocator, results);
+
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expect(!results[0].is_error);
+    try testing.expect(std.mem.indexOf(u8, results[0].content, "\"stdout\":\"ok\\n\"") != null);
 }
 
 test "built-in Discuss skeleton stops the run for user interaction" {

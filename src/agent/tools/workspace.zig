@@ -12,6 +12,8 @@ pub const Context = struct {
     workspace_path: []const u8 = ".",
     max_read_bytes: usize = 64 * 1024,
     max_matches: usize = 100,
+    command_timeout_ms: u64 = 30 * 1000,
+    max_command_output_bytes: usize = 50 * 1024,
 };
 
 /// Opens the configured workspace without letting tool arguments choose a root.

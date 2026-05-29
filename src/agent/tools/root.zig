@@ -9,6 +9,7 @@ pub const Builtin = @import("builtin.zig");
 pub const catalog = @import("catalog.zig");
 pub const discuss = @import("discuss.zig");
 pub const edit = @import("edit.zig");
+pub const process = @import("process.zig");
 pub const read = @import("read.zig");
 pub const result = @import("result.zig");
 pub const search = @import("search.zig");
@@ -22,6 +23,7 @@ test {
     _ = catalog;
     _ = discuss;
     _ = edit;
+    _ = process;
     _ = read;
     _ = result;
     _ = search;
