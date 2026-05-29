@@ -1045,7 +1045,7 @@ fn appendLoadCountPart(
 ) std.mem.Allocator.Error!void {
     if (count == 0) return;
     if (parts.items.len > 0) try parts.appendSlice(allocator, ", ");
-    try parts.writer(allocator).print("{d} {s}", .{ count, if (count == 1) singular else plural });
+    try parts.print(allocator, "{d} {s}", .{ count, if (count == 1) singular else plural });
 }
 
 fn loadToolId(tool: attestation_reader.RoundTool) ?[]const u8 {

@@ -322,7 +322,10 @@ fn normalizedHash(hash: []const u8) []const u8 {
 fn writeTestFile(dir: std.fs.Dir, path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(path, .{ .truncate = true });
     defer file.close();
-    try file.writeAll(content);
+    var buf: [4096]u8 = undefined;
+    var writer = std.fs.File.Writer.init(file, &buf);
+    try writer.interface.writeAll(content);
+    try writer.interface.flush();
 }
 
 test "hashesEqual accepts prefixed and bare hashes" {

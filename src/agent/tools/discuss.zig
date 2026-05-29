@@ -4,7 +4,9 @@
 //! the UI has a pause/resume flow, the runtime returns a model-visible pending
 //! result with `.stop_run` so the loop exits cleanly.
 
+const std = @import("std");
 const tool = @import("../core/tool.zig");
+const tool_result = @import("result.zig");
 
 pub const DEFINITION: tool.Definition = .{
     .name = "Discuss",
@@ -21,10 +23,11 @@ pub const DEFINITION: tool.Definition = .{
 /// `Discuss` is still named like other tools so the dispatcher has one calling
 /// convention. It returns `.stop_run` because user interaction needs a future
 /// pause/resume surface instead of another automatic provider turn.
-pub fn invoke() tool.Result {
-    return .{
-        .content = "built-in tool is not implemented yet",
-        .is_error = true,
-        .control = .stop_run,
-    };
+pub fn invoke(allocator: std.mem.Allocator) !tool.Result {
+    return tool_result.failWithControl(
+        allocator,
+        "user_interaction_required",
+        "Discuss requires a pause/resume UI before the run can continue",
+        .stop_run,
+    );
 }

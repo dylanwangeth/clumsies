@@ -238,7 +238,8 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
     const esc_type = try encoding.jsonEscapeAlloc(allocator, type_tag);
     defer allocator.free(esc_type);
 
-    try buf.writer(allocator).print(
+    try buf.print(
+        allocator,
         "{{\"ws_id\":\"{s}\",\"session_id\":\"{s}\",\"event_id\":{d},\"timestamp\":{d},\"type\":\"{s}\"",
         .{ esc_ws, esc_session, event.event_id, event.ts, esc_type },
     );
@@ -341,17 +342,17 @@ fn writeOptionalString(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), ke
     const v = value orelse return;
     const esc = try encoding.jsonEscapeAlloc(allocator, v);
     defer allocator.free(esc);
-    try buf.writer(allocator).print(",\"{s}\":\"{s}\"", .{ key, esc });
+    try buf.print(allocator, ",\"{s}\":\"{s}\"", .{ key, esc });
 }
 
 fn writeOptionalBool(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: ?bool) !void {
     const v = value orelse return;
-    try buf.writer(allocator).print(",\"{s}\":{s}", .{ key, if (v) "true" else "false" });
+    try buf.print(allocator, ",\"{s}\":{s}", .{ key, if (v) "true" else "false" });
 }
 
 fn writeOptionalU32(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: ?u32) !void {
     const v = value orelse return;
-    try buf.writer(allocator).print(",\"{s}\":{d}", .{ key, v });
+    try buf.print(allocator, ",\"{s}\":{d}", .{ key, v });
 }
 
 test "sessionAttestationFilePath is under workspace attestation directory" {

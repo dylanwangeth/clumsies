@@ -1,7 +1,7 @@
 //! Built-in tool catalog for the first coding-agent surface.
 //!
 //! This module declares the tools that a product surface may choose to expose.
-//! It intentionally stays outside `agent/core/tool.zig`: the core tool module
+//! It intentionally stays outside `agent/core/tool`: the core tool module
 //! defines the provider-neutral contract and runtime, while this catalog is a
 //! concrete tool set with product-level names, descriptions, and schemas.
 

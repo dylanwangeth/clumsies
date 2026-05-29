@@ -598,8 +598,10 @@ fn rotateLogFileIfNeeded(path: []const u8, max_bytes: u64, backups: usize) !void
 
 fn readLogDate(file: std.fs.File, out: *[10]u8) bool {
     var buf: [10]u8 = undefined;
-    const n = file.readAll(&buf) catch return false;
-    if (n != buf.len or !isDateStamp(buf[0..])) return false;
+    var read_buf: [64]u8 = undefined;
+    var reader = std.fs.File.Reader.init(file, &read_buf);
+    reader.interface.readSliceAll(&buf) catch return false;
+    if (!isDateStamp(buf[0..])) return false;
     @memcpy(out, &buf);
     return true;
 }

@@ -10,6 +10,7 @@ pub const catalog = @import("catalog.zig");
 pub const discuss = @import("discuss.zig");
 pub const edit = @import("edit.zig");
 pub const read = @import("read.zig");
+pub const result = @import("result.zig");
 pub const search = @import("search.zig");
 pub const workspace = @import("workspace.zig");
 pub const write = @import("write.zig");
@@ -22,6 +23,7 @@ test {
     _ = discuss;
     _ = edit;
     _ = read;
+    _ = result;
     _ = search;
     _ = workspace;
     _ = write;

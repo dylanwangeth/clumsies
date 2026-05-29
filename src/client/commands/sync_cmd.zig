@@ -576,6 +576,13 @@ fn printHelp(out: *std.Io.Writer) !void {
 
 const testing = std.testing;
 
+fn writeAllTestFile(file: std.fs.File, content: []const u8) !void {
+    var buf: [4096]u8 = undefined;
+    var writer = std.fs.File.Writer.init(file, &buf);
+    try writer.interface.writeAll(content);
+    try writer.interface.flush();
+}
+
 test "percentEncode encodes special characters" {
     const allocator = testing.allocator;
     const result = try percentEncode(allocator, "hello world/foo&bar");
@@ -626,12 +633,12 @@ test "pruneCacheNamespace removes files absent from manifest keep set" {
     {
         const f = try tmp.dir.createFile("cache/context/keep/A.md", .{});
         defer f.close();
-        try f.writeAll("keep");
+        try writeAllTestFile(f, "keep");
     }
     {
         const f = try tmp.dir.createFile("cache/context/stale/B.md", .{});
         defer f.close();
-        try f.writeAll("stale");
+        try writeAllTestFile(f, "stale");
     }
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -658,7 +665,7 @@ test "localFileMatchesHash returns true on hash match" {
     {
         const f = try tmp.dir.createFile("cache/rule/file.md", .{});
         defer f.close();
-        try f.writeAll("hello");
+        try writeAllTestFile(f, "hello");
     }
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -678,7 +685,7 @@ test "localFileMatchesHash returns false on hash mismatch" {
     {
         const f = try tmp.dir.createFile("cache/rule/file.md", .{});
         defer f.close();
-        try f.writeAll("hello");
+        try writeAllTestFile(f, "hello");
     }
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -709,7 +716,7 @@ test "localFileMatchesHash returns false on empty remote hash" {
     {
         const f = try tmp.dir.createFile("cache/rule/file.md", .{});
         defer f.close();
-        try f.writeAll("hello");
+        try writeAllTestFile(f, "hello");
     }
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;

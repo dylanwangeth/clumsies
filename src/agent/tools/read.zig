@@ -38,10 +38,12 @@ pub fn invoke(
     var workspace_dir = try workspace.open(context);
     defer workspace_dir.close();
 
-    var file = try workspace_dir.openFile(args.path, .{});
-    defer file.close();
-
-    const file_content = try file.readToEndAlloc(allocator, context.max_read_bytes);
+    const file_content = try workspace.readFileAlloc(
+        allocator,
+        workspace_dir,
+        args.path,
+        context.max_read_bytes,
+    );
     defer allocator.free(file_content);
 
     const content = try formatResult(
@@ -67,7 +69,7 @@ fn formatResult(
 ) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
-    try out.writer(allocator).print("file: {s}\n", .{path});
+    try out.print(allocator, "file: {s}\n", .{path});
 
     var current_line: usize = 1;
     var emitted: usize = 0;
@@ -75,7 +77,7 @@ fn formatResult(
     while (lines.next()) |line| : (current_line += 1) {
         if (current_line < start_line) continue;
         if (emitted >= line_count) break;
-        try out.writer(allocator).print("{d}: {s}\n", .{ current_line, line });
+        try out.print(allocator, "{d}: {s}\n", .{ current_line, line });
         emitted += 1;
     }
 

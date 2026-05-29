@@ -32,6 +32,13 @@ pub const MAX_BYTES_PER_BATCH: usize = 512 * 1024;
 pub const MAX_SINGLE_EVENT_BYTES: usize = 900 * 1024;
 const READ_BUFFER_BYTES: usize = 1024 * 1024;
 
+fn writeAllFile(file: std.fs.File, content: []const u8) !void {
+    var buf: [4096]u8 = undefined;
+    var writer = std.fs.File.Writer.init(file, &buf);
+    try writer.interface.writeAll(content);
+    try writer.interface.flush();
+}
+
 /// A single batch collected from an attestation log, ready to POST as
 /// {"events":[line1, line2, ...]} to /api/attestations.
 pub const Batch = struct {
@@ -318,7 +325,7 @@ test "flushLogFile clamps cursor after log truncation" {
     {
         const file = try tmp.dir.createFile("events.jsonl", .{});
         defer file.close();
-        try file.writeAll(
+        try writeAllFile(file,
             \\{"type":"refer","event_id":"after-truncate"}
             \\
         );
@@ -326,7 +333,7 @@ test "flushLogFile clamps cursor after log truncation" {
     {
         const file = try tmp.dir.createFile("events.cursor", .{});
         defer file.close();
-        try file.writeAll("999999\n");
+        try writeAllFile(file, "999999\n");
     }
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -362,12 +369,12 @@ test "flushLogFile handles event lines larger than small read buffers" {
     {
         const file = try tmp.dir.createFile("events.jsonl", .{});
         defer file.close();
-        try file.writeAll(event.items);
+        try writeAllFile(file, event.items);
     }
     {
         const file = try tmp.dir.createFile("events.cursor", .{});
         defer file.close();
-        try file.writeAll("0\n");
+        try writeAllFile(file, "0\n");
     }
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -406,8 +413,11 @@ test "flushLogFile resumes from cursor without double-counting offset" {
     {
         const file = try tmp.dir.createFile("events.jsonl", .{});
         defer file.close();
-        try file.writeAll(first);
-        try file.writeAll(second);
+        var write_buf: [4096]u8 = undefined;
+        var writer = std.fs.File.Writer.init(file, &write_buf);
+        try writer.interface.writeAll(first);
+        try writer.interface.writeAll(second);
+        try writer.interface.flush();
     }
     {
         const file = try tmp.dir.createFile("events.cursor", .{});

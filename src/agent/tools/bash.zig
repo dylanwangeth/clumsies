@@ -4,7 +4,9 @@
 //! The tool remains declared but unimplemented so those policies are not
 //! accidentally bypassed by an early local process runner.
 
+const std = @import("std");
 const tool = @import("../core/tool.zig");
+const tool_result = @import("result.zig");
 
 pub const DEFINITION: tool.Definition = .{
     .name = "Bash",
@@ -23,9 +25,10 @@ pub const DEFINITION: tool.Definition = .{
 /// Shell execution has extra policy requirements, so this entrypoint exists for
 /// dispatcher consistency while refusing to run commands until sandbox,
 /// timeout, and approval semantics are implemented.
-pub fn invoke() tool.Result {
-    return .{
-        .content = "built-in tool is not implemented yet",
-        .is_error = true,
-    };
+pub fn invoke(allocator: std.mem.Allocator) !tool.Result {
+    return tool_result.fail(
+        allocator,
+        "not_implemented",
+        "Bash is declared but command execution policy is not implemented yet",
+    );
 }

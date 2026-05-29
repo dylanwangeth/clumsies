@@ -12,6 +12,7 @@ const discuss = @import("discuss.zig");
 const edit = @import("edit.zig");
 const read = @import("read.zig");
 const search = @import("search.zig");
+const tool_result = @import("result.zig");
 const workspace = @import("workspace.zig");
 const write = @import("write.zig");
 
@@ -114,14 +115,19 @@ fn invoke(
     if (std.mem.eql(u8, definition.name, search.DEFINITION.name)) {
         return search.invoke(allocator, tool_context, call.arguments);
     }
-    if (std.mem.eql(u8, definition.name, discuss.DEFINITION.name)) return discuss.invoke();
-    if (std.mem.eql(u8, definition.name, edit.DEFINITION.name)) return edit.invoke();
-    if (std.mem.eql(u8, definition.name, write.DEFINITION.name)) return write.invoke();
-    if (std.mem.eql(u8, definition.name, bash.DEFINITION.name)) return bash.invoke();
-    return .{
-        .content = "built-in tool is not implemented yet",
-        .is_error = true,
-    };
+    if (std.mem.eql(u8, definition.name, discuss.DEFINITION.name)) return discuss.invoke(allocator);
+    if (std.mem.eql(u8, definition.name, edit.DEFINITION.name)) {
+        return edit.invoke(allocator, tool_context, call.arguments);
+    }
+    if (std.mem.eql(u8, definition.name, write.DEFINITION.name)) {
+        return write.invoke(allocator, tool_context, call.arguments);
+    }
+    if (std.mem.eql(u8, definition.name, bash.DEFINITION.name)) return bash.invoke(allocator);
+    return tool_result.fail(
+        allocator,
+        "not_implemented",
+        "built-in tool definition has no dispatcher implementation",
+    );
 }
 
 const testing = std.testing;

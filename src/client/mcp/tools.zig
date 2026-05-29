@@ -620,7 +620,7 @@ fn buildUnknownConstraintDetails(
 
     for (parsed.constraints.items, 0..) |constraint, idx| {
         if (idx > 0) try options.appendSlice(allocator, ", ");
-        try options.writer(allocator).print("{s} ({s})", .{ constraint.id, constraint.name });
+        try options.print(allocator, "{s} ({s})", .{ constraint.id, constraint.name });
 
         if (idx > 0) try constraints_json.append(allocator, ',');
         const esc_id = try jsonEscapeAlloc(allocator, constraint.id);
@@ -629,7 +629,8 @@ fn buildUnknownConstraintDetails(
         defer allocator.free(esc_name);
         const esc_text = try jsonEscapeAlloc(allocator, constraint.text);
         defer allocator.free(esc_text);
-        try constraints_json.writer(allocator).print(
+        try constraints_json.print(
+            allocator,
             "{{\"id\":\"{s}\",\"name\":\"{s}\",\"text\":\"{s}\"}}",
             .{ esc_id, esc_name, esc_text },
         );

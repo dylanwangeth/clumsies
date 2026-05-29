@@ -43,7 +43,7 @@ pub const Result = struct {
 /// the current assistant turn's full tool-result batch, it stops the run instead
 /// of asking the provider for another turn.
 ///
-/// For example, a failed grep or test command should usually be returned as
+/// For example, a failed search or test command should usually be returned as
 /// `Result{ .is_error = true, .control = .continue_run }` so the model can
 /// react. A user cancellation, safety stop, or approval denial that must halt
 /// the agent should use `.stop_run`.
@@ -278,8 +278,8 @@ pub const Runtime = struct {
         results: []Result,
     ) anyerror!bool {
         var should_stop_after_segment = false;
-        for (calls, results) |call, *result| {
-            if (try self.executeOne(allocator, call, result)) {
+        for (calls, results) |call, *result_slot| {
+            if (try self.executeOne(allocator, call, result_slot)) {
                 should_stop_after_segment = true;
             }
         }
@@ -295,18 +295,16 @@ pub const Runtime = struct {
         self: *Runtime,
         allocator: std.mem.Allocator,
         resolved: ResolvedCall,
-        result: *Result,
+        result_slot: *Result,
     ) anyerror!bool {
         switch (resolved.action) {
             .invoke => |definition| {
-                result.* = self.invoker.invoke(allocator, resolved.call, definition) catch |err| .{
-                    .content = @errorName(err),
-                    .is_error = true,
-                };
-                return definition.failure_policy == .stop_on_error and result.is_error;
+                result_slot.* = self.invoker.invoke(allocator, resolved.call, definition) catch
+                    staticFail(INVOKE_FAILED);
+                return definition.failure_policy == .stop_on_error and result_slot.is_error;
             },
             .unavailable => |reason| {
-                result.* = unavailableResult(reason);
+                result_slot.* = unavailableResult(reason);
                 return false;
             },
         }
@@ -318,10 +316,7 @@ pub const Runtime = struct {
     /// `tool_call_id` ordering remains valid.
     fn unavailableResult(reason: UnavailableReason) Result {
         return switch (reason) {
-            .unknown_tool => .{
-                .content = "unknown tool",
-                .is_error = true,
-            },
+            .unknown_tool => staticFail(UNKNOWN_TOOL),
         };
     }
 
@@ -331,14 +326,38 @@ pub const Runtime = struct {
     /// are skipped, because provider APIs require every tool call to receive a
     /// corresponding tool-result message.
     fn fillSkipped(results: []Result) void {
-        for (results) |*result| {
-            result.* = .{
-                .content = "skipped after tool failure",
-                .is_error = true,
-            };
+        for (results) |*result_slot| {
+            result_slot.* = staticFail(SKIPPED_AFTER_FAILURE);
         }
     }
 };
+
+/// Returns a static model-visible error for core runtime failure cases.
+///
+/// Runtime-generated results are allocation-free because these paths only need
+/// to preserve the provider invariant that every requested tool call receives a
+/// result message.
+fn staticFail(content: []const u8) Result {
+    return .{
+        .content = content,
+        .is_error = true,
+    };
+}
+
+const INVOKE_FAILED =
+    \\{"status":"error","error_code":"tool_invocation_failed","message":"tool invocation failed before producing a result"}
+    \\
+;
+
+const UNKNOWN_TOOL =
+    \\{"status":"error","error_code":"unknown_tool","message":"requested tool is not registered"}
+    \\
+;
+
+const SKIPPED_AFTER_FAILURE =
+    \\{"status":"error","error_code":"skipped_after_tool_failure","message":"skipped after previous tool failure"}
+    \\
+;
 
 const ResolvedCall = struct {
     call: Call,
@@ -413,7 +432,7 @@ test "tool runtime returns model-visible result for unknown tools by default" {
 
     try testing.expectEqual(@as(usize, 1), results.len);
     try testing.expect(results[0].is_error);
-    try testing.expectEqualStrings("unknown tool", results[0].content);
+    try testing.expect(std.mem.indexOf(u8, results[0].content, "\"error_code\":\"unknown_tool\"") != null);
     try testing.expectEqual(@as(usize, 0), invoker_state.calls);
 }
 
@@ -453,7 +472,7 @@ test "tool runtime stops later calls after serial stop_on_error failure" {
 
     try testing.expect(results[0].is_error);
     try testing.expect(results[1].is_error);
-    try testing.expectEqualStrings("skipped after tool failure", results[1].content);
+    try testing.expect(std.mem.indexOf(u8, results[1].content, "\"error_code\":\"skipped_after_tool_failure\"") != null);
     try testing.expectEqual(@as(usize, 1), invoker_state.calls);
 }
 
@@ -482,7 +501,7 @@ test "tool runtime completes parallel-capable segment before stop_on_error takes
     try testing.expect(!results[1].is_error);
     try testing.expect(results[2].is_error);
     try testing.expectEqualStrings("peer", results[1].content);
-    try testing.expectEqualStrings("skipped after tool failure", results[2].content);
+    try testing.expect(std.mem.indexOf(u8, results[2].content, "\"error_code\":\"skipped_after_tool_failure\"") != null);
     try testing.expectEqual(@as(usize, 2), invoker_state.calls);
 }
 

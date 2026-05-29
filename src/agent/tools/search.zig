@@ -84,7 +84,7 @@ fn searchPaths(
         if (entry.kind != .file) continue;
         if (!matchesPathPattern(args.query, entry.path)) continue;
         if (count >= context.max_matches) break;
-        try out.writer(allocator).print("{s}\n", .{entry.path});
+        try out.print(allocator, "{s}\n", .{entry.path});
         count += 1;
     }
 
@@ -124,9 +124,12 @@ fn searchContent(
         }
         if (count >= context.max_matches) break;
 
-        var file = base.openFile(entry.path, .{}) catch continue;
-        defer file.close();
-        const content = file.readToEndAlloc(allocator, context.max_read_bytes) catch continue;
+        const content = workspace.readFileAlloc(
+            allocator,
+            base,
+            entry.path,
+            context.max_read_bytes,
+        ) catch continue;
         defer allocator.free(content);
 
         count += try appendContentMatches(
@@ -161,7 +164,7 @@ fn appendContentMatches(
     while (lines.next()) |line| : (current_line += 1) {
         if (emitted >= remaining) break;
         if (std.mem.indexOf(u8, line, query) == null) continue;
-        try out.writer(allocator).print("{s}:{d}: {s}\n", .{ path, current_line, line });
+        try out.print(allocator, "{s}:{d}: {s}\n", .{ path, current_line, line });
         emitted += 1;
     }
     return emitted;
