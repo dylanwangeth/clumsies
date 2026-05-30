@@ -10,6 +10,7 @@ pub const event = @import("event.zig");
 pub const loop = @import("loop.zig");
 pub const Memory = @import("memory.zig");
 pub const Provider = @import("provider.zig");
+pub const Session = @import("session.zig");
 pub const tool = @import("tool.zig");
 pub const Trace = @import("trace.zig");
 pub const transcript = @import("transcript.zig");
@@ -20,6 +21,7 @@ test {
     _ = loop;
     _ = Memory;
     _ = Provider;
+    _ = Session;
     _ = tool;
     _ = Trace;
     _ = transcript;

@@ -9,6 +9,7 @@ pub const event = core.event;
 pub const loop = core.loop;
 pub const Memory = core.Memory;
 pub const Provider = core.Provider;
+pub const Session = core.Session;
 pub const tool = core.tool;
 pub const Trace = core.Trace;
 pub const transcript = core.transcript;
@@ -20,6 +21,7 @@ test {
     _ = loop;
     _ = Memory;
     _ = Provider;
+    _ = Session;
     _ = providers;
     _ = tools;
     _ = tool;
