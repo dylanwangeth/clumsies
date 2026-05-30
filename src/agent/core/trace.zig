@@ -26,20 +26,28 @@ pub fn deinit(self: *Trace) void {
     self.records.deinit(self.allocator);
 }
 
-/// Returns an `event.Sink` that appends owned records to this trace.
+/// Returns a standalone `event.Sink` that appends owned records to this trace.
 ///
-/// The agent loop remains coupled only to the small sink interface. UI code can
-/// pass this sink into `loop.run` and read `records.items` as the durable,
-/// lifecycle-complete view of the run.
+/// Use this when the caller only needs the raw lifecycle log. Higher-level
+/// containers such as `Session` may own a `Trace` directly and append records
+/// through `appendOwned` while maintaining additional projections.
 pub fn sink(self: *Trace) event.Sink {
     return .{ .ctx = self, .emit_fn = emit };
+}
+
+/// Appends one owned record to the trace.
+///
+/// On success, ownership transfers to `Trace`. On append failure, the record is
+/// released here so callers do not need a second cleanup path after transfer.
+pub fn appendOwned(self: *Trace, record: Record) !void {
+    errdefer record.deinit(self.allocator);
+    try self.records.append(self.allocator, record);
 }
 
 fn emit(ctx: *anyopaque, new_event: event.Event) !void {
     const self: *Trace = @ptrCast(@alignCast(ctx));
     const record = try Record.clone(self.allocator, new_event);
-    errdefer record.deinit(self.allocator);
-    try self.records.append(self.allocator, record);
+    try self.appendOwned(record);
 }
 
 /// Owned, UI-facing shape of one agent lifecycle event.
@@ -124,17 +132,23 @@ pub const TextMessage = struct {
 
 pub const AssistantMessage = struct {
     content: []const u8,
-    tool_call_count: usize,
+    tool_calls: []const tool.Call,
 
     fn clone(allocator: std.mem.Allocator, value: transcript.AssistantMessage) !AssistantMessage {
+        const content = try allocator.dupe(u8, value.content);
+        errdefer allocator.free(content);
+
+        const calls = try cloneCalls(allocator, value.tool_calls);
         return .{
-            .content = try allocator.dupe(u8, value.content),
-            .tool_call_count = value.tool_calls.len,
+            .content = content,
+            .tool_calls = calls,
         };
     }
 
     fn deinit(self: AssistantMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
+        for (self.tool_calls) |call| deinitCall(call, allocator);
+        if (self.tool_calls.len > 0) allocator.free(self.tool_calls);
     }
 };
 
@@ -184,6 +198,46 @@ pub const ToolStart = struct {
         allocator.free(self.arguments);
     }
 };
+
+fn cloneCalls(allocator: std.mem.Allocator, calls: []const tool.Call) ![]const tool.Call {
+    if (calls.len == 0) return &.{};
+    const cloned = try allocator.alloc(tool.Call, calls.len);
+    errdefer allocator.free(cloned);
+
+    var index: usize = 0;
+    errdefer {
+        for (cloned[0..index]) |call| deinitCall(call, allocator);
+    }
+
+    for (calls, cloned) |call, *dest| {
+        dest.* = try cloneCall(allocator, call);
+        index += 1;
+    }
+    return cloned;
+}
+
+fn cloneCall(allocator: std.mem.Allocator, call: tool.Call) !tool.Call {
+    const id = try allocator.dupe(u8, call.id);
+    errdefer allocator.free(id);
+
+    const name = try allocator.dupe(u8, call.name);
+    errdefer allocator.free(name);
+
+    const arguments = try allocator.dupe(u8, call.arguments);
+    errdefer allocator.free(arguments);
+
+    return .{
+        .id = id,
+        .name = name,
+        .arguments = arguments,
+    };
+}
+
+fn deinitCall(call: tool.Call, allocator: std.mem.Allocator) void {
+    allocator.free(call.id);
+    allocator.free(call.name);
+    allocator.free(call.arguments);
+}
 
 pub const ToolEnd = struct {
     call: ToolStart,
@@ -276,7 +330,7 @@ test "trace records full loop lifecycle" {
     try trace.sink().emit(.{ .turn_start = .{ .turn_index = 2 } });
     try trace.sink().emit(.{ .message_append = .{ .assistant = .{
         .content = "done",
-        .tool_calls = &.{},
+        .tool_calls = &.{.{ .id = "call_1", .name = "Read", .arguments = "{\"path\":\"src/root.zig\"}" }},
     } } });
     try trace.sink().emit(.{ .agent_end = .{
         .reason = .complete,
@@ -287,5 +341,7 @@ test "trace records full loop lifecycle" {
     try testing.expectEqual(Record.agent_start, std.meta.activeTag(trace.records.items[0]));
     try testing.expectEqual(@as(usize, 2), trace.records.items[1].turn_start.turn_index);
     try testing.expectEqualStrings("done", trace.records.items[2].message_append.assistant.content);
+    try testing.expectEqualStrings("call_1", trace.records.items[2].message_append.assistant.tool_calls[0].id);
+    try testing.expectEqualStrings("Read", trace.records.items[2].message_append.assistant.tool_calls[0].name);
     try testing.expectEqual(transcript.EndReason.complete, trace.records.items[3].agent_end.reason);
 }

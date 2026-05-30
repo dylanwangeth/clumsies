@@ -218,7 +218,7 @@ test "session state aggregates lifecycle records" {
     try state.apply(.{ .message_append = .{ .user = .{ .content = "fix tests" } } });
     try state.apply(.{ .message_append = .{ .assistant = .{
         .content = "I will inspect the failure.",
-        .tool_call_count = 1,
+        .tool_calls = &.{.{ .id = "call_1", .name = "Bash" }},
     } } });
     try state.apply(.{ .tool_start = .{
         .id = "call_1",

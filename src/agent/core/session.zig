@@ -21,8 +21,8 @@ state: SessionState,
 ///
 /// The first implementation is intentionally runtime-only: it records owned
 /// lifecycle events and keeps a derived state projection. A future persistence
-/// layer should append session entries through this boundary instead of
-/// replacing `Session` with a UI-specific shape.
+/// layer should append durable session entries through this boundary instead
+/// of replacing `Session` with a UI-specific shape.
 pub fn init(allocator: std.mem.Allocator) Session {
     return .{
         .allocator = allocator,
@@ -37,18 +37,18 @@ pub fn deinit(self: *Session) void {
     self.state.deinit();
 }
 
-/// Clears recorded events and returns the derived state to idle.
+/// Clears recorded events and derived state.
 pub fn reset(self: *Session) void {
     self.trace.deinit();
     self.trace = Trace.init(self.allocator);
     self.state.reset();
 }
 
-/// Returns an event sink that records trace data and updates session state.
+/// Returns the session's composite event sink.
 ///
-/// The agent loop emits borrowed provider/tool data. The session sink converts
-/// each event to an owned trace record first, then updates the current-state
-/// projection from that record.
+/// The agent loop knows only about `event.Sink`. `Session` implements that port
+/// by cloning each borrowed event once, applying the owned record to
+/// `SessionState`, then transferring the same record into its owned `Trace`.
 pub fn sink(self: *Session) event.Sink {
     return .{ .ctx = self, .emit_fn = emit };
 }
@@ -64,9 +64,11 @@ pub fn rebuildState(self: *Session) !void {
 fn emit(ctx: *anyopaque, new_event: event.Event) !void {
     const self: *Session = @ptrCast(@alignCast(ctx));
     const record = try Trace.Record.clone(self.allocator, new_event);
-    errdefer record.deinit(self.allocator);
-    try self.state.apply(record);
-    try self.trace.records.append(self.allocator, record);
+    self.state.apply(record) catch |err| {
+        record.deinit(self.allocator);
+        return err;
+    };
+    try self.trace.appendOwned(record);
 }
 
 const testing = std.testing;
@@ -106,6 +108,7 @@ test "session records events and updates derived state" {
     } });
 
     try testing.expectEqual(@as(usize, 7), session.trace.records.items.len);
+    try testing.expectEqualStrings("call_1", session.trace.records.items[3].message_append.assistant.tool_calls[0].id);
     try testing.expectEqual(SessionState.Status{ .ended = .complete }, session.state.status);
     try testing.expectEqual(@as(usize, 0), session.state.current_turn_index.?);
     try testing.expectEqual(@as(usize, 3), session.state.message_count);
