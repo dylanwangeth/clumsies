@@ -10,6 +10,7 @@ const Assembler = @import("assembler.zig");
 const event = @import("event.zig");
 const Memory = @import("memory.zig");
 const Provider = @import("provider.zig");
+const Trace = @import("trace.zig");
 const tool = @import("tool.zig");
 const transcript = @import("transcript.zig");
 
@@ -182,8 +183,8 @@ test "agent loop executes tools and continues until assistant completes" {
         .registry = registry_state.registry(),
         .invoker = invoker_state.invoker(),
     };
-    var recorder: EventRecorder = .{};
-    defer recorder.deinit(testing.allocator);
+    var trace = Trace.init(testing.allocator);
+    defer trace.deinit();
 
     const prompts = [_]transcript.Message{
         .{ .user = .{ .content = "fix it" } },
@@ -191,7 +192,7 @@ test "agent loop executes tools and continues until assistant completes" {
     const result = try run(testing.allocator, &prompts, .{
         .model_provider = provider_state.provider(),
         .tool_runtime = &runtime,
-        .event_sink = recorder.sink(),
+        .event_sink = trace.sink(),
     });
     defer result.deinit(testing.allocator);
 
@@ -201,7 +202,10 @@ test "agent loop executes tools and continues until assistant completes" {
     try testing.expectEqual(@as(usize, 2), invoker_state.calls);
     try testing.expectEqualStrings("call_1", result.messages[2].tool_result.tool_call_id);
     try testing.expectEqualStrings("call_2", result.messages[3].tool_result.tool_call_id);
-    try testing.expectEqual(@as(usize, 15), recorder.events.items.len);
+    try testing.expectEqual(@as(usize, 15), trace.records.items.len);
+    try testing.expectEqual(Trace.Record.agent_start, std.meta.activeTag(trace.records.items[0]));
+    try testing.expectEqualStrings("read", trace.records.items[4].tool_start.name);
+    try testing.expectEqualStrings("grep", trace.records.items[5].tool_start.name);
 }
 
 test "agent loop stops when a tool result requests stop_run" {
@@ -476,23 +480,6 @@ fn expectDefinitionEqual(expected: tool.Definition, actual: tool.Definition) !vo
     try testing.expectEqual(expected.effects.external_side_effect, actual.effects.external_side_effect);
     try testing.expectEqual(expected.failure_policy, actual.failure_policy);
 }
-
-const EventRecorder = struct {
-    events: std.ArrayList(event.Event) = .empty,
-
-    fn deinit(self: *EventRecorder, allocator: std.mem.Allocator) void {
-        self.events.deinit(allocator);
-    }
-
-    fn sink(self: *EventRecorder) event.Sink {
-        return .{ .ctx = self, .emit_fn = emitEvent };
-    }
-
-    fn emitEvent(ctx: *anyopaque, new_event: event.Event) !void {
-        const self: *EventRecorder = @ptrCast(@alignCast(ctx));
-        try self.events.append(testing.allocator, new_event);
-    }
-};
 
 const TestMemory = struct {
     pull_count: usize = 0,

@@ -10,6 +10,7 @@ pub const loop = core.loop;
 pub const Memory = core.Memory;
 pub const Provider = core.Provider;
 pub const tool = core.tool;
+pub const Trace = core.Trace;
 pub const transcript = core.transcript;
 
 test {
@@ -22,5 +23,6 @@ test {
     _ = providers;
     _ = tools;
     _ = tool;
+    _ = Trace;
     _ = transcript;
 }
