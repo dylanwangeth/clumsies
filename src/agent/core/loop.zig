@@ -1,15 +1,16 @@
 //! Provider-neutral agent turn loop.
 //!
-//! The loop owns turn sequencing, event emission, and transcript growth. It
+//! The loop owns turn sequencing, event emission, and run-message growth. It
 //! does not know any provider wire format or local tool implementation details:
-//! provider adapters translate transcript/tool definitions for model calls, and
-//! `tool.Runtime` resolves and invokes model-requested tools.
+//! provider adapters translate messages and tool definitions for model calls,
+//! and `tool.Runtime` resolves and invokes model-requested tools.
 
 const std = @import("std");
 const Assembler = @import("assembler.zig");
 const event = @import("event.zig");
 const Memory = @import("memory.zig");
 const Provider = @import("provider.zig");
+const Session = @import("session.zig");
 const Trace = @import("trace.zig");
 const tool = @import("tool.zig");
 const transcript = @import("transcript.zig");
@@ -20,6 +21,7 @@ pub const RunOptions = struct {
     provider_options: Provider.Options = .{},
     tool_runtime: *tool.Runtime,
     memory: ?Memory = null,
+    session_entries: []const Session.Entry = &.{},
     event_sink: ?event.Sink = null,
     max_turns: usize = 32,
 };
@@ -27,23 +29,25 @@ pub const RunOptions = struct {
 /// Runs the provider-neutral agent loop until completion, termination, or turn
 /// exhaustion.
 ///
-/// `run` is the core orchestration boundary: it builds provider requests,
-/// appends assistant/tool-result messages, calls local tools, and gives memory
-/// a chance to pull/push around every provider inference. Message payloads are
-/// copied by `transcript.Builder`, so providers and tools may return temporary
-/// buffers as long as the loop appends them before deinit.
+/// `run` is the core orchestration boundary: it builds provider requests from
+/// the current run message chain, appends assistant/tool-result messages, calls
+/// local tools, and gives memory a chance to pull/push around every provider
+/// inference. Older session entries are passed as facts for memory/assembly,
+/// not appended into the run message chain by default. Message payloads are
+/// copied by `transcript.Builder`, so providers and tools may return temporary buffers
+/// as long as the loop appends them before deinit.
 pub fn run(
     allocator: std.mem.Allocator,
     prompts: []const transcript.Message,
     options: RunOptions,
-) !transcript.Transcript {
-    var history: transcript.Builder = .{};
-    errdefer history.deinit(allocator);
+) !transcript.Run {
+    var run_builder: transcript.Builder = .{};
+    errdefer run_builder.deinit(allocator);
 
     try emit(options.event_sink, .agent_start);
-    for (prompts) |message| {
-        try history.append(allocator, message);
-        try emit(options.event_sink, .{ .message_append = message });
+    for (prompts) |prompt| {
+        try run_builder.append(allocator, prompt);
+        try emit(options.event_sink, .{ .message_append = prompt });
     }
 
     var turn_index: usize = 0;
@@ -53,16 +57,19 @@ pub fn run(
         // One provider response defines the full assistant turn, including any
         // unordered tool-call batch requested by the model.
         const available_tools = try options.tool_runtime.definitions();
-        const request = try (Assembler{ .memory = options.memory }).build(.{
-            .history = history.items(),
+        const assembled = try (Assembler{ .memory = options.memory }).build(allocator, .{
+            .run_messages = run_builder.items(),
+            .session_entries = options.session_entries,
             .tools = available_tools,
             .provider_options = options.provider_options,
             .turn_index = turn_index,
         });
-        const assistant = try options.model_provider.respond(allocator, request);
-        try history.append(allocator, .{ .assistant = assistant });
+        defer assembled.deinit(allocator);
+
+        const assistant = try options.model_provider.respond(allocator, assembled.request);
+        try run_builder.append(allocator, .{ .assistant = assistant });
         try emit(options.event_sink, .{ .message_append = .{ .assistant = assistant } });
-        try pushMemory(options.memory, history.items(), turn_index, .{ .assistant = assistant });
+        try pushMemory(options.memory, run_builder.items(), options.session_entries, turn_index, .{ .assistant = assistant });
 
         const tool_calls = assistant.tool_calls;
         if (tool_calls.len == 0) {
@@ -74,11 +81,11 @@ pub fn run(
             });
             try emit(options.event_sink, .{ .agent_end = .{
                 .reason = .complete,
-                .message_count = history.len(),
+                .message_count = run_builder.len(),
             } });
-            var result = try history.finish(allocator, .complete);
+            var result = try run_builder.finish(allocator, .complete);
             errdefer result.deinit(allocator);
-            try pushMemory(options.memory, result.messages, turn_index, .{ .run_end = .complete });
+            try pushMemory(options.memory, result.messages, options.session_entries, turn_index, .{ .run_end = .complete });
             return result;
         }
 
@@ -99,7 +106,7 @@ pub fn run(
             // This is the provider boundary: local `tool.Result` values do not
             // carry provider ids, so the loop attaches the original call id
             // before the provider adapter serializes this as a role="tool"
-            // message.
+            // transcript.
             if (result.control == .stop_run) stop_request_count += 1;
             try emit(options.event_sink, .{ .tool_end = .{ .call = call, .result = result } });
 
@@ -108,9 +115,9 @@ pub fn run(
                 .tool_call_id = call.id,
                 .is_error = result.is_error,
             };
-            try history.append(allocator, .{ .tool_result = result_message });
+            try run_builder.append(allocator, .{ .tool_result = result_message });
             try emit(options.event_sink, .{ .message_append = .{ .tool_result = result_message } });
-            try pushMemory(options.memory, history.items(), turn_index, .{ .tool_result = result_message });
+            try pushMemory(options.memory, run_builder.items(), options.session_entries, turn_index, .{ .tool_result = result_message });
         }
 
         try emit(options.event_sink, .{
@@ -123,22 +130,22 @@ pub fn run(
         if (stop_request_count > 0) {
             try emit(options.event_sink, .{ .agent_end = .{
                 .reason = .terminated,
-                .message_count = history.len(),
+                .message_count = run_builder.len(),
             } });
-            var result = try history.finish(allocator, .terminated);
+            var result = try run_builder.finish(allocator, .terminated);
             errdefer result.deinit(allocator);
-            try pushMemory(options.memory, result.messages, turn_index, .{ .run_end = .terminated });
+            try pushMemory(options.memory, result.messages, options.session_entries, turn_index, .{ .run_end = .terminated });
             return result;
         }
     }
 
     try emit(options.event_sink, .{ .agent_end = .{
         .reason = .max_turns,
-        .message_count = history.len(),
+        .message_count = run_builder.len(),
     } });
-    var result = try history.finish(allocator, .max_turns);
+    var result = try run_builder.finish(allocator, .max_turns);
     errdefer result.deinit(allocator);
-    try pushMemory(options.memory, result.messages, turn_index, .{ .run_end = .max_turns });
+    try pushMemory(options.memory, result.messages, options.session_entries, turn_index, .{ .run_end = .max_turns });
     return result;
 }
 
@@ -151,15 +158,18 @@ fn emit(event_sink: ?event.Sink, new_event: event.Event) !void {
 /// Memory is deliberately optional and outside the tool runtime; the loop calls
 /// this helper after assistant messages, tool results, and run end events so a
 /// future graph-memory layer can ingest evidence without becoming model-callable.
+/// The next provider turn will pull memory again with the updated run messages.
 fn pushMemory(
     memory_layer: ?Memory,
-    history: []const transcript.Message,
+    run_messages: []const transcript.Message,
+    session_entries: []const Session.Entry,
     turn_index: usize,
     push_event: Memory.PushEvent,
 ) !void {
     if (memory_layer) |memory| {
         try memory.push(.{
-            .history = history,
+            .run_messages = run_messages,
+            .session_entries = session_entries,
             .turn_index = turn_index,
             .event = push_event,
         });
@@ -342,7 +352,7 @@ test "agent loop pulls memory context for provider calls and pushes inference ev
     };
     var provider_state: TestProvider = .{
         .first_tool_calls = &calls,
-        .expected_context_len = 1,
+        .expected_leading_memory = true,
     };
     var invoker_state: TestInvoker = .{};
     var registry_state: TestRegistry = .{ .definitions = &.{
@@ -371,7 +381,7 @@ test "agent loop pulls memory context for provider calls and pushes inference ev
     try testing.expectEqual(@as(usize, 4), result.messages.len);
     try testing.expectEqual(@as(std.meta.Tag(transcript.Message), .user), std.meta.activeTag(result.messages[0]));
     try testing.expectEqualStrings("use pulled context", result.messages[0].user.content);
-    try testing.expectEqual(@as(usize, 4), memory_state.last_history_len);
+    try testing.expectEqual(@as(usize, 4), memory_state.last_run_message_len);
 }
 
 // Private adapters used by this file's tests. Keeping them here makes the
@@ -380,7 +390,7 @@ const TestProvider = struct {
     calls: usize = 0,
     first_tool_calls: []const tool.Call,
     expected_tools_len: ?usize = null,
-    expected_context_len: ?usize = null,
+    expected_leading_memory: bool = false,
 
     fn provider(self: *TestProvider) Provider {
         return .{ .ctx = self, .respond_fn = respond };
@@ -397,9 +407,9 @@ const TestProvider = struct {
         if (self.expected_tools_len) |expected| {
             try testing.expectEqual(expected, request.tools.len);
         }
-        if (self.expected_context_len) |expected| {
-            try testing.expectEqual(expected, request.context.len);
-            try testing.expectEqualStrings("memory context", request.context[0].user.content);
+        if (self.expected_leading_memory) {
+            try testing.expect(request.messages.len > 0);
+            try testing.expectEqualStrings("memory context", request.messages[0].user.content);
         }
         if (self.calls == 1) {
             return .{
@@ -484,7 +494,7 @@ fn expectDefinitionEqual(expected: tool.Definition, actual: tool.Definition) !vo
 const TestMemory = struct {
     pull_count: usize = 0,
     push_count: usize = 0,
-    last_history_len: usize = 0,
+    last_run_message_len: usize = 0,
     saw_assistant: bool = false,
     saw_tool_result: bool = false,
     saw_run_end: bool = false,
@@ -506,7 +516,8 @@ const TestMemory = struct {
     ) !Memory.PullResult {
         const self: *TestMemory = @ptrCast(@alignCast(ctx.?));
         self.pull_count += 1;
-        self.last_history_len = input.history.len;
+        self.last_run_message_len = input.run_messages.len;
+        try testing.expectEqual(@as(usize, 0), input.session_entries.len);
         try testing.expectEqual(self.pull_count - 1, input.turn_index);
         return .{ .messages = self.context_messages[0..] };
     }
@@ -517,7 +528,8 @@ const TestMemory = struct {
     ) !void {
         const self: *TestMemory = @ptrCast(@alignCast(ctx.?));
         self.push_count += 1;
-        self.last_history_len = input.history.len;
+        self.last_run_message_len = input.run_messages.len;
+        try testing.expectEqual(@as(usize, 0), input.session_entries.len);
         switch (input.event) {
             .assistant => self.saw_assistant = true,
             .tool_result => self.saw_tool_result = true,

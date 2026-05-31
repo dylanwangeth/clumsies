@@ -1,32 +1,40 @@
-//! Transcript message and run-result types for the agent loop.
+//! Run-local provider-neutral transcript protocol.
 //!
-//! `Builder.append` deep-copies message payloads into the transcript. That
-//! keeps provider and tool implementations free to return short-lived buffers:
-//! once a message is appended, the transcript owns the stored copy until
-//! `Transcript.deinit`.
+//! A transcript is not durable session history. It is the in-run message chain
+//! that preserves provider protocol causality: user input, assistant tool-call
+//! requests, matching tool results, and final assistant output. Session history
+//! may store transcript messages, but the assembler decides later which session
+//! facts become context for a new run.
+//!
+//! `Builder.append` deep-copies message payloads. That keeps provider and tool
+//! implementations free to return short-lived buffers: once a message is
+//! appended, the builder owns the stored copy until it is finished or deinit'd.
 
 const std = @import("std");
 const tool = @import("tool.zig");
 
-/// One transcript entry.
+/// One provider-neutral message in the run-local causal chain.
 pub const Message = union(enum) {
     user: UserMessage,
     assistant: AssistantMessage,
     tool_result: ToolResultMessage,
 };
 
-/// User-authored context sent to the model.
+/// User-authored input or context sent to the model.
 pub const UserMessage = struct {
     content: []const u8,
 };
 
 /// Assistant response produced by the model provider.
+///
+/// Tool calls are kept on the assistant message because provider APIs pair
+/// later tool-result messages with these call ids.
 pub const AssistantMessage = struct {
     content: []const u8 = "",
     tool_calls: []const tool.Call = &.{},
 };
 
-/// Result of one tool call, linked to the original call id.
+/// Result of one tool call, linked to the original assistant call id.
 pub const ToolResultMessage = struct {
     tool_call_id: []const u8,
     content: []const u8,
@@ -40,7 +48,7 @@ pub const EndReason = enum {
     terminated,
 };
 
-/// Mutable transcript under construction during one agent run.
+/// Mutable run message chain under construction during one agent run.
 pub const Builder = struct {
     messages: std.ArrayList(Message) = .empty,
 
@@ -53,9 +61,9 @@ pub const Builder = struct {
 
     /// Appends a message by deep-copying all payload slices.
     ///
-    /// The loop appends messages from providers, tools, memory, and user
-    /// prompts. Cloning here makes the transcript the single owner of stored
-    /// message payloads, instead of leaking lifetime rules into every caller.
+    /// The loop appends run-local user, assistant, and tool-result messages.
+    /// Cloning here makes the builder the single owner of stored message
+    /// payloads, instead of leaking lifetime rules into every caller.
     pub fn append(
         self: *Builder,
         allocator: std.mem.Allocator,
@@ -74,14 +82,14 @@ pub const Builder = struct {
         return self.messages.items.len;
     }
 
-    /// Finishes the builder and transfers the message array to `Transcript`.
+    /// Finishes the builder and transfers the message array to `Run`.
     ///
     /// Nested payload ownership has already been established by `append`.
     pub fn finish(
         self: *Builder,
         allocator: std.mem.Allocator,
         reason: EndReason,
-    ) !Transcript {
+    ) !Run {
         return .{
             .messages = try self.messages.toOwnedSlice(allocator),
             .end_reason = reason,
@@ -89,13 +97,13 @@ pub const Builder = struct {
     }
 };
 
-/// Owned transcript returned by a completed agent run.
-pub const Transcript = struct {
+/// Owned message chain returned by a completed agent run.
+pub const Run = struct {
     messages: []const Message,
     end_reason: EndReason,
 
-    /// Releases the transcript message array and every copied payload.
-    pub fn deinit(self: Transcript, allocator: std.mem.Allocator) void {
+    /// Releases the run message array and every copied payload.
+    pub fn deinit(self: Run, allocator: std.mem.Allocator) void {
         for (self.messages) |message| {
             deinitMessage(message, allocator);
         }
@@ -105,7 +113,7 @@ pub const Transcript = struct {
 
 /// Clones a message variant into owned memory.
 ///
-/// Session history and transcript builders both need the same ownership rule:
+/// Session history and run-message builders both need the same ownership rule:
 /// once a message crosses into durable agent state, no string or tool-call
 /// payload may depend on a provider or tool executor buffer.
 pub fn cloneMessage(allocator: std.mem.Allocator, message: Message) !Message {
@@ -121,7 +129,7 @@ pub fn cloneMessage(allocator: std.mem.Allocator, message: Message) !Message {
 /// Clones an assistant message as one ownership unit.
 ///
 /// Assistant messages carry nested tool calls. Keeping content and calls owned
-/// together prevents mixed borrowed/owned fields in the transcript.
+/// together prevents mixed borrowed/owned fields in the message.
 fn cloneAssistant(
     allocator: std.mem.Allocator,
     assistant: AssistantMessage,
@@ -146,7 +154,7 @@ fn cloneAssistant(
 /// Clones a tool result with the provider's original tool call id.
 ///
 /// Providers need the id/result pair replayed on later stateless requests, so
-/// both fields are copied into transcript-owned memory.
+/// both fields are copied into message-owned memory.
 fn cloneToolResult(
     allocator: std.mem.Allocator,
     result: ToolResultMessage,
@@ -167,7 +175,7 @@ fn cloneToolResult(
 /// Clones a tool-call slice while preserving call order.
 ///
 /// Provider APIs require tool-result messages to line up with prior assistant
-/// tool calls, so the transcript stores a stable ordered copy.
+/// tool calls, so the message stores a stable ordered copy.
 fn cloneCalls(allocator: std.mem.Allocator, calls: []const tool.Call) ![]const tool.Call {
     if (calls.len == 0) return &.{};
     const cloned = try allocator.alloc(tool.Call, calls.len);
@@ -187,7 +195,7 @@ fn cloneCalls(allocator: std.mem.Allocator, calls: []const tool.Call) ![]const t
     return cloned;
 }
 
-/// Clones a provider tool call into transcript-owned memory.
+/// Clones a provider tool call into message-owned memory.
 ///
 /// Later tool-result messages refer back to the call id, so no call string can
 /// depend on a provider-owned arena after append.

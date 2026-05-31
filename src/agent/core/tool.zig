@@ -17,13 +17,13 @@ pub const Call = struct {
 
 /// Result of one local tool invocation.
 ///
-/// This is not a provider transcript message yet. The agent loop combines a
+/// This is not a provider message yet. The agent loop combines a
 /// `Call.id` with this result to produce `transcript.ToolResultMessage`, which
 /// provider adapters then serialize as request-side tool messages.
 ///
 /// `owns_content` marks content allocated by the invoker with the same
 /// allocator passed to `invoke`. The agent loop copies the content into the
-/// transcript before calling `deinit`.
+/// run message chain before calling `deinit`.
 pub const Result = struct {
     content: []const u8,
     owns_content: bool = false,
@@ -38,10 +38,10 @@ pub const Result = struct {
 /// Runtime control signal carried by a tool result.
 ///
 /// This is separate from `Result.is_error`. A tool error is model-visible data:
-/// the result is appended to the transcript and the provider can recover in the
-/// next turn. `.stop_run` is a control-plane signal: after the runtime records
-/// the current assistant turn's full tool-result batch, it stops the run instead
-/// of asking the provider for another turn.
+/// the result is appended to the run message chain and the provider can recover
+/// in the next turn. `.stop_run` is a control-plane signal: after the runtime
+/// records the current assistant turn's full tool-result batch, it stops the run
+/// instead of asking the provider for another turn.
 ///
 /// For example, a failed search or test command should usually be returned as
 /// `Result{ .is_error = true, .control = .continue_run }` so the model can
@@ -157,7 +157,7 @@ pub const UnknownToolPolicy = enum {
 ///
 /// `Runtime` is deliberately provider-neutral. It consumes normalized tool
 /// calls and returns normalized results; the agent loop and provider adapters
-/// handle transcript and JSON-message conversion.
+/// handle run-message and JSON-message conversion.
 pub const Runtime = struct {
     registry: Registry,
     invoker: Invoker,

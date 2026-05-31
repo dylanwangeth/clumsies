@@ -3,7 +3,7 @@
 //! This module is deliberately below the provider-neutral tool runtime. It
 //! knows how to spawn a local process, collect bounded stdout/stderr, and stop
 //! work on timeout or output overflow, but it does not know anything about
-//! provider messages or transcript conversion.
+//! provider messages or run-message conversion.
 
 const std = @import("std");
 const builtin = @import("builtin");

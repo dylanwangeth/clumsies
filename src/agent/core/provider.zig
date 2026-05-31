@@ -35,13 +35,14 @@ pub const Options = struct {
 
 /// Provider-neutral request built by the assembler.
 ///
-/// `messages` is the durable conversation history. `context` is transient
-/// memory pulled for this inference only. `tools` is the request-level
-/// capability declaration: adapters decide how to encode those definitions for
-/// their provider.
+/// `messages` is the run-local provider protocol chain. It should contain the
+/// current prompt plus assistant/tool messages needed for in-run causality, not
+/// a default replay of older session history. Any transient memory or
+/// instruction context has already been rendered into this message list by the
+/// assembler. `tools` is the request-level capability declaration: adapters
+/// decide how to encode those definitions for their provider.
 pub const Request = struct {
     messages: []const transcript.Message,
-    context: []const transcript.Message = &.{},
     tools: []const tool.Definition = &.{},
     options: Options = .{},
 };

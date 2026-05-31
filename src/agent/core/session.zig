@@ -252,10 +252,10 @@ pub const State = struct {
         }
     }
 
-    fn applyToolResultMessage(self: *State, message: Trace.ToolResultMessage) !void {
-        if (self.findTool(message.tool_call_id)) |item| {
-            try item.replaceResult(self.allocator, message.content);
-            item.status = if (message.is_error) .err else .ok;
+    fn applyToolResultMessage(self: *State, result: Trace.ToolResultMessage) !void {
+        if (self.findTool(result.tool_call_id)) |item| {
+            try item.replaceResult(self.allocator, result.content);
+            item.status = if (result.is_error) .err else .ok;
         }
     }
 

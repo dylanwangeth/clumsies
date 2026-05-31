@@ -3,13 +3,13 @@
 //! This module is the provider-specific translation boundary for the agent
 //! core. It consumes provider-neutral transcript messages and tool definitions,
 //! materializes the OpenAI-compatible Chat Completions request shape, then
-//! normalizes the assistant response back into `transcript.AssistantMessage`.
+//! normalizes the assistant response back into the core assistant-message type.
 //!
 //! Tool conversion happens in both directions here by design. Request-level
 //! `tools[]` declares what the model may call for the current request, while
 //! message-level `tool_calls` replays tool-call requests already made by prior
 //! assistant turns. Local tool results are represented internally as
-//! `transcript.ToolResultMessage` and serialized here as `role = "tool"`.
+//! transcript tool-result messages and serialized here as `role = "tool"`.
 
 const std = @import("std");
 const http = std.http;
@@ -179,9 +179,9 @@ fn metadata(ctx: *anyopaque) Provider.Metadata {
 
 /// Executes one OpenAI-compatible chat completions request.
 ///
-/// This is the adapter's main boundary: it merges transient request context
-/// before durable transcript history, declares available tools, sends the wire
-/// request, and normalizes the first assistant choice back into core types.
+/// This is the adapter's main boundary: it serializes the assembler-built
+/// message list, declares available tools, sends the wire request, and
+/// normalizes the first assistant choice back into core types.
 fn respond(
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
@@ -189,18 +189,11 @@ fn respond(
 ) !transcript.AssistantMessage {
     const self: *OpenAICompatible = @ptrCast(@alignCast(ctx));
 
-    const messages_json = try allocator.alloc(MessageJson, request.context.len + request.messages.len);
+    const messages_json = try allocator.alloc(MessageJson, request.messages.len);
     defer allocator.free(messages_json);
     var message_count: usize = 0;
     defer freeMessageJson(allocator, messages_json[0..message_count]);
-    for (request.context, messages_json[0..request.context.len]) |message, *message_json| {
-        message_json.* = try messageToJson(allocator, message);
-        message_count += 1;
-    }
-    for (
-        request.messages,
-        messages_json[request.context.len .. request.context.len + request.messages.len],
-    ) |message, *message_json| {
+    for (request.messages, messages_json) |message, *message_json| {
         message_json.* = try messageToJson(allocator, message);
         message_count += 1;
     }
@@ -233,12 +226,12 @@ fn respond(
 
 /// Releases temporary message-level tool-call arrays created for JSON encoding.
 fn freeMessageJson(allocator: std.mem.Allocator, messages: []const MessageJson) void {
-    for (messages) |message| {
-        if (message.tool_calls) |calls| allocator.free(calls);
+    for (messages) |item| {
+        if (item.tool_calls) |calls| allocator.free(calls);
     }
 }
 
-/// Converts one core transcript message into OpenAI-compatible message JSON.
+/// Converts one core message into OpenAI-compatible message JSON.
 ///
 /// This is where internal message variants become provider roles. The core uses
 /// `.tool_result` to describe local semantics; only this adapter turns it into
@@ -338,15 +331,15 @@ fn toolDefinitionsToJson(
 /// Normalizes the first provider choice into a core assistant message.
 ///
 /// The returned content and tool-call fields are arena-owned by the provider.
-/// The agent loop copies them into its transcript builder before the next turn.
+/// The agent loop copies them into its run-message builder before the next turn.
 fn assistantFromJson(
     allocator: std.mem.Allocator,
-    message: AssistantJson,
+    assistant_json: AssistantJson,
 ) !transcript.AssistantMessage {
-    const content = try allocator.dupe(u8, message.content orelse "");
+    const content = try allocator.dupe(u8, assistant_json.content orelse "");
     errdefer allocator.free(content);
 
-    const source_calls = message.tool_calls orelse &.{};
+    const source_calls = assistant_json.tool_calls orelse &.{};
     const calls = try allocator.alloc(tool.Call, source_calls.len);
     errdefer allocator.free(calls);
     for (source_calls, calls, 0..) |source, *call, idx| {

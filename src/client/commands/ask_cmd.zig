@@ -18,7 +18,7 @@ const PROVIDER_ENV_KEYS = [_][]const u8{
 /// Runs one prompt through the real agent loop and prints the final reply.
 ///
 /// The command intentionally avoids a direct provider call so CLI smoke tests
-/// exercise the same tool declaration, execution, and transcript replay path
+/// exercise the same tool declaration, execution, and run-message replay path
 /// that future interactive surfaces will use.
 pub fn run(
     stdout: *std.Io.Writer,
@@ -62,7 +62,7 @@ pub fn run(
 
     var builtins: agent.tools.Builtin = .{};
     var tool_runtime = builtins.runtime();
-    const transcript = agent.loop.run(allocator, &messages, .{
+    const run_result = agent.loop.run(allocator, &messages, .{
         .model_provider = provider_state.provider(),
         .tool_runtime = &tool_runtime,
         .provider_options = .{ .max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS },
@@ -81,9 +81,9 @@ pub fn run(
         });
         return error.CommandFailed;
     };
-    defer transcript.deinit(allocator);
+    defer run_result.deinit(allocator);
 
-    const final_content = lastAssistantContent(transcript.messages) orelse "";
+    const final_content = lastAssistantContent(run_result.messages) orelse "";
     if (final_content.len == 0) {
         try stderr.print("{s}{s}{s}Error:{s} provider returned an empty assistant message.\n", .{
             P,

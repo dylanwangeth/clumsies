@@ -32,9 +32,9 @@ pub fn okPathAction(
 
 /// Builds a recoverable, model-visible JSON tool error.
 ///
-/// Tool errors are part of the transcript rather than Zig control-flow errors:
-/// the next provider turn sees `error_code` and `message` and can choose a
-/// different tool call.
+/// Tool errors are part of the run message chain rather than Zig control-flow
+/// errors: the next provider turn sees `error_code` and `message` and can
+/// choose a different tool call.
 pub fn fail(
     allocator: std.mem.Allocator,
     code: []const u8,
