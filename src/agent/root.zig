@@ -10,7 +10,8 @@ pub const loop = core.loop;
 pub const Memory = core.Memory;
 pub const Provider = core.Provider;
 pub const Session = core.Session;
-pub const SessionState = core.SessionState;
+pub const SessionEntry = Session.Entry;
+pub const SessionState = Session.State;
 pub const tool = core.tool;
 pub const Trace = core.Trace;
 pub const transcript = core.transcript;
@@ -23,6 +24,7 @@ test {
     _ = Memory;
     _ = Provider;
     _ = Session;
+    _ = SessionEntry;
     _ = SessionState;
     _ = providers;
     _ = tools;

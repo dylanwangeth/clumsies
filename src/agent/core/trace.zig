@@ -44,6 +44,15 @@ pub fn appendOwned(self: *Trace, record: Record) !void {
     try self.records.append(self.allocator, record);
 }
 
+/// Appends one owned record after the caller has reserved trace capacity.
+///
+/// This lets composite observers reserve all of their owned collections before
+/// mutating derived state, then transfer record ownership without another
+/// allocation failure point.
+pub fn appendOwnedAssumeCapacity(self: *Trace, record: Record) void {
+    self.records.appendAssumeCapacity(record);
+}
+
 fn emit(ctx: *anyopaque, new_event: event.Event) !void {
     const self: *Trace = @ptrCast(@alignCast(ctx));
     const record = try Record.clone(self.allocator, new_event);

@@ -103,8 +103,12 @@ pub const Transcript = struct {
     }
 };
 
-/// Clones a message variant into transcript-owned memory.
-fn cloneMessage(allocator: std.mem.Allocator, message: Message) !Message {
+/// Clones a message variant into owned memory.
+///
+/// Session history and transcript builders both need the same ownership rule:
+/// once a message crosses into durable agent state, no string or tool-call
+/// payload may depend on a provider or tool executor buffer.
+pub fn cloneMessage(allocator: std.mem.Allocator, message: Message) !Message {
     return switch (message) {
         .user => |user| .{ .user = .{
             .content = try allocator.dupe(u8, user.content),
@@ -208,7 +212,7 @@ fn cloneCall(allocator: std.mem.Allocator, call: tool.Call) !tool.Call {
 ///
 /// Any new `Message` variant must be added here at the same time it becomes
 /// cloneable.
-fn deinitMessage(message: Message, allocator: std.mem.Allocator) void {
+pub fn deinitMessage(message: Message, allocator: std.mem.Allocator) void {
     switch (message) {
         .user => |user| allocator.free(user.content),
         .assistant => |assistant| {
