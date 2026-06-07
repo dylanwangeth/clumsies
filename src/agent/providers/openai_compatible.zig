@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const http = std.http;
-const HttpTransport = @import("../../net/http_transport.zig");
+const ProviderTransport = @import("../../net/provider_transport.zig");
 const Provider = @import("../core/provider.zig");
 const tool = @import("../core/tool.zig");
 const transcript = @import("../core/transcript.zig");
@@ -22,9 +22,10 @@ const OpenAICompatible = @This();
 
 allocator: std.mem.Allocator,
 config: Config,
-transport: HttpTransport,
+transport: ProviderTransport,
 arena: std.heap.ArenaAllocator,
 last_error: ?ProviderError = null,
+last_transport_failure: ?ProviderTransport.Failure = null,
 
 pub const Config = struct {
     id: []const u8 = "openai-compatible",
@@ -32,6 +33,8 @@ pub const Config = struct {
     api_key: []const u8,
     model: []const u8,
     auth: Auth = .bearer,
+    request_timeout_ms: ?u64 = 60 * std.time.ms_per_s,
+    use_env_proxy: bool = true,
 };
 
 pub const Auth = union(enum) {
@@ -112,8 +115,8 @@ const ToolDefinitionsJson = struct {
         for (self.parsed_parameters) |parsed| {
             parsed.deinit();
         }
-        allocator.free(self.parsed_parameters);
-        allocator.free(self.tools);
+        if (self.parsed_parameters.len > 0) allocator.free(self.parsed_parameters);
+        if (self.tools.len > 0) allocator.free(self.tools);
     }
 };
 
@@ -136,7 +139,7 @@ pub fn init(allocator: std.mem.Allocator, config: Config) OpenAICompatible {
     return .{
         .allocator = allocator,
         .config = config,
-        .transport = HttpTransport.init(allocator),
+        .transport = ProviderTransport.init(allocator),
         .arena = std.heap.ArenaAllocator.init(allocator),
     };
 }
@@ -157,6 +160,13 @@ pub fn takeLastError(self: *OpenAICompatible) ?ProviderError {
     const last_error = self.last_error;
     self.last_error = null;
     return last_error;
+}
+
+/// Moves the last transport-stage failure out for CLI/UI diagnostics.
+pub fn takeLastTransportFailure(self: *OpenAICompatible) ?ProviderTransport.Failure {
+    const failure = self.last_transport_failure;
+    self.last_transport_failure = null;
+    return failure;
 }
 
 /// Exposes this adapter through the provider-neutral core port.
@@ -212,7 +222,7 @@ fn respond(
     defer allocator.free(body);
 
     const response_body = try self.fetchChatCompletions(body);
-    defer allocator.free(response_body);
+    defer self.allocator.free(response_body);
 
     const parsed = try std.json.parseFromSlice(ResponseJson, allocator, response_body, .{
         .allocate = .alloc_always,
@@ -375,17 +385,20 @@ fn freeOwnedCalls(allocator: std.mem.Allocator, calls: []const tool.Call) void {
 ///
 /// The provider interface returns a normal Zig error on failure, while
 /// `last_error` keeps the provider-specific HTTP status/body available for
-/// diagnostics outside the core loop.
+/// diagnostics outside the core loop. Successful response bodies are allocated
+/// by the provider's transport allocator and must be freed by this adapter.
 fn fetchChatCompletions(self: *OpenAICompatible, body: []const u8) ![]const u8 {
     self.clearLastError();
 
     const url = try endpointUrl(self.allocator, self.config.base_url);
     defer self.allocator.free(url);
 
-    var headers: [4]http.Header = undefined;
+    var headers: [5]http.Header = undefined;
     headers[0] = .{ .name = "content-type", .value = "application/json" };
     var header_count: usize = 1;
     headers[header_count] = .{ .name = "accept", .value = "application/json" };
+    header_count += 1;
+    headers[header_count] = .{ .name = "accept-encoding", .value = "identity" };
     header_count += 1;
     headers[header_count] = .{ .name = "user-agent", .value = "clumsies-agent" };
     header_count += 1;
@@ -404,14 +417,19 @@ fn fetchChatCompletions(self: *OpenAICompatible, body: []const u8) ![]const u8 {
     }
     defer if (auth_value) |value| self.allocator.free(value);
 
-    const response = try self.transport.fetch(.{
+    const response = self.transport.fetch(.{
         .url = url,
         .method = .POST,
         .payload = body,
         .headers = headers[0..header_count],
-        .keep_alive = false,
-    });
-    errdefer response.deinit();
+        .timeout_ms = self.config.request_timeout_ms,
+        .use_env_proxy = self.config.use_env_proxy,
+    }) catch |err| {
+        if (self.transport.takeLastFailure()) |failure| {
+            self.last_transport_failure = failure;
+        }
+        return err;
+    };
 
     if (response.status != .ok) {
         self.last_error = .{
@@ -429,11 +447,23 @@ fn clearLastError(self: *OpenAICompatible) void {
         self.allocator.free(last_error.body);
         self.last_error = null;
     }
+    if (self.last_transport_failure) |failure| {
+        failure.deinit(self.allocator);
+        self.last_transport_failure = null;
+    }
 }
 
 /// Builds the OpenAI-compatible chat completions endpoint from a base URL.
+///
+/// Some providers document the version root (`https://host/v1`), while local
+/// `.env` files often paste the full Chat Completions endpoint. Accept both
+/// forms so switching providers does not silently produce
+/// `/chat/completions/chat/completions`.
 fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
     const trimmed = std.mem.trimRight(u8, base_url, "/");
+    if (std.mem.endsWith(u8, trimmed, "/chat/completions")) {
+        return allocator.dupe(u8, trimmed);
+    }
     return std.fmt.allocPrint(allocator, "{s}/chat/completions", .{trimmed});
 }
 
@@ -445,6 +475,10 @@ test "endpointUrl appends chat completions path once" {
     const second = try endpointUrl(std.testing.allocator, "https://example.com/v1/");
     defer std.testing.allocator.free(second);
     try std.testing.expectEqualStrings("https://example.com/v1/chat/completions", second);
+
+    const full = try endpointUrl(std.testing.allocator, "https://example.com/v1/chat/completions/");
+    defer std.testing.allocator.free(full);
+    try std.testing.expectEqualStrings("https://example.com/v1/chat/completions", full);
 }
 
 test "toolDefinitionsToJson emits request-level function tools" {
@@ -482,6 +516,32 @@ test "toolDefinitionsToJson emits request-level function tools" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"read_file\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"path\":{\"type\":\"string\"}") != null);
+}
+
+test "toolDefinitionsToJson deinit accepts empty tool lists" {
+    const converted = try toolDefinitionsToJson(std.testing.allocator, &.{});
+    converted.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), converted.tools.len);
+}
+
+test "non-OK provider responses retain owned error body" {
+    const body = try std.testing.allocator.dupe(u8, "{\"error\":\"bad request\"}");
+    var provider_state = OpenAICompatible.init(std.testing.allocator, .{
+        .base_url = "https://example.test/v1",
+        .api_key = "secret",
+        .model = "test-model",
+    });
+    defer provider_state.deinit();
+
+    provider_state.last_error = .{
+        .status = .bad_request,
+        .body = body,
+    };
+
+    const retained = provider_state.takeLastError().?;
+    defer retained.deinit(std.testing.allocator);
+    try std.testing.expectEqual(http.Status.bad_request, retained.status);
+    try std.testing.expectEqualStrings("{\"error\":\"bad request\"}", retained.body);
 }
 
 test "responds through configured OpenAI-compatible provider" {

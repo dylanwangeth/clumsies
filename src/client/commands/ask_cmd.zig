@@ -1,19 +1,12 @@
 const std = @import("std");
 const clumsies = @import("clumsies_lib");
-const logger = clumsies.logger;
+const agent_config = @import("../agent_config.zig");
+const agent_workspace = @import("../agent_workspace.zig");
 const styles = @import("../styles.zig");
 
 const agent = clumsies.agent;
 const Color = styles.Color;
 const P = styles.P;
-const DEFAULT_MAX_OUTPUT_TOKENS = 1024;
-
-const PROVIDER_ENV_KEYS = [_][]const u8{
-    "CLUMSIES_AGENT_PROVIDER_BASE_URL",
-    "CLUMSIES_AGENT_PROVIDER_API_KEY",
-    "CLUMSIES_AGENT_PROVIDER_MODEL",
-    "CLUMSIES_AGENT_PROVIDER_AUTH_HEADER",
-};
 
 /// Runs one prompt through the real agent loop and prints the final reply.
 ///
@@ -31,53 +24,71 @@ pub fn run(
         return;
     }
 
-    if (args.len == 0) {
-        try stderr.print("{s}{s}{s}Error:{s} prompt is required.\n\n", .{ P, Color.bold, Color.red, Color.reset });
-        try printHelp(stderr);
-        return error.CommandFailed;
-    }
+    if (args.len == 0) return promptRequired(stderr);
 
     const prompt = try std.mem.join(allocator, " ", args);
     defer allocator.free(prompt);
+    const trimmed_prompt = validPrompt(prompt) orelse return promptRequired(stderr);
 
-    var env_map = try logger.loadEnvMap(allocator);
-    defer env_map.deinit();
-    try loadProviderDotEnv(allocator, &env_map);
+    const tool_root = agent_workspace.resolveToolRoot(allocator) catch |err| {
+        try printWorkspaceRootError(stderr, err);
+        return error.CommandFailed;
+    };
+    defer allocator.free(tool_root);
 
-    const base_url = requiredEnv(&env_map, stderr, "CLUMSIES_AGENT_PROVIDER_BASE_URL") orelse return error.CommandFailed;
-    const api_key = requiredEnv(&env_map, stderr, "CLUMSIES_AGENT_PROVIDER_API_KEY") orelse return error.CommandFailed;
-    const model = requiredEnv(&env_map, stderr, "CLUMSIES_AGENT_PROVIDER_MODEL") orelse return error.CommandFailed;
+    var provider_env = agent_config.loadFromDir(allocator, tool_root) catch |err| {
+        try printProviderConfigError(stderr, err);
+        return error.CommandFailed;
+    };
+    defer provider_env.deinit();
 
     var provider_state = agent.providers.OpenAICompatible.init(allocator, .{
-        .base_url = base_url,
-        .api_key = api_key,
-        .model = model,
-        .auth = if (env_map.get("CLUMSIES_AGENT_PROVIDER_AUTH_HEADER")) |header| .{ .api_key = header } else .bearer,
+        .base_url = provider_env.base_url,
+        .api_key = provider_env.api_key,
+        .model = provider_env.model,
+        .auth = if (provider_env.api_key_header_name) |header| .{ .api_key = header } else .bearer,
+        .request_timeout_ms = provider_env.timeout_ms,
+        .use_env_proxy = provider_env.use_env_proxy,
     });
     defer provider_state.deinit();
 
     const messages = [_]agent.transcript.Message{
-        .{ .user = .{ .content = prompt } },
+        .{ .user = .{ .content = trimmed_prompt } },
     };
 
-    var builtins: agent.tools.Builtin = .{};
+    var builtins: agent.tools.Builtin = .{ .workspace_path = tool_root };
     var tool_runtime = builtins.runtime();
     const run_result = agent.loop.run(allocator, &messages, .{
         .model_provider = provider_state.provider(),
         .tool_runtime = &tool_runtime,
-        .provider_options = .{ .max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS },
+        .provider_options = .{ .max_output_tokens = provider_env.max_output_tokens },
     }) catch |err| {
         if (provider_state.takeLastError()) |provider_error| {
             defer provider_error.deinit(allocator);
             try printProviderHttpError(stderr, provider_error);
             return error.CommandFailed;
         }
-        try stderr.print("{s}{s}{s}Error:{s} provider request failed: {s}\n", .{
+        if (provider_state.takeLastTransportFailure()) |failure| {
+            defer failure.deinit(allocator);
+            try stderr.print("{s}{s}{s}Error:{s} provider transport failed at {s}: {s}\n", .{
+                P,
+                Color.bold,
+                Color.red,
+                Color.reset,
+                @tagName(failure.stage),
+                failure.message,
+            });
+            return error.CommandFailed;
+        }
+        try stderr.print("{s}{s}{s}Error:{s} provider request failed: {s} (model {s}, proxy {s}, timeout {d}ms)\n", .{
             P,
             Color.bold,
             Color.red,
             Color.reset,
             @errorName(err),
+            provider_env.model,
+            proxyLabel(provider_env.use_env_proxy),
+            provider_env.timeout_ms,
         });
         return error.CommandFailed;
     };
@@ -100,84 +111,43 @@ pub fn run(
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print("{s}{s}{s}Usage:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
     try stdout.print("{s}    {s}clumsies ask <prompt...>{s}\n\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("Sends one prompt to the configured OpenAI-compatible provider and prints the assistant reply.\n", .{});
-    try stdout.print("Provider configuration is read from .env and environment variables; .env wins for CLUMSIES_AGENT_PROVIDER_* keys.\n", .{});
+    try stdout.print("Runs one prompt through the configured provider and built-in coding tools, then prints the final assistant reply.\n", .{});
+    try stdout.print("Provider configuration is read from the workspace .env and environment variables; .env wins for CLUMSIES_AGENT_PROVIDER_* keys.\n", .{});
+    try stdout.print("Set CLUMSIES_AGENT_PROVIDER_MAX_OUTPUT_TOKENS when you want to cap assistant output explicitly.\n", .{});
+    try stdout.print("Provider requests use HTTP_PROXY/HTTPS_PROXY automatically; set CLUMSIES_AGENT_PROVIDER_USE_PROXY=false to bypass them.\n", .{});
 }
 
-fn printMissingEnv(stderr: *std.Io.Writer, name: []const u8) !void {
-    try stderr.print("{s}{s}{s}Error:{s} Missing {s}. Set it in the environment or .env.\n", .{
+fn promptRequired(stderr: *std.Io.Writer) !void {
+    try stderr.print("{s}{s}{s}Error:{s} prompt is required.\n\n", .{ P, Color.bold, Color.red, Color.reset });
+    try printHelp(stderr);
+    return error.CommandFailed;
+}
+
+fn validPrompt(prompt: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return trimmed;
+}
+
+fn printProviderConfigError(stderr: *std.Io.Writer, err: anyerror) !void {
+    try stderr.print("{s}{s}{s}Error:{s} ", .{
         P,
         Color.bold,
         Color.red,
         Color.reset,
-        name,
     });
+    try agent_config.printError(stderr, err);
+    try stderr.writeAll(". Set provider configuration in the environment or .env.\n");
 }
 
-fn requiredEnv(env_map: *const std.process.EnvMap, stderr: *std.Io.Writer, name: []const u8) ?[]const u8 {
-    const value = env_map.get(name) orelse {
-        printMissingEnv(stderr, name) catch {};
-        return null;
-    };
-    if (value.len == 0) {
-        printMissingEnv(stderr, name) catch {};
-        return null;
-    }
-    return value;
-}
-
-fn loadProviderDotEnv(allocator: std.mem.Allocator, env_map: *std.process.EnvMap) !void {
-    const file = std.fs.cwd().openFile(".env", .{}) catch return;
-    defer file.close();
-
-    const size = file.getEndPos() catch return;
-    if (size == 0) return;
-    const alloc_size = std.math.cast(usize, size) orelse return;
-    const contents = try allocator.alloc(u8, alloc_size);
-    defer allocator.free(contents);
-
-    var buf: [4096]u8 = undefined;
-    var reader = std.fs.File.Reader.init(file, &buf);
-    reader.interface.readSliceAll(contents) catch return;
-
-    var iter = std.mem.splitSequence(u8, contents, "\n");
-    while (iter.next()) |line| {
-        try applyProviderEnvLine(allocator, env_map, line);
-    }
-}
-
-/// Applies one `.env` line when it belongs to the provider configuration.
-///
-/// `.env` is allowed to override process environment for provider keys only;
-/// this command should not silently change unrelated client behavior.
-fn applyProviderEnvLine(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, line: []const u8) !void {
-    const trimmed = std.mem.trim(u8, line, " \t\r");
-    if (trimmed.len == 0 or trimmed[0] == '#') return;
-    const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return;
-    const key = std.mem.trim(u8, trimmed[0..eq], " \t");
-    if (!isProviderEnvKey(key)) return;
-
-    const raw_value = std.mem.trim(u8, trimmed[eq + 1 ..], " \t");
-    const value = stripQuotes(raw_value);
-    const key_owned = try allocator.dupe(u8, key);
-    errdefer allocator.free(key_owned);
-    const value_owned = try allocator.dupe(u8, value);
-    errdefer allocator.free(value_owned);
-    try env_map.put(key_owned, value_owned);
-}
-
-fn isProviderEnvKey(key: []const u8) bool {
-    inline for (PROVIDER_ENV_KEYS) |candidate| {
-        if (std.mem.eql(u8, key, candidate)) return true;
-    }
-    return false;
-}
-
-fn stripQuotes(s: []const u8) []const u8 {
-    if (s.len >= 2 and ((s[0] == '"' and s[s.len - 1] == '"') or (s[0] == '\'' and s[s.len - 1] == '\''))) {
-        return s[1 .. s.len - 1];
-    }
-    return s;
+fn printWorkspaceRootError(stderr: *std.Io.Writer, err: anyerror) !void {
+    try stderr.print("{s}{s}{s}Error:{s} could not resolve agent workspace root: {s}\n", .{
+        P,
+        Color.bold,
+        Color.red,
+        Color.reset,
+        @errorName(err),
+    });
 }
 
 /// Finds the final textual assistant response after any tool turns.
@@ -211,5 +181,35 @@ fn printProviderHttpError(stderr: *std.Io.Writer, provider_error: agent.provider
         return;
     }
 
-    try stderr.print(": {s}\n", .{trimmed[0..@min(trimmed.len, 1024)]});
+    if (std.unicode.utf8ValidateSlice(trimmed)) {
+        try stderr.print(": {s}\n", .{truncateUtf8Boundary(trimmed, 1024)});
+        return;
+    }
+
+    var hex_buf: [128]u8 = undefined;
+    const prefix = trimmed[0..@min(trimmed.len, 32)];
+    const hex = std.fmt.bufPrint(&hex_buf, "{f}", .{std.ascii.hexEscape(prefix, .lower)}) catch unreachable;
+    try stderr.print(": non-UTF-8 response body ({d} bytes, hex prefix {s})\n", .{ trimmed.len, hex });
+}
+
+fn proxyLabel(use_env_proxy: bool) []const u8 {
+    return if (use_env_proxy) "auto" else "off";
+}
+
+/// Bounds provider diagnostics without splitting localized UTF-8 text.
+fn truncateUtf8Boundary(text: []const u8, max_bytes: usize) []const u8 {
+    var end = @min(text.len, max_bytes);
+    if (end == text.len) return text;
+    while (end > 0 and (text[end] & 0xc0) == 0x80) : (end -= 1) {}
+    return text[0..end];
+}
+
+test "truncateUtf8Boundary keeps CLI provider diagnostics valid" {
+    try std.testing.expectEqualStrings("评价", truncateUtf8Boundary("评价一下", 7));
+    try std.testing.expectEqualStrings("评价", truncateUtf8Boundary("评价", 6));
+}
+
+test "validPrompt rejects whitespace-only prompts" {
+    try std.testing.expect(validPrompt(" \t\r\n") == null);
+    try std.testing.expectEqualStrings("hello", validPrompt("  hello \n").?);
 }
