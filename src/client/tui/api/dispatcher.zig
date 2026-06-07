@@ -80,10 +80,35 @@ pub const ThreadRegistry = struct {
     mutex: std.Thread.Mutex = .{},
     active: std.ArrayList(std.Thread) = .empty,
 
+    /// Records an already-spawned thread for exit-time joining.
+    ///
+    /// Prefer `spawnRegistered` for new call sites so spawn and registration
+    /// cannot be separated by an allocation failure.
     pub fn register(self: *ThreadRegistry, thread: std.Thread, alloc: std.mem.Allocator) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         try self.active.append(alloc, thread);
+    }
+
+    /// Spawns a thread only after reserving a registry slot for its handle.
+    ///
+    /// This avoids the fragile sequence "spawn first, register second": if the
+    /// append fails after a worker has already started, the caller must either
+    /// block while joining that worker or detach it and lose exit-time joining.
+    /// Holding the registry lock during `Thread.spawn` keeps the capacity
+    /// reservation and append inseparable.
+    pub fn spawnRegistered(
+        self: *ThreadRegistry,
+        alloc: std.mem.Allocator,
+        comptime function: anytype,
+        args: anytype,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        try self.active.ensureUnusedCapacity(alloc, 1);
+        const thread = try std.Thread.spawn(.{}, function, args);
+        self.active.appendAssumeCapacity(thread);
     }
 
     /// Block until every registered thread completes, then drop their
@@ -212,7 +237,7 @@ pub fn dispatch(
         .result_alloc = result_alloc,
     };
 
-    const thread = std.Thread.spawn(.{}, runWorker(ReqT, RespT), .{ctx_ptr}) catch {
+    registry.spawnRegistered(registry_alloc, runWorker(ReqT, RespT), .{ctx_ptr}) catch {
         log.warn("dispatch_prepare_failed method={s} stage=thread_spawn", .{methodName(spec.method)});
         transient_parent.destroy(ctx_ptr);
         transient_parent.free(token_copy);
@@ -220,12 +245,6 @@ pub fn dispatch(
         freeDeepCopy(ReqT, transient_parent, req_copy);
         pending.complete(gen, .network_error);
         return;
-    };
-
-    registry.register(thread, registry_alloc) catch {
-        // Registration failure does not abort the request — the thread
-        // is already running. We just will not be able to join it at
-        // exit, which matches the pre-refactor behavior.
     };
 }
 
@@ -718,4 +737,25 @@ test "ThreadRegistry register and joinAll drain spawned threads" {
 
     registry.joinAll(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 4), counter.load(.monotonic));
+}
+
+test "ThreadRegistry spawnRegistered records thread before returning" {
+    var registry: ThreadRegistry = .{};
+
+    const Worker = struct {
+        fn noop(counter: *std.atomic.Value(u32)) void {
+            _ = counter.fetchAdd(1, .monotonic);
+        }
+    };
+
+    var counter = std.atomic.Value(u32).init(0);
+    try registry.spawnRegistered(std.testing.allocator, Worker.noop, .{&counter});
+
+    registry.mutex.lock();
+    const registered_count = registry.active.items.len;
+    registry.mutex.unlock();
+    try std.testing.expectEqual(@as(usize, 1), registered_count);
+
+    registry.joinAll(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 1), counter.load(.monotonic));
 }

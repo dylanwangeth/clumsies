@@ -23,7 +23,22 @@ pub const RunOptions = struct {
     memory: ?Memory = null,
     session_entries: []const Session.Entry = &.{},
     event_sink: ?event.Sink = null,
+    cancel: ?Cancel = null,
     max_turns: usize = 32,
+};
+
+/// Cooperative cancellation hook for long-running UI/RPC callers.
+///
+/// Cancellation is checked at agent-loop boundaries, not inside provider or
+/// tool implementations. Blocking HTTP requests and local processes must still
+/// return or time out before the loop can observe the stop request.
+pub const Cancel = struct {
+    ctx: *anyopaque,
+    is_requested_fn: *const fn (ctx: *anyopaque) bool,
+
+    pub fn isRequested(self: Cancel) bool {
+        return self.is_requested_fn(self.ctx);
+    }
 };
 
 /// Runs the provider-neutral agent loop until completion, termination, or turn
@@ -52,6 +67,17 @@ pub fn run(
 
     var turn_index: usize = 0;
     while (turn_index < options.max_turns) : (turn_index += 1) {
+        if (isCancelled(options.cancel)) {
+            try emit(options.event_sink, .{ .agent_end = .{
+                .reason = .terminated,
+                .message_count = run_builder.len(),
+            } });
+            var result = try run_builder.finish(allocator, .terminated);
+            errdefer result.deinit(allocator);
+            try pushMemory(options.memory, result.messages, options.session_entries, turn_index, .{ .run_end = .terminated });
+            return result;
+        }
+
         try emit(options.event_sink, .{ .turn_start = .{ .turn_index = turn_index } });
 
         // One provider response defines the full assistant turn, including any
@@ -72,6 +98,23 @@ pub fn run(
         try pushMemory(options.memory, run_builder.items(), options.session_entries, turn_index, .{ .assistant = assistant });
 
         const tool_calls = assistant.tool_calls;
+        if (isCancelled(options.cancel)) {
+            try emit(options.event_sink, .{
+                .turn_end = .{
+                    .turn_index = turn_index,
+                    .assistant = assistant,
+                },
+            });
+            try emit(options.event_sink, .{ .agent_end = .{
+                .reason = .terminated,
+                .message_count = run_builder.len(),
+            } });
+            var result = try run_builder.finish(allocator, .terminated);
+            errdefer result.deinit(allocator);
+            try pushMemory(options.memory, result.messages, options.session_entries, turn_index, .{ .run_end = .terminated });
+            return result;
+        }
+
         if (tool_calls.len == 0) {
             try emit(options.event_sink, .{
                 .turn_end = .{
@@ -127,7 +170,7 @@ pub fn run(
             },
         });
 
-        if (stop_request_count > 0) {
+        if (stop_request_count > 0 or isCancelled(options.cancel)) {
             try emit(options.event_sink, .{ .agent_end = .{
                 .reason = .terminated,
                 .message_count = run_builder.len(),
@@ -151,6 +194,11 @@ pub fn run(
 
 fn emit(event_sink: ?event.Sink, new_event: event.Event) !void {
     if (event_sink) |sink| try sink.emit(new_event);
+}
+
+fn isCancelled(cancel: ?Cancel) bool {
+    if (cancel) |token| return token.isRequested();
+    return false;
 }
 
 /// Pushes post-inference evidence when a memory layer is attached.
@@ -309,6 +357,64 @@ test "agent loop returns max turns when assistant keeps calling tools" {
     try testing.expectEqual(@as(usize, 3), result.messages.len);
 }
 
+test "agent loop terminates before provider call when cancellation is already requested" {
+    const calls = [_]tool.Call{};
+    var provider_state: TestProvider = .{ .first_tool_calls = &calls };
+    var invoker_state: TestInvoker = .{};
+    var registry_state: TestRegistry = .{ .definitions = &.{} };
+    var runtime: tool.Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
+    var cancel_state: TestCancel = .{ .requested = true };
+    const prompts = [_]transcript.Message{
+        .{ .user = .{ .content = "stop now" } },
+    };
+
+    const result = try run(testing.allocator, &prompts, .{
+        .model_provider = provider_state.provider(),
+        .tool_runtime = &runtime,
+        .cancel = cancel_state.cancel(),
+    });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(transcript.EndReason, .terminated), result.end_reason);
+    try testing.expectEqual(@as(usize, 1), result.messages.len);
+    try testing.expectEqual(@as(usize, 0), provider_state.calls);
+}
+
+test "agent loop terminates after current tool batch when cancellation is requested" {
+    const calls = [_]tool.Call{
+        .{ .id = "call_1", .name = "read" },
+    };
+    var cancel_requested = false;
+    var provider_state: TestProvider = .{ .first_tool_calls = &calls };
+    var invoker_state: TestInvoker = .{ .cancel_after_call = &cancel_requested };
+    var registry_state: TestRegistry = .{ .definitions = &.{
+        .{ .name = "read" },
+    } };
+    var runtime: tool.Runtime = .{
+        .registry = registry_state.registry(),
+        .invoker = invoker_state.invoker(),
+    };
+    var cancel_state: TestCancel = .{ .requested_ptr = &cancel_requested };
+    const prompts = [_]transcript.Message{
+        .{ .user = .{ .content = "read then stop" } },
+    };
+
+    const result = try run(testing.allocator, &prompts, .{
+        .model_provider = provider_state.provider(),
+        .tool_runtime = &runtime,
+        .cancel = cancel_state.cancel(),
+    });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(transcript.EndReason, .terminated), result.end_reason);
+    try testing.expectEqual(@as(usize, 3), result.messages.len);
+    try testing.expectEqual(@as(usize, 1), provider_state.calls);
+    try testing.expect(cancel_requested);
+}
+
 test "agent loop uses the configured tool runtime" {
     const calls = [_]tool.Call{
         .{ .id = "call_1", .name = "write" },
@@ -422,11 +528,27 @@ const TestProvider = struct {
     }
 };
 
+const TestCancel = struct {
+    requested: bool = false,
+    requested_ptr: ?*bool = null,
+
+    fn cancel(self: *TestCancel) Cancel {
+        return .{ .ctx = self, .is_requested_fn = isRequested };
+    }
+
+    fn isRequested(ctx: *anyopaque) bool {
+        const self: *TestCancel = @ptrCast(@alignCast(ctx));
+        if (self.requested_ptr) |requested| return requested.*;
+        return self.requested;
+    }
+};
+
 const TestInvoker = struct {
     calls: usize = 0,
     stop_run: bool = false,
     stop_run_call_index: ?usize = null,
     expected_definition: ?tool.Definition = null,
+    cancel_after_call: ?*bool = null,
 
     fn invoker(self: *TestInvoker) tool.Invoker {
         return .{ .ctx = self, .invoke_fn = invoke };
@@ -446,6 +568,7 @@ const TestInvoker = struct {
 
         const call_index = self.calls;
         self.calls += 1;
+        if (self.cancel_after_call) |requested| requested.* = true;
         const stop_run = self.stop_run or
             (self.stop_run_call_index != null and self.stop_run_call_index.? == call_index);
         return .{

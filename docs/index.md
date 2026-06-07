@@ -45,7 +45,7 @@ hero:
         <span class="home-terminal-output"><span class="home-terminal-token is-orange">Usage:</span></span>
       </div>
       <div class="home-terminal-line is-output">
-        <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies</span>            Launch TUI Dashboard</span>
+        <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies</span>            Launch TUI</span>
       </div>
       <div class="home-terminal-line is-output">
         <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies login</span>      Authenticate with Hub</span>
@@ -58,6 +58,9 @@ hero:
       </div>
       <div class="home-terminal-line is-output">
         <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies adapt</span>        Install, update, remove, or list agent adapters</span>
+      </div>
+      <div class="home-terminal-line is-output">
+        <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies ask</span>          Run one agent prompt and print the reply</span>
       </div>
       <div class="home-terminal-line is-output">
         <span class="home-terminal-output">    <span class="home-terminal-token is-cyan">clumsies hub</span>          Start Hub server</span>

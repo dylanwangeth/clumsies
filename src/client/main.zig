@@ -299,6 +299,8 @@ test {
     _ = @import("adapter/workflow_skills.zig");
 
     _ = @import("batch_upload.zig");
+    _ = @import("agent_config.zig");
+    _ = @import("agent_workspace.zig");
     _ = @import("drafts.zig");
     _ = @import("flags.zig");
     _ = @import("host_session.zig");
@@ -324,6 +326,7 @@ test {
     _ = @import("tui/api/view_model.zig");
     _ = @import("tui/api.zig");
     _ = @import("tui/features.zig");
+    _ = @import("tui/features/agent/root.zig");
     _ = @import("tui/features/analysis/root.zig");
     _ = @import("tui/features/dashboard/root.zig");
     _ = @import("tui/features/drafts/root.zig");
@@ -336,6 +339,7 @@ test {
     _ = @import("tui/models/view_types.zig");
     _ = @import("tui/prefs.zig");
     _ = @import("tui/runtime.zig");
+    _ = @import("tui/runtime/agent_runner.zig");
     _ = @import("tui/runtime/drafts_reader.zig");
     _ = @import("tui/runtime/editor_host.zig");
     _ = @import("tui/runtime/markdown_viewer.zig");

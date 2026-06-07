@@ -67,6 +67,7 @@ pub const Record = union(enum) {
     tool_start: ToolStart,
     tool_end: ToolEnd,
     turn_end: TurnEnd,
+    run_error: RunError,
     agent_end: AgentEnd,
 
     /// Clones one synchronous event into an owned trace record.
@@ -82,6 +83,7 @@ pub const Record = union(enum) {
             .tool_start => |call| .{ .tool_start = try ToolStart.clone(allocator, call) },
             .tool_end => |value| .{ .tool_end = try ToolEnd.clone(allocator, value) },
             .turn_end => |value| .{ .turn_end = try TurnEnd.clone(allocator, value) },
+            .run_error => |value| .{ .run_error = try RunError.clone(allocator, value) },
             .agent_end => |value| .{ .agent_end = .{
                 .reason = value.reason,
                 .message_count = value.message_count,
@@ -99,6 +101,7 @@ pub const Record = union(enum) {
             .tool_start => |value| value.deinit(allocator),
             .tool_end => |value| value.deinit(allocator),
             .turn_end => |value| value.deinit(allocator),
+            .run_error => |value| value.deinit(allocator),
         }
     }
 };
@@ -299,6 +302,18 @@ pub const TurnEnd = struct {
     }
 };
 
+pub const RunError = struct {
+    message: []const u8,
+
+    fn clone(allocator: std.mem.Allocator, value: event.Event.RunError) !RunError {
+        return .{ .message = try allocator.dupe(u8, value.message) };
+    }
+
+    fn deinit(self: RunError, allocator: std.mem.Allocator) void {
+        allocator.free(self.message);
+    }
+};
+
 pub const AgentEnd = struct {
     reason: transcript.EndReason,
     message_count: usize,
@@ -353,4 +368,18 @@ test "trace records full loop lifecycle" {
     try testing.expectEqualStrings("call_1", trace.records.items[2].message_append.assistant.tool_calls[0].id);
     try testing.expectEqualStrings("Read", trace.records.items[2].message_append.assistant.tool_calls[0].name);
     try testing.expectEqual(transcript.EndReason.complete, trace.records.items[3].agent_end.reason);
+}
+
+test "trace clones run error diagnostics into owned records" {
+    var trace = Trace.init(testing.allocator);
+    defer trace.deinit();
+
+    const owned_message = try testing.allocator.dupe(u8, "provider HTTP 401: bad key");
+    defer testing.allocator.free(owned_message);
+
+    try trace.sink().emit(.{ .run_error = .{ .message = owned_message } });
+    @memset(owned_message, 'x');
+
+    try testing.expectEqual(@as(usize, 1), trace.records.items.len);
+    try testing.expectEqualStrings("provider HTTP 401: bad key", trace.records.items[0].run_error.message);
 }

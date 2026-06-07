@@ -1,10 +1,8 @@
 //! Agent session container shared by future CLI, TUI, and RPC surfaces.
 //!
-//! A session is the runtime span of a coding-agent conversation. It owns
-//! durable history entries, append-only lifecycle `Trace`, and a derived
-//! current-state projection. Keeping these session-owned concepts in one module
-//! makes their boundaries explicit without scattering one session abstraction
-//! across several files.
+//! A session is a longer-lived coding conversation. It owns a list of agent
+//! loop runs, while the top-level history/trace/state fields expose the current
+//! or latest run for UI surfaces that render one active run at a time.
 
 const std = @import("std");
 const event = @import("event.zig");
@@ -18,6 +16,9 @@ allocator: std.mem.Allocator,
 entries: std.ArrayList(Entry) = .empty,
 trace: Trace,
 state: State,
+runs: std.ArrayList(Run) = .empty,
+current_run_index: ?usize = null,
+revision: u64 = 0,
 
 /// Initializes an in-memory agent session.
 ///
@@ -36,18 +37,33 @@ pub fn init(allocator: std.mem.Allocator) Session {
 
 /// Releases durable entries, owned trace, and derived state projection.
 pub fn deinit(self: *Session) void {
+    self.clearRuns();
     self.clearEntries();
     self.entries.deinit(self.allocator);
     self.trace.deinit();
     self.state.deinit();
+    self.runs.deinit(self.allocator);
 }
 
-/// Clears durable history, recorded events, and derived state.
+/// Clears all runs plus the current run projection.
 pub fn reset(self: *Session) void {
+    self.clearRuns();
+    self.current_run_index = null;
+    self.clearCurrentRun();
+    self.revision +%= 1;
+}
+
+/// Clears only the current/latest run projection.
+///
+/// The TUI calls this when a new background run has been accepted but before
+/// the worker emits `.agent_start`. Historical runs remain available on the
+/// same session's run list.
+pub fn clearCurrentRun(self: *Session) void {
     self.clearEntries();
     self.trace.deinit();
     self.trace = Trace.init(self.allocator);
     self.state.reset();
+    self.current_run_index = null;
 }
 
 /// Returns the session's composite event sink.
@@ -68,6 +84,18 @@ pub fn history(self: *const Session) []const Entry {
     return self.entries.items;
 }
 
+/// Returns all runs recorded in this session.
+pub fn runsView(self: *const Session) []const Run {
+    return self.runs.items;
+}
+
+/// Returns the current or latest run, if one has started.
+pub fn currentRun(self: *const Session) ?*const Run {
+    const index = self.current_run_index orelse return null;
+    if (index >= self.runs.items.len) return null;
+    return &self.runs.items[index];
+}
+
 /// Rebuilds the derived state from the owned trace.
 ///
 /// Use this after loading or compacting trace records. It keeps `State`
@@ -76,30 +104,189 @@ pub fn rebuildState(self: *Session) !void {
     try self.state.rebuild(self.trace.records.items);
 }
 
+/// Commits one borrowed loop event into owned session state.
+///
+/// The session owns several projections of the same event stream. This
+/// function prepares the next trace/history/state payloads before replacing the
+/// current ones so allocation failure cannot leave top-level state, run state,
+/// and trace out of sync.
 fn emit(ctx: *anyopaque, new_event: event.Event) !void {
     const self: *Session = @ptrCast(@alignCast(ctx));
     var record = try Trace.Record.clone(self.allocator, new_event);
     var record_owned = true;
     defer if (record_owned) record.deinit(self.allocator);
 
-    const entry = try Entry.cloneFromTrace(self.allocator, record);
+    const starts_new_run = std.meta.activeTag(record) == .agent_start;
+    const existing_run = self.currentRunMut();
+    const needs_new_run = starts_new_run or existing_run == null;
+
+    var entry = try Entry.cloneFromTrace(self.allocator, record);
     errdefer if (entry) |value| value.deinit(self.allocator);
+    var run_entry = try Entry.cloneFromTrace(self.allocator, record);
+    errdefer if (run_entry) |value| value.deinit(self.allocator);
+    var run_record = try Trace.Record.clone(self.allocator, new_event);
+    var run_record_owned = true;
+    defer if (run_record_owned) run_record.deinit(self.allocator);
 
-    try self.trace.records.ensureUnusedCapacity(self.allocator, 1);
-    if (entry != null) try self.entries.ensureUnusedCapacity(self.allocator, 1);
+    var next_state = if (needs_new_run) State.init(self.allocator) else try self.state.clone(self.allocator);
+    var next_state_owned = true;
+    defer if (next_state_owned) next_state.deinit();
+    try next_state.apply(record);
 
-    self.state.apply(record) catch |err| {
-        return err;
-    };
-    if (entry) |value| self.entries.appendAssumeCapacity(value);
-    self.trace.appendOwnedAssumeCapacity(record);
-    record_owned = false;
+    var next_run_state = if (needs_new_run) State.init(self.allocator) else try existing_run.?.state.clone(self.allocator);
+    var next_run_state_owned = true;
+    defer if (next_run_state_owned) next_run_state.deinit();
+    try next_run_state.apply(record);
+
+    if (needs_new_run) {
+        var next_trace = Trace.init(self.allocator);
+        var next_trace_owned = true;
+        defer if (next_trace_owned) next_trace.deinit();
+        try next_trace.records.ensureUnusedCapacity(self.allocator, 1);
+        var next_run_trace = Trace.init(self.allocator);
+        var next_run_trace_owned = true;
+        defer if (next_run_trace_owned) next_run_trace.deinit();
+        try next_run_trace.records.ensureUnusedCapacity(self.allocator, 1);
+
+        var next_entries: std.ArrayList(Entry) = .empty;
+        var next_entries_owned = true;
+        defer if (next_entries_owned) {
+            for (next_entries.items) |item| item.deinit(self.allocator);
+            next_entries.deinit(self.allocator);
+        };
+        if (entry != null) try next_entries.ensureUnusedCapacity(self.allocator, 1);
+
+        var next_run_entries: std.ArrayList(Entry) = .empty;
+        var next_run_entries_owned = true;
+        defer if (next_run_entries_owned) {
+            for (next_run_entries.items) |item| item.deinit(self.allocator);
+            next_run_entries.deinit(self.allocator);
+        };
+        if (run_entry != null) try next_run_entries.ensureUnusedCapacity(self.allocator, 1);
+
+        try self.runs.ensureUnusedCapacity(self.allocator, 1);
+        if (entry) |value| {
+            next_entries.appendAssumeCapacity(value);
+            entry = null;
+        }
+        if (run_entry) |value| {
+            next_run_entries.appendAssumeCapacity(value);
+            run_entry = null;
+        }
+
+        var next_run = Run{
+            .allocator = self.allocator,
+            .index = self.runs.items.len,
+            .entries = next_run_entries,
+            .trace = next_run_trace,
+            .state = next_run_state,
+        };
+        next_run_trace_owned = false;
+        var next_run_owned = true;
+        defer if (next_run_owned) next_run.deinit();
+        next_run.trace.appendOwnedAssumeCapacity(run_record);
+        run_record_owned = false;
+
+        self.state.deinit();
+        self.state = next_state;
+        next_state_owned = false;
+        next_run_state_owned = false;
+        next_run_entries_owned = false;
+
+        self.clearEntries();
+        self.entries.deinit(self.allocator);
+        self.entries = next_entries;
+        next_entries_owned = false;
+
+        self.trace.deinit();
+        next_trace.appendOwnedAssumeCapacity(record);
+        self.trace = next_trace;
+        next_trace_owned = false;
+        record_owned = false;
+
+        self.runs.appendAssumeCapacity(next_run);
+        self.current_run_index = next_run.index;
+        next_run_owned = false;
+    } else {
+        try self.trace.records.ensureUnusedCapacity(self.allocator, 1);
+        if (entry != null) try self.entries.ensureUnusedCapacity(self.allocator, 1);
+        const run = existing_run.?;
+        try run.trace.records.ensureUnusedCapacity(self.allocator, 1);
+        if (run_entry != null) try run.entries.ensureUnusedCapacity(self.allocator, 1);
+
+        self.state.deinit();
+        self.state = next_state;
+        next_state_owned = false;
+        run.state.deinit();
+        run.state = next_run_state;
+        next_run_state_owned = false;
+        if (entry) |value| {
+            self.entries.appendAssumeCapacity(value);
+            entry = null;
+        }
+        if (run_entry) |value| {
+            run.entries.appendAssumeCapacity(value);
+            run_entry = null;
+        }
+        self.trace.appendOwnedAssumeCapacity(record);
+        record_owned = false;
+        run.trace.appendOwnedAssumeCapacity(run_record);
+        run_record_owned = false;
+    }
+    self.revision +%= 1;
+}
+
+fn currentRunMut(self: *Session) ?*Run {
+    const index = self.current_run_index orelse return null;
+    if (index >= self.runs.items.len) return null;
+    return &self.runs.items[index];
 }
 
 fn clearEntries(self: *Session) void {
     for (self.entries.items) |entry| entry.deinit(self.allocator);
     self.entries.clearRetainingCapacity();
 }
+
+fn clearRuns(self: *Session) void {
+    for (self.runs.items) |*run| run.deinit();
+    self.runs.clearRetainingCapacity();
+}
+
+/// One agent loop run inside a longer-lived session.
+///
+/// A run starts at `.agent_start` and ends at `.agent_end`. The TUI can render
+/// the latest run as the active left-side panel while listing previous runs on
+/// the right without losing their durable messages or end state.
+pub const Run = struct {
+    allocator: std.mem.Allocator,
+    index: usize,
+    entries: std.ArrayList(Entry) = .empty,
+    trace: Trace,
+    state: State,
+
+    /// Initializes an empty run projection.
+    pub fn init(allocator: std.mem.Allocator, index: usize) Run {
+        return .{
+            .allocator = allocator,
+            .index = index,
+            .trace = Trace.init(allocator),
+            .state = State.init(allocator),
+        };
+    }
+
+    /// Releases entries, trace records, and derived state owned by this run.
+    pub fn deinit(self: *Run) void {
+        for (self.entries.items) |entry| entry.deinit(self.allocator);
+        self.entries.deinit(self.allocator);
+        self.trace.deinit();
+        self.state.deinit();
+    }
+
+    /// Returns durable conversation facts for this run.
+    pub fn history(self: *const Run) []const Entry {
+        return self.entries.items;
+    }
+};
 
 /// One durable entry in an agent session.
 ///
@@ -127,6 +314,7 @@ pub const Entry = union(enum) {
             .tool_start,
             .tool_end,
             .turn_end,
+            .run_error,
             => null,
         };
     }
@@ -185,6 +373,27 @@ pub const State = struct {
         self.tools.deinit(self.allocator);
     }
 
+    /// Returns an owned copy suitable for transactional projection updates.
+    ///
+    /// `Session.emit` builds the next projection before committing an event to
+    /// trace and history. Cloning keeps allocation failure from leaving the
+    /// current projection half-updated.
+    pub fn clone(self: *const State, allocator: std.mem.Allocator) !State {
+        var out = State.init(allocator);
+        errdefer out.deinit();
+        out.status = self.status;
+        out.current_turn_index = self.current_turn_index;
+        out.message_count = self.message_count;
+        out.latest_user_content = if (self.latest_user_content.len == 0) "" else try allocator.dupe(u8, self.latest_user_content);
+        out.latest_assistant_content = if (self.latest_assistant_content.len == 0) "" else try allocator.dupe(u8, self.latest_assistant_content);
+        out.end_reason = self.end_reason;
+        try out.tools.ensureTotalCapacity(allocator, self.tools.items.len);
+        for (self.tools.items) |item| {
+            out.tools.appendAssumeCapacity(try item.clone(allocator));
+        }
+        return out;
+    }
+
     /// Clears run state while keeping allocated list capacity for reuse.
     pub fn reset(self: *State) void {
         self.clear();
@@ -226,6 +435,7 @@ pub const State = struct {
                 self.current_turn_index = value.turn_index;
                 try self.replaceString(&self.latest_assistant_content, value.assistant.content);
             },
+            .run_error => {},
             .agent_end => |value| {
                 self.message_count = value.message_count;
                 self.end_reason = value.reason;
@@ -333,6 +543,24 @@ pub const ToolRun = struct {
         };
     }
 
+    fn clone(self: ToolRun, allocator: std.mem.Allocator) !ToolRun {
+        const id = try allocator.dupe(u8, self.id);
+        errdefer allocator.free(id);
+        const name = try allocator.dupe(u8, self.name);
+        errdefer allocator.free(name);
+        const arguments = try allocator.dupe(u8, self.arguments);
+        errdefer allocator.free(arguments);
+        const result_content = if (self.result_content.len == 0) "" else try allocator.dupe(u8, self.result_content);
+        return .{
+            .id = id,
+            .name = name,
+            .arguments = arguments,
+            .result_content = result_content,
+            .status = self.status,
+            .control = self.control,
+        };
+    }
+
     fn deinit(self: ToolRun, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.name);
@@ -412,6 +640,36 @@ test "session records events and updates derived state" {
     try testing.expectEqual(ToolStatus.ok, session.state.tools.items[0].status);
     try testing.expectEqualStrings("Bash", session.state.tools.items[0].name);
     try testing.expectEqualStrings("{\"status\":\"ok\",\"exit_code\":0}", session.state.tools.items[0].result_content);
+    try testing.expectEqual(@as(u64, 7), session.revision);
+}
+
+test "session keeps multiple runs while current view follows latest run" {
+    var session = Session.init(testing.allocator);
+    defer session.deinit();
+
+    const event_sink = session.sink();
+    try event_sink.emit(.agent_start);
+    try event_sink.emit(.{ .message_append = .{ .user = .{ .content = "first run" } } });
+    try event_sink.emit(.{ .agent_end = .{
+        .reason = .complete,
+        .message_count = 1,
+    } });
+    try event_sink.emit(.agent_start);
+    try event_sink.emit(.{ .message_append = .{ .user = .{ .content = "second run" } } });
+
+    try testing.expectEqual(@as(usize, 2), session.runsView().len);
+    try testing.expectEqualStrings("first run", session.runsView()[0].history()[0].message.user.content);
+    try testing.expectEqual(transcript.EndReason.complete, session.runsView()[0].history()[1].run_end);
+    try testing.expectEqual(@as(usize, 3), session.runsView()[0].trace.records.items.len);
+    try testing.expectEqual(Trace.Record.agent_start, session.runsView()[0].trace.records.items[0]);
+    try testing.expectEqualStrings("first run", session.runsView()[0].trace.records.items[1].message_append.user.content);
+    try testing.expectEqualStrings("second run", session.runsView()[1].history()[0].message.user.content);
+    try testing.expectEqual(@as(usize, 2), session.runsView()[1].trace.records.items.len);
+    try testing.expectEqual(@as(usize, 2), session.trace.records.items.len);
+    try testing.expectEqualStrings("second run", session.trace.records.items[1].message_append.user.content);
+    try testing.expectEqualStrings("second run", session.history()[0].message.user.content);
+    try testing.expectEqual(@as(usize, 1), session.history().len);
+    try testing.expectEqual(@as(usize, 1), session.currentRun().?.index);
 }
 
 test "session rebuilds state from trace" {
@@ -506,4 +764,25 @@ test "session state rebuild owns data independently of trace" {
 
     try testing.expectEqual(Status.running, state.status);
     try testing.expectEqualStrings("read file", state.latest_user_content);
+}
+
+test "session state clone owns projected strings and tools" {
+    var state = State.init(testing.allocator);
+    defer state.deinit();
+    try state.apply(.agent_start);
+    try state.apply(.{ .message_append = .{ .user = .{ .content = "fix tui" } } });
+    try state.apply(.{ .tool_start = .{
+        .id = "call_1",
+        .name = "Read",
+        .arguments = "{\"path\":\"src/client/tui/features/agent/root.zig\"}",
+    } });
+
+    var cloned = try state.clone(testing.allocator);
+    defer cloned.deinit();
+    state.reset();
+
+    try testing.expectEqual(Status.running, cloned.status);
+    try testing.expectEqualStrings("fix tui", cloned.latest_user_content);
+    try testing.expectEqual(@as(usize, 1), cloned.tools.items.len);
+    try testing.expectEqualStrings("Read", cloned.tools.items[0].name);
 }

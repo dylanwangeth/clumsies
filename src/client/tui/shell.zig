@@ -11,6 +11,7 @@ const data = models.view_types;
 const api = @import("api.zig");
 const features = @import("features.zig");
 const analysis_panel = features.analysis;
+const agent_panel = features.agent;
 const dashboard_panel = features.dashboard;
 const artifact_panel = features.artifact;
 const review_panel = features.review;
@@ -70,6 +71,7 @@ const TopModule = enum(u8) {
     artifact,
     review,
     analysis,
+    agent,
 
     fn label(self: TopModule) []const u8 {
         return switch (self) {
@@ -78,6 +80,7 @@ const TopModule = enum(u8) {
             .artifact => "Artifact",
             .review => "Review",
             .analysis => "Analysis",
+            .agent => "Agent",
         };
     }
 };
@@ -89,6 +92,7 @@ fn moduleName(module: TopModule) []const u8 {
         .artifact => "artifact",
         .review => "review",
         .analysis => "analysis",
+        .agent => "agent",
     };
 }
 
@@ -121,6 +125,7 @@ fn keyName(key: vaxis.Key) []const u8 {
     if (key.matches(vaxis.Key.page_down, .{})) return "page_down";
     if (key.matches(vaxis.Key.home, .{})) return "home";
     if (key.matches(vaxis.Key.end, .{})) return "end";
+    if (key.matches(vaxis.Key.f1, .{})) return "f1";
     if (key.matches(vaxis.Key.f2, .{})) return "f2";
     if (key.text) |text| {
         if (text.len > 0) return "text_input";
@@ -146,7 +151,18 @@ fn containsSearchText(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-const top_tabs = [_]TopModule{ .dashboard, .workspace, .artifact, .review, .analysis };
+const top_tabs = [_]TopModule{ .agent, .dashboard, .workspace, .artifact, .review, .analysis };
+
+/// Returns top-level tab shortcuts that remain available behind the login panel.
+///
+/// Most tabs depend on Hub data and should keep the login panel focused. Agent
+/// runs against local provider configuration and built-in tools, so unauthenticated
+/// users still need one direct route into that surface. Use F1 rather than the
+/// normal `1` tab key so login form text fields can accept the digit 1.
+fn loginPanelTabShortcut(key: vaxis.Key) ?TopModule {
+    if (key.matches(vaxis.Key.f1, .{})) return .agent;
+    return null;
+}
 
 const WORKSPACE_METADATA_REFRESH_TICKS = 600;
 const GLOBAL_METADATA_REFRESH_TICKS = 3000;
@@ -203,11 +219,12 @@ const PendingContentRequest = union(enum) {
 
 pub const Shell = struct {
     api_state: *api.state.ApiState,
-    selected_module: TopModule = .dashboard,
+    selected_module: TopModule = .agent,
     artifact: artifact_panel.State,
     review: rule_detail_panel.State,
     workspace: workspace_panel.State,
     dashboard: dashboard_panel.State,
+    agent: agent_panel.State,
     analysis: analysis_panel.State = .{},
     settings: settings_panel.State = .{},
     drafts: features.drafts.State,
@@ -319,6 +336,7 @@ pub const Shell = struct {
             .review = rule_detail_panel.State.init(),
             .workspace = workspace_panel.State.init(api_state.backing_allocator),
             .dashboard = dashboard_panel.State.init(),
+            .agent = agent_panel.State.init(),
             .drafts = features.drafts.State.init(api_state.backing_allocator),
             .view_arena = std.heap.ArenaAllocator.init(api_state.backing_allocator),
             .last_workspace_id = last_workspace_id,
@@ -327,6 +345,7 @@ pub const Shell = struct {
         };
         shell.refreshMarkdownViewerPreference();
         shell.seedLoginDefaults();
+        runtime.agent_runner.refreshWorkspaceRoot(api_state) catch {};
         return shell;
     }
 
@@ -396,6 +415,7 @@ pub const Shell = struct {
                         ctx.quit = true;
                         return;
                     }
+                    if (loginPanelTabShortcut(key)) |tab| return self.selectTab(ctx, tab);
                     self.handleLoginKey(ctx, key);
                     return;
                 }
@@ -524,6 +544,15 @@ pub const Shell = struct {
                     ctx.quit = true;
                     return;
                 }
+
+                // Agent prompt is a native text input inside the module body,
+                // so it must receive printable keys before global shortcuts
+                // such as `q`, `?`, number-tab switching, or settings.
+                if (self.selected_module == .agent and self.agent.prompt_active) {
+                    try agent_panel.handleModuleEvent(self, ctx, key);
+                    return;
+                }
+
                 if (key.matches('q', .{})) {
                     log.info("quit_prompt", .{});
                     self.confirm_message = "";
@@ -565,11 +594,12 @@ pub const Shell = struct {
                 }
 
                 // Top-level tab switching
-                if (key.matches('1', .{})) return self.selectTab(ctx, .dashboard);
-                if (key.matches('2', .{})) return self.selectTab(ctx, .workspace);
-                if (key.matches('3', .{})) return self.selectTab(ctx, .artifact);
-                if (key.matches('4', .{})) return self.selectTab(ctx, .review);
-                if (key.matches('5', .{})) return self.selectTab(ctx, .analysis);
+                if (key.matches('1', .{})) return self.selectTab(ctx, .agent);
+                if (key.matches('2', .{})) return self.selectTab(ctx, .dashboard);
+                if (key.matches('3', .{})) return self.selectTab(ctx, .workspace);
+                if (key.matches('4', .{})) return self.selectTab(ctx, .artifact);
+                if (key.matches('5', .{})) return self.selectTab(ctx, .review);
+                if (key.matches('6', .{})) return self.selectTab(ctx, .analysis);
 
                 // Module-specific input
                 switch (self.selected_module) {
@@ -577,6 +607,7 @@ pub const Shell = struct {
                     .review => try review_panel.handleModuleEvent(self, ctx, event, key),
                     .workspace => try workspace_panel.handleModuleEvent(self, ctx, key),
                     .dashboard => try dashboard_panel.handleModuleEvent(self, ctx, key, self.getAnalysisCounts().input_count),
+                    .agent => try agent_panel.handleModuleEvent(self, ctx, key),
                     .analysis => {
                         const counts = self.getAnalysisCounts();
                         try analysis_panel.handleModuleEvent(self, ctx, key, counts.rule_count, counts.member_count);
@@ -595,6 +626,7 @@ pub const Shell = struct {
                 const was_native_cursor_input = self.hasNativeCursorInput();
                 const was_pr_composer_visible = self.drafts.show_pr_composer;
                 const was_pr_composer_submitting = self.drafts.pr_composer_submitting;
+                const was_agent_session_revision = self.agentSessionRevision();
 
                 // Advance breathing cycle: 0→20→0 (2 seconds at 100ms intervals)
                 self.tick_count +%= 1;
@@ -657,7 +689,8 @@ pub const Shell = struct {
                 const is_native_cursor_input = self.hasNativeCursorInput();
                 const pr_composer_changed = was_pr_composer_visible != self.drafts.show_pr_composer or
                     was_pr_composer_submitting != self.drafts.pr_composer_submitting;
-                ctx.redraw = pr_composer_changed or !is_native_cursor_input or was_login_panel != is_login_panel or was_native_cursor_input != is_native_cursor_input;
+                const agent_session_changed = was_agent_session_revision != self.agentSessionRevision();
+                ctx.redraw = pr_composer_changed or agent_session_changed or !is_native_cursor_input or was_login_panel != is_login_panel or was_native_cursor_input != is_native_cursor_input;
                 try ctx.tick(100, self.widget());
             },
             else => {},
@@ -1069,6 +1102,7 @@ pub const Shell = struct {
             .review => self.drawReview(ctx),
             .workspace => self.drawWorkspaceStatus(ctx),
             .analysis => self.drawAnalysis(ctx),
+            .agent => agent_panel.drawRoot(self, ctx),
         };
     }
 
@@ -1132,6 +1166,7 @@ pub const Shell = struct {
             .review => review_panel.shortcuts(self),
             .workspace => workspace_panel.shortcuts(self),
             .analysis => analysis_panel.shortcuts(self),
+            .agent => agent_panel.shortcuts(self),
         };
     }
 
@@ -1248,7 +1283,14 @@ pub const Shell = struct {
         self.login_focus = .username;
     }
 
+    /// Decides whether Hub login should overlay the current module.
+    ///
+    /// Agent is a local provider/tool surface, and settings may already be open
+    /// from that surface. Both cases must avoid reintroducing the Hub login
+    /// overlay after the user has entered a non-Hub flow.
     fn shouldShowLoginPanel(self: *const Shell) bool {
+        if (self.show_settings) return false;
+        if (self.selected_module == .agent) return false;
         self.api_state.mutex.lock();
         defer self.api_state.mutex.unlock();
         if (self.api_state.current_user != null) return false;
@@ -1341,9 +1383,22 @@ pub const Shell = struct {
         if (self.show_markdown_viewer_dialog) return true;
         if (self.drafts.show_new_draft_form) return true;
         if (self.drafts.show_pr_composer) return self.drafts.pr_composer_focus == .title or self.drafts.pr_composer_focus == .body;
+        if (self.selected_module == .agent and self.agent.prompt_active) return true;
         if (self.workspace.show_create) return self.workspace.create_focus == .name or self.workspace.create_focus == .description;
         if (self.search_active) return true;
         return false;
+    }
+
+    /// Reads the agent session change counter under the API mutex.
+    ///
+    /// Agent runs emit from background threads and do not flow through the Hub
+    /// pending-request consumers above. The shell compares this counter on each
+    /// tick so provider replies, tool events, and wrapper errors trigger a TUI
+    /// redraw even when no key event occurs.
+    fn agentSessionRevision(self: *Shell) u64 {
+        self.api_state.mutex.lock();
+        defer self.api_state.mutex.unlock();
+        return self.api_state.agent_session.revision;
     }
 
     fn handleLoginKey(self: *Shell, ctx: *vxfw.EventContext, key: vaxis.Key) void {
@@ -1508,6 +1563,7 @@ pub const Shell = struct {
 
         const col = result.content_col;
         const field_start = result.content_row;
+        w.writeText(&surface, ctx, col, field_start -| 2, "F1 local Agent", theme.textOn(theme.PANEL_ALT, theme.MUTED));
         const switch_label = if (self.login_mode == .activate) "F2 sign in" else "F2 activate invite";
         const switch_w: u16 = @intCast(@min(ctx.stringWidth(switch_label), result.content_width));
         w.writeText(&surface, ctx, col + result.content_width -| switch_w, field_start -| 2, switch_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
@@ -4097,12 +4153,21 @@ pub const Shell = struct {
         });
         if (row < body_h) row += 1;
         row = self.drawHelpSection(&body, ctx, row, "Application", &.{
-            .{ .key = "1-5", .label = "switch the top-level module" },
+            .{ .key = "1-6", .label = "switch the top-level module" },
             .{ .key = "S", .label = "open settings" },
             .{ .key = "?", .label = "open or close this help drawer" },
             .{ .key = "q", .label = "open quit confirmation" },
             .{ .key = "Ctrl+C", .label = "quit immediately" },
         });
+        if (self.selected_module == .agent and row < body_h) {
+            row += 1;
+            _ = self.drawHelpSection(&body, ctx, row, "Agent", &.{
+                .{ .key = "i / Enter", .label = "focus the prompt when no run is active" },
+                .{ .key = "Enter", .label = "start one agent run from the prompt" },
+                .{ .key = "j/k", .label = "select a historical run when idle" },
+                .{ .key = "Esc", .label = "stop an active run or leave prompt/history focus" },
+            });
+        }
 
         const drawer = w.Drawer{
             .title = "Keyboard Reference",
@@ -4665,7 +4730,7 @@ pub const Shell = struct {
         defer alloc.free(command);
         var display = std.ArrayList(u8).empty;
         defer display.deinit(alloc);
-        display.writer(alloc).print("$ {s} <preview.md>", .{command}) catch {
+        display.print(alloc, "$ {s} <preview.md>", .{command}) catch {
             self.setMarkdownViewerDisplay("$ <viewer command too large>");
             return;
         };
@@ -5305,6 +5370,7 @@ pub const Shell = struct {
             .workspace => "Workspace list and sync status detail.",
             .review => "Pull request review queue.",
             .analysis => "Rule and member aggregates.",
+            .agent => "Live coding-agent run and session run list.",
         };
     }
 
@@ -8250,3 +8316,18 @@ pub const Shell = struct {
         self.workspace.tab = @enumFromInt(@as(u8, @intCast(next)));
     }
 };
+
+test "top-level tabs keep Dashboard and add Agent separately" {
+    try std.testing.expectEqual(@as(usize, 6), top_tabs.len);
+    try std.testing.expectEqual(TopModule.agent, top_tabs[0]);
+    try std.testing.expectEqual(TopModule.dashboard, top_tabs[1]);
+    try std.testing.expectEqualStrings("Dashboard", TopModule.dashboard.label());
+    try std.testing.expectEqualStrings("Agent", TopModule.agent.label());
+    try std.testing.expectEqualStrings("dashboard", moduleName(.dashboard));
+    try std.testing.expectEqualStrings("agent", moduleName(.agent));
+}
+
+test "login panel keeps a direct route to local Agent tab" {
+    try std.testing.expectEqual(TopModule.agent, loginPanelTabShortcut(.{ .codepoint = vaxis.Key.f1 }).?);
+    try std.testing.expect(loginPanelTabShortcut(.{ .codepoint = '1', .text = "1" }) == null);
+}

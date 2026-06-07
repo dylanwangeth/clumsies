@@ -3,6 +3,7 @@
 //! asynchronous Hub fetches to synchronous draw code.
 
 const std = @import("std");
+const agent = @import("clumsies_lib").agent;
 const collab_api = @import("clumsies_lib").protocol.collab_api;
 const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const auth_api = @import("clumsies_lib").protocol.auth_api;
@@ -107,6 +108,19 @@ pub const ApiState = struct {
     org_stats: ?model.OrgStats = null,
     local_stats: ?attestation_reader.LocalStats = null,
     drafts: ?[]const DraftEntry = null,
+    // Live Agent tab state. The durable run facts live in `agent_session`; the
+    // sibling fields are TUI wrapper state for background execution, display
+    // metadata, and configuration errors that can happen before the core loop
+    // emits any events.
+    agent_session: agent.Session,
+    agent_run_active: bool = false,
+    agent_run_id: u64 = 0,
+    agent_run_cancel_requested: bool = false,
+    agent_run_error: ?[]const u8 = null,
+    agent_workspace_root: ?[]const u8 = null,
+    agent_provider_model: ?[]const u8 = null,
+    agent_provider_timeout_ms: ?u64 = null,
+    agent_provider_use_proxy: ?bool = null,
 
     // Artifact rule content, keyed by rule path.
     rule_content_batch_pending: request.PendingRequest(dispatcher.Result(artifact_api.BatchRuleContentResponse)) = .{},
@@ -215,6 +229,7 @@ pub const ApiState = struct {
             .local_arena = local_arena_ptr,
             .client_id = id_bytes,
             .ts_allocator = undefined,
+            .agent_session = agent.Session.init(base_allocator),
         };
     }
 
@@ -235,6 +250,10 @@ pub const ApiState = struct {
     }
 
     pub fn deinit(self: *ApiState) void {
+        if (self.agent_run_error) |message| self.backing_allocator.free(message);
+        if (self.agent_workspace_root) |path| self.backing_allocator.free(path);
+        if (self.agent_provider_model) |model_name| self.backing_allocator.free(model_name);
+        self.agent_session.deinit();
         if (self.access_token) |token| self.backing_allocator.free(token);
         if (self.refresh_token) |token| self.backing_allocator.free(token);
         self.arena.deinit();

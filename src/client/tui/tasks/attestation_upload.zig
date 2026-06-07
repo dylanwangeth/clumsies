@@ -85,11 +85,10 @@ const ApiStateUploader = struct {
 
 pub fn start(api_state: *state.ApiState) !void {
     const gen = api_state.attestation_upload_pending.tryBegin() orelse return;
-    const thread = std.Thread.spawn(.{}, worker, .{ api_state, gen }) catch |err| {
+    api_state.thread_registry.spawnRegistered(api_state.backing_allocator, worker, .{ api_state, gen }) catch |err| {
         api_state.attestation_upload_pending.complete(gen, .{ .failed = @errorName(err) });
         return err;
     };
-    api_state.thread_registry.register(thread, api_state.backing_allocator) catch {};
 }
 
 fn worker(api_state: *state.ApiState, gen: u64) void {
