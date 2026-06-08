@@ -100,6 +100,9 @@ pub fn start(api_state: *state.ApiState, prompt: []const u8) !void {
         if (api_state.agent_run_active) return error.AgentRunInProgress;
 
         api_state.agent_session.clearCurrentRun();
+        enableSessionPersistenceLocked(api_state, preflight.tool_root) catch |err| {
+            log.warn("agent_session_persistence_failed workspace={s} err={s}", .{ preflight.tool_root, @errorName(err) });
+        };
         api_state.agent_run_active = true;
         api_state.agent_run_cancel_requested = false;
         clearProviderMetadataLocked(api_state);
@@ -608,6 +611,33 @@ fn setRunProviderForRun(api_state: *state.ApiState, run_id: u64, provider: Provi
     api_state.agent_provider_timeout_ms = provider.timeout_ms;
     api_state.agent_provider_use_proxy = provider.use_env_proxy;
 }
+
+/// Enables append-only session persistence to ~/.clumsies/agent/sessions/<hash>.jsonl.
+///
+/// The path is derived from the workspace root hash so each project gets its
+/// own session file. Existing file content is preserved across process restarts.
+fn enableSessionPersistenceLocked(api_state: *state.ApiState, workspace_root: []const u8) !void {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(workspace_root);
+    const digest = hasher.final();
+
+    const home = std.process.getEnvVarOwned(api_state.backing_allocator, "HOME") catch
+        std.process.getEnvVarOwned(api_state.backing_allocator, "USERPROFILE") catch
+        return error.HomeNotSet;
+    defer api_state.backing_allocator.free(home);
+
+    const sessions_dir = try std.fs.path.join(api_state.backing_allocator, &.{ home, ".clumsies", "agent", "sessions" });
+    defer api_state.backing_allocator.free(sessions_dir);
+    std.fs.cwd().makePath(sessions_dir) catch {};
+
+    var name_buf: [20]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buf, "{x}.jsonl", .{digest});
+    const path = try std.fs.path.join(api_state.backing_allocator, &.{ sessions_dir, name });
+    defer api_state.backing_allocator.free(path);
+
+    try api_state.agent_session.enablePersistence(path);
+}
+
 
 fn clearProviderMetadataLocked(api_state: *state.ApiState) void {
     if (api_state.agent_provider_model) |model_name| {

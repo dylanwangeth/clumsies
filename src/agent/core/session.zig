@@ -3,12 +3,17 @@
 //! A session is a longer-lived coding conversation. It owns a list of agent
 //! loop runs, while the top-level history/trace/state fields expose the current
 //! or latest run for UI surfaces that render one active run at a time.
+//!
+//! Persistence is opt-in: call `enablePersistence` to append every emitted
+//! trace record to a JSONL file. `loadFromFile` in `session_persistence.zig`
+//! replays those records to reconstruct an identical in-memory session.
 
 const std = @import("std");
 const event = @import("event.zig");
 const tool = @import("tool.zig");
 const Trace = @import("trace.zig");
 const transcript = @import("transcript.zig");
+const persistence = @import("session_persistence.zig");
 
 const Session = @This();
 
@@ -19,14 +24,9 @@ state: State,
 runs: std.ArrayList(Run) = .empty,
 current_run_index: ?usize = null,
 revision: u64 = 0,
+save_state: ?SaveState = null,
 
 /// Initializes an in-memory agent session.
-///
-/// The first implementation is intentionally runtime-only: it records owned
-/// lifecycle events, keeps durable history entries, and maintains a derived
-/// state projection. A future persistence layer should append durable session
-/// entries through this boundary instead of replacing `Session` with a
-/// UI-specific shape.
 pub fn init(allocator: std.mem.Allocator) Session {
     return .{
         .allocator = allocator,
@@ -35,8 +35,32 @@ pub fn init(allocator: std.mem.Allocator) Session {
     };
 }
 
-/// Releases durable entries, owned trace, and derived state projection.
+/// Owned state for the optional session persistence file.
+pub const SaveState = struct {
+    file: std.fs.File,
+    path: []const u8,
+};
+
+/// Opens a JSONL file and enables append-only persistence.
+pub fn enablePersistence(self: *Session, path: []const u8) !void {
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = false, .read = true });
+    errdefer file.close();
+    _ = try file.seekFromEnd(0);
+    self.save_state = .{ .file = file, .path = try self.allocator.dupe(u8, path) };
+}
+
+/// Closes the persistence file and stops appending.
+pub fn disablePersistence(self: *Session) void {
+    if (self.save_state) |*save| {
+        save.file.close();
+        self.allocator.free(save.path);
+    }
+    self.save_state = null;
+}
+
+/// Releases durable entries, owned trace, persisted file, and derived state.
 pub fn deinit(self: *Session) void {
+    self.disablePersistence();
     self.clearRuns();
     self.clearEntries();
     self.entries.deinit(self.allocator);
@@ -44,6 +68,7 @@ pub fn deinit(self: *Session) void {
     self.state.deinit();
     self.runs.deinit(self.allocator);
 }
+
 
 /// Clears all runs plus the current run projection.
 pub fn reset(self: *Session) void {
@@ -234,6 +259,12 @@ fn emit(ctx: *anyopaque, new_event: event.Event) !void {
         run_record_owned = false;
     }
     self.revision +%= 1;
+
+    // Best-effort persistence: state is already committed.
+    if (self.save_state) |save| {
+        const last = self.trace.records.items[self.trace.records.items.len - 1];
+        persistence.appendRecord(save.file, last, self.allocator) catch {};
+    }
 }
 
 fn currentRunMut(self: *Session) ?*Run {
@@ -287,8 +318,6 @@ pub const Run = struct {
         return self.entries.items;
     }
 };
-
-/// One durable entry in an agent session.
 ///
 /// `Trace.Record` captures the full lifecycle stream for observability.
 /// `Entry` keeps only the long-lived conversation facts that matter for
@@ -300,6 +329,18 @@ pub const Entry = union(enum) {
     /// Clones the trace record if it carries durable session meaning.
     ///
     /// Runtime-only records such as `turn_start`, `tool_start`, and `turn_end`
+/// One durable entry in an agent session.
+///
+/// `Entry` is intentionally thin: `message` and `run_end` are the only facts
+/// that matter for durable replay and memory recall right now. The agent loop
+/// currently has no mid-run model change, context compaction, or
+/// branch/fork mechanism, so entries like `model_change`, `compaction`, or
+/// `branch_summary` are not added until those features land.
+///
+/// `Trace.Record` carries the full lifecycle stream (tool_start/tool_end,
+/// turn boundaries, errors) and is the source of truth for session recovery
+/// via `session_persistence.zig`. `Entry` is a derived projection, not a
+/// replacement for the trace.
     /// return null because they describe execution progress, not conversation
     /// history.
     pub fn cloneFromTrace(
