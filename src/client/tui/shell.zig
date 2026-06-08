@@ -4162,9 +4162,12 @@ pub const Shell = struct {
         if (self.selected_module == .agent and row < body_h) {
             row += 1;
             _ = self.drawHelpSection(&body, ctx, row, "Agent", &.{
-                .{ .key = "i / Enter", .label = "focus the prompt when no run is active" },
+                .{ .key = "i", .label = "focus the prompt when no run is active" },
                 .{ .key = "Enter", .label = "start one agent run from the prompt" },
-                .{ .key = "j/k", .label = "select a historical run when idle" },
+                .{ .key = "Tab", .label = "switch Run and Session focus" },
+                .{ .key = "j/k", .label = "scroll Agent output when Run is focused" },
+                .{ .key = "j/k", .label = "select a Session prompt when focused" },
+                .{ .key = "Enter", .label = "open the selected Session prompt" },
                 .{ .key = "Esc", .label = "stop an active run or leave prompt/history focus" },
             });
         }
