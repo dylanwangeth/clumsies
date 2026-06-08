@@ -10,6 +10,7 @@ const Assembler = @import("assembler.zig");
 const event = @import("event.zig");
 const Memory = @import("memory.zig");
 const Provider = @import("provider.zig");
+const RuntimeLog = @import("runtime_log.zig");
 const Session = @import("session.zig");
 const Trace = @import("trace.zig");
 const tool = @import("tool.zig");
@@ -23,6 +24,7 @@ pub const RunOptions = struct {
     memory: ?Memory = null,
     session_entries: []const Session.Entry = &.{},
     event_sink: ?event.Sink = null,
+    runtime_log: ?*RuntimeLog = null,
     cancel: ?Cancel = null,
     max_turns: usize = 32,
 };
@@ -92,9 +94,34 @@ pub fn run(
         });
         defer assembled.deinit(allocator);
 
-        const assistant = try options.model_provider.respond(allocator, assembled.request);
+        // Log provider request before the blocking call.
+        if (options.runtime_log) |log| {
+            try log.append(RuntimeLog.ProviderRequestInfo{
+                .turn = turn_index,
+                .msg_count = assembled.request.messages.len,
+                .tool_count = assembled.request.tools.len,
+                .model = options.model_provider.metadata().model,
+            });
+        }
+
+        const request_start = std.time.milliTimestamp();
+        const assistant = options.model_provider.respond(allocator, assembled.request) catch |err| {
+            if (options.runtime_log) |log| {
+                log.append(RuntimeLog.ProviderErrorEvent{
+                    .turn = turn_index,
+                    .message = @errorName(err),
+                }) catch {};
+            }
+            return err;
+        };
+        const request_latency: u64 = @intCast(std.time.milliTimestamp() - request_start);
+
         try run_builder.append(allocator, .{ .assistant = assistant });
         try emit(options.event_sink, .{ .message_append = .{ .assistant = assistant } });
+
+        if (options.runtime_log) |log| {
+            try logProviderResponse(log, turn_index, assistant, request_latency);
+        }
         try pushMemory(options.memory, run_builder.items(), options.session_entries, turn_index, .{ .assistant = assistant });
 
         const tool_calls = assistant.tool_calls;
@@ -190,6 +217,19 @@ pub fn run(
     errdefer result.deinit(allocator);
     try pushMemory(options.memory, result.messages, options.session_entries, turn_index, .{ .run_end = .max_turns });
     return result;
+}
+
+fn logProviderResponse(log: *RuntimeLog, turn: usize, assistant: transcript.AssistantMessage, latency_ms: u64) !void {
+    const calls = try log.allocator.alloc(RuntimeLog.ToolCallDetail, assistant.tool_calls.len);
+    defer log.allocator.free(calls);
+    for (assistant.tool_calls, calls) |c, *d| d.* = .{ .id = c.id, .name = c.name, .arguments = c.arguments };
+    try log.append(RuntimeLog.ProviderDetail{
+        .turn = turn,
+        .model = "",
+        .content = assistant.content,
+        .tool_calls = calls,
+        .latency_ms = latency_ms,
+    });
 }
 
 fn emit(event_sink: ?event.Sink, new_event: event.Event) !void {

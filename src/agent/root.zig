@@ -14,6 +14,8 @@ pub const SessionEntry = Session.Entry;
 pub const SessionState = Session.State;
 pub const tool = core.tool;
 pub const Trace = core.Trace;
+pub const session_persistence = core.session_persistence;
+pub const runtime_log = core.runtime_log;
 pub const transcript = core.transcript;
 
 test {
@@ -31,4 +33,6 @@ test {
     _ = tool;
     _ = Trace;
     _ = transcript;
+    _ = session_persistence;
+    _ = providers;
 }

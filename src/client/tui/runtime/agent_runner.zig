@@ -339,6 +339,10 @@ fn runAgent(api_state: *state.ApiState, run_id: u64, prompt: []const u8) !void {
     var sink_ctx = SinkContext{ .api_state = api_state, .run_id = run_id };
     var cancel_ctx = CancelContext{ .api_state = api_state, .run_id = run_id };
     log.info("agent_loop_enter run_id={d}", .{run_id});
+    const runtime_log_path = try agentRuntimeLogPath(allocator, tool_root);
+    var runtime_log: ?agent.runtime_log = agent.runtime_log.init(allocator, runtime_log_path) catch null;
+    defer if (runtime_log) |*rl| rl.deinit();
+    defer allocator.free(runtime_log_path);
     const run_result = agent.loop.run(allocator, &messages, .{
         .model_provider = provider_state.provider(),
         .tool_runtime = &tool_runtime,
@@ -346,6 +350,7 @@ fn runAgent(api_state: *state.ApiState, run_id: u64, prompt: []const u8) !void {
         .event_sink = sink(&sink_ctx),
         .session_entries = &.{},
         .cancel = cancelToken(&cancel_ctx),
+        .runtime_log = if (runtime_log) |*rl| rl else null,
     }) catch |err| {
         if (provider_state.takeLastError()) |provider_error| {
             defer provider_error.deinit(allocator);
@@ -630,12 +635,31 @@ fn enableSessionPersistenceLocked(api_state: *state.ApiState, workspace_root: []
     defer api_state.backing_allocator.free(sessions_dir);
     std.fs.cwd().makePath(sessions_dir) catch {};
 
-    var name_buf: [20]u8 = undefined;
+    var name_buf: [32]u8 = undefined;
     const name = try std.fmt.bufPrint(&name_buf, "{x}.jsonl", .{digest});
     const path = try std.fs.path.join(api_state.backing_allocator, &.{ sessions_dir, name });
     defer api_state.backing_allocator.free(path);
 
     try api_state.agent_session.enablePersistence(path);
+}
+
+fn agentRuntimeLogPath(allocator: std.mem.Allocator, workspace_root: []const u8) ![]const u8 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(workspace_root);
+    const digest = hasher.final();
+
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
+        return error.HomeNotSet;
+    defer allocator.free(home);
+
+    const sessions_dir = try std.fs.path.join(allocator, &.{ home, ".clumsies", "agent", "sessions" });
+    defer allocator.free(sessions_dir);
+    std.fs.cwd().makePath(sessions_dir) catch {};
+
+    var name_buf: [32]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buf, "{x}_runtime.jsonl", .{digest});
+    return std.fs.path.join(allocator, &.{ sessions_dir, name });
 }
 
 

@@ -16,6 +16,8 @@ pub const SessionState = Session.State;
 pub const tool = @import("tool.zig");
 pub const Trace = @import("trace.zig");
 pub const transcript = @import("transcript.zig");
+pub const session_persistence = @import("session_persistence.zig");
+pub const runtime_log = @import("runtime_log.zig");
 
 test {
     _ = Assembler;

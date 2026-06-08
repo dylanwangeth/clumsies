@@ -71,20 +71,17 @@ fn loadAgentSession(api_state: *api.state.ApiState, allocator: std.mem.Allocator
 
     const sessions_dir = try std.fs.path.join(allocator, &.{ home, ".clumsies", "agent", "sessions" });
     defer allocator.free(sessions_dir);
-
-    var name_buf: [20]u8 = undefined;
+    var name_buf: [32]u8 = undefined;
     const name = std.fmt.bufPrint(&name_buf, "{x}.jsonl", .{digest}) catch return;
     const path = try std.fs.path.join(allocator, &.{ sessions_dir, name });
     defer allocator.free(path);
 
     // File may not exist yet — that's fine, the session starts empty.
     std.fs.cwd().access(path, .{}) catch return;
-
     // Load and replace the default empty session.
     api_state.agent_session.deinit();
-    api_state.agent_session = persistence.loadFromFile(api_state.backing_allocator, path) catch {
-        api_state.agent_session = agent.Session.init(api_state.backing_allocator);
-    };
+    api_state.agent_session = persistence.loadFromFile(api_state.backing_allocator, path) catch
+        agent.Session.init(api_state.backing_allocator);
 }
 
 pub fn main() !void {
