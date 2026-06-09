@@ -329,6 +329,7 @@ fn runAgent(api_state: *state.ApiState, run_id: u64, prompt: []const u8) !void {
         .use_env_proxy = provider_env.use_env_proxy,
     });
     defer provider_state.deinit();
+    api_state.agent_provider_context_window = provider_state.provider().metadata().context_window;
 
     var builtins: agent.tools.Builtin = .{ .workspace_path = tool_root };
     var tool_runtime = builtins.runtime();
@@ -343,12 +344,14 @@ fn runAgent(api_state: *state.ApiState, run_id: u64, prompt: []const u8) !void {
     var runtime_log: ?agent.runtime_log = agent.runtime_log.init(allocator, runtime_log_path) catch null;
     defer if (runtime_log) |*rl| rl.deinit();
     defer allocator.free(runtime_log_path);
+    const session_prior_entries = try agent.Session.priorEntries(&api_state.agent_session, allocator);
+    defer allocator.free(session_prior_entries);
     const run_result = agent.loop.run(allocator, &messages, .{
         .model_provider = provider_state.provider(),
         .tool_runtime = &tool_runtime,
         .provider_options = .{ .max_output_tokens = provider_env.max_output_tokens },
         .event_sink = sink(&sink_ctx),
-        .session_entries = &.{},
+        .session_entries = session_prior_entries,
         .cancel = cancelToken(&cancel_ctx),
         .runtime_log = if (runtime_log) |*rl| rl else null,
     }) catch |err| {
@@ -390,8 +393,163 @@ fn runAgent(api_state: *state.ApiState, run_id: u64, prompt: []const u8) !void {
     };
     defer run_result.deinit(allocator);
     log.info("agent_loop_exit run_id={d} reason={s}", .{ run_id, @tagName(run_result.end_reason) });
+
+    if (run_result.end_reason == .complete or run_result.end_reason == .max_turns) {
+        compactIfNeeded(api_state, allocator, &provider_env) catch |err| {
+            log.warn("agent_compaction_failed err={s}", .{@errorName(err)});
+        };
+    }
 }
 
+
+/// Checks whether the session's estimated context tokens exceed the model's
+/// window and, if so, compacts entries before the most recent run into a
+/// single summary entry.
+///
+/// Uses the chars/4 heuristic (same as pi) because we don't have a local
+/// tokenizer and the overhead of an exact count isn't justified for a
+/// threshold check. A real LLM summarization call via `generateCompactionSummary`
+/// produces the summary text; the placeholder fallback is kept for provider errors.
+fn compactIfNeeded(api_state: *state.ApiState, allocator: std.mem.Allocator, provider_env: *const agent_config.ProviderEnv) !void {
+    const entries = api_state.agent_session.history();
+    const context_tokens = estimateContextTokens(entries);
+    const context_window = api_state.agent_provider_context_window;
+    const reserve_tokens: usize = 8192;
+
+    if (context_tokens + reserve_tokens < context_window) return;
+
+    log.info("agent_compaction_triggered tokens={d} entries={d}", .{ context_tokens, entries.len });
+
+    const keep_recent_tokens: usize = 16000;
+    var kept_tokens: usize = 0;
+    var cut_idx: ?usize = null;
+    var idx: usize = entries.len;
+    while (idx > 0) {
+        idx -= 1;
+        switch (entries[idx]) {
+            .message => |msg| {
+                kept_tokens += estimateMessageTokens(msg);
+                if (kept_tokens >= keep_recent_tokens) {
+                    cut_idx = idx;
+                    break;
+                }
+            },
+            .run_end => {},
+            .compaction => |c| {
+                kept_tokens += c.summary.len / 4;
+                if (c.tokens_before > 0) {
+                    cut_idx = idx;
+                    break;
+                }
+            },
+        }
+    }
+    const cut = cut_idx orelse return;
+
+    var compacted_runs: usize = 0;
+    var compacted_msgs: usize = 0;
+    for (entries[0..cut]) |entry| switch (entry) {
+        .run_end => compacted_runs += 1,
+        .message => compacted_msgs += 1,
+        .compaction => {},
+    };
+
+    const summary = generateCompactionSummary(api_state, allocator, provider_env, entries[0..cut]) catch |err| {
+        log.warn("agent_compaction_summary_failed err={s}", .{@errorName(err)});
+        const fallback = try api_state.backing_allocator.dupe(u8, "Previous conversation compacted.");
+        try api_state.agent_session.compact(fallback, context_tokens, compacted_runs, compacted_msgs);
+        return;
+    };
+
+    try api_state.agent_session.compact(summary, context_tokens, compacted_runs, compacted_msgs);
+    log.info("agent_compaction_complete runs={d} msgs={d} tokens_before={d}", .{ compacted_runs, compacted_msgs, context_tokens });
+}
+
+/// Generates a compaction summary by calling the LLM provider with a
+/// summarization prompt and the conversation entries as context.
+///
+/// Returns the summary text owned by `api_state.backing_allocator`.
+fn generateCompactionSummary(
+    api_state: *state.ApiState,
+    allocator: std.mem.Allocator,
+    provider_env: *const agent_config.ProviderEnv,
+    entries: []const agent.Session.Entry,
+) ![]const u8 {
+    var prompt_buf: std.ArrayList(u8) = .empty;
+    defer prompt_buf.deinit(api_state.backing_allocator);
+    const writer = prompt_buf.writer(api_state.backing_allocator);
+    try writer.writeAll(
+        \\Summarize the following conversation between a developer and an AI coding agent.
+        \\Focus on what was discussed, what files were modified, and what was accomplished.
+        \\Be concise.
+        \\
+        \\
+    );
+    for (entries) |entry| {
+        switch (entry) {
+            .message => |msg| {
+                switch (msg) {
+                    .user => |m| try writer.print("Developer: {s}\n", .{m.content}),
+                    .assistant => |m| {
+                        try writer.print("Assistant: {s}", .{m.content});
+                        for (m.tool_calls) |tc| {
+                            try writer.print("\n  [tool call: {s}({s})]", .{ tc.name, tc.arguments });
+                        }
+                        try writer.writeByte('\n');
+                    },
+                    .tool_result => |m| try writer.print("Tool result: {s}\n", .{m.content}),
+                }
+            },
+            .run_end => |reason| try writer.print("[Run ended: {s}]\n", .{@tagName(reason)}),
+            .compaction => |c| try writer.print("[Previous summary: {s}]\n", .{c.summary}),
+        }
+    }
+
+    const messages = [_]agent.transcript.Message{
+        .{ .user = .{ .content = prompt_buf.items } },
+    };
+
+    var compaction_provider = agent.providers.OpenAICompatible.init(allocator, .{
+        .base_url = provider_env.base_url,
+        .api_key = provider_env.api_key,
+        .model = provider_env.model,
+        .auth = if (provider_env.api_key_header_name) |header| .{ .api_key = header } else .bearer,
+        .request_timeout_ms = provider_env.timeout_ms,
+        .use_env_proxy = provider_env.use_env_proxy,
+    });
+    defer compaction_provider.deinit();
+
+    const assistant = try compaction_provider.provider().respond(allocator, .{
+        .messages = &messages,
+    });
+
+    // assistant.content is arena-owned by compaction_provider; dupe before deinit.
+    return try api_state.backing_allocator.dupe(u8, assistant.content);
+}
+
+fn estimateContextTokens(entries: []const agent.Session.Entry) usize {
+    var tokens: usize = 0;
+    for (entries) |entry| {
+        switch (entry) {
+            .message => |msg| tokens += estimateMessageTokens(msg),
+            .run_end => {},
+            .compaction => |c| tokens += c.summary.len / 4,
+        }
+    }
+    return tokens;
+}
+
+fn estimateMessageTokens(msg: agent.transcript.Message) usize {
+    return switch (msg) {
+        .user => |m| m.content.len / 4,
+        .assistant => |m| blk: {
+            var t: usize = m.content.len / 4;
+            for (m.tool_calls) |tc| t += (tc.name.len + tc.arguments.len) / 4;
+            break :blk t;
+        },
+        .tool_result => |m| m.content.len / 4,
+    };
+}
 fn cancelToken(ctx: *CancelContext) agent.loop.Cancel {
     return .{
         .ctx = ctx,
@@ -484,6 +642,7 @@ fn ensureRunHasPromptLocked(api_state: *state.ApiState, prompt: []const u8) !voi
                 => {},
             },
             .run_end => {},
+            .compaction => {},
         }
     }
     try api_state.agent_session.sink().emit(.{ .message_append = .{ .user = .{ .content = prompt } } });
@@ -507,6 +666,7 @@ fn terminateRunIfOpenLocked(api_state: *state.ApiState, message: []const u8) !vo
     for (api_state.agent_session.history()) |entry| {
         switch (entry) {
             .run_end => return,
+            .compaction => return,
             .message => {},
         }
     }

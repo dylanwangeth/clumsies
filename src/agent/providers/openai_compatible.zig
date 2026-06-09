@@ -32,6 +32,7 @@ pub const Config = struct {
     base_url: []const u8,
     api_key: []const u8,
     model: []const u8,
+    context_window: usize = 131072,
     auth: Auth = .bearer,
     request_timeout_ms: ?u64 = 60 * std.time.ms_per_s,
     use_env_proxy: bool = true,
@@ -184,6 +185,7 @@ fn metadata(ctx: *anyopaque) Provider.Metadata {
     return .{
         .id = self.config.id,
         .model = self.config.model,
+        .context_window = self.config.context_window,
     };
 }
 

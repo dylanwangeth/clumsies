@@ -597,6 +597,7 @@ fn runPrompt(run: *const agent.Session.Run) ?[]const u8 {
                 => {},
             },
             .run_end => {},
+            .compaction => {},
         }
     }
     return null;

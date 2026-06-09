@@ -26,6 +26,20 @@ pub fn appendRecord(file: std.fs.File, record: Trace.Record, allocator: std.mem.
     try file.writeAll("\n");
 }
 
+/// Appends a compaction summary entry to the session file.
+pub fn appendCompactionEntry(file: std.fs.File, summary: []const u8, tokens_before: usize, run_count: usize, message_count: usize, allocator: std.mem.Allocator) !void {
+    const line = try std.json.Stringify.valueAlloc(allocator, .{
+        .type = "compaction",
+        .summary = summary,
+        .tokens_before = tokens_before,
+        .compacted_runs = run_count,
+        .compacted_msgs = message_count,
+    }, .{});
+    defer allocator.free(line);
+    try file.writeAll(line);
+    try file.writeAll("\n");
+}
+
 /// Loads a session from a JSONL file by replaying every record.
 pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Session {
     const content = try std.fs.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024);
@@ -39,11 +53,20 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Session {
         const trimmed = std.mem.trimRight(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
 
-        var record = try parseRecord(allocator, trimmed);
-        errdefer record.deinit(allocator);
+        if (isCompactionLine(trimmed)) {
+            // Compaction replaces everything before it — clear current entries
+            // then inject the compaction entry.
+            for (session.entries.items) |*e| e.deinit(session.allocator);
+            session.entries.clearRetainingCapacity();
+            const entry = try parseCompactionEntry(allocator, trimmed);
+            try session.entries.append(session.allocator, entry);
+        } else {
+            var record = try parseRecord(allocator, trimmed);
+            errdefer record.deinit(allocator);
 
-        try replayRecord(&session, record);
-        record.deinit(allocator);
+            try replayRecord(&session, record);
+            record.deinit(allocator);
+        }
     }
     return session;
 }
@@ -183,6 +206,33 @@ fn parseRecord(allocator: std.mem.Allocator, line: []const u8) !Trace.Record {
             .message_count = p.message_count orelse 0,
         } };
     return error.UnknownRecordType;
+}
+
+/// Quick check whether a JSON line is a compaction entry.
+fn isCompactionLine(line: []const u8) bool {
+    return std.mem.startsWith(u8, line, "{\"type\":\"compaction\"");
+}
+
+/// Parses a compaction JSONL line into a Session.Entry.
+fn parseCompactionEntry(allocator: std.mem.Allocator, line: []const u8) !Session.Entry {
+    const Parsed = struct {
+        type: []const u8,
+        summary: ?[]const u8 = null,
+        tokens_before: ?usize = null,
+        compacted_runs: ?usize = null,
+        compacted_msgs: ?usize = null,
+    };
+    var parsed = try std.json.parseFromSlice(Parsed, allocator, line, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const p = parsed.value;
+    const summary = try allocator.dupe(u8, p.summary orelse return error.MissingField);
+    errdefer allocator.free(summary);
+    return .{ .compaction = .{
+        .summary = summary,
+        .tokens_before = p.tokens_before orelse 0,
+        .run_count = p.compacted_runs orelse 0,
+        .message_count = p.compacted_msgs orelse 0,
+    } };
 }
 
 fn parseMessageAppend(allocator: std.mem.Allocator, p: anytype) !Trace.Record {

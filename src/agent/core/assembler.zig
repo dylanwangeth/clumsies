@@ -54,8 +54,42 @@ pub fn build(
     else
         Memory.PullResult{};
 
-    const messages = try cloneMessages(allocator, pulled.messages, frame.run_messages);
-    errdefer deinitMessages(allocator, messages);
+    // When no memory layer is attached, convert session entries into context
+    // messages. Walk backwards to find the compaction boundary: entries before
+    // it are replaced by the compaction summary; entries after are kept.
+    var context_messages: []const transcript.Message = pulled.messages;
+    var context_buf: std.ArrayList(transcript.Message) = .empty;
+    defer if (context_buf.items.len > 0) {
+        for (context_buf.items) |m| transcript.deinitMessage(m, allocator);
+        context_buf.deinit(allocator);
+    };
+    if (self.memory == null and frame.session_entries.len > 0) {
+        var start_idx: usize = 0;
+        var back_idx: usize = frame.session_entries.len;
+        while (back_idx > 0) {
+            back_idx -= 1;
+            if (frame.session_entries[back_idx] == .compaction) {
+                const c = frame.session_entries[back_idx].compaction;
+                const duped = try transcript.cloneMessage(allocator, .{ .user = .{ .content = c.summary } });
+                try context_buf.append(allocator, duped);
+                start_idx = back_idx + 1;
+                break;
+            }
+        }
+        for (frame.session_entries[start_idx..]) |entry| {
+            switch (entry) {
+                .message => |msg| {
+                    const duped = try transcript.cloneMessage(allocator, msg);
+                    try context_buf.append(allocator, duped);
+                },
+                .run_end => {},
+                .compaction => {},
+            }
+        }
+        context_messages = context_buf.items;
+    }
+
+    const messages = try cloneMessages(allocator, context_messages, frame.run_messages);
 
     return .{
         .request = .{

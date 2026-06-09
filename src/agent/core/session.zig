@@ -121,6 +121,84 @@ pub fn currentRun(self: *const Session) ?*const Run {
     return &self.runs.items[index];
 }
 
+/// Returns all durable entries from completed (non-current) runs.
+///
+/// These are the conversation facts the assembler passes as long-term context
+/// so the model can see what happened in previous interactions.
+pub fn priorEntries(self: *const Session, allocator: std.mem.Allocator) ![]const Entry {
+    var all: std.ArrayList(Entry) = .empty;
+    errdefer all.deinit(allocator);
+    for (self.runs.items) |*run| {
+        if (self.current_run_index) |current| {
+            if (run.index == current) continue;
+        }
+        try all.ensureUnusedCapacity(allocator, run.entries.items.len);
+        for (run.entries.items) |entry| {
+            const duped = try entry.clone(allocator);
+            all.appendAssumeCapacity(duped);
+        }
+    }
+    return try all.toOwnedSlice(allocator);
+}
+
+/// Replaces entries before the most recent `run_end` with a single compaction
+/// entry. Entries after the boundary are kept intact. Also collapses the runs
+/// list to only the last completed run.
+pub fn compact(self: *Session, summary: []const u8, tokens_before: usize, compacted_run_count: usize, compacted_message_count: usize) !void {
+    var entries_to_keep: usize = 0;
+    var idx: usize = self.entries.items.len;
+    while (idx > 0) {
+        idx -= 1;
+        entries_to_keep += 1;
+        if (self.entries.items[idx] == .run_end) break;
+    }
+    if (entries_to_keep >= self.entries.items.len) return;
+
+    const start_of_keep = self.entries.items.len - entries_to_keep;
+
+    for (self.entries.items[0..start_of_keep]) |*old_entry| {
+        old_entry.deinit(self.allocator);
+    }
+
+    var kept: std.ArrayList(Entry) = .empty;
+    errdefer {
+        for (kept.items) |*e| e.deinit(self.allocator);
+        kept.deinit(self.allocator);
+    }
+    const owned_summary = try self.allocator.dupe(u8, summary);
+    errdefer self.allocator.free(owned_summary);
+    try kept.append(self.allocator, .{ .compaction = .{
+        .summary = owned_summary,
+        .tokens_before = tokens_before,
+        .run_count = compacted_run_count,
+        .message_count = compacted_message_count,
+    } });
+    for (self.entries.items[start_of_keep..]) |*entry| {
+        try kept.append(self.allocator, entry.*);
+    }
+
+    self.entries.deinit(self.allocator);
+    self.entries = kept;
+
+    if (self.runs.items.len > 1) {
+        const last_idx = self.runs.items.len - 1;
+        for (self.runs.items[0..last_idx]) |*old_run| {
+            old_run.deinit();
+        }
+        const last_run = self.runs.items[last_idx];
+        self.runs.items.len = 0;
+        try self.runs.append(self.allocator, last_run);
+        self.current_run_index = 0;
+    }
+
+    self.revision +%= 1;
+
+    // Persist compaction to session.jsonl if enabled.
+    if (self.save_state) |save| {
+        persistence.appendCompactionEntry(save.file, summary, tokens_before, compacted_run_count, compacted_message_count, self.allocator) catch {};
+    }
+}
+
 /// Rebuilds the derived state from the owned trace.
 ///
 /// Use this after loading or compacting trace records. It keeps `State`
@@ -318,18 +396,33 @@ pub const Run = struct {
         return self.entries.items;
     }
 };
-///
-/// `Trace.Record` captures the full lifecycle stream for observability.
-/// `Entry` keeps only the long-lived conversation facts that matter for
-/// replay, history rendering, compaction, and future persistence.
-pub const Entry = union(enum) {
-    message: transcript.Message,
-    run_end: transcript.EndReason,
 
-    /// Clones the trace record if it carries durable session meaning.
-    ///
-    /// Runtime-only records such as `turn_start`, `tool_start`, and `turn_end`
-/// One durable entry in an agent session.
+/// Summary produced by context compaction, stored as a durable session entry.
+///
+/// When the session's estimated token count exceeds the model's context window,
+/// the agent runner compacts older entries into a single summary. The assembler
+/// recognizes compaction entries and replaces all prior entries with the summary
+/// text when building provider context.
+pub const CompactionSummary = struct {
+    summary: []const u8,
+    tokens_before: usize,
+    run_count: usize,
+    message_count: usize,
+
+    pub fn deinit(self: CompactionSummary, allocator: std.mem.Allocator) void {
+        allocator.free(self.summary);
+    }
+
+    pub fn clone(self: *const CompactionSummary, allocator: std.mem.Allocator) !CompactionSummary {
+        return .{
+            .summary = try allocator.dupe(u8, self.summary),
+            .tokens_before = self.tokens_before,
+            .run_count = self.run_count,
+            .message_count = self.message_count,
+        };
+    }
+};
+
 ///
 /// `Entry` is intentionally thin: `message` and `run_end` are the only facts
 /// that matter for durable replay and memory recall right now. The agent loop
@@ -341,6 +434,13 @@ pub const Entry = union(enum) {
 /// turn boundaries, errors) and is the source of truth for session recovery
 /// via `session_persistence.zig`. `Entry` is a derived projection, not a
 /// replacement for the trace.
+pub const Entry = union(enum) {
+    message: transcript.Message,
+    run_end: transcript.EndReason,
+    compaction: CompactionSummary,
+    /// Clones the trace record if it carries durable session meaning.
+    ///
+    /// Runtime-only records such as `turn_start`, `tool_start`, and `turn_end`
     /// return null because they describe execution progress, not conversation
     /// history.
     pub fn cloneFromTrace(
@@ -361,11 +461,22 @@ pub const Entry = union(enum) {
     }
 
     /// Releases any payload owned by this session entry.
+    /// Releases any payload owned by this session entry.
     pub fn deinit(self: Entry, allocator: std.mem.Allocator) void {
         switch (self) {
             .message => |message| transcript.deinitMessage(message, allocator),
             .run_end => {},
+            .compaction => |c| c.deinit(allocator),
         }
+    }
+
+    /// Returns an owned copy of this entry.
+    pub fn clone(self: *const Entry, allocator: std.mem.Allocator) !Entry {
+        return switch (self.*) {
+            .message => |message| .{ .message = try transcript.cloneMessage(allocator, message) },
+            .run_end => |reason| .{ .run_end = reason },
+            .compaction => |c| .{ .compaction = try c.clone(allocator) },
+        };
     }
 };
 
@@ -434,7 +545,6 @@ pub const State = struct {
         }
         return out;
     }
-
     /// Clears run state while keeping allocated list capacity for reuse.
     pub fn reset(self: *State) void {
         self.clear();

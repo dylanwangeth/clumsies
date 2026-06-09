@@ -121,6 +121,7 @@ pub const ApiState = struct {
     agent_provider_model: ?[]const u8 = null,
     agent_provider_timeout_ms: ?u64 = null,
     agent_provider_use_proxy: ?bool = null,
+    agent_provider_context_window: usize = 131072,
 
     // Artifact rule content, keyed by rule path.
     rule_content_batch_pending: request.PendingRequest(dispatcher.Result(artifact_api.BatchRuleContentResponse)) = .{},

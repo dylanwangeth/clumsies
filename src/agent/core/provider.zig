@@ -24,6 +24,7 @@ metadata_fn: *const fn (ctx: *anyopaque) Metadata = defaultMetadata,
 pub const Metadata = struct {
     id: []const u8 = "unknown",
     model: []const u8 = "",
+    context_window: usize = 131072,
 };
 
 /// Model sampling and response bounds for one provider request.
