@@ -19,6 +19,7 @@ const TRACE_ENTRY_GAP_ROWS: u16 = 1;
 pub const State = struct {
     prompt_buf: [4096]u8 = .{0} ** 4096,
     prompt_len: usize = 0,
+    prompt_cursor: u16 = 0,
     prompt_active: bool = false,
     focus: Focus = .run,
     selected_run_index: ?usize = null,
@@ -100,6 +101,7 @@ pub fn handleModuleEvent(
         var input = w.TextInput{
             .buf = &self.agent.prompt_buf,
             .len = &self.agent.prompt_len,
+            .cursor = self.agent.prompt_cursor,
             .bg = theme.PANEL_ALT,
         };
         switch (input.handleKey(key)) {
@@ -113,6 +115,7 @@ pub fn handleModuleEvent(
                 self.agent.selected_run_index = null;
                 resetRunScroll(self);
                 input.clear();
+                self.agent.prompt_cursor = input.cursor;
                 self.agent.prompt_active = false;
                 self.agent.focus = .run;
                 ctx.consumeAndRedraw();
@@ -120,11 +123,13 @@ pub fn handleModuleEvent(
             },
             .cancel => {
                 self.agent.prompt_active = false;
+                self.agent.prompt_cursor = 0;
                 self.agent.focus = .run;
                 ctx.consumeAndRedraw();
                 return;
             },
             .consumed => {
+                self.agent.prompt_cursor = input.cursor;
                 ctx.consumeAndRedraw();
                 return;
             },
@@ -231,8 +236,7 @@ fn isRunListKey(key: vaxis.Key) ?isize {
 }
 
 fn isFocusKey(key: vaxis.Key) ?isize {
-    if (key.matches(vaxis.Key.tab, .{}) or key.matches(vaxis.Key.right, .{})) return 1;
-    if (key.matches(vaxis.Key.left, .{})) return -1;
+    if (key.matches(vaxis.Key.tab, .{})) return 1;
     return null;
 }
 
@@ -337,10 +341,10 @@ fn drawComposer(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vx
         w.writeRightText(&surface, ctx, 0, header, theme.fg(if (self.api_state.agent_run_error != null) theme.DANGER else if (running) theme.ACCENT_SOFT else theme.MUTED));
         break :blk running;
     };
-
     var input = w.TextInput{
         .buf = &self.agent.prompt_buf,
         .len = &self.agent.prompt_len,
+        .cursor = self.agent.prompt_cursor,
         .bg = theme.PANEL_ALT,
     };
     input.drawOnSurface(&surface, ctx, 2, 1, surface.size.width -| 4);
@@ -975,16 +979,15 @@ test "agent focus cycles between run and session list" {
     try std.testing.expectEqual(Focus.run, movedFocus(.runs, -1));
 }
 
-test "agent focus keys use tab and horizontal arrows" {
+test "agent focus key uses tab" {
     try std.testing.expectEqual(@as(?isize, 1), isFocusKey(.{ .codepoint = vaxis.Key.tab }));
-    try std.testing.expectEqual(@as(?isize, 1), isFocusKey(.{ .codepoint = vaxis.Key.right }));
-    try std.testing.expectEqual(@as(?isize, -1), isFocusKey(.{ .codepoint = vaxis.Key.left }));
+    try std.testing.expectEqual(@as(?isize, null), isFocusKey(.{ .codepoint = vaxis.Key.left }));
+    try std.testing.expectEqual(@as(?isize, null), isFocusKey(.{ .codepoint = vaxis.Key.right }));
     try std.testing.expectEqual(@as(?isize, null), isFocusKey(.{ .codepoint = 'j' }));
 }
 
 test "agent scroll delegates row and half-page keys to ScrollView" {
     try std.testing.expect(isScrollViewKey(.{ .codepoint = 'j' }));
-    try std.testing.expect(isScrollViewKey(.{ .codepoint = 'k' }));
     try std.testing.expect(isScrollViewKey(.{ .codepoint = vaxis.Key.down }));
     try std.testing.expect(isScrollViewKey(.{ .codepoint = vaxis.Key.up }));
     try std.testing.expect(isScrollViewKey(.{ .codepoint = 'd', .mods = .{ .ctrl = true } }));
