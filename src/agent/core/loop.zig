@@ -163,12 +163,30 @@ pub fn run(
             try emit(options.event_sink, .{ .tool_start = call });
         }
 
-        // The tool runtime owns scheduling and per-tool failure handling, but
-        // must return one result per input call so call ids stay aligned.
+        var tool_start_ms: i64 = 0;
+        if (options.runtime_log != null) {
+            tool_start_ms = std.time.milliTimestamp();
+            try options.runtime_log.?.append(.{
+                .type = "tool_batch_start",
+                .turn = turn_index,
+                .count = tool_calls.len,
+            });
+        }
+
         const tool_results = try options.tool_runtime.executeBatch(allocator, tool_calls);
         defer {
             for (tool_results) |result| result.deinit(allocator);
             allocator.free(tool_results);
+        }
+
+        if (options.runtime_log) |log| {
+            const latency: u64 = @intCast(std.time.milliTimestamp() - tool_start_ms);
+            try log.append(.{
+                .type = "tool_batch_end",
+                .turn = turn_index,
+                .count = tool_calls.len,
+                .latency_ms = latency,
+            });
         }
 
         var stop_request_count: usize = 0;

@@ -15,12 +15,13 @@ const std = @import("std");
 const http = std.http;
 const ProviderTransport = @import("../../net/provider_transport.zig");
 const Provider = @import("../core/provider.zig");
+const RuntimeLog = @import("../core/runtime_log.zig");
 const tool = @import("../core/tool.zig");
 const transcript = @import("../core/transcript.zig");
-
 const OpenAICompatible = @This();
 
 allocator: std.mem.Allocator,
+runtime_log: ?*RuntimeLog = null,
 config: Config,
 transport: ProviderTransport,
 arena: std.heap.ArenaAllocator,
@@ -223,15 +224,21 @@ fn respond(
     }, .{ .emit_null_optional_fields = false });
     defer allocator.free(body);
 
+    if (self.runtime_log) |log| {
+        log.append(.{ .type = "provider_request_raw", .body = body }) catch {};
+    }
+
     const response_body = try self.fetchChatCompletions(body);
     defer self.allocator.free(response_body);
+
+    if (self.runtime_log) |log| {
+        log.append(.{ .type = "provider_response_raw", .body = response_body }) catch {};
+    }
 
     const parsed = try std.json.parseFromSlice(ResponseJson, allocator, response_body, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     });
-    defer parsed.deinit();
-
     if (parsed.value.choices.len == 0) return error.EmptyProviderResponse;
     return assistantFromJson(self.arena.allocator(), parsed.value.choices[0].message);
 }

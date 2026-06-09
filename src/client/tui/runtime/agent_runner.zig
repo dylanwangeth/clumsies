@@ -328,31 +328,36 @@ fn runAgent(api_state: *state.ApiState, run_id: u64, prompt: []const u8) !void {
         .request_timeout_ms = provider_env.timeout_ms,
         .use_env_proxy = provider_env.use_env_proxy,
     });
-    defer provider_state.deinit();
-    api_state.agent_provider_context_window = provider_state.provider().metadata().context_window;
 
-    var builtins: agent.tools.Builtin = .{ .workspace_path = tool_root };
-    var tool_runtime = builtins.runtime();
-    const messages = [_]agent.transcript.Message{
-        .{ .user = .{ .content = prompt } },
-    };
-
-    var sink_ctx = SinkContext{ .api_state = api_state, .run_id = run_id };
-    var cancel_ctx = CancelContext{ .api_state = api_state, .run_id = run_id };
-    log.info("agent_loop_enter run_id={d}", .{run_id});
     const runtime_log_path = try agentRuntimeLogPath(allocator, tool_root);
     var runtime_log: ?agent.runtime_log = agent.runtime_log.init(allocator, runtime_log_path) catch null;
     defer if (runtime_log) |*rl| rl.deinit();
     defer allocator.free(runtime_log_path);
+
+    if (runtime_log) |*rl| provider_state.runtime_log = rl;
+    api_state.agent_provider_context_window = provider_state.provider().metadata().context_window;
+    defer provider_state.deinit();
+
+    const messages = [_]agent.transcript.Message{
+        .{ .user = .{ .content = prompt } },
+    };
+    var builtins: agent.tools.Builtin = .{ .workspace_path = tool_root };
+    var tool_runtime = builtins.runtime();
+    var cancel_state = CancelContext{
+        .api_state = api_state,
+        .run_id = run_id,
+    };
+    var sink_ctx = SinkContext{ .api_state = api_state, .run_id = run_id };
     const session_prior_entries = try agent.Session.priorEntries(&api_state.agent_session, allocator);
     defer allocator.free(session_prior_entries);
+    log.info("agent_loop_enter run_id={d}", .{run_id});
     const run_result = agent.loop.run(allocator, &messages, .{
         .model_provider = provider_state.provider(),
         .tool_runtime = &tool_runtime,
         .provider_options = .{ .max_output_tokens = provider_env.max_output_tokens },
         .event_sink = sink(&sink_ctx),
         .session_entries = session_prior_entries,
-        .cancel = cancelToken(&cancel_ctx),
+        .cancel = cancelToken(&cancel_state),
         .runtime_log = if (runtime_log) |*rl| rl else null,
     }) catch |err| {
         if (provider_state.takeLastError()) |provider_error| {
