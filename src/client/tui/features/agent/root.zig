@@ -13,7 +13,9 @@ const w = @import("../../widgets.zig");
 const agent_runner = @import("../../runtime/agent_runner.zig");
 const agent = @import("clumsies_lib").agent;
 
-const SPINNER_FRAMES = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+const GUTTER_COLS: u16 = 4;
+const GUTTER_INDENT = "    ";
+const RUN_STREAM_SPACER = " ";
 const TRACE_ENTRY_GAP_ROWS: u16 = 1;
 
 pub const State = struct {
@@ -376,7 +378,7 @@ fn drawCurrentRun(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!
     else
         self.api_state.agent_session.trace.records.items;
     const has_run_error = traceHasRunError(records);
-    const icons = runIconSet(self.tick_count);
+    const icons = runIconSet();
     const status_label = try statusGlyphLabel(
         ctx.arena,
         icons,
@@ -388,7 +390,7 @@ fn drawCurrentRun(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!
     w.writeRightText(&surface, ctx, 0, status_label, statusStyle(state.status, is_live_view and self.api_state.agent_run_active, has_run_error or (is_live_view and self.api_state.agent_run_error != null)));
     if (records.len == 0) {
         const text = if (is_live_view and self.api_state.agent_run_active)
-            try std.fmt.allocPrint(ctx.arena, "{s} starting", .{icons.spinner})
+            try std.fmt.allocPrint(ctx.arena, "{s} starting", .{icons.thinking})
         else
             "No runs yet.";
         try syncRunStreamWidgets(self, ctx.arena, &.{.{ .text = text, .style = theme.fg(theme.MUTED) }}, surface.size.height -| 2);
@@ -398,20 +400,76 @@ fn drawCurrentRun(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error!
     const show_provider_pending = shouldShowProviderPending(is_live_view and self.api_state.agent_run_active, records);
     const body_width = surface.size.width -| 2;
     const content_width = @max(@as(u16, 1), body_width -| @intFromBool(self.agent.run_scroll_bars.draw_vertical_scrollbar));
+    const model_label = self.api_state.agent_provider_model orelse "model";
     var lines: std.ArrayListUnmanaged(RunLine) = .empty;
     if (is_live_view) {
         if (self.api_state.agent_run_error) |message| {
-            try appendWrappedRunLine(ctx.arena, ctx, &lines, firstLineTrimmed(message, content_width), theme.fg(theme.DANGER), content_width);
+            try appendRunBlock(ctx.arena, ctx, &lines, try gutter(ctx.arena, icons.tool_error), "Run error", firstLineTrimmed(message, content_width), .{ .fg = theme.DANGER, .bg = theme.PANEL, .bold = true }, .{ .fg = theme.DANGER, .bg = theme.PANEL }, content_width, TRACE_ENTRY_GAP_ROWS);
         }
     }
+
+    var tool_format_buf: [4096]u8 = undefined;
     for (records, 0..) |record, record_index| {
         if (!isVisibleRunRecordAt(records, record_index)) continue;
-        const line = try traceLine(ctx.arena, icons, record);
-        try appendWrappedRunLine(ctx.arena, ctx, &lines, line, .{ .fg = traceColor(record), .bg = theme.PANEL }, content_width);
+        const gap = recordGapRows();
+        switch (record) {
+            .message_append => |message| switch (message) {
+                .user => |value| {
+                    const summary = firstLineTrimmed(value.content, content_width -| GUTTER_COLS -| 12);
+                    const label = try std.fmt.allocPrint(ctx.arena, "User asked: {s}", .{summary});
+                    try appendRunBlock(ctx.arena, ctx, &lines, try gutter(ctx.arena, icons.user), label, value.content, .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL, .bold = true }, .{ .fg = theme.TEXT, .bg = theme.PANEL }, content_width, gap);
+                },
+                .assistant => |value| {
+                    if (value.reasoning.len > 0) {
+                        const label = try std.fmt.allocPrint(ctx.arena, "{s} is thinking", .{model_label});
+                        try appendRunBlock(ctx.arena, ctx, &lines, try gutter(ctx.arena, icons.thinking), label, value.reasoning, .{ .fg = theme.MUTED, .bg = theme.PANEL, .bold = true }, .{ .fg = theme.MUTED, .bg = theme.PANEL }, content_width, gap);
+                    }
+                    if (value.content.len > 0) {
+                        const label = try std.fmt.allocPrint(ctx.arena, "{s} responded", .{model_label});
+                        try appendRunBlock(ctx.arena, ctx, &lines, try gutter(ctx.arena, icons.assistant), label, value.content, .{ .fg = theme.TEXT, .bg = theme.PANEL, .bold = true }, .{ .fg = theme.TEXT, .bg = theme.PANEL }, content_width, gap);
+                    }
+                },
+                .tool_result => {},
+            },
+            .tool_start => |call| {
+                const args = formatToolArgs(ctx.arena, &tool_format_buf, call.name, call.arguments);
+                const label = try toolHeader(ctx.arena, call.name, args);
+                try appendRunBlock(ctx.arena, ctx, &lines, try gutter(ctx.arena, toolNerdIcon(call.name)), label, "", .{ .fg = theme.TEXT, .bg = theme.PANEL, .bold = true }, .{ .fg = theme.TEXT, .bg = theme.PANEL }, content_width, gap);
+            },
+            .tool_end => |value| {
+                const tool_gutter = try gutter(ctx.arena, toolNerdIcon(value.call.name));
+                const args = formatToolArgs(ctx.arena, &tool_format_buf, value.call.name, value.call.arguments);
+                const label = try toolHeader(ctx.arena, value.call.name, args);
+                const fg = if (value.result.is_error) theme.DANGER else theme.TEXT;
+                const label_style: vaxis.Style = .{ .fg = fg, .bg = theme.PANEL, .bold = true };
+                const body_style: vaxis.Style = .{ .fg = fg, .bg = theme.PANEL };
+                if (value.result.content.len == 0) {
+                    try appendRunBlock(ctx.arena, ctx, &lines, tool_gutter, label, "", label_style, body_style, content_width, gap);
+                } else if (std.mem.eql(u8, value.call.name, "Bash")) {
+                    if (formatBashResult(ctx.arena, &tool_format_buf, value.result.content)) |output| {
+                        try appendRunBlock(ctx.arena, ctx, &lines, tool_gutter, label, output, label_style, body_style, content_width, gap);
+                    } else {
+                        try appendRunBlock(ctx.arena, ctx, &lines, tool_gutter, label, value.result.content, label_style, body_style, content_width, gap);
+                    }
+                } else {
+                    try appendRunBlock(ctx.arena, ctx, &lines, tool_gutter, label, value.result.content, label_style, body_style, content_width, gap);
+                }
+            },
+            .run_error => |value| {
+                try appendRunBlock(ctx.arena, ctx, &lines, try gutter(ctx.arena, icons.tool_error), "Run error", value.message, .{ .fg = theme.DANGER, .bg = theme.PANEL, .bold = true }, .{ .fg = theme.DANGER, .bg = theme.PANEL }, content_width, gap);
+            },
+            .agent_end => |value| {
+                try appendRunBlock(ctx.arena, ctx, &lines, try gutter(ctx.arena, endReasonGlyph(value.reason)), endReasonLabel(value.reason), "", .{ .fg = theme.TEXT, .bg = theme.PANEL, .bold = true }, .{ .fg = theme.TEXT, .bg = theme.PANEL }, content_width, gap);
+            },
+            .agent_start,
+            .turn_start,
+            .turn_end,
+            => {},
+        }
     }
     if (show_provider_pending) {
-        const pending = try std.fmt.allocPrint(ctx.arena, "{s} model", .{icons.spinner});
-        try appendWrappedRunLine(ctx.arena, ctx, &lines, pending, theme.fg(theme.ACCENT_SOFT), content_width);
+        const label = try std.fmt.allocPrint(ctx.arena, "{s} is thinking", .{model_label});
+        try appendRunBlock(ctx.arena, ctx, &lines, try gutter(ctx.arena, icons.thinking), label, "Waiting for model response", .{ .fg = theme.ACCENT_SOFT, .bg = theme.PANEL, .bold = true }, .{ .fg = theme.MUTED, .bg = theme.PANEL }, content_width, TRACE_ENTRY_GAP_ROWS);
     }
     trimTrailingRunGap(&lines);
     try syncRunStreamWidgets(self, ctx.arena, lines.items, surface.size.height -| 2);
@@ -510,38 +568,50 @@ fn endReasonLabel(reason: agent.transcript.EndReason) []const u8 {
 }
 
 const RunIconSet = struct {
-    spinner: []const u8,
-    user: []const u8 = "›",
-    assistant: []const u8 = "✦",
-    tool_ok: []const u8 = "✓",
+    user: []const u8 = "\u{F054}",
+    assistant: []const u8 = "\u{F075}",
+    thinking: []const u8 = NF_FA_LIGHTBULB,
     tool_error: []const u8 = "✗",
 };
 
-/// Returns the symbol palette for one draw tick.
+const NF_FA_LIGHTBULB = "\u{F0EB}";
+const NF_FA_BOOK = "\u{F02D}";
+const NF_FA_PENCIL = "\u{F040}";
+const NF_FA_TERMINAL = "\u{F120}";
+const NF_FA_SEARCH = "\u{F002}";
+
+/// Returns the static symbol palette for the Agent run stream.
 ///
-/// Animated and static glyphs live together so the run stream has one visual
-/// language: braille spinner for live work, `✦` for assistant prose, `›` for
-/// user prompts, and result glyphs for completed tools.
-fn runIconSet(tick_count: u64) RunIconSet {
-    return .{ .spinner = SPINNER_FRAMES[@intCast(tick_count % SPINNER_FRAMES.len)] };
+/// The stream uses Nerd Font glyphs as stable gutters. Active work deliberately
+/// avoids animation so wrapped rows keep a fixed visual rhythm.
+fn runIconSet() RunIconSet {
+    return .{};
+}
+
+fn toolNerdIcon(tool_name: []const u8) []const u8 {
+    if (std.mem.eql(u8, tool_name, "Bash")) return NF_FA_TERMINAL;
+    if (std.mem.eql(u8, tool_name, "Read")) return NF_FA_BOOK;
+    if (std.mem.eql(u8, tool_name, "Write")) return NF_FA_PENCIL;
+    if (std.mem.eql(u8, tool_name, "Search") or std.mem.eql(u8, tool_name, "Find")) return NF_FA_SEARCH;
+    return "?";
 }
 
 /// Formats the compact status shown in the Agent panel border.
 ///
-/// The border status is intentionally terse: it uses the same spinner as the
-/// stream for active work, then falls back to stable result glyphs for completed
-/// runs so status and stream rows do not teach different symbol meanings.
+/// The border status is intentionally terse: active work uses the same thinking
+/// glyph as the stream, then stable result glyphs for completed runs.
 fn statusGlyphLabel(arena: std.mem.Allocator, icons: RunIconSet, status: agent.Session.Status, active: bool, cancel_requested: bool, has_error: bool) std.mem.Allocator.Error![]const u8 {
-    if (active and cancel_requested) return std.fmt.allocPrint(arena, "{s} stopping", .{icons.spinner});
-    if (active) return std.fmt.allocPrint(arena, "{s} running", .{icons.spinner});
-    if (has_error) return "✗ error";
+    _ = arena;
+    if (active and cancel_requested) return "■";
+    if (active) return icons.thinking;
+    if (has_error) return "✗";
     return switch (status) {
-        .idle => "○ idle",
-        .running => std.fmt.allocPrint(arena, "{s} running", .{icons.spinner}),
+        .idle => "○",
+        .running => icons.thinking,
         .ended => |reason| switch (reason) {
-            .complete => "✓ complete",
-            .terminated => "■ stopped",
-            .max_turns => "… max",
+            .complete => "✓",
+            .terminated => "■",
+            .max_turns => "…",
         },
     };
 }
@@ -731,31 +801,80 @@ fn visibleRunRows(scroll_view: *const vxfw.ScrollView) usize {
     return @max(@as(usize, @intCast(scroll_view.last_height)), 1);
 }
 
+fn appendRunBlock(
+    arena: std.mem.Allocator,
+    ctx: vxfw.DrawContext,
+    out: *std.ArrayListUnmanaged(RunLine),
+    gutter_text: []const u8,
+    label: []const u8,
+    body: []const u8,
+    label_style: vaxis.Style,
+    body_style: vaxis.Style,
+    max_width: u16,
+    gap_rows: u16,
+) std.mem.Allocator.Error!void {
+    const body_gap: u16 = if (body.len == 0) gap_rows else 0;
+    try appendWrappedRunLine(arena, ctx, out, gutter_text, label, label_style, max_width, body_gap);
+    if (body.len > 0) {
+        try appendWrappedRunLine(arena, ctx, out, GUTTER_INDENT, body, body_style, max_width, gap_rows);
+    }
+}
+
 fn appendWrappedRunLine(
     arena: std.mem.Allocator,
     ctx: vxfw.DrawContext,
     out: *std.ArrayListUnmanaged(RunLine),
-    text: []const u8,
+    gutter_text: []const u8,
+    content: []const u8,
     style: vaxis.Style,
     max_width: u16,
+    gap_rows: u16,
 ) std.mem.Allocator.Error!void {
-    var rest = text;
-    while (true) {
-        const next = nextWrappedLine(ctx, rest, max_width) orelse break;
-        rest = next.rest;
-        try out.append(arena, .{ .text = next.line, .style = style });
+    const wrap_width = @max(@as(u16, 1), max_width -| GUTTER_COLS);
+    if (content.len == 0) {
+        try out.append(arena, .{ .text = gutter_text, .style = style });
+    } else {
+        var rest = content;
+        var first = true;
+        while (true) {
+            const next = nextWrappedLine(ctx, rest, wrap_width) orelse break;
+            rest = next.rest;
+            const prefix = if (first) gutter_text else GUTTER_INDENT;
+            try out.append(arena, .{ .text = try std.fmt.allocPrint(arena, "{s}{s}", .{ prefix, next.line }), .style = style });
+            first = false;
+        }
+        if (first) {
+            try out.append(arena, .{ .text = try std.fmt.allocPrint(arena, "{s}{s}", .{ gutter_text, content }), .style = style });
+        }
     }
-    if (text.len == 0) try out.append(arena, .{ .text = "", .style = style });
+
     var gap: u16 = 0;
-    while (gap < TRACE_ENTRY_GAP_ROWS) : (gap += 1) {
-        try out.append(arena, .{ .text = "", .style = theme.fg(theme.MUTED) });
+    while (gap < gap_rows) : (gap += 1) {
+        try out.append(arena, .{ .text = RUN_STREAM_SPACER, .style = theme.fg(theme.MUTED) });
     }
 }
 
+fn gutter(arena: std.mem.Allocator, icon: []const u8) std.mem.Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(arena, " {s}  ", .{icon});
+}
+
+fn toolHeader(arena: std.mem.Allocator, tool_name: []const u8, args: []const u8) std.mem.Allocator.Error![]const u8 {
+    if (args.len == 0) return std.fmt.allocPrint(arena, "{s}", .{tool_name});
+    return std.fmt.allocPrint(arena, "{s}  {s}", .{ tool_name, args });
+}
+
+fn recordGapRows() u16 {
+    return TRACE_ENTRY_GAP_ROWS;
+}
+
 fn trimTrailingRunGap(lines: *std.ArrayListUnmanaged(RunLine)) void {
-    while (lines.items.len > 0 and lines.items[lines.items.len - 1].text.len == 0) {
+    while (lines.items.len > 0 and isRunSpacer(lines.items[lines.items.len - 1].text)) {
         lines.items.len -= 1;
     }
+}
+
+fn isRunSpacer(text: []const u8) bool {
+    return std.mem.trim(u8, text, " ").len == 0;
 }
 
 /// Decides whether one runtime record should appear in the Agent stream.
@@ -770,7 +889,7 @@ fn isVisibleRunRecordAt(records: []const agent.Trace.Record, index: usize) bool 
     return switch (records[index]) {
         .message_append => |message| switch (message) {
             .user => true,
-            .assistant => |value| value.content.len > 0,
+            .assistant => |value| value.content.len > 0 or value.reasoning.len > 0,
             .tool_result => false,
         },
         .tool_start => |call| !hasLaterToolEnd(records, index, call.id),
@@ -798,69 +917,59 @@ fn hasLaterToolEnd(records: []const agent.Trace.Record, start_index: usize, call
     return false;
 }
 
-/// Formats one trace record into the user-facing run stream.
-///
-/// Trace records are runtime events, while this panel is a coding-agent
-/// conversation. This adapter gives user messages, assistant prose, live tools,
-/// and tool results distinct symbols before the generic wrapped-text renderer
-/// lays them out.
-fn traceLine(arena: std.mem.Allocator, icons: RunIconSet, record: agent.Trace.Record) std.mem.Allocator.Error![]const u8 {
-    return switch (record) {
-        .agent_start => std.fmt.allocPrint(arena, "○ start", .{}),
-        .turn_start => |value| std.fmt.allocPrint(arena, "◌ turn {d}", .{value.turn_index + 1}),
-        .message_append => |message| messageAppendLine(arena, icons, message),
-        .tool_start => |call| std.fmt.allocPrint(arena, "{s} {s} {s}", .{ icons.spinner, call.name, call.arguments }),
-        .tool_end => |value| std.fmt.allocPrint(arena, "{s} {s} {s}", .{
-            if (value.result.is_error) icons.tool_error else icons.tool_ok,
-            value.call.name,
-            value.result.content,
-        }),
-        .turn_end => |value| std.fmt.allocPrint(arena, "◌ turn {d}", .{value.turn_index + 1}),
-        .run_error => |value| std.fmt.allocPrint(arena, "{s} {s}", .{ icons.tool_error, value.message }),
-        .agent_end => |value| std.fmt.allocPrint(arena, "{s}", .{endReasonGlyphLabel(value.reason)}),
-    };
-}
-
-/// Formats transcript messages that appear inside the visible run stream.
-///
-/// Assistant text and tool requests both arrive through assistant messages, so
-/// this function keeps natural-language answers on `✦` while pending tool-call
-/// requests use the spinner language shared with live tool execution.
-fn messageAppendLine(arena: std.mem.Allocator, icons: RunIconSet, message: agent.Trace.MessageAppend) std.mem.Allocator.Error![]const u8 {
-    return switch (message) {
-        .user => |value| std.fmt.allocPrint(arena, "{s} {s}", .{ icons.user, value.content }),
-        .assistant => |value| if (value.content.len > 0)
-            std.fmt.allocPrint(arena, "{s} {s}", .{ icons.assistant, value.content })
-        else
-            std.fmt.allocPrint(arena, "{s} {d} tool call(s)", .{ icons.spinner, value.tool_calls.len }),
-        .tool_result => |value| std.fmt.allocPrint(arena, "{s} {s}", .{ if (value.is_error) icons.tool_error else icons.tool_ok, value.content }),
-    };
-}
-
-fn endReasonGlyphLabel(reason: agent.transcript.EndReason) []const u8 {
+fn endReasonGlyph(reason: agent.transcript.EndReason) []const u8 {
     return switch (reason) {
-        .complete => "✓ complete",
-        .terminated => "■ stopped",
-        .max_turns => "… max turns",
+        .complete => "✓",
+        .terminated => "■",
+        .max_turns => "…",
     };
 }
 
-fn traceColor(record: agent.Trace.Record) vaxis.Color {
-    return switch (record) {
-        .agent_start,
-        .turn_start,
-        .turn_end,
-        .agent_end,
-        => theme.MUTED,
-        .run_error => theme.DANGER,
-        .message_append => |message| switch (message) {
-            .user => theme.ACCENT_SOFT,
-            .assistant => theme.TEXT_SOFT,
-            .tool_result => |value| if (value.is_error) theme.DANGER else theme.TEXT_SOFT,
-        },
-        .tool_start => theme.INFO,
-        .tool_end => |value| if (value.result.is_error) theme.DANGER else theme.OK,
-    };
+fn copyInto(buf: []u8, src: []const u8) []const u8 {
+    if (buf.len == 0) return src;
+    const n = @min(src.len, buf.len);
+    @memcpy(buf[0..n], src[0..n]);
+    return buf[0..n];
+}
+
+fn formatToolArgs(arena: std.mem.Allocator, buf: []u8, tool_name: []const u8, arguments: []const u8) []const u8 {
+    _ = tool_name;
+    if (arguments.len == 0) return "";
+
+    const P = struct { path: ?[]const u8 = null };
+    if (std.json.parseFromSlice(P, arena, arguments, .{ .ignore_unknown_fields = true })) |p| {
+        defer p.deinit();
+        if (p.value.path) |v| return copyInto(buf, v);
+    } else |_| {}
+
+    const C = struct { command: ?[]const u8 = null };
+    if (std.json.parseFromSlice(C, arena, arguments, .{ .ignore_unknown_fields = true })) |p| {
+        defer p.deinit();
+        if (p.value.command) |v| return copyInto(buf, v);
+    } else |_| {}
+
+    const PT = struct { pattern: ?[]const u8 = null };
+    if (std.json.parseFromSlice(PT, arena, arguments, .{ .ignore_unknown_fields = true })) |p| {
+        defer p.deinit();
+        if (p.value.pattern) |v| return copyInto(buf, v);
+    } else |_| {}
+
+    return copyInto(buf, arguments);
+}
+
+fn formatBashResult(arena: std.mem.Allocator, buf: []u8, content: []const u8) ?[]const u8 {
+    const R = struct { stdout: ?[]const u8 = null, stderr: ?[]const u8 = null };
+    const parsed = std.json.parseFromSlice(R, arena, content, .{ .ignore_unknown_fields = true }) catch return null;
+    defer parsed.deinit();
+    if (parsed.value.stdout) |stdout| {
+        const trimmed = std.mem.trimRight(u8, stdout, "\r\n");
+        if (trimmed.len > 0) return copyInto(buf, trimmed);
+    }
+    if (parsed.value.stderr) |stderr| {
+        const trimmed = std.mem.trimRight(u8, stderr, "\r\n");
+        if (trimmed.len > 0) return copyInto(buf, trimmed);
+    }
+    return "";
 }
 
 const WrappedLine = struct {
@@ -1012,12 +1121,12 @@ test "statusGlyphLabel reflects wrapper errors without fabricating core end reas
     var arena_instance = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
-    const icons: RunIconSet = .{ .spinner = "⠋" };
-    try std.testing.expectEqualStrings("⠋ stopping", try statusGlyphLabel(arena, icons, .running, true, true, false));
-    try std.testing.expectEqualStrings("⠋ running", try statusGlyphLabel(arena, icons, .running, true, false, true));
-    try std.testing.expectEqualStrings("✗ error", try statusGlyphLabel(arena, icons, .running, false, false, true));
-    try std.testing.expectEqualStrings("✗ error", try statusGlyphLabel(arena, icons, .{ .ended = .terminated }, false, false, true));
-    try std.testing.expectEqualStrings("✓ complete", try statusGlyphLabel(arena, icons, .{ .ended = .complete }, false, false, false));
+    const icons = runIconSet();
+    try std.testing.expectEqualStrings("■", try statusGlyphLabel(arena, icons, .running, true, true, false));
+    try std.testing.expectEqualStrings("\u{F0EB}", try statusGlyphLabel(arena, icons, .running, true, false, true));
+    try std.testing.expectEqualStrings("✗", try statusGlyphLabel(arena, icons, .running, false, false, true));
+    try std.testing.expectEqualStrings("✗", try statusGlyphLabel(arena, icons, .{ .ended = .terminated }, false, false, true));
+    try std.testing.expectEqualStrings("✓", try statusGlyphLabel(arena, icons, .{ .ended = .complete }, false, false, false));
 }
 
 test "provider pending hint follows model-boundary trace records" {
@@ -1053,8 +1162,8 @@ test "clampRunScroll only repairs invalid viewport offsets" {
 test "trimTrailingRunGap removes only bottom spacer rows" {
     var lines: std.ArrayListUnmanaged(RunLine) = .empty;
     try lines.append(std.testing.allocator, .{ .text = "› prompt", .style = theme.fg(theme.TEXT) });
-    try lines.append(std.testing.allocator, .{ .text = "", .style = theme.fg(theme.MUTED) });
-    try lines.append(std.testing.allocator, .{ .text = "", .style = theme.fg(theme.MUTED) });
+    try lines.append(std.testing.allocator, .{ .text = RUN_STREAM_SPACER, .style = theme.fg(theme.MUTED) });
+    try lines.append(std.testing.allocator, .{ .text = RUN_STREAM_SPACER, .style = theme.fg(theme.MUTED) });
     defer lines.deinit(std.testing.allocator);
 
     trimTrailingRunGap(&lines);
@@ -1062,12 +1171,56 @@ test "trimTrailingRunGap removes only bottom spacer rows" {
     try std.testing.expectEqualStrings("› prompt", lines.items[0].text);
 }
 
-test "traceLine renders wrapper run errors as run stream diagnostics" {
-    const icons: RunIconSet = .{ .spinner = "⠋" };
-    const line = try traceLine(std.testing.allocator, icons, .{ .run_error = .{ .message = "provider HTTP 401: bad key" } });
-    defer std.testing.allocator.free(line);
-    try std.testing.expectEqualStrings("✗ provider HTTP 401: bad key", line);
-    try std.testing.expectEqual(theme.DANGER, traceColor(.{ .run_error = .{ .message = "x" } }));
+test "appendWrappedRunLine aligns wrapped content after the gutter" {
+    var arena_instance = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_instance.deinit();
+    const arena = arena_instance.allocator();
+
+    var lines: std.ArrayListUnmanaged(RunLine) = .empty;
+    const tool_gutter = try gutter(arena, "\u{F02D}");
+    try appendWrappedRunLine(arena, testDrawContext(arena), &lines, tool_gutter, "alpha beta gamma", theme.fg(theme.TEXT), 10, 1);
+
+    try std.testing.expect(lines.items.len >= 3);
+    try std.testing.expectEqualStrings(" \u{F02D}  ", tool_gutter);
+    try std.testing.expect(std.mem.startsWith(u8, lines.items[0].text, tool_gutter));
+    try std.testing.expect(std.mem.startsWith(u8, lines.items[1].text, GUTTER_INDENT));
+    try std.testing.expectEqualStrings(RUN_STREAM_SPACER, lines.items[lines.items.len - 1].text);
+}
+
+test "appendRunBlock renders label with gutter and body without icon" {
+    var arena_instance = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_instance.deinit();
+    const arena = arena_instance.allocator();
+
+    var lines: std.ArrayListUnmanaged(RunLine) = .empty;
+    try appendRunBlock(
+        arena,
+        testDrawContext(arena),
+        &lines,
+        try gutter(arena, "\u{F120}"),
+        "Bash  ls -la",
+        "total 8",
+        theme.fg(theme.TEXT),
+        theme.fg(theme.MUTED),
+        80,
+        1,
+    );
+
+    try std.testing.expectEqualStrings(" \u{F120}  Bash  ls -la", lines.items[0].text);
+    try std.testing.expectEqualStrings("    total 8", lines.items[1].text);
+    try std.testing.expectEqualStrings(RUN_STREAM_SPACER, lines.items[2].text);
+}
+
+fn testDrawContext(arena: std.mem.Allocator) vxfw.DrawContext {
+    return .{
+        .arena = arena,
+        .min = .{ .width = 0, .height = 0 },
+        .max = .{ .width = 80, .height = 24 },
+        .cell_size = .{ .width = 1, .height = 1 },
+    };
+}
+
+test "traceHasRunError identifies wrapper run errors" {
     try std.testing.expect(traceHasRunError(&.{
         .agent_start,
         .{ .run_error = .{ .message = "provider HTTP 401: bad key" } },
@@ -1076,36 +1229,6 @@ test "traceLine renders wrapper run errors as run stream diagnostics" {
         .agent_start,
         .{ .agent_end = .{ .reason = .complete, .message_count = 1 } },
     }));
-}
-
-test "traceLine uses separate assistant and tool symbols" {
-    const icons: RunIconSet = .{ .spinner = "⠋" };
-
-    const assistant_line = try traceLine(std.testing.allocator, icons, .{ .message_append = .{ .assistant = .{
-        .content = "I will inspect the file.",
-        .tool_calls = &.{},
-    } } });
-    defer std.testing.allocator.free(assistant_line);
-    try std.testing.expectEqualStrings("✦ I will inspect the file.", assistant_line);
-
-    const tool_start_line = try traceLine(std.testing.allocator, icons, .{ .tool_start = .{
-        .id = "call_1",
-        .name = "Read",
-        .arguments = "{\"path\":\"src/root.zig\"}",
-    } });
-    defer std.testing.allocator.free(tool_start_line);
-    try std.testing.expectEqualStrings("⠋ Read {\"path\":\"src/root.zig\"}", tool_start_line);
-
-    const tool_end_line = try traceLine(std.testing.allocator, icons, .{ .tool_end = .{
-        .call = .{ .id = "call_1", .name = "Read", .arguments = "{\"path\":\"src/root.zig\"}" },
-        .result = .{
-            .content = "{\"status\":\"ok\"}",
-            .is_error = false,
-            .control = .continue_run,
-        },
-    } });
-    defer std.testing.allocator.free(tool_end_line);
-    try std.testing.expectEqualStrings("✓ Read {\"status\":\"ok\"}", tool_end_line);
 }
 
 test "displayRecordCount hides internal loop boundaries from the run stream" {
@@ -1135,7 +1258,7 @@ test "displayRecordCount hides internal loop boundaries from the run stream" {
     }));
 }
 
-test "displayRecordCount hides completed tool-start spinners" {
+test "displayRecordCount hides completed tool-start rows" {
     try std.testing.expectEqual(@as(usize, 1), displayRecordCount(&.{
         .{ .message_append = .{ .assistant = .{
             .content = "",
