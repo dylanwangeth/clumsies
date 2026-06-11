@@ -145,20 +145,24 @@ pub const TextMessage = struct {
 pub const AssistantMessage = struct {
     content: []const u8,
     tool_calls: []const tool.Call,
+    reasoning: []const u8 = "",
 
     fn clone(allocator: std.mem.Allocator, value: transcript.AssistantMessage) !AssistantMessage {
         const content = try allocator.dupe(u8, value.content);
         errdefer allocator.free(content);
-
+        const reasoning = try allocator.dupe(u8, value.reasoning);
+        errdefer allocator.free(reasoning);
         const calls = try cloneCalls(allocator, value.tool_calls);
-        return .{
-            .content = content,
-            .tool_calls = calls,
-        };
+        errdefer {
+            for (calls) |call| deinitCall(call, allocator);
+            if (calls.len > 0) allocator.free(calls);
+        }
+        return .{ .content = content, .tool_calls = calls, .reasoning = reasoning };
     }
 
     fn deinit(self: AssistantMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
+        if (self.reasoning.len > 0) allocator.free(self.reasoning);
         for (self.tool_calls) |call| deinitCall(call, allocator);
         if (self.tool_calls.len > 0) allocator.free(self.tool_calls);
     }

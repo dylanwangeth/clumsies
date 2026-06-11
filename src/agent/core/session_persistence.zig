@@ -114,7 +114,7 @@ fn serializeAssistantAppend(allocator: std.mem.Allocator, a: Trace.AssistantMess
     defer allocator.free(calls);
     for (a.tool_calls, calls) |c, *d| d.* = .{ .id = c.id, .name = c.name, .arguments = c.arguments };
     return try std.json.Stringify.valueAlloc(allocator, .{
-        .type = "message_append", .assistant = .{ .content = a.content, .tool_calls = calls },
+        .type = "message_append", .assistant = .{ .content = a.content, .tool_calls = calls, .reasoning = a.reasoning },
     }, .{});
 }
 
@@ -133,7 +133,7 @@ fn serializeTurnEnd(allocator: std.mem.Allocator, v: Trace.TurnEnd) ![]const u8 
     for (v.assistant.tool_calls, calls) |c, *d| d.* = .{ .id = c.id, .name = c.name, .arguments = c.arguments };
     return try std.json.Stringify.valueAlloc(allocator, .{
         .type = "turn_end", .turn_index = v.turn_index,
-        .assistant = .{ .content = v.assistant.content, .tool_calls = calls },
+        .assistant = .{ .content = v.assistant.content, .tool_calls = calls, .reasoning = v.assistant.reasoning },
     }, .{});
 }
 
@@ -142,7 +142,7 @@ fn serializeTurnEnd(allocator: std.mem.Allocator, v: Trace.TurnEnd) ![]const u8 
 fn parseRecord(allocator: std.mem.Allocator, line: []const u8) !Trace.Record {
     const U = struct { content: []const u8 };
     const TC = struct { id: []const u8, name: []const u8, arguments: []const u8 };
-    const A = struct { content: []const u8, tool_calls: ?[]const TC = null };
+    const A = struct { content: []const u8, tool_calls: ?[]const TC = null, reasoning: ?[]const u8 = null };
     const TM = struct { tool_call_id: []const u8, content: []const u8, is_error: ?bool = null };
     const TR = struct { content: []const u8, is_error: ?bool = null, control: ?[]const u8 = null };
 
@@ -192,10 +192,12 @@ fn parseRecord(allocator: std.mem.Allocator, line: []const u8) !Trace.Record {
         const a = p.assistant orelse return error.MissingField;
         const ac = try allocator.dupe(u8, a.content);
         errdefer allocator.free(ac);
+        const ar = try allocator.dupe(u8, a.reasoning orelse "");
+        errdefer allocator.free(ar);
         const atc = try dupToolCalls(allocator, a.tool_calls orelse &.{});
         return .{ .turn_end = .{
             .turn_index = p.turn_index orelse return error.MissingField,
-            .assistant = .{ .content = ac, .tool_calls = atc },
+            .assistant = .{ .content = ac, .tool_calls = atc, .reasoning = ar },
         } };
     }
     if (std.mem.eql(u8, p.type, "run_error"))
@@ -244,7 +246,9 @@ fn parseMessageAppend(allocator: std.mem.Allocator, p: anytype) !Trace.Record {
         const content = try allocator.dupe(u8, a.content);
         errdefer allocator.free(content);
         const calls = try dupToolCalls(allocator, a.tool_calls orelse &.{});
-        return .{ .message_append = .{ .assistant = .{ .content = content, .tool_calls = calls } } };
+        const reasoning = try allocator.dupe(u8, a.reasoning orelse "");
+        errdefer allocator.free(reasoning);
+        return .{ .message_append = .{ .assistant = .{ .content = content, .tool_calls = calls, .reasoning = reasoning } } };
     }
     if (p.tool_result) |r| {
         const tcid = try allocator.dupe(u8, r.tool_call_id);
@@ -289,7 +293,7 @@ fn replayRecord(session: *Session, record: Trace.Record) !void {
         .turn_start => |v| evt.Event{ .turn_start = .{ .turn_index = v.turn_index } },
         .message_append => |m| evt.Event{ .message_append = switch (m) {
             .user => |v| .{ .user = .{ .content = v.content } },
-            .assistant => |v| .{ .assistant = .{ .content = v.content, .tool_calls = v.tool_calls } },
+            .assistant => |v| .{ .assistant = .{ .content = v.content, .tool_calls = v.tool_calls, .reasoning = v.reasoning } },
             .tool_result => |v| .{ .tool_result = .{ .tool_call_id = v.tool_call_id, .content = v.content, .is_error = v.is_error } },
         } },
         .tool_start => |v| evt.Event{ .tool_start = .{ .id = v.id, .name = v.name, .arguments = v.arguments } },
@@ -299,7 +303,7 @@ fn replayRecord(session: *Session, record: Trace.Record) !void {
         } },
         .turn_end => |v| evt.Event{ .turn_end = .{
             .turn_index = v.turn_index,
-            .assistant = .{ .content = v.assistant.content, .tool_calls = v.assistant.tool_calls },
+            .assistant = .{ .content = v.assistant.content, .tool_calls = v.assistant.tool_calls, .reasoning = v.assistant.reasoning },
         } },
         .run_error => |v| evt.Event{ .run_error = .{ .message = v.message } },
         .agent_end => |v| evt.Event{ .agent_end = .{ .reason = v.reason, .message_count = v.message_count } },

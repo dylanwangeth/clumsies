@@ -199,6 +199,45 @@ pub fn compact(self: *Session, summary: []const u8, tokens_before: usize, compac
     }
 }
 
+/// On startup, trim the session to only the most recent run's entries
+/// so that restored sessions with many old runs don't overflow context
+/// on the first provider call.
+pub fn trimToLastRun(self: *Session) void {
+    var entries_to_keep: usize = 0;
+    var idx: usize = self.entries.items.len;
+    while (idx > 0) {
+        idx -= 1;
+        entries_to_keep += 1;
+        if (self.entries.items[idx] == .run_end) break;
+    }
+    if (entries_to_keep >= self.entries.items.len) return;
+
+    const start_of_keep = self.entries.items.len - entries_to_keep;
+    for (self.entries.items[0..start_of_keep]) |*old_entry| {
+        old_entry.deinit(self.allocator);
+    }
+    var kept: std.ArrayList(Entry) = .empty;
+    for (self.entries.items[start_of_keep..]) |*entry| {
+        kept.append(self.allocator, entry.*) catch {
+            kept.deinit(self.allocator);
+            return;
+        };
+    }
+    self.entries.deinit(self.allocator);
+    self.entries = kept;
+    if (self.runs.items.len > 1) {
+        const last_idx = self.runs.items.len - 1;
+        const last_run = self.runs.items[last_idx];
+        for (self.runs.items[0..last_idx]) |*old_run| {
+            old_run.deinit();
+        }
+        self.runs.items.len = 0;
+        self.runs.append(self.allocator, last_run) catch return;
+        self.current_run_index = 0;
+    }
+    self.revision +%= 1;
+}
+
 /// Rebuilds the derived state from the owned trace.
 ///
 /// Use this after loading or compacting trace records. It keeps `State`

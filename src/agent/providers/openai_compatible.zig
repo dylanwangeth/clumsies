@@ -134,6 +134,7 @@ const ChoiceJson = struct {
 const AssistantJson = struct {
     content: ?[]const u8 = null,
     tool_calls: ?[]const ToolCallJson = null,
+    reasoning_content: ?[]const u8 = null,
 };
 
 /// Creates an OpenAI-compatible provider with a persistent HTTP client.
@@ -358,6 +359,9 @@ fn assistantFromJson(
     const content = try allocator.dupe(u8, assistant_json.content orelse "");
     errdefer allocator.free(content);
 
+    const reasoning = try allocator.dupe(u8, assistant_json.reasoning_content orelse "");
+    errdefer allocator.free(reasoning);
+
     const source_calls = assistant_json.tool_calls orelse &.{};
     const calls = try allocator.alloc(tool.Call, source_calls.len);
     errdefer allocator.free(calls);
@@ -378,6 +382,7 @@ fn assistantFromJson(
     return .{
         .content = content,
         .tool_calls = calls,
+        .reasoning = reasoning,
     };
 }
 
@@ -582,4 +587,15 @@ test "responds through configured OpenAI-compatible provider" {
     });
 
     try std.testing.expect(assistant.content.len > 0 or assistant.tool_calls.len > 0);
+}
+
+test "parses reasoning_content from assistant message" {
+    const response_json =
+        \\{"id":"test","choices":[{"message":{"content":"2","reasoning_content":"这是推理过程..."},"finish_reason":"stop"}]}
+    ;
+    const parsed = try std.json.parseFromSlice(ResponseJson, std.testing.allocator, response_json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const msg = parsed.value.choices[0].message;
+    try std.testing.expectEqualStrings("2", msg.content.?);
+    try std.testing.expectEqualStrings("这是推理过程...", msg.reasoning_content.?);
 }

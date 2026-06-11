@@ -82,6 +82,14 @@ fn loadAgentSession(api_state: *api.state.ApiState, allocator: std.mem.Allocator
     api_state.agent_session.deinit();
     api_state.agent_session = persistence.loadFromFile(api_state.backing_allocator, path) catch
         agent.Session.init(api_state.backing_allocator);
+
+    // If the restored session has many old runs, keep only the last one
+    // so the first provider call doesn't fail with context overflow.
+    // Full compaction (with LLM summary) runs after the first agent_end.
+    const entries = api_state.agent_session.history();
+    if (entries.len > 20) {
+        api_state.agent_session.trimToLastRun();
+    }
 }
 
 pub fn main() !void {

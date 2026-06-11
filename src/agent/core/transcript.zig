@@ -32,6 +32,7 @@ pub const UserMessage = struct {
 pub const AssistantMessage = struct {
     content: []const u8 = "",
     tool_calls: []const tool.Call = &.{},
+    reasoning: []const u8 = "",
 };
 
 /// Result of one tool call, linked to the original assistant call id.
@@ -135,7 +136,9 @@ fn cloneAssistant(
     assistant: AssistantMessage,
 ) !Message {
     const content = try allocator.dupe(u8, assistant.content);
-    errdefer allocator.free(content);
+
+    const reasoning = try allocator.dupe(u8, assistant.reasoning);
+    errdefer allocator.free(reasoning);
 
     const calls = try cloneCalls(allocator, assistant.tool_calls);
     errdefer {
@@ -148,6 +151,7 @@ fn cloneAssistant(
     return .{ .assistant = .{
         .content = content,
         .tool_calls = calls,
+        .reasoning = reasoning,
     } };
 }
 
@@ -225,6 +229,7 @@ pub fn deinitMessage(message: Message, allocator: std.mem.Allocator) void {
         .user => |user| allocator.free(user.content),
         .assistant => |assistant| {
             allocator.free(assistant.content);
+            if (assistant.reasoning.len > 0) allocator.free(assistant.reasoning);
             for (assistant.tool_calls) |call| {
                 deinitCall(call, allocator);
             }
@@ -237,7 +242,6 @@ pub fn deinitMessage(message: Message, allocator: std.mem.Allocator) void {
     }
 }
 
-/// Releases one cloned provider tool call.
 fn deinitCall(call: tool.Call, allocator: std.mem.Allocator) void {
     allocator.free(call.id);
     allocator.free(call.name);
