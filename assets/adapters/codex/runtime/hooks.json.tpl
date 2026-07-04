@@ -23,17 +23,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": __CLUMSIES_STOP_CHECK_COMMAND_JSON__,
-            "timeout": 5
-          }
-        ]
-      }
     ]
   }
 }

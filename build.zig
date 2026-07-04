@@ -200,10 +200,6 @@ fn addCodexAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) 
         b,
         "assets/adapters/codex/runtime/hooks/user-prompt-submit.sh.tpl",
     ));
-    options.addOption([]const u8, "adapter_codex_runtime_stop_refer_check_sh", readSourceAsset(
-        b,
-        "assets/adapters/codex/runtime/hooks/stop-refer-check.sh.tpl",
-    ));
 }
 
 fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) void {
@@ -226,10 +222,6 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
     options.addOption([]const u8, "adapter_claude_code_runtime_user_prompt_submit_sh", readSourceAsset(
         b,
         "assets/adapters/claude-code/runtime/hooks/user-prompt-submit.sh.tpl",
-    ));
-    options.addOption([]const u8, "adapter_claude_code_runtime_stop_refer_check_sh", readSourceAsset(
-        b,
-        "assets/adapters/claude-code/runtime/hooks/stop-refer-check.sh.tpl",
     ));
     options.addOption([]const u8, "adapter_claude_code_runtime_skill_discover", readSourceAsset(
         b,
@@ -273,10 +265,6 @@ fn addAgyAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) vo
     options.addOption([]const u8, "adapter_agy_runtime_pre_invocation_sh", readSourceAsset(
         b,
         "assets/adapters/agy/runtime/hooks/pre-invocation.sh.tpl",
-    ));
-    options.addOption([]const u8, "adapter_agy_runtime_stop_refer_check_sh", readSourceAsset(
-        b,
-        "assets/adapters/agy/runtime/hooks/stop-refer-check.sh.tpl",
     ));
     options.addOption([]const u8, "adapter_agy_runtime_skill_discover", readSourceAsset(
         b,

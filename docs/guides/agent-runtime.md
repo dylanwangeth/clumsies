@@ -28,16 +28,12 @@ So the practical order is:
 
 In the current implementation, the MCP tool surface is:
 
-- `memsetup`
-- `memdisc`
-- `memload`
-- `memref`
-- `agentreport`
-- `agentrejected`
-- `artifact`
+- `activate`
+- `retrieve`
+- `store`
 
-That path loads rules and context, records applied constraints, stages
-drafts, and closes the turn with an attestation trail.
+That path activates available memory, retrieves selected rules and context, and
+stages memory drafts.
 
 The runtime shape is easier to understand as a sequence:
 
@@ -52,10 +48,9 @@ agent host
 That path is why MCP should be described as a local runtime surface rather than as a direct Hub API wrapper. It serves the synchronized local workspace state first, and only later do attestation events move back up to Hub.
 
 One bootstrap detail sits between step 2 and step 3: the agent imports
-`META_PROMPT.md` from the cache. That file tells the runtime to discover
-first, load intentionally, and declare real constraint usage through
-`memref`. The host starts an MCP server and a workspace-scoped
-bootstrap contract.
+`META_PROMPT.md` from the cache. That file tells the runtime to activate
+relevant memory first, then retrieve intentionally. The host starts an MCP
+server and a workspace-scoped bootstrap contract.
 
 ## What state the runtime depends on
 
@@ -83,7 +78,7 @@ clumsies adapt --agent codex --scope workspace --yes
 clumsies adapt --agent claude-code --scope user --yes
 ```
 
-That is still a user action. What changes after installation is the runtime behavior. The host can now start `clumsies mcp serve` and follow the structured `memsetup` → `memdisc` → `memload` → `memref` flow instead of treating rule and context files as ad hoc local memory.
+That is still a user action. What changes after installation is the runtime behavior. The host can now start `clumsies mcp serve` and follow the structured `retrieve` → `activate` → `retrieve` → `store` flow instead of treating rule and context files as ad hoc local memory.
 
 In the current implementation, the built-in adapter packages are:
 

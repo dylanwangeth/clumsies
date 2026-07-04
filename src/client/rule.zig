@@ -429,7 +429,7 @@ fn resolveLoadId(
     return error.UnknownRuleId;
 }
 
-/// Discover rules and context available for memdisc. Iterates the
+/// Discover rules and context available for activation. Iterates the
 /// local manifest, overlays draft paths for renamed entries, classifies
 /// each effective path by prefix or category, and applies optional
 /// kind/group filters. Reserved paths (META_PROMPT.md) are excluded.

@@ -43,15 +43,15 @@ if session_id:
         f"Use exactly this session_id value: {session_id}. "
         "During host agent startup, before calling any other clumsies MCP "
         "tool, call "
-        f'memsetup({{"session_id":"{session_id}",'
+        f'retrieve({{"session_id":"{session_id}",'
         '"knownHashes":{"META_PROMPT.md":""}}). '
-        "Call memsetup only once for this host session. Do not call it "
+        "Call retrieve with session_id only once for this host session. Do not call it "
         "again later unless the user explicitly invokes the setup skill. "
-        "Pass that exact value as the memsetup session_id argument. "
+        "Pass that exact value as the retrieve session_id argument. "
         "Do not invent, shorten, replace, or default the session_id. "
-        "If this value is unavailable, do not call memsetup; report that "
+        "If this value is unavailable, do not call retrieve for setup; report that "
         "the required session_id is missing. After setup succeeds, reuse the "
-        "bound session and continue with memdisc/memload/memref/agentreport."
+        "bound session and continue with activate/retrieve/store."
     )
 print(json.dumps({
     "hookSpecificOutput": {

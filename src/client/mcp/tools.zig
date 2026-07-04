@@ -1,5 +1,5 @@
-//! MCP tool definitions and dispatch. Exposes memory tools and the artifact
-//! mutation tool to the agent. Each call generates an attestation event.
+//! MCP tool definitions and dispatch. Exposes the agent-facing memory tools.
+//! Each call generates an attestation event.
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("clumsies_lib").util.encoding;
@@ -30,54 +30,25 @@ const ValidationError = error{
     MissingIdHash,
 };
 
-const setup_schema =
-    "{\"name\":\"" ++ tool_names.setup ++ "\",\"title\":\"Setup\",\"description\":\"Bind this MCP connection to the host agent session, then bootstrap the protocol. Pass the host session/thread id as session_id and knownHashes with a META_PROMPT.md entry. Use an empty hash when the meta-prompt hash is unknown.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
-    "\"session_id\":{\"type\":\"string\",\"description\":\"The host session/thread ID to bind this connection to.\"}," ++
-    "\"knownHashes\":{\"type\":\"object\",\"description\":\"A map of known file hashes. Must contain a 'META_PROMPT.md' entry (use an empty string if unknown).\",\"additionalProperties\":{\"type\":\"string\"}}" ++
-    "},\"required\":[\"session_id\",\"knownHashes\"],\"additionalProperties\":false}}";
-
-const discover_schema =
-    "{\"name\":\"" ++ tool_names.discover ++ "\",\"title\":\"Discover\",\"description\":\"Discover available rules, workflows, and context files. Returns fresh metadata from the workspace.\"," ++
+const activate_schema =
+    "{\"name\":\"" ++ tool_names.activate ++ "\",\"title\":\"Activate\",\"description\":\"Discover available rules, workflows, and context files. Returns fresh metadata from the workspace.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"],\"description\":\"Filter results by resource kind: 'rule', 'workflow', or 'context'.\"}," ++
     "\"group\":{\"type\":\"string\",\"description\":\"Filter results by category or folder group prefix (e.g., 'coding', 'zig').\"}," ++
     "\"query\":{\"type\":\"string\",\"description\":\"Search query to filter resources by title, name, or content match.\"" ++
     "}},\"additionalProperties\":false}}";
 
-const load_schema =
-    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load rule, workflow, or context content by ids. ids may be Hub ids, local draft temp ids, paths, or aliases such as workflow:GEN_COMMIT_MSG, rule:COMPATIBILITY, or context:pitfall. Pass knownHashes for every requested id: use the remembered hash when known, or an empty string when unknown. Returns full content only when the current hash differs from knownHashes[id]. Rule/workflow results include referable constraints parsed from H2 headings and H2 list items; context results do not include constraints.\"," ++
+const retrieve_schema =
+    "{\"name\":\"" ++ tool_names.retrieve ++ "\",\"title\":\"Retrieve\",\"description\":\"Bind this MCP connection when session_id is present, or retrieve rule, workflow, and context content when ids is present. Keep using the original setup and load argument shapes: session_id plus knownHashes for META_PROMPT bootstrap, or ids plus knownHashes for content retrieval.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
+    "\"session_id\":{\"type\":\"string\",\"description\":\"The host session/thread ID to bind this connection to when bootstrapping.\"}," ++
     "\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Array of unique resource identifiers, paths, or aliases to load.\"}," ++
-    "\"knownHashes\":{\"type\":\"object\",\"description\":\"A map of last remembered hashes for each requested id. Use an empty string if unknown.\",\"additionalProperties\":{\"type\":\"string\"}}" ++
-    "},\"required\":[\"ids\",\"knownHashes\"],\"additionalProperties\":false}}";
+    "\"knownHashes\":{\"type\":\"object\",\"description\":\"A map of known hashes. For bootstrap it must contain META_PROMPT.md; for content retrieval it must contain every requested id. Use an empty string if unknown.\",\"additionalProperties\":{\"type\":\"string\"}}" ++
+    "},\"required\":[\"knownHashes\"],\"additionalProperties\":false}}";
 
-const refer_schema =
-    "{\"name\":\"" ++ tool_names.refer ++ "\",\"title\":\"Refer\",\"description\":\"Declare applied rule/workflow constraints. A constraint is one semantic markdown section returned in memload constraints: either a whole H2 section or one list item inside an H2 section. The constraintId wire field must be copied exactly from a returned constraint id: H2 title for a whole-section constraint, or H2/ordinal for a list-item constraint. ruleId must identify that rule/workflow, not context.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
-    "\"refs\":{\"type\":\"array\",\"description\":\"Array of applied rule constraint references.\",\"items\":{\"type\":\"object\",\"properties\":{" ++
-    "\"ruleId\":{\"type\":\"string\",\"description\":\"The identifier of the applied rule/workflow.\"}," ++
-    "\"ruleHash\":{\"type\":\"string\",\"description\":\"The hash of the rule version that was loaded.\"}," ++
-    "\"constraintId\":{\"type\":\"string\",\"description\":\"The exact constraint id from the parsed rule content (H2 title or H2/ordinal).\"}," ++
-    "\"reason\":{\"type\":\"string\",\"description\":\"A brief explanation of how this constraint was satisfied in your response.\"}" ++
-    "},\"required\":[\"ruleId\",\"constraintId\"]}}" ++
-    "},\"required\":[\"refs\"],\"additionalProperties\":false}}";
-
-const submit_schema =
-    "{\"name\":\"" ++ tool_names.submit ++ "\",\"title\":\"Submit\",\"description\":\"Submit your turn summary. Call this before finishing to close the current turn.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
-    "\"summary\":{\"type\":\"string\",\"description\":\"A high-level human summary of the work done during this turn.\"}" ++
-    "},\"required\":[\"summary\"],\"additionalProperties\":false}}";
-
-const reject_schema =
-    "{\"name\":\"" ++ tool_names.reject ++ "\",\"title\":\"Reject\",\"description\":\"Mark the current turn as unsatisfactory. Call when the user indicates the output did not follow loaded rules.\"," ++
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
-    "\"reason\":{\"type\":\"string\",\"description\":\"The explanation of why the turn output did not satisfy the loaded rules.\"" ++
-    "}},\"additionalProperties\":false}}";
-
-const artifact_schema =
-    "{\"name\":\"" ++ tool_names.artifact ++ "\",\"title\":\"Artifact\"," ++
-    "\"description\":\"Create, update, rename, delete, or discard a local change for context, rule, or MPF artifacts. Local changes are stored as drafts until they enter review. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
+const store_schema =
+    "{\"name\":\"" ++ tool_names.store ++ "\",\"title\":\"Store\"," ++
+    "\"description\":\"Create, update, rename, delete, or discard a local change for context, rule, or MPF memory artifacts. Local changes are stored as drafts until they enter review. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"mpf\"],\"description\":\"The resource type: 'context', 'rule', or 'mpf'.\"}," ++
     "\"op\":{\"type\":\"object\",\"description\":\"The draft operation details, containing exactly one of create, update, rename, delete, or discard.\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
@@ -110,13 +81,9 @@ pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(
         u8,
         "{\"tools\":[" ++
-            setup_schema ++ "," ++
-            discover_schema ++ "," ++
-            load_schema ++ "," ++
-            refer_schema ++ "," ++
-            submit_schema ++ "," ++
-            reject_schema ++ "," ++
-            artifact_schema ++
+            activate_schema ++ "," ++
+            retrieve_schema ++ "," ++
+            store_schema ++
             "]}",
     );
 }
@@ -145,20 +112,8 @@ pub fn handleCall(
         else => return try tool_result.buildErrorResult(allocator, "invalid request: arguments must be a JSON object"),
     };
 
-    if (std.mem.eql(u8, name, tool_names.setup)) {
-        return try handleSetup(allocator, workspace_root, session, args_obj);
-    }
-    if (session.session_id == null) {
-        return try tool_result.buildErrorResult(
-            allocator,
-            "memsetup with the exact host session_id is required before other clumsies tools; do not invent a session_id",
-        );
-    }
-    if (std.mem.eql(u8, name, tool_names.discover)) {
-        return try handleDiscover(allocator, workspace_root, session, args_obj);
-    }
-    if (std.mem.eql(u8, name, tool_names.load)) {
-        return handleLoad(allocator, workspace_root, session, args_obj) catch |err| switch (err) {
+    if (std.mem.eql(u8, name, tool_names.retrieve)) {
+        return handleRetrieve(allocator, workspace_root, session, args_obj) catch |err| switch (err) {
             error.UnknownRuleId => try tool_result.buildErrorResult(
                 allocator,
                 "Unknown rule id",
@@ -166,23 +121,49 @@ pub fn handleCall(
             else => return err,
         };
     }
-    if (std.mem.eql(u8, name, tool_names.refer)) {
-        return try handleRefer(allocator, workspace_root, session, args_obj);
+    const is_activate = std.mem.eql(u8, name, tool_names.activate);
+    const is_store = std.mem.eql(u8, name, tool_names.store);
+    if (!is_activate and !is_store) {
+        return try tool_result.buildErrorResult(allocator, "Unknown tool");
     }
-    if (std.mem.eql(u8, name, tool_names.submit)) {
-        return try handleSubmit(allocator, session, args_obj);
+    if (session.session_id == null) {
+        return try tool_result.buildErrorResult(
+            allocator,
+            "retrieve with the exact host session_id is required before other clumsies tools; do not invent a session_id",
+        );
     }
-    if (std.mem.eql(u8, name, tool_names.reject)) {
-        return try handleReject(allocator, session, args_obj);
+    if (is_activate) {
+        return try handleActivate(allocator, workspace_root, session, args_obj);
     }
-    if (std.mem.eql(u8, name, tool_names.artifact)) {
-        return handleArtifact(allocator, workspace_root, session, args_obj) catch |err| proposeErr(allocator, err);
+    if (is_store) {
+        return handleStore(allocator, workspace_root, session, args_obj) catch |err| storeErr(allocator, err);
     }
 
-    return try tool_result.buildErrorResult(allocator, "Unknown tool");
+    unreachable;
 }
 
-fn handleSetup(
+fn handleRetrieve(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session: *session_mod.Session,
+    args_obj: std.json.ObjectMap,
+) ![]u8 {
+    if (args_obj.get("session_id") != null) {
+        return try handleRetrieveSetup(allocator, workspace_root, session, args_obj);
+    }
+    if (session.session_id == null) {
+        return try tool_result.buildErrorResult(
+            allocator,
+            "retrieve with the exact host session_id is required before loading content; do not invent a session_id",
+        );
+    }
+    if (args_obj.get("ids") != null) {
+        return try handleRetrieveLoad(allocator, workspace_root, session, args_obj);
+    }
+    return try tool_result.buildErrorResult(allocator, "retrieve requires session_id for bootstrap or ids for content retrieval");
+}
+
+fn handleRetrieveSetup(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     session: *session_mod.Session,
@@ -276,7 +257,7 @@ fn parseSetupKnownHash(value_opt: ?std.json.Value) ValidationError!?[]const u8 {
     return if (hash.len == 0) null else hash;
 }
 
-fn handleDiscover(
+fn handleActivate(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     session: *session_mod.Session,
@@ -363,7 +344,7 @@ fn appendTruncatedDiscoverSuffix(
     try names.appendSlice(allocator, suffix);
 }
 
-fn handleLoad(
+fn handleRetrieveLoad(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     session: *session_mod.Session,
@@ -407,284 +388,6 @@ fn handleLoad(
     );
     defer allocator.free(structured);
     return try tool_result.buildSuccessResult(allocator, structured);
-}
-
-fn handleRefer(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
-    args_obj: std.json.ObjectMap,
-) ![]u8 {
-    const refs_val = args_obj.get("refs") orelse return try tool_result.buildErrorResult(allocator, "refs parameter is required");
-    const refs_array = switch (refs_val) {
-        .array => |a| a,
-        else => return try tool_result.buildErrorResult(allocator, "refs parameter must be a JSON array"),
-    };
-
-    if (refs_array.items.len == 0) return try tool_result.buildErrorResult(allocator, "refs parameter must contain at least one constraint reference");
-
-    var count: usize = 0;
-    for (refs_array.items) |ref_val| {
-        const ref_obj = switch (ref_val) {
-            .object => |o| o,
-            else => continue,
-        };
-
-        const rule_id = if (ref_obj.get("ruleId")) |v| switch (v) {
-            .string => |s| s,
-            else => continue,
-        } else continue;
-
-        const rule_hash = if (ref_obj.get("ruleHash")) |v| switch (v) {
-            .string => |s| s,
-            else => null,
-        } else null;
-
-        const constraint_id = if (ref_obj.get("constraintId")) |v| switch (v) {
-            .string => |s| s,
-            else => null,
-        } else null;
-
-        const reason = if (ref_obj.get("reason")) |v| switch (v) {
-            .string => |s| s,
-            else => null,
-        } else null;
-
-        const final_constraint_id = constraint_id orelse continue;
-        const constraint = resolveReferConstraint(
-            allocator,
-            workspace_root,
-            rule_id,
-            final_constraint_id,
-        ) catch |err| return try referValidationError(
-            allocator,
-            workspace_root,
-            rule_id,
-            final_constraint_id,
-            err,
-        );
-        defer constraint.deinit(allocator);
-
-        session.recordEvent(allocator, .{ .refer = .{
-            .rule_id = rule_id,
-            .rule_hash = rule_hash,
-            .constraint_id = final_constraint_id,
-            .constraint_name = constraint.name,
-            .constraint_text = constraint.text,
-            .reason = reason,
-        } });
-        count += 1;
-    }
-
-    var buf: [64]u8 = undefined;
-    const structured = std.fmt.bufPrint(&buf, "{{\"ok\":true,\"count\":{d}}}", .{count}) catch
-        return error.InternalError;
-    return try tool_result.buildSuccessResult(allocator, structured);
-}
-
-const ReferConstraint = struct {
-    name: []const u8,
-    text: []const u8,
-
-    fn deinit(self: ReferConstraint, allocator: std.mem.Allocator) void {
-        allocator.free(self.name);
-        allocator.free(self.text);
-    }
-};
-
-fn resolveReferConstraint(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    rule_id: []const u8,
-    constraint_id: []const u8,
-) !ReferConstraint {
-    const ids = [_][]const u8{rule_id};
-    var loaded = try workspace_rule.loadRules(allocator, workspace_root, ids[0..], &.{});
-    defer loaded.deinit(allocator);
-
-    if (loaded.items.items.len == 0) return error.UnknownRuleId;
-    const item = loaded.items.items[0];
-    if (item.kind == .context) return error.InvalidReferTargetKind;
-
-    const content = item.content orelse return error.UnknownConstraintId;
-    var parsed = try workspace_rule.parseConstraints(allocator, content);
-    defer parsed.deinit(allocator);
-
-    for (parsed.constraints.items) |constraint| {
-        if (std.mem.eql(u8, constraint.id, constraint_id)) {
-            const name = try allocator.dupe(u8, constraint.name);
-            errdefer allocator.free(name);
-            return .{
-                .name = name,
-                .text = try allocator.dupe(u8, constraint.text),
-            };
-        }
-    }
-    return error.UnknownConstraintId;
-}
-
-fn referValidationError(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    rule_id: []const u8,
-    constraint_id: []const u8,
-    err: anyerror,
-) ![]u8 {
-    return switch (err) {
-        error.UnknownRuleId => try buildReferErrorResult(
-            allocator,
-            "unknown_rule_or_workflow",
-            "memref ruleId must identify an existing rule or workflow; retry after memdisc and memload with the exact id",
-            true,
-            "rediscover_and_reload",
-            null,
-        ),
-        error.InvalidReferTargetKind => try buildReferErrorResult(
-            allocator,
-            "invalid_target_kind",
-            "memref ruleId must identify a rule or workflow; context ids cannot be referenced",
-            false,
-            "use_rule_or_workflow_id",
-            null,
-        ),
-        error.UnknownConstraintId => blk: {
-            const details = buildUnknownConstraintDetails(
-                allocator,
-                workspace_root,
-                rule_id,
-                constraint_id,
-            ) catch null;
-            defer if (details) |d| d.deinit(allocator);
-
-            const fallback_message = try std.fmt.allocPrint(
-                allocator,
-                "memref constraintId '{s}' is not valid for ruleId '{s}'; reload the rule/workflow and use one of the returned constraints",
-                .{ constraint_id, rule_id },
-            );
-            defer allocator.free(fallback_message);
-
-            break :blk try buildReferErrorResult(
-                allocator,
-                "unknown_constraint",
-                if (details) |d| d.message else fallback_message,
-                true,
-                "retry_with_valid_constraint",
-                if (details) |d| d.constraints_json else null,
-            );
-        },
-        else => try buildReferErrorResult(
-            allocator,
-            "validation_error",
-            "memref could not validate the referenced constraint; retry after reloading the rule/workflow",
-            true,
-            "reload_and_retry",
-            null,
-        ),
-    };
-}
-
-const UnknownConstraintDetails = struct {
-    message: []const u8,
-    constraints_json: []const u8,
-
-    fn deinit(self: UnknownConstraintDetails, allocator: std.mem.Allocator) void {
-        allocator.free(self.message);
-        allocator.free(self.constraints_json);
-    }
-};
-
-fn buildUnknownConstraintDetails(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    rule_id: []const u8,
-    constraint_id: []const u8,
-) !UnknownConstraintDetails {
-    const ids = [_][]const u8{rule_id};
-    var loaded = try workspace_rule.loadRules(allocator, workspace_root, ids[0..], &.{});
-    defer loaded.deinit(allocator);
-    if (loaded.items.items.len == 0) return error.UnknownRuleId;
-
-    const item = loaded.items.items[0];
-    if (item.kind == .context) return error.InvalidReferTargetKind;
-    const content = item.content orelse return error.UnknownConstraintId;
-
-    var parsed = try workspace_rule.parseConstraints(allocator, content);
-    defer parsed.deinit(allocator);
-
-    var options: std.ArrayList(u8) = .empty;
-    defer options.deinit(allocator);
-    var constraints_json: std.ArrayList(u8) = .empty;
-    errdefer constraints_json.deinit(allocator);
-
-    try constraints_json.append(allocator, '[');
-
-    for (parsed.constraints.items, 0..) |constraint, idx| {
-        if (idx > 0) try options.appendSlice(allocator, ", ");
-        try options.writer(allocator).print("{s} ({s})", .{ constraint.id, constraint.name });
-
-        if (idx > 0) try constraints_json.append(allocator, ',');
-        const esc_id = try jsonEscapeAlloc(allocator, constraint.id);
-        defer allocator.free(esc_id);
-        const esc_name = try jsonEscapeAlloc(allocator, constraint.name);
-        defer allocator.free(esc_name);
-        const esc_text = try jsonEscapeAlloc(allocator, constraint.text);
-        defer allocator.free(esc_text);
-        try constraints_json.writer(allocator).print(
-            "{{\"id\":\"{s}\",\"name\":\"{s}\",\"text\":\"{s}\"}}",
-            .{ esc_id, esc_name, esc_text },
-        );
-    }
-    try constraints_json.append(allocator, ']');
-
-    const option_text = if (options.items.len > 0)
-        options.items
-    else
-        @as([]const u8, "none");
-
-    return .{
-        .message = try std.fmt.allocPrint(
-            allocator,
-            "memref constraintId '{s}' is not valid for ruleId '{s}'; retry with one of: {s}",
-            .{ constraint_id, rule_id, option_text },
-        ),
-        .constraints_json = try constraints_json.toOwnedSlice(allocator),
-    };
-}
-
-fn buildReferErrorResult(
-    allocator: std.mem.Allocator,
-    code: []const u8,
-    message: []const u8,
-    retryable: bool,
-    retry_action: []const u8,
-    valid_constraints_json: ?[]const u8,
-) ![]u8 {
-    const esc_code = try jsonEscapeAlloc(allocator, code);
-    defer allocator.free(esc_code);
-    const esc_message = try jsonEscapeAlloc(allocator, message);
-    defer allocator.free(esc_message);
-    const esc_action = try jsonEscapeAlloc(allocator, retry_action);
-    defer allocator.free(esc_action);
-
-    const constraints = valid_constraints_json orelse "[]";
-    const structured = try std.fmt.allocPrint(
-        allocator,
-        "{{\"error\":\"{s}\",\"code\":\"{s}\",\"retryable\":{s},\"retryAction\":\"{s}\",\"validConstraints\":{s}}}",
-        .{
-            esc_message,
-            esc_code,
-            if (retryable) "true" else "false",
-            esc_action,
-            constraints,
-        },
-    );
-    defer allocator.free(structured);
-
-    return try tool_result.buildStructuredErrorResult(allocator, message, structured);
-}
-
-fn jsonEscapeAlloc(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
-    return @import("clumsies_lib").util.encoding.jsonEscapeAlloc(allocator, value);
 }
 
 fn parseRuleKind(value: std.json.Value) error{InvalidKind}!?workspace_rule.RuleKind {
@@ -773,59 +476,12 @@ fn parseKnownHashes(
     return known;
 }
 
-fn handleSubmit(
-    allocator: std.mem.Allocator,
-    session: *session_mod.Session,
-    args: std.json.ObjectMap,
-) ![]u8 {
-    const summary = blk: {
-        const val = args.get("summary") orelse
-            return try tool_result.buildErrorResult(allocator, "summary is required");
-        break :blk switch (val) {
-            .string => |s| s,
-            else => return try tool_result.buildErrorResult(allocator, "summary must be a string"),
-        };
-    };
-    if (summary.len == 0) {
-        return try tool_result.buildErrorResult(allocator, "summary must not be empty");
-    }
-
-    session.recordEvent(allocator, .{
-        .agent_report = .{
-            .summary = summary,
-        },
-    });
-
-    const ok_json = "{\"ok\":true}";
-    return try tool_result.buildSuccessResult(allocator, ok_json);
-}
-
-fn handleReject(
-    allocator: std.mem.Allocator,
-    session: *session_mod.Session,
-    args: std.json.ObjectMap,
-) ![]u8 {
-    const reason: ?[]const u8 = if (args.get("reason")) |value| switch (value) {
-        .string => |s| s,
-        else => return try tool_result.buildErrorResult(allocator, "reason must be a string"),
-    } else null;
-
-    session.recordEvent(allocator, .{
-        .reject = .{
-            .reason = reason,
-        },
-    });
-
-    const ok_json = "{\"ok\":true}";
-    return try tool_result.buildSuccessResult(allocator, ok_json);
-}
-
-fn proposeErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
+fn storeErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
     return tool_result.buildErrorResult(allocator, switch (err) {
         error.InvalidParams => "invalid parameters",
-        error.FileNotFound => "artifact or draft not found",
+        error.FileNotFound => "memory artifact or draft not found",
         error.DraftAlreadyExists => "draft already exists for this path",
-        error.DraftOperationConflict => "artifact already has an incompatible local change",
+        error.DraftOperationConflict => "memory artifact already has an incompatible local change",
         error.UnsafeDraftPath => "unsafe path",
         else => "internal error",
     }) catch @constCast("{\"error\":{\"code\":-32603,\"message\":\"internal error\"}}");
@@ -839,7 +495,7 @@ const DraftOp = enum {
     discard,
 };
 
-fn handleArtifact(
+fn handleStore(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     session: *session_mod.Session,
@@ -1254,19 +910,24 @@ fn draftRenameEventUsesPath(
     return std.mem.indexOf(u8, content, needle) != null;
 }
 
-test "buildListResult: exposes memory tools and unified artifact tool" {
+test "buildListResult: exposes activate retrieve and store tools" {
     const result = try buildListResult(testing.allocator);
     defer testing.allocator.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.setup ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.discover ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.load ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.refer ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.submit ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.artifact ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"required\":[\"session_id\",\"knownHashes\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.activate ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.retrieve ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.store ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memsetup\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memdisc\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memload\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memref\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"agentreport\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"agentrejected\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"artifact\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "META_PROMPT.md") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"required\":[\"ids\",\"knownHashes\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"required\":[\"knownHashes\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"resource\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"op\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_create\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_update\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_rename\"") == null);
@@ -1281,6 +942,30 @@ test "buildListResult: exposes memory tools and unified artifact tool" {
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.list\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
+}
+
+test "handleCall rejects removed tool names without compatibility dispatch" {
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"name":"memsetup","arguments":{"session_id":"test-session","knownHashes":{"META_PROMPT.md":""}}}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    var session: session_mod.Session = .{
+        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .workspace_root = try testing.allocator.dupe(u8, "/tmp/workspace"),
+    };
+    defer session.deinit(testing.allocator);
+
+    const result = try handleCall(testing.allocator, "/tmp/workspace", &session, parsed.value);
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "\"isError\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Unknown tool") != null);
+    try testing.expect(session.session_id == null);
 }
 
 test "parseSetupKnownHash requires explicit META_PROMPT entry" {
@@ -1361,7 +1046,7 @@ test "parseKnownHashes accepts empty hash as explicit unknown" {
     try testing.expectEqualStrings("", known.items[0].hash);
 }
 
-test "artifact tool creates context change through tagged op" {
+test "store tool creates context change through tagged op" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1390,7 +1075,7 @@ test "artifact tool creates context change through tagged op" {
     defer session.deinit(testing.allocator);
     try session.bind(testing.allocator, "test-session");
 
-    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
+    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
@@ -1403,7 +1088,7 @@ test "artifact tool creates context change through tagged op" {
     try testing.expectEqual(drafts_mod.DraftCategory.context, entry.category);
 }
 
-test "artifact tool updates newly created context draft" {
+test "store tool updates newly created context draft" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1431,7 +1116,7 @@ test "artifact tool updates newly created context draft" {
     ;
     const create = try std.json.parseFromSlice(std.json.Value, testing.allocator, create_json, .{});
     defer create.deinit();
-    const create_result = try handleArtifact(testing.allocator, root, &session, create.value.object);
+    const create_result = try handleStore(testing.allocator, root, &session, create.value.object);
     defer testing.allocator.free(create_result);
     try testing.expect(std.mem.indexOf(u8, create_result, "\"id\":\"tmp-context-") != null);
 
@@ -1449,7 +1134,7 @@ test "artifact tool updates newly created context draft" {
     ;
     const update = try std.json.parseFromSlice(std.json.Value, testing.allocator, update_json, .{});
     defer update.deinit();
-    const update_result = try handleArtifact(testing.allocator, root, &session, update.value.object);
+    const update_result = try handleStore(testing.allocator, root, &session, update.value.object);
     defer testing.allocator.free(update_result);
     try testing.expect(std.mem.indexOf(u8, update_result, "\"ok\":true") != null);
     try testing.expect(std.mem.indexOf(u8, update_result, "\"id\":\"tmp-context-") != null);
@@ -1466,7 +1151,7 @@ test "artifact tool updates newly created context draft" {
     try testing.expectEqualStrings("second", entry.description.?);
 }
 
-test "artifact tool renames newly created context draft" {
+test "store tool renames newly created context draft" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1503,7 +1188,7 @@ test "artifact tool renames newly created context draft" {
     defer session.deinit(testing.allocator);
     try session.bind(testing.allocator, "test-session");
 
-    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
+    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
@@ -1524,7 +1209,7 @@ test "artifact tool renames newly created context draft" {
     try testing.expectEqualStrings("move to specs", entry.description.?);
 }
 
-test "artifact tool discards rule change by local temp id" {
+test "store tool discards rule change by local temp id" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1558,7 +1243,7 @@ test "artifact tool discards rule change by local temp id" {
     defer session.deinit(testing.allocator);
     try session.bind(testing.allocator, "test-session");
 
-    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
+    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
@@ -1568,7 +1253,7 @@ test "artifact tool discards rule change by local temp id" {
     try testing.expect(index.findByLocalTempId("tmp-rule-1") == null);
 }
 
-test "artifact tool discards MPF draft by manifest id" {
+test "store tool discards MPF draft by manifest id" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1603,7 +1288,7 @@ test "artifact tool discards MPF draft by manifest id" {
     defer session.deinit(testing.allocator);
     try session.bind(testing.allocator, "test-session");
 
-    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
+    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
@@ -1613,7 +1298,7 @@ test "artifact tool discards MPF draft by manifest id" {
     try testing.expect(index.findByCurrentPath(.meta_prompt, "META_PROMPT.md") == null);
 }
 
-test "artifact tool updates MPF change" {
+test "store tool updates MPF change" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1643,7 +1328,7 @@ test "artifact tool updates MPF change" {
     defer session.deinit(testing.allocator);
     try session.bind(testing.allocator, "test-session");
 
-    const result = try handleArtifact(testing.allocator, root, &session, parsed.value.object);
+    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
     defer testing.allocator.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
@@ -1654,7 +1339,7 @@ test "artifact tool updates MPF change" {
     try testing.expectEqual(drafts_mod.DraftOperation.update, entry.operation);
 }
 
-test "artifact update overwrites existing context update draft" {
+test "store update overwrites existing context update draft" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1693,7 +1378,7 @@ test "artifact update overwrites existing context update draft" {
     ;
     const first = try std.json.parseFromSlice(std.json.Value, testing.allocator, first_json, .{});
     defer first.deinit();
-    const first_result = try handleArtifact(testing.allocator, root, &session, first.value.object);
+    const first_result = try handleStore(testing.allocator, root, &session, first.value.object);
     defer testing.allocator.free(first_result);
     try testing.expect(std.mem.indexOf(u8, first_result, "\"ok\":true") != null);
 
@@ -1711,7 +1396,7 @@ test "artifact update overwrites existing context update draft" {
     ;
     const second = try std.json.parseFromSlice(std.json.Value, testing.allocator, second_json, .{});
     defer second.deinit();
-    const second_result = try handleArtifact(testing.allocator, root, &session, second.value.object);
+    const second_result = try handleStore(testing.allocator, root, &session, second.value.object);
     defer testing.allocator.free(second_result);
     try testing.expect(std.mem.indexOf(u8, second_result, "\"ok\":true") != null);
 
@@ -1883,199 +1568,21 @@ test "discoverResultNames caps recorded bytes" {
     try testing.expect(std.mem.indexOf(u8, names, "... (+") != null);
 }
 
-test "resolveReferConstraint accepts rule and workflow constraints" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath("cache/rule/workflow");
-    try writeTestFile(tmp.dir, "cache/rule/workflow/CODING.md",
-        \\# Coding
-        \\
-        \\## Rule loading
-        \\
-        \\Follow the workflow.
-    );
-    try writeTestFile(tmp.dir, "manifest.json",
-        \\{
-        \\  "rules": {
-        \\    "p-coding": {"path": "workflow/CODING.md", "hash": "sha256:workflow"}
-        \\  }
-        \\}
-    );
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-
-    const constraint = try resolveReferConstraint(testing.allocator, root, "p-coding", "Rule loading");
-    defer constraint.deinit(testing.allocator);
-
-    try testing.expectEqualStrings("Rule loading", constraint.name);
-    try testing.expectEqualStrings("Follow the workflow.", constraint.text);
-}
-
-test "resolveReferConstraint rejects unknown constraint ids" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath("cache/rule/workflow");
-    try writeTestFile(tmp.dir, "cache/rule/workflow/CODING.md",
-        \\# Coding
-        \\
-        \\## Rule loading
-        \\
-        \\Follow the workflow.
-    );
-    try writeTestFile(tmp.dir, "manifest.json",
-        \\{
-        \\  "rules": {
-        \\    "p-coding": {"path": "workflow/CODING.md", "hash": "sha256:workflow"}
-        \\  }
-        \\}
-    );
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-
-    try testing.expectError(
-        error.UnknownConstraintId,
-        resolveReferConstraint(testing.allocator, root, "p-coding", "missing"),
-    );
-}
-
-test "resolveReferConstraint rejects context ids" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath("cache/context/spec");
-    try writeTestFile(tmp.dir, "cache/context/spec/API.md",
-        \\# API
-        \\
-        \\## Endpoints
-        \\
-        \\Reference material.
-    );
-    try writeTestFile(tmp.dir, "manifest.json",
-        \\{
-        \\  "rules": {},
-        \\  "context": {
-        \\    "c-api": {"path": "spec/API.md", "hash": "sha256:context"}
-        \\  }
-        \\}
-    );
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-
-    try testing.expectError(
-        error.InvalidReferTargetKind,
-        resolveReferConstraint(testing.allocator, root, "c-api", "c-1"),
-    );
-}
-
-test "referValidationError returns retryable constraint candidates" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath("cache/rule/workflow");
-    try writeTestFile(tmp.dir, "cache/rule/workflow/CODING.md",
-        \\# Coding
-        \\
-        \\## Rule loading
-        \\
-        \\Load relevant rules before editing.
-    );
-    try writeTestFile(tmp.dir, "manifest.json",
-        \\{
-        \\  "rules": {
-        \\    "p-coding": {"path": "workflow/CODING.md", "hash": "sha256:workflow"}
-        \\  }
-        \\}
-    );
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-
-    const result = try referValidationError(
-        testing.allocator,
-        root,
-        "p-coding",
-        "Steps",
-        error.UnknownConstraintId,
-    );
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"isError\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"code\":\"unknown_constraint\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"retryable\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"retryAction\":\"retry_with_valid_constraint\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"validConstraints\":[") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"id\":\"Rule loading\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"Rule loading\"") != null);
-}
-
-test "handleRefer resolves constraints from current workspace root" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath("cache/rule/workflow");
-    try writeTestFile(tmp.dir, "cache/rule/workflow/CODING.md",
-        \\# Coding
-        \\
-        \\## Rule loading
-        \\
-        \\Load relevant rules before editing.
-    );
-    try writeTestFile(tmp.dir, "manifest.json",
-        \\{
-        \\  "rules": {
-        \\    "p-coding": {"path": "workflow/CODING.md", "hash": "sha256:workflow"}
-        \\  }
-        \\}
-    );
-
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &root_buf);
-
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, "/wrong/workspace/root"),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const args_json =
-        \\{
-        \\  "refs": [{
-        \\    "ruleId": "p-coding",
-        \\    "constraintId": "Rule loading"
-        \\  }]
-        \\}
-    ;
-    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
-    defer parsed.deinit();
-
-    const result = try handleRefer(testing.allocator, root, &session, parsed.value.object);
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"count\":1") != null);
-}
-
 // The next three tests exercise full handleCall flows against
 // synthetic .rules fixtures. They were added before the test
 // aggregator was wired into client/main.zig, so they never ran — and
 // silently drifted out of sync with handleCall's actual response
 // format. Skipping them keeps CI honest while the mismatch is
-// resolved; they should be re-enabled once the MCP discover / load /
-// setup contract is re-audited.
-test "handleCall: memdisc returns rule metadata" {
+// resolved; they should be re-enabled once the MCP activate / retrieve
+// contract is re-audited.
+test "handleCall: activate returns rule metadata" {
     return error.SkipZigTest;
 }
 
-test "handleCall: memload returns content" {
+test "handleCall: retrieve returns content" {
     return error.SkipZigTest;
 }
 
-test "handleCall: memsetup returns structured error when no workspace binding" {
+test "handleCall: retrieve returns structured error when no workspace binding" {
     return error.SkipZigTest;
 }

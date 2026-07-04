@@ -175,10 +175,10 @@ fn renderSkillContent(
             \\  short-description: Follow {s}
             \\---
             \\
-            \\Call the `memload` MCP tool with ids: ["{s}"] and
+            \\Call the `retrieve` MCP tool with ids: ["{s}"] and
             \\knownHashes: {{"{s}": "<remembered_hash_or_empty_string>"}}.
             \\Use the last hash you remember for this workflow when available; otherwise use an empty string.
-            \\If memload returns changed:false without content, continue from the workflow content you already remember.
+            \\If retrieve returns changed:false without content, continue from the workflow content you already remember.
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
             \\
@@ -193,10 +193,10 @@ fn renderSkillContent(
             \\argument-hint: "[task description]"
             \\user-invocable: true
             \\---
-            \\Call the `memload` MCP tool with ids: ["{s}"] and
+            \\Call the `retrieve` MCP tool with ids: ["{s}"] and
             \\knownHashes: {{"{s}": "<remembered_hash_or_empty_string>"}}.
             \\Use the last hash you remember for this workflow when available; otherwise use an empty string.
-            \\If memload returns changed:false without content, continue from the workflow content you already remember.
+            \\If retrieve returns changed:false without content, continue from the workflow content you already remember.
             \\Then follow the loaded workflow carefully.
             \\
             \\$ARGUMENTS
@@ -210,10 +210,10 @@ fn renderSkillContent(
             \\description: Run {s} workflow
             \\---
             \\
-            \\Call the `memload` MCP tool with ids: ["{s}"] and
+            \\Call the `retrieve` MCP tool with ids: ["{s}"] and
             \\knownHashes: {{"{s}": "<remembered_hash_or_empty_string>"}}.
             \\Use the last hash you remember for this workflow when available; otherwise use an empty string.
-            \\If memload returns changed:false without content, continue from the workflow content you already remember.
+            \\If retrieve returns changed:false without content, continue from the workflow content you already remember.
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
         ,

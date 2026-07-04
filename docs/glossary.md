@@ -87,13 +87,12 @@ Adapter is not the Hub and not the MCP protocol itself. It is the layer that mak
 
 ## MCP
 
-MCP is the agent-facing protocol surface. It is the runtime path through which an agent discovers Artifact content and context, loads content, and declares the constraints it actually applied.
+MCP is the agent-facing protocol surface. It is the runtime path through which an agent activates available memory, retrieves selected content, and stores draft refinements.
 
 MCP is not just a transport detail. It is the mechanism that turns rule and context management into a live runtime system with traceable usage.
 
-The current implementation exposes concise tools such as `memsetup`,
-`memdisc`, `memload`, `memref`, `artifact`, `agentreport`, and
-`agentrejected`. That is the runtime contract the docs should describe.
+The current implementation exposes concise tools: `activate`, `retrieve`, and
+`store`. That is the runtime contract the docs should describe.
 
 ## Draft and PR
 

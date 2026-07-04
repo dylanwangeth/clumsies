@@ -72,15 +72,6 @@ pub fn renderRuntimeAssets(
         .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_user_prompt_submit_sh),
     });
     try assets.append(allocator, .{
-        .resource_id = "claude-code.hooks.stop_check",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, scope, "hooks/stop-refer-check.sh"),
-        .ownership = "exclusive",
-        .label = "Claude Code Stop hook",
-        .file_mode = 0o755,
-        .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_stop_refer_check_sh),
-    });
-    try assets.append(allocator, .{
         .resource_id = "claude-code.skills.discover",
         .resource_kind = "plain_file",
         .relative_path = try scopedRelativePath(allocator, scope, "skills/discover/SKILL.md"),
@@ -196,15 +187,12 @@ fn renderSettingsJson(
     defer allocator.free(session_start_cmd_json);
     const user_prompt_submit_cmd_json = try commandJsonLiteral(allocator, scope, target_root, "user-prompt-submit.sh");
     defer allocator.free(user_prompt_submit_cmd_json);
-    const stop_check_cmd_json = try commandJsonLiteral(allocator, scope, target_root, "stop-refer-check.sh");
-    defer allocator.free(stop_check_cmd_json);
 
     var rendered = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_settings_json);
     errdefer allocator.free(rendered);
 
     rendered = try replaceOwned(allocator, rendered, "__CLUMSIES_SESSION_START_COMMAND_JSON__", session_start_cmd_json);
     rendered = try replaceOwned(allocator, rendered, "__CLUMSIES_USER_PROMPT_SUBMIT_COMMAND_JSON__", user_prompt_submit_cmd_json);
-    rendered = try replaceOwned(allocator, rendered, "__CLUMSIES_STOP_CHECK_COMMAND_JSON__", stop_check_cmd_json);
     return rendered;
 }
 

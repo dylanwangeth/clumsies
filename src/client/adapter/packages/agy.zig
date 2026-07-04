@@ -65,15 +65,6 @@ pub fn renderRuntimeAssets(
         .file_mode = 0o755,
         .content = try allocator.dupe(u8, build_options.adapter_agy_runtime_pre_invocation_sh),
     });
-    try assets.append(allocator, .{
-        .resource_id = "agy.hooks.stop_check",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, scope, "hooks/stop-refer-check.sh"),
-        .ownership = "exclusive",
-        .label = "Antigravity CLI Stop hook",
-        .file_mode = 0o755,
-        .content = try allocator.dupe(u8, build_options.adapter_agy_runtime_stop_refer_check_sh),
-    });
     try appendSkillAsset(allocator, &assets, scope, target_root, "discover", "Antigravity CLI discover skill", build_options.adapter_agy_runtime_skill_discover);
     try appendSkillAsset(allocator, &assets, scope, target_root, "ntmd", "Antigravity CLI ntmd skill", build_options.adapter_agy_runtime_skill_ntmd);
     try appendSkillAsset(allocator, &assets, scope, target_root, "setup", "Antigravity CLI setup skill", build_options.adapter_agy_runtime_skill_setup);
@@ -167,14 +158,11 @@ fn renderHooksJson(
 ) ![]u8 {
     const pre_invocation_cmd_json = try commandJsonLiteral(allocator, scope, target_root, "pre-invocation.sh");
     defer allocator.free(pre_invocation_cmd_json);
-    const stop_check_cmd_json = try commandJsonLiteral(allocator, scope, target_root, "stop-refer-check.sh");
-    defer allocator.free(stop_check_cmd_json);
 
     var rendered = try allocator.dupe(u8, build_options.adapter_agy_runtime_hooks_json);
     errdefer allocator.free(rendered);
 
     rendered = try replaceOwned(allocator, rendered, "__CLUMSIES_PRE_INVOCATION_COMMAND_JSON__", pre_invocation_cmd_json);
-    rendered = try replaceOwned(allocator, rendered, "__CLUMSIES_STOP_CHECK_COMMAND_JSON__", stop_check_cmd_json);
     return rendered;
 }
 
@@ -352,7 +340,7 @@ test "renderRuntimeAssets uses workspace-local Antigravity hook paths" {
     try std.testing.expect(std.mem.indexOf(u8, assets[0].content, "/tmp/workspace/.agents/hooks/pre-invocation.sh") != null);
 }
 
-test "renderRuntimeAssets injects memsetup instructions from Antigravity conversationId" {
+test "renderRuntimeAssets injects retrieve setup instructions from Antigravity conversationId" {
     const allocator = std.testing.allocator;
     const assets = try renderRuntimeAssets(allocator, .workspace, "/tmp/workspace");
     defer deinitRenderedAssets(allocator, assets);
@@ -366,19 +354,15 @@ test "renderRuntimeAssets injects memsetup instructions from Antigravity convers
             try std.testing.expect(std.mem.indexOf(u8, asset.content, "invocationNum") != null);
             try std.testing.expect(std.mem.indexOf(u8, asset.content, "transcriptPath") != null);
             try std.testing.expect(std.mem.indexOf(u8, asset.content, "attestation-append --type user_prompt") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "memsetup") != null);
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "retrieve") != null);
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "memsetup") == null);
+            try std.testing.expect(std.mem.indexOf(u8, asset.content, "agentreport") == null);
             try std.testing.expect(std.mem.indexOf(u8, asset.content, "session_id") != null);
             try std.testing.expect(std.mem.indexOf(u8, asset.content, "_agent setup") == null);
         } else if (std.mem.eql(u8, asset.resource_id, "agy.hooks.stop_check")) {
             found_stop_check = true;
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "conversationId") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "transcriptPath") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "CLUMSIES_HOST_SESSION_ID") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "memsetup") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "agentreport") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "attestation-append --type agent_report") != null);
         }
     }
     try std.testing.expect(found_pre_invocation);
-    try std.testing.expect(found_stop_check);
+    try std.testing.expect(!found_stop_check);
 }

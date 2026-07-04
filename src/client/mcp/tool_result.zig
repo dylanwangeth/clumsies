@@ -1,10 +1,8 @@
 //! MCP tool response formatting. Builds the content envelope agents consume: success results
-//! include human-readable text + machine-readable structuredContent; loaded rules/workflows
-//! include parsed constraint IDs for the agent to reference in memref calls.
+//! include human-readable text + machine-readable structuredContent.
 const std = @import("std");
 const encoding = @import("clumsies_lib").util.encoding;
 const workspace_rule = @import("../rule.zig");
-const tool_names = @import("tool_names.zig");
 
 pub fn buildSuccessResult(allocator: std.mem.Allocator, structured_json: []const u8) ![]u8 {
     const esc_text = try encoding.jsonEscapeAlloc(allocator, structured_json);
@@ -171,6 +169,7 @@ fn appendLoadedRuleWithConstraints(
     item: workspace_rule.LoadedRule,
     constraints: []const workspace_rule.ParsedConstraint,
 ) !void {
+    _ = constraints;
     const esc_id = try encoding.jsonEscapeAlloc(allocator, item.id);
     defer allocator.free(esc_id);
     const esc_path = try encoding.jsonEscapeAlloc(allocator, item.path);
@@ -194,36 +193,9 @@ fn appendLoadedRuleWithConstraints(
     }
     try buf.appendSlice(allocator, "\"content\":");
     if (item.content) |content| {
-        const needs_reminder = item.kind == .rule or item.kind == .workflow;
-        if (needs_reminder) {
-            var constraint_list_buf: std.ArrayList(u8) = .empty;
-            defer constraint_list_buf.deinit(allocator);
-            for (constraints) |c| {
-                if (std.mem.eql(u8, c.name, c.text)) {
-                    try constraint_list_buf.writer(allocator).print("  - {s}: {s}\n", .{ c.id, c.name });
-                } else {
-                    try constraint_list_buf.writer(allocator).print("  - {s}: {s} - {s}\n", .{ c.id, c.name, c.text });
-                }
-            }
-            const constraint_list = if (constraint_list_buf.items.len > 0)
-                constraint_list_buf.items
-            else
-                @as([]const u8, "  (no constraints parsed)\n");
-
-            const reminder = try std.fmt.allocPrint(
-                allocator,
-                "{s}\n\n---\n[clumsies] Constraints are the referable markdown sections listed below: either a whole H2 section or one list item inside an H2 section. Their ids are stable markdown-derived ids: H2 title for whole-section constraints, or H2/ordinal for list-item constraints. When one shapes your work, include it in a single {s} call at the end of your response. Use this ruleId and ruleHash exactly, and copy constraintId exactly from this list.\nrefs entry fields: ruleId: {s}, ruleHash: {s}, constraintId: pick from below\n{s}---",
-                .{ content, tool_names.refer, item.id, item.hash, constraint_list },
-            );
-            defer allocator.free(reminder);
-            const esc_content = try encoding.jsonEscapeAlloc(allocator, reminder);
-            defer allocator.free(esc_content);
-            try buf.writer(allocator).print("\"{s}\"", .{esc_content});
-        } else {
-            const esc_content = try encoding.jsonEscapeAlloc(allocator, content);
-            defer allocator.free(esc_content);
-            try buf.writer(allocator).print("\"{s}\"", .{esc_content});
-        }
+        const esc_content = try encoding.jsonEscapeAlloc(allocator, content);
+        defer allocator.free(esc_content);
+        try buf.writer(allocator).print("\"{s}\"", .{esc_content});
     } else {
         try buf.appendSlice(allocator, "null");
     }

@@ -79,7 +79,7 @@ If the short labels look too terse on their own, read them as:
 | `manifest` | `manifest.json`, the current workspace snapshot |
 | `cache` | materialized local rules, context, and `META_PROMPT` |
 | `attestation log` | append-only local runtime events awaiting TUI upload |
-| `MCP` | the current `mem*`, `artifact`, and agent-reporting tool surface |
+| `MCP` | the current `activate`, `retrieve`, and `store` tool surface |
 | `adapter` | plan, install, update, and remove logic for host integration |
 
 ## What each layer owns
@@ -242,10 +242,10 @@ MCP and adapter are easy to conflate because both sit close to agent runtime. Th
 
 | Layer | Question it answers |
 | --- | --- |
-| MCP | how does an agent search, load, and refer to workspace material |
+| MCP | how does an agent activate, retrieve, and store workspace material |
 | adapter | how does this host get configured so the right MCP path is available at all |
 
-Current docs should keep one implementation fact explicit: the running tool surface is `memsetup`, `memdisc`, `memload`, `memref`, `artifact`, `agentreport`, and `agentrejected`. Public docs should describe that as the real protocol surface rather than as a temporary alias for some other namespace.
+Current docs should keep one implementation fact explicit: the running tool surface is `activate`, `retrieve`, and `store`. Public docs should describe that as the real protocol surface rather than as a temporary alias for some other namespace.
 
 Adapter should also be treated as a first-class architectural layer. For Codex, runtime depends on `.codex/config.toml`, `.codex/hooks.json`, hook scripts, and optional local skills. That is not setup trivia. It is the installable host-facing part of the system.
 
@@ -283,7 +283,7 @@ Some surfaces are still mid-transition:
 
 - terminology is moving from prompt to rule where the meaning is behavioral instruction
 - terminology is moving from trace to attestation
-- MCP uses concise `mem*`, `artifact`, and agent-reporting tools in the current implementation
+- MCP uses concise `activate`, `retrieve`, and `store` tools in the current implementation
 - local runtime details still carry earlier design assumptions in a few places
 
 That is normal. The right public-doc move is not to hide it. The right move is to separate current implementation, stable boundary, and target direction whenever those diverge.

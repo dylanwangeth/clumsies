@@ -201,7 +201,7 @@ This explains several behaviors that would otherwise look arbitrary.
 
 `clumsies sync` can skip unchanged content because it compares manifest entries to the files already present in cache. MCP can serve quickly because it reads local files from cache rather than re-fetching from Hub for every tool call. Agent bootstrap can be deterministic because `META_PROMPT.md` comes from the workspace cache path, not from a random repo file somebody happened to create.
 
-`META_PROMPT.md` also deserves to be read as a first-class runtime artifact. It is the bootstrap frame that tells the agent to discover constraints through `memdisc`, load them through `memload`, and declare actual usage through `memref`. The full current workspace copy is documented on the dedicated [META_PROMPT](/meta-prompt) page because it is stable enough to matter, but specific enough that it should not be duplicated across every runtime section.
+`META_PROMPT.md` also deserves to be read as a first-class runtime artifact. It is the bootstrap frame that tells the agent to activate relevant memory through `activate`, retrieve selected content through `retrieve`, and store refinements through `store`. The full current workspace copy is documented on the dedicated [META_PROMPT](/meta-prompt) page because it is stable enough to matter, but specific enough that it should not be duplicated across every runtime section.
 
 ## How sync actually uses manifest and cache
 
@@ -222,19 +222,15 @@ MCP is the runtime surface agents actually talk to. Its job is to expose workspa
 The current runtime path looks like this:
 
 1. bootstrap the session
-2. discover the available items
-3. load the items needed for the current task
-4. refer to the constraints actually applied
-5. submit or reject the turn result
+2. activate the available items
+3. retrieve the items needed for the current task
+4. store draft refinements when needed
 
 The current implementation exposes the memory runtime tool surface:
 
-- `memsetup`
-- `memdisc`
-- `memload`
-- `memref`
-- `agentreport`
-- `agentrejected`
+- `activate`
+- `retrieve`
+- `store`
 
 That distinction is exactly the sort of detail users need when reading docs and code side by side.
 
@@ -309,8 +305,8 @@ That gives the system two useful properties:
 - Hub still receives durable evidence for later analysis
 
 The current codebase is still in a terminology transition from trace to
-attestation. The runtime idea is unchanged: discover, load, refer, and
-related session signals leave evidence.
+attestation. The runtime idea is now centered on activate, retrieve, and store
+operations.
 
 ## Where to inspect when something feels wrong
 

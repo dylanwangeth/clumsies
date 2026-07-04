@@ -26,7 +26,7 @@ These two layers are adjacent but different:
 
 | Layer | Job |
 | --- | --- |
-| MCP | define the agent-facing search, load, and refer protocol |
+| MCP | define the agent-facing activate, retrieve, and store protocol |
 | Adapter | make the host actually launch and reinforce that protocol |
 
 MCP tells you what the runtime contract is. Adapter tells you how a specific host gets wired up so that contract becomes usable.
@@ -44,11 +44,10 @@ In the current implementation, the Codex package renders at least these managed 
 | Resource ID | Path shape | Ownership | Purpose |
 | --- | --- | --- | --- |
 | `codex.config` | `config.toml` | shared | configure Codex runtime behavior for clumsies |
-| `codex.hooks.registry` | `hooks.json` | shared | register SessionStart, UserPromptSubmit, and Stop hooks |
+| `codex.hooks.registry` | `hooks.json` | shared | register SessionStart and UserPromptSubmit hooks |
 | `codex.hooks.resolve_binary` | `hooks/resolve-binary.sh` | exclusive | locate the active `clumsies` binary |
 | `codex.hooks.session_start` | `hooks/session-start.sh` | exclusive | run bootstrap at session start |
 | `codex.hooks.user_prompt_submit` | `hooks/user-prompt-submit.sh` | exclusive | append session input telemetry |
-| `codex.hooks.stop_check` | `hooks/stop-refer-check.sh` | exclusive | enforce refer reminder at turn end |
 | `codex.skills.*` | `skills/...` | exclusive | install built-in and imported workflow skills |
 
 Scope changes the target root rather than the package identity:
@@ -73,7 +72,6 @@ In the current implementation, the adapter manages at least:
 | `claude-code.hooks.resolve_binary` | `.claude/hooks/resolve-binary.sh` | exclusive | locate the active `clumsies` binary |
 | `claude-code.hooks.session_start` | `.claude/hooks/session-start.sh` | exclusive | run bootstrap at session start |
 | `claude-code.hooks.user_prompt_submit` | `.claude/hooks/user-prompt-submit.sh` | exclusive | append session input telemetry |
-| `claude-code.hooks.stop_check` | `.claude/hooks/stop-refer-check.sh` | exclusive | enforce refer reminder at turn end |
 | `claude-code.skills.*` | `.claude/skills/...` | exclusive | install built-in and imported workflow skills |
 
 The point is not just that Codex and Claude Code use different file names. The point is that Adapter absorbs those host differences behind one command surface.
@@ -84,15 +82,15 @@ Clumsies skills should stay thin. A skill installed into Codex, Claude Code, or 
 
 That indirection is the design advantage. The workflow content remains an Artifact object, so the team can update the real process through the normal review flow without asking every user to reinstall or hand-edit host skill files. The adapter only needs to keep the proxy stable.
 
-Workflow proxies should load by workflow name or path alias, such as `workflow:GEN_COMMIT_MSG`, rather than requiring the generated skill author to know a Hub `p-*` id. The proxy should pass a remembered hash to `memload` when it has one, and use an empty string only when the hash is unknown.
+Workflow proxies should load by workflow name or path alias, such as `workflow:GEN_COMMIT_MSG`, rather than requiring the generated skill author to know a Hub `p-*` id. The proxy should pass a remembered hash to `retrieve` when it has one, and use an empty string only when the hash is unknown.
 
 ## Workflow skill auto-import
 
 Workflow-backed skills are imported when the adapter is installed or updated. For workspace-scoped installs, the adapter scans the local workspace cache manifest for files under `workflow/*.md`, turns each workflow filename into a host skill name, and writes a thin skill proxy into the host's skill directory.
 
-For example, `workflow/STUDY.md` becomes a `study` skill. The generated skill does not embed the workflow body. It calls `memload` with `workflow:STUDY` and then tells the agent to follow the loaded workflow. The same rule applies to other workflow files, such as `workflow/ERROR_PRONE.md` becoming `error-prone`.
+For example, `workflow/STUDY.md` becomes a `study` skill. The generated skill does not embed the workflow body. It calls `retrieve` with `workflow:STUDY` and then tells the agent to follow the loaded workflow. The same rule applies to other workflow files, such as `workflow/ERROR_PRONE.md` becoming `error-prone`.
 
-This import path runs during `clumsies adapt` or `clumsies adapt --update`. It is not part of the Codex `SessionStart` hook. The Codex hook only bootstraps the MCP protocol by injecting the `memsetup` instruction for the current host session.
+This import path runs during `clumsies adapt` or `clumsies adapt --update`. It is not part of the Codex `SessionStart` hook. The Codex hook only bootstraps the MCP protocol by injecting the `retrieve` setup instruction for the current host session.
 
 The import source is the synchronized local cache, not the review draft list. A newly created workflow draft may be visible through MCP tools, but it will not necessarily produce a host skill until the workflow is accepted into the cache and the adapter is updated.
 

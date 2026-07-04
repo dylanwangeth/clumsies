@@ -669,7 +669,7 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     row += 1;
 
     w.writeText(&surface, ctx, 4, row, "MCP", theme.fg(theme.MUTED));
-    w.writeText(&surface, ctx, 19, row, "bound by memsetup", theme.fg(theme.TEXT_SOFT));
+    w.writeText(&surface, ctx, 19, row, "bound by retrieve", theme.fg(theme.TEXT_SOFT));
     row += 1;
     row += 1;
 

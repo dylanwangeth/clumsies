@@ -136,9 +136,9 @@ fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u
     defer allocator.free(esc_version);
 
     const instructions =
-        "Call " ++ tool_names.setup ++ " with session_id first to bind this connection and get usage instructions, " ++
-        tool_names.discover ++ " to discover rules/workflows, " ++ tool_names.load ++ " to get content, " ++
-        "and " ++ tool_names.refer ++ " to declare constraint usage.";
+        "Call " ++ tool_names.retrieve ++ " with session_id and knownHashes first to bind this connection and get META_PROMPT, " ++
+        tool_names.activate ++ " to discover rules/workflows/context, " ++ tool_names.retrieve ++ " with ids to get content, " ++
+        "and " ++ tool_names.store ++ " to create, update, rename, delete, or discard local memory drafts.";
     const esc_instructions = try encoding.jsonEscapeAlloc(allocator, instructions);
     defer allocator.free(esc_instructions);
 
@@ -185,8 +185,11 @@ test "processLine: initialize then tools list" {
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}",
     )).?;
     defer testing.allocator.free(tools_response);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memsetup\"") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memdisc\"") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memload\"") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memref\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"activate\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"retrieve\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"store\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memsetup\"") == null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memdisc\"") == null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memload\"") == null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"memref\"") == null);
 }

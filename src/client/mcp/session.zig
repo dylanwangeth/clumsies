@@ -1,4 +1,4 @@
-//! MCP session state. The host session ID is supplied by memsetup so hook
+//! MCP session state. The host session ID is supplied by retrieve so hook
 //! events and MCP tool events are written to the same attestation log.
 const std = @import("std");
 const attestation = @import("../attestation.zig");
@@ -35,7 +35,7 @@ pub const Session = struct {
     ) void {
         const session_id = self.session_id orelse {
             log.warn(
-                "ignored attestation event type='{s}' before memsetup bound a session",
+                "ignored attestation event type='{s}' before retrieve bound a session",
                 .{attestation.payloadTypeTag(payload)},
             );
             return;

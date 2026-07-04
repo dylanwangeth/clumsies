@@ -16,20 +16,19 @@ At a high level, attestation exists around three kinds of runtime action:
 | --- | --- |
 | discover | the agent looked for relevant material |
 | load | the agent pulled material into task context |
-| refer | the agent declared an applied constraint |
+| draft | the agent proposed a local memory change |
 
 Those signals are not equally strong. Discover is weak evidence. Load is
-stronger. Refer is strongest because it names the constraint used.
+stronger. Draft operations are strongest when the task explicitly changes
+memory.
 
 The current attestation model also treats session setup and user input capture as part of the runtime event stream. In other words, attestation is not only about "which rule was mentioned." It is about reconstructing enough structured runtime behavior to support useful later analysis.
 
-Attestation is not only `discover`, `load`, and `refer`. The local event
+Attestation is not only discovery and retrieval. The local event
 model in `src/client/attestation.zig` also includes:
 
 - `setup`
 - `user_prompt`
-- `agent_report`
-- `reject`
 - `context_propose_create`
 - `context_propose_update`
 - `context_propose_rename`
@@ -43,7 +42,7 @@ model in `src/client/attestation.zig` also includes:
 - `mpf_propose_delete`
 - `draft_discard`
 
-That matters because the product is trying to observe more than retrieval. It also wants evidence around turn setup, applied constraints, user input, and content change proposals.
+That matters because the local runtime records more than retrieval. It also has evidence around session setup, user input, and content change proposals.
 
 ## Why hash-bound attestation matters
 

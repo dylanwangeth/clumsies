@@ -601,7 +601,6 @@ fn clumsiesHookScriptName(command: []const u8) ?[]const u8 {
         "session-start.sh",
         "user-prompt-submit.sh",
         "pre-invocation.sh",
-        "stop-refer-check.sh",
     };
     for (names) |name| {
         const name_pos = std.mem.indexOf(u8, command, name) orelse continue;

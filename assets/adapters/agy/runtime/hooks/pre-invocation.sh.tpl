@@ -104,7 +104,7 @@ if transcript_path:
     try:
         with open(transcript_path, "r", encoding="utf-8") as f:
             for line in f:
-                if "memsetup" not in line:
+                if "retrieve" not in line:
                     continue
                 try:
                     item = json.loads(line)
@@ -115,14 +115,14 @@ if transcript_path:
                     if isinstance(tool_calls, list):
                         for tc in tool_calls:
                             name = tc.get("name", "")
-                            if "memsetup" in name:
+                            if "retrieve" in name:
                                 has_setup = True
                                 break
                             if name == "call_mcp_tool":
                                 args = tc.get("args", {})
                                 if isinstance(args, dict):
                                     tool_name = args.get("ToolName", "")
-                                    if "memsetup" in tool_name:
+                                    if "retrieve" in tool_name:
                                         has_setup = True
                                         break
                 if has_setup:
@@ -138,14 +138,14 @@ else:
         f"Use exactly this session_id value: {session_id}. "
         "Antigravity hook input provides this value as conversationId, the unique UUID "
         "of the active agent conversation. Before calling any other clumsies MCP tool, "
-        f'memsetup({{"session_id":"{session_id}",'
+        f'retrieve({{"session_id":"{session_id}",'
         '"knownHashes":{"META_PROMPT.md":""}}). '
-        "Call memsetup only once for this host session. Do not call it again later "
+        "Call retrieve with session_id only once for this host session. Do not call it again later "
         "unless the user explicitly invokes the setup skill. Pass that exact value "
-        "as the memsetup session_id argument. Do not invent, shorten, replace, or "
-        "default the session_id. If this value is unavailable, do not call memsetup; "
+        "as the retrieve session_id argument. Do not invent, shorten, replace, or "
+        "default the session_id. If this value is unavailable, do not call retrieve for setup; "
         "report that the required session_id is missing. After setup succeeds, reuse "
-        "the bound session and continue with memdisc/memload/memref/agentreport."
+        "the bound session and continue with activate/retrieve/store."
     )
     print(json.dumps({"injectSteps": [{"ephemeralMessage": message}]}))
 PY

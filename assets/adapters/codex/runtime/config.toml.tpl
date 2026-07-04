@@ -5,23 +5,11 @@ hooks = true
 command = "clumsies"
 args = ["mcp", "serve"]
 
-[mcp_servers.clumsies.tools."memsetup"]
+[mcp_servers.clumsies.tools."activate"]
 approval_mode = "approve"
 
-[mcp_servers.clumsies.tools."memdisc"]
+[mcp_servers.clumsies.tools."retrieve"]
 approval_mode = "approve"
 
-[mcp_servers.clumsies.tools."memload"]
-approval_mode = "approve"
-
-[mcp_servers.clumsies.tools."memref"]
-approval_mode = "approve"
-
-[mcp_servers.clumsies.tools."agentreport"]
-approval_mode = "approve"
-
-[mcp_servers.clumsies.tools."agentrejected"]
-approval_mode = "approve"
-
-[mcp_servers.clumsies.tools."artifact"]
+[mcp_servers.clumsies.tools."store"]
 approval_mode = "approve"

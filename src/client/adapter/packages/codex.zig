@@ -72,15 +72,6 @@ pub fn renderRuntimeAssets(
         .file_mode = 0o755,
         .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_user_prompt_submit_sh),
     });
-    try assets.append(allocator, .{
-        .resource_id = "codex.hooks.stop_check",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, "hooks/stop-refer-check.sh"),
-        .ownership = "exclusive",
-        .label = "Codex Stop hook",
-        .file_mode = 0o755,
-        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_stop_refer_check_sh),
-    });
     try appendCodexCoreSkills(allocator, &assets, target_root);
 
     if (scope == .workspace) {
@@ -135,9 +126,6 @@ pub fn renderHooksRegistry(
     defer allocator.free(session_start_cmd_json);
     const user_prompt_submit_cmd_json = try commandJsonLiteral(allocator, target_root, "user-prompt-submit.sh");
     defer allocator.free(user_prompt_submit_cmd_json);
-    const stop_check_cmd_json = try commandJsonLiteral(allocator, target_root, "stop-refer-check.sh");
-    defer allocator.free(stop_check_cmd_json);
-
     var rendered = try allocator.dupe(u8, build_options.adapter_codex_runtime_hooks_json);
     errdefer allocator.free(rendered);
 
@@ -152,12 +140,6 @@ pub fn renderHooksRegistry(
         rendered,
         "__CLUMSIES_USER_PROMPT_SUBMIT_COMMAND_JSON__",
         user_prompt_submit_cmd_json,
-    );
-    rendered = try replaceOwned(
-        allocator,
-        rendered,
-        "__CLUMSIES_STOP_CHECK_COMMAND_JSON__",
-        stop_check_cmd_json,
     );
     return rendered;
 }
@@ -373,13 +355,10 @@ test "codex hooks pass Codex session id through clumsies host session env" {
             try std.testing.expect(std.mem.indexOf(u8, asset.content, "turn_id") == null);
         } else if (std.mem.eql(u8, asset.resource_id, "codex.hooks.stop_check")) {
             found_stop_check = true;
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "session_id") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "CLUMSIES_HOST_SESSION_ID") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "turn_id") == null);
         }
     }
     try std.testing.expect(found_user_prompt);
-    try std.testing.expect(found_stop_check);
+    try std.testing.expect(!found_stop_check);
 }
 
 test "renderSessionStartHook does not import workflow skills" {
@@ -391,15 +370,17 @@ test "renderSessionStartHook does not import workflow skills" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "WORKFLOW_SKILLS_DIR") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "_agent setup") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "hookSpecificOutput") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "memsetup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "retrieve") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "memsetup") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "agentreport") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "session_id") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "knownHashes") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "META_PROMPT.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Use exactly this session_id value") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "During host agent startup") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Call memsetup only once for this host session") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Call retrieve with session_id only once for this host session") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "unless the user explicitly invokes the setup skill") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Pass that exact value as the memsetup session_id argument") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Pass that exact value as the retrieve session_id argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Do not invent, shorten, replace, or default the session_id") != null);
 }
 
