@@ -72,8 +72,8 @@ const ApiStateUploader = struct {
     }
 
     fn snapshotAuth(self: *ApiStateUploader) !AuthSnapshot {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const hub_url = self.api_state.hub_url orelse return error.NotAuthenticated;
         const access_token = self.api_state.access_token orelse return error.NotAuthenticated;
         return .{

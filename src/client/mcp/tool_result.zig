@@ -231,7 +231,7 @@ test "serializeLoadResultWithConstraints includes constraints when content is un
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/workflow");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/workflow");
     try writeTestFile(tmp.dir, "cache/rule/workflow/GEN_COMMIT_MSG.md",
         \\# Generate Commit Message
         \\
@@ -284,11 +284,11 @@ test "serializeRuleList produces valid items array" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"kind\":\"rule\"") != null);
 }
 
-fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
+fn writeTestFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
-    defer file.close();
+    defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
-    var fw = std.fs.File.Writer.init(file, &write_buf);
+    var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
     defer fw.interface.flush() catch {};
     try fw.interface.writeAll(content);
 }

@@ -33,7 +33,7 @@ pub fn runWithRoot(
 
     const stdin_buffer = try allocator.alloc(u8, protocol.MAX_MESSAGE_SIZE);
     defer allocator.free(stdin_buffer);
-    var stdin_reader = std.fs.File.Reader.init(std.fs.File.stdin(), stdin_buffer);
+    var stdin_reader = std.Io.File.Reader.init(std.Io.File.stdin(), stdin_buffer);
     const reader = &stdin_reader.interface;
 
     while (true) {

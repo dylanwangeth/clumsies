@@ -300,12 +300,12 @@ pub const Shell = struct {
     // resolved dynamically from `ws_sel` against the hub-provided
     // workspace list (see `activeWsId()`), not from a cwd binding.
     app: *vxfw.App,
-    env_map: *const std.process.EnvMap,
+    env_map: *const std.process.Environ.Map,
 
     pub fn init(
         api_state: *api.state.ApiState,
         app: *vxfw.App,
-        env_map: *const std.process.EnvMap,
+        env_map: *const std.process.Environ.Map,
     ) Shell {
         const prefs = tui_prefs.load(api_state.backing_allocator) catch tui_prefs.Prefs{};
         defer prefs.deinit(api_state.backing_allocator);
@@ -373,8 +373,8 @@ pub const Shell = struct {
     }
 
     fn connectionHeaderNotice(self: *Shell) ?w.SystemNotice {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const now = self.system_notices.now();
         return switch (self.api_state.status) {
             .connected => null,
@@ -1016,8 +1016,8 @@ pub const Shell = struct {
         // Row 0: Accent band with org/user context
         w.paintBand(&surface, 0, theme.ACCENT, theme.PANEL);
         const org_name: []const u8 = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
+            self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.api_state.mutex.unlock(std.Options.debug_io);
             if (self.api_state.current_user) |u|
                 break :blk u.org_name;
             break :blk "\xe2\x80\x94";
@@ -1249,8 +1249,8 @@ pub const Shell = struct {
     }
 
     fn shouldShowLoginPanel(self: *const Shell) bool {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.current_user != null) return false;
         return switch (self.api_state.status) {
             .disconnected, .error_auth, .error_network => true,
@@ -1563,8 +1563,8 @@ pub const Shell = struct {
     }
 
     pub fn canManageMembers(self: *Shell) bool {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return false;
         return std.mem.eql(u8, user.role, "maintainer") and std.mem.indexOf(u8, user.scopes, "members:write") != null;
     }
@@ -1577,8 +1577,8 @@ pub const Shell = struct {
 
     pub fn canManageSelectedWorkspaceMembers(self: *Shell) bool {
         const workspace = self.selectedSettingsWorkspace() orelse return false;
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return false;
         if (std.mem.indexOf(u8, user.scopes, "members:write") == null) return false;
         return std.mem.eql(u8, user.role, "maintainer") or std.mem.eql(u8, workspace.role, "admin");
@@ -1593,8 +1593,8 @@ pub const Shell = struct {
     pub fn canRemoveSelectedWorkspaceMember(self: *Shell) bool {
         const workspace = self.selectedSettingsWorkspace() orelse return false;
         const member = self.selectedWorkspaceMember() orelse return false;
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return false;
         if (std.mem.indexOf(u8, user.scopes, "members:write") == null) return false;
         if (std.mem.eql(u8, member.user_id, user.user_id)) return true;
@@ -1673,8 +1673,8 @@ pub const Shell = struct {
     /// off the authoritative `current_user.workspaces` list because
     /// the view-layer `WorkspaceEntry` intentionally omits it.
     pub fn activeWsId(self: *Shell) ?[]const u8 {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return null;
         if (user.workspaces.len == 0) return null;
         const idx = @min(self.workspace.sel, user.workspaces.len - 1);
@@ -1682,8 +1682,8 @@ pub const Shell = struct {
     }
 
     pub fn activeWorkspaceName(self: *Shell) []const u8 {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return "No workspace";
         if (user.workspaces.len == 0) return "No workspace";
         const idx = @min(self.workspace.sel, user.workspaces.len - 1);
@@ -1692,8 +1692,8 @@ pub const Shell = struct {
 
     fn selectedSettingsWorkspaceId(self: *Shell) ?[]const u8 {
         if (!self.show_settings or self.settings.tab != .workspaces) return null;
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return null;
         if (user.workspaces.len == 0) return null;
         const idx = @min(self.settings.content_sel, user.workspaces.len - 1);
@@ -1702,7 +1702,7 @@ pub const Shell = struct {
 
     fn reconcileWorkspaceSelection(self: *Shell) void {
         var next_idx: ?usize = null;
-        self.api_state.mutex.lock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
         if (self.api_state.current_user) |user| {
             if (user.workspaces.len == 0) {
                 self.workspace.sel = 0;
@@ -1713,7 +1713,7 @@ pub const Shell = struct {
                 next_idx = 0;
             }
         }
-        self.api_state.mutex.unlock();
+        self.api_state.mutex.unlock(std.Options.debug_io);
 
         if (next_idx) |idx| {
             self.workspace_pref_applied = true;
@@ -1853,7 +1853,7 @@ pub const Shell = struct {
 
     pub fn selectWorkspaceIndex(self: *Shell, idx: usize) void {
         var selected_ws_id: ?[]const u8 = null;
-        self.api_state.mutex.lock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
         if (self.api_state.current_user) |user| {
             if (user.workspaces.len > 0) {
                 const next = @min(idx, user.workspaces.len - 1);
@@ -1865,7 +1865,7 @@ pub const Shell = struct {
         } else {
             self.workspace.sel = 0;
         }
-        self.api_state.mutex.unlock();
+        self.api_state.mutex.unlock(std.Options.debug_io);
 
         self.workspace.list_sel = 0;
         self.workspace.list_machine.reset();
@@ -1925,7 +1925,7 @@ pub const Shell = struct {
             return;
         };
         const alloc = self.api_state.backing_allocator;
-        const cwd = std.fs.cwd().realpathAlloc(alloc, ".") catch {
+        const cwd = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", alloc) catch {
             self.notifyOp(.failure, "Could not resolve current directory.");
             return;
         };
@@ -1950,18 +1950,18 @@ pub const Shell = struct {
         };
         const alloc = self.api_state.backing_allocator;
 
-        const cwd = std.fs.cwd().realpathAlloc(alloc, ".") catch {
+        const cwd = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", alloc) catch {
             self.confirm_error_message = "Could not resolve current directory.";
             return false;
         };
         defer alloc.free(cwd);
 
         var hub_url_copy: ?[]const u8 = null;
-        self.api_state.mutex.lock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
         if (self.api_state.hub_url) |hub_url| {
             hub_url_copy = alloc.dupe(u8, hub_url) catch null;
         }
-        self.api_state.mutex.unlock();
+        self.api_state.mutex.unlock(std.Options.debug_io);
         const hub_url = hub_url_copy orelse {
             self.confirm_error_message = "Hub URL is not loaded.";
             return false;
@@ -2002,14 +2002,14 @@ pub const Shell = struct {
     pub fn bindWorkspacePath(self: *Shell, name: []const u8, ws_id: []const u8, path: []const u8) !void {
         const alloc = self.api_state.backing_allocator;
         var hub_url_copy: ?[]const u8 = null;
-        self.api_state.mutex.lock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
         if (self.api_state.hub_url) |hub_url| {
             hub_url_copy = alloc.dupe(u8, hub_url) catch {
-                self.api_state.mutex.unlock();
+                self.api_state.mutex.unlock(std.Options.debug_io);
                 return error.OutOfMemory;
             };
         }
-        self.api_state.mutex.unlock();
+        self.api_state.mutex.unlock(std.Options.debug_io);
         const hub_url = hub_url_copy orelse return error.HubUrlNotLoaded;
         defer alloc.free(hub_url);
 
@@ -2026,8 +2026,8 @@ pub const Shell = struct {
 
     fn selectedSettingsWorkspace(self: *Shell) ?SettingsWorkspaceSelection {
         if (!self.show_settings or self.settings.tab != .workspaces) return null;
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return null;
         if (user.workspaces.len == 0) return null;
         const idx = @min(self.settings.content_sel, user.workspaces.len - 1);
@@ -2484,10 +2484,10 @@ pub const Shell = struct {
         const arena = self.viewAllocator();
         const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
         const path = std.fs.path.join(arena, &.{ ws_dir, "cache", "META_PROMPT.md" }) catch return null;
-        const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-        defer file.close();
+        const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return null;
+        defer file.close(std.Options.debug_io);
         var read_buf: [4096]u8 = undefined;
-        var fr = std.fs.File.Reader.init(file, &read_buf);
+        var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
         return fr.interface.allocRemaining(arena, std.io.Limit.limited(10 * 1024 * 1024)) catch null;
     }
 
@@ -2799,8 +2799,8 @@ pub const Shell = struct {
     /// artifact rule list. Returns null if the artifact has not loaded
     /// yet or the path is unknown.
     pub fn lookupRuleId(self: *Shell, path: []const u8) ?[]const u8 {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const lib = self.api_state.rules orelse return null;
         for (lib) |lp| {
             if (std.mem.eql(u8, lp.path, path)) return lp.rule_id;
@@ -2820,8 +2820,8 @@ pub const Shell = struct {
     /// artifact path. Used by draft and PR detail code that needs to
     /// map operation metadata back to the visible rule tree.
     fn lookupRulePath(self: *Shell, rule_id: []const u8) ?[]const u8 {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const lib = self.api_state.rules orelse return null;
         for (lib) |lp| {
             if (std.mem.eql(u8, lp.rule_id, rule_id)) return lp.path;
@@ -3014,8 +3014,8 @@ pub const Shell = struct {
     }
 
     fn loadAnalysisData(self: *Shell, arena: std.mem.Allocator) ?data.AnalysisData {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.org_stats) |stats| {
             return api.view_model.analysisFromStats(arena, stats, self.api_state.rules, null);
         }
@@ -3090,8 +3090,8 @@ pub const Shell = struct {
 
     // Count active drafts across all categories; terminal states are hidden.
     fn draftCount(self: *Shell) usize {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const drafts = self.api_state.drafts orelse return 0;
         var count: usize = 0;
         for (drafts) |d| {
@@ -3102,8 +3102,8 @@ pub const Shell = struct {
 
     pub fn getReviewPrs(self: *Shell) []const data.PullRequestEntry {
         const prs = self.api_state.review_prs_cache.lookup(.{ .value = "review" }) orelse return &.{};
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         return api.view_model.toReviewPrEntries(self.viewAllocator(), prs, self.api_state);
     }
 
@@ -3124,8 +3124,8 @@ pub const Shell = struct {
     }
 
     pub fn getRules(self: *Shell) []const data.RuleEntry {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.rules) |lp| {
             return api.view_model.toRuleEntries(self.viewAllocator(), lp);
         }
@@ -3133,8 +3133,8 @@ pub const Shell = struct {
     }
 
     pub fn getBundles(self: *Shell) []const data.BundleEntry {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.bundles) |lb| {
             return api.view_model.toBundleEntries(self.viewAllocator(), lb);
         }
@@ -3421,8 +3421,8 @@ pub const Shell = struct {
         const attestation_refers: u16 = @intCast(@min(resp.attestation_summary.refer_count, std.math.maxInt(u16)));
         const stored_pr_id = alloc.dupe(u8, pr_id) catch null;
 
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         self.api_state.pr_detail_id = stored_pr_id;
         self.api_state.pr_detail_base = base_copy;
         self.api_state.pr_detail_proposed = proposed_copy;
@@ -3664,7 +3664,7 @@ pub const Shell = struct {
         var access_copy: ?[]const u8 = null;
         var refresh_copy: ?[]const u8 = null;
 
-        self.api_state.mutex.lock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
         self.api_state.username = username_copy;
         if (self.api_state.current_user) |*u| {
             u.org_name = org_name_copy;
@@ -3675,7 +3675,7 @@ pub const Shell = struct {
         if (self.api_state.hub_url) |value| hub_url_copy = alloc.dupe(u8, value) catch null;
         if (self.api_state.access_token) |value| access_copy = alloc.dupe(u8, value) catch null;
         if (self.api_state.refresh_token) |value| refresh_copy = alloc.dupe(u8, value) catch null;
-        self.api_state.mutex.unlock();
+        self.api_state.mutex.unlock(std.Options.debug_io);
 
         defer if (hub_url_copy) |value| alloc.free(value);
         defer if (access_copy) |value| alloc.free(value);
@@ -3800,8 +3800,8 @@ pub const Shell = struct {
     }
 
     fn isHubConnected(self: *Shell) bool {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         return self.api_state.status == .connected;
     }
 
@@ -3809,18 +3809,18 @@ pub const Shell = struct {
         const result = self.api_state.health_pending.consume() orelse return;
         switch (result) {
             .ok => {
-                self.api_state.mutex.lock();
+                self.api_state.mutex.lockUncancelable(std.Options.debug_io);
                 const was_offline = self.api_state.status == .error_network;
                 if (was_offline) self.api_state.status = .connected;
-                self.api_state.mutex.unlock();
+                self.api_state.mutex.unlock(std.Options.debug_io);
                 if (was_offline) api.fetch.refetchAllAsync(self.api_state);
             },
             else => {
-                self.api_state.mutex.lock();
+                self.api_state.mutex.lockUncancelable(std.Options.debug_io);
                 if (self.api_state.status != .connecting and self.api_state.status != .disconnected) {
                     self.api_state.status = .error_network;
                 }
-                self.api_state.mutex.unlock();
+                self.api_state.mutex.unlock(std.Options.debug_io);
             },
         }
     }
@@ -3931,8 +3931,8 @@ pub const Shell = struct {
     }
 
     pub fn getWorkspaces(self: *Shell) []const data.WorkspaceEntry {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.current_user) |u| {
             const alloc = self.api_state.allocator();
             var list: std.ArrayList(data.WorkspaceEntry) = .empty;
@@ -3956,15 +3956,15 @@ pub const Shell = struct {
     }
 
     fn wsContextCount(self: *Shell) usize {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.ws_detail) |ws_d| return ws_d.workspace_context.len;
         return 0;
     }
 
     fn wsRulesCount(self: *Shell) usize {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.ws_detail) |ws_d| return ws_d.workspace_rules.len;
         return 0;
     }
@@ -3992,14 +3992,14 @@ pub const Shell = struct {
     }
 
     fn currentAnalysisScope(self: *const Shell) AnalysisScopeInfo {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         return self.currentAnalysisScopeLocked();
     }
 
     pub fn cycleAnalysisScope(self: *Shell) AnalysisScopeInfo {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const workspaces = if (self.api_state.current_user) |u| u.workspaces else &.{};
         const scope_count = workspaces.len + 1;
         self.analysis.scope_idx = (self.analysis.scope_idx + 1) % scope_count;
@@ -4007,8 +4007,8 @@ pub const Shell = struct {
     }
 
     fn scopedAttestationData(self: *const Shell) ?ScopedAttestationData {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
 
         const local = self.api_state.local_stats orelse return null;
         const scope = self.currentAnalysisScopeLocked();
@@ -4046,8 +4046,8 @@ pub const Shell = struct {
     }
 
     fn getAnalysisCounts(self: *Shell) AnalysisCounts {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
 
         const scope = self.currentAnalysisScopeLocked();
         const input_count: usize = if (self.api_state.local_stats) |local| blk: {
@@ -4468,8 +4468,8 @@ pub const Shell = struct {
         self.profile_dialog_message = "";
         self.show_profile_dialog = true;
 
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.current_user) |u| {
             const len = @min(u.username.len, self.profile_first_buf.len);
             @memcpy(self.profile_first_buf[0..len], u.username[0..len]);
@@ -5222,8 +5222,8 @@ pub const Shell = struct {
     }
 
     fn selectedOrgMemberData(self: *Shell) ?api.model.OrgMemberData {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const dir = self.api_state.members orelse return null;
         if (dir.members.len == 0) return null;
         const idx = @min(self.settings.content_sel, dir.members.len - 1);
@@ -5231,8 +5231,8 @@ pub const Shell = struct {
     }
 
     fn selectedWorkspaceMember(self: *Shell) ?api.model.WorkspaceMemberData {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return null;
         if (user.workspaces.len == 0) return null;
         const ws_idx = @min(self.settings.content_sel, user.workspaces.len - 1);
@@ -5244,8 +5244,8 @@ pub const Shell = struct {
     }
 
     fn resolveOrgUserIdByUsername(self: *Shell, username: []const u8) ?[]const u8 {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const dir = self.api_state.members orelse return null;
         for (dir.members) |member| {
             if (std.mem.eql(u8, member.username, username)) return member.user_id;
@@ -5461,10 +5461,10 @@ pub const Shell = struct {
         const index_path = std.fs.path.join(allocator, &.{ ws_dir, "drafts", "index.json" }) catch return .{};
         defer allocator.free(index_path);
 
-        const file = std.fs.openFileAbsolute(index_path, .{}) catch return .{};
-        defer file.close();
+        const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, index_path, .{}) catch return .{};
+        defer file.close(std.Options.debug_io);
 
-        const stat = file.stat() catch return .{};
+        const stat = file.stat(std.Options.debug_io) catch return .{};
         return .{ .size = stat.size, .mtime = stat.mtime };
     }
 
@@ -7007,8 +7007,8 @@ pub const Shell = struct {
 
     fn bundleNameAtIndex(self: *Shell, bundle_idx: usize) ?[]const u8 {
         const alloc = self.api_state.allocator();
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const bundles = self.api_state.bundles orelse return null;
         if (bundle_idx >= bundles.len) return null;
         return alloc.dupe(u8, bundles[bundle_idx].name) catch null;
@@ -7094,16 +7094,16 @@ pub const Shell = struct {
     }
 
     fn workspaceAtIndex(self: *Shell, workspace_idx: usize) ?api.model.WorkspaceData {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return null;
         if (workspace_idx >= user.workspaces.len) return null;
         return user.workspaces[workspace_idx];
     }
 
     fn workspaceNameById(self: *Shell, ws_id: []const u8) []const u8 {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse return "Workspace";
         for (user.workspaces) |workspace| {
             if (std.mem.eql(u8, workspace.ws_id, ws_id)) return workspace.name;

@@ -21,8 +21,8 @@ pub fn readAllDrafts(allocator: std.mem.Allocator) ?[]const DraftEntry {
     const ws_root = std.fs.path.join(allocator, &.{ home, ".clumsies", "workspaces" }) catch return null;
     defer allocator.free(ws_root);
 
-    var dir = std.fs.openDirAbsolute(ws_root, .{ .iterate = true }) catch return null;
-    defer dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, ws_root, .{ .iterate = true }) catch return null;
+    defer dir.close(std.Options.debug_io);
 
     var all: std.ArrayList(DraftEntry) = .empty;
     var it = dir.iterate();
@@ -38,8 +38,8 @@ pub fn readAllDrafts(allocator: std.mem.Allocator) ?[]const DraftEntry {
 }
 
 fn readIndexFile(allocator: std.mem.Allocator, path: []const u8, out: *std.ArrayList(DraftEntry)) void {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return;
-    defer file.close();
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return;
+    defer file.close(std.Options.debug_io);
 
     var buf: [64 * 1024]u8 = undefined;
     var total: usize = 0;

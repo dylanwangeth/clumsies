@@ -63,7 +63,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer result.deinit(allocator);
 
     // Resolve workspace from config
-    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd_path);
 
     const binding = ws_config.resolveWorkspace(allocator, cwd_path) catch {
@@ -237,11 +237,11 @@ pub fn materializeWorkspace(
         const manifest_file_path = try std.fs.path.join(allocator, &.{ ws_dir, "manifest.json" });
         defer allocator.free(manifest_file_path);
 
-        const file = try std.fs.createFileAbsolute(manifest_file_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_file_path, .{ .truncate = true });
+        defer file.close(std.Options.debug_io);
 
         var buf: [8192]u8 = undefined;
-        var w = std.fs.File.Writer.init(file, &buf);
+        var w = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
         try w.interface.writeAll(manifest_response.body);
         try w.interface.flush();
     }
@@ -296,11 +296,11 @@ fn pruneCacheNamespace(
     namespace_dir: []const u8,
     keep: *const std.StringHashMapUnmanaged(void),
 ) !usize {
-    var dir = std.fs.openDirAbsolute(namespace_dir, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, namespace_dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return 0,
         else => return err,
     };
-    dir.close();
+    dir.close(std.Options.debug_io);
     return pruneCacheDir(allocator, namespace_dir, "", keep);
 }
 
@@ -316,8 +316,8 @@ fn pruneCacheDir(
         try std.fs.path.join(allocator, &.{ namespace_dir, rel_dir });
     defer allocator.free(current_dir);
 
-    var dir = try std.fs.openDirAbsolute(current_dir, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, current_dir, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
 
     var removed: usize = 0;
     var it = dir.iterate();
@@ -488,11 +488,11 @@ fn localFileMatchesHash(
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, rel_path });
     defer allocator.free(file_path);
 
-    const file = std.fs.openFileAbsolute(file_path, .{}) catch return false;
-    defer file.close();
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, file_path, .{}) catch return false;
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [8192]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
+    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch return false;
     defer allocator.free(content);
 
@@ -510,7 +510,7 @@ fn stripHashPrefix(raw: []const u8) []const u8 {
 }
 
 fn ensureDir(path: []const u8) void {
-    std.fs.makeDirAbsolute(path) catch |err| {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, path, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) {
             log.warn("failed to create directory {s}: {}", .{ path, err });
         }
@@ -526,7 +526,7 @@ fn writeToCache(allocator: std.mem.Allocator, ws_cache_dir: []const u8, sub_dir:
     // cache/context). `makeDirAbsolute` is the absolute-safe single-
     // level creator; the cache root above it is created by the
     // caller's `ensureDir(cache_dir)` before the loops start.
-    std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, dir_path, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
@@ -536,18 +536,18 @@ fn writeToCache(allocator: std.mem.Allocator, ws_cache_dir: []const u8, sub_dir:
     // Dir-relative API the stdlib is designed around. This avoids
     // handing an absolute path to `Dir.makePath`, which is intended
     // for paths relative to the receiver.
-    var dir = try std.fs.openDirAbsolute(dir_path, .{});
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, dir_path, .{});
+    defer dir.close(std.Options.debug_io);
 
     if (std.fs.path.dirname(name)) |rel_parent| {
-        try dir.makePath(rel_parent);
+        try dir.createDirPath(std.Options.debug_io, rel_parent);
     }
 
     const file = try dir.createFile(name, .{ .truncate = true });
-    defer file.close();
+    defer file.close(std.Options.debug_io);
 
     var buf: [8192]u8 = undefined;
-    var w = std.fs.File.Writer.init(file, &buf);
+    var w = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
     try w.interface.writeAll(content);
     try w.interface.flush();
 }
@@ -621,16 +621,16 @@ test "pruneCacheNamespace removes files absent from manifest keep set" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/context/keep");
-    try tmp.dir.makePath("cache/context/stale");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/keep");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/stale");
     {
         const f = try tmp.dir.createFile("cache/context/keep/A.md", .{});
-        defer f.close();
+        defer f.close(std.Options.debug_io);
         try f.writeAll("keep");
     }
     {
         const f = try tmp.dir.createFile("cache/context/stale/B.md", .{});
-        defer f.close();
+        defer f.close(std.Options.debug_io);
         try f.writeAll("stale");
     }
 
@@ -645,7 +645,7 @@ test "pruneCacheNamespace removes files absent from manifest keep set" {
     try testing.expectEqual(@as(usize, 1), removed);
     {
         const f = try tmp.dir.openFile("cache/context/keep/A.md", .{});
-        defer f.close();
+        defer f.close(std.Options.debug_io);
     }
     try testing.expectError(error.FileNotFound, tmp.dir.openFile("cache/context/stale/B.md", .{}));
 }
@@ -654,10 +654,10 @@ test "localFileMatchesHash returns true on hash match" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule");
     {
         const f = try tmp.dir.createFile("cache/rule/file.md", .{});
-        defer f.close();
+        defer f.close(std.Options.debug_io);
         try f.writeAll("hello");
     }
 
@@ -674,10 +674,10 @@ test "localFileMatchesHash returns false on hash mismatch" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule");
     {
         const f = try tmp.dir.createFile("cache/rule/file.md", .{});
-        defer f.close();
+        defer f.close(std.Options.debug_io);
         try f.writeAll("hello");
     }
 
@@ -692,7 +692,7 @@ test "localFileMatchesHash returns false when file is missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const cache_path = try tmp.dir.realpath("cache", &buf);
@@ -705,10 +705,10 @@ test "localFileMatchesHash returns false on empty remote hash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule");
     {
         const f = try tmp.dir.createFile("cache/rule/file.md", .{});
-        defer f.close();
+        defer f.close(std.Options.debug_io);
         try f.writeAll("hello");
     }
 

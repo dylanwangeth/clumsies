@@ -14,10 +14,10 @@ pub fn init(config: Config) !Middleware {
 }
 
 pub fn execute(_: *const Middleware, req: *httpz.Request, res: *httpz.Response, executor: anytype) !void {
-    const start = std.time.nanoTimestamp();
+    const start = @import("clumsies_lib").util.time_util.nowNanos();
     const request_id = ensureRequestId(req, res);
     defer {
-        const elapsed_ns = std.time.nanoTimestamp() - start;
+        const elapsed_ns = @import("clumsies_lib").util.time_util.nowNanos() - start;
         var client_buf: [64]u8 = undefined;
         var ip_buf: [128]u8 = undefined;
         const client_id = sanitizedClientId(req.header("x-client-id"), &client_buf);
@@ -82,7 +82,7 @@ fn ensureRequestId(req: *httpz.Request, res: *httpz.Response) []const u8 {
     }
 
     const counter = next_request_id.fetchAdd(1, .monotonic) + 1;
-    const request_id = std.fmt.allocPrint(req.arena, "req-{x}-{x}", .{ @as(u64, @intCast(std.time.nanoTimestamp())), counter }) catch "-";
+    const request_id = std.fmt.allocPrint(req.arena, "req-{x}-{x}", .{ @as(u64, @intCast(@import("clumsies_lib").util.time_util.nowNanos())), counter }) catch "-";
     res.header("x-request-id", request_id);
     return request_id;
 }

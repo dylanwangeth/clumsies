@@ -39,7 +39,7 @@ pub fn removeInstall(
         .install_id = manifest.install_id,
         .revision = manifest.active_revision,
         .mode = "remove",
-        .timestamp = std.time.milliTimestamp(),
+        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
         .message = "Starting adapter remove",
     });
 
@@ -81,7 +81,7 @@ pub fn removeInstall(
                     .install_id = manifest.install_id,
                     .revision = manifest.active_revision,
                     .mode = "remove",
-                    .timestamp = std.time.milliTimestamp(),
+                    .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                     .step_id = resource.resource_id,
                     .resource_id = resource.resource_id,
                     .target = resource.relative_path,
@@ -116,7 +116,7 @@ pub fn removeInstall(
                 .install_id = manifest.install_id,
                 .revision = manifest.active_revision,
                 .mode = "remove",
-                .timestamp = std.time.milliTimestamp(),
+                .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                 .step_id = resource.resource_id,
                 .resource_id = resource.resource_id,
                 .target = resource.relative_path,
@@ -143,7 +143,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -168,7 +168,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -177,7 +177,7 @@ pub fn removeInstall(
                     });
                 },
                 .delete_file => {
-                    try std.fs.deleteFileAbsolute(absolute_path);
+                    try std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, absolute_path);
                     cleanupEmptyParents(absolute_path, manifest.target_root);
                     removed_count += 1;
                     try next_resources.append(allocator, .{
@@ -195,7 +195,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -222,7 +222,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -259,7 +259,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -284,7 +284,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -293,7 +293,7 @@ pub fn removeInstall(
                     });
                 },
                 .delete_file => {
-                    try std.fs.deleteFileAbsolute(absolute_path);
+                    try std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, absolute_path);
                     cleanupEmptyParents(absolute_path, manifest.target_root);
                     removed_count += 1;
                     try next_resources.append(allocator, .{
@@ -311,7 +311,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -338,7 +338,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -375,7 +375,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -400,7 +400,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -409,7 +409,7 @@ pub fn removeInstall(
                     });
                 },
                 .delete_file => {
-                    try std.fs.deleteFileAbsolute(absolute_path);
+                    try std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, absolute_path);
                     cleanupEmptyParents(absolute_path, manifest.target_root);
                     removed_count += 1;
                     try next_resources.append(allocator, .{
@@ -427,7 +427,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -454,7 +454,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -483,7 +483,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -508,7 +508,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -517,7 +517,7 @@ pub fn removeInstall(
                     });
                 },
                 .delete_file => {
-                    try std.fs.deleteFileAbsolute(absolute_path);
+                    try std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, absolute_path);
                     cleanupEmptyParents(absolute_path, manifest.target_root);
                     removed_count += 1;
                     try next_resources.append(allocator, .{
@@ -535,7 +535,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -562,7 +562,7 @@ pub fn removeInstall(
                         .install_id = manifest.install_id,
                         .revision = manifest.active_revision,
                         .mode = "remove",
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                         .step_id = resource.resource_id,
                         .resource_id = resource.resource_id,
                         .target = resource.relative_path,
@@ -591,7 +591,7 @@ pub fn removeInstall(
                 .install_id = manifest.install_id,
                 .revision = manifest.active_revision,
                 .mode = "remove",
-                .timestamp = std.time.milliTimestamp(),
+                .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                 .step_id = resource.resource_id,
                 .resource_id = resource.resource_id,
                 .target = resource.relative_path,
@@ -601,7 +601,7 @@ pub fn removeInstall(
             continue;
         }
 
-        try std.fs.deleteFileAbsolute(absolute_path);
+        try std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, absolute_path);
         cleanupEmptyParents(absolute_path, manifest.target_root);
         removed_count += 1;
 
@@ -620,7 +620,7 @@ pub fn removeInstall(
             .install_id = manifest.install_id,
             .revision = manifest.active_revision,
             .mode = "remove",
-            .timestamp = std.time.milliTimestamp(),
+            .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
             .step_id = resource.resource_id,
             .resource_id = resource.resource_id,
             .target = resource.relative_path,
@@ -640,7 +640,7 @@ pub fn removeInstall(
         .active_revision = manifest.active_revision,
         .managed_resources = try next_resources.toOwnedSlice(allocator),
         .created_at = manifest.created_at,
-        .updated_at = std.time.milliTimestamp(),
+        .updated_at = @import("clumsies_lib").util.time_util.nowMillis(),
     };
     defer allocator.free(next_manifest.managed_resources);
 
@@ -651,7 +651,7 @@ pub fn removeInstall(
         .install_id = manifest.install_id,
         .revision = manifest.active_revision,
         .mode = "remove",
-        .timestamp = std.time.milliTimestamp(),
+        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
         .message = if (blocked_count == 0) "Adapter remove committed" else "Adapter remove left blocked resources",
     });
 
@@ -688,14 +688,14 @@ fn recordBlockedResource(
 }
 
 fn readFileIfExists(allocator: std.mem.Allocator, absolute_path: []const u8) !?[]u8 {
-    const file = std.fs.openFileAbsolute(absolute_path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, absolute_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
-    defer file.close();
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [4096]u8 = undefined;
-    var reader = std.fs.File.Reader.init(file, &read_buf);
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     return try reader.interface.allocRemaining(allocator, std.io.Limit.limited(256 * 1024));
 }
 
@@ -704,17 +704,17 @@ fn cleanupEmptyParents(absolute_path: []const u8, root_hint: []const u8) void {
     while (parent_opt) |parent| {
         if (!std.mem.startsWith(u8, parent, root_hint)) break;
         if (std.mem.eql(u8, parent, root_hint)) break;
-        std.fs.deleteDirAbsolute(parent) catch break;
+        std.Io.Dir.deleteDirAbsolute(std.Options.debug_io, parent) catch break;
         parent_opt = std.fs.path.dirname(parent);
     }
 }
 
 fn writeFileAbsolute(path: []const u8, content: []const u8, mode: u16) !void {
-    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = mode });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .mode = mode });
+    defer file.close(std.Options.debug_io);
 
     var buf: [4096]u8 = undefined;
-    var writer = std.fs.File.Writer.init(file, &buf);
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
     try writer.interface.writeAll(content);
     try writer.interface.flush();
 }

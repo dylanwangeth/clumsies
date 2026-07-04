@@ -44,9 +44,9 @@ pub fn init(allocator: std.mem.Allocator, config: Config, pool: *pg.Pool) !Serve
         .auth_rate_limiter = auth_rl,
     };
 
-    const listen_address = try resolveListenAddress(allocator, config.host, config.port);
-    var server = try HttpServer.init(allocator, .{
-        .address = .{ .addr = listen_address },
+    const listen_address = try resolveListenAddress(config.host, config.port);
+    var server = try HttpServer.init(std.Options.debug_io, allocator, .{
+        .address = .{ .ip = listen_address },
     }, ctx);
 
     const request_log_middleware = try server.middleware(request_logger, .{});
@@ -125,14 +125,11 @@ pub fn deinit(self: *Server) void {
     self.http.deinit();
 }
 
-fn resolveListenAddress(allocator: std.mem.Allocator, host: []const u8, port: u16) !std.net.Address {
-    if (std.net.Address.parseIp(host, port)) |addr| return addr else |_| {}
-
-    const addresses = std.net.getAddressList(allocator, host, port) catch
-        return error.InvalidHost;
-    defer addresses.deinit();
-    if (addresses.addrs.len == 0) return error.InvalidHost;
-    return addresses.addrs[0];
+fn resolveListenAddress(host: []const u8, port: u16) !std.Io.net.IpAddress {
+    if (std.mem.eql(u8, host, "localhost")) {
+        return .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = port } };
+    }
+    return std.Io.net.IpAddress.resolve(std.Options.debug_io, host, port) catch error.InvalidHost;
 }
 
 pub fn listen(self: *Server) !void {

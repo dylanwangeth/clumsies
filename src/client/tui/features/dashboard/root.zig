@@ -1792,10 +1792,10 @@ fn readCacheBytes(
         .rule => try std.fs.path.join(arena, &.{ ws_dir, "cache", "rule", path }),
         .context => try std.fs.path.join(arena, &.{ ws_dir, "cache", "context", path }),
     };
-    const file = try std.fs.openFileAbsolute(abs_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, abs_path, .{});
+    defer file.close(std.Options.debug_io);
     var read_buf: [4096]u8 = undefined;
-    var reader = std.fs.File.Reader.init(file, &read_buf);
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     return reader.interface.allocRemaining(arena, std.io.Limit.limited(1 * 1024 * 1024));
 }
 

@@ -72,9 +72,9 @@ pub fn flushOnce(
 
     const log_dir = attestation.attestationLogDirPath(allocator, ws_id) catch return error.OutOfMemory;
     defer allocator.free(log_dir);
-    if (std.fs.openDirAbsolute(log_dir, .{ .iterate = true })) |dir_handle| {
+    if (std.Io.Dir.openDirAbsolute(std.Options.debug_io, log_dir, .{ .iterate = true })) |dir_handle| {
         var dir = dir_handle;
-        defer dir.close();
+        defer dir.close(std.Options.debug_io);
         var it = dir.iterate();
         while (it.next() catch return error.ReadAttestationFailed) |entry| {
             if (entry.kind != .file) continue;
@@ -114,13 +114,13 @@ fn flushLogFile(
         else => return error.ReadCursorFailed,
     };
 
-    var file = std.fs.openFileAbsolute(attestation_path, .{}) catch |err| switch (err) {
+    var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, attestation_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return result,
         else => return error.ReadAttestationFailed,
     };
-    defer file.close();
+    defer file.close(std.Options.debug_io);
 
-    const stat = file.stat() catch return error.ReadAttestationFailed;
+    const stat = file.stat(std.Options.debug_io) catch return error.ReadAttestationFailed;
     if (start_offset > stat.size) {
         log.warn(
             "attestation cursor beyond log size; clamping cursor_path={s} cursor={d} size={d}",
@@ -133,7 +133,7 @@ fn flushLogFile(
 
     const read_buf = allocator.alloc(u8, READ_BUFFER_BYTES) catch return error.OutOfMemory;
     defer allocator.free(read_buf);
-    var reader = std.fs.File.Reader.initSize(file, read_buf, stat.size);
+    var reader = std.Io.File.Reader.initSize(file, std.Options.debug_io, read_buf, stat.size);
     reader.seekTo(start_offset) catch return error.ReadAttestationFailed;
 
     var cursor_offset: u64 = start_offset;
@@ -247,11 +247,11 @@ fn buildBatchBody(allocator: std.mem.Allocator, lines: []const []const u8) ![]u8
 }
 
 fn readCursorPath(_: std.mem.Allocator, cursor_path: []const u8) !u64 {
-    var file = try std.fs.openFileAbsolute(cursor_path, .{});
-    defer file.close();
+    var file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, cursor_path, .{});
+    defer file.close(std.Options.debug_io);
 
     var buf: [32]u8 = undefined;
-    var r = std.fs.File.Reader.init(file, &buf);
+    var r = std.Io.File.Reader.init(file, std.Options.debug_io, &buf);
     var small: [32]u8 = undefined;
     const n = r.interface.readSliceShort(&small) catch return error.ReadCursorFailed;
     const text = std.mem.trim(u8, small[0..n], " \t\r\n");
@@ -264,15 +264,15 @@ fn writeCursorPath(allocator: std.mem.Allocator, cursor_path: []const u8, offset
     defer allocator.free(tmp_path);
 
     {
-        const file = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, tmp_path, .{ .truncate = true });
+        defer file.close(std.Options.debug_io);
         var buf: [32]u8 = undefined;
-        var w = std.fs.File.Writer.init(file, &buf);
+        var w = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
         try w.interface.print("{d}\n", .{offset});
         try w.interface.flush();
     }
 
-    try std.fs.renameAbsolute(tmp_path, cursor_path);
+    try std.Io.Dir.renameAbsolute(tmp_path, cursor_path, std.Options.debug_io);
 }
 
 const TestUploader = struct {
@@ -317,7 +317,7 @@ test "flushLogFile clamps cursor after log truncation" {
 
     {
         const file = try tmp.dir.createFile("events.jsonl", .{});
-        defer file.close();
+        defer file.close(std.Options.debug_io);
         try file.writeAll(
             \\{"type":"refer","event_id":"after-truncate"}
             \\
@@ -325,7 +325,7 @@ test "flushLogFile clamps cursor after log truncation" {
     }
     {
         const file = try tmp.dir.createFile("events.cursor", .{});
-        defer file.close();
+        defer file.close(std.Options.debug_io);
         try file.writeAll("999999\n");
     }
 
@@ -361,12 +361,12 @@ test "flushLogFile handles event lines larger than small read buffers" {
 
     {
         const file = try tmp.dir.createFile("events.jsonl", .{});
-        defer file.close();
+        defer file.close(std.Options.debug_io);
         try file.writeAll(event.items);
     }
     {
         const file = try tmp.dir.createFile("events.cursor", .{});
-        defer file.close();
+        defer file.close(std.Options.debug_io);
         try file.writeAll("0\n");
     }
 
@@ -405,13 +405,13 @@ test "flushLogFile resumes from cursor without double-counting offset" {
 
     {
         const file = try tmp.dir.createFile("events.jsonl", .{});
-        defer file.close();
+        defer file.close(std.Options.debug_io);
         try file.writeAll(first);
         try file.writeAll(second);
     }
     {
         const file = try tmp.dir.createFile("events.cursor", .{});
-        defer file.close();
+        defer file.close(std.Options.debug_io);
         var buf: [32]u8 = undefined;
         var writer = file.writer(&buf);
         try writer.interface.print("{d}\n", .{first.len});

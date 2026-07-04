@@ -11,7 +11,7 @@ var cached_mode: ?Mode = null;
 
 pub fn detect() Mode {
     if (cached_mode) |m| return m;
-    const m: Mode = if (std.fs.File.stdout().isTty()) .human else .pipe;
+    const m: Mode = if (std.Io.File.stdout().isTty(std.Options.debug_io) catch false) .human else .pipe;
     cached_mode = m;
     return m;
 }

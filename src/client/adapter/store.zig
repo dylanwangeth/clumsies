@@ -90,11 +90,11 @@ pub fn loadManifestForTarget(
     const installs_dir = try adaptersBasePath(allocator);
     defer allocator.free(installs_dir);
 
-    var dir = std.fs.openDirAbsolute(installs_dir, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, installs_dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(std.Options.debug_io);
 
     var iterator = dir.iterate();
     var best_match: ?LoadedManifest = null;
@@ -154,16 +154,16 @@ pub fn writeManifest(allocator: std.mem.Allocator, manifest: model.InstallManife
     defer allocator.free(json);
 
     {
-        const file = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true, .mode = 0o600 });
-        defer file.close();
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, tmp_path, .{ .truncate = true, .mode = 0o600 });
+        defer file.close(std.Options.debug_io);
         var buf: [4096]u8 = undefined;
-        var writer = std.fs.File.Writer.init(file, &buf);
+        var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
         try writer.interface.writeAll(json);
         try writer.interface.writeAll("\n");
         try writer.interface.flush();
     }
 
-    try std.fs.renameAbsolute(tmp_path, path);
+    try std.Io.Dir.renameAbsolute(tmp_path, path, std.Options.debug_io);
 }
 
 pub fn appendWalEvent(allocator: std.mem.Allocator, event: model.WalEvent) !void {
@@ -172,15 +172,15 @@ pub fn appendWalEvent(allocator: std.mem.Allocator, event: model.WalEvent) !void
     const path = try walPath(allocator, event.install_id);
     defer allocator.free(path);
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = false, .mode = 0o600 });
-    defer file.close();
+    var file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = false, .mode = 0o600 });
+    defer file.close(std.Options.debug_io);
     const end_pos = try file.getEndPos();
 
     const json = try std.json.Stringify.valueAlloc(allocator, event, .{});
     defer allocator.free(json);
 
     var buf: [4096]u8 = undefined;
-    var writer = std.fs.File.Writer.init(file, &buf);
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
     try writer.seekTo(end_pos);
     try writer.interface.writeAll(json);
     try writer.interface.writeAll("\n");
@@ -193,7 +193,7 @@ pub fn fingerprintForContent(allocator: std.mem.Allocator, content: []const u8) 
 }
 
 fn ensureDir(path: []const u8) void {
-    std.fs.makeDirAbsolute(path) catch |err| {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, path, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) {
             log.warn("failed to create directory {s}: {}", .{ path, err });
         }
@@ -201,11 +201,11 @@ fn ensureDir(path: []const u8) void {
 }
 
 fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{});
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [4096]u8 = undefined;
-    var reader = std.fs.File.Reader.init(file, &read_buf);
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     return try reader.interface.allocRemaining(allocator, std.io.Limit.limited(256 * 1024));
 }
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const logger = @import("clumsies_lib").logger;
+const env_util = @import("clumsies_lib").util.env_util;
 const hub = @import("root.zig");
 
 pub const std_options: std.Options = .{
@@ -12,15 +13,15 @@ const log = std.log.scoped(.hub);
 
 const StartupError = error{HubStartupFailed};
 
-pub fn main() void {
+pub fn main(init: std.process.Init) void {
     const exit_code: u8 = blk: {
         var da: std.heap.DebugAllocator(.{}) = .init;
         defer _ = da.deinit();
 
-        run(da.allocator()) catch |err| {
+        run(da.allocator(), init.minimal.environ) catch |err| {
             if (err == StartupError.HubStartupFailed) break :blk 1;
             var stderr_buffer: [4096]u8 = undefined;
-            var stderr_file_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buffer);
+            var stderr_file_writer = std.Io.File.Writer.init(std.Io.File.stderr(), std.Options.debug_io, &stderr_buffer);
             defer stderr_file_writer.interface.flush() catch {};
             stderr_file_writer.interface.print("Error: {s}\n", .{@errorName(err)}) catch {};
             break :blk 1;
@@ -30,8 +31,10 @@ pub fn main() void {
     std.process.exit(exit_code);
 }
 
-pub fn run(allocator: std.mem.Allocator) !void {
-    var env_map = try loadEnvMap(allocator);
+pub fn run(allocator: std.mem.Allocator, environ: std.process.Environ) !void {
+    env_util.init(environ);
+
+    var env_map = try loadEnvMap(allocator, environ);
     defer env_map.deinit();
 
     initHubLogger(&env_map);
@@ -75,11 +78,11 @@ pub fn run(allocator: std.mem.Allocator) !void {
     };
 }
 
-fn loadEnvMap(allocator: std.mem.Allocator) !std.process.EnvMap {
-    return logger.loadEnvMap(allocator);
+fn loadEnvMap(allocator: std.mem.Allocator, environ: std.process.Environ) !std.process.Environ.Map {
+    return logger.loadEnvMap(allocator, environ);
 }
 
-fn initHubLogger(env_map: *const std.process.EnvMap) void {
+fn initHubLogger(env_map: *const std.process.Environ.Map) void {
     const config = logger.configFromEnvMap(env_map);
     logger.initBestEffort(.{ .level = config.level, .sink = .stderr });
     if (config.invalid_level) |raw| logger.noteInvalidLevel(raw);

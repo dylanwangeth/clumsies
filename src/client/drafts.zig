@@ -139,14 +139,14 @@ pub fn loadIndex(allocator: std.mem.Allocator, ws_dir: []const u8) !DraftsIndex 
 
     const index_path = try std.fs.path.join(arena, &.{ ws_dir, "drafts", "index.json" });
 
-    const file = std.fs.openFileAbsolute(index_path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, index_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return index,
         else => return err,
     };
-    defer file.close();
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [4096]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
+    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     const content = try fr.interface.allocRemaining(arena, std.io.Limit.limited(1 * 1024 * 1024));
 
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, content, .{}) catch return error.InvalidDraftsIndex;
@@ -240,11 +240,11 @@ pub fn readDraftFile(
     const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString(), draft_path });
     defer allocator.free(abs_path);
 
-    const file = try std.fs.openFileAbsolute(abs_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, abs_path, .{});
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [4096]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
+    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024));
 }
 
@@ -877,7 +877,7 @@ fn discardDraftFile(
 ) !void {
     const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString(), draft_path });
     defer allocator.free(abs_path);
-    std.fs.deleteFileAbsolute(abs_path) catch |err| switch (err) {
+    std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, abs_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
@@ -981,11 +981,11 @@ fn draftFileExists(
     if (!path_util.isSafeRelative(draft_path)) return error.UnsafeDraftPath;
     const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "drafts", category.toString(), draft_path });
     defer allocator.free(abs_path);
-    const file = std.fs.openFileAbsolute(abs_path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, abs_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
-    file.close();
+    file.close(std.Options.debug_io);
     return true;
 }
 
@@ -1133,11 +1133,11 @@ pub fn reconcileDraftsWithOptions(
         const cache_path = try cacheFilePath(allocator, cache_dir, entry.category, cur);
         defer allocator.free(cache_path);
 
-        const file = std.fs.openFileAbsolute(cache_path, .{}) catch continue;
-        defer file.close();
+        const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, cache_path, .{}) catch continue;
+        defer file.close(std.Options.debug_io);
 
         var read_buf: [4096]u8 = undefined;
-        var fr = std.fs.File.Reader.init(file, &read_buf);
+        var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
         const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch continue;
         defer allocator.free(content);
 
@@ -1166,11 +1166,11 @@ fn cacheFileExists(
 ) !bool {
     const path = try cacheFilePath(allocator, cache_dir, category, rel_path);
     defer allocator.free(path);
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
-    defer file.close();
+    defer file.close(std.Options.debug_io);
     return true;
 }
 
@@ -1290,12 +1290,12 @@ fn writeDraftFileAbs(
 /// errors on missing intermediates; this walks up and creates each
 /// segment idempotently.
 fn ensureDirTreeAbsolute(abs_path: []const u8) !void {
-    std.fs.makeDirAbsolute(abs_path) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, abs_path, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => return,
         error.FileNotFound => {
             const parent = std.fs.path.dirname(abs_path) orelse return err;
             try ensureDirTreeAbsolute(parent);
-            std.fs.makeDirAbsolute(abs_path) catch |e2| switch (e2) {
+            std.Io.Dir.createDirAbsolute(std.Options.debug_io, abs_path, .default_dir) catch |e2| switch (e2) {
                 error.PathAlreadyExists => {},
                 else => return e2,
             };
@@ -1309,15 +1309,15 @@ fn atomicWriteAbsolute(allocator: std.mem.Allocator, abs_path: []const u8, conte
     defer allocator.free(tmp_path);
 
     {
-        const file = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, tmp_path, .{ .truncate = true });
+        defer file.close(std.Options.debug_io);
         var buf: [4096]u8 = undefined;
-        var fw = std.fs.File.Writer.init(file, &buf);
+        var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
         try fw.interface.writeAll(content);
         try fw.interface.flush();
     }
 
-    try std.fs.renameAbsolute(tmp_path, abs_path);
+    try std.Io.Dir.renameAbsolute(tmp_path, abs_path, std.Options.debug_io);
 }
 
 fn writeIndexAtomic(allocator: std.mem.Allocator, ws_dir: []const u8, entries: []const DraftEntry) !void {
@@ -1415,11 +1415,11 @@ fn statusToString(status: DraftStatus) []const u8 {
     };
 }
 
-fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
+fn writeFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
-    defer file.close();
+    defer file.close(std.Options.debug_io);
     var buf: [4096]u8 = undefined;
-    var fw = std.fs.File.Writer.init(file, &buf);
+    var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
     defer fw.interface.flush() catch {};
     try fw.interface.writeAll(content);
 }
@@ -1445,7 +1445,7 @@ test "loadIndex: parses rule and context entries" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("drafts");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
@@ -1492,7 +1492,7 @@ test "loadIndex: invalid drafts array returns error" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("drafts");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{"drafts": "not an array"}
     );
@@ -1662,7 +1662,7 @@ test "readDraftFile: reads from drafts/{category}/{draft_path}" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("drafts/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts/rule/coding");
     try writeFile(tmp.dir, "drafts/rule/coding/STYLE.md", "draft override content");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -2529,7 +2529,7 @@ test "reconcileDrafts: leaves matching base_hash untouched" {
         .base_hash = seed_hash[0..],
     }, seed);
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/A.md", seed);
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
@@ -2561,7 +2561,7 @@ test "reconcileDrafts: marks conflicted when cache drifted" {
         .base_hash = seed_hash[0..],
     }, seed);
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/A.md", "v2 body (someone else merged)\n");
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
@@ -2618,7 +2618,7 @@ test "reconcileDrafts: restores conflicted update when base matches cache" {
     }, "local edit\n");
     try setDraftStatus(testing.allocator, root, .context, "spec/API.md", .conflicted);
 
-    try tmp.dir.makePath("cache/context/spec");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
     try writeFile(tmp.dir, "cache/context/spec/API.md", seed);
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
@@ -2676,7 +2676,7 @@ test "reconcileDraftsWithOptions: can keep conflicted update sticky" {
     }, "local edit\n");
     try setDraftStatus(testing.allocator, root, .context, "spec/API.md", .conflicted);
 
-    try tmp.dir.makePath("cache/context/spec");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
     try writeFile(tmp.dir, "cache/context/spec/API.md", seed);
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
@@ -2734,7 +2734,7 @@ test "reconcileDrafts: leaves terminal applied and declined statuses sticky" {
     }, seed);
     try setDraftStatus(testing.allocator, root, .rule, "coding/A.md", .applied);
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/A.md", "totally different body\n");
 
     const cache_dir = try std.fs.path.join(testing.allocator, &.{ root, "cache" });

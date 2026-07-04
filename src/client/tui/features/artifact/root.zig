@@ -86,8 +86,8 @@ pub fn drawListPanel(
 
     if (self.artifact.tree.rowCount() == 0) {
         const status = blk: {
-            self.api_state.mutex.lock();
-            defer self.api_state.mutex.unlock();
+            self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.api_state.mutex.unlock(std.Options.debug_io);
             break :blk self.api_state.status;
         };
         w.drawEmptyState(&surface, ctx, body_origin_col, body_origin_row, status, "rules");
@@ -507,8 +507,8 @@ fn artifactListSubtitle(self: anytype) ?[]const u8 {
 
 fn selectedBundleRuleIds(self: anytype) ?[]const []const u8 {
     if (self.artifact.bundle_filter == 0) return null;
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer self.api_state.mutex.unlock(std.Options.debug_io);
     const bundles = self.api_state.bundles orelse return null;
     const idx = self.artifact.bundle_filter - 1;
     if (idx >= bundles.len) return null;
@@ -531,15 +531,15 @@ fn bundleChoiceCount(self: anytype) usize {
 }
 
 fn workspaceChoiceCount(self: anytype) usize {
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer self.api_state.mutex.unlock(std.Options.debug_io);
     if (self.api_state.current_user) |user| return user.workspaces.len;
     return 0;
 }
 
 fn workspaceAtIndex(self: anytype, idx: usize) ?api_model.WorkspaceData {
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer self.api_state.mutex.unlock(std.Options.debug_io);
     const user = self.api_state.current_user orelse return null;
     if (idx >= user.workspaces.len) return null;
     return user.workspaces[idx];

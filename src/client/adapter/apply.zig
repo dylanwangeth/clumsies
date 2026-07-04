@@ -14,7 +14,7 @@ pub fn applyAdaptPlan(
         .install_id = plan.install_id,
         .revision = plan.revision,
         .mode = plan.mode,
-        .timestamp = std.time.milliTimestamp(),
+        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
         .message = "Starting adapter apply",
     });
 
@@ -23,7 +23,7 @@ pub fn applyAdaptPlan(
 
     var wrote_count: usize = 0;
     var kept_count: usize = 0;
-    var created_at = std.time.milliTimestamp();
+    var created_at = @import("clumsies_lib").util.time_util.nowMillis();
 
     var existing_manifest_opt = try store.loadManifest(allocator, plan.install_id);
     defer if (existing_manifest_opt) |*loaded| loaded.deinit();
@@ -46,7 +46,7 @@ pub fn applyAdaptPlan(
                     .install_id = plan.install_id,
                     .revision = plan.revision,
                     .mode = plan.mode,
-                    .timestamp = std.time.milliTimestamp(),
+                    .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                     .step_id = step.step_id,
                     .resource_id = step.resource_id,
                     .target = step.relative_path,
@@ -58,7 +58,7 @@ pub fn applyAdaptPlan(
                     .install_id = plan.install_id,
                     .revision = plan.revision,
                     .mode = plan.mode,
-                    .timestamp = std.time.milliTimestamp(),
+                    .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
                     .message = "Adapter apply aborted",
                 });
                 return err;
@@ -88,7 +88,7 @@ pub fn applyAdaptPlan(
             .install_id = plan.install_id,
             .revision = plan.revision,
             .mode = plan.mode,
-            .timestamp = std.time.milliTimestamp(),
+            .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
             .step_id = step.step_id,
             .resource_id = step.resource_id,
             .target = step.relative_path,
@@ -114,7 +114,7 @@ pub fn applyAdaptPlan(
         .active_revision = plan.revision,
         .managed_resources = try managed_resources.toOwnedSlice(allocator),
         .created_at = created_at,
-        .updated_at = std.time.milliTimestamp(),
+        .updated_at = @import("clumsies_lib").util.time_util.nowMillis(),
     };
     defer model.deinitOwnedManifest(allocator, &manifest);
 
@@ -125,7 +125,7 @@ pub fn applyAdaptPlan(
         .install_id = plan.install_id,
         .revision = plan.revision,
         .mode = plan.mode,
-        .timestamp = std.time.milliTimestamp(),
+        .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
         .message = "Adapter apply committed",
     });
 
@@ -139,23 +139,23 @@ fn writeManagedFileAbsolute(absolute_path: []const u8, content: []const u8, file
     if (std.fs.path.dirname(absolute_path)) |parent| {
         try ensureDirTreeAbsolute(parent);
     }
-    const file = try std.fs.createFileAbsolute(absolute_path, .{ .truncate = true, .mode = file_mode });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, absolute_path, .{ .truncate = true, .mode = file_mode });
+    defer file.close(std.Options.debug_io);
 
     var buf: [4096]u8 = undefined;
-    var writer = std.fs.File.Writer.init(file, &buf);
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
     try writer.interface.writeAll(content);
     try writer.interface.flush();
 }
 
 fn ensureDirTreeAbsolute(dir_path: []const u8) !void {
-    std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, dir_path, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => return,
         error.FileNotFound => {
             const parent = std.fs.path.dirname(dir_path) orelse return err;
             if (std.mem.eql(u8, parent, dir_path)) return err;
             try ensureDirTreeAbsolute(parent);
-            std.fs.makeDirAbsolute(dir_path) catch |mkdir_err| {
+            std.Io.Dir.createDirAbsolute(std.Options.debug_io, dir_path, .default_dir) catch |mkdir_err| {
                 if (mkdir_err != error.PathAlreadyExists) return mkdir_err;
             };
         },

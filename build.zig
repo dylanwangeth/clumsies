@@ -282,7 +282,7 @@ fn addAgyAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) vo
 
 fn readSourceAsset(b: *std.Build, relative_path: []const u8) []const u8 {
     const absolute_path = b.path(relative_path).getPath(b);
-    return std.fs.cwd().readFileAlloc(b.allocator, absolute_path, 1024 * 1024) catch |err| {
+    return std.Io.Dir.cwd().readFileAlloc(b.graph.io, absolute_path, b.allocator, .limited(1024 * 1024)) catch |err| {
         std.debug.panic("failed to read asset {s}: {s}", .{ relative_path, @errorName(err) });
     };
 }

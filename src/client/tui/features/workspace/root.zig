@@ -650,8 +650,8 @@ pub fn drawWorkspaceDrawer(
     w.fillSurface(&body, theme.PANEL_SOFT);
 
     const workspaces: []const api.model.WorkspaceData = blk: {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const user = self.api_state.current_user orelse break :blk &.{};
         const snapshot = try ctx.arena.alloc(api.model.WorkspaceData, user.workspaces.len);
         @memcpy(snapshot, user.workspaces);
@@ -1484,7 +1484,7 @@ pub fn openEdit(self: anytype, ws_id: []const u8, name: []const u8, description:
 
 fn seedCreatePathFromCwd(self: anytype) void {
     const alloc = self.api_state.backing_allocator;
-    const cwd = std.fs.cwd().realpathAlloc(alloc, ".") catch return;
+    const cwd = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", alloc) catch return;
     defer alloc.free(cwd);
     writeFixedBuf(&self.workspace.create_path_buf, &self.workspace.create_path_len, cwd);
 }
@@ -1642,10 +1642,10 @@ fn completeCreatePath(self: anytype) bool {
         std.fs.path.basename(raw);
 
     var dir = if (std.fs.path.isAbsolute(parent))
-        std.fs.openDirAbsolute(parent, .{ .iterate = true }) catch return false
+        std.Io.Dir.openDirAbsolute(std.Options.debug_io, parent, .{ .iterate = true }) catch return false
     else
-        std.fs.cwd().openDir(parent, .{ .iterate = true }) catch return false;
-    defer dir.close();
+        std.Io.Dir.cwd().openDir(std.Options.debug_io, parent, .{ .iterate = true }) catch return false;
+    defer dir.close(std.Options.debug_io);
 
     var iter = dir.iterate();
     var count: usize = 0;
@@ -1765,7 +1765,7 @@ fn normalizeCreatePath(self: anytype) bool {
     const raw = self.workspace.create_path_buf[0..self.workspace.create_path_len];
     if (raw.len == 0) return false;
     const alloc = self.api_state.backing_allocator;
-    const real = std.fs.cwd().realpathAlloc(alloc, raw) catch return false;
+    const real = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, raw, alloc) catch return false;
     defer alloc.free(real);
     writeFixedBuf(&self.workspace.create_path_buf, &self.workspace.create_path_len, real);
     return true;
@@ -1816,16 +1816,16 @@ pub fn consumeCreateResult(self: anytype) bool {
 
 fn createBundleCount(self: anytype) usize {
     if (self.workspace.create_mode == .edit) return 0;
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer self.api_state.mutex.unlock(std.Options.debug_io);
     if (self.api_state.bundles) |list| return list.len;
     return 0;
 }
 
 fn createSelectedBundleId(self: anytype) ?[]const u8 {
     const idx = self.workspace.create_selected_bundle orelse return null;
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer self.api_state.mutex.unlock(std.Options.debug_io);
     const bundles = self.api_state.bundles orelse return null;
     if (idx >= bundles.len) return null;
     if (bundles[idx].bundle_id.len == 0) return null;
@@ -1923,10 +1923,10 @@ pub fn copyTextToClipboard(alloc: std.mem.Allocator, text: []const u8) void {
 
     if (child.stdin) |stdin| {
         var buf: [128]u8 = undefined;
-        var writer = std.fs.File.Writer.init(stdin, &buf);
+        var writer = std.Io.File.Writer.init(stdin, std.Options.debug_io, &buf);
         writer.interface.writeAll(text) catch {};
         writer.interface.flush() catch {};
-        stdin.close();
+        stdin.close(std.Options.debug_io);
         child.stdin = null;
     }
 
@@ -2040,9 +2040,9 @@ fn drawCreateForm(
 
 fn createBundleListHeight(self: anytype) u16 {
     if (self.workspace.create_mode == .edit) return 0;
-    self.api_state.mutex.lock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
     const bundles_opt = self.api_state.bundles;
-    self.api_state.mutex.unlock();
+    self.api_state.mutex.unlock(std.Options.debug_io);
     const count = if (bundles_opt) |bundles| bundles.len else 1;
     if (count == 0) return 3;
     return @intCast(@min(count + 2, 6));
@@ -2058,9 +2058,9 @@ fn drawCreateBundleList(
     height: u16,
     bg: vaxis.Color,
 ) void {
-    self.api_state.mutex.lock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
     const bundles_opt = self.api_state.bundles;
-    self.api_state.mutex.unlock();
+    self.api_state.mutex.unlock(std.Options.debug_io);
 
     const list_focused = self.workspace.create_focus == .bundle;
 

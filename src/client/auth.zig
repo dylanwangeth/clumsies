@@ -3,6 +3,7 @@
 //! and TUI init.
 const std = @import("std");
 const build_options = @import("build_options");
+const env_util = @import("clumsies_lib").util.env_util;
 const enable_keychain = build_options.enable_keychain;
 const log = std.log.scoped(.auth);
 
@@ -39,9 +40,7 @@ const ACCOUNT_NAME = "hub-auth";
 const STORE_ENV = "CLUMSIES_AUTH_STORE";
 
 pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
-        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
-        return error.HomeNotSet;
+    const home = env_util.homeDir(allocator) catch return error.HomeNotSet;
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }
@@ -156,7 +155,7 @@ const AuthJson = struct {
 };
 
 pub fn currentStore(allocator: std.mem.Allocator) !AuthStore {
-    const raw = std.process.getEnvVarOwned(allocator, STORE_ENV) catch |err| switch (err) {
+    const raw = env_util.getOwned(allocator, STORE_ENV) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return .file,
         else => return err,
     };
@@ -299,13 +298,13 @@ fn fileFallbackStore(allocator: std.mem.Allocator, data: []const u8) !void {
     defer allocator.free(base);
     const path = try std.fs.path.join(allocator, &.{ base, "auth.json" });
     defer allocator.free(path);
-    std.fs.makeDirAbsolute(base) catch |err| {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, base, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
-    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close(std.Options.debug_io);
     var buf: [4096]u8 = undefined;
-    var writer = std.fs.File.Writer.init(file, &buf);
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
     defer writer.interface.flush() catch {};
     try writer.interface.writeAll(data);
 }
@@ -315,8 +314,8 @@ fn fileFallbackLoad(allocator: std.mem.Allocator) ![]const u8 {
     defer allocator.free(base);
     const path = try std.fs.path.join(allocator, &.{ base, "auth.json" });
     defer allocator.free(path);
-    const file = std.fs.openFileAbsolute(path, .{}) catch return error.NotAuthenticated;
-    defer file.close();
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return error.NotAuthenticated;
+    defer file.close(std.Options.debug_io);
     var buf: [64 * 1024]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
@@ -333,7 +332,7 @@ fn fileFallbackDelete(allocator: std.mem.Allocator) !void {
     defer allocator.free(base);
     const path = try std.fs.path.join(allocator, &.{ base, "auth.json" });
     defer allocator.free(path);
-    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+    std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };

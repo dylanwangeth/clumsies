@@ -128,7 +128,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }
 
     // Add workspace binding to ~/.clumsies/config.toml
-    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd_path);
 
     ws_config.addWorkspace(allocator, auth_info.hub_url, ws_name, ws_id, cwd_path) catch {
@@ -140,19 +140,19 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const cache_path = try ws_config.getCachePath(allocator, ws_id);
     defer allocator.free(cache_path);
 
-    std.fs.makeDirAbsolute(cache_path) catch |err| {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, cache_path, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) {
             // Create parent dirs
             const base_path = try auth_mod.getBasePath(allocator);
             defer allocator.free(base_path);
-            std.fs.makeDirAbsolute(base_path) catch {};
+            std.Io.Dir.createDirAbsolute(std.Options.debug_io, base_path, .default_dir) catch {};
             const ws_dir = try std.fs.path.join(allocator, &.{ base_path, "workspaces" });
             defer allocator.free(ws_dir);
-            std.fs.makeDirAbsolute(ws_dir) catch {};
+            std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws_dir, .default_dir) catch {};
             const local_ws_dir = try ws_config.getWsDir(allocator, ws_id);
             defer allocator.free(local_ws_dir);
-            std.fs.makeDirAbsolute(local_ws_dir) catch {};
-            std.fs.makeDirAbsolute(cache_path) catch {};
+            std.Io.Dir.createDirAbsolute(std.Options.debug_io, local_ws_dir, .default_dir) catch {};
+            std.Io.Dir.createDirAbsolute(std.Options.debug_io, cache_path, .default_dir) catch {};
         }
     };
 

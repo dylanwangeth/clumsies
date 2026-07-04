@@ -1,10 +1,11 @@
 //! Host CLI session identity resolution for attestation events.
 const std = @import("std");
+const env_util = @import("clumsies_lib").util.env_util;
 
 pub const HOST_SESSION_ENV_NAME = "CLUMSIES_HOST_SESSION_ID";
 
 pub fn resolveHookSessionId(allocator: std.mem.Allocator) ?[]u8 {
-    const value = std.process.getEnvVarOwned(allocator, HOST_SESSION_ENV_NAME) catch return null;
+    const value = env_util.getOwned(allocator, HOST_SESSION_ENV_NAME) catch return null;
     if (!isSafeSessionId(value)) {
         allocator.free(value);
         return null;

@@ -97,8 +97,8 @@ pub const AuthTokenPair = struct {
 };
 
 pub const ApiState = struct {
-    mutex: std.Thread.Mutex = .{},
-    auth_refresh_mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
+    auth_refresh_mutex: std.Io.Mutex = .init,
     status: ConnectionStatus = .disconnected,
     current_user: ?model.UserData = null,
     members: ?model.OrgMembersData = null,
@@ -207,7 +207,7 @@ pub const ApiState = struct {
         local_arena_ptr.* = std.heap.ArenaAllocator.init(base_allocator);
 
         var id_bytes: [16]u8 = undefined;
-        std.crypto.random.bytes(&id_bytes);
+        std.Options.debug_io.random(&id_bytes);
 
         return .{
             .backing_allocator = base_allocator,
@@ -254,19 +254,19 @@ pub const ApiState = struct {
             alloc.free(access_copy);
             return;
         };
-        self.mutex.lock();
+        self.mutex.lockUncancelable(std.Options.debug_io);
         const old_access = self.access_token;
         const old_refresh = self.refresh_token;
         self.access_token = access_copy;
         self.refresh_token = refresh_copy;
-        self.mutex.unlock();
+        self.mutex.unlock(std.Options.debug_io);
         if (old_access) |token| alloc.free(token);
         if (old_refresh) |token| alloc.free(token);
     }
 
     pub fn clearAuthSession(self: *ApiState) void {
         const alloc = self.backing_allocator;
-        self.mutex.lock();
+        self.mutex.lockUncancelable(std.Options.debug_io);
         const old_access = self.access_token;
         const old_refresh = self.refresh_token;
         self.access_token = null;
@@ -275,60 +275,60 @@ pub const ApiState = struct {
         self.status = .error_auth;
         self.bootstrap_inflight = false;
         self.bootstrap_refetch_requested = false;
-        self.mutex.unlock();
+        self.mutex.unlock(std.Options.debug_io);
         if (old_access) |token| alloc.free(token);
         if (old_refresh) |token| alloc.free(token);
     }
 
     pub fn refreshAuthTokens(self: *ApiState, alloc: std.mem.Allocator, previous_access_token: []const u8) !AuthTokenPair {
-        self.auth_refresh_mutex.lock();
-        defer self.auth_refresh_mutex.unlock();
+        self.auth_refresh_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.auth_refresh_mutex.unlock(std.Options.debug_io);
 
-        self.mutex.lock();
+        self.mutex.lockUncancelable(std.Options.debug_io);
         if (self.access_token) |current_access| {
             if (!std.mem.eql(u8, current_access, previous_access_token)) {
                 const access_copy = alloc.dupe(u8, current_access) catch |err| {
-                    self.mutex.unlock();
+                    self.mutex.unlock(std.Options.debug_io);
                     return err;
                 };
                 errdefer alloc.free(access_copy);
                 const current_refresh = self.refresh_token orelse {
-                    self.mutex.unlock();
+                    self.mutex.unlock(std.Options.debug_io);
                     return error.NotAuthenticated;
                 };
                 const refresh_copy = alloc.dupe(u8, current_refresh) catch |err| {
-                    self.mutex.unlock();
+                    self.mutex.unlock(std.Options.debug_io);
                     return err;
                 };
-                self.mutex.unlock();
+                self.mutex.unlock(std.Options.debug_io);
                 return .{ .access_token = access_copy, .refresh_token = refresh_copy };
             }
         }
 
         const hub_url = if (self.hub_url) |value| alloc.dupe(u8, value) catch |err| {
-            self.mutex.unlock();
+            self.mutex.unlock(std.Options.debug_io);
             return err;
         } else {
-            self.mutex.unlock();
+            self.mutex.unlock(std.Options.debug_io);
             return error.NotAuthenticated;
         };
         defer alloc.free(hub_url);
         const username = if (self.username) |value| alloc.dupe(u8, value) catch |err| {
-            self.mutex.unlock();
+            self.mutex.unlock(std.Options.debug_io);
             return err;
         } else {
-            self.mutex.unlock();
+            self.mutex.unlock(std.Options.debug_io);
             return error.NotAuthenticated;
         };
         defer alloc.free(username);
         const refresh_token = if (self.refresh_token) |value| alloc.dupe(u8, value) catch |err| {
-            self.mutex.unlock();
+            self.mutex.unlock(std.Options.debug_io);
             return err;
         } else {
-            self.mutex.unlock();
+            self.mutex.unlock(std.Options.debug_io);
             return error.NotAuthenticated;
         };
-        self.mutex.unlock();
+        self.mutex.unlock(std.Options.debug_io);
         defer alloc.free(refresh_token);
 
         var client = HubClient.init(alloc, hub_url, null);
@@ -364,14 +364,14 @@ pub const ApiState = struct {
 };
 
 pub fn setConnectionStatus(api_state: *ApiState, status: ConnectionStatus) void {
-    api_state.mutex.lock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
     api_state.status = status;
-    api_state.mutex.unlock();
+    api_state.mutex.unlock(std.Options.debug_io);
 }
 
 pub fn refreshLocalState(api_state: *ApiState) void {
-    api_state.mutex.lock();
-    defer api_state.mutex.unlock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer api_state.mutex.unlock(std.Options.debug_io);
 
     _ = api_state.local_arena.reset(.retain_capacity);
     const alloc = api_state.local_arena.allocator();
@@ -449,8 +449,8 @@ fn invalidateWorkspaceDetail(api_state: *ApiState) void {
 }
 
 pub fn resetPrDetailState(api_state: *ApiState) void {
-    api_state.mutex.lock();
-    defer api_state.mutex.unlock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer api_state.mutex.unlock(std.Options.debug_io);
 
     api_state.pr_detail_id = null;
     api_state.pr_detail_base = null;

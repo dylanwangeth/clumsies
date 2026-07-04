@@ -24,7 +24,7 @@ pub const DEFAULT_SNAPSHOT_REFRESH_TICKS: u64 = 600;
 
 pub fn CacheSlot(comptime K: type, comptime V: type) type {
     return struct {
-        mutex: std.Thread.Mutex = .{},
+        mutex: std.Io.Mutex = .init,
         state: State = .empty,
 
         const Self = @This();
@@ -58,8 +58,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
         /// calling `key.eql(k)` when `K` declares an `eql` method;
         /// otherwise falls back to `std.meta.eql`.
         pub fn lookup(self: *Self, k: K) ?V {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             switch (self.state) {
                 .ok, .ok_refreshing => |entry| if (keysEqual(entry.key, k)) return entry.value,
                 else => {},
@@ -71,8 +71,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
         /// Widget-sync code uses this together with `lookup` to avoid
         /// re-dispatching on every tick when a fetch keeps failing.
         pub fn isFailed(self: *Self, k: K) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             return switch (self.state) {
                 .failed => |entry| keysEqual(entry.key, k),
                 else => false,
@@ -83,8 +83,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
         /// `k`. False when the slot already has a cached value for `k`
         /// or is remembering a failure for `k`; true otherwise.
         pub fn shouldDispatch(self: *Self, k: K) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             return switch (self.state) {
                 .empty => true,
                 .ok, .ok_refreshing => |entry| !keysEqual(entry.key, k),
@@ -97,8 +97,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
         /// current value so UI can keep drawing old data while the new
         /// request is in flight.
         pub fn shouldRefresh(self: *Self, k: K, now_tick: u64, ttl_ticks: u64) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             return switch (self.state) {
                 .empty => true,
                 .ok => |entry| !keysEqual(entry.key, k) or isStale(entry.updated_tick, now_tick, ttl_ticks),
@@ -114,8 +114,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
 
         /// Store a value and remember the UI tick that produced it.
         pub fn storeAt(self: *Self, k: K, v: V, now_tick: u64) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             self.state = .{ .ok = .{ .key = k, .value = v, .updated_tick = now_tick } };
         }
 
@@ -123,8 +123,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
         /// visible through `lookup`; callers use this before dispatching
         /// a stale-while-revalidate request.
         pub fn beginRefresh(self: *Self, k: K, now_tick: u64, ttl_ticks: u64) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             switch (self.state) {
                 .empty => return true,
                 .ok => |entry| {
@@ -147,8 +147,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
 
         /// Remember a failed fetch and the tick that observed it.
         pub fn markFailedAt(self: *Self, k: K, now_tick: u64) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             switch (self.state) {
                 .ok => |entry| if (keysEqual(entry.key, k)) {
                     self.state = .{ .ok = .{ .key = entry.key, .value = entry.value, .updated_tick = now_tick } };
@@ -165,8 +165,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
 
         /// Drop any cached entry or remembered failure.
         pub fn invalidate(self: *Self) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             self.state = .empty;
         }
 
@@ -174,8 +174,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
         /// Refresh flows that keep the last successful snapshot use this
         /// to allow a retry without dropping the drawable data.
         pub fn clearFailure(self: *Self) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             switch (self.state) {
                 .failed => self.state = .empty,
                 else => {},
@@ -185,8 +185,8 @@ pub fn CacheSlot(comptime K: type, comptime V: type) type {
         /// Whether the slot currently holds any entry — value or
         /// failure.
         pub fn isPopulated(self: *Self) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             return self.state != .empty;
         }
 
@@ -227,7 +227,7 @@ pub const StringKey = struct {
 
 pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
     return struct {
-        mutex: std.Thread.Mutex = .{},
+        mutex: std.Io.Mutex = .init,
         entries: std.ArrayList(Entry) = .empty,
 
         const Self = @This();
@@ -252,8 +252,8 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         };
 
         pub fn lookup(self: *Self, k: K) ?V {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             const idx = self.findIndexLocked(k) orelse return null;
             return switch (self.entries.items[idx].state) {
@@ -263,8 +263,8 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         }
 
         pub fn isFailed(self: *Self, k: K) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             const idx = self.findIndexLocked(k) orelse return false;
             return switch (self.entries.items[idx].state) {
@@ -274,14 +274,14 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         }
 
         pub fn shouldDispatch(self: *Self, k: K) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             return self.findIndexLocked(k) == null;
         }
 
         pub fn shouldRefresh(self: *Self, k: K, now_tick: u64, ttl_ticks: u64) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             const idx = self.findIndexLocked(k) orelse return true;
             return switch (self.entries.items[idx].state) {
@@ -294,8 +294,8 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         }
 
         pub fn beginRefreshAt(self: *Self, allocator: std.mem.Allocator, k: K, now_tick: u64, ttl_ticks: u64) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             const idx = self.findIndexLocked(k) orelse {
                 self.entries.append(allocator, .{
@@ -329,8 +329,8 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         }
 
         pub fn reserveAt(self: *Self, allocator: std.mem.Allocator, k: K, now_tick: u64) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             if (self.findIndexLocked(k) != null) return false;
             self.entries.append(allocator, .{
@@ -345,8 +345,8 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         }
 
         pub fn storeAt(self: *Self, allocator: std.mem.Allocator, k: K, v: V, now_tick: u64) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             if (self.findIndexLocked(k)) |idx| {
                 self.entries.items[idx].state = .{ .ok = .{ .value = v, .updated_tick = now_tick } };
@@ -363,8 +363,8 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         }
 
         pub fn markFailedAt(self: *Self, allocator: std.mem.Allocator, k: K, now_tick: u64) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             if (self.findIndexLocked(k)) |idx| {
                 switch (self.entries.items[idx].state) {
@@ -388,22 +388,22 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         }
 
         pub fn invalidate(self: *Self) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             self.entries.clearRetainingCapacity();
         }
 
         pub fn invalidateKey(self: *Self, k: K) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             const idx = self.findIndexLocked(k) orelse return;
             _ = self.entries.orderedRemove(idx);
         }
 
         pub fn clearFailure(self: *Self) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             var i: usize = 0;
             while (i < self.entries.items.len) {
@@ -419,8 +419,8 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         }
 
         pub fn markInflightFailed(self: *Self) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
 
             for (self.entries.items) |*entry| {
                 switch (entry.state) {
@@ -433,8 +433,8 @@ pub fn MultiCacheSlot(comptime K: type, comptime V: type) type {
         }
 
         pub fn isPopulated(self: *Self) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             return self.entries.items.len > 0;
         }
 

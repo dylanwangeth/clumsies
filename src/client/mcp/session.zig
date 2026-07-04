@@ -44,7 +44,7 @@ pub const Session = struct {
             .ws_id = self.ws_id,
             .session_id = session_id,
             .event_id = attestation.nextEventId(),
-            .ts = std.time.milliTimestamp(),
+            .ts = @import("clumsies_lib").util.time_util.nowMillis(),
             .payload = payload,
         }) catch |err| {
             log.err(

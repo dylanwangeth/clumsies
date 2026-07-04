@@ -77,12 +77,12 @@ pub fn RequestSpec(comptime ReqT: type, comptime RespT: type) type {
 /// Accumulator for spawned worker threads so the TUI exit path can wait
 /// for every in-flight request before tearing down the allocator.
 pub const ThreadRegistry = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     active: std.ArrayList(std.Thread) = .empty,
 
     pub fn register(self: *ThreadRegistry, thread: std.Thread, alloc: std.mem.Allocator) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.mutex.unlock(std.Options.debug_io);
         try self.active.append(alloc, thread);
     }
 
@@ -93,10 +93,10 @@ pub const ThreadRegistry = struct {
     /// thread that silently escapes the join.
     pub fn joinAll(self: *ThreadRegistry, alloc: std.mem.Allocator) void {
         while (true) {
-            self.mutex.lock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
             var batch = self.active;
             self.active = .empty;
-            self.mutex.unlock();
+            self.mutex.unlock(std.Options.debug_io);
 
             if (batch.items.len == 0) {
                 batch.deinit(alloc);

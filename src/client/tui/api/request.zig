@@ -32,7 +32,7 @@ pub fn Result(comptime T: type) type {
 
 pub fn PendingRequest(comptime T: type) type {
     return struct {
-        mutex: std.Thread.Mutex = .{},
+        mutex: std.Io.Mutex = .init,
         state: State = .idle,
         generation: u64 = 0,
         result: T = undefined,
@@ -45,8 +45,8 @@ pub fn PendingRequest(comptime T: type) type {
         /// The returned generation must be passed back to `complete` so
         /// that results from a cancelled request are dropped.
         pub fn tryBegin(self: *@This()) ?u64 {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             if (self.state == .inflight) return null;
             self.generation +%= 1;
             self.state = .inflight;
@@ -60,8 +60,8 @@ pub fn PendingRequest(comptime T: type) type {
         /// — T must tolerate being leaked in that case, which is fine in
         /// practice because results live in the shared arena).
         pub fn complete(self: *@This(), gen: u64, value: T) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             if (self.state != .inflight or self.generation != gen) return;
             self.result = value;
             self.state = .ready;
@@ -71,8 +71,8 @@ pub fn PendingRequest(comptime T: type) type {
         /// is idle or a request is still in flight. After consumption the
         /// slot returns to `idle` and is ready to accept a new request.
         pub fn consume(self: *@This()) ?T {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             if (self.state != .ready) return null;
             const value = self.result;
             self.state = .idle;
@@ -84,27 +84,27 @@ pub fn PendingRequest(comptime T: type) type {
         /// generation is bumped. The slot returns to `idle` so a new
         /// request can begin immediately.
         pub fn cancel(self: *@This()) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             self.generation +%= 1;
             self.state = .idle;
         }
 
         pub fn isInflight(self: *@This()) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             return self.state == .inflight;
         }
 
         pub fn hasPendingResult(self: *@This()) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             return self.state == .ready;
         }
 
         pub fn isIdle(self: *@This()) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(std.Options.debug_io);
+            defer self.mutex.unlock(std.Options.debug_io);
             return self.state == .idle;
         }
     };

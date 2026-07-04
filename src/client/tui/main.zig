@@ -7,7 +7,7 @@ const auth_mod = @import("../auth.zig");
 const api = @import("api.zig");
 const tasks = @import("tasks.zig");
 
-pub fn run() !void {
+pub fn run(environ: std.process.Environ) !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
     const allocator = da.allocator();
@@ -34,12 +34,12 @@ pub fn run() !void {
 
     if (builtin.os.tag != .windows) {
         var title_buffer: [64]u8 = undefined;
-        var title_writer = std.fs.File.Writer.init(std.fs.File.stdout(), &title_buffer);
+        var title_writer = std.Io.File.Writer.init(std.Io.File.stdout(), std.Options.debug_io, &title_buffer);
         defer title_writer.interface.flush() catch {};
         title_writer.interface.writeAll("\x1b]2;clumsies hub\x07") catch {};
     }
 
-    var env_map = try std.process.getEnvMap(allocator);
+    var env_map = try std.process.Environ.createMap(environ, allocator);
     defer env_map.deinit();
 
     var dashboard = Shell.init(&api_state, app, &env_map);
@@ -47,6 +47,6 @@ pub fn run() !void {
     try app.run(dashboard.widget(), .{});
 }
 
-pub fn main() !void {
-    try run();
+pub fn main(init: std.process.Init) !void {
+    try run(init.minimal.environ);
 }

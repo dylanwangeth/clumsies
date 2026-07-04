@@ -3,6 +3,7 @@ const testing = std.testing;
 const build_options = @import("build_options");
 const hub_main = @import("clumsies_hub_main");
 const logger = @import("clumsies_lib").logger;
+const env_util = @import("clumsies_lib").util.env_util;
 const styles = @import("styles.zig");
 
 // Compile-time filter set to .debug so logger.logFn controls
@@ -18,7 +19,7 @@ fn recoverPanic(msg: []const u8, ra: ?usize) noreturn {
     const vaxis = @import("vaxis");
     vaxis.recover();
     var stderr_buf: [256]u8 = undefined;
-    var stderr_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buf);
+    var stderr_writer = std.Io.File.Writer.init(std.Io.File.stderr(), std.Options.debug_io, &stderr_buf);
     stderr_writer.interface.writeAll("\x1b[0m\x1b[?25h\r\n") catch {};
     stderr_writer.interface.flush() catch {};
     std.debug.defaultPanic(msg, ra);
@@ -70,13 +71,13 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "--version", .version },
 });
 
-pub fn main() void {
-    run() catch |err| {
+pub fn main(init: std.process.Init) void {
+    run(init) catch |err| {
         if (err == error.CommandFailed) {
             std.process.exit(1);
         }
         var stderr_buffer: [4096]u8 = undefined;
-        var stderr_file_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buffer);
+        var stderr_file_writer = std.Io.File.Writer.init(std.Io.File.stderr(), std.Options.debug_io, &stderr_buffer);
         defer stderr_file_writer.interface.flush() catch {};
         stderr_file_writer.interface.print("{s}{s}{s}Error:{s} {s}\n", .{
             P,
@@ -89,11 +90,11 @@ pub fn main() void {
     };
 }
 
-fn run() !void {
+fn run(init: std.process.Init) !void {
     var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
-    var stdout_file_writer = std.fs.File.Writer.init(std.fs.File.stdout(), &stdout_buffer);
-    var stderr_file_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buffer);
+    var stdout_file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), std.Options.debug_io, &stdout_buffer);
+    var stderr_file_writer = std.Io.File.Writer.init(std.Io.File.stderr(), std.Options.debug_io, &stderr_buffer);
     defer stdout_file_writer.interface.flush() catch {};
     defer stderr_file_writer.interface.flush() catch {};
     const stdout_writer = &stdout_file_writer.interface;
@@ -108,9 +109,11 @@ fn run() !void {
         debug_alloc.allocator()
     else
         std.heap.smp_allocator;
+    env_util.init(init.minimal.environ);
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_arena = std.heap.ArenaAllocator.init(allocator);
+    defer args_arena.deinit();
+    const args = try init.minimal.args.toSlice(args_arena.allocator());
 
     var cmd: Command = .none;
     var cmd_args_start: usize = 1;
@@ -142,14 +145,14 @@ fn run() !void {
             try stderr_writer.print("{s}{s}{s}Error:{s} unknown hub argument: {s}\n", .{ P, Color.bold, Color.red, Color.reset, cmd_args[0] });
             return error.CommandFailed;
         }
-        hub_main.run(allocator) catch |err| switch (err) {
+        hub_main.run(allocator, init.minimal.environ) catch |err| switch (err) {
             error.HubStartupFailed => return error.CommandFailed,
             else => return err,
         };
         return;
     }
 
-    initClientLogger(allocator);
+    initClientLogger(allocator, init.minimal.environ);
     defer logger.deinit();
 
     if (is_agent_cmd) {
@@ -191,7 +194,7 @@ fn run() !void {
                 return error.CommandFailed;
             } else {
                 if (canLaunchTui()) {
-                    try tui.run();
+                    try tui.run(init.minimal.environ);
                 } else {
                     try stdout_writer.print("{s}{s}{s}clumsies{s} {s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, version });
                     try stdout_writer.print("TUI Shell requires an interactive terminal.\n\n", .{});
@@ -203,11 +206,12 @@ fn run() !void {
 }
 
 fn canLaunchTui() bool {
-    return std.fs.File.stdin().isTty() and std.fs.File.stdout().isTty();
+    return (std.Io.File.stdin().isTty(std.Options.debug_io) catch false) and
+        (std.Io.File.stdout().isTty(std.Options.debug_io) catch false);
 }
 
-fn initClientLogger(allocator: std.mem.Allocator) void {
-    var env_map = logger.loadEnvMap(allocator) catch {
+fn initClientLogger(allocator: std.mem.Allocator, environ: std.process.Environ) void {
+    var env_map = logger.loadEnvMap(allocator, environ) catch {
         logger.initBestEffort(.{ .level = .info, .sink = .disabled });
         return;
     };
@@ -215,7 +219,7 @@ fn initClientLogger(allocator: std.mem.Allocator) void {
 
     const config = logger.configFromEnvMap(&env_map);
 
-    const log_file_path = clientLogFilePath(allocator) catch {
+    const log_file_path = clientLogFilePath(allocator, &env_map) catch {
         logger.initBestEffort(.{ .level = config.level, .sink = .disabled });
         return;
     };
@@ -238,12 +242,8 @@ fn printHubHelp(stdout: *std.Io.Writer) !void {
     try stdout.print("Hub reads configuration from environment variables and .env.\n", .{});
 }
 
-fn clientLogFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    const env_path = std.process.getEnvVarOwned(allocator, "CLUMSIES_LOG_FILE") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => return logger.clientDefaultLogPath(allocator),
-        else => return err,
-    };
-    defer allocator.free(env_path);
+fn clientLogFilePath(allocator: std.mem.Allocator, env_map: *const std.process.Environ.Map) ![]const u8 {
+    const env_path = env_map.get("CLUMSIES_LOG_FILE") orelse return logger.clientDefaultLogPath(allocator);
     return logger.resolveLogFilePath(allocator, env_path);
 }
 

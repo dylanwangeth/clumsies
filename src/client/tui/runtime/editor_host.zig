@@ -55,7 +55,7 @@ pub const default_fallbacks: []const []const u8 = &.{ "vim", "nano", "vi" };
 /// owned by `allocator`.
 pub fn resolveEditor(
     allocator: std.mem.Allocator,
-    env: *const std.process.EnvMap,
+    env: *const std.process.Environ.Map,
     fallback: []const []const u8,
 ) !?[]const u8 {
     const preferred_keys: []const []const u8 = &.{ "EDITOR", "VISUAL" };
@@ -127,7 +127,7 @@ pub fn editFile(
     allocator: std.mem.Allocator,
     vx: *vaxis.Vaxis,
     tty: *vaxis.Tty,
-    env: *const std.process.EnvMap,
+    env: *const std.process.Environ.Map,
     file_path: []const u8,
 ) !Result {
     const cmd = try resolveEditor(allocator, env, default_fallbacks) orelse
@@ -197,13 +197,13 @@ fn resumeTerminal(vx: *vaxis.Vaxis, tty: *vaxis.Tty, tty_writer: *std.io.Writer)
 
 fn hasExecutable(
     allocator: std.mem.Allocator,
-    env: *const std.process.EnvMap,
+    env: *const std.process.Environ.Map,
     name: []const u8,
 ) !bool {
     // A name with a path separator is treated as an explicit path and
     // checked directly — we do not walk $PATH for it.
     if (std.mem.indexOfAny(u8, name, "/\\") != null) {
-        std.fs.cwd().access(name, .{}) catch return false;
+        std.Io.Dir.cwd().access(std.Options.debug_io, name, .{}) catch return false;
         return true;
     }
     const path = env.get("PATH") orelse return false;
@@ -212,14 +212,14 @@ fn hasExecutable(
         if (dir.len == 0) continue;
         const candidate = try std.fs.path.join(allocator, &.{ dir, name });
         defer allocator.free(candidate);
-        std.fs.cwd().access(candidate, .{}) catch continue;
+        std.Io.Dir.cwd().access(std.Options.debug_io, candidate, .{}) catch continue;
         return true;
     }
     return false;
 }
 
 test "resolveEditor: $EDITOR wins when set" {
-    var env = std.process.EnvMap.init(std.testing.allocator);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
     try env.put("EDITOR", "vim");
     try env.put("VISUAL", "code --wait");
@@ -232,7 +232,7 @@ test "resolveEditor: $EDITOR wins when set" {
 }
 
 test "resolveEditor: falls back to $VISUAL when $EDITOR is empty" {
-    var env = std.process.EnvMap.init(std.testing.allocator);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
     try env.put("EDITOR", "");
     try env.put("VISUAL", "code --wait");
@@ -245,7 +245,7 @@ test "resolveEditor: falls back to $VISUAL when $EDITOR is empty" {
 }
 
 test "resolveEditor: falls through to fallback list when env vars missing" {
-    var env = std.process.EnvMap.init(std.testing.allocator);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
     // Point PATH at /usr/bin so we can find `true` deterministically.
     try env.put("PATH", "/usr/bin");
@@ -258,7 +258,7 @@ test "resolveEditor: falls through to fallback list when env vars missing" {
 }
 
 test "resolveEditor: returns null when nothing resolves" {
-    var env = std.process.EnvMap.init(std.testing.allocator);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
     try env.put("PATH", "/nonexistent");
 

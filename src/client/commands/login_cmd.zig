@@ -182,7 +182,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 fn readLine(allocator: std.mem.Allocator) ![]const u8 {
     var line_buf: [1024]u8 = undefined;
     var len: usize = 0;
-    const stdin = std.fs.File.stdin();
+    const stdin = std.Io.File.stdin();
     while (len < line_buf.len) {
         var byte: [1]u8 = undefined;
         const n = stdin.read(&byte) catch break;
@@ -200,7 +200,7 @@ fn readPassword(allocator: std.mem.Allocator) ![]const u8 {
     if (comptime builtin.os.tag == .windows) {
         return readLine(allocator);
     }
-    const stdin_fd = std.fs.File.stdin().handle;
+    const stdin_fd = std.Io.File.stdin().handle;
     const old_termios = std.posix.tcgetattr(stdin_fd) catch {
         return readLine(allocator);
     };

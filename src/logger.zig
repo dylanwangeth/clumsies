@@ -1,7 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env_util = @import("util/env_util.zig");
 const testing = std.testing;
 const epoch = std.time.epoch;
+const time_util = @import("util/time_util.zig");
 
 pub const Sink = union(enum) {
     disabled,
@@ -20,12 +22,12 @@ pub const Options = struct {
 pub const DEFAULT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_LOG_BACKUPS: usize = 10;
 
-var mutex: std.Thread.Mutex = .{};
+var mutex: std.Io.Mutex = .init;
 var active_level: std.log.Level = .warn;
 var active_sink: SinkTag = .disabled;
 var color_enabled: bool = false;
-var active_file: ?std.fs.File = null;
-var active_writer: ?std.fs.File.Writer = null;
+var active_file: ?std.Io.File = null;
+var active_writer: ?std.Io.File.Writer = null;
 var writer_buffer: [4096]u8 = undefined;
 var failure_reported = false;
 
@@ -36,8 +38,8 @@ const SinkTag = enum {
 };
 
 pub fn init(options: Options) !void {
-    mutex.lock();
-    defer mutex.unlock();
+    mutex.lockUncancelable(std.Options.debug_io);
+    defer mutex.unlock(std.Options.debug_io);
 
     deinitLocked();
     active_level = options.level;
@@ -49,7 +51,7 @@ pub fn init(options: Options) !void {
             color_enabled = false;
         },
         .stderr => {
-            active_writer = std.fs.File.Writer.initStreaming(std.fs.File.stderr(), &writer_buffer);
+            active_writer = std.Io.File.Writer.initStreaming(std.Io.File.stderr(), std.Options.debug_io, &writer_buffer);
             active_sink = .stderr;
             color_enabled = detectColor();
         },
@@ -58,10 +60,10 @@ pub fn init(options: Options) !void {
             if (options.rotate) {
                 try rotateLogFileIfNeeded(path, options.max_bytes, options.backups);
             }
-            const file = try std.fs.createFileAbsolute(path, .{ .truncate = false, .read = true });
-            errdefer file.close();
-            var writer = std.fs.File.Writer.init(file, &writer_buffer);
-            try writer.seekTo(try file.getEndPos());
+            const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = false, .read = true });
+            errdefer file.close(std.Options.debug_io);
+            var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &writer_buffer);
+            try writer.seekTo((try file.stat(std.Options.debug_io)).size);
             active_file = file;
             active_writer = writer;
             active_sink = .file;
@@ -72,8 +74,8 @@ pub fn init(options: Options) !void {
 
 pub fn initBestEffort(options: Options) void {
     init(options) catch {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lockUncancelable(std.Options.debug_io);
+        defer mutex.unlock(std.Options.debug_io);
         deinitLocked();
         active_level = options.level;
         color_enabled = false;
@@ -83,8 +85,8 @@ pub fn initBestEffort(options: Options) void {
 }
 
 pub fn deinit() void {
-    mutex.lock();
-    defer mutex.unlock();
+    mutex.lockUncancelable(std.Options.debug_io);
+    defer mutex.unlock(std.Options.debug_io);
     deinitLocked();
 }
 
@@ -105,31 +107,31 @@ pub fn clientDefaultLogPath(allocator: std.mem.Allocator) ![]const u8 {
 pub fn resolveLogFilePath(allocator: std.mem.Allocator, raw_path: []const u8) ![]const u8 {
     if (std.fs.path.isAbsolute(raw_path)) return allocator.dupe(u8, raw_path);
 
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd);
     return std.fs.path.join(allocator, &.{ cwd, raw_path });
 }
 
-pub fn loadEnvMap(allocator: std.mem.Allocator) !std.process.EnvMap {
-    var env_map = try std.process.getEnvMap(allocator);
+pub fn loadEnvMap(allocator: std.mem.Allocator, environ: std.process.Environ) !std.process.Environ.Map {
+    var env_map = try std.process.Environ.createMap(environ, allocator);
     errdefer env_map.deinit();
 
     loadDotEnv(allocator, &env_map);
     return env_map;
 }
 
-pub fn loadDotEnv(allocator: std.mem.Allocator, env_map: *std.process.EnvMap) void {
-    const file = std.fs.cwd().openFile(".env", .{}) catch return;
-    defer file.close();
+pub fn loadDotEnv(allocator: std.mem.Allocator, env_map: *std.process.Environ.Map) void {
+    const file = std.Io.Dir.cwd().openFile(std.Options.debug_io, ".env", .{}) catch return;
+    defer file.close(std.Options.debug_io);
 
-    const size = file.getEndPos() catch return;
+    const size = (file.stat(std.Options.debug_io) catch return).size;
     if (size == 0) return;
     const alloc_size = std.math.cast(usize, size) orelse return;
     const contents = allocator.alloc(u8, alloc_size) catch return;
     defer allocator.free(contents);
 
     var buf: [4096]u8 = undefined;
-    var reader = std.fs.File.Reader.init(file, &buf);
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &buf);
     reader.interface.readSliceAll(contents) catch return;
 
     var iter = std.mem.splitSequence(u8, contents, "\n");
@@ -144,8 +146,8 @@ pub fn logFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    mutex.lock();
-    defer mutex.unlock();
+    mutex.lockUncancelable(std.Options.debug_io);
+    defer mutex.unlock(std.Options.debug_io);
 
     if (active_sink == .disabled) return;
     if (@intFromEnum(message_level) > @intFromEnum(active_level)) return;
@@ -169,8 +171,8 @@ pub fn httpAccessLogFn(
     message_level: std.log.Level,
     access: HttpAccess,
 ) void {
-    mutex.lock();
-    defer mutex.unlock();
+    mutex.lockUncancelable(std.Options.debug_io);
+    defer mutex.unlock(std.Options.debug_io);
 
     if (active_sink == .disabled) return;
     if (@intFromEnum(message_level) > @intFromEnum(active_level)) return;
@@ -194,8 +196,8 @@ pub fn hubEventLogFn(
     message_level: std.log.Level,
     event: HubEvent,
 ) void {
-    mutex.lock();
-    defer mutex.unlock();
+    mutex.lockUncancelable(std.Options.debug_io);
+    defer mutex.unlock(std.Options.debug_io);
 
     if (active_sink == .disabled) return;
     if (@intFromEnum(message_level) > @intFromEnum(active_level)) return;
@@ -400,7 +402,7 @@ pub fn defaultEnvConfig() EnvConfig {
     };
 }
 
-pub fn configFromEnvMap(env_map: *const std.process.EnvMap) EnvConfig {
+pub fn configFromEnvMap(env_map: *const std.process.Environ.Map) EnvConfig {
     var log_level: std.log.Level = .info;
     var invalid_level: ?[]const u8 = null;
     var rotate = true;
@@ -440,7 +442,7 @@ pub fn configFromEnvMap(env_map: *const std.process.EnvMap) EnvConfig {
     };
 }
 
-fn applyEnvLine(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, line: []const u8) void {
+fn applyEnvLine(allocator: std.mem.Allocator, env_map: *std.process.Environ.Map, line: []const u8) void {
     const trimmed = std.mem.trim(u8, line, " \t\r");
     if (trimmed.len == 0 or trimmed[0] == '#') return;
     const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return;
@@ -504,7 +506,7 @@ fn levelText(comptime level: std.log.Level) []const u8 {
 }
 
 fn formatTimestamp(buf: *[19]u8) void {
-    const s: u64 = @intCast(@max(std.time.milliTimestamp(), 0) / 1000);
+    const s: u64 = @intCast(@max(time_util.nowMillis(), 0) / 1000);
 
     const epoch_secs: epoch.EpochSeconds = .{ .secs = s };
     const ed = epoch_secs.getEpochDay();
@@ -561,20 +563,20 @@ fn rotateLogFileIfNeeded(path: []const u8, max_bytes: u64, backups: usize) !void
     if (max_bytes == 0 or backups == 0) return;
 
     var current_date: [10]u8 = undefined;
-    formatDateFromSeconds(&current_date, @intCast(@max(std.time.milliTimestamp(), 0) / 1000));
+    formatDateFromSeconds(&current_date, @intCast(@max(time_util.nowMillis(), 0) / 1000));
 
     var log_date: [10]u8 = undefined;
     const stat = blk: {
-        var file = std.fs.openFileAbsolute(path, .{ .mode = .read_only }) catch |err| switch (err) {
+        var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{ .mode = .read_only }) catch |err| switch (err) {
             error.FileNotFound => return,
             else => return err,
         };
-        defer file.close();
+        defer file.close(std.Options.debug_io);
 
-        const stat = try file.stat();
+        const stat = try file.stat(std.Options.debug_io);
         if (stat.size == 0) return;
         if (!readLogDate(file, &log_date)) {
-            if (!formatDateFromNs(stat.mtime, &log_date)) {
+            if (!formatDateFromNs(stat.mtime.nanoseconds, &log_date)) {
                 @memcpy(&log_date, &current_date);
             }
         }
@@ -589,17 +591,19 @@ fn rotateLogFileIfNeeded(path: []const u8, max_bytes: u64, backups: usize) !void
     const archive_path = try nextArchivePath(allocator, path, archive_date);
     defer allocator.free(archive_path);
 
-    std.fs.renameAbsolute(path, archive_path) catch |err| switch (err) {
+    std.Io.Dir.renameAbsolute(path, archive_path, std.Options.debug_io) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
     try pruneLogArchives(allocator, path, backups);
 }
 
-fn readLogDate(file: std.fs.File, out: *[10]u8) bool {
+fn readLogDate(file: std.Io.File, out: *[10]u8) bool {
     var buf: [10]u8 = undefined;
-    const n = file.readAll(&buf) catch return false;
-    if (n != buf.len or !isDateStamp(buf[0..])) return false;
+    var read_buf: [64]u8 = undefined;
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
+    reader.interface.readSliceAll(&buf) catch return false;
+    if (!isDateStamp(buf[0..])) return false;
     @memcpy(out, &buf);
     return true;
 }
@@ -643,7 +647,7 @@ fn nextArchivePath(allocator: std.mem.Allocator, path: []const u8, date: []const
     var suffix: usize = 0;
     while (suffix < 10_000) : (suffix += 1) {
         const candidate = try archivePath(allocator, path, date, suffix);
-        std.fs.accessAbsolute(candidate, .{}) catch |err| switch (err) {
+        std.Io.Dir.accessAbsolute(std.Options.debug_io, candidate, .{}) catch |err| switch (err) {
             error.FileNotFound => return candidate,
             else => {
                 allocator.free(candidate);
@@ -676,8 +680,8 @@ fn pruneLogArchives(allocator: std.mem.Allocator, active_path: []const u8, backu
     const prefix = try std.fmt.allocPrint(allocator, "{s}-", .{stem});
     defer allocator.free(prefix);
 
-    var dir = try std.fs.openDirAbsolute(dir_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, dir_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
 
     var archives: std.ArrayList(LogArchive) = .empty;
     defer {
@@ -686,14 +690,14 @@ fn pruneLogArchives(allocator: std.mem.Allocator, active_path: []const u8, backu
     }
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(std.Options.debug_io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.startsWith(u8, entry.name, prefix)) continue;
         if (!std.mem.endsWith(u8, entry.name, ".log")) continue;
-        const stat = dir.statFile(entry.name) catch continue;
+        const stat = dir.statFile(std.Options.debug_io, entry.name, .{}) catch continue;
         try archives.append(allocator, .{
             .name = try allocator.dupe(u8, entry.name),
-            .mtime = stat.mtime,
+            .mtime = stat.mtime.nanoseconds,
         });
     }
 
@@ -702,7 +706,7 @@ fn pruneLogArchives(allocator: std.mem.Allocator, active_path: []const u8, backu
 
     const remove_count = archives.items.len - backups;
     for (archives.items[0..remove_count]) |item| {
-        dir.deleteFile(item.name) catch |err| switch (err) {
+        dir.deleteFile(std.Options.debug_io, item.name) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
@@ -727,13 +731,9 @@ fn isFalseEnvValue(raw: []const u8) bool {
 }
 
 fn detectColor() bool {
-    const no_color = std.process.getEnvVarOwned(std.heap.page_allocator, "NO_COLOR") catch null;
-    if (no_color) |val| {
-        std.heap.page_allocator.free(val);
-        return false;
-    }
+    if (builtin.link_libc and std.c.getenv("NO_COLOR") != null) return false;
     if (builtin.os.tag == .windows) return false;
-    return std.posix.isatty(std.posix.STDERR_FILENO);
+    return std.Io.File.stderr().isTty(std.Options.debug_io) catch false;
 }
 
 fn deinitLocked() void {
@@ -742,7 +742,7 @@ fn deinitLocked() void {
     }
     active_writer = null;
     if (active_file) |file| {
-        file.close();
+        file.close(std.Options.debug_io);
     }
     active_file = null;
     active_sink = .disabled;
@@ -756,13 +756,11 @@ fn disableLocked() void {
 
 fn ensureParentDir(path: []const u8) !void {
     const dir = std.fs.path.dirname(path) orelse return;
-    try std.fs.cwd().makePath(dir);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dir);
 }
 
 fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
-        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
-        return error.HomeNotSet;
+    const home = env_util.homeDir(allocator) catch return error.HomeNotSet;
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }
@@ -926,8 +924,8 @@ test "file sink rotates stale dated client log on init" {
     try init(.{ .level = .info, .sink = .{ .file = path }, .max_bytes = 1024, .backups = 3 });
     defer deinit();
 
-    try tmp.dir.access("client-2000-01-01.log", .{});
-    try tmp.dir.access("client.log", .{});
+    try tmp.dir.access(std.Options.debug_io, "client-2000-01-01.log", .{});
+    try tmp.dir.access(std.Options.debug_io, "client.log", .{});
 }
 
 test "file sink rotates oversized current client log on init" {
@@ -935,7 +933,7 @@ test "file sink rotates oversized current client log on init" {
     defer tmp.cleanup();
 
     var current_date: [10]u8 = undefined;
-    formatDateFromSeconds(&current_date, @intCast(@max(std.time.milliTimestamp(), 0) / 1000));
+    formatDateFromSeconds(&current_date, @intCast(@max(time_util.nowMillis(), 0) / 1000));
     const content = try std.fmt.allocPrint(
         testing.allocator,
         "{s} 00:00:00 [INFO ] (test): oversized\n",
@@ -952,15 +950,15 @@ test "file sink rotates oversized current client log on init" {
 
     const archive_name = try std.fmt.allocPrint(testing.allocator, "client-{s}.log", .{current_date});
     defer testing.allocator.free(archive_name);
-    try tmp.dir.access(archive_name, .{});
-    try tmp.dir.access("client.log", .{});
+    try tmp.dir.access(std.Options.debug_io, archive_name, .{});
+    try tmp.dir.access(std.Options.debug_io, "client.log", .{});
 }
 
-fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
+fn writeTestFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
-    defer file.close();
+    defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
-    var fw = std.fs.File.Writer.init(file, &write_buf);
+    var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
     defer fw.interface.flush() catch {};
     try fw.interface.writeAll(content);
 }

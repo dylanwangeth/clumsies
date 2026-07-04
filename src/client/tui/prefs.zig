@@ -29,14 +29,14 @@ pub fn load(allocator: std.mem.Allocator) !Prefs {
     const path = try prefsPath(allocator);
     defer allocator.free(path);
 
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => return .{},
         else => return err,
     };
-    defer file.close();
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [4096]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
+    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     const body = try fr.interface.allocRemaining(allocator, std.io.Limit.limited(64 * 1024));
     defer allocator.free(body);
 
@@ -78,7 +78,7 @@ pub fn saveMarkdownViewerArgv(allocator: std.mem.Allocator, argv: ?[]const []con
 fn save(allocator: std.mem.Allocator, prefs: Prefs) !void {
     const base = try auth.getBasePath(allocator);
     defer allocator.free(base);
-    std.fs.makeDirAbsolute(base) catch |err| {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, base, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
@@ -91,10 +91,10 @@ fn save(allocator: std.mem.Allocator, prefs: Prefs) !void {
     }, .{});
     defer allocator.free(body);
 
-    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
-    var writer = std.fs.File.Writer.init(file, &write_buf);
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
     try writer.interface.writeAll(body);
     try writer.interface.flush();
 }

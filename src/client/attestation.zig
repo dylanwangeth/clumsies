@@ -8,12 +8,11 @@
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("clumsies_lib").util.encoding;
+const env_util = @import("clumsies_lib").util.env_util;
 const workspace_config = @import("workspace_config.zig");
 
 fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
-        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
-        return error.HomeNotSet;
+    const home = env_util.homeDir(allocator) catch return error.HomeNotSet;
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }
@@ -119,7 +118,8 @@ pub const AttestationEvent = struct {
 /// Generate an opaque idempotency key for local attestation uploads.
 /// Ordering must use `timestamp`; `event_id` only backs Hub de-duplication.
 pub fn nextEventId() i64 {
-    const raw = std.crypto.random.int(u64) & @as(u64, @intCast(std.math.maxInt(i64)));
+    const random_source: std.Random.IoSource = .{ .io = std.Options.debug_io };
+    const raw = random_source.interface().int(u64) & @as(u64, @intCast(std.math.maxInt(i64)));
     return @intCast(raw);
 }
 
@@ -176,28 +176,28 @@ fn ensureWorkspaceDir(allocator: std.mem.Allocator, ws_id: []const u8) !void {
     const base = try getBasePath(allocator);
     defer allocator.free(base);
 
-    std.fs.makeDirAbsolute(base) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, base, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
     const ws_parent = try std.fs.path.join(allocator, &.{ base, "workspaces" });
     defer allocator.free(ws_parent);
-    std.fs.makeDirAbsolute(ws_parent) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws_parent, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
     const ws_dir = try workspace_config.getWsDir(allocator, ws_id);
     defer allocator.free(ws_dir);
-    std.fs.makeDirAbsolute(ws_dir) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
     const attestation_dir = try std.fs.path.join(allocator, &.{ ws_dir, "attestation" });
     defer allocator.free(attestation_dir);
-    std.fs.makeDirAbsolute(attestation_dir) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, attestation_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
@@ -211,15 +211,15 @@ pub fn appendAttestationEvent(allocator: std.mem.Allocator, event: AttestationEv
     const attestation_path = try sessionAttestationFilePath(allocator, event.ws_id, event.session_id);
     defer allocator.free(attestation_path);
 
-    var file = try std.fs.createFileAbsolute(attestation_path, .{ .truncate = false });
-    defer file.close();
+    var file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, attestation_path, .{ .truncate = false });
+    defer file.close(std.Options.debug_io);
     const end_pos = try file.getEndPos();
 
     const line = try serializeAttestationEvent(allocator, event);
     defer allocator.free(line);
 
     var write_buf: [4096]u8 = undefined;
-    var fw = std.fs.File.Writer.init(file, &write_buf);
+    var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
     try fw.seekTo(end_pos);
     try fw.interface.writeAll(line);
     try fw.interface.flush();

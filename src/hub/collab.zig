@@ -76,7 +76,7 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     }
 
     var rand_bytes: [8]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
     var id_buf: [20]u8 = undefined;
     @memcpy(id_buf[0..4], "ppr-");
     const hex_chars = "0123456789abcdef";
@@ -824,7 +824,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
                 return false;
             };
             var rand_bytes: [16]u8 = undefined;
-            std.crypto.random.bytes(&rand_bytes);
+            std.Options.debug_io.random(&rand_bytes);
             var new_pid_buf: [36]u8 = undefined;
             @memcpy(new_pid_buf[0..2], "p-");
             const hex = "0123456789abcdef";
@@ -947,7 +947,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, org_id: []const u8, pr_id: [
 
 fn generateBundleId(arena: std.mem.Allocator) ![]const u8 {
     var rand_bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
     var buf: [36]u8 = undefined;
     @memcpy(buf[0..4], "bnd-");
     const hex = "0123456789abcdef";
@@ -1039,7 +1039,7 @@ pub fn handleAddComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz.R
     pr_row.deinit() catch {};
 
     var rand_bytes: [8]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
     var cmt_id_buf: [20]u8 = undefined;
     @memcpy(cmt_id_buf[0..4], "cmt-");
     const hex_chars = "0123456789abcdef";

@@ -26,7 +26,7 @@ pub fn materialize(
 ) ![]const u8 {
     const dir_path = try std.fs.path.join(allocator, &.{ ws_dir, "viewer" });
     defer allocator.free(dir_path);
-    std.fs.makeDirAbsolute(dir_path) catch |err| {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, dir_path, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
@@ -35,10 +35,10 @@ pub fn materialize(
     const path = try std.fs.path.join(allocator, &.{ dir_path, name });
     errdefer allocator.free(path);
 
-    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close(std.Options.debug_io);
     var buf: [4096]u8 = undefined;
-    var writer = std.fs.File.Writer.init(file, &buf);
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
     try writer.interface.writeAll(content);
     try writer.interface.flush();
     return path;

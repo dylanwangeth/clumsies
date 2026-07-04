@@ -58,7 +58,7 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     }
 
     var rand_bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
     var ws_id_buf: [35]u8 = undefined;
     @memcpy(ws_id_buf[0..3], "ws-");
     const hex_chars = "0123456789abcdef";

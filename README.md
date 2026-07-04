@@ -4,7 +4,7 @@
 [![Tests](https://github.com/lilhammerfun/clumsies/actions/workflows/test.yml/badge.svg)](https://github.com/lilhammerfun/clumsies/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/github/license/lilhammerfun/clumsies?label=License)](https://github.com/lilhammerfun/clumsies/blob/main/LICENSE)
 [![Release](https://img.shields.io/github/v/release/lilhammerfun/clumsies?include_prereleases&label=Release)](https://github.com/lilhammerfun/clumsies/releases)
-[![Zig](https://img.shields.io/badge/Zig-0.15%2B-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
+[![Zig](https://img.shields.io/badge/Zig-0.16%2B-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 
 Building the persistent, observable, and collaborative context infrastructure that coexists with agents' self-managed memory.
 
@@ -111,7 +111,7 @@ browse shared rules and bundles, Review to handle PRs, and Settings to manage
 account, organization, tokens, members, workspaces, and local path bindings.
 For exact command flags, use the [CLI reference](https://lilhammerfun.github.io/clumsies/guides/cli-commands/).
 
-Development from source requires [Zig 0.15+](https://ziglang.org/download/):
+Development from source requires [Zig 0.16+](https://ziglang.org/download/):
 
 ```bash
 git clone https://github.com/lilhammerfun/clumsies.git

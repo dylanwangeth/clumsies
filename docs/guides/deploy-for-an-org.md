@@ -17,7 +17,7 @@ For the current local bring-up path, you need:
 | Requirement | Notes |
 | --- | --- |
 | `curl` or `wget` | required by the release installer |
-| [Zig 0.15+](https://ziglang.org/download/) | only required when building from source |
+| [Zig 0.16+](https://ziglang.org/download/) | only required when building from source |
 | [PostgreSQL](https://www.postgresql.org/docs/current/) 16 or [Docker Compose](https://docs.docker.com/compose/) | the repo ships a local Postgres compose file |
 | free local ports `5432` and `8400` | defaults for Postgres and Hub |
 | a shell environment where you can export variables | used for Hub and bootstrap configuration |

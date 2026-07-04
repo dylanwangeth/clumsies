@@ -133,7 +133,7 @@ fn queryTrend(
 }
 
 fn recentCutoffMs(max_days: u32) i64 {
-    return std.time.milliTimestamp() - @as(i64, max_days) * std.time.ms_per_day;
+    return @import("clumsies_lib").util.time_util.nowMillis() - @as(i64, max_days) * std.time.ms_per_day;
 }
 
 fn zeroTrendSeries(arena: std.mem.Allocator, max_days: u32) []i64 {

@@ -262,7 +262,7 @@ fn runRemove(
     defer if (configured_workspace_root_opt) |workspace_root| allocator.free(workspace_root);
 
     const cwd_workspace_root_opt: ?[]const u8 = if (configured_workspace_root_opt == null)
-        try std.fs.cwd().realpathAlloc(allocator, ".")
+        try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator)
     else
         null;
     defer if (cwd_workspace_root_opt) |workspace_root| allocator.free(workspace_root);
@@ -417,14 +417,14 @@ fn listInstalls(
     };
     defer allocator.free(installs_dir_path);
 
-    var installs_dir = std.fs.openDirAbsolute(installs_dir_path, .{ .iterate = true }) catch |err| switch (err) {
+    var installs_dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, installs_dir_path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => {
             try stdout.print("{s}{s}No adapter installs found.{s}\n", .{ P, Color.dim, Color.reset });
             return;
         },
         else => return err,
     };
-    defer installs_dir.close();
+    defer installs_dir.close(std.Options.debug_io);
 
     var manifests: std.ArrayList(adapter.store.LoadedManifest) = .empty;
     defer {
@@ -523,7 +523,7 @@ fn createAndBindCurrentWorkspace(
     };
     defer auth_info.deinit(allocator);
 
-    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     errdefer allocator.free(cwd_path);
     const workspace_name = try directoryNameFromPath(allocator, cwd_path);
     defer allocator.free(workspace_name);
@@ -645,7 +645,7 @@ fn findAccessibleWorkspaceByName(workspaces: []const auth_api.MeWorkspace, name:
 }
 
 fn currentDirectoryName(allocator: std.mem.Allocator) ![]const u8 {
-    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd_path);
     return directoryNameFromPath(allocator, cwd_path);
 }

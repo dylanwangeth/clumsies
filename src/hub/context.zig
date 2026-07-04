@@ -191,7 +191,7 @@ pub fn handleCreatePr(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Res
     }
 
     var rand_bytes: [8]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
     var pr_id_buf: [20]u8 = undefined;
     @memcpy(pr_id_buf[0..4], "cpr-");
     const hex_chars = "0123456789abcdef";
@@ -872,7 +872,7 @@ fn applyPr(conn: anytype, arena: std.mem.Allocator, ws_id: []const u8, pr_id: []
                 return false;
             };
             var rand_bytes: [16]u8 = undefined;
-            std.crypto.random.bytes(&rand_bytes);
+            std.Options.debug_io.random(&rand_bytes);
             var cid_buf: [36]u8 = undefined;
             @memcpy(cid_buf[0..4], "ctx-");
             const hex = "0123456789abcdef";
@@ -999,7 +999,7 @@ pub fn handleAddPrComment(ctx: *Server.Context, req: *httpz.Request, res: *httpz
     pr_check.deinit() catch {};
 
     var rand_bytes: [8]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
     var comment_id_buf: [20]u8 = undefined;
     @memcpy(comment_id_buf[0..4], "cmt-");
     const hex_chars = "0123456789abcdef";

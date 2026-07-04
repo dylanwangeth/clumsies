@@ -547,7 +547,7 @@ fn verifyPassword(input: []const u8, stored_hash: []const u8) bool {
 
 fn generateInviteToken(buf: *[68]u8) []const u8 {
     var rand_bytes: [32]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
     @memcpy(buf[0..4], "inv_");
     hexEncode(&rand_bytes, buf[4..68]);
     return buf;
@@ -561,12 +561,12 @@ pub fn hashPassword(password: []const u8, out: []u8) ![]const u8 {
     return bcrypt.strHash(password, .{
         .params = .{ .rounds_log = 10, .silently_truncate_password = false },
         .encoding = .phc,
-    }, out);
+    }, out, std.Options.debug_io);
 }
 
 fn generateToken(allocator: std.mem.Allocator, conn: *pg.Conn, user_id: []const u8, kind: []const u8, scopes: []const u8, ttl_seconds: u32) ![]const u8 {
     var rand_bytes: [32]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
 
     var token_buf: [64]u8 = undefined;
     hexEncode(&rand_bytes, &token_buf);
@@ -574,7 +574,7 @@ fn generateToken(allocator: std.mem.Allocator, conn: *pg.Conn, user_id: []const 
     const token_hash = hashToken(&token_buf);
     const hash_slice: []const u8 = &token_hash;
 
-    const epoch_now: f64 = @floatFromInt(std.time.timestamp());
+    const epoch_now: f64 = @floatFromInt(@import("clumsies_lib").util.time_util.nowSeconds());
     const expires_epoch: f64 = epoch_now + @as(f64, @floatFromInt(ttl_seconds));
     _ = conn.exec(
         "INSERT INTO tokens (token_hash, user_id, kind, scopes, expires_at) VALUES ($1, $2, $3, $4, to_timestamp($5))",
@@ -670,7 +670,7 @@ pub fn handleInviteMember(ctx: *Server.Context, req: *httpz.Request, res: *httpz
 
     // Generate user_id
     var rand_bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
     var uid_buf: [36]u8 = undefined;
     @memcpy(uid_buf[0..4], "usr-");
     const hex = "0123456789abcdef";

@@ -137,7 +137,7 @@ pub fn resolveWorkspaceRoot(allocator: std.mem.Allocator, cwd: []const u8) !?[]c
 
 /// Resolve the current workspace root for the current process working directory.
 pub fn resolveCurrentWorkspaceRoot(allocator: std.mem.Allocator) !?[]const u8 {
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd);
 
     return try resolveWorkspaceRoot(allocator, cwd);
@@ -171,7 +171,7 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
     const config_path = try std.fs.path.join(allocator, &.{ base, "config.toml" });
     defer allocator.free(config_path);
 
-    std.fs.makeDirAbsolute(base) catch |err| {
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, base, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
@@ -241,8 +241,8 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
 
     try writeWorkspaceBlock(allocator, &buf, name, ws_id, merged_paths.items);
 
-    const file = try std.fs.createFileAbsolute(config_path, .{ .truncate = true });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, config_path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
     _ = try file.write(buf.items);
 }
 
@@ -289,12 +289,12 @@ pub fn removeWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) !void {
         try writeWorkspaceBlock(allocator, &buf, ws.name, ws.ws_id, ws.paths);
     }
 
-    const file = try std.fs.createFileAbsolute(config_path, .{ .truncate = true });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, config_path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
     _ = try file.write(buf.items);
 
     if (local_ws_dir) |path| {
-        std.fs.deleteTreeAbsolute(path) catch |err| switch (err) {
+        std.Io.Dir.cwd().deleteTree(std.Options.debug_io, path) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
@@ -316,10 +316,10 @@ fn loadConfig(allocator: std.mem.Allocator) !ParsedConfig {
     const config_path = try std.fs.path.join(allocator, &.{ base, "config.toml" });
     defer allocator.free(config_path);
 
-    const file = std.fs.openFileAbsolute(config_path, .{}) catch {
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, config_path, .{}) catch {
         return error.NoConfigFound;
     };
-    defer file.close();
+    defer file.close(std.Options.debug_io);
 
     var buf: [64 * 1024]u8 = undefined;
     var total: usize = 0;
@@ -416,10 +416,10 @@ fn migrateWorkspaceDir(allocator: std.mem.Allocator, parent: []const u8, ws_id: 
     defer allocator.free(old);
     if (std.mem.eql(u8, old, target)) return;
 
-    std.fs.accessAbsolute(old, .{}) catch return;
-    std.fs.accessAbsolute(target, .{}) catch |err| switch (err) {
+    std.Io.Dir.accessAbsolute(std.Options.debug_io, old, .{}) catch return;
+    std.Io.Dir.accessAbsolute(std.Options.debug_io, target, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            std.fs.renameAbsolute(old, target) catch |rename_err| switch (rename_err) {
+            std.Io.Dir.renameAbsolute(old, target, std.Options.debug_io) catch |rename_err| switch (rename_err) {
                 error.FileNotFound => {},
                 else => return rename_err,
             };

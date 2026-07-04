@@ -87,7 +87,7 @@ pub fn deinitRenderedAssets(allocator: std.mem.Allocator, assets: []const model.
 
 pub fn skillAlreadyInstalled(absolute_path: ?[]const u8) bool {
     const path = absolute_path orelse return false;
-    std.fs.accessAbsolute(path, .{}) catch return false;
+    std.Io.Dir.accessAbsolute(std.Options.debug_io, path, .{}) catch return false;
     return true;
 }
 

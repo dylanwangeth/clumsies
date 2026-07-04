@@ -821,7 +821,7 @@ pub fn dispatchFromState(
     const token_alloc = api_state.backing_allocator;
     var access_token_copy: ?[]const u8 = null;
 
-    api_state.mutex.lock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
     const hub_url = api_state.hub_url;
     const username = api_state.username;
     const access_token = api_state.access_token;
@@ -830,7 +830,7 @@ pub fn dispatchFromState(
         access_token_copy = token_alloc.dupe(u8, token) catch null;
     }
     const has_refresh = username != null and refresh_token != null;
-    api_state.mutex.unlock();
+    api_state.mutex.unlock(std.Options.debug_io);
     defer if (access_token_copy) |token| token_alloc.free(token);
 
     if (hub_url == null or access_token_copy == null) {
@@ -873,12 +873,12 @@ pub const health = dispatcher.RequestSpec(EmptyParams, void){
 };
 
 pub fn dispatchHealthCheck(api_state: *state.ApiState) void {
-    api_state.mutex.lock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
     const hub_url = api_state.hub_url orelse {
-        api_state.mutex.unlock();
+        api_state.mutex.unlock(std.Options.debug_io);
         return;
     };
-    api_state.mutex.unlock();
+    api_state.mutex.unlock(std.Options.debug_io);
 
     dispatcher.dispatch(
         EmptyParams,

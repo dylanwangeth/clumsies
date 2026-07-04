@@ -10,7 +10,7 @@ const Entry = struct {
 
 allocator: std.mem.Allocator,
 buckets: std.StringHashMap(Entry),
-mutex: std.Thread.Mutex,
+mutex: std.Io.Mutex,
 window_seconds: i64,
 max_requests: u32,
 
@@ -20,7 +20,7 @@ pub fn init(allocator: std.mem.Allocator, window_seconds: u32, max_requests: u32
     return .{
         .allocator = allocator,
         .buckets = std.StringHashMap(Entry).init(allocator),
-        .mutex = .{},
+        .mutex = .init,
         .window_seconds = @intCast(window_seconds),
         .max_requests = max_requests,
     };
@@ -35,10 +35,10 @@ pub fn deinit(self: *RateLimiter) void {
 }
 
 pub fn check(self: *RateLimiter, key: []const u8) bool {
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(std.Options.debug_io);
+    defer self.mutex.unlock(std.Options.debug_io);
 
-    const now = std.time.timestamp();
+    const now = @import("clumsies_lib").util.time_util.nowSeconds();
 
     if (self.buckets.getPtr(key)) |entry| {
         if (now - entry.window_start >= self.window_seconds) {

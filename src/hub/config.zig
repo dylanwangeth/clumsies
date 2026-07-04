@@ -14,7 +14,7 @@ refresh_token_ttl_seconds: u32,
 
 const Config = @This();
 
-pub fn fromEnv(env_map: *const std.process.EnvMap) Config {
+pub fn fromEnv(env_map: *const std.process.Environ.Map) Config {
     return .{
         .host = getEnvStr(env_map, "HUB_HOST", "0.0.0.0"),
         .port = getEnvInt(env_map, u16, "HUB_PORT", 8400),
@@ -28,11 +28,11 @@ pub fn fromEnv(env_map: *const std.process.EnvMap) Config {
     };
 }
 
-fn getEnvStr(env_map: *const std.process.EnvMap, key: []const u8, default: []const u8) []const u8 {
+fn getEnvStr(env_map: *const std.process.Environ.Map, key: []const u8, default: []const u8) []const u8 {
     return env_map.get(key) orelse default;
 }
 
-fn getEnvInt(env_map: *const std.process.EnvMap, comptime T: type, key: []const u8, default: T) T {
+fn getEnvInt(env_map: *const std.process.Environ.Map, comptime T: type, key: []const u8, default: T) T {
     const val = env_map.get(key) orelse return default;
     return std.fmt.parseInt(T, val, 10) catch default;
 }

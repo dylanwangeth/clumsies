@@ -132,8 +132,8 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     const ws_root = std.fs.path.join(allocator, &.{ base, "workspaces" }) catch return null;
     defer allocator.free(ws_root);
 
-    var dir = std.fs.openDirAbsolute(ws_root, .{ .iterate = true }) catch return null;
-    defer dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, ws_root, .{ .iterate = true }) catch return null;
+    defer dir.close(std.Options.debug_io);
 
     var all_events: std.ArrayList(AttestationEvent) = .empty;
     var workspace_stats: std.ArrayList(WorkspaceLocalStats) = .empty;
@@ -186,9 +186,9 @@ fn readWorkspaceEvents(allocator: std.mem.Allocator, ws_dir: []const u8, ws_id: 
     const log_dir = std.fs.path.join(allocator, &.{ ws_dir, "attestation" }) catch return;
     defer allocator.free(log_dir);
 
-    var dir = std.fs.openDirAbsolute(log_dir, .{ .iterate = true }) catch null;
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, log_dir, .{ .iterate = true }) catch null;
     if (dir) |*opened_dir| {
-        defer opened_dir.close();
+        defer opened_dir.close(std.Options.debug_io);
         var it = opened_dir.iterate();
         while (it.next() catch null) |entry| {
             if (entry.kind != .file) continue;
@@ -213,8 +213,8 @@ fn readEventsFromFile(
     ws_id: []const u8,
     events: *std.ArrayList(AttestationEvent),
 ) void {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return;
-    defer file.close();
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return;
+    defer file.close(std.Options.debug_io);
 
     const max_attestation_bytes: u64 = 8 * 1024 * 1024;
     const end_pos = file.getEndPos() catch return;
@@ -228,7 +228,7 @@ fn readEventsFromFile(
     defer allocator.free(buf);
 
     var read_buf: [4096]u8 = undefined;
-    var reader = std.fs.File.Reader.init(file, &read_buf);
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     const total = reader.interface.readSliceShort(buf) catch return;
     if (total == 0) return;
 
@@ -464,7 +464,7 @@ fn computeStats(
     var refers_list: std.ArrayList(ReferEvent) = .empty;
     var inputs_list: std.ArrayList(InputEvent) = .empty;
 
-    const now_ms: i64 = std.time.milliTimestamp();
+    const now_ms: i64 = @import("clumsies_lib").util.time_util.nowMillis();
     const day_ms: i64 = 86400 * 1000;
 
     for (events) |ev| {
@@ -825,7 +825,7 @@ test "computeStats uses rule totals to derive non-100 signal ratios" {
             .ws_id = "ws-1",
             .session_id = "ses-1",
             .type = "refer",
-            .timestamp = std.time.milliTimestamp(),
+            .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
             .rule_id = "p-1",
             .constraint_id = "c-1",
         },
@@ -833,7 +833,7 @@ test "computeStats uses rule totals to derive non-100 signal ratios" {
             .ws_id = "ws-1",
             .session_id = "ses-1",
             .type = "refer",
-            .timestamp = std.time.milliTimestamp(),
+            .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
             .rule_id = "p-1",
             .constraint_id = "c-2",
         },
@@ -864,7 +864,7 @@ test "computeStats falls back to active constraint counts when rule totals are u
             .ws_id = "ws-1",
             .session_id = "ses-1",
             .type = "refer",
-            .timestamp = std.time.milliTimestamp(),
+            .timestamp = @import("clumsies_lib").util.time_util.nowMillis(),
             .rule_id = "p-1",
             .constraint_id = "c-1",
         },

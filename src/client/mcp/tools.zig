@@ -848,13 +848,13 @@ fn readRuleCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path:
 fn readMetaPromptCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8) ![]const u8 {
     const path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
     defer allocator.free(path);
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         else => return err,
     };
-    defer file.close();
+    defer file.close(std.Options.debug_io);
     var read_buf: [4096]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
+    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024));
 }
 
@@ -882,11 +882,11 @@ fn buildOkDraftIdentity(
     return try tool_result.buildSuccessResult(allocator, structured);
 }
 
-fn writeTestFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
+fn writeTestFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
-    defer file.close();
+    defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
-    var fw = std.fs.File.Writer.init(file, &write_buf);
+    var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
     defer fw.interface.flush() catch {};
     try fw.interface.writeAll(content);
 }
@@ -903,7 +903,7 @@ fn draftRenameEventUsesPath(
 ) bool {
     const attestation_path = attestation.sessionAttestationFilePath(allocator, ws_id, session_id) catch return false;
     defer allocator.free(attestation_path);
-    const content = std.fs.cwd().readFileAlloc(allocator, attestation_path, 1024 * 1024) catch return false;
+    const content = std.Io.Dir.cwd().readFileAlloc(allocator, attestation_path, 1024 * 1024) catch return false;
     defer allocator.free(content);
     const needle = std.fmt.allocPrint(allocator, "\"path\":\"{s}\"", .{path}) catch return false;
     defer allocator.free(needle);
@@ -1304,7 +1304,7 @@ test "store tool updates MPF change" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
-    try tmp.dir.makePath("cache");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache");
     try writeTestFile(tmp.dir, "cache/META_PROMPT.md", "old mpf");
 
     const args_json =
@@ -1346,7 +1346,7 @@ test "store update overwrites existing context update draft" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
 
-    try tmp.dir.makePath("cache/context/spec");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
     try writeTestFile(tmp.dir, "cache/context/spec/API.md", "old api");
     try writeTestFile(tmp.dir, "manifest.json",
         \\{

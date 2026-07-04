@@ -15,7 +15,7 @@
 **SUGGESTION (Non-blocking)**
 - Naming clarity, code simplification
 
-## Zig 0.15 Conventions
+## Zig 0.16 Conventions
 
 ### Style
 - Functions: camelCase. Types/Structs: PascalCase. Constants: SCREAMING_SNAKE_CASE. Files: snake_case
@@ -32,7 +32,7 @@ Every allocation must have a corresponding free:
 
 Slices pointing into a buffer with `defer deinit()` become dangling after return. Dupe needed fields first.
 
-### Deprecated APIs (0.15)
+### Deprecated APIs (0.16)
 Flag any use of these:
 
 - `std.io.getStdOut().writer()` — use `File.Writer.init(File.stdout(), &buf)` + `.interface`

@@ -9,7 +9,7 @@ pub const Pool = pg.Pool;
 const db_log = std.log.scoped(.db);
 
 pub fn initPool(allocator: std.mem.Allocator, config: Config) !*Pool {
-    return Pool.init(allocator, .{
+    return Pool.init(std.Options.debug_io, allocator, .{
         .size = 5,
         .connect = .{
             .host = config.db_host,
@@ -102,7 +102,7 @@ pub fn extractDescription(content: []const u8) []const u8 {
     return "";
 }
 
-pub fn bootstrap(pool: *Pool, env_map: *const std.process.EnvMap) !void {
+pub fn bootstrap(pool: *Pool, env_map: *const std.process.Environ.Map) !void {
     const log = std.log.scoped(.bootstrap);
 
     const conn = try pool.acquire();
@@ -159,14 +159,14 @@ pub fn bootstrap(pool: *Pool, env_map: *const std.process.EnvMap) !void {
     const password_hash = bcrypt.strHash(password, .{
         .params = .{ .rounds_log = 10, .silently_truncate_password = false },
         .encoding = .phc,
-    }, &hash_buf) catch {
+    }, &hash_buf, std.Options.debug_io) catch {
         log.err("bootstrap password hash failed", .{});
         return;
     };
 
     // Generate user_id
     var rand_bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    std.Options.debug_io.random(&rand_bytes);
     var uid_buf: [36]u8 = undefined;
     @memcpy(uid_buf[0..4], "usr-");
     const hex = "0123456789abcdef";

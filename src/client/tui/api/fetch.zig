@@ -46,7 +46,7 @@ pub fn startFetch(
     errdefer if (worker_auth_owned) worker_auth.deinit(token_alloc);
 
     log.info("bootstrap_start", .{});
-    api_state.mutex.lock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
     const old_access = api_state.access_token;
     const old_refresh = api_state.refresh_token;
     api_state.hub_url = url_copy;
@@ -54,15 +54,15 @@ pub fn startFetch(
     api_state.access_token = token_copy;
     api_state.refresh_token = refresh_copy;
     api_state.bootstrap_inflight = true;
-    api_state.mutex.unlock();
+    api_state.mutex.unlock(std.Options.debug_io);
     if (old_access) |token| token_alloc.free(token);
     if (old_refresh) |token| token_alloc.free(token);
 
     const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, worker_auth }) catch |err| {
         log.warn("bootstrap_spawn_failed error={s}", .{@errorName(err)});
-        api_state.mutex.lock();
+        api_state.mutex.lockUncancelable(std.Options.debug_io);
         api_state.bootstrap_inflight = false;
-        api_state.mutex.unlock();
+        api_state.mutex.unlock(std.Options.debug_io);
         return err;
     };
     worker_auth_owned = false;
@@ -78,9 +78,9 @@ pub fn refetchAllAsync(api_state: *state.ApiState) void {
     const thread = std.Thread.spawn(.{}, fetchAll, .{ api_state, auth }) catch |err| {
         auth.deinit(api_state.backing_allocator);
         log.warn("bootstrap_refetch_spawn_failed error={s}", .{@errorName(err)});
-        api_state.mutex.lock();
+        api_state.mutex.lockUncancelable(std.Options.debug_io);
         api_state.bootstrap_inflight = false;
-        api_state.mutex.unlock();
+        api_state.mutex.unlock(std.Options.debug_io);
         return;
     };
     registerFetchThread(api_state, thread, "bootstrap_refetch") catch {};
@@ -100,15 +100,15 @@ fn fetchAll(
             } else |err| {
                 next_auth.deinit(api_state.backing_allocator);
                 log.warn("bootstrap_refetch_queued_spawn_failed error={s}", .{@errorName(err)});
-                api_state.mutex.lock();
+                api_state.mutex.lockUncancelable(std.Options.debug_io);
                 api_state.bootstrap_inflight = false;
-                api_state.mutex.unlock();
+                api_state.mutex.unlock(std.Options.debug_io);
             }
         }
     }
-    api_state.mutex.lock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
     api_state.status = .connecting;
-    api_state.mutex.unlock();
+    api_state.mutex.unlock(std.Options.debug_io);
 
     const alloc = api_state.allocator();
 
@@ -162,10 +162,10 @@ fn fetchAll(
     };
     log.info("bootstrap_auth_me ok", .{});
 
-    api_state.mutex.lock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
     api_state.current_user = user;
     api_state.status = .connected;
-    api_state.mutex.unlock();
+    api_state.mutex.unlock(std.Options.debug_io);
 
     const members = doFetchParse(
         &client,
@@ -196,12 +196,12 @@ fn fetchAll(
         parse.parseBundles,
     );
 
-    api_state.mutex.lock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
     if (members) |value| api_state.members = value;
     if (rules_list) |value| api_state.rules = value;
     if (bundles) |value| api_state.bundles = value;
     if (org_stats) |value| api_state.org_stats = value;
-    api_state.mutex.unlock();
+    api_state.mutex.unlock(std.Options.debug_io);
     log.info("bootstrap_complete members={} rules={} bundles={} org_stats={}", .{
         members != null,
         rules_list != null,
@@ -226,8 +226,8 @@ fn dupeAuthSnapshot(
 
 fn beginRefetch(api_state: *state.ApiState) !?AuthSnapshot {
     const alloc = api_state.backing_allocator;
-    api_state.mutex.lock();
-    defer api_state.mutex.unlock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer api_state.mutex.unlock(std.Options.debug_io);
 
     if (api_state.hub_url == null or api_state.username == null or api_state.access_token == null or api_state.refresh_token == null) {
         return null;
@@ -250,8 +250,8 @@ fn beginRefetch(api_state: *state.ApiState) !?AuthSnapshot {
 
 fn takeQueuedRefetch(api_state: *state.ApiState) ?AuthSnapshot {
     const alloc = api_state.backing_allocator;
-    api_state.mutex.lock();
-    defer api_state.mutex.unlock();
+    api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer api_state.mutex.unlock(std.Options.debug_io);
 
     if (!api_state.bootstrap_refetch_requested) {
         api_state.bootstrap_inflight = false;

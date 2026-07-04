@@ -336,14 +336,14 @@ fn assetAbsolutePath(
 }
 
 fn readFileIfExists(allocator: std.mem.Allocator, absolute_path: []const u8) !?[]u8 {
-    const file = std.fs.openFileAbsolute(absolute_path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, absolute_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
-    defer file.close();
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [4096]u8 = undefined;
-    var reader = std.fs.File.Reader.init(file, &read_buf);
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     return try reader.interface.allocRemaining(allocator, std.io.Limit.limited(256 * 1024));
 }
 

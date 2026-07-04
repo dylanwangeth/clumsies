@@ -137,10 +137,10 @@ pub fn loadMpf(allocator: std.mem.Allocator, ws_dir: []const u8, known_hash: ?[]
     else blk: {
         const mpf_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
         defer allocator.free(mpf_path);
-        const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return .{ .content = null, .hash = null };
-        defer file.close();
+        const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, mpf_path, .{}) catch return .{ .content = null, .hash = null };
+        defer file.close(std.Options.debug_io);
         var read_buf: [4096]u8 = undefined;
-        var fr = std.fs.File.Reader.init(file, &read_buf);
+        var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
         break :blk fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch return .{ .content = null, .hash = null };
     };
     errdefer allocator.free(content);
@@ -194,14 +194,14 @@ pub fn loadManifest(allocator: std.mem.Allocator, ws_dir: []const u8) !Manifest 
 
     const manifest_path = try std.fs.path.join(arena, &.{ ws_dir, "manifest.json" });
 
-    const file = std.fs.openFileAbsolute(manifest_path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, manifest_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return manifest,
         else => return err,
     };
-    defer file.close();
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [4096]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
+    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     const content = try fr.interface.allocRemaining(arena, std.io.Limit.limited(4 * 1024 * 1024));
 
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, content, .{}) catch return error.InvalidManifest;
@@ -874,11 +874,11 @@ pub fn readRuleCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_p
     const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "rule", rel_path });
     defer allocator.free(abs_path);
 
-    const file = try std.fs.openFileAbsolute(abs_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, abs_path, .{});
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [4096]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
+    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE));
 }
 
@@ -888,11 +888,11 @@ pub fn readContextCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, re
     const abs_path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "context", rel_path });
     defer allocator.free(abs_path);
 
-    const file = try std.fs.openFileAbsolute(abs_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, abs_path, .{});
+    defer file.close(std.Options.debug_io);
 
     var read_buf: [4096]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
+    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE));
 }
 
@@ -1118,11 +1118,11 @@ fn isOrderedListItem(line: []const u8) bool {
     return line[i] == '.' and i + 1 < line.len and line[i + 1] == ' ';
 }
 
-fn writeFile(dir: std.fs.Dir, sub_path: []const u8, content: []const u8) !void {
+fn writeFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(sub_path, .{});
-    defer file.close();
+    defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
-    var fw = std.fs.File.Writer.init(file, &write_buf);
+    var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
     defer fw.interface.flush() catch {};
     try fw.interface.writeAll(content);
 }
@@ -1131,7 +1131,7 @@ fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8)
     return tmp.dir.realpath(".", buf) catch "";
 }
 
-fn writeTestManifest(dir: std.fs.Dir, json: []const u8) !void {
+fn writeTestManifest(dir: std.Io.Dir, json: []const u8) !void {
     try writeFile(dir, "manifest.json", json);
 }
 
@@ -1187,9 +1187,9 @@ test "discoverSearchable: returns hub rule_ids classified by path prefix" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/pedagogy");
-    try tmp.dir.makePath("cache/rule/coding");
-    try tmp.dir.makePath("cache/rule/workflow");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/pedagogy");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/workflow");
     try writeFile(tmp.dir, "cache/rule/pedagogy/TEACHING.md", "teaching");
     try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style");
     try writeFile(tmp.dir, "cache/rule/workflow/COMMIT.md", "commit");
@@ -1376,7 +1376,7 @@ test "loadRules: looks up by hub rule_id and reads cache file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style content");
 
     try writeTestManifest(tmp.dir,
@@ -1403,7 +1403,7 @@ test "loadRules: known hash matches returns delta with no content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style content");
 
     try writeTestManifest(tmp.dir,
@@ -1429,7 +1429,7 @@ test "loadRules: workflow name alias resolves through manifest" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/workflow");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/workflow");
     try writeFile(tmp.dir, "cache/rule/workflow/00_GEN_COMMIT_MSG.md", "commit workflow");
 
     try writeTestManifest(tmp.dir,
@@ -1456,7 +1456,7 @@ test "loadRules: alias known hash suppresses unchanged content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/workflow");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/workflow");
     try writeFile(tmp.dir, "cache/rule/workflow/ERROR_PRONE.md", "error workflow");
 
     try writeTestManifest(tmp.dir,
@@ -1559,7 +1559,7 @@ test "loadRules: context id reads from cache/context" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/context/spec");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
     try writeFile(tmp.dir, "cache/context/spec/API.md", "api spec content");
 
     try writeTestManifest(tmp.dir,
@@ -1588,9 +1588,9 @@ test "loadRules: mixed rule and context ids" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "style");
-    try tmp.dir.makePath("cache/context/spec");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
     try writeFile(tmp.dir, "cache/context/spec/API.md", "api");
 
     try writeTestManifest(tmp.dir,
@@ -1621,10 +1621,10 @@ test "loadRules: draft content overrides cache when indexed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "cache content");
 
-    try tmp.dir.makePath("drafts/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts/rule/coding");
     try writeFile(tmp.dir, "drafts/rule/coding/STYLE.md", "draft override");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
@@ -1667,10 +1667,10 @@ test "loadRules: rule draft change ignores matching manifest known hash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "cache content");
 
-    try tmp.dir.makePath("drafts/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts/rule/coding");
     try writeFile(tmp.dir, "drafts/rule/coding/STYLE.md", "draft override");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
@@ -1721,10 +1721,10 @@ test "loadRules: context draft change ignores matching manifest known hash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/context/spec");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
     try writeFile(tmp.dir, "cache/context/spec/API.md", "cache api");
 
-    try tmp.dir.makePath("drafts/context/spec");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts/context/spec");
     try writeFile(tmp.dir, "drafts/context/spec/API.md", "draft api");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
@@ -1769,10 +1769,10 @@ test "loadRules: draft marked delete behaves as UnknownRuleId" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeFile(tmp.dir, "cache/rule/coding/STYLE.md", "cache content");
 
-    try tmp.dir.makePath("drafts");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
@@ -1807,7 +1807,7 @@ test "loadMpf: returns content and hash from cache subdirectory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache");
     try writeFile(tmp.dir, "cache/META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1825,7 +1825,7 @@ test "loadMpf: delta when hash matches" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache");
     try writeFile(tmp.dir, "cache/META_PROMPT.md", "bootstrap rules");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1861,12 +1861,12 @@ test "loadMpf: draft content overrides cache" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache");
     try writeFile(tmp.dir, "cache/META_PROMPT.md", "cached mpf");
 
-    try tmp.dir.makePath("drafts/meta_prompt");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts/meta_prompt");
     try writeFile(tmp.dir, "drafts/meta_prompt/META_PROMPT.md", "draft mpf");
-    try tmp.dir.makePath("drafts");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
@@ -1896,10 +1896,10 @@ test "loadMpf: delete draft makes mpf appear absent" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache");
     try writeFile(tmp.dir, "cache/META_PROMPT.md", "cached mpf");
 
-    try tmp.dir.makePath("drafts");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [
@@ -1928,12 +1928,12 @@ test "loadMpf: delta works with draft content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("cache");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache");
     try writeFile(tmp.dir, "cache/META_PROMPT.md", "cached mpf");
 
-    try tmp.dir.makePath("drafts/meta_prompt");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts/meta_prompt");
     try writeFile(tmp.dir, "drafts/meta_prompt/META_PROMPT.md", "draft mpf");
-    try tmp.dir.makePath("drafts");
+    try tmp.dir.createDirPath(std.Options.debug_io, "drafts");
     try writeFile(tmp.dir, "drafts/index.json",
         \\{
         \\  "drafts": [

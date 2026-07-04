@@ -66,7 +66,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         return;
     }
 
-    const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch return;
+    const cwd = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator) catch return;
     defer allocator.free(cwd);
 
     const binding = ws_config.resolveWorkspace(allocator, cwd) catch return;
@@ -105,7 +105,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         .ws_id = binding.ws_id,
         .session_id = session_id,
         .event_id = attestation.nextEventId(),
-        .ts = std.time.milliTimestamp(),
+        .ts = @import("clumsies_lib").util.time_util.nowMillis(),
         .payload = payload,
     }) catch |err| {
         log.warn("attestation append failed: {}", .{err});

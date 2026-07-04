@@ -353,22 +353,22 @@ fn shiftSettingsTab(self: anytype, delta: i8) void {
 }
 
 fn orgMemberCount(self: anytype) usize {
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer self.api_state.mutex.unlock(std.Options.debug_io);
     if (self.api_state.members) |dir| return dir.members.len;
     return 0;
 }
 
 fn accountWorkspaceCount(self: anytype) usize {
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer self.api_state.mutex.unlock(std.Options.debug_io);
     if (self.api_state.current_user) |u| return u.workspaces.len;
     return 0;
 }
 
 fn selectedWorkspaceMemberCount(self: anytype) usize {
-    self.api_state.mutex.lock();
-    defer self.api_state.mutex.unlock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+    defer self.api_state.mutex.unlock(std.Options.debug_io);
     const user = self.api_state.current_user orelse return 0;
     if (user.workspaces.len == 0) return 0;
     const idx = @min(self.settings.content_sel, user.workspaces.len - 1);
@@ -628,15 +628,15 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     };
 
     const user: UserView = blk: {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.current_user) |u|
             break :blk .{ .user_id = u.user_id, .username = u.username, .role = u.role };
         break :blk .{ .user_id = "\xe2\x80\x94", .username = "\xe2\x80\x94", .role = "\xe2\x80\x94" };
     };
     const cfg: data.ClientConfig = blk: {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         const url = if (self.api_state.hub_url) |u| u else "\xe2\x80\x94";
         if (self.api_state.current_user) |_|
             break :blk .{ .server_url = url, .sync_strategy = "session", .token_status = "active", .token_expires = "\xe2\x80\x94" };
@@ -744,8 +744,8 @@ fn drawSettingsWorkspaces(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocato
     };
     const workspaces: []const WorkspaceView = blk: {
         var list: std.ArrayList(WorkspaceView) = .empty;
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.current_user) |u| {
             const active_idx = if (u.workspaces.len > 0) @min(self.workspace.sel, u.workspaces.len - 1) else 0;
             for (u.workspaces, 0..) |ws, i| {
@@ -938,9 +938,9 @@ fn drawSettingsOrg(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Error
     var row: u16 = 1;
     const sel = self.settings.content_sel;
 
-    self.api_state.mutex.lock();
+    self.api_state.mutex.lockUncancelable(std.Options.debug_io);
     const live_dir = self.api_state.members;
-    self.api_state.mutex.unlock();
+    self.api_state.mutex.unlock(std.Options.debug_io);
 
     const MemberView = struct { username: []const u8, role: []const u8, status: []const u8, joined: []const u8 };
     var member_views: std.ArrayList(MemberView) = .empty;
@@ -990,8 +990,8 @@ fn drawSettingsToken(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.Err
     const size = ctx.max.size();
     const focused = self.settings.focus == .content;
     const live_scopes: ?[]const u8 = blk: {
-        self.api_state.mutex.lock();
-        defer self.api_state.mutex.unlock();
+        self.api_state.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.api_state.mutex.unlock(std.Options.debug_io);
         if (self.api_state.current_user) |u| break :blk u.scopes;
         break :blk null;
     };

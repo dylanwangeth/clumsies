@@ -19,7 +19,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     _ = stdout;
     _ = stderr;
 
-    const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch return;
+    const cwd = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator) catch return;
     defer allocator.free(cwd);
 
     const binding = workspace_config.resolveWorkspace(allocator, cwd) catch return;
@@ -32,10 +32,10 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const attestation_path = attestation.sessionAttestationFilePath(allocator, binding.ws_id, session_id) catch return;
     defer allocator.free(attestation_path);
 
-    const file = std.fs.openFileAbsolute(attestation_path, .{}) catch return;
-    defer file.close();
+    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, attestation_path, .{}) catch return;
+    defer file.close(std.Options.debug_io);
 
-    const stat = file.stat() catch return;
+    const stat = file.stat(std.Options.debug_io) catch return;
     if (stat.size == 0) return;
 
     var contents_buf: [10 * 1024 * 1024]u8 = undefined;

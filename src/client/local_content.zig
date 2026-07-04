@@ -50,10 +50,10 @@ pub fn read(
     };
     defer allocator.free(abs_path);
 
-    const file = try std.fs.openFileAbsolute(abs_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, abs_path, .{});
+    defer file.close(std.Options.debug_io);
     var read_buf: [4096]u8 = undefined;
-    var fr = std.fs.File.Reader.init(file, &read_buf);
+    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024));
 }
 
@@ -73,12 +73,12 @@ pub fn write(
     defer allocator.free(abs_path);
 
     if (std.fs.path.dirname(abs_path)) |dir_path| {
-        try std.fs.cwd().makePath(dir_path);
+        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dir_path);
     }
-    const file = try std.fs.createFileAbsolute(abs_path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, abs_path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
-    var writer = std.fs.File.Writer.init(file, &write_buf);
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
     try writer.interface.writeAll(body);
     try writer.interface.flush();
 }
@@ -213,10 +213,10 @@ fn writeManifestEntry(
 
     const manifest_path = try std.fs.path.join(allocator, &.{ ws_dir, "manifest.json" });
     defer allocator.free(manifest_path);
-    const file = try std.fs.createFileAbsolute(manifest_path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close(std.Options.debug_io);
     var write_buf: [8192]u8 = undefined;
-    var writer = std.fs.File.Writer.init(file, &write_buf);
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
     try writer.interface.writeAll(body);
     try writer.interface.flush();
 
@@ -285,10 +285,10 @@ fn removeManifestEntry(
 
     const manifest_path = try std.fs.path.join(allocator, &.{ ws_dir, "manifest.json" });
     defer allocator.free(manifest_path);
-    const file = try std.fs.createFileAbsolute(manifest_path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close(std.Options.debug_io);
     var write_buf: [8192]u8 = undefined;
-    var writer = std.fs.File.Writer.init(file, &write_buf);
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
     try writer.interface.writeAll(body);
     try writer.interface.flush();
 
@@ -307,7 +307,7 @@ fn deleteCacheFile(
         .meta_prompt => return,
     };
     defer allocator.free(abs_path);
-    std.fs.deleteFileAbsolute(abs_path) catch |err| switch (err) {
+    std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, abs_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
@@ -319,9 +319,9 @@ fn normalizedHash(hash: []const u8) []const u8 {
     return hash;
 }
 
-fn writeTestFile(dir: std.fs.Dir, path: []const u8, content: []const u8) !void {
+fn writeTestFile(dir: std.Io.Dir, path: []const u8, content: []const u8) !void {
     const file = try dir.createFile(path, .{ .truncate = true });
-    defer file.close();
+    defer file.close(std.Options.debug_io);
     try file.writeAll(content);
 }
 
@@ -335,12 +335,12 @@ test "hashesEqual accepts prefixed and bare hashes" {
 test "freshness maps cache paths and detects fresh content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.Options.debug_io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    try tmp.dir.makePath("cache/rule/coding");
-    try tmp.dir.makePath("cache/context/spec");
-    try tmp.dir.makePath("cache");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache");
     try writeTestFile(tmp.dir, "cache/rule/coding/STYLE.md", "hello");
     try writeTestFile(tmp.dir, "cache/context/spec/API.md", "hello");
     try writeTestFile(tmp.dir, "cache/META_PROMPT.md", "hello");
@@ -354,10 +354,10 @@ test "freshness maps cache paths and detects fresh content" {
 test "freshness treats missing or mismatched local content as stale" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.Options.debug_io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    try tmp.dir.makePath("cache/rule/coding");
+    try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try writeTestFile(tmp.dir, "cache/rule/coding/STYLE.md", "different");
 
     const remote = "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
@@ -368,7 +368,7 @@ test "freshness treats missing or mismatched local content as stale" {
 test "write creates nested cache path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.Options.debug_io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     try write(std.testing.allocator, root, .context, "spec/API.md", "hello");
@@ -380,7 +380,7 @@ test "write creates nested cache path" {
 test "writeManifestContextEntry updates only the selected context" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.Options.debug_io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     try writeTestFile(tmp.dir, "manifest.json",
@@ -412,7 +412,7 @@ test "writeManifestContextEntry updates only the selected context" {
 test "writeManifestRuleEntry adds only the selected rule when manifest is empty" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.Options.debug_io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     try writeManifestRuleEntry(std.testing.allocator, root, "ws-1", "demo", "p-1", "coding/STYLE.md", "sha256:new-rule");
@@ -428,7 +428,7 @@ test "writeManifestRuleEntry adds only the selected rule when manifest is empty"
 test "removeManifestRuleEntry removes selected rule and cache file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.Options.debug_io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     try write(std.testing.allocator, root, .rule, "coding/STYLE.md", "hello");

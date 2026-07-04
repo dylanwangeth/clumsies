@@ -8,7 +8,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         return;
     }
 
-    const cwd = std.process.getCwdAlloc(allocator) catch return;
+    const cwd = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator) catch return;
     defer allocator.free(cwd);
 
     const cache_path = blk: {
@@ -23,11 +23,13 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         const mpf_path = std.fs.path.join(allocator, &.{ cp, "META_PROMPT.md" }) catch return;
         defer allocator.free(mpf_path);
 
-        const file = std.fs.openFileAbsolute(mpf_path, .{}) catch return;
-        defer file.close();
+        const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, mpf_path, .{}) catch return;
+        defer file.close(std.Options.debug_io);
 
+        var read_buf: [4096]u8 = undefined;
+        var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
         var buf: [64 * 1024]u8 = undefined;
-        const n = file.read(&buf) catch return;
+        const n = reader.interface.readSliceShort(&buf) catch return;
         stdout.writeAll(buf[0..n]) catch return;
     }
 }

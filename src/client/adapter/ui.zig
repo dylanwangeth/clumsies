@@ -148,7 +148,7 @@ fn promptChoiceInteractive(
     if (comptime builtin.os.tag == .windows) return error.NotATerminal;
     if (choices.len == 0) return error.NoChoices;
 
-    const stdin_fd = std.fs.File.stdin().handle;
+    const stdin_fd = std.Io.File.stdin().handle;
     const old_termios = std.posix.tcgetattr(stdin_fd) catch return error.NotATerminal;
     var new_termios = old_termios;
     new_termios.lflag.ICANON = false;
@@ -201,7 +201,7 @@ const MenuKey = enum {
 
 fn canUseInteractivePrompt() bool {
     if (comptime builtin.os.tag == .windows) return false;
-    return std.fs.File.stdin().isTty() and std.fs.File.stdout().isTty();
+    return std.Io.File.stdin().isTty() and std.Io.File.stdout().isTty();
 }
 
 fn promptYesNoInteractive(
@@ -215,7 +215,7 @@ fn promptYesNoInteractive(
         .{ .key = "no", .label = "No", .description = "" },
     };
 
-    const stdin_fd = std.fs.File.stdin().handle;
+    const stdin_fd = std.Io.File.stdin().handle;
     const old_termios = std.posix.tcgetattr(stdin_fd) catch return error.NotATerminal;
     var new_termios = old_termios;
     new_termios.lflag.ICANON = false;
@@ -331,7 +331,7 @@ fn rewindRenderedBlock(stdout: *std.Io.Writer, rendered_lines: usize) !void {
 }
 
 fn readMenuKey() !MenuKey {
-    const stdin = std.fs.File.stdin();
+    const stdin = std.Io.File.stdin();
     var byte: [1]u8 = undefined;
 
     while (true) {
@@ -365,7 +365,7 @@ fn readLineTrimmedAlloc(allocator: std.mem.Allocator) !?[]u8 {
 
     var byte: [1]u8 = undefined;
     while (true) {
-        const n = std.fs.File.stdin().read(&byte) catch return null;
+        const n = std.Io.File.stdin().read(&byte) catch return null;
         if (n == 0) {
             if (line_buf.items.len == 0) return null;
             break;

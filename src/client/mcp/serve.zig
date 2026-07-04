@@ -6,7 +6,7 @@ const server = @import("server.zig");
 const workspace_config = @import("../workspace_config.zig");
 
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, version: []const u8) !void {
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd);
 
     var session = session_mod.init(allocator, cwd) catch |err| switch (err) {
