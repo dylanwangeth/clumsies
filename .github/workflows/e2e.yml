@@ -13,7 +13,7 @@ jobs:
         include:
           - os: ubuntu-latest
             script: bash test/e2e.sh
-          - os: macos-latest
+          - os: macos-15
             script: bash test/e2e.sh
           - os: windows-latest
             script: pwsh test/e2e.ps1
