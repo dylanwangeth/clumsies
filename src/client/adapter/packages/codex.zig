@@ -2,6 +2,7 @@ const build_options = @import("build_options");
 const model = @import("../model.zig");
 const std = @import("std");
 const types = @import("types.zig");
+const env_util = @import("clumsies_lib").util.env_util;
 const workflow_skills = @import("../workflow_skills.zig");
 
 pub const package: types.AdapterPackage = .{
@@ -240,13 +241,7 @@ fn appendCodexCoreSkills(
 }
 
 fn userCodexRoot(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |fallback_err| switch (fallback_err) {
-            error.EnvironmentVariableNotFound => return error.EnvironmentVariableNotFound,
-            else => return fallback_err,
-        },
-        else => return err,
-    };
+    const home = try env_util.homeDir(allocator);
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".codex" });
 }

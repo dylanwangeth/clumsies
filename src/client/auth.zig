@@ -175,11 +175,52 @@ pub fn parseStore(raw: []const u8) ?AuthStore {
     return null;
 }
 
-// macOS Keychain via Security framework
-const c = if (enable_keychain) @cImport({
-    @cInclude("Security/Security.h");
-    @cInclude("CoreFoundation/CoreFoundation.h");
-}) else struct {};
+const c = if (enable_keychain) struct {
+    pub const OSStatus = i32;
+    pub const UInt32 = u32;
+    pub const SecKeychainRef = ?*anyopaque;
+    pub const SecKeychainItemRef = ?*anyopaque;
+
+    pub const errSecSuccess: OSStatus = 0;
+    pub const errSecItemNotFound: OSStatus = -25300;
+
+    extern "c" fn SecKeychainFindGenericPassword(
+        keychainOrArray: ?*anyopaque,
+        serviceNameLength: UInt32,
+        serviceName: [*c]const u8,
+        accountNameLength: UInt32,
+        accountName: [*c]const u8,
+        passwordLength: ?*UInt32,
+        passwordData: ?*?*anyopaque,
+        itemRef: ?*SecKeychainItemRef,
+    ) OSStatus;
+
+    extern "c" fn SecKeychainAddGenericPassword(
+        keychain: SecKeychainRef,
+        serviceNameLength: UInt32,
+        serviceName: [*c]const u8,
+        accountNameLength: UInt32,
+        accountName: [*c]const u8,
+        passwordLength: UInt32,
+        passwordData: ?*const anyopaque,
+        itemRef: ?*SecKeychainItemRef,
+    ) OSStatus;
+
+    extern "c" fn SecKeychainItemModifyAttributesAndData(
+        itemRef: SecKeychainItemRef,
+        attrList: ?*const anyopaque,
+        length: UInt32,
+        data: ?*const anyopaque,
+    ) OSStatus;
+
+    extern "c" fn SecKeychainItemFreeContent(
+        attrList: ?*anyopaque,
+        data: ?*anyopaque,
+    ) OSStatus;
+
+    extern "c" fn SecKeychainItemDelete(itemRef: SecKeychainItemRef) OSStatus;
+    extern "c" fn CFRelease(cf: ?*anyopaque) void;
+} else struct {};
 
 fn keychainStore(data: []const u8) !void {
     if (comptime !enable_keychain) return error.KeychainError;
@@ -301,7 +342,7 @@ fn fileFallbackStore(allocator: std.mem.Allocator, data: []const u8) !void {
     std.Io.Dir.createDirAbsolute(std.Options.debug_io, base, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
-    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .mode = 0o600 });
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .permissions = @enumFromInt(0o600) });
     defer file.close(std.Options.debug_io);
     var buf: [4096]u8 = undefined;
     var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
@@ -317,9 +358,11 @@ fn fileFallbackLoad(allocator: std.mem.Allocator) ![]const u8 {
     const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return error.NotAuthenticated;
     defer file.close(std.Options.debug_io);
     var buf: [64 * 1024]u8 = undefined;
+    var read_buf: [4096]u8 = undefined;
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     var total: usize = 0;
     while (total < buf.len) {
-        const n = file.read(buf[total..]) catch return error.NotAuthenticated;
+        const n = reader.interface.readSliceShort(buf[total..]) catch return error.NotAuthenticated;
         if (n == 0) break;
         total += n;
     }

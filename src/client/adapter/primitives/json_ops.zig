@@ -130,6 +130,7 @@ pub fn prepareJsonNamedHooksRegistry(
         const current_value = current_root.getPtr(entry.key_ptr.*);
         if (current_value == null) {
             try current_root.put(
+                arena,
                 try arena.dupe(u8, entry.key_ptr.*),
                 try cloneValue(arena, entry.value_ptr.*),
             );
@@ -387,7 +388,7 @@ fn ensureHooksObject(root_object: *std.json.ObjectMap, arena: std.mem.Allocator)
     if (root_object.getPtr("hooks")) |hooks_value| {
         return asObjectPtr(hooks_value) orelse error.InvalidHooksContainer;
     }
-    try root_object.put("hooks", .{ .object = std.json.ObjectMap.init(arena) });
+    try root_object.put(arena, "hooks", .{ .object = .empty });
     return asObjectPtr(root_object.getPtr("hooks").?).?;
 }
 
@@ -397,7 +398,7 @@ fn ensureEventArray(hooks_object: *std.json.ObjectMap, event_name: []const u8, a
     }
 
     const owned_key = try arena.dupe(u8, event_name);
-    try hooks_object.put(owned_key, .{ .array = std.json.Array.init(arena) });
+    try hooks_object.put(arena, owned_key, .{ .array = std.json.Array.init(arena) });
     return asArrayPtr(hooks_object.getPtr(event_name).?).?;
 }
 
@@ -423,10 +424,11 @@ fn cloneValue(arena: std.mem.Allocator, value: std.json.Value) !std.json.Value {
             break :blk .{ .array = cloned };
         },
         .object => |inner| blk: {
-            var cloned: std.json.ObjectMap = .init(arena);
+            var cloned: std.json.ObjectMap = .empty;
             var it = inner.iterator();
             while (it.next()) |entry| {
                 try cloned.put(
+                    arena,
                     try arena.dupe(u8, entry.key_ptr.*),
                     try cloneValue(arena, entry.value_ptr.*),
                 );

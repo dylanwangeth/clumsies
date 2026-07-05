@@ -70,7 +70,7 @@ pub fn serializeLoadResultWithConstraints(
     const esc_ws = try encoding.jsonEscapeAlloc(allocator, workspace_id);
     defer allocator.free(esc_ws);
 
-    try buf.writer(allocator).print("{{\"workspaceId\":\"{s}\",\"items\":[", .{esc_ws});
+    try buf.print(allocator, "{{\"workspaceId\":\"{s}\",\"items\":[", .{esc_ws});
     for (result.items.items, 0..) |item, idx| {
         if (idx > 0) try buf.append(allocator, ',');
 
@@ -105,7 +105,8 @@ pub fn serializeLoadResultWithConstraints(
                 defer allocator.free(esc_text);
                 const esc_th = try encoding.jsonEscapeAlloc(allocator, c.text_hash);
                 defer allocator.free(esc_th);
-                try buf.writer(allocator).print(
+                try buf.print(
+                    allocator,
                     "{{\"id\":\"{s}\",\"name\":\"{s}\",\"text\":\"{s}\",\"textHash\":\"{s}\"}}",
                     .{ esc_cid, esc_name, esc_text, esc_th },
                 );
@@ -132,22 +133,23 @@ fn appendRuleMetadata(
     const esc_name = try encoding.jsonEscapeAlloc(allocator, item.name);
     defer allocator.free(esc_name);
 
-    try buf.writer(allocator).print(
+    try buf.print(
+        allocator,
         "{{\"id\":\"{s}\",\"kind\":\"{s}\",\"path\":\"{s}\",\"name\":\"{s}\",\"group\":",
         .{ esc_id, workspace_rule.kindToString(item.kind), esc_path, esc_name },
     );
     if (item.group) |group| {
         const esc_group = try encoding.jsonEscapeAlloc(allocator, group);
         defer allocator.free(esc_group);
-        try buf.writer(allocator).print("\"{s}\"", .{esc_group});
+        try buf.print(allocator, "\"{s}\"", .{esc_group});
     } else {
         try buf.appendSlice(allocator, "null");
     }
-    try buf.writer(allocator).print(",\"hash\":\"{s}\"", .{item.hash});
+    try buf.print(allocator, ",\"hash\":\"{s}\"", .{item.hash});
     if (item.description) |desc| {
         const esc_desc = try encoding.jsonEscapeAlloc(allocator, desc);
         defer allocator.free(esc_desc);
-        try buf.writer(allocator).print(",\"description\":\"{s}\"", .{esc_desc});
+        try buf.print(allocator, ",\"description\":\"{s}\"", .{esc_desc});
     }
     if (item.has_draft) {
         try buf.appendSlice(allocator, ",\"hasDraft\":true");
@@ -175,7 +177,8 @@ fn appendLoadedRuleWithConstraints(
     const esc_path = try encoding.jsonEscapeAlloc(allocator, item.path);
     defer allocator.free(esc_path);
 
-    try buf.writer(allocator).print(
+    try buf.print(
+        allocator,
         "{{\"id\":\"{s}\",\"kind\":\"{s}\",\"path\":\"{s}\",\"changed\":{s},\"hash\":\"{s}\",\"hasDraft\":{s},",
         .{
             esc_id,
@@ -189,13 +192,13 @@ fn appendLoadedRuleWithConstraints(
     if (item.draft_base_hash) |bh| {
         const esc_bh = try encoding.jsonEscapeAlloc(allocator, bh);
         defer allocator.free(esc_bh);
-        try buf.writer(allocator).print("\"draftBaseHash\":\"{s}\",", .{esc_bh});
+        try buf.print(allocator, "\"draftBaseHash\":\"{s}\",", .{esc_bh});
     }
     try buf.appendSlice(allocator, "\"content\":");
     if (item.content) |content| {
         const esc_content = try encoding.jsonEscapeAlloc(allocator, content);
         defer allocator.free(esc_content);
-        try buf.writer(allocator).print("\"{s}\"", .{esc_content});
+        try buf.print(allocator, "\"{s}\"", .{esc_content});
     } else {
         try buf.appendSlice(allocator, "null");
     }
@@ -248,7 +251,8 @@ test "serializeLoadResultWithConstraints includes constraints when content is un
     );
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = try tmp.dir.realpath(".", &path_buf);
+    const root_len = try tmp.dir.realPathFile(std.Options.debug_io, ".", &path_buf);
+    const root = path_buf[0..root_len];
 
     const ids = [_][]const u8{"p-commit"};
     const known = [_]workspace_rule.KnownHash{.{ .id = "p-commit", .hash = "sha256:workflow" }};
@@ -285,7 +289,7 @@ test "serializeRuleList produces valid items array" {
 }
 
 fn writeTestFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(sub_path, .{});
+    const file = try dir.createFile(std.Options.debug_io, sub_path, .{});
     defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
     var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);

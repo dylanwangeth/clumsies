@@ -243,7 +243,10 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
 
     const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, config_path, .{ .truncate = true });
     defer file.close(std.Options.debug_io);
-    _ = try file.write(buf.items);
+    var write_buf: [4096]u8 = undefined;
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
+    try writer.interface.writeAll(buf.items);
+    try writer.interface.flush();
 }
 
 /// Remove a workspace binding from ~/.clumsies/config.toml.
@@ -291,13 +294,13 @@ pub fn removeWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) !void {
 
     const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, config_path, .{ .truncate = true });
     defer file.close(std.Options.debug_io);
-    _ = try file.write(buf.items);
+    var write_buf: [4096]u8 = undefined;
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
+    try writer.interface.writeAll(buf.items);
+    try writer.interface.flush();
 
     if (local_ws_dir) |path| {
-        std.Io.Dir.cwd().deleteTree(std.Options.debug_io, path) catch |err| switch (err) {
-            error.FileNotFound => {},
-            else => return err,
-        };
+        try std.Io.Dir.cwd().deleteTree(std.Options.debug_io, path);
     }
 }
 
@@ -322,9 +325,11 @@ fn loadConfig(allocator: std.mem.Allocator) !ParsedConfig {
     defer file.close(std.Options.debug_io);
 
     var buf: [64 * 1024]u8 = undefined;
+    var read_buf: [4096]u8 = undefined;
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     var total: usize = 0;
     while (total < buf.len) {
-        const n = file.read(buf[total..]) catch return error.NoConfigFound;
+        const n = reader.interface.readSliceShort(buf[total..]) catch return error.NoConfigFound;
         if (n == 0) break;
         total += n;
     }

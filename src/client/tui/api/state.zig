@@ -196,7 +196,6 @@ pub const ApiState = struct {
     backing_allocator: std.mem.Allocator,
     arena: *std.heap.ArenaAllocator,
     local_arena: *std.heap.ArenaAllocator,
-    ts_allocator: std.heap.ThreadSafeAllocator,
 
     pub fn init(base_allocator: std.mem.Allocator) ApiState {
         const arena_ptr = base_allocator.create(std.heap.ArenaAllocator) catch
@@ -214,12 +213,11 @@ pub const ApiState = struct {
             .arena = arena_ptr,
             .local_arena = local_arena_ptr,
             .client_id = id_bytes,
-            .ts_allocator = undefined,
         };
     }
 
     pub fn bindAllocator(self: *ApiState) void {
-        self.ts_allocator = .{ .child_allocator = self.arena.allocator() };
+        _ = self;
     }
 
     pub fn clientIdHex(self: *ApiState) []const u8 {
@@ -244,7 +242,7 @@ pub const ApiState = struct {
     }
 
     pub fn allocator(self: *ApiState) std.mem.Allocator {
-        return self.ts_allocator.allocator();
+        return self.arena.allocator();
     }
 
     pub fn updateAuthTokens(self: *ApiState, access_token: []const u8, refresh_token: []const u8) void {

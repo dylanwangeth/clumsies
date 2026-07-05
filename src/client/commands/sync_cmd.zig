@@ -321,7 +321,7 @@ fn pruneCacheDir(
 
     var removed: usize = 0;
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(std.Options.debug_io)) |entry| {
         const rel_path = if (rel_dir.len == 0)
             try allocator.dupe(u8, entry.name)
         else
@@ -331,13 +331,13 @@ fn pruneCacheDir(
         switch (entry.kind) {
             .file, .sym_link => {
                 if (!keep.contains(rel_path)) {
-                    try dir.deleteFile(entry.name);
+                    try dir.deleteFile(std.Options.debug_io, entry.name);
                     removed += 1;
                 }
             },
             .directory => {
                 removed += try pruneCacheDir(allocator, namespace_dir, rel_path, keep);
-                dir.deleteDir(entry.name) catch |err| switch (err) {
+                dir.deleteDir(std.Options.debug_io, entry.name) catch |err| switch (err) {
                     error.DirNotEmpty, error.FileNotFound => {},
                     else => return err,
                 };
@@ -493,7 +493,7 @@ fn localFileMatchesHash(
 
     var read_buf: [8192]u8 = undefined;
     var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch return false;
+    const content = fr.interface.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch return false;
     defer allocator.free(content);
 
     const local_hash = util_hash.sha256HexAlloc(allocator, content) catch return false;
@@ -543,7 +543,7 @@ fn writeToCache(allocator: std.mem.Allocator, ws_cache_dir: []const u8, sub_dir:
         try dir.createDirPath(std.Options.debug_io, rel_parent);
     }
 
-    const file = try dir.createFile(name, .{ .truncate = true });
+    const file = try dir.createFile(std.Options.debug_io, name, .{ .truncate = true });
     defer file.close(std.Options.debug_io);
 
     var buf: [8192]u8 = undefined;
@@ -623,19 +623,12 @@ test "pruneCacheNamespace removes files absent from manifest keep set" {
 
     try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/keep");
     try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/stale");
-    {
-        const f = try tmp.dir.createFile("cache/context/keep/A.md", .{});
-        defer f.close(std.Options.debug_io);
-        try f.writeAll("keep");
-    }
-    {
-        const f = try tmp.dir.createFile("cache/context/stale/B.md", .{});
-        defer f.close(std.Options.debug_io);
-        try f.writeAll("stale");
-    }
+    try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "cache/context/keep/A.md", .data = "keep" });
+    try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "cache/context/stale/B.md", .data = "stale" });
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const namespace_path = try tmp.dir.realpath("cache/context", &buf);
+    const namespace_path_len = try tmp.dir.realPathFile(std.Options.debug_io, "cache/context", &buf);
+    const namespace_path = buf[0..namespace_path_len];
 
     var keep: std.StringHashMapUnmanaged(void) = .empty;
     defer keep.deinit(testing.allocator);
@@ -644,10 +637,10 @@ test "pruneCacheNamespace removes files absent from manifest keep set" {
     const removed = try pruneCacheNamespace(testing.allocator, namespace_path, &keep);
     try testing.expectEqual(@as(usize, 1), removed);
     {
-        const f = try tmp.dir.openFile("cache/context/keep/A.md", .{});
+        const f = try tmp.dir.openFile(std.Options.debug_io, "cache/context/keep/A.md", .{});
         defer f.close(std.Options.debug_io);
     }
-    try testing.expectError(error.FileNotFound, tmp.dir.openFile("cache/context/stale/B.md", .{}));
+    try testing.expectError(error.FileNotFound, tmp.dir.openFile(std.Options.debug_io, "cache/context/stale/B.md", .{}));
 }
 
 test "localFileMatchesHash returns true on hash match" {
@@ -655,14 +648,11 @@ test "localFileMatchesHash returns true on hash match" {
     defer tmp.cleanup();
 
     try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule");
-    {
-        const f = try tmp.dir.createFile("cache/rule/file.md", .{});
-        defer f.close(std.Options.debug_io);
-        try f.writeAll("hello");
-    }
+    try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "cache/rule/file.md", .data = "hello" });
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cache_path = try tmp.dir.realpath("cache", &buf);
+    const cache_path_len = try tmp.dir.realPathFile(std.Options.debug_io, "cache", &buf);
+    const cache_path = buf[0..cache_path_len];
 
     // sha256 of "hello" is 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
     const hello_sha = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
@@ -675,14 +665,11 @@ test "localFileMatchesHash returns false on hash mismatch" {
     defer tmp.cleanup();
 
     try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule");
-    {
-        const f = try tmp.dir.createFile("cache/rule/file.md", .{});
-        defer f.close(std.Options.debug_io);
-        try f.writeAll("hello");
-    }
+    try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "cache/rule/file.md", .data = "hello" });
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cache_path = try tmp.dir.realpath("cache", &buf);
+    const cache_path_len = try tmp.dir.realPathFile(std.Options.debug_io, "cache", &buf);
+    const cache_path = buf[0..cache_path_len];
 
     const matches = try localFileMatchesHash(testing.allocator, cache_path, "rule", "file.md", "0000000000000000000000000000000000000000000000000000000000000000");
     try testing.expect(!matches);
@@ -695,7 +682,8 @@ test "localFileMatchesHash returns false when file is missing" {
     try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule");
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cache_path = try tmp.dir.realpath("cache", &buf);
+    const cache_path_len = try tmp.dir.realPathFile(std.Options.debug_io, "cache", &buf);
+    const cache_path = buf[0..cache_path_len];
 
     const matches = try localFileMatchesHash(testing.allocator, cache_path, "rule", "missing.md", "anyhashvalue");
     try testing.expect(!matches);
@@ -706,14 +694,11 @@ test "localFileMatchesHash returns false on empty remote hash" {
     defer tmp.cleanup();
 
     try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule");
-    {
-        const f = try tmp.dir.createFile("cache/rule/file.md", .{});
-        defer f.close(std.Options.debug_io);
-        try f.writeAll("hello");
-    }
+    try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "cache/rule/file.md", .data = "hello" });
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cache_path = try tmp.dir.realpath("cache", &buf);
+    const cache_path_len = try tmp.dir.realPathFile(std.Options.debug_io, "cache", &buf);
+    const cache_path = buf[0..cache_path_len];
 
     const matches = try localFileMatchesHash(testing.allocator, cache_path, "rule", "file.md", "");
     try testing.expect(!matches);

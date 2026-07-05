@@ -213,7 +213,7 @@ pub fn appendAttestationEvent(allocator: std.mem.Allocator, event: AttestationEv
 
     var file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, attestation_path, .{ .truncate = false });
     defer file.close(std.Options.debug_io);
-    const end_pos = try file.getEndPos();
+    const end_pos = (try file.stat(std.Options.debug_io)).size;
 
     const line = try serializeAttestationEvent(allocator, event);
     defer allocator.free(line);
@@ -238,7 +238,8 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
     const esc_type = try encoding.jsonEscapeAlloc(allocator, type_tag);
     defer allocator.free(esc_type);
 
-    try buf.writer(allocator).print(
+    try buf.print(
+        allocator,
         "{{\"ws_id\":\"{s}\",\"session_id\":\"{s}\",\"event_id\":{d},\"timestamp\":{d},\"type\":\"{s}\"",
         .{ esc_ws, esc_session, event.event_id, event.ts, esc_type },
     );
@@ -341,23 +342,44 @@ fn writeOptionalString(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), ke
     const v = value orelse return;
     const esc = try encoding.jsonEscapeAlloc(allocator, v);
     defer allocator.free(esc);
-    try buf.writer(allocator).print(",\"{s}\":\"{s}\"", .{ key, esc });
+    try buf.print(allocator, ",\"{s}\":\"{s}\"", .{ key, esc });
 }
 
 fn writeOptionalBool(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: ?bool) !void {
     const v = value orelse return;
-    try buf.writer(allocator).print(",\"{s}\":{s}", .{ key, if (v) "true" else "false" });
+    try buf.print(allocator, ",\"{s}\":{s}", .{ key, if (v) "true" else "false" });
 }
 
 fn writeOptionalU32(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: ?u32) !void {
     const v = value orelse return;
-    try buf.writer(allocator).print(",\"{s}\":{d}", .{ key, v });
+    try buf.print(allocator, ",\"{s}\":{d}", .{ key, v });
+}
+
+fn initTestHomeEnv(allocator: std.mem.Allocator, home: []const u8) !std.process.Environ {
+    var map = std.process.Environ.Map.init(allocator);
+    defer map.deinit();
+    try map.put("HOME", home);
+    try map.put("USERPROFILE", home);
+    return .{ .block = try map.createPosixBlock(allocator, .{}) };
 }
 
 test "sessionAttestationFilePath is under workspace attestation directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home_len = try tmp.dir.realPathFile(std.Options.debug_io, ".", &home_buf);
+    const home = home_buf[0..home_len];
+
+    var test_env = try initTestHomeEnv(testing.allocator, home);
+    defer test_env.block.deinit(testing.allocator);
+    defer env_util.init(.empty);
+    env_util.init(test_env);
+
     const p = try sessionAttestationFilePath(testing.allocator, "ws-test123", "sess-abc");
     defer testing.allocator.free(p);
-    try testing.expect(std.mem.indexOf(u8, p, "/.clumsies/workspaces/ws-test123/attestation/sess-abc.jsonl") != null);
+    try testing.expect(std.mem.startsWith(u8, p, home));
+    try testing.expect(std.mem.endsWith(u8, p, "/.clumsies/workspaces/ws-test123/attestation/sess-abc.jsonl"));
 }
 
 test "serializeAttestationEvent: refer event with all fields" {

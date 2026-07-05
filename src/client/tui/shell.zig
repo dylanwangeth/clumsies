@@ -301,11 +301,15 @@ pub const Shell = struct {
     // workspace list (see `activeWsId()`), not from a cwd binding.
     app: *vxfw.App,
     env_map: *const std.process.Environ.Map,
+    process_environ: std.process.Environ,
+    process_io: std.Io,
 
     pub fn init(
         api_state: *api.state.ApiState,
         app: *vxfw.App,
         env_map: *const std.process.Environ.Map,
+        process_environ: std.process.Environ,
+        process_io: std.Io,
     ) Shell {
         const prefs = tui_prefs.load(api_state.backing_allocator) catch tui_prefs.Prefs{};
         defer prefs.deinit(api_state.backing_allocator);
@@ -324,6 +328,8 @@ pub const Shell = struct {
             .last_workspace_id = last_workspace_id,
             .app = app,
             .env_map = env_map,
+            .process_environ = process_environ,
+            .process_io = process_io,
         };
         shell.refreshMarkdownViewerPreference();
         shell.seedLoginDefaults();
@@ -1628,7 +1634,7 @@ pub const Shell = struct {
         if (!std.mem.startsWith(u8, with_scheme, "http://") and !std.mem.startsWith(u8, with_scheme, "https://")) {
             return error.UnsupportedHubUrlScheme;
         }
-        const normalized = std.mem.trimRight(u8, with_scheme, "/");
+        const normalized = std.mem.trimEnd(u8, with_scheme, "/");
         if (normalized.len == with_scheme.len) return with_scheme;
         const copy = try allocator.dupe(u8, normalized);
         allocator.free(with_scheme);
@@ -2488,7 +2494,7 @@ pub const Shell = struct {
         defer file.close(std.Options.debug_io);
         var read_buf: [4096]u8 = undefined;
         var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-        return fr.interface.allocRemaining(arena, std.io.Limit.limited(10 * 1024 * 1024)) catch null;
+        return fr.interface.allocRemaining(arena, std.Io.Limit.limited(10 * 1024 * 1024)) catch null;
     }
 
     pub fn isLocalContentFresh(
@@ -4665,7 +4671,7 @@ pub const Shell = struct {
         defer alloc.free(command);
         var display = std.ArrayList(u8).empty;
         defer display.deinit(alloc);
-        display.writer(alloc).print("$ {s} <preview.md>", .{command}) catch {
+        display.print(alloc, "$ {s} <preview.md>", .{command}) catch {
             self.setMarkdownViewerDisplay("$ <viewer command too large>");
             return;
         };
@@ -5153,7 +5159,7 @@ pub const Shell = struct {
     fn copyInviteToken(self: *Shell) void {
         const token = self.invite_result_token_buf[0..self.invite_result_token_len];
         if (token.len == 0) return;
-        workspace_panel.copyTextToClipboard(self.api_state.backing_allocator, token);
+        workspace_panel.copyTextToClipboard(self.process_io, token);
         self.invite_token_copied = true;
     }
 
@@ -5465,7 +5471,7 @@ pub const Shell = struct {
         defer file.close(std.Options.debug_io);
 
         const stat = file.stat(std.Options.debug_io) catch return .{};
-        return .{ .size = stat.size, .mtime = stat.mtime };
+        return .{ .size = stat.size, .mtime = stat.mtime.nanoseconds };
     }
 
     pub fn draftStatusFor(
@@ -5609,7 +5615,7 @@ pub const Shell = struct {
 
     pub fn copySelectedContentId(self: *Shell) bool {
         const id = self.selectedContentId() orelse return false;
-        workspace_panel.copyTextToClipboard(self.api_state.backing_allocator, id);
+        workspace_panel.copyTextToClipboard(self.process_io, id);
         self.notifyOp(.success, "Copied id to clipboard.");
         return true;
     }
@@ -5648,7 +5654,7 @@ pub const Shell = struct {
 
         var prefs = tui_prefs.load(alloc) catch tui_prefs.Prefs{};
         defer prefs.deinit(alloc);
-        const result = markdown_viewer.open(alloc, prefs.markdown_viewer_argv, file_path) catch |err| {
+        const result = markdown_viewer.open(alloc, self.process_environ, prefs.markdown_viewer_argv, file_path, .detach) catch |err| {
             self.notifyOp(.failure, @errorName(err));
             return;
         };
@@ -5743,6 +5749,7 @@ pub const Shell = struct {
         defer alloc.free(draft_abs);
 
         const result = editor_host.editFile(
+            self.process_io,
             alloc,
             &self.app.vx,
             &self.app.tty,
@@ -7738,6 +7745,7 @@ pub const Shell = struct {
         defer alloc.free(draft_abs);
 
         const result = editor_host.editFile(
+            self.process_io,
             alloc,
             &self.app.vx,
             &self.app.tty,

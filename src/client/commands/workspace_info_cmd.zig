@@ -20,7 +20,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         return;
     }
 
-    const cwd = std.process.getCwdAlloc(allocator) catch return;
+    const cwd = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator) catch return;
     defer allocator.free(cwd);
 
     const binding = ws_config.resolveWorkspace(allocator, cwd) catch return;

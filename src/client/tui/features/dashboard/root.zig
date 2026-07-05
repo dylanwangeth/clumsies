@@ -9,6 +9,7 @@ const w = @import("../../widgets.zig");
 const attestation_reader = @import("../../runtime/attestation_reader.zig");
 const drafts_mod = @import("../../../drafts.zig");
 const workspace_rule = @import("../../../rule.zig");
+const env_util = @import("clumsies_lib").util.env_util;
 pub const ARENA_HEIGHT: u16 = 7;
 pub const ROUND_ROW_COUNT = 5;
 pub const MAX_VISIBLE_ROUNDS: usize = 1000;
@@ -1045,7 +1046,7 @@ fn appendLoadCountPart(
 ) std.mem.Allocator.Error!void {
     if (count == 0) return;
     if (parts.items.len > 0) try parts.appendSlice(allocator, ", ");
-    try parts.writer(allocator).print("{d} {s}", .{ count, if (count == 1) singular else plural });
+    try parts.print(allocator, "{d} {s}", .{ count, if (count == 1) singular else plural });
 }
 
 fn loadToolId(tool: attestation_reader.RoundTool) ?[]const u8 {
@@ -1347,8 +1348,7 @@ fn resolveConstraintInfo(
 }
 
 fn workspaceDir(arena: std.mem.Allocator, ws_id: []const u8) ?[]const u8 {
-    const home = std.process.getEnvVarOwned(arena, "HOME") catch
-        std.process.getEnvVarOwned(arena, "USERPROFILE") catch return null;
+    const home = env_util.homeDir(arena) catch return null;
     return std.fs.path.join(arena, &.{ home, ".clumsies", "workspaces", ws_id }) catch null;
 }
 
@@ -1796,7 +1796,7 @@ fn readCacheBytes(
     defer file.close(std.Options.debug_io);
     var read_buf: [4096]u8 = undefined;
     var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return reader.interface.allocRemaining(arena, std.io.Limit.limited(1 * 1024 * 1024));
+    return reader.interface.allocRemaining(arena, std.Io.Limit.limited(1 * 1024 * 1024));
 }
 
 fn createdSummary(ctx: vxfw.DrawContext, draft: ?[]const u8) ?[]const u8 {

@@ -696,7 +696,7 @@ fn readFileIfExists(allocator: std.mem.Allocator, absolute_path: []const u8) !?[
 
     var read_buf: [4096]u8 = undefined;
     var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return try reader.interface.allocRemaining(allocator, std.io.Limit.limited(256 * 1024));
+    return try reader.interface.allocRemaining(allocator, std.Io.Limit.limited(256 * 1024));
 }
 
 fn cleanupEmptyParents(absolute_path: []const u8, root_hint: []const u8) void {
@@ -710,7 +710,7 @@ fn cleanupEmptyParents(absolute_path: []const u8, root_hint: []const u8) void {
 }
 
 fn writeFileAbsolute(path: []const u8, content: []const u8, mode: u16) !void {
-    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .mode = mode });
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .permissions = @enumFromInt(mode) });
     defer file.close(std.Options.debug_io);
 
     var buf: [4096]u8 = undefined;

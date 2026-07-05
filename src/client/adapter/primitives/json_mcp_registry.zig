@@ -65,6 +65,7 @@ pub fn prepareJsonMcpRegistry(
         const current_value = current_servers.getPtr(entry.key_ptr.*);
         if (current_value == null) {
             try current_servers.put(
+                arena,
                 try arena.dupe(u8, entry.key_ptr.*),
                 try cloneValue(arena, entry.value_ptr.*),
             );
@@ -140,7 +141,7 @@ fn ensureMcpServersObject(root_object: *std.json.ObjectMap, arena: std.mem.Alloc
     if (root_object.getPtr("mcpServers")) |value| {
         return asObjectPtr(value) orelse error.InvalidMcpServersContainer;
     }
-    try root_object.put("mcpServers", .{ .object = std.json.ObjectMap.init(arena) });
+    try root_object.put(arena, "mcpServers", .{ .object = .empty });
     return asObjectPtr(root_object.getPtr("mcpServers").?).?;
 }
 
@@ -166,10 +167,11 @@ fn cloneValue(arena: std.mem.Allocator, value: std.json.Value) !std.json.Value {
             break :blk .{ .array = cloned };
         },
         .object => |inner| blk: {
-            var cloned: std.json.ObjectMap = .init(arena);
+            var cloned: std.json.ObjectMap = .empty;
             var it = inner.iterator();
             while (it.next()) |entry| {
                 try cloned.put(
+                    arena,
                     try arena.dupe(u8, entry.key_ptr.*),
                     try cloneValue(arena, entry.value_ptr.*),
                 );

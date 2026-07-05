@@ -2,6 +2,7 @@
 const std = @import("std");
 const workspace_rule = @import("../../rule.zig");
 const data = @import("../models/view_types.zig");
+const env_util = @import("clumsies_lib").util.env_util;
 
 pub const LocalStats = struct {
     total_refer_count: u32 = 0,
@@ -140,7 +141,7 @@ pub fn readLocalStats(allocator: std.mem.Allocator) ?LocalStats {
     var all_rule_totals: RuleConstraintTotals = .init(allocator);
     defer deinitRuleConstraintTotals(allocator, &all_rule_totals);
     var it = dir.iterate();
-    while (it.next() catch null) |entry| {
+    while (it.next(std.Options.debug_io) catch null) |entry| {
         if (entry.kind != .directory) continue;
         const ws_id = allocator.dupe(u8, entry.name) catch continue;
         var keep_ws_id = false;
@@ -190,7 +191,7 @@ fn readWorkspaceEvents(allocator: std.mem.Allocator, ws_dir: []const u8, ws_id: 
     if (dir) |*opened_dir| {
         defer opened_dir.close(std.Options.debug_io);
         var it = opened_dir.iterate();
-        while (it.next() catch null) |entry| {
+        while (it.next(std.Options.debug_io) catch null) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
             const path = std.fs.path.join(allocator, &.{ log_dir, entry.name }) catch continue;
@@ -201,8 +202,7 @@ fn readWorkspaceEvents(allocator: std.mem.Allocator, ws_dir: []const u8, ws_id: 
 }
 
 fn getBaseDir(allocator: std.mem.Allocator) ?[]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
-        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return null;
+    const home = env_util.homeDir(allocator) catch return null;
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".clumsies" }) catch null;
 }
@@ -217,11 +217,10 @@ fn readEventsFromFile(
     defer file.close(std.Options.debug_io);
 
     const max_attestation_bytes: u64 = 8 * 1024 * 1024;
-    const end_pos = file.getEndPos() catch return;
+    const end_pos = (file.stat(std.Options.debug_io) catch return).size;
     if (end_pos == 0) return;
 
     const read_from: u64 = if (end_pos > max_attestation_bytes) end_pos - max_attestation_bytes else 0;
-    file.seekTo(read_from) catch return;
 
     const read_len: usize = @intCast(end_pos - read_from);
     const buf = allocator.alloc(u8, read_len) catch return;
@@ -229,6 +228,7 @@ fn readEventsFromFile(
 
     var read_buf: [4096]u8 = undefined;
     var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
+    reader.seekTo(read_from) catch return;
     const total = reader.interface.readSliceShort(buf) catch return;
     if (total == 0) return;
 

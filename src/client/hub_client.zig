@@ -5,6 +5,7 @@ const std = @import("std");
 const http = std.http;
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 const logger = @import("clumsies_lib").logger;
+const time_util = @import("clumsies_lib").util.time_util;
 
 const log = std.log.scoped(.hub_client);
 
@@ -66,7 +67,7 @@ pub const HubClient = struct {
             .allocator = allocator,
             .hub_url = hub_url,
             .access_token = access_token,
-            .client = .{ .allocator = allocator },
+            .client = .{ .allocator = allocator, .io = std.Options.debug_io },
         };
     }
 
@@ -195,7 +196,7 @@ pub const HubClient = struct {
     }
 
     fn doFetchOnce(self: *HubClient, method: http.Method, path: []const u8, payload: ?[]const u8) !Response {
-        const started_us = std.time.microTimestamp();
+        const started_us = time_util.nowMicros();
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.hub_url, path });
         defer self.allocator.free(url);
 
@@ -233,7 +234,7 @@ pub const HubClient = struct {
                 methodName(method),
                 logger.redactedPath(path),
                 @errorName(err),
-                std.time.microTimestamp() - started_us,
+                time_util.nowMicros() - started_us,
             });
             return err;
         };
@@ -244,7 +245,7 @@ pub const HubClient = struct {
                 logger.redactedPath(path),
                 @errorName(err),
                 @intFromEnum(result.status),
-                std.time.microTimestamp() - started_us,
+                time_util.nowMicros() - started_us,
             });
             return err;
         };
@@ -254,7 +255,7 @@ pub const HubClient = struct {
             methodName(method),
             logger.redactedPath(path),
             @intFromEnum(result.status),
-            std.time.microTimestamp() - started_us,
+            time_util.nowMicros() - started_us,
             body.len,
         });
 

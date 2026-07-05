@@ -3,6 +3,7 @@
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("clumsies_lib").util.encoding;
+const env_util = @import("clumsies_lib").util.env_util;
 const util_hash = @import("clumsies_lib").util.hash;
 const workspace_rule = @import("../rule.zig");
 const drafts_mod = @import("../drafts.zig");
@@ -105,7 +106,7 @@ pub fn handleCall(
     } else return try tool_result.buildErrorResult(allocator, "invalid request: name is required");
 
     const arguments = params_obj.get("arguments") orelse std.json.Value{
-        .object = .init(allocator),
+        .object = .empty,
     };
     const args_obj = switch (arguments) {
         .object => |obj| obj,
@@ -855,7 +856,7 @@ fn readMetaPromptCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8) ![]
     defer file.close(std.Options.debug_io);
     var read_buf: [4096]u8 = undefined;
     var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024));
+    return try fr.interface.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024));
 }
 
 fn isMetaPromptPath(path: []const u8) bool {
@@ -883,7 +884,7 @@ fn buildOkDraftIdentity(
 }
 
 fn writeTestFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(sub_path, .{});
+    const file = try dir.createFile(std.Options.debug_io, sub_path, .{});
     defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
     var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
@@ -892,8 +893,30 @@ fn writeTestFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !vo
 }
 
 fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {
-    return tmp.dir.realpath(".", buf) catch "";
+    const len = tmp.dir.realPathFile(std.Options.debug_io, ".", buf) catch return "";
+    return buf[0..len];
 }
+
+const TestHomeEnv = struct {
+    environ: std.process.Environ,
+
+    fn init(allocator: std.mem.Allocator, home: []const u8) !TestHomeEnv {
+        var map = std.process.Environ.Map.init(allocator);
+        defer map.deinit();
+        try map.put("HOME", home);
+        try map.put("USERPROFILE", home);
+        return .{ .environ = .{ .block = try map.createPosixBlock(allocator, .{}) } };
+    }
+
+    fn activate(self: TestHomeEnv) void {
+        env_util.init(self.environ);
+    }
+
+    fn deinit(self: *TestHomeEnv, allocator: std.mem.Allocator) void {
+        env_util.init(.empty);
+        self.environ.block.deinit(allocator);
+    }
+};
 
 fn draftRenameEventUsesPath(
     allocator: std.mem.Allocator,
@@ -903,7 +926,7 @@ fn draftRenameEventUsesPath(
 ) bool {
     const attestation_path = attestation.sessionAttestationFilePath(allocator, ws_id, session_id) catch return false;
     defer allocator.free(attestation_path);
-    const content = std.Io.Dir.cwd().readFileAlloc(allocator, attestation_path, 1024 * 1024) catch return false;
+    const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, attestation_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch return false;
     defer allocator.free(content);
     const needle = std.fmt.allocPrint(allocator, "\"path\":\"{s}\"", .{path}) catch return false;
     defer allocator.free(needle);
@@ -1052,6 +1075,9 @@ test "store tool creates context change through tagged op" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
+    var test_env = try TestHomeEnv.init(testing.allocator, root);
+    defer test_env.deinit(testing.allocator);
+    test_env.activate();
 
     const args_json =
         \\{
@@ -1094,6 +1120,9 @@ test "store tool updates newly created context draft" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
+    var test_env = try TestHomeEnv.init(testing.allocator, root);
+    defer test_env.deinit(testing.allocator);
+    test_env.activate();
 
     var session: session_mod.Session = .{
         .ws_id = try testing.allocator.dupe(u8, "ws-test"),
@@ -1157,6 +1186,9 @@ test "store tool renames newly created context draft" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
+    var test_env = try TestHomeEnv.init(testing.allocator, root);
+    defer test_env.deinit(testing.allocator);
+    test_env.activate();
 
     try drafts_mod.createDraft(testing.allocator, root, .{
         .category = .context,
@@ -1215,6 +1247,9 @@ test "store tool discards rule change by local temp id" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
+    var test_env = try TestHomeEnv.init(testing.allocator, root);
+    defer test_env.deinit(testing.allocator);
+    test_env.activate();
 
     try drafts_mod.createDraft(testing.allocator, root, .{
         .category = .rule,
@@ -1259,6 +1294,9 @@ test "store tool discards MPF draft by manifest id" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
+    var test_env = try TestHomeEnv.init(testing.allocator, root);
+    defer test_env.deinit(testing.allocator);
+    test_env.activate();
 
     try drafts_mod.createDraft(testing.allocator, root, .{
         .category = .meta_prompt,
@@ -1304,6 +1342,9 @@ test "store tool updates MPF change" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
+    var test_env = try TestHomeEnv.init(testing.allocator, root);
+    defer test_env.deinit(testing.allocator);
+    test_env.activate();
     try tmp.dir.createDirPath(std.Options.debug_io, "cache");
     try writeTestFile(tmp.dir, "cache/META_PROMPT.md", "old mpf");
 
@@ -1345,6 +1386,9 @@ test "store update overwrites existing context update draft" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
+    var test_env = try TestHomeEnv.init(testing.allocator, root);
+    defer test_env.deinit(testing.allocator);
+    test_env.activate();
 
     try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
     try writeTestFile(tmp.dir, "cache/context/spec/API.md", "old api");
@@ -1418,6 +1462,9 @@ test "context propose delete discards create-only draft by local temp id" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
+    var test_env = try TestHomeEnv.init(testing.allocator, root);
+    defer test_env.deinit(testing.allocator);
+    test_env.activate();
     const draft_path = "projects/eth-p2p-z/project-context.md";
 
     try drafts_mod.createDraft(testing.allocator, root, .{
@@ -1480,6 +1527,9 @@ test "rule propose delete discards create-only draft by local temp id" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const root = tmpDirAbsolutePath(&tmp, &buf);
+    var test_env = try TestHomeEnv.init(testing.allocator, root);
+    defer test_env.deinit(testing.allocator);
+    test_env.activate();
     const draft_path = "learning/zig-libp2p/eth-p2p-z.md";
 
     try drafts_mod.createDraft(testing.allocator, root, .{

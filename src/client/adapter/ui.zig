@@ -201,7 +201,8 @@ const MenuKey = enum {
 
 fn canUseInteractivePrompt() bool {
     if (comptime builtin.os.tag == .windows) return false;
-    return std.Io.File.stdin().isTty() and std.Io.File.stdout().isTty();
+    return (std.Io.File.stdin().isTty(std.Options.debug_io) catch false) and
+        (std.Io.File.stdout().isTty(std.Options.debug_io) catch false);
 }
 
 fn promptYesNoInteractive(
@@ -331,27 +332,32 @@ fn rewindRenderedBlock(stdout: *std.Io.Writer, rendered_lines: usize) !void {
 }
 
 fn readMenuKey() !MenuKey {
-    const stdin = std.Io.File.stdin();
-    var byte: [1]u8 = undefined;
+    var read_buf: [8]u8 = undefined;
+    var reader = std.Io.File.Reader.initStreaming(std.Io.File.stdin(), std.Options.debug_io, &read_buf);
 
     while (true) {
-        const n = try stdin.read(&byte);
-        if (n == 0) return .enter;
+        const byte = reader.interface.takeByte() catch |err| switch (err) {
+            error.EndOfStream => return .enter,
+            else => |e| return e,
+        };
 
-        switch (byte[0]) {
+        switch (byte) {
             '\r', '\n' => return .enter,
             'k', 'K' => return .up,
             'j', 'J' => return .down,
             'y', 'Y' => return .yes,
             'n', 'N' => return .no,
             '\x1b' => {
-                var seq: [2]u8 = undefined;
-                const first = try stdin.read(seq[0..1]);
-                if (first == 0) return .other;
-                const second = try stdin.read(seq[1..2]);
-                if (second == 0) return .other;
-                if (seq[0] == '[' and seq[1] == 'A') return .up;
-                if (seq[0] == '[' and seq[1] == 'B') return .down;
+                const first = reader.interface.takeByte() catch |err| switch (err) {
+                    error.EndOfStream => return .other,
+                    else => |e| return e,
+                };
+                const second = reader.interface.takeByte() catch |err| switch (err) {
+                    error.EndOfStream => return .other,
+                    else => |e| return e,
+                };
+                if (first == '[' and second == 'A') return .up;
+                if (first == '[' and second == 'B') return .down;
                 return .other;
             },
             else => return .other,
@@ -363,15 +369,18 @@ fn readLineTrimmedAlloc(allocator: std.mem.Allocator) !?[]u8 {
     var line_buf: std.ArrayList(u8) = .empty;
     defer line_buf.deinit(allocator);
 
-    var byte: [1]u8 = undefined;
+    var read_buf: [64]u8 = undefined;
+    var reader = std.Io.File.Reader.initStreaming(std.Io.File.stdin(), std.Options.debug_io, &read_buf);
     while (true) {
-        const n = std.Io.File.stdin().read(&byte) catch return null;
-        if (n == 0) {
-            if (line_buf.items.len == 0) return null;
-            break;
-        }
-        if (byte[0] == '\n') break;
-        try line_buf.append(allocator, byte[0]);
+        const byte = reader.interface.takeByte() catch |err| switch (err) {
+            error.EndOfStream => {
+                if (line_buf.items.len == 0) return null;
+                break;
+            },
+            else => return null,
+        };
+        if (byte == '\n') break;
+        try line_buf.append(allocator, byte);
     }
 
     const line = try allocator.dupe(u8, std.mem.trim(u8, line_buf.items, " \t\r"));

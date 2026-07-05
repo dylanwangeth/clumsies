@@ -2,6 +2,7 @@ const build_options = @import("build_options");
 const model = @import("../model.zig");
 const std = @import("std");
 const types = @import("types.zig");
+const env_util = @import("clumsies_lib").util.env_util;
 const workflow_skills = @import("../workflow_skills.zig");
 
 pub const package: types.AdapterPackage = .{
@@ -150,15 +151,7 @@ pub fn resolveTargetRoot(
     return switch (scope) {
         .workspace => if (workspace_root_opt) |workspace_root| try allocator.dupe(u8, workspace_root) else null,
         .user => blk: {
-            const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
-                error.EnvironmentVariableNotFound => std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |fallback_err| switch (fallback_err) {
-                    error.EnvironmentVariableNotFound => return error.EnvironmentVariableNotFound,
-                    else => return fallback_err,
-                },
-                else => return err,
-            };
-            defer allocator.free(home);
-            break :blk try allocator.dupe(u8, home);
+            break :blk try env_util.homeDir(allocator);
         },
     };
 }

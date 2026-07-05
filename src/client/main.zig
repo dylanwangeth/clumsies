@@ -193,8 +193,8 @@ fn run(init: std.process.Init) !void {
                 try cmd_help.run(stderr_writer);
                 return error.CommandFailed;
             } else {
-                if (canLaunchTui()) {
-                    try tui.run(init.minimal.environ);
+                if (canLaunchTui(init.io)) {
+                    try tui.run(init.io, init.minimal.environ, init.environ_map);
                 } else {
                     try stdout_writer.print("{s}{s}{s}clumsies{s} {s}\n\n", .{ P, Color.bold, Color.orange, Color.reset, version });
                     try stdout_writer.print("TUI Shell requires an interactive terminal.\n\n", .{});
@@ -205,9 +205,9 @@ fn run(init: std.process.Init) !void {
     }
 }
 
-fn canLaunchTui() bool {
-    return (std.Io.File.stdin().isTty(std.Options.debug_io) catch false) and
-        (std.Io.File.stdout().isTty(std.Options.debug_io) catch false);
+fn canLaunchTui(io: std.Io) bool {
+    return (std.Io.File.stdin().isTty(io) catch false) and
+        (std.Io.File.stdout().isTty(io) catch false);
 }
 
 fn initClientLogger(allocator: std.mem.Allocator, environ: std.process.Environ) void {

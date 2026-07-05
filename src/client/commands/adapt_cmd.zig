@@ -49,7 +49,6 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
             try stderr.print("Error: {s} requires a value\n", .{err_ctx.flag.?});
             return;
         },
-        else => return err,
     };
     defer parsed.deinit(allocator);
 
@@ -433,7 +432,7 @@ fn listInstalls(
     }
 
     var iterator = installs_dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.Options.debug_io)) |entry| {
         if (entry.kind != .directory) continue;
 
         const manifest_path = try std.fs.path.join(allocator, &.{ installs_dir_path, entry.name, "manifest.json" });

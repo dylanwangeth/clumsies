@@ -10,6 +10,11 @@ pub const Result = enum {
     failed,
 };
 
+pub const OpenMode = enum {
+    detach,
+    wait,
+};
+
 pub fn systemOpenLabel() []const u8 {
     return switch (builtin.os.tag) {
         .macos => "$ open <preview.md>",
@@ -35,7 +40,7 @@ pub fn materialize(
     const path = try std.fs.path.join(allocator, &.{ dir_path, name });
     errdefer allocator.free(path);
 
-    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .mode = 0o600 });
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .permissions = @enumFromInt(0o600) });
     defer file.close(std.Options.debug_io);
     var buf: [4096]u8 = undefined;
     var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
@@ -46,8 +51,10 @@ pub fn materialize(
 
 pub fn open(
     allocator: std.mem.Allocator,
+    environ: std.process.Environ,
     configured_argv: ?[]const []const u8,
     file_path: []const u8,
+    mode: OpenMode,
 ) !Result {
     const argv = if (configured_argv) |configured|
         try argvWithFile(allocator, configured, file_path)
@@ -56,18 +63,48 @@ pub fn open(
     defer allocator.free(argv);
 
     if (argv.len < 2) return .spawn_failed;
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-
-    child.spawn() catch |err| switch (err) {
-        error.FileNotFound, error.AccessDenied, error.InvalidExe => return .viewer_not_found,
-        else => return .spawn_failed,
+    const wait_ctx = try allocator.create(WaitContext);
+    errdefer allocator.destroy(wait_ctx);
+    wait_ctx.* = .{
+        .allocator = allocator,
+        .io_backend = std.Io.Threaded.init(allocator, .{ .environ = environ }),
+        .child = undefined,
     };
-    const thread = std.Thread.spawn(.{ .allocator = allocator }, waitForChild, .{child}) catch {
-        var fallback_child = child;
-        _ = fallback_child.wait() catch {};
+    errdefer wait_ctx.io_backend.deinit();
+
+    const io = wait_ctx.io_backend.io();
+    wait_ctx.child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch |err| {
+        wait_ctx.io_backend.deinit();
+        allocator.destroy(wait_ctx);
+        return switch (err) {
+            error.FileNotFound, error.AccessDenied, error.InvalidExe => .viewer_not_found,
+            else => .spawn_failed,
+        };
+    };
+
+    if (mode == .wait) {
+        const term = wait_ctx.child.wait(io) catch {
+            wait_ctx.io_backend.deinit();
+            allocator.destroy(wait_ctx);
+            return .spawn_failed;
+        };
+        wait_ctx.io_backend.deinit();
+        allocator.destroy(wait_ctx);
+        return switch (term) {
+            .exited => |code| if (code == 0) .opened else .failed,
+            else => .failed,
+        };
+    }
+
+    const thread = std.Thread.spawn(.{ .allocator = allocator }, waitForChild, .{wait_ctx}) catch {
+        _ = wait_ctx.child.wait(io) catch {};
+        wait_ctx.io_backend.deinit();
+        allocator.destroy(wait_ctx);
         return .spawn_failed;
     };
     thread.detach();
@@ -91,9 +128,18 @@ pub fn previewFileName(allocator: std.mem.Allocator, source_path: []const u8) ![
     return try safe.toOwnedSlice(allocator);
 }
 
-fn waitForChild(child: std.process.Child) void {
-    var owned_child = child;
-    _ = owned_child.wait() catch {};
+const WaitContext = struct {
+    allocator: std.mem.Allocator,
+    io_backend: std.Io.Threaded,
+    child: std.process.Child,
+};
+
+fn waitForChild(ctx: *WaitContext) void {
+    defer {
+        ctx.io_backend.deinit();
+        ctx.allocator.destroy(ctx);
+    }
+    _ = ctx.child.wait(ctx.io_backend.io()) catch {};
 }
 
 fn argvWithFile(allocator: std.mem.Allocator, argv: []const []const u8, file_path: []const u8) ![]const []const u8 {
@@ -136,6 +182,11 @@ test "previewFileName keeps stable markdown path" {
 }
 
 test "open appends file path to configured argv" {
-    const result = try open(std.testing.allocator, &.{"/usr/bin/true"}, "/tmp/ignored.md");
+    const result = try open(std.testing.allocator, .empty, &.{"/usr/bin/true"}, "/tmp/ignored.md", .wait);
     try std.testing.expectEqual(Result.opened, result);
+}
+
+test "open returns failed for configured argv non-zero exit" {
+    const result = try open(std.testing.allocator, .empty, &.{"/usr/bin/false"}, "/tmp/ignored.md", .wait);
+    try std.testing.expectEqual(Result.failed, result);
 }

@@ -45,6 +45,11 @@ pub const Batch = struct {
     }
 };
 
+const RawLine = struct {
+    bytes: []const u8,
+    consumed: usize,
+};
+
 /// Upload helper injected by callers. flushOnce is agnostic to the transport
 /// so the library can be tested without a live hub server. Implementations
 /// should POST {"events": [...]} to /api/attestations and return true on 2xx.
@@ -76,7 +81,7 @@ pub fn flushOnce(
         var dir = dir_handle;
         defer dir.close(std.Options.debug_io);
         var it = dir.iterate();
-        while (it.next() catch return error.ReadAttestationFailed) |entry| {
+        while (it.next(std.Options.debug_io) catch return error.ReadAttestationFailed) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
 
@@ -185,15 +190,12 @@ fn collectBatch(
     var end_offset: u64 = start_offset;
 
     while (lines.items.len < MAX_EVENTS_PER_BATCH) {
-        const raw = reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
-        };
+        const line = (try takeLine(reader)) orelse break;
+        const raw = line.bytes;
 
         const trimmed = std.mem.trim(u8, raw, " \t\r");
-        const line_bytes = raw.len + 1;
         if (trimmed.len == 0) {
-            end_offset += line_bytes;
+            end_offset += line.consumed;
             continue;
         }
 
@@ -202,7 +204,7 @@ fn collectBatch(
                 "dropping oversized attestation event at offset {d}: {d} bytes exceeds {d} limit",
                 .{ end_offset, trimmed.len, MAX_SINGLE_EVENT_BYTES },
             );
-            end_offset += line_bytes;
+            end_offset += line.consumed;
             continue;
         }
 
@@ -214,7 +216,7 @@ fn collectBatch(
                 "dropping attestation event at offset {d}: {d} bytes exceeds {d} batch budget",
                 .{ end_offset, trimmed.len, MAX_BYTES_PER_BATCH },
             );
-            end_offset += line_bytes;
+            end_offset += line.consumed;
             continue;
         }
 
@@ -222,7 +224,7 @@ fn collectBatch(
         errdefer allocator.free(owned);
         try lines.append(allocator, owned);
         total_bytes = projected;
-        end_offset += line_bytes;
+        end_offset += line.consumed;
     }
 
     return .{
@@ -230,6 +232,20 @@ fn collectBatch(
         .total_bytes = total_bytes,
         .end_offset = end_offset,
     };
+}
+
+fn takeLine(reader: *std.Io.Reader) !?RawLine {
+    const inclusive = reader.peekDelimiterInclusive('\n') catch |err| switch (err) {
+        error.EndOfStream => {
+            const remaining = reader.buffer[reader.seek..reader.end];
+            if (remaining.len == 0) return null;
+            reader.toss(remaining.len);
+            return .{ .bytes = remaining, .consumed = remaining.len };
+        },
+        else => return err,
+    };
+    reader.toss(inclusive.len);
+    return .{ .bytes = inclusive[0 .. inclusive.len - 1], .consumed = inclusive.len };
 }
 
 fn buildBatchBody(allocator: std.mem.Allocator, lines: []const []const u8) ![]u8 {
@@ -316,23 +332,21 @@ test "flushLogFile clamps cursor after log truncation" {
     defer tmp.cleanup();
 
     {
-        const file = try tmp.dir.createFile("events.jsonl", .{});
-        defer file.close(std.Options.debug_io);
-        try file.writeAll(
+        try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "events.jsonl", .data =
             \\{"type":"refer","event_id":"after-truncate"}
             \\
-        );
+        });
     }
     {
-        const file = try tmp.dir.createFile("events.cursor", .{});
-        defer file.close(std.Options.debug_io);
-        try file.writeAll("999999\n");
+        try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "events.cursor", .data = "999999\n" });
     }
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     var cursor_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp.dir.realpath("events.jsonl", &path_buf);
-    const cursor_path = try tmp.dir.realpath("events.cursor", &cursor_buf);
+    const path_len = try tmp.dir.realPathFile(std.Options.debug_io, "events.jsonl", &path_buf);
+    const cursor_path_len = try tmp.dir.realPathFile(std.Options.debug_io, "events.cursor", &cursor_buf);
+    const path = path_buf[0..path_len];
+    const cursor_path = cursor_buf[0..cursor_path_len];
 
     var captured: std.ArrayList([]const u8) = .empty;
     defer {
@@ -360,20 +374,18 @@ test "flushLogFile handles event lines larger than small read buffers" {
     try event.appendSlice(testing.allocator, "\"}\n");
 
     {
-        const file = try tmp.dir.createFile("events.jsonl", .{});
-        defer file.close(std.Options.debug_io);
-        try file.writeAll(event.items);
+        try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "events.jsonl", .data = event.items });
     }
     {
-        const file = try tmp.dir.createFile("events.cursor", .{});
-        defer file.close(std.Options.debug_io);
-        try file.writeAll("0\n");
+        try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "events.cursor", .data = "0\n" });
     }
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     var cursor_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp.dir.realpath("events.jsonl", &path_buf);
-    const cursor_path = try tmp.dir.realpath("events.cursor", &cursor_buf);
+    const path_len = try tmp.dir.realPathFile(std.Options.debug_io, "events.jsonl", &path_buf);
+    const cursor_path_len = try tmp.dir.realPathFile(std.Options.debug_io, "events.cursor", &cursor_buf);
+    const path = path_buf[0..path_len];
+    const cursor_path = cursor_buf[0..cursor_path_len];
 
     var captured: std.ArrayList([]const u8) = .empty;
     defer {
@@ -404,24 +416,29 @@ test "flushLogFile resumes from cursor without double-counting offset" {
     ;
 
     {
-        const file = try tmp.dir.createFile("events.jsonl", .{});
+        const file = try tmp.dir.createFile(std.Options.debug_io, "events.jsonl", .{});
         defer file.close(std.Options.debug_io);
-        try file.writeAll(first);
-        try file.writeAll(second);
+        var buf: [256]u8 = undefined;
+        var writer = file.writer(std.Options.debug_io, &buf);
+        try writer.interface.writeAll(first);
+        try writer.interface.writeAll(second);
+        try writer.interface.flush();
     }
     {
-        const file = try tmp.dir.createFile("events.cursor", .{});
+        const file = try tmp.dir.createFile(std.Options.debug_io, "events.cursor", .{});
         defer file.close(std.Options.debug_io);
         var buf: [32]u8 = undefined;
-        var writer = file.writer(&buf);
+        var writer = file.writer(std.Options.debug_io, &buf);
         try writer.interface.print("{d}\n", .{first.len});
         try writer.interface.flush();
     }
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     var cursor_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp.dir.realpath("events.jsonl", &path_buf);
-    const cursor_path = try tmp.dir.realpath("events.cursor", &cursor_buf);
+    const path_len = try tmp.dir.realPathFile(std.Options.debug_io, "events.jsonl", &path_buf);
+    const cursor_path_len = try tmp.dir.realPathFile(std.Options.debug_io, "events.cursor", &cursor_buf);
+    const path = path_buf[0..path_len];
+    const cursor_path = cursor_buf[0..cursor_path_len];
 
     var captured: std.ArrayList([]const u8) = .empty;
     defer {
@@ -444,7 +461,7 @@ test "collectBatch stops at event count limit" {
     defer sample.deinit(testing.allocator);
     var i: usize = 0;
     while (i < MAX_EVENTS_PER_BATCH + 5) : (i += 1) {
-        try sample.writer(testing.allocator).print("line-{d}\n", .{i});
+        try sample.print(testing.allocator, "line-{d}\n", .{i});
     }
 
     var reader = std.Io.Reader.fixed(sample.items);
@@ -460,7 +477,7 @@ test "collectBatch stops at byte budget" {
     const chunk = "x" ** 1024;
     var i: usize = 0;
     while (i < 600) : (i += 1) {
-        try sample.writer(testing.allocator).print("{s}\n", .{chunk});
+        try sample.print(testing.allocator, "{s}\n", .{chunk});
     }
 
     var reader = std.Io.Reader.fixed(sample.items);
@@ -490,7 +507,7 @@ test "collectBatch drops oversized event and keeps neighbors" {
     const huge = "x" ** (MAX_SINGLE_EVENT_BYTES + 100);
     var sample: std.ArrayList(u8) = .empty;
     defer sample.deinit(testing.allocator);
-    try sample.writer(testing.allocator).print("ok1\n{s}\nok2\n", .{huge});
+    try sample.print(testing.allocator, "ok1\n{s}\nok2\n", .{huge});
 
     var reader = std.Io.Reader.fixed(sample.items);
     var batch = try collectBatch(testing.allocator, &reader, 0);
@@ -507,7 +524,7 @@ test "collectBatch advances offset when only oversized events are present" {
     const huge = "x" ** (MAX_SINGLE_EVENT_BYTES + 100);
     var sample: std.ArrayList(u8) = .empty;
     defer sample.deinit(testing.allocator);
-    try sample.writer(testing.allocator).print("{s}\n", .{huge});
+    try sample.print(testing.allocator, "{s}\n", .{huge});
 
     var reader = std.Io.Reader.fixed(sample.items);
     var batch = try collectBatch(testing.allocator, &reader, 50);
@@ -521,7 +538,7 @@ test "collectBatch drops first event when it exceeds batch budget" {
     const too_large = "x" ** MAX_BYTES_PER_BATCH;
     var sample: std.ArrayList(u8) = .empty;
     defer sample.deinit(testing.allocator);
-    try sample.writer(testing.allocator).print("{s}\nok\n", .{too_large});
+    try sample.print(testing.allocator, "{s}\nok\n", .{too_large});
 
     var reader = std.Io.Reader.fixed(sample.items);
     var batch = try collectBatch(testing.allocator, &reader, 10);

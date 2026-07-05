@@ -147,7 +147,7 @@ pub fn loadIndex(allocator: std.mem.Allocator, ws_dir: []const u8) !DraftsIndex 
 
     var read_buf: [4096]u8 = undefined;
     var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    const content = try fr.interface.allocRemaining(arena, std.io.Limit.limited(1 * 1024 * 1024));
+    const content = try fr.interface.allocRemaining(arena, std.Io.Limit.limited(1 * 1024 * 1024));
 
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, content, .{}) catch return error.InvalidDraftsIndex;
     if (parsed != .object) return error.InvalidDraftsIndex;
@@ -245,7 +245,7 @@ pub fn readDraftFile(
 
     var read_buf: [4096]u8 = undefined;
     var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024));
+    return try fr.interface.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024));
 }
 
 /// Parameters for creating a new draft entry. `draft_path` is the target
@@ -1138,7 +1138,7 @@ pub fn reconcileDraftsWithOptions(
 
         var read_buf: [4096]u8 = undefined;
         var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-        const content = fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch continue;
+        const content = fr.interface.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch continue;
         defer allocator.free(content);
 
         const current_hash = util_hash.contentHash(content);
@@ -1416,7 +1416,7 @@ fn statusToString(status: DraftStatus) []const u8 {
 }
 
 fn writeFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(sub_path, .{});
+    const file = try dir.createFile(std.Options.debug_io, sub_path, .{});
     defer file.close(std.Options.debug_io);
     var buf: [4096]u8 = undefined;
     var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
@@ -1425,7 +1425,8 @@ fn writeFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
 }
 
 fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {
-    return tmp.dir.realpath(".", buf) catch "";
+    const len = tmp.dir.realPathFile(std.Options.debug_io, ".", buf) catch return "";
+    return buf[0..len];
 }
 
 test "loadIndex: missing file returns empty index" {

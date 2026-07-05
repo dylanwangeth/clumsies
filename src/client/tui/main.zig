@@ -6,8 +6,15 @@ const Shell = @import("shell.zig").Shell;
 const auth_mod = @import("../auth.zig");
 const api = @import("api.zig");
 const tasks = @import("tasks.zig");
+const env_util = @import("clumsies_lib").util.env_util;
 
-pub fn run(environ: std.process.Environ) !void {
+pub fn run(
+    io: std.Io,
+    environ: std.process.Environ,
+    env_map: *std.process.Environ.Map,
+) !void {
+    env_util.init(environ);
+
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
     const allocator = da.allocator();
@@ -29,24 +36,22 @@ pub fn run(environ: std.process.Environ) !void {
         tasks.attestation_upload.start(&api_state) catch {};
     } else |_| {}
 
-    var app = try vxfw.App.init(allocator);
+    var tty_buffer: [4096]u8 = undefined;
+    var app = try vxfw.App.init(io, allocator, env_map, &tty_buffer);
     defer app.deinit();
 
     if (builtin.os.tag != .windows) {
         var title_buffer: [64]u8 = undefined;
-        var title_writer = std.Io.File.Writer.init(std.Io.File.stdout(), std.Options.debug_io, &title_buffer);
+        var title_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &title_buffer);
         defer title_writer.interface.flush() catch {};
         title_writer.interface.writeAll("\x1b]2;clumsies hub\x07") catch {};
     }
 
-    var env_map = try std.process.Environ.createMap(environ, allocator);
-    defer env_map.deinit();
-
-    var dashboard = Shell.init(&api_state, app, &env_map);
+    var dashboard = Shell.init(&api_state, &app, env_map, environ, io);
     defer dashboard.deinit();
     try app.run(dashboard.widget(), .{});
 }
 
 pub fn main(init: std.process.Init) !void {
-    try run(init.minimal.environ);
+    try run(init.io, init.minimal.environ, init.environ_map);
 }

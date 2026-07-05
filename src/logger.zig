@@ -955,7 +955,7 @@ test "file sink rotates oversized current client log on init" {
 }
 
 fn writeTestFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(sub_path, .{});
+    const file = try dir.createFile(std.Options.debug_io, sub_path, .{});
     defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
     var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);

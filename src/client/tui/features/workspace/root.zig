@@ -1652,7 +1652,7 @@ fn completeCreatePath(self: anytype) bool {
     var common: [256]u8 = undefined;
     var common_len: usize = 0;
     var single_is_dir = false;
-    while (iter.next() catch null) |entry| {
+    while (iter.next(std.Options.debug_io) catch null) |entry| {
         if (!std.mem.startsWith(u8, entry.name, prefix)) continue;
         if (count == 0) {
             common_len = @min(entry.name.len, common.len);
@@ -1895,7 +1895,7 @@ fn copyCreateInitCommand(self: anytype) void {
     const id = self.workspace.create_created_id_buf[0..self.workspace.create_created_id_len];
     const cmd = std.fmt.allocPrint(alloc, "clumsies init --ws-id {s}", .{id}) catch return;
     defer alloc.free(cmd);
-    copyTextToClipboard(alloc, cmd);
+    copyTextToClipboard(self.process_io, cmd);
 }
 
 fn writeErrorMessage(self: anytype, message: []const u8) void {
@@ -1908,29 +1908,30 @@ fn writeFixedBuf(buf: []u8, len: *usize, src: []const u8) void {
     len.* = n;
 }
 
-pub fn copyTextToClipboard(alloc: std.mem.Allocator, text: []const u8) void {
+pub fn copyTextToClipboard(io: std.Io, text: []const u8) void {
     const argv: []const []const u8 = switch (@import("builtin").os.tag) {
         .macos => &[_][]const u8{"pbcopy"},
         .linux => &[_][]const u8{ "xclip", "-selection", "clipboard" },
         else => return,
     };
 
-    var child = std.process.Child.init(argv, alloc);
-    child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    child.spawn() catch return;
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .pipe,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return;
 
     if (child.stdin) |stdin| {
         var buf: [128]u8 = undefined;
-        var writer = std.Io.File.Writer.init(stdin, std.Options.debug_io, &buf);
+        var writer = std.Io.File.Writer.init(stdin, io, &buf);
         writer.interface.writeAll(text) catch {};
         writer.interface.flush() catch {};
-        stdin.close(std.Options.debug_io);
+        stdin.close(io);
         child.stdin = null;
     }
 
-    _ = child.wait() catch {};
+    _ = child.wait(io) catch {};
 }
 
 fn drawCreateForm(

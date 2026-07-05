@@ -238,8 +238,8 @@ test "skillAlreadyInstalled detects existing absolute skill paths" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "SKILL.md", .data = "test skill" });
-    const absolute_path = try tmp.dir.realpathAlloc(std.testing.allocator, "SKILL.md");
+    try tmp.dir.writeFile(std.Options.debug_io, .{ .sub_path = "SKILL.md", .data = "test skill" });
+    const absolute_path = try tmp.dir.realPathFileAlloc(std.Options.debug_io, "SKILL.md", std.testing.allocator);
     defer std.testing.allocator.free(absolute_path);
 
     try std.testing.expect(skillAlreadyInstalled(absolute_path));

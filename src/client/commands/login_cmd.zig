@@ -181,14 +181,13 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
 fn readLine(allocator: std.mem.Allocator) ![]const u8 {
     var line_buf: [1024]u8 = undefined;
+    var read_buf: [64]u8 = undefined;
     var len: usize = 0;
-    const stdin = std.Io.File.stdin();
+    var reader = std.Io.File.Reader.initStreaming(std.Io.File.stdin(), std.Options.debug_io, &read_buf);
     while (len < line_buf.len) {
-        var byte: [1]u8 = undefined;
-        const n = stdin.read(&byte) catch break;
-        if (n == 0) break;
-        if (byte[0] == '\n') break;
-        line_buf[len] = byte[0];
+        const byte = reader.interface.takeByte() catch break;
+        if (byte == '\n') break;
+        line_buf[len] = byte;
         len += 1;
     }
     const line_len = if (len > 0 and line_buf[len - 1] == '\r') len - 1 else len;
@@ -320,7 +319,7 @@ fn normalizeHubUrl(allocator: std.mem.Allocator, raw: []const u8) HubUrlError![]
         try allocator.dupe(u8, trimmed);
     errdefer allocator.free(with_scheme);
 
-    const without_trailing_slash = std.mem.trimRight(u8, with_scheme, "/");
+    const without_trailing_slash = std.mem.trimEnd(u8, with_scheme, "/");
     if (without_trailing_slash.len == 0) return error.InvalidHubUrl;
 
     const uri = std.Uri.parse(without_trailing_slash) catch return error.InvalidHubUrl;

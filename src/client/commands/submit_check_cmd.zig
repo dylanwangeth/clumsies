@@ -39,8 +39,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     if (stat.size == 0) return;
 
     var contents_buf: [10 * 1024 * 1024]u8 = undefined;
-    var reader = file.reader(&contents_buf);
-    const contents = reader.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch return;
+    var reader = file.reader(std.Options.debug_io, &contents_buf);
+    const contents = reader.interface.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch return;
     defer allocator.free(contents);
 
     var found_user_prompt = false;

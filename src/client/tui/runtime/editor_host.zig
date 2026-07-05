@@ -75,6 +75,7 @@ pub fn resolveEditor(
 /// `"code --wait"` split into multiple argv tokens; quoted or escaped
 /// arguments are not recognized.
 pub fn runEditor(
+    io: std.Io,
     allocator: std.mem.Allocator,
     cmd: []const u8,
     file_path: []const u8,
@@ -88,27 +89,27 @@ pub fn runEditor(
 
     if (argv.items.len < 2) return .spawn_failed;
 
-    var child = std.process.Child.init(argv.items, allocator);
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-
     // On posix_spawn systems (macOS), exec errors like "file not
     // found" do not surface on spawn itself — spawn returns a forked
     // child pid optimistically and the exec failure bubbles through
     // wait. Map either code path to editor_not_found for the classes
     // that mean "we could not run the resolved command".
-    child.spawn() catch |err| switch (err) {
+    var child = std.process.spawn(io, .{
+        .argv = argv.items,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| switch (err) {
         error.FileNotFound, error.AccessDenied, error.InvalidExe => return .editor_not_found,
         else => return .spawn_failed,
     };
 
-    const term = child.wait() catch |err| switch (err) {
-        error.FileNotFound, error.AccessDenied, error.InvalidExe => return .editor_not_found,
+    const term = child.wait(io) catch |err| switch (err) {
+        error.AccessDenied => return .editor_not_found,
         else => return .spawn_failed,
     };
     return switch (term) {
-        .Exited => |code| if (code == 0) .completed else .failed,
+        .exited => |code| if (code == 0) .completed else .failed,
         else => .failed,
     };
 }
@@ -124,6 +125,7 @@ pub fn runEditor(
 /// If no editor resolves, `.editor_not_found` is returned without
 /// touching terminal state — nothing to suspend or resume.
 pub fn editFile(
+    io: std.Io,
     allocator: std.mem.Allocator,
     vx: *vaxis.Vaxis,
     tty: *vaxis.Tty,
@@ -149,7 +151,7 @@ pub fn editFile(
         resumeTerminal(vx, tty, tty_writer) catch {};
     };
 
-    const result = try runEditor(allocator, cmd, file_path);
+    const result = try runEditor(io, allocator, cmd, file_path);
 
     try resumeTerminal(vx, tty, tty_writer);
     resumed = true;
@@ -165,11 +167,11 @@ pub fn editFile(
 /// are necessary: if termios stays raw, Ctrl-C/Ctrl-Q cannot signal
 /// the child; if CSI modes stay on, kitty keyboard reports arrive
 /// inside the child as literal `1;1:3u` text.
-fn suspendTerminal(vx: *vaxis.Vaxis, tty: *vaxis.Tty, tty_writer: *std.io.Writer) !void {
+fn suspendTerminal(vx: *vaxis.Vaxis, tty: *vaxis.Tty, tty_writer: *std.Io.Writer) !void {
     try vx.resetState(tty_writer);
     try tty_writer.flush();
     if (builtin.os.tag != .windows) {
-        std.posix.tcsetattr(tty.fd, .FLUSH, tty.termios) catch {};
+        std.posix.tcsetattr(tty.fd.handle, .FLUSH, tty.termios) catch {};
     }
 }
 
@@ -184,9 +186,9 @@ fn suspendTerminal(vx: *vaxis.Vaxis, tty: *vaxis.Tty, tty_writer: *std.io.Writer
 /// pushes every cell again — otherwise libvaxis' diff renderer
 /// believes the screen still matches `screen_last` and the TUI comes
 /// up blank on top of the editor's last frame.
-fn resumeTerminal(vx: *vaxis.Vaxis, tty: *vaxis.Tty, tty_writer: *std.io.Writer) !void {
+fn resumeTerminal(vx: *vaxis.Vaxis, tty: *vaxis.Tty, tty_writer: *std.Io.Writer) !void {
     if (builtin.os.tag != .windows) {
-        _ = vaxis.tty.PosixTty.makeRaw(tty.fd) catch {};
+        _ = vaxis.tty.PosixTty.makeRaw(tty.fd.handle) catch {};
     }
     try vx.enterAltScreen(tty_writer);
     try vx.enableDetectedFeatures(tty_writer);
@@ -267,21 +269,21 @@ test "resolveEditor: returns null when nothing resolves" {
 }
 
 test "runEditor: true command returns completed" {
-    const result = try runEditor(std.testing.allocator, "/usr/bin/true", "/tmp/ignored");
+    const result = try runEditor(std.testing.io, std.testing.allocator, "/usr/bin/true", "/tmp/ignored");
     try std.testing.expectEqual(Result.completed, result);
 }
 
 test "runEditor: false command returns failed" {
-    const result = try runEditor(std.testing.allocator, "/usr/bin/false", "/tmp/ignored");
+    const result = try runEditor(std.testing.io, std.testing.allocator, "/usr/bin/false", "/tmp/ignored");
     try std.testing.expectEqual(Result.failed, result);
 }
 
 test "runEditor: nonexistent command returns editor_not_found" {
-    const result = try runEditor(std.testing.allocator, "/nonexistent/binary", "/tmp/ignored");
+    const result = try runEditor(std.testing.io, std.testing.allocator, "/nonexistent/binary", "/tmp/ignored");
     try std.testing.expectEqual(Result.editor_not_found, result);
 }
 
 test "runEditor: empty command string returns spawn_failed" {
-    const result = try runEditor(std.testing.allocator, "", "/tmp/ignored");
+    const result = try runEditor(std.testing.io, std.testing.allocator, "", "/tmp/ignored");
     try std.testing.expectEqual(Result.spawn_failed, result);
 }

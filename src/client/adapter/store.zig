@@ -99,7 +99,7 @@ pub fn loadManifestForTarget(
     var iterator = dir.iterate();
     var best_match: ?LoadedManifest = null;
 
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.Options.debug_io)) |entry| {
         if (entry.kind != .directory) continue;
 
         const path = try std.fs.path.join(allocator, &.{ installs_dir, entry.name, "manifest.json" });
@@ -154,7 +154,7 @@ pub fn writeManifest(allocator: std.mem.Allocator, manifest: model.InstallManife
     defer allocator.free(json);
 
     {
-        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, tmp_path, .{ .truncate = true, .mode = 0o600 });
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, tmp_path, .{ .truncate = true, .permissions = @enumFromInt(0o600) });
         defer file.close(std.Options.debug_io);
         var buf: [4096]u8 = undefined;
         var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &buf);
@@ -172,9 +172,9 @@ pub fn appendWalEvent(allocator: std.mem.Allocator, event: model.WalEvent) !void
     const path = try walPath(allocator, event.install_id);
     defer allocator.free(path);
 
-    var file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = false, .mode = 0o600 });
+    var file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = false, .permissions = @enumFromInt(0o600) });
     defer file.close(std.Options.debug_io);
-    const end_pos = try file.getEndPos();
+    const end_pos = (try file.stat(std.Options.debug_io)).size;
 
     const json = try std.json.Stringify.valueAlloc(allocator, event, .{});
     defer allocator.free(json);
@@ -206,7 +206,7 @@ fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 
     var read_buf: [4096]u8 = undefined;
     var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return try reader.interface.allocRemaining(allocator, std.io.Limit.limited(256 * 1024));
+    return try reader.interface.allocRemaining(allocator, std.Io.Limit.limited(256 * 1024));
 }
 
 fn manifestMatchesTarget(

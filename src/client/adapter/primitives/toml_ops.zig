@@ -355,14 +355,14 @@ fn renderValue(
 ) !void {
     switch (value) {
         .string => |inner| try renderString(allocator, out, inner),
-        .integer => |inner| try out.writer(allocator).print("{d}", .{inner}),
-        .float => |inner| try out.writer(allocator).print("{d}", .{inner}),
+        .integer => |inner| try out.print(allocator, "{d}", .{inner}),
+        .float => |inner| try out.print(allocator, "{d}", .{inner}),
         .boolean => |inner| try out.appendSlice(allocator, if (inner) "true" else "false"),
-        .date => |inner| try out.writer(allocator).print("{d}-{d:0>2}-{d:0>2}", .{ inner.year, inner.month, inner.day }),
+        .date => |inner| try out.print(allocator, "{d}-{d:0>2}-{d:0>2}", .{ inner.year, inner.month, inner.day }),
         .time => |inner| {
-            try out.writer(allocator).print("{d:0>2}:{d:0>2}:{d:0>2}", .{ inner.hour, inner.minute, inner.second });
+            try out.print(allocator, "{d:0>2}:{d:0>2}:{d:0>2}", .{ inner.hour, inner.minute, inner.second });
             if (inner.nanosecond != 0) {
-                try out.writer(allocator).print(".{d}", .{inner.nanosecond});
+                try out.print(allocator, ".{d}", .{inner.nanosecond});
             }
         },
         .datetime => |inner| {
@@ -376,7 +376,7 @@ fn renderValue(
                     const abs_offset = @abs(offset);
                     const hours = @divTrunc(abs_offset, 60);
                     const minutes = @mod(abs_offset, 60);
-                    try out.writer(allocator).print("{s}{d:0>2}:{d:0>2}", .{
+                    try out.print(allocator, "{s}{d:0>2}:{d:0>2}", .{
                         if (offset < 0) "-" else "+",
                         hours,
                         minutes,

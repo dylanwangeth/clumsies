@@ -141,7 +141,7 @@ pub fn loadMpf(allocator: std.mem.Allocator, ws_dir: []const u8, known_hash: ?[]
         defer file.close(std.Options.debug_io);
         var read_buf: [4096]u8 = undefined;
         var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-        break :blk fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024)) catch return .{ .content = null, .hash = null };
+        break :blk fr.interface.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch return .{ .content = null, .hash = null };
     };
     errdefer allocator.free(content);
 
@@ -202,7 +202,7 @@ pub fn loadManifest(allocator: std.mem.Allocator, ws_dir: []const u8) !Manifest 
 
     var read_buf: [4096]u8 = undefined;
     var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    const content = try fr.interface.allocRemaining(arena, std.io.Limit.limited(4 * 1024 * 1024));
+    const content = try fr.interface.allocRemaining(arena, std.Io.Limit.limited(4 * 1024 * 1024));
 
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, content, .{}) catch return error.InvalidManifest;
     if (parsed != .object) return error.InvalidManifest;
@@ -879,7 +879,7 @@ pub fn readRuleCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_p
 
     var read_buf: [4096]u8 = undefined;
     var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE));
+    return try fr.interface.allocRemaining(allocator, std.Io.Limit.limited(MAX_FILE_SIZE));
 }
 
 pub fn readContextCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
@@ -893,7 +893,7 @@ pub fn readContextCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, re
 
     var read_buf: [4096]u8 = undefined;
     var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(MAX_FILE_SIZE));
+    return try fr.interface.allocRemaining(allocator, std.Io.Limit.limited(MAX_FILE_SIZE));
 }
 
 fn knownHashFor(id: []const u8, known: []const KnownHash) ?[]const u8 {
@@ -975,7 +975,7 @@ pub fn parseConstraints(allocator: std.mem.Allocator, content: []const u8) !Vali
 
     while (lines.next()) |line| {
         line_num += 1;
-        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const trimmed = std.mem.trim(u8, line, " \t");
 
         if (std.mem.startsWith(u8, trimmed, "# ") and !std.mem.startsWith(u8, trimmed, "## ")) {
             continue;
@@ -1119,7 +1119,7 @@ fn isOrderedListItem(line: []const u8) bool {
 }
 
 fn writeFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(sub_path, .{});
+    const file = try dir.createFile(std.Options.debug_io, sub_path, .{});
     defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
     var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
@@ -1128,7 +1128,8 @@ fn writeFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
 }
 
 fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {
-    return tmp.dir.realpath(".", buf) catch "";
+    const len = tmp.dir.realPathFile(std.Options.debug_io, ".", buf) catch return "";
+    return buf[0..len];
 }
 
 fn writeTestManifest(dir: std.Io.Dir, json: []const u8) !void {

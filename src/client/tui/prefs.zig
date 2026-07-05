@@ -37,7 +37,7 @@ pub fn load(allocator: std.mem.Allocator) !Prefs {
 
     var read_buf: [4096]u8 = undefined;
     var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    const body = try fr.interface.allocRemaining(allocator, std.io.Limit.limited(64 * 1024));
+    const body = try fr.interface.allocRemaining(allocator, std.Io.Limit.limited(64 * 1024));
     defer allocator.free(body);
 
     const parsed = try std.json.parseFromSlice(PrefsJson, allocator, body, .{
@@ -91,7 +91,7 @@ fn save(allocator: std.mem.Allocator, prefs: Prefs) !void {
     }, .{});
     defer allocator.free(body);
 
-    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .mode = 0o600 });
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true, .permissions = @enumFromInt(0o600) });
     defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
     var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);

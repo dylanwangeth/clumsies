@@ -54,7 +54,7 @@ pub fn read(
     defer file.close(std.Options.debug_io);
     var read_buf: [4096]u8 = undefined;
     var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return try fr.interface.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024));
+    return try fr.interface.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024));
 }
 
 pub fn write(
@@ -75,7 +75,7 @@ pub fn write(
     if (std.fs.path.dirname(abs_path)) |dir_path| {
         try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dir_path);
     }
-    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, abs_path, .{ .truncate = true, .mode = 0o600 });
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, abs_path, .{ .truncate = true, .permissions = @enumFromInt(0o600) });
     defer file.close(std.Options.debug_io);
     var write_buf: [4096]u8 = undefined;
     var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
@@ -213,7 +213,7 @@ fn writeManifestEntry(
 
     const manifest_path = try std.fs.path.join(allocator, &.{ ws_dir, "manifest.json" });
     defer allocator.free(manifest_path);
-    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_path, .{ .truncate = true, .mode = 0o600 });
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_path, .{ .truncate = true, .permissions = @enumFromInt(0o600) });
     defer file.close(std.Options.debug_io);
     var write_buf: [8192]u8 = undefined;
     var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
@@ -285,7 +285,7 @@ fn removeManifestEntry(
 
     const manifest_path = try std.fs.path.join(allocator, &.{ ws_dir, "manifest.json" });
     defer allocator.free(manifest_path);
-    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_path, .{ .truncate = true, .mode = 0o600 });
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_path, .{ .truncate = true, .permissions = @enumFromInt(0o600) });
     defer file.close(std.Options.debug_io);
     var write_buf: [8192]u8 = undefined;
     var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
@@ -320,9 +320,7 @@ fn normalizedHash(hash: []const u8) []const u8 {
 }
 
 fn writeTestFile(dir: std.Io.Dir, path: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(path, .{ .truncate = true });
-    defer file.close(std.Options.debug_io);
-    try file.writeAll(content);
+    try dir.writeFile(std.Options.debug_io, .{ .sub_path = path, .data = content });
 }
 
 test "hashesEqual accepts prefixed and bare hashes" {

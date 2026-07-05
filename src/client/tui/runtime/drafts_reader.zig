@@ -1,5 +1,6 @@
 //! Read local drafts/index.json files across all workspaces.
 const std = @import("std");
+const env_util = @import("clumsies_lib").util.env_util;
 
 pub const DraftEntry = struct {
     category: []const u8,
@@ -11,8 +12,7 @@ pub const DraftEntry = struct {
 };
 
 fn getHomeDirOwned(allocator: std.mem.Allocator) ?[]u8 {
-    return std.process.getEnvVarOwned(allocator, "HOME") catch
-        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch null;
+    return env_util.homeDir(allocator) catch null;
 }
 
 pub fn readAllDrafts(allocator: std.mem.Allocator) ?[]const DraftEntry {
@@ -26,7 +26,7 @@ pub fn readAllDrafts(allocator: std.mem.Allocator) ?[]const DraftEntry {
 
     var all: std.ArrayList(DraftEntry) = .empty;
     var it = dir.iterate();
-    while (it.next() catch null) |entry| {
+    while (it.next(std.Options.debug_io) catch null) |entry| {
         if (entry.kind != .directory) continue;
         const index_path = std.fs.path.join(allocator, &.{ ws_root, entry.name, "drafts", "index.json" }) catch continue;
         defer allocator.free(index_path);
@@ -42,9 +42,11 @@ fn readIndexFile(allocator: std.mem.Allocator, path: []const u8, out: *std.Array
     defer file.close(std.Options.debug_io);
 
     var buf: [64 * 1024]u8 = undefined;
+    var read_buf: [4096]u8 = undefined;
+    var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
     var total: usize = 0;
     while (total < buf.len) {
-        const n = file.read(buf[total..]) catch return;
+        const n = reader.interface.readSliceShort(buf[total..]) catch return;
         if (n == 0) break;
         total += n;
     }

@@ -139,7 +139,7 @@ fn writeManagedFileAbsolute(absolute_path: []const u8, content: []const u8, file
     if (std.fs.path.dirname(absolute_path)) |parent| {
         try ensureDirTreeAbsolute(parent);
     }
-    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, absolute_path, .{ .truncate = true, .mode = file_mode });
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, absolute_path, .{ .truncate = true, .permissions = @enumFromInt(file_mode) });
     defer file.close(std.Options.debug_io);
 
     var buf: [4096]u8 = undefined;

@@ -344,7 +344,7 @@ fn readFileIfExists(allocator: std.mem.Allocator, absolute_path: []const u8) !?[
 
     var read_buf: [4096]u8 = undefined;
     var reader = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return try reader.interface.allocRemaining(allocator, std.io.Limit.limited(256 * 1024));
+    return try reader.interface.allocRemaining(allocator, std.Io.Limit.limited(256 * 1024));
 }
 
 fn isManagedPlainFileUpdate(
