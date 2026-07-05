@@ -223,9 +223,9 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/hooks/user-prompt-submit.sh.tpl",
     ));
-    options.addOption([]const u8, "adapter_claude_code_runtime_skill_discover", readSourceAsset(
+    options.addOption([]const u8, "adapter_claude_code_runtime_skill_activate", readSourceAsset(
         b,
-        "assets/adapters/claude-code/runtime/skills/discover/SKILL.md",
+        "assets/adapters/claude-code/runtime/skills/activate/SKILL.md",
     ));
     options.addOption([]const u8, "adapter_claude_code_runtime_skill_ntmd", readSourceAsset(
         b,
@@ -235,9 +235,9 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/skills/setup/SKILL.md",
     ));
-    options.addOption([]const u8, "adapter_codex_runtime_skill_discover", readSourceAsset(
+    options.addOption([]const u8, "adapter_codex_runtime_skill_activate", readSourceAsset(
         b,
-        "assets/adapters/codex/runtime/skills/discover/SKILL.md",
+        "assets/adapters/codex/runtime/skills/activate/SKILL.md",
     ));
     options.addOption([]const u8, "adapter_codex_runtime_skill_ntmd", readSourceAsset(
         b,

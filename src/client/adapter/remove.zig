@@ -857,16 +857,16 @@ test "resolveManagedAbsolutePath rejects absolute path outside target root" {
 
 test "resolveManagedAbsolutePath allows codex sibling managed paths" {
     const resource = model.ManagedResource{
-        .resource_id = "codex.skills.discover",
-        .relative_path = ".agents/skills/discover/SKILL.md",
-        .absolute_path = "/tmp/workspace/.agents/skills/discover/SKILL.md",
+        .resource_id = "codex.skills.activate",
+        .relative_path = ".agents/skills/activate/SKILL.md",
+        .absolute_path = "/tmp/workspace/.agents/skills/activate/SKILL.md",
         .ownership = "exclusive",
         .fingerprint = "",
         .active = true,
     };
     const resolved = try resolveManagedAbsolutePath(std.testing.allocator, "/tmp/workspace/.codex", resource);
     defer std.testing.allocator.free(resolved);
-    try std.testing.expectEqualStrings("/tmp/workspace/.agents/skills/discover/SKILL.md", resolved);
+    try std.testing.expectEqualStrings("/tmp/workspace/.agents/skills/activate/SKILL.md", resolved);
 }
 
 test "resolveManagedAbsolutePath rejects unrelated codex sibling paths" {

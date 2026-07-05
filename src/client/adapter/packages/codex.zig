@@ -214,11 +214,11 @@ fn appendCodexCoreSkills(
     try appendCodexSkill(
         allocator,
         assets,
-        "codex.skills.discover",
-        "discover",
-        "Codex discover skill",
+        "codex.skills.activate",
+        "activate",
+        "Codex activate skill",
         skills_root_absolute,
-        build_options.adapter_codex_runtime_skill_discover,
+        build_options.adapter_codex_runtime_skill_activate,
     );
     try appendCodexSkill(
         allocator,
@@ -386,11 +386,11 @@ test "renderRuntimeAssets installs codex user skills under home agents skills" {
 
     var found = false;
     for (assets) |asset| {
-        if (!std.mem.eql(u8, asset.resource_id, "codex.skills.discover")) continue;
+        if (!std.mem.eql(u8, asset.resource_id, "codex.skills.activate")) continue;
         found = true;
-        try std.testing.expectEqualStrings(".agents/skills/discover/SKILL.md", asset.relative_path);
+        try std.testing.expectEqualStrings(".agents/skills/activate/SKILL.md", asset.relative_path);
         try std.testing.expect(asset.absolute_path != null);
-        try std.testing.expectEqualStrings("/Users/test/.agents/skills/discover/SKILL.md", asset.absolute_path.?);
+        try std.testing.expectEqualStrings("/Users/test/.agents/skills/activate/SKILL.md", asset.absolute_path.?);
     }
     try std.testing.expect(found);
 }
@@ -402,11 +402,11 @@ test "renderRuntimeAssets installs codex workspace skills under workspace agents
 
     var found = false;
     for (assets) |asset| {
-        if (!std.mem.eql(u8, asset.resource_id, "codex.skills.discover")) continue;
+        if (!std.mem.eql(u8, asset.resource_id, "codex.skills.activate")) continue;
         found = true;
-        try std.testing.expectEqualStrings(".agents/skills/discover/SKILL.md", asset.relative_path);
+        try std.testing.expectEqualStrings(".agents/skills/activate/SKILL.md", asset.relative_path);
         try std.testing.expect(asset.absolute_path != null);
-        try std.testing.expectEqualStrings("/Users/test/project/.agents/skills/discover/SKILL.md", asset.absolute_path.?);
+        try std.testing.expectEqualStrings("/Users/test/project/.agents/skills/activate/SKILL.md", asset.absolute_path.?);
     }
     try std.testing.expect(found);
 }
