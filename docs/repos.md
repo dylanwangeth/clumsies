@@ -50,7 +50,6 @@ These are the host-facing runtime assets that `clumsies adapt` installs. They ma
 
 The built-in adapter subtrees are:
 
-- `assets/adapters/agy/`
 - `assets/adapters/codex/`
 - `assets/adapters/claude-code/`
 

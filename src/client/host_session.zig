@@ -26,7 +26,7 @@ pub fn isSafeSessionId(session_id: []const u8) bool {
 
 test "isSafeSessionId accepts host CLI ids and rejects path-like input" {
     try std.testing.expect(isSafeSessionId("019dba93-8214-7d50-a089-9690b4ce6b9e"));
-    try std.testing.expect(isSafeSessionId("gemini_session_123"));
+    try std.testing.expect(isSafeSessionId("host_session_123"));
     try std.testing.expect(!isSafeSessionId(""));
     try std.testing.expect(!isSafeSessionId("../session"));
     try std.testing.expect(!isSafeSessionId("session.json"));

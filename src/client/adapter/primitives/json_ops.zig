@@ -608,10 +608,7 @@ fn clumsiesHookScriptName(command: []const u8) ?[]const u8 {
         const name_pos = std.mem.indexOf(u8, command, name) orelse continue;
         const prefix = command[0..name_pos];
         if (std.mem.indexOf(u8, prefix, "/.codex/hooks/") != null or
-            std.mem.indexOf(u8, prefix, "/.agents/hooks/") != null or
-            std.mem.indexOf(u8, prefix, "/.gemini/config/hooks/") != null or
-            std.mem.indexOf(u8, prefix, "/.antigravity/hooks/") != null or
-            std.mem.indexOf(u8, prefix, "/.antigravitycli/hooks/") != null)
+            std.mem.indexOf(u8, prefix, "/.agents/hooks/") != null)
         {
             return name;
         }

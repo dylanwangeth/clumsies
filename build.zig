@@ -13,7 +13,6 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "enable_keychain", enable_keychain);
     addCodexAdapterAssetOptions(b, options);
     addClaudeCodeAdapterAssetOptions(b, options);
-    addAgyAdapterAssetOptions(b, options);
     const build_options_module = options.createModule();
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
 
@@ -246,37 +245,6 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
     options.addOption([]const u8, "adapter_codex_runtime_skill_setup", readSourceAsset(
         b,
         "assets/adapters/codex/runtime/skills/setup/SKILL.md",
-    ));
-}
-
-fn addAgyAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) void {
-    options.addOption([]const u8, "adapter_agy_runtime_hooks_json", readSourceAsset(
-        b,
-        "assets/adapters/agy/runtime/hooks.json.tpl",
-    ));
-    options.addOption([]const u8, "adapter_agy_runtime_mcp_config_json", readSourceAsset(
-        b,
-        "assets/adapters/agy/runtime/mcp_config.json.tpl",
-    ));
-    options.addOption([]const u8, "adapter_agy_runtime_resolve_binary_sh", readSourceAsset(
-        b,
-        "assets/adapters/agy/runtime/hooks/resolve-binary.sh.tpl",
-    ));
-    options.addOption([]const u8, "adapter_agy_runtime_pre_invocation_sh", readSourceAsset(
-        b,
-        "assets/adapters/agy/runtime/hooks/pre-invocation.sh.tpl",
-    ));
-    options.addOption([]const u8, "adapter_agy_runtime_skill_discover", readSourceAsset(
-        b,
-        "assets/adapters/agy/runtime/skills/discover/SKILL.md",
-    ));
-    options.addOption([]const u8, "adapter_agy_runtime_skill_ntmd", readSourceAsset(
-        b,
-        "assets/adapters/agy/runtime/skills/ntmd/SKILL.md",
-    ));
-    options.addOption([]const u8, "adapter_agy_runtime_skill_setup", readSourceAsset(
-        b,
-        "assets/adapters/agy/runtime/skills/setup/SKILL.md",
     ));
 }
 

@@ -83,7 +83,7 @@ clumsies adapt --agent codex --scope workspace --yes
 
 | Flag | Meaning |
 | --- | --- |
-| `--agent <name>` | adapter package name such as `codex`, `claude-code`, or `agy` |
+| `--agent <name>` | adapter package name such as `codex` or `claude-code` |
 | `--scope workspace|user` | install scope |
 | `--update` | update an existing install |
 | `--yes` | skip confirmation |

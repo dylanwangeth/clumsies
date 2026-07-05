@@ -8,7 +8,6 @@ const workspace_config = @import("../workspace_config.zig");
 pub const Host = enum {
     codex,
     claude_code,
-    agy,
 };
 
 pub fn renderImportedWorkflowSkills(
@@ -98,7 +97,7 @@ fn skillFilePath(
     slug: []const u8,
 ) ![]u8 {
     return switch (host) {
-        .codex, .claude_code, .agy => std.fs.path.join(allocator, &.{ root, slug, "SKILL.md" }),
+        .codex, .claude_code => std.fs.path.join(allocator, &.{ root, slug, "SKILL.md" }),
     };
 }
 
@@ -200,22 +199,6 @@ fn renderSkillContent(
             \\Then follow the loaded workflow carefully.
             \\
             \\$ARGUMENTS
-        ,
-            .{ slug, filename, workflow_ref, workflow_ref },
-        ),
-        .agy => std.fmt.allocPrint(
-            allocator,
-            \\---
-            \\name: {s}
-            \\description: Run {s} workflow
-            \\---
-            \\
-            \\Call the `retrieve` MCP tool with ids: ["{s}"] and
-            \\knownHashes: {{"{s}": "<remembered_hash_or_empty_string>"}}.
-            \\Use the last hash you remember for this workflow when available; otherwise use an empty string.
-            \\If retrieve returns changed:false without content, continue from the workflow content you already remember.
-            \\Then follow the loaded workflow carefully.
-            \\If the user already provided task details, use them as the workflow input.
         ,
             .{ slug, filename, workflow_ref, workflow_ref },
         ),

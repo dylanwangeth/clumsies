@@ -1293,8 +1293,7 @@ fn countWorkflowSkills(plan: *const adapter.model.Plan) usize {
     var count: usize = 0;
     for (plan.steps) |step| {
         if (std.mem.startsWith(u8, step.resource_id, "codex.skills.workflow.") or
-            std.mem.startsWith(u8, step.resource_id, "claude-code.skills.workflow.") or
-            std.mem.startsWith(u8, step.resource_id, "agy.skills.workflow."))
+            std.mem.startsWith(u8, step.resource_id, "claude-code.skills.workflow."))
         {
             count += 1;
         }
