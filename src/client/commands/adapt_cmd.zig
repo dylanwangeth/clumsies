@@ -7,6 +7,7 @@ const styles = @import("../styles.zig");
 const workspace_config = @import("../workspace_config.zig");
 const HubClient = @import("../hub_client.zig").HubClient;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
+const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 const api_error = @import("clumsies_lib").protocol.api_error;
 const sync_cmd = @import("sync_cmd.zig");
@@ -20,6 +21,7 @@ const FLAG_YES: usize = 5;
 
 const Color = styles.Color;
 const P = styles.P;
+const log = std.log.scoped(.adapt);
 
 pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const specs = [_]flag.FlagSpec{
@@ -121,11 +123,29 @@ fn runInstall(
     else
         try chooseInstallScope(stdout, allocator, pkg, workspace_target_root_opt, user_target_root_opt);
 
+    log.info("install_scope_selected agent={s} scope={s}", .{ pkg.id, scope.cliString() });
+
     if (scope == .workspace and workspace_target_root_opt == null) {
         if (!parsed.boolean(FLAG_YES) and (explicit_scope == null or parsed.value(FLAG_AGENT) == null)) {
             try stdout.writeAll("\n");
         }
-        workspace_root_opt = createAndBindCurrentWorkspace(stdout, stderr, allocator) catch |err| {
+        const pending_workspace = try pendingWorkspaceSetup(allocator);
+        defer pending_workspace.deinit(allocator);
+
+        var bundle_import: BundleImportSelection = .{};
+        defer bundle_import.deinit(allocator);
+
+        if (!parsed.boolean(FLAG_YES)) {
+            bundle_import = try chooseWorkspaceBundles(stdout, stderr, allocator);
+            try printWorkspaceSetupPreview(stdout, allocator, &pending_workspace, &bundle_import);
+            if (!try adapter.ui.promptYesNo(stdout, allocator, "Create and bind this workspace?", true)) {
+                try stdout.print("{s}{s}Cancelled.{s} No files were written.\n", .{ P, Color.dim, Color.reset });
+                return;
+            }
+            try stdout.writeAll("\n");
+        }
+
+        workspace_root_opt = createAndBindCurrentWorkspace(stdout, stderr, allocator, &pending_workspace, &bundle_import) catch |err| {
             switch (err) {
                 error.NotAuthenticated, error.WorkspaceCreateFailed => {},
                 else => try stderr.print(
@@ -506,12 +526,197 @@ fn workspaceTargetAvailable(workspace_target_root_opt: ?[]const u8) bool {
     return workspace_target_root_opt != null;
 }
 
+const PendingWorkspaceSetup = struct {
+    root: [:0]u8,
+    name: []const u8,
+
+    fn deinit(self: *const PendingWorkspaceSetup, allocator: std.mem.Allocator) void {
+        allocator.free(self.root);
+        allocator.free(self.name);
+    }
+};
+
+const BundleImportSelection = struct {
+    ids: []const []const u8 = &.{},
+    names: []const []const u8 = &.{},
+    rule_ids: []const []const u8 = &.{},
+    owned: bool = false,
+
+    fn deinit(self: *BundleImportSelection, allocator: std.mem.Allocator) void {
+        if (!self.owned) return;
+        for (self.ids) |id| allocator.free(id);
+        allocator.free(self.ids);
+        for (self.names) |name| allocator.free(name);
+        allocator.free(self.names);
+        for (self.rule_ids) |rule_id| allocator.free(rule_id);
+        allocator.free(self.rule_ids);
+        self.* = .{};
+    }
+};
+
+fn chooseWorkspaceBundles(
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+) !BundleImportSelection {
+    try adapter_cli.printSectionTitle(stdout, "Bundle import");
+    const import_choices = [_]adapter.ui.Choice{
+        .{ .key = "skip", .label = "Skip", .description = "Import no bundles" },
+        .{ .key = "select", .label = "Select bundles", .description = "Choose one or more bundles to import" },
+    };
+    const import_choice = try adapter.ui.promptChoice(stdout, allocator, "Import bundles?", &import_choices, 0);
+    if (import_choice == 0) {
+        try stdout.writeAll("\n");
+        return .{};
+    }
+
+    try stdout.print("{s}  Loading available bundles...\n", .{P});
+    try stdout.flush();
+
+    const auth_info = auth_mod.loadAuth(allocator) catch {
+        try stderr.print("{s}{s}{s}Warning:{s} Bundle import skipped because you are not logged in.\n", .{ P, Color.bold, Color.orange, Color.reset });
+        return .{};
+    };
+    defer auth_info.deinit(allocator);
+
+    var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
+    defer hub.deinit();
+    try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
+
+    const response = hub.get("/api/bundles") catch |err| {
+        try stderr.print("{s}{s}{s}Warning:{s} Bundle import skipped: {s}.\n", .{ P, Color.bold, Color.orange, Color.reset, @errorName(err) });
+        return .{};
+    };
+    defer response.deinit();
+    if (response.status != .ok) {
+        try reportApiError(stderr, allocator, "Failed to load bundles", response.status, response.body);
+        return .{};
+    }
+
+    const parsed = std.json.parseFromSlice(
+        artifact_api.BundleListResponse,
+        allocator,
+        response.body,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch {
+        try stderr.print("{s}{s}{s}Warning:{s} Bundle import skipped because the bundle list could not be parsed.\n", .{ P, Color.bold, Color.orange, Color.reset });
+        return .{};
+    };
+    defer parsed.deinit();
+
+    const bundles = parsed.value.bundles;
+    if (bundles.len == 0) {
+        try adapter_cli.printDetailLine(stdout, "No bundles available; using Skip", .{});
+        try stdout.writeAll("\n");
+        return .{};
+    }
+
+    var choices = try allocator.alloc(adapter.ui.Choice, bundles.len);
+    defer {
+        for (choices) |choice| allocator.free(choice.description);
+        allocator.free(choices);
+    }
+    for (bundles, 0..) |bundle, idx| {
+        choices[idx] = .{
+            .key = bundle.bundle_id,
+            .label = bundle.name,
+            .description = try bundleChoiceDescription(allocator, bundle),
+        };
+    }
+
+    const selected_indices = try adapter.ui.promptMultiChoice(stdout, allocator, "Import bundles?", choices);
+    defer allocator.free(selected_indices);
+    try stdout.writeAll("\n");
+
+    return try buildBundleImportSelection(allocator, bundles, selected_indices);
+}
+
+fn bundleChoiceDescription(allocator: std.mem.Allocator, bundle: artifact_api.BundleMeta) ![]const u8 {
+    if (bundle.description.len == 0) {
+        return std.fmt.allocPrint(allocator, "{d} rules", .{bundle.rule_count});
+    }
+    return std.fmt.allocPrint(allocator, "{d} rules - {s}", .{ bundle.rule_count, bundle.description });
+}
+
+fn buildBundleImportSelection(
+    allocator: std.mem.Allocator,
+    bundles: []const artifact_api.BundleMeta,
+    selected_indices: []const usize,
+) !BundleImportSelection {
+    if (selected_indices.len == 0) return .{};
+
+    var ids: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (ids.items) |id| allocator.free(id);
+        ids.deinit(allocator);
+    }
+    var names: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+    var rule_ids: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (rule_ids.items) |rule_id| allocator.free(rule_id);
+        rule_ids.deinit(allocator);
+    }
+    var seen_rule_ids: std.StringHashMap(void) = .init(allocator);
+    defer seen_rule_ids.deinit();
+
+    for (selected_indices) |idx| {
+        const bundle = bundles[idx];
+        try ids.append(allocator, try allocator.dupe(u8, bundle.bundle_id));
+        try names.append(allocator, try allocator.dupe(u8, bundle.name));
+
+        for (bundle.rule_ids) |rule_id| {
+            if (seen_rule_ids.contains(rule_id)) continue;
+            try seen_rule_ids.put(rule_id, {});
+            try rule_ids.append(allocator, try allocator.dupe(u8, rule_id));
+        }
+    }
+
+    const owned_ids = try ids.toOwnedSlice(allocator);
+    errdefer freeStringSlice(allocator, owned_ids);
+    const owned_names = try names.toOwnedSlice(allocator);
+    errdefer freeStringSlice(allocator, owned_names);
+    const owned_rule_ids = try rule_ids.toOwnedSlice(allocator);
+    errdefer freeStringSlice(allocator, owned_rule_ids);
+
+    return .{
+        .ids = owned_ids,
+        .names = owned_names,
+        .rule_ids = owned_rule_ids,
+        .owned = true,
+    };
+}
+
+fn freeStringSlice(allocator: std.mem.Allocator, values: []const []const u8) void {
+    for (values) |value| allocator.free(value);
+    allocator.free(values);
+}
+
+fn pendingWorkspaceSetup(allocator: std.mem.Allocator) !PendingWorkspaceSetup {
+    const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
+    errdefer allocator.free(cwd_path);
+    const workspace_name = try directoryNameFromPath(allocator, cwd_path);
+    errdefer allocator.free(workspace_name);
+    return .{
+        .root = cwd_path,
+        .name = workspace_name,
+    };
+}
+
 fn createAndBindCurrentWorkspace(
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
     allocator: std.mem.Allocator,
+    pending_workspace: *const PendingWorkspaceSetup,
+    bundle_import: *const BundleImportSelection,
 ) ![]const u8 {
     try adapter_cli.printSectionTitle(stdout, "Workspace setup");
+    try stdout.print("{s}  Creating or binding workspace \"{s}\" for {s}...\n", .{ P, pending_workspace.name, pending_workspace.root });
+    try stdout.flush();
+    log.info("workspace_setup_start name={s} root={s}", .{ pending_workspace.name, pending_workspace.root });
 
     const auth_info = auth_mod.loadAuth(allocator) catch {
         try stderr.print(
@@ -522,10 +727,8 @@ fn createAndBindCurrentWorkspace(
     };
     defer auth_info.deinit(allocator);
 
-    const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
+    const cwd_path = try allocator.dupe(u8, pending_workspace.root);
     errdefer allocator.free(cwd_path);
-    const workspace_name = try directoryNameFromPath(allocator, cwd_path);
-    defer allocator.free(workspace_name);
     const description = try std.fmt.allocPrint(allocator, "Workspace for {s}", .{cwd_path});
     defer allocator.free(description);
 
@@ -535,14 +738,16 @@ fn createAndBindCurrentWorkspace(
 
     const body = try std.json.Stringify.valueAlloc(
         allocator,
-        workspace_api.CreateWorkspaceRequest{ .name = workspace_name, .description = description },
+        workspace_api.CreateWorkspaceRequest{ .name = pending_workspace.name, .description = description, .bundle_ids = bundle_import.ids },
         .{ .emit_null_optional_fields = false },
     );
     defer allocator.free(body);
 
     const created = blk: {
+        log.info("workspace_create_request_start name={s}", .{pending_workspace.name});
         const response = try hub.post("/api/workspaces", body);
         defer response.deinit();
+        log.info("workspace_create_request_done status={d}", .{@intFromEnum(response.status)});
         if (response.status == .ok or response.status == .created) {
             const parsed = try std.json.parseFromSlice(
                 workspace_api.CreateWorkspaceResponse,
@@ -553,7 +758,7 @@ fn createAndBindCurrentWorkspace(
             break :blk parsed;
         }
         if (response.status == .conflict) {
-            if (try bindExistingWorkspaceByName(stdout, stderr, allocator, &hub, auth_info.hub_url, cwd_path, workspace_name)) {
+            if (try bindExistingWorkspaceByName(stdout, stderr, allocator, &hub, auth_info.hub_url, cwd_path, pending_workspace.name, bundle_import)) {
                 return cwd_path;
             }
         }
@@ -567,14 +772,22 @@ fn createAndBindCurrentWorkspace(
         "{s}  {s}{s}Workspace \"{s}\" bound to current directory (ws_id: {s}){s}\n",
         .{ P, Color.bold, Color.green, created.value.name, created.value.ws_id, Color.reset },
     );
+    if (bundle_import.ids.len > 0) {
+        try stdout.print("{s}  Imported {d} bundle(s) into the new workspace\n", .{ P, bundle_import.ids.len });
+    }
+    try stdout.print("{s}  Syncing initial workspace memory...\n", .{P});
+    try stdout.flush();
 
-    const summary = sync_cmd.materializeWorkspace(allocator, &hub, created.value.ws_id, .{ .errors = stderr }) catch |err| {
+    log.info("workspace_sync_start ws_id={s}", .{created.value.ws_id});
+    const summary = sync_cmd.materializeWorkspace(allocator, &hub, created.value.ws_id, .{ .progress = stdout, .errors = stderr }) catch |err| {
+        log.warn("workspace_sync_failed ws_id={s} error={s}", .{ created.value.ws_id, @errorName(err) });
         try stderr.print(
             "{s}{s}{s}Warning:{s} Initial sync failed: {s}. The adapter install will continue.\n",
             .{ P, Color.bold, Color.orange, Color.reset, @errorName(err) },
         );
         return cwd_path;
     };
+    log.info("workspace_sync_done ws_id={s} rules={d} context={d}", .{ created.value.ws_id, summary.rules_total, summary.context_total });
     try stdout.print(
         "{s}  {s}{s}Synced:{s} {d} rules, {d} context files into local cache\n",
         .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total },
@@ -590,7 +803,9 @@ fn bindExistingWorkspaceByName(
     hub_url: []const u8,
     cwd_path: []const u8,
     workspace_name: []const u8,
+    bundle_import: *const BundleImportSelection,
 ) !bool {
+    log.info("workspace_bind_existing_lookup_start name={s}", .{workspace_name});
     const me_response = hub.get("/api/auth/me") catch |err| {
         try stderr.print(
             "{s}{s}{s}Warning:{s} Workspace \"{s}\" already exists, but lookup failed: {s}.\n",
@@ -618,19 +833,61 @@ fn bindExistingWorkspaceByName(
         "{s}  {s}{s}Workspace \"{s}\" already exists; bound current directory (ws_id: {s}){s}\n",
         .{ P, Color.bold, Color.green, existing.name, existing.ws_id, Color.reset },
     );
+    try attachImportedBundleRules(stdout, stderr, allocator, hub, existing.ws_id, bundle_import.rule_ids);
+    try stdout.print("{s}  Syncing initial workspace memory...\n", .{P});
+    try stdout.flush();
 
-    const summary = sync_cmd.materializeWorkspace(allocator, hub, existing.ws_id, .{ .errors = stderr }) catch |err| {
+    log.info("workspace_sync_start ws_id={s}", .{existing.ws_id});
+    const summary = sync_cmd.materializeWorkspace(allocator, hub, existing.ws_id, .{ .progress = stdout, .errors = stderr }) catch |err| {
+        log.warn("workspace_sync_failed ws_id={s} error={s}", .{ existing.ws_id, @errorName(err) });
         try stderr.print(
             "{s}{s}{s}Warning:{s} Initial sync failed: {s}. The adapter install will continue.\n",
             .{ P, Color.bold, Color.orange, Color.reset, @errorName(err) },
         );
         return true;
     };
+    log.info("workspace_sync_done ws_id={s} rules={d} context={d}", .{ existing.ws_id, summary.rules_total, summary.context_total });
     try stdout.print(
         "{s}  {s}{s}Synced:{s} {d} rules, {d} context files into local cache\n",
         .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total },
     );
     return true;
+}
+
+fn attachImportedBundleRules(
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    hub: *HubClient,
+    ws_id: []const u8,
+    rule_ids: []const []const u8,
+) !void {
+    if (rule_ids.len == 0) return;
+
+    try stdout.print("{s}  Importing {d} bundle rule(s) into existing workspace...\n", .{ P, rule_ids.len });
+    try stdout.flush();
+
+    const body = try std.json.Stringify.valueAlloc(
+        allocator,
+        workspace_api.WorkspaceRulesRequest{ .rule_ids = rule_ids },
+        .{},
+    );
+    defer allocator.free(body);
+
+    const path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/rules", .{ws_id});
+    defer allocator.free(path);
+
+    const response = hub.post(path, body) catch |err| {
+        try stderr.print("{s}{s}{s}Warning:{s} Bundle import failed: {s}.\n", .{ P, Color.bold, Color.orange, Color.reset, @errorName(err) });
+        return;
+    };
+    defer response.deinit();
+    if (response.status != .ok) {
+        try reportApiError(stderr, allocator, "Failed to import bundle rules", response.status, response.body);
+        return;
+    }
+
+    try stdout.print("{s}  Imported {d} bundle rule(s) into existing workspace\n", .{ P, rule_ids.len });
 }
 
 fn findAccessibleWorkspaceByName(workspaces: []const auth_api.MeWorkspace, name: []const u8) ?auth_api.MeWorkspace {
@@ -928,6 +1185,40 @@ fn printInstallPlan(
     }
     try adapter_cli.printDetailLine(stdout, "Remove with clumsies adapt --remove --agent {s} --scope {s}", .{ pkg.id, plan.scope });
     try stdout.writeAll("\n");
+}
+
+fn printWorkspaceSetupPreview(
+    stdout: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    pending_workspace: *const PendingWorkspaceSetup,
+    bundle_import: *const BundleImportSelection,
+) !void {
+    try adapter_cli.printSectionTitle(stdout, "Workspace setup preview");
+    try adapter_cli.printDetailLine(stdout, "Create or bind workspace \"{s}\" for {s}", .{ pending_workspace.name, pending_workspace.root });
+    try printBundleImportPreview(stdout, allocator, bundle_import);
+    try adapter_cli.printDetailLine(stdout, "Sync workspace memory into the local cache before installing the adapter", .{});
+    try adapter_cli.printDetailLine(stdout, "Show the adapter install preview after workspace setup completes", .{});
+    try stdout.writeAll("\n");
+    try stdout.flush();
+}
+
+fn printBundleImportPreview(
+    stdout: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    bundle_import: *const BundleImportSelection,
+) !void {
+    if (bundle_import.names.len == 0) {
+        try adapter_cli.printDetailLine(stdout, "Import bundles: Skip", .{});
+        return;
+    }
+
+    var names: std.ArrayList(u8) = .empty;
+    defer names.deinit(allocator);
+    for (bundle_import.names, 0..) |name, idx| {
+        if (idx > 0) try names.appendSlice(allocator, ", ");
+        try names.appendSlice(allocator, name);
+    }
+    try adapter_cli.printDetailLine(stdout, "Import bundles: {s}", .{names.items});
 }
 
 fn printHelp(out: *std.Io.Writer) !void {

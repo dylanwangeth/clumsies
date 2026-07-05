@@ -15,7 +15,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const SPECS = [_]flag.FlagSpec{
         .{ .short = 'c', .long = "create", .kind = .value },
         .{ .short = 'w', .long = "ws-id", .kind = .value },
-        .{ .short = 'b', .long = "bundle", .kind = .value },
+        .{ .short = 'b', .long = "bundles", .kind = .value },
         .{ .short = 'd', .long = "description", .kind = .value },
     };
 
@@ -44,7 +44,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     const create_name = result.value(0);
     const ws_id_flag = result.value(1);
-    const bundle_id = result.value(2);
+    const bundle_ids = parseBundleIdsFlag(allocator, result.value(2)) catch {
+        try stderr.print("{s}{s}{s}Error:{s} --bundles must contain one or more comma-separated bundle ids\n", .{ P, Color.bold, Color.red, Color.reset });
+        return;
+    };
+    defer allocator.free(bundle_ids);
     const description = result.value(3);
 
     if (create_name == null and ws_id_flag == null) {
@@ -54,6 +58,11 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     }
     if (create_name != null and description == null) {
         try stderr.print("{s}{s}{s}Error:{s} --description is required with --create\n", .{ P, Color.bold, Color.red, Color.reset });
+        try printHelp(stderr);
+        return;
+    }
+    if (ws_id_flag != null and bundle_ids.len > 0) {
+        try stderr.print("{s}{s}{s}Error:{s} --bundles can only be used with --create\n", .{ P, Color.bold, Color.red, Color.reset });
         try printHelp(stderr);
         return;
     }
@@ -79,7 +88,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
     if (create_name) |name| {
         // POST /api/workspaces to create a new workspace
-        const request = workspace_api.CreateWorkspaceRequest{ .name = name, .description = description.?, .bundle_id = bundle_id };
+        const request = workspace_api.CreateWorkspaceRequest{ .name = name, .description = description.?, .bundle_ids = bundle_ids };
         const body = std.json.Stringify.valueAlloc(
             allocator,
             request,
@@ -210,13 +219,28 @@ fn reportApiError(
 }
 
 fn printHelp(out: *std.Io.Writer) !void {
-    try out.print("{s}Usage: {s}clumsies init [--create <name> --description <text> | --ws-id <id>] [--bundle <bundle_id>]{s}\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}Usage: {s}clumsies init [--create <name> --description <text> | --ws-id <id>] [--bundles <id[,id...]>]{s}\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}Initialize a workspace binding in the current directory.\n", .{P});
     try out.print("{s}Flags:\n", .{P});
     try out.print("{s}  {s}--create <name>{s}     Create a new workspace with this name\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--description <text>{s} Workspace description (with --create)\n", .{ P, Color.cyan, Color.reset });
     try out.print("{s}  {s}--ws-id <id>{s}        Bind to an existing workspace by ID\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}  {s}--bundle <bundle_id>{s} Associate a bundle (with --create)\n", .{ P, Color.cyan, Color.reset });
+    try out.print("{s}  {s}--bundles <ids>{s}      Import bundle ids when creating a workspace\n", .{ P, Color.cyan, Color.reset });
+}
+
+fn parseBundleIdsFlag(allocator: std.mem.Allocator, raw_opt: ?[]const u8) ![]const []const u8 {
+    const raw = raw_opt orelse return allocator.alloc([]const u8, 0);
+    var ids: std.ArrayList([]const u8) = .empty;
+    errdefer ids.deinit(allocator);
+
+    var iter = std.mem.splitScalar(u8, raw, ',');
+    while (iter.next()) |part| {
+        const id = std.mem.trim(u8, part, " \t\r\n");
+        if (id.len == 0) return error.InvalidBundleIds;
+        try ids.append(allocator, id);
+    }
+    if (ids.items.len == 0) return error.InvalidBundleIds;
+    return ids.toOwnedSlice(allocator);
 }
 
 test "parseCreatedWorkspace reads workspace description" {

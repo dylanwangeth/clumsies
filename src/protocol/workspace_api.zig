@@ -46,7 +46,7 @@ pub const WorkspaceManifestResponse = struct {
 pub const CreateWorkspaceRequest = struct {
     name: []const u8,
     description: []const u8,
-    bundle_id: ?[]const u8 = null,
+    bundle_ids: []const []const u8 = &.{},
 };
 
 pub const CreateWorkspaceResponse = struct {

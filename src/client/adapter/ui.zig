@@ -42,6 +42,20 @@ pub fn promptYesNo(
     return promptYesNoLine(stdout, allocator, prompt, default_yes);
 }
 
+pub fn promptMultiChoice(
+    stdout: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    prompt: []const u8,
+    choices: []const Choice,
+) ![]usize {
+    if (canUseInteractivePrompt()) {
+        return promptMultiChoiceInteractive(stdout, allocator, prompt, choices) catch
+            promptMultiChoiceLine(stdout, allocator, prompt, choices);
+    }
+
+    return promptMultiChoiceLine(stdout, allocator, prompt, choices);
+}
+
 fn promptYesNoLine(
     stdout: *std.Io.Writer,
     allocator: std.mem.Allocator,
@@ -64,6 +78,73 @@ fn promptYesNoLine(
         try stdout.print("{s}{s}Please answer y or n.{s}\n", .{ P, Color.orange, Color.reset });
         try stdout.flush();
     }
+}
+
+fn promptMultiChoiceLine(
+    stdout: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    prompt: []const u8,
+    choices: []const Choice,
+) ![]usize {
+    try stdout.print("{s}{s}{s}{s}{s}\n", .{ P, Color.bold, Color.orange, prompt, Color.reset });
+    try stdout.print("{s}  {s}0.{s} {s}{s}{s}  {s}Import no bundles [default]{s}\n", .{ P, Color.cyan, Color.reset, Color.bold, "Skip", Color.reset, Color.dim, Color.reset });
+    for (choices, 0..) |choice, idx| {
+        if (choice.description.len != 0) {
+            try stdout.print(
+                "{s}  {s}{d}.{s} {s}{s}{s}  {s}{s}{s}\n",
+                .{ P, Color.cyan, idx + 1, Color.reset, Color.bold, choice.label, Color.reset, Color.dim, choice.description, Color.reset },
+            );
+        } else {
+            try stdout.print(
+                "{s}  {s}{d}.{s} {s}{s}{s}\n",
+                .{ P, Color.cyan, idx + 1, Color.reset, Color.bold, choice.label, Color.reset },
+            );
+        }
+    }
+
+    while (true) {
+        try stdout.print("{s}Enter choices separated by comma {s}[0]{s}: ", .{ P, Color.dim, Color.reset });
+        try stdout.flush();
+        const line_opt = try readLineTrimmedAlloc(allocator);
+        if (line_opt == null) return allocator.alloc(usize, 0);
+        const line = line_opt.?;
+        defer allocator.free(line);
+        if (line.len == 0 or std.ascii.eqlIgnoreCase(line, "skip") or std.mem.eql(u8, line, "0")) {
+            return allocator.alloc(usize, 0);
+        }
+
+        const selected = try parseMultiChoiceLine(allocator, line, choices.len);
+        if (selected) |indices| return indices;
+        try stdout.print(
+            "{s}{s}Invalid choice.{s} Enter 0, skip, or comma-separated numbers shown above.\n",
+            .{ P, Color.orange, Color.reset },
+        );
+        try stdout.flush();
+    }
+}
+
+fn parseMultiChoiceLine(allocator: std.mem.Allocator, line: []const u8, choice_count: usize) !?[]usize {
+    var seen = try allocator.alloc(bool, choice_count);
+    defer allocator.free(seen);
+    @memset(seen, false);
+
+    var selected: std.ArrayList(usize) = .empty;
+    defer selected.deinit(allocator);
+
+    var iter = std.mem.splitScalar(u8, line, ',');
+    while (iter.next()) |raw_part| {
+        const part = std.mem.trim(u8, raw_part, " \t\r\n");
+        if (part.len == 0 or std.ascii.eqlIgnoreCase(part, "skip") or std.mem.eql(u8, part, "0")) return null;
+        const number = std.fmt.parseInt(usize, part, 10) catch return null;
+        if (number == 0 or number > choice_count) return null;
+        const idx = number - 1;
+        if (seen[idx]) continue;
+        seen[idx] = true;
+        try selected.append(allocator, idx);
+    }
+
+    if (selected.items.len == 0) return null;
+    return @as(?[]usize, try allocator.dupe(usize, selected.items));
 }
 
 fn promptChoiceLine(
@@ -184,6 +265,7 @@ fn promptChoiceInteractive(
                 try renderChoiceSummary(stdout, prompt, choices[selected_index].label);
                 return selected_index;
             },
+            .toggle => {},
             .yes, .no => {},
             .other => {},
         }
@@ -194,6 +276,7 @@ const MenuKey = enum {
     up,
     down,
     enter,
+    toggle,
     yes,
     no,
     other,
@@ -252,6 +335,7 @@ fn promptYesNoInteractive(
                 try renderChoiceSummary(stdout, prompt, choices[selected_index].label);
                 return selected_index == 0;
             },
+            .toggle => {},
             .yes => {
                 try rewindRenderedBlock(stdout, rendered_lines);
                 try renderChoiceSummary(stdout, prompt, "Yes");
@@ -263,6 +347,68 @@ fn promptYesNoInteractive(
                 return false;
             },
             .other => {},
+        }
+    }
+}
+
+fn promptMultiChoiceInteractive(
+    stdout: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    prompt: []const u8,
+    choices: []const Choice,
+) ![]usize {
+    if (comptime builtin.os.tag == .windows) return error.NotATerminal;
+
+    const stdin_fd = std.Io.File.stdin().handle;
+    const old_termios = std.posix.tcgetattr(stdin_fd) catch return error.NotATerminal;
+    var new_termios = old_termios;
+    new_termios.lflag.ICANON = false;
+    new_termios.lflag.ECHO = false;
+    std.posix.tcsetattr(stdin_fd, .FLUSH, new_termios) catch return error.NotATerminal;
+    defer std.posix.tcsetattr(stdin_fd, .FLUSH, old_termios) catch {};
+
+    try stdout.writeAll("\x1b[?25l");
+    defer stdout.writeAll("\x1b[?25h") catch {};
+
+    var selected = try allocator.alloc(bool, choices.len);
+    defer allocator.free(selected);
+    @memset(selected, false);
+
+    var cursor_index: usize = 0;
+    var rendered_lines = try renderMultiChoiceFrame(stdout, prompt, choices, selected, cursor_index);
+
+    while (true) {
+        const key = try readMenuKey();
+        switch (key) {
+            .up => {
+                cursor_index = if (cursor_index == 0) choices.len else cursor_index - 1;
+                try rewindRenderedBlock(stdout, rendered_lines);
+                rendered_lines = try renderMultiChoiceFrame(stdout, prompt, choices, selected, cursor_index);
+            },
+            .down => {
+                cursor_index = if (cursor_index >= choices.len) 0 else cursor_index + 1;
+                try rewindRenderedBlock(stdout, rendered_lines);
+                rendered_lines = try renderMultiChoiceFrame(stdout, prompt, choices, selected, cursor_index);
+            },
+            .toggle => {
+                if (cursor_index > 0) {
+                    selected[cursor_index - 1] = !selected[cursor_index - 1];
+                    try rewindRenderedBlock(stdout, rendered_lines);
+                    rendered_lines = try renderMultiChoiceFrame(stdout, prompt, choices, selected, cursor_index);
+                }
+            },
+            .enter => {
+                try rewindRenderedBlock(stdout, rendered_lines);
+                if (cursor_index == 0) {
+                    try renderChoiceSummary(stdout, prompt, "Skip");
+                    return allocator.alloc(usize, 0);
+                }
+                const indices = try selectedIndices(allocator, selected);
+                errdefer allocator.free(indices);
+                try renderMultiChoiceSummary(stdout, allocator, prompt, choices, selected);
+                return indices;
+            },
+            .yes, .no, .other => {},
         }
     }
 }
@@ -318,12 +464,107 @@ fn renderChoiceFrame(
     return rendered_lines;
 }
 
+fn renderMultiChoiceFrame(
+    stdout: *std.Io.Writer,
+    prompt: []const u8,
+    choices: []const Choice,
+    selected: []const bool,
+    cursor_index: usize,
+) !usize {
+    var rendered_lines: usize = 0;
+
+    try stdout.print("{s}{s}?{s} {s}\n", .{ P, Color.green, Color.reset, prompt });
+    rendered_lines += 1;
+
+    try renderMultiChoiceRow(stdout, cursor_index == 0, false, "Skip", "Import no bundles");
+    rendered_lines += 1;
+
+    for (choices, 0..) |choice, idx| {
+        try renderMultiChoiceRow(stdout, cursor_index == idx + 1, selected[idx], choice.label, choice.description);
+        rendered_lines += 1;
+    }
+
+    try stdout.print("{s}{s}Space selects, Enter confirms.{s}\n", .{ P, Color.dim, Color.reset });
+    rendered_lines += 1;
+    try stdout.flush();
+    return rendered_lines;
+}
+
+fn renderMultiChoiceRow(
+    stdout: *std.Io.Writer,
+    focused: bool,
+    selected: bool,
+    label: []const u8,
+    description: []const u8,
+) !void {
+    const cursor = if (focused) ">" else " ";
+    const mark = if (selected) "x" else " ";
+    const focus_color = if (focused) Color.green else "";
+    const focus_reset = if (focused) Color.reset else "";
+    const label_color = if (focused) Color.bold else "";
+    const label_reset = if (focused) Color.reset else "";
+    if (description.len != 0) {
+        try stdout.print(
+            "{s}{s}{s}{s} [{s}] {s}{s}{s}  {s}{s}{s}\n",
+            .{
+                P,
+                focus_color,
+                cursor,
+                focus_reset,
+                mark,
+                label_color,
+                label,
+                label_reset,
+                Color.dim,
+                description,
+                Color.reset,
+            },
+        );
+    } else {
+        try stdout.print(
+            "{s}{s}{s}{s} [{s}] {s}{s}{s}\n",
+            .{ P, focus_color, cursor, focus_reset, mark, label_color, label, label_reset },
+        );
+    }
+}
+
 fn renderChoiceSummary(stdout: *std.Io.Writer, prompt: []const u8, label: []const u8) !void {
     try stdout.print(
         "{s}{s}?{s} {s} {s}{s}{s}\n",
         .{ P, Color.green, Color.reset, prompt, Color.cyan, label, Color.reset },
     );
     try stdout.flush();
+}
+
+fn renderMultiChoiceSummary(
+    stdout: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    prompt: []const u8,
+    choices: []const Choice,
+    selected: []const bool,
+) !void {
+    var label: std.ArrayList(u8) = .empty;
+    defer label.deinit(allocator);
+
+    var count: usize = 0;
+    for (selected, 0..) |is_selected, idx| {
+        if (!is_selected) continue;
+        if (count > 0) try label.appendSlice(allocator, ", ");
+        try label.appendSlice(allocator, choices[idx].label);
+        count += 1;
+    }
+    if (count == 0) try label.appendSlice(allocator, "Skip");
+
+    try renderChoiceSummary(stdout, prompt, label.items);
+}
+
+fn selectedIndices(allocator: std.mem.Allocator, selected: []const bool) ![]usize {
+    var indices: std.ArrayList(usize) = .empty;
+    errdefer indices.deinit(allocator);
+    for (selected, 0..) |is_selected, idx| {
+        if (is_selected) try indices.append(allocator, idx);
+    }
+    return indices.toOwnedSlice(allocator);
 }
 
 fn rewindRenderedBlock(stdout: *std.Io.Writer, rendered_lines: usize) !void {
@@ -345,6 +586,7 @@ fn readMenuKey() !MenuKey {
             '\r', '\n' => return .enter,
             'k', 'K' => return .up,
             'j', 'J' => return .down,
+            ' ' => return .toggle,
             'y', 'Y' => return .yes,
             'n', 'N' => return .no,
             '\x1b' => {

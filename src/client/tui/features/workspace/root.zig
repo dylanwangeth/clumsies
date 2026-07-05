@@ -1747,6 +1747,13 @@ fn submitCreate(self: anytype) void {
         return;
     }
 
+    const selected_bundle_id = createSelectedBundleId(self);
+    var selected_bundle_ids_buf: [1][]const u8 = undefined;
+    const selected_bundle_ids: []const []const u8 = if (selected_bundle_id) |id| blk: {
+        selected_bundle_ids_buf[0] = id;
+        break :blk selected_bundle_ids_buf[0..1];
+    } else &.{};
+
     api.specs.dispatchFromState(
         workspace_api.CreateWorkspaceRequest,
         workspace_api.CreateWorkspaceResponse,
@@ -1756,7 +1763,7 @@ fn submitCreate(self: anytype) void {
         .{
             .name = name,
             .description = self.workspace.create_desc_buf[0..self.workspace.create_desc_len],
-            .bundle_id = createSelectedBundleId(self),
+            .bundle_ids = selected_bundle_ids,
         },
     );
 }

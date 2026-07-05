@@ -74,6 +74,7 @@ pub fn choosePackage(
 
 pub fn printSectionTitle(stdout: *std.Io.Writer, title: []const u8) !void {
     try stdout.print("{s}{s}{s}{s}{s}\n", .{ P, Color.bold, Color.orange, title, Color.reset });
+    try stdout.flush();
 }
 
 pub fn printDetailLine(stdout: *std.Io.Writer, comptime fmt: []const u8, args: anytype) !void {

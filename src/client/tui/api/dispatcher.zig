@@ -663,16 +663,17 @@ test "staticPath returns the path string allocated in the given arena" {
 }
 
 test "jsonBody serializes structs and skips null optionals" {
-    const Req = struct { name: []const u8, bundle_id: ?[]const u8 = null };
+    const Req = struct { name: []const u8, bundle_ids: []const []const u8 = &.{} };
     const build = jsonBody(Req);
 
     const body = try build(std.testing.allocator, Req{ .name = "foo" });
     defer std.testing.allocator.free(body);
-    try std.testing.expectEqualStrings("{\"name\":\"foo\"}", body);
+    try std.testing.expectEqualStrings("{\"name\":\"foo\",\"bundle_ids\":[]}", body);
 
-    const body_with_bundle = try build(std.testing.allocator, Req{ .name = "foo", .bundle_id = "b1" });
+    const bundle_ids = [_][]const u8{"b1"};
+    const body_with_bundle = try build(std.testing.allocator, Req{ .name = "foo", .bundle_ids = &bundle_ids });
     defer std.testing.allocator.free(body_with_bundle);
-    try std.testing.expectEqualStrings("{\"name\":\"foo\",\"bundle_id\":\"b1\"}", body_with_bundle);
+    try std.testing.expectEqualStrings("{\"name\":\"foo\",\"bundle_ids\":[\"b1\"]}", body_with_bundle);
 }
 
 test "deepCopy recursively owns slices of structs" {

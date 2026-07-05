@@ -37,9 +37,9 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     if (body.name.len == 0) {
         return apiError(res, 400, "BAD_REQUEST", "name is required");
     }
-    if (body.bundle_id) |bid| {
+    for (body.bundle_ids) |bid| {
         if (bid.len == 0) {
-            return apiError(res, 400, "BAD_REQUEST", "bundle_id is required when provided");
+            return apiError(res, 400, "BAD_REQUEST", "bundle_ids cannot contain empty ids");
         }
     }
 
@@ -48,7 +48,7 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
     };
     defer conn.release();
 
-    if (body.bundle_id) |bid| {
+    for (body.bundle_ids) |bid| {
         const ok = bundleExists(conn, user.org_id, bid) catch {
             return apiError(res, 500, "INTERNAL_ERROR", "database query failed");
         };
@@ -94,10 +94,10 @@ pub fn handleCreate(ctx: *Server.Context, req: *httpz.Request, res: *httpz.Respo
         return apiError(res, 500, "INTERNAL_ERROR", "failed to add creator as admin");
     };
 
-    if (body.bundle_id) |bid| {
-        seedWorkspaceFromBundle(conn, &ws_id_buf, bid) catch {
+    if (body.bundle_ids.len > 0) {
+        seedWorkspaceFromBundles(conn, &ws_id_buf, body.bundle_ids) catch {
             conn.rollback() catch {};
-            return apiError(res, 500, "INTERNAL_ERROR", "failed to seed workspace from bundle");
+            return apiError(res, 500, "INTERNAL_ERROR", "failed to seed workspace from bundles");
         };
     }
 
@@ -509,13 +509,13 @@ fn bundleExists(conn: anytype, org_id: []const u8, bundle_id: []const u8) !bool 
     return false;
 }
 
-fn seedWorkspaceFromBundle(conn: anytype, ws_id: []const u8, bundle_id: []const u8) !void {
+fn seedWorkspaceFromBundles(conn: anytype, ws_id: []const u8, bundle_ids: []const []const u8) !void {
     _ = conn.exec(
         \\INSERT INTO workspace_rules (ws_id, rule_id)
-        \\SELECT $1, rule_id FROM bundle_rules WHERE bundle_id = $2
+        \\SELECT $1, rule_id FROM bundle_rules WHERE bundle_id = ANY($2)
         \\ON CONFLICT DO NOTHING
     ,
-        .{ ws_id, bundle_id },
+        .{ ws_id, bundle_ids },
     ) catch return error.DatabaseQueryFailed;
 }
 
