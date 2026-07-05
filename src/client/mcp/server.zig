@@ -140,8 +140,9 @@ fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u
 
     const instructions =
         "Call " ++ tool_names.retrieve ++ " with session_id and knownHashes first to bind this connection and get META_PROMPT, " ++
-        tool_names.activate ++ " to discover rules/workflows/context, " ++ tool_names.retrieve ++ " with ids to get content, " ++
-        "and " ++ tool_names.store ++ " to create, update, rename, delete, or discard local memory drafts.";
+        "then call " ++ tool_names.activate ++ " once at the start of every user task to activate candidate rules/workflows/context. " ++
+        "Use " ++ tool_names.retrieve ++ " with ids only for selected relevant content, " ++
+        "and " ++ tool_names.store ++ " only when the user asks to create, update, rename, delete, or discard local memory drafts.";
     const esc_instructions = try encoding.jsonEscapeAlloc(allocator, instructions);
     defer allocator.free(esc_instructions);
 
@@ -172,6 +173,8 @@ test "processLine: initialize then tools list" {
     )).?;
     defer testing.allocator.free(init_response);
     try testing.expect(std.mem.indexOf(u8, init_response, "\"protocolVersion\":\"2025-06-18\"") != null);
+    try testing.expect(std.mem.indexOf(u8, init_response, "start of every user task") != null);
+    try testing.expect(std.mem.indexOf(u8, init_response, "selected relevant content") != null);
 
     const initialized_response = try processLine(
         testing.allocator,

@@ -18,13 +18,15 @@ That path matters because the file is part of the workspace cache, not a random 
 
 The current file establishes four ideas.
 
-First, rules and workflows are not supposed to be discovered by crawling local files. The agent is supposed to use `activate` and `retrieve`.
+First, rules, workflows, and context are not supposed to be discovered by crawling local files. The agent is supposed to use `activate` as the mandatory memory activation step, then `retrieve` only for selected relevant material.
 
 Second, `retrieve` returns structured rule and workflow metadata, including constraints, but the current MCP surface no longer has a separate reference-reporting tool.
 
-Third, the adapter owns part of the protocol lifecycle. Session bootstrap is injected by the installed host adapter rather than being left to the model to remember ad hoc.
+Third, `store` is the only MCP write path for managed agent memory. It writes local drafts that shadow the synced cache; it does not directly edit authoritative cache files.
 
-Fourth, the file defines the priority order between `PIN.md`, loaded constraints, `META_PROMPT.md`, and the model's default behavior.
+Fourth, the adapter owns part of the protocol lifecycle. Session bootstrap is injected by the installed host adapter rather than being left to the model to remember ad hoc.
+
+Fifth, the file defines the priority order between `PIN.md`, loaded constraints, `META_PROMPT.md`, and the model's default behavior.
 
 ## Current workspace copy
 
@@ -37,20 +39,26 @@ This workspace uses [clumsies](https://github.com/lilhammerfun/clumsies/blob/mai
 to manage rules and context for AI agents. These coexist with your own memory,
 but take priority when they conflict.
 
-## Protocol
+## Agent Guidelines
 
-Follow this loop every turn:
-
-1. **Activate.** Call `activate()` to list all available rules,
-   workflows, and context. Read their descriptions to decide what is relevant.
+1. **Activate.** For every user task after setup, call `activate()` before
+   substantive reasoning or edits. This is the memory activation step, not an
+   optional search fallback. Use `kind`, `group`, or `query` when the task
+   provides a clear cue; otherwise call `activate()` broadly. Read returned
+   descriptions to decide what is relevant.
 2. **Retrieve.** Call `retrieve()` with the ids you need and a `knownHashes`
-   entry for every id. Use a remembered hash when available, otherwise pass an
+   entry for every id. Retrieve only selected relevant items from activation,
+   or retrieve directly when the user provides an exact Hub id, local draft id,
+   alias, or path. Use a remembered hash when available, otherwise pass an
    empty string. Loaded content includes parsed rule ids.
 3. **Apply.** Follow loaded rules in your work. Rules override your defaults.
-4. **Refine.** When the user asks you to create, update, rename,
-   delete, or discard local changes for rule, context, or MPF artifacts.
-   Use the `store` tool with a `resource` value and exactly one
-   tagged `op` object.
+   Use loaded context as project background, but trust code and observable
+   runtime state when they conflict.
+4. **Refine.** Use `store()` as the only MCP write path when the user asks
+   you to create, update, rename, delete, or discard agent memory for rule,
+   context, or MPF artifacts. `store()` writes a local draft that shadows the
+   synced cache; it does not directly edit the authoritative cache file. Use a
+   `resource` value and exactly one tagged `op` object.
 
 ## Resource types
 
@@ -59,10 +67,12 @@ Follow this loop every turn:
   slash commands by the adapter.
 - **context** — workspace-scoped reference material (design docs, research,
   specs).
+- **mpf** — workspace meta-prompt files such as `META_PROMPT.md`.
 
 Categories are organizational only (e.g. `coding/`, `zig/`, `writing/`).
 
-Filter with `activate({kind: "rule"})` or `activate({group: "zig"})`.
+Filter with `activate({kind: "rule"})`, `activate({group: "zig"})`, or
+`activate({query: "mcp tool"})`.
 
 ## Priority
 

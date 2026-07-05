@@ -12,9 +12,9 @@ The current implementation exposes three MCP tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `activate` | discover available rules, workflows, and context files |
-| `retrieve` | bootstrap the session or retrieve selected content |
-| `store` | create, update, rename, delete, or discard local memory drafts |
+| `activate` | mandatory memory activation at the start of each user task |
+| `retrieve` | bootstrap the session or retrieve selected relevant content |
+| `store` | the only MCP write path for managed agent memory; writes local drafts when asked |
 
 There is no `memory.` namespace prefix. The older public tools are not part of the current surface: `memsetup`, `memdisc`, `memload`, `memref`, `artifact`, `agentreport`, and `agentrejected` are removed rather than wrapped.
 
@@ -23,10 +23,10 @@ There is no `memory.` namespace prefix. The older public tools are not part of t
 The current loop is:
 
 1. bootstrap the connection with `retrieve` using `session_id` and `knownHashes`
-2. activate relevant material with `activate`
-3. retrieve only the content the task needs with `retrieve` using `ids` and `knownHashes`
+2. call `activate` once at the start of every user task to activate candidate material
+3. retrieve only the selected relevant content with `retrieve` using `ids` and `knownHashes`
 4. apply the loaded material in the work
-5. use `store` when the task is to refine rules, context, or MPF
+5. use `store` for any requested agent memory write to rule, context, or MPF
 
 This phase intentionally does not redesign retrieval parameters or write algorithms. `activate` keeps the old discover arguments, `retrieve` keeps the old setup/load argument shapes, and `store` keeps the old draft operation shape.
 
@@ -85,15 +85,27 @@ Example:
 
 ## `activate`
 
-`activate` discovers available rules, workflows, and context files without loading their full content. It keeps the old discover parameters unchanged.
+`activate` is the mandatory memory activation step after setup. Call it once at the start of every user task before substantive reasoning or edits. It lists available rules, workflows, and context files without loading their full content. It keeps the old discover parameters unchanged.
+
+Calling `activate()` with no arguments performs broad activation. Add filters only when the task gives a useful cue:
+
+| Call shape | Meaning |
+| --- | --- |
+| `activate()` | broad activation across rules, workflows, context, and draft-aware items |
+| `activate({kind: "rule"})` | only rule candidates |
+| `activate({kind: "workflow"})` | only workflow candidates |
+| `activate({kind: "context"})` | only context candidates |
+| `activate({group: "coding"})` | candidates under a category or folder group |
+| `activate({query: "mcp tool"})` | candidates whose path or description matches any query term |
+| `activate({kind: "rule", group: "zig", query: "toolchain"})` | combined narrowing; filters are applied together |
 
 ### Input
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `kind` | string enum | no | one of `rule`, `workflow`, `context` |
-| `group` | string | no | filter by first path segment or logical group |
-| `query` | string | no | free-text query across searchable metadata |
+| `kind` | string enum | no | focus activation to one of `rule`, `workflow`, `context` |
+| `group` | string | no | focus activation by first path segment or nested logical group |
+| `query` | string | no | focus activation by matching terms against path or description |
 
 ### Structured Result
 
@@ -128,6 +140,8 @@ Each item can include:
 ## `retrieve` For Content
 
 When `ids` is present and `session_id` is absent, `retrieve` resolves full content for the selected IDs. This is the old load parameter structure under the new tool name.
+
+Do not retrieve every item returned by `activate`. Read activated metadata first, then retrieve only the items that are relevant to the current task. If the user gives an exact Hub id, local draft id, alias, or path, retrieve that reference directly without a broad activation search.
 
 ### Input
 
@@ -180,7 +194,9 @@ The content no longer includes a footer telling the agent to call a reference-re
 
 ## `store`
 
-`store` stages local changes for rules, workspace context, or MPF. Those local changes are stored as drafts until they enter review.
+`store` is the only MCP write path for managed agent memory. Use it whenever the user asks to create, update, rename, delete, or discard rule, context, or MPF memory, including `META_PROMPT.md`.
+
+`store` does not directly edit the synced cache or authoritative server state. It writes a local draft that shadows the cached memory until the draft enters review or is applied. It is not part of the mandatory activation loop.
 
 The input is still the tagged command object used by the previous draft tool. This phase does not introduce text-fragment replacement or multi-patch operations; `update.body` is the complete replacement draft body.
 

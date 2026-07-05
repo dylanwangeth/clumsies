@@ -32,15 +32,15 @@ const ValidationError = error{
 };
 
 const activate_schema =
-    "{\"name\":\"" ++ tool_names.activate ++ "\",\"title\":\"Activate\",\"description\":\"Discover available rules, workflows, and context files. Returns fresh metadata from the workspace.\"," ++
+    "{\"name\":\"" ++ tool_names.activate ++ "\",\"title\":\"Activate\",\"description\":\"Mandatory memory activation step. After setup, call activate once at the start of every user task before substantive reasoning or edits. It lists candidate rules, workflows, and context from the local workspace so the agent can decide what to retrieve and apply. Use kind, group, or query only to focus activation; omit them for broad activation.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
-    "\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"],\"description\":\"Filter results by resource kind: 'rule', 'workflow', or 'context'.\"}," ++
-    "\"group\":{\"type\":\"string\",\"description\":\"Filter results by category or folder group prefix (e.g., 'coding', 'zig').\"}," ++
-    "\"query\":{\"type\":\"string\",\"description\":\"Search query to filter resources by title, name, or content match.\"" ++
+    "\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"],\"description\":\"Focus activation by resource kind: 'rule', 'workflow', or 'context'.\"}," ++
+    "\"group\":{\"type\":\"string\",\"description\":\"Focus activation by category or folder group prefix (e.g., 'coding', 'zig').\"}," ++
+    "\"query\":{\"type\":\"string\",\"description\":\"Focus activation by matching terms against resource path or description.\"" ++
     "}},\"additionalProperties\":false}}";
 
 const retrieve_schema =
-    "{\"name\":\"" ++ tool_names.retrieve ++ "\",\"title\":\"Retrieve\",\"description\":\"Bind this MCP connection when session_id is present, or retrieve rule, workflow, and context content when ids is present. Keep using the original setup and load argument shapes: session_id plus knownHashes for META_PROMPT bootstrap, or ids plus knownHashes for content retrieval.\"," ++
+    "{\"name\":\"" ++ tool_names.retrieve ++ "\",\"title\":\"Retrieve\",\"description\":\"Bind this MCP connection when session_id is present. After activate, retrieve full content only for selected relevant ids, or retrieve directly when the user provides an exact resource id, path, or alias. Keep using the original setup and load argument shapes: session_id plus knownHashes for META_PROMPT bootstrap, or ids plus knownHashes for content retrieval.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"session_id\":{\"type\":\"string\",\"description\":\"The host session/thread ID to bind this connection to when bootstrapping.\"}," ++
     "\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Array of unique resource identifiers, paths, or aliases to load.\"}," ++
@@ -49,7 +49,7 @@ const retrieve_schema =
 
 const store_schema =
     "{\"name\":\"" ++ tool_names.store ++ "\",\"title\":\"Store\"," ++
-    "\"description\":\"Create, update, rename, delete, or discard a local change for context, rule, or MPF memory artifacts. Local changes are stored as drafts until they enter review. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
+    "\"description\":\"The only MCP write path for managed agent memory. Use store whenever the user asks to create, update, rename, delete, or discard rule, context, or MPF memory, including META_PROMPT. Store writes a local draft that shadows the synced cache; it does not directly edit the authoritative cache file. Store is not part of the mandatory activation loop. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"mpf\"],\"description\":\"The resource type: 'context', 'rule', or 'mpf'.\"}," ++
     "\"op\":{\"type\":\"object\",\"description\":\"The draft operation details, containing exactly one of create, update, rename, delete, or discard.\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
@@ -940,6 +940,10 @@ test "buildListResult: exposes activate retrieve and store tools" {
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.activate ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.retrieve ++ "\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.store ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Mandatory memory activation step") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "start of every user task") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "only MCP write path for managed agent memory") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Store is not part of the mandatory activation loop") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memsetup\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memdisc\"") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memload\"") == null);
