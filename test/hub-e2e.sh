@@ -391,7 +391,7 @@ assert_status "list bundles" "200" "$STATUS"
 assert_json "contains test bundle" "$BUNDLE_NAME" "$BODY"
 
 step "Workspace: create from bundle"
-RAW=$(call POST "/api/workspaces" '{"name":"bundle-ws-'"$RUN_ID"'","description":"Workspace seeded from a bundle.","bundle_id":"'"$BUNDLE_ID"'"}')
+RAW=$(call POST "/api/workspaces" '{"name":"bundle-ws-'"$RUN_ID"'","description":"Workspace seeded from a bundle.","bundle_ids":["'"$BUNDLE_ID"'"]}')
 parse_response "$RAW"
 assert_status "create workspace from bundle" "201" "$STATUS"
 BUNDLE_WS_ID=$(echo "$BODY" | grep -o '"ws_id":"[^"]*"' | cut -d'"' -f4)
