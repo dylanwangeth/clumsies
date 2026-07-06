@@ -1,7 +1,7 @@
 .{
     .fingerprint = 0xa21731978d142f78,
     .name = .clumsies,
-    .version = "0.19.1-alpha",
+    .version = "0.19.2-alpha",
     .dependencies = .{
         .httpz = .{
             .url = "https://github.com/karlseguin/http.zig/archive/86a44b63bda353338f2dbddc35eeb260f0f5c299.tar.gz",
