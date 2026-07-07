@@ -1,0 +1,1835 @@
+openapi: 3.1.0
+info:
+  title: clumsies Public API
+  version: 1.0.0
+  summary: Public Hub API for Desktop and CLI.
+servers:
+  - url: https://hub.clumsies.local
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/auth/token:
+    post:
+      operationId: createAuthToken
+      summary: Exchange an authorization code or refresh token for clumsies tokens.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenRequest"
+      responses:
+        "200":
+          description: Token pair.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/session:
+    delete:
+      operationId: revokeSession
+      summary: Revoke the current session.
+      responses:
+        "200":
+          description: Session revocation result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRevoked"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/me:
+    get:
+      operationId: getMe
+      summary: Read the current user bootstrap payload.
+      responses:
+        "200":
+          description: Current user, organization, projects, and capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects:
+    get:
+      operationId: listProjects
+      summary: List projects accessible to the current user.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Project page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createProject
+      summary: Create a project.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "200":
+          description: Created project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: getProject
+      summary: Read a project.
+      responses:
+        "200":
+          description: Project detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateProject
+      summary: Update project metadata.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProjectRequest"
+      responses:
+        "200":
+          description: Updated project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteProject
+      summary: Delete a project.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Delete result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/me/bundles:
+    get:
+      operationId: listPersonalBundles
+      summary: List personal Bundles owned by the current user.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Personal Bundle page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalBundleListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createPersonalBundle
+      summary: Create a user-owned personal Bundle.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PersonalBundleRequest"
+      responses:
+        "200":
+          description: Created personal Bundle.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalBundleDetail"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/me/bundles/{bundle_id}:
+    parameters:
+      - $ref: "#/components/parameters/BundleId"
+    get:
+      operationId: getPersonalBundle
+      summary: Read a personal Bundle.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Personal Bundle detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalBundleDetail"
+        "304":
+          description: ETag matched.
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updatePersonalBundle
+      summary: Update a personal Bundle.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PersonalBundleUpdateRequest"
+      responses:
+        "200":
+          description: Updated personal Bundle.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalBundleDetail"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deletePersonalBundle
+      summary: Delete a personal Bundle.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Delete result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/org/rules:
+    get:
+      operationId: listOrgRules
+      summary: List organization rules.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Organization rule page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/org/rules/{rule_id}:
+    parameters:
+      - $ref: "#/components/parameters/RuleId"
+    get:
+      operationId: getOrgRule
+      summary: Read an organization rule.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Organization rule detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleDetail"
+        "304":
+          description: ETag matched.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/org/context:
+    get:
+      operationId: listOrgContext
+      summary: List organization context entries.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Organization context page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/org/context/{context_id}:
+    parameters:
+      - $ref: "#/components/parameters/ContextId"
+    get:
+      operationId: getOrgContext
+      summary: Read an organization context entry.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Organization context detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextDetail"
+        "304":
+          description: ETag matched.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/org/workflows:
+    get:
+      operationId: listOrgWorkflows
+      summary: List organization workflows.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Organization workflow page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/org/workflows/{workflow_id}:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowId"
+    get:
+      operationId: getOrgWorkflow
+      summary: Read an organization workflow.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Organization workflow detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDetail"
+        "304":
+          description: ETag matched.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/rules:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectRules
+      summary: List project rules.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Project rule page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/rules/{rule_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/RuleId"
+    get:
+      operationId: getProjectRule
+      summary: Read a project rule.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Project rule detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleDetail"
+        "304":
+          description: ETag matched.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/context:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectContext
+      summary: List project context entries.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Project context page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/context/{context_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ContextId"
+    get:
+      operationId: getProjectContext
+      summary: Read a project context entry.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Project context detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextDetail"
+        "304":
+          description: ETag matched.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/workflows:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectWorkflows
+      summary: List project workflows.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Project workflow page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/workflows/{workflow_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/WorkflowId"
+    get:
+      operationId: getProjectWorkflow
+      summary: Read a project workflow.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Project workflow detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDetail"
+        "304":
+          description: ETag matched.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/org-selections:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: getProjectOrgSelection
+      summary: Read organization memory selected by a project.
+      responses:
+        "200":
+          description: Project organization memory selection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectOrgSelection"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: replaceProjectOrgSelection
+      summary: Replace organization memory selected by a project.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplaceProjectOrgSelectionRequest"
+      responses:
+        "200":
+          description: Updated project organization memory selection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectOrgSelection"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/drafts:
+    get:
+      operationId: listDrafts
+      summary: List current user's personal drafts.
+      parameters:
+        - $ref: "#/components/parameters/ProjectIdQuery"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Draft page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createDraft
+      summary: Create a personal draft.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDraftRequest"
+      responses:
+        "200":
+          description: Created draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftDetail"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/drafts/{draft_id}:
+    parameters:
+      - $ref: "#/components/parameters/DraftId"
+    get:
+      operationId: getDraft
+      summary: Read a personal draft.
+      responses:
+        "200":
+          description: Draft detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftDetail"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateDraft
+      summary: Update draft metadata.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDraftRequest"
+      responses:
+        "200":
+          description: Updated draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftDetail"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteDraft
+      summary: Discard a personal draft.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Delete result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/drafts/{draft_id}/operations:
+    parameters:
+      - $ref: "#/components/parameters/DraftId"
+    post:
+      operationId: appendDraftOperation
+      summary: Append an operation to a personal draft.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppendDraftOperationRequest"
+      responses:
+        "200":
+          description: Draft after appending the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftDetail"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/draft-events:
+    get:
+      operationId: listDraftEvents
+      summary: Read draft sync events.
+      parameters:
+        - name: after_cursor
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Draft sync events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftEventListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/draft-operation-batches:
+    post:
+      operationId: createDraftOperationBatch
+      summary: Submit local draft operations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DraftOperationBatchRequest"
+      responses:
+        "200":
+          description: Accepted draft operations and new sync cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftOperationBatchResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews:
+    get:
+      operationId: listReviews
+      summary: List reviews.
+      parameters:
+        - $ref: "#/components/parameters/ProjectIdQuery"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Review page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createReview
+      summary: Create a review from a draft.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReviewRequest"
+      responses:
+        "200":
+          description: Created review.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}:
+    parameters:
+      - $ref: "#/components/parameters/ReviewId"
+    get:
+      operationId: getReview
+      summary: Read a review.
+      responses:
+        "200":
+          description: Review detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewDetail"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}/comments:
+    parameters:
+      - $ref: "#/components/parameters/ReviewId"
+    get:
+      operationId: listReviewComments
+      summary: List review comments.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Review comment page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewCommentListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createReviewComment
+      summary: Add a review comment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReviewCommentRequest"
+      responses:
+        "200":
+          description: Created review comment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewComment"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}/decisions:
+    parameters:
+      - $ref: "#/components/parameters/ReviewId"
+    post:
+      operationId: createReviewDecision
+      summary: Create a review decision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReviewDecisionRequest"
+      responses:
+        "200":
+          description: Review after decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}/merges:
+    parameters:
+      - $ref: "#/components/parameters/ReviewId"
+    post:
+      operationId: createReviewMerge
+      summary: Merge an approved review and produce authoritative memory.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReviewMergeRequest"
+      responses:
+        "200":
+          description: Merge result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewMergeResult"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/org/snapshots:
+    get:
+      operationId: listOrgSnapshots
+      summary: List organization memory snapshots.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Organization snapshot page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/org/snapshot-state:
+    get:
+      operationId: getOrgSnapshotState
+      summary: Read organization snapshot update state.
+      parameters:
+        - name: local_snapshot_id
+          in: query
+          schema:
+            type: string
+        - name: local_org_version
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Organization snapshot update state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotStateResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/snapshots:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectSnapshots
+      summary: List project memory snapshots.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Project snapshot page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/snapshot-state:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: getProjectSnapshotState
+      summary: Read project snapshot update state.
+      parameters:
+        - name: local_snapshot_id
+          in: query
+          schema:
+            type: string
+        - name: local_project_version
+          in: query
+          schema:
+            type: integer
+        - name: local_org_snapshot_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Project snapshot update state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotStateResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/snapshots/{snapshot_id}:
+    parameters:
+      - $ref: "#/components/parameters/SnapshotId"
+    get:
+      operationId: getSnapshot
+      summary: Download or read a memory snapshot payload.
+      responses:
+        "200":
+          description: Snapshot payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotPayload"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema:
+        type: string
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      schema:
+        type: string
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      schema:
+        type: string
+    ProjectIdQuery:
+      name: project_id
+      in: query
+      schema:
+        type: string
+    RuleId:
+      name: rule_id
+      in: path
+      required: true
+      schema:
+        type: string
+    ContextId:
+      name: context_id
+      in: path
+      required: true
+      schema:
+        type: string
+    WorkflowId:
+      name: workflow_id
+      in: path
+      required: true
+      schema:
+        type: string
+    BundleId:
+      name: bundle_id
+      in: path
+      required: true
+      schema:
+        type: string
+    DraftId:
+      name: draft_id
+      in: path
+      required: true
+      schema:
+        type: string
+    ReviewId:
+      name: review_id
+      in: path
+      required: true
+      schema:
+        type: string
+    SnapshotId:
+      name: snapshot_id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Error:
+      description: Error response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    TokenRequest:
+      type: object
+      oneOf:
+        - required: [grant_type, code, code_verifier]
+        - required: [grant_type, refresh_token]
+      properties:
+        grant_type:
+          type: string
+          enum: [authorization_code, refresh_token]
+        code:
+          type: string
+        code_verifier:
+          type: string
+        refresh_token:
+          type: string
+    TokenResponse:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+    SessionRevoked:
+      type: object
+      required: [revoked]
+      properties:
+        revoked:
+          type: boolean
+    MeResponse:
+      type: object
+      required: [user, org, projects, default_project_id, capabilities]
+      properties:
+        user:
+          $ref: "#/components/schemas/UserRef"
+        org:
+          $ref: "#/components/schemas/OrgRef"
+        projects:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectRef"
+        default_project_id:
+          type: [string, "null"]
+        capabilities:
+          type: array
+          items:
+            type: string
+    CreateProjectRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+    UpdateProjectRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+    ProjectListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    Project:
+      allOf:
+        - $ref: "#/components/schemas/ProjectRef"
+        - type: object
+          required: [description, revision, created_at, updated_at]
+          properties:
+            description:
+              type: string
+            revision:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+    ProjectRef:
+      type: object
+      required: [project_id, name]
+      properties:
+        project_id:
+          type: string
+        name:
+          type: string
+    PersonalBundleRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        rule_ids:
+          type: array
+          items:
+            type: string
+        context_ids:
+          type: array
+          items:
+            type: string
+        workflow_ids:
+          type: array
+          items:
+            type: string
+    PersonalBundleUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        rule_ids:
+          type: array
+          items:
+            type: string
+        context_ids:
+          type: array
+          items:
+            type: string
+        workflow_ids:
+          type: array
+          items:
+            type: string
+    PersonalBundleListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PersonalBundleMeta"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    PersonalBundleDetail:
+      type: object
+      required: [bundle, rules, context, workflows, etag]
+      properties:
+        bundle:
+          $ref: "#/components/schemas/PersonalBundleMeta"
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleMeta"
+        context:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContextMeta"
+        workflows:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowMeta"
+        etag:
+          type: string
+    PersonalBundleMeta:
+      type: object
+      required:
+        - bundle_id
+        - owner_user_id
+        - name
+        - description
+        - rule_count
+        - context_count
+        - workflow_count
+        - revision
+        - created_at
+        - updated_at
+      properties:
+        bundle_id:
+          type: string
+        owner_user_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        rule_count:
+          type: integer
+        context_count:
+          type: integer
+        workflow_count:
+          type: integer
+        revision:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    RuleListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleMeta"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    ContextListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContextMeta"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    WorkflowListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowMeta"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    RuleDetail:
+      type: object
+      required: [rule, body, etag]
+      properties:
+        rule:
+          $ref: "#/components/schemas/RuleMeta"
+        body:
+          type: string
+        etag:
+          type: string
+    ContextDetail:
+      type: object
+      required: [context, body, etag]
+      properties:
+        context:
+          $ref: "#/components/schemas/ContextMeta"
+        body:
+          type: string
+        etag:
+          type: string
+    WorkflowDetail:
+      type: object
+      required: [workflow, steps, etag]
+      properties:
+        workflow:
+          $ref: "#/components/schemas/WorkflowMeta"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowStep"
+        etag:
+          type: string
+    WorkflowStep:
+      type: object
+      required: [order, rule_id, body]
+      properties:
+        order:
+          type: integer
+        rule_id:
+          type: [string, "null"]
+        body:
+          type: [string, "null"]
+    ReplaceProjectOrgSelectionRequest:
+      type: object
+      properties:
+        rule_ids:
+          type: array
+          items:
+            type: string
+        context_ids:
+          type: array
+          items:
+            type: string
+        workflow_ids:
+          type: array
+          items:
+            type: string
+    DraftListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Draft"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    CreateDraftRequest:
+      type: object
+      required: [project_id, title, resource]
+      properties:
+        project_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        resource:
+          $ref: "#/components/schemas/DraftResourceRef"
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftOperationInput"
+    UpdateDraftRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/DraftStatus"
+    AppendDraftOperationRequest:
+      $ref: "#/components/schemas/DraftOperationInput"
+    DraftDetail:
+      type: object
+      required: [draft, operations, sync_state]
+      properties:
+        draft:
+          $ref: "#/components/schemas/Draft"
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftOperation"
+        sync_state:
+          $ref: "#/components/schemas/DraftSyncState"
+    Draft:
+      type: object
+      required:
+        - draft_id
+        - project_id
+        - author
+        - title
+        - description
+        - resource
+        - status
+        - version
+        - created_at
+        - updated_at
+      properties:
+        draft_id:
+          type: string
+        project_id:
+          type: string
+        author:
+          $ref: "#/components/schemas/UserRef"
+        title:
+          type: string
+        description:
+          type: string
+        resource:
+          $ref: "#/components/schemas/DraftResourceRef"
+        status:
+          $ref: "#/components/schemas/DraftStatus"
+        version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DraftOperation:
+      allOf:
+        - $ref: "#/components/schemas/DraftOperationInput"
+        - type: object
+          required: [operation_id, created_at]
+          properties:
+            operation_id:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+    DraftOperationInput:
+      type: object
+      required: [action, resource, base_hash]
+      properties:
+        action:
+          $ref: "#/components/schemas/DraftOperationAction"
+        resource:
+          $ref: "#/components/schemas/DraftResourceRef"
+        base_hash:
+          type: [string, "null"]
+        body:
+          type: [string, "null"]
+        new_path:
+          type: [string, "null"]
+    DraftResourceRef:
+      type: object
+      required: [kind, id, path]
+      properties:
+        kind:
+          $ref: "#/components/schemas/DraftResourceKind"
+        id:
+          type: [string, "null"]
+        path:
+          type: [string, "null"]
+    DraftSyncState:
+      type: object
+      required: [status, server_cursor, runtime_installation_id, conflict_count]
+      properties:
+        status:
+          type: string
+          enum: [synced, pending, conflicted, failed]
+        server_cursor:
+          type: [string, "null"]
+        runtime_installation_id:
+          type: [string, "null"]
+        conflict_count:
+          type: integer
+    DraftEventListResponse:
+      type: object
+      required: [events, next_cursor, has_more]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftEvent"
+        next_cursor:
+          type: [string, "null"]
+        has_more:
+          type: boolean
+    DraftEvent:
+      type: object
+      required:
+        - event_id
+        - draft_id
+        - project_id
+        - event_type
+        - version
+        - runtime_installation_id
+        - created_at
+      properties:
+        event_id:
+          type: string
+        draft_id:
+          type: string
+        project_id:
+          type: string
+        event_type:
+          type: string
+          enum: [created, updated, operation_appended, discarded, submitted, conflicted]
+        version:
+          type: integer
+        runtime_installation_id:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+    DraftOperationBatchRequest:
+      type: object
+      required: [runtime_installation_id, operations]
+      properties:
+        runtime_installation_id:
+          type: string
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftOperationBatchItem"
+    DraftOperationBatchItem:
+      type: object
+      required: [local_operation_id, draft_id, expected_draft_version, operation]
+      properties:
+        local_operation_id:
+          type: string
+        draft_id:
+          type: string
+        expected_draft_version:
+          type: integer
+        operation:
+          $ref: "#/components/schemas/DraftOperationInput"
+    DraftOperationBatchResponse:
+      type: object
+      required: [accepted_operations, cursor]
+      properties:
+        accepted_operations:
+          type: array
+          items:
+            type: string
+        cursor:
+          type: string
+    ReviewListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Review"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    CreateReviewRequest:
+      type: object
+      required: [draft_id, expected_draft_version]
+      properties:
+        draft_id:
+          type: string
+        expected_draft_version:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+    ReviewDetail:
+      type: object
+      required: [review, draft, operations, comments]
+      properties:
+        review:
+          $ref: "#/components/schemas/Review"
+        draft:
+          $ref: "#/components/schemas/Draft"
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftOperation"
+        comments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewComment"
+    Review:
+      type: object
+      required:
+        - review_id
+        - project_id
+        - draft_id
+        - author
+        - title
+        - description
+        - status
+        - version
+        - created_at
+        - updated_at
+      properties:
+        review_id:
+          type: string
+        project_id:
+          type: string
+        draft_id:
+          type: string
+        author:
+          $ref: "#/components/schemas/UserRef"
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/ReviewStatus"
+        version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ReviewCommentListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewComment"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    CreateReviewCommentRequest:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+    ReviewComment:
+      type: object
+      required: [comment_id, review_id, author, body, created_at]
+      properties:
+        comment_id:
+          type: string
+        review_id:
+          type: string
+        author:
+          $ref: "#/components/schemas/UserRef"
+        body:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    CreateReviewDecisionRequest:
+      type: object
+      required: [decision, expected_review_version]
+      properties:
+        decision:
+          type: string
+          enum: [approved, rejected]
+        expected_review_version:
+          type: integer
+        body:
+          type: string
+    CreateReviewMergeRequest:
+      type: object
+      required: [expected_review_version]
+      properties:
+        expected_review_version:
+          type: integer
+        expected_target_version:
+          type: [integer, "null"]
+    ReviewMergeResult:
+      type: object
+      required: [review, snapshot_id, applied_operation_count]
+      properties:
+        review:
+          $ref: "#/components/schemas/Review"
+        snapshot_id:
+          type: [string, "null"]
+        applied_operation_count:
+          type: integer
+    RuleMeta:
+      type: object
+      required: [rule_id, scope, project_id, path, name, content_hash, status, updated_at]
+      properties:
+        rule_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/MemoryScope"
+        project_id:
+          type: [string, "null"]
+        path:
+          type: string
+        name:
+          type: string
+        content_hash:
+          type: string
+        status:
+          $ref: "#/components/schemas/MemoryStatus"
+        updated_at:
+          type: string
+          format: date-time
+    ContextMeta:
+      type: object
+      required: [context_id, scope, project_id, kind, path, content_hash, size, updated_at]
+      properties:
+        context_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/MemoryScope"
+        project_id:
+          type: [string, "null"]
+        kind:
+          type: string
+          enum: [file, note, decision, reference]
+        path:
+          type: string
+        content_hash:
+          type: string
+        size:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+    WorkflowMeta:
+      type: object
+      required: [workflow_id, scope, project_id, path, name, content_hash, status, updated_at]
+      properties:
+        workflow_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/MemoryScope"
+        project_id:
+          type: [string, "null"]
+        path:
+          type: string
+        name:
+          type: string
+        content_hash:
+          type: string
+        status:
+          $ref: "#/components/schemas/MemoryStatus"
+        updated_at:
+          type: string
+          format: date-time
+    SnapshotListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SnapshotManifest"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    SnapshotStateResponse:
+      type: object
+      required: [update_available, latest, download_url, incremental_supported]
+      properties:
+        update_available:
+          type: boolean
+        latest:
+          $ref: "#/components/schemas/SnapshotManifest"
+        download_url:
+          type: string
+        incremental_supported:
+          type: boolean
+    SnapshotPayload:
+      type: object
+      required: [manifest, content_items, project_org_selection]
+      properties:
+        manifest:
+          $ref: "#/components/schemas/SnapshotManifest"
+        content_items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SnapshotContentItem"
+        project_org_selection:
+          oneOf:
+            - $ref: "#/components/schemas/ProjectOrgSelection"
+            - type: "null"
+    SnapshotManifest:
+      type: object
+      required: [snapshot_id, scope, project_id, version, created_at, items]
+      properties:
+        snapshot_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/SnapshotScope"
+        project_id:
+          type: [string, "null"]
+        version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SnapshotManifestItem"
+    SnapshotManifestItem:
+      type: object
+      required: [id, type, scope, project_id, path, content_hash, source]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [rule, context, workflow, mpf, project_org_selection]
+        scope:
+          type: string
+          enum: [org, project, runtime]
+        project_id:
+          type: [string, "null"]
+        path:
+          type: [string, "null"]
+        content_hash:
+          type: [string, "null"]
+        source:
+          type: string
+          enum: [org, project, selected_org, bootstrap, config]
+    SnapshotContentItem:
+      type: object
+      required: [id, type, scope, project_id, path, content_hash, content]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [rule, context, workflow, mpf]
+        scope:
+          type: string
+          enum: [org, project, runtime]
+        project_id:
+          type: [string, "null"]
+        path:
+          type: [string, "null"]
+        content_hash:
+          type: string
+        content:
+          type: string
+    ProjectOrgSelection:
+      type: object
+      required: [project_id, rules, context, workflows, revision]
+      properties:
+        project_id:
+          type: string
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleMeta"
+        context:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContextMeta"
+        workflows:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowMeta"
+        revision:
+          type: integer
+    DeleteResult:
+      type: object
+      required: [deleted, id]
+      properties:
+        deleted:
+          type: boolean
+        id:
+          type: string
+    PageInfo:
+      type: object
+      required: [next_cursor, has_more]
+      properties:
+        next_cursor:
+          type: [string, "null"]
+        has_more:
+          type: boolean
+    UserRef:
+      type: object
+      required: [user_id, email, display_name, role, auth_provider]
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: [string, "null"]
+        role:
+          type: string
+        auth_provider:
+          type: string
+          enum: [google]
+    OrgRef:
+      type: object
+      required: [org_id, name]
+      properties:
+        org_id:
+          type: string
+        name:
+          type: string
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ApiError"
+    ApiError:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    MemoryScope:
+      type: string
+      enum: [org, project]
+    MemoryStatus:
+      type: string
+      enum: [active, deprecated, archived]
+    SnapshotScope:
+      type: string
+      enum: [org, project]
+    DraftStatus:
+      type: string
+      enum: [open, submitted, discarded, conflicted]
+    DraftResourceKind:
+      type: string
+      enum: [context, rule, workflow, mpf]
+    DraftOperationAction:
+      type: string
+      enum: [create, update, rename, delete]
+    ReviewStatus:
+      type: string
+      enum: [open, approved, rejected, merged]

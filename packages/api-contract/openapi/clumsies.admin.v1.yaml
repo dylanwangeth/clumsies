@@ -1,0 +1,453 @@
+openapi: 3.1.0
+info:
+  title: clumsies Admin API
+  version: 1.0.0
+  summary: Admin Hub API for Web Admin.
+servers:
+  - url: https://hub.clumsies.local
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/admin/org:
+    get:
+      operationId: getAdminOrg
+      summary: Read organization settings.
+      responses:
+        "200":
+          description: Organization settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminOrg"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateAdminOrg
+      summary: Update organization settings.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAdminOrgRequest"
+      responses:
+        "200":
+          description: Updated organization settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminOrg"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/members:
+    get:
+      operationId: listAdminMembers
+      summary: List organization members.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Member page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createAdminMember
+      summary: Create a Google email member admission record.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMemberRequest"
+      responses:
+        "200":
+          description: Created member.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/members/{user_id}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    patch:
+      operationId: updateAdminMember
+      summary: Update organization member role or status.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMemberRequest"
+      responses:
+        "200":
+          description: Updated member.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAdminMember
+      summary: Remove or disable an organization member.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+        - name: transfer_projects_to
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Delete result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/projects:
+    get:
+      operationId: listAdminProjects
+      summary: List project metadata for administration.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Project metadata page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminProjectListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/tokens:
+    get:
+      operationId: listAdminTokens
+      summary: List access token metadata.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Access token metadata page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessTokenListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/tokens/{token_id}:
+    parameters:
+      - name: token_id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteAdminToken
+      summary: Revoke an access token.
+      responses:
+        "200":
+          description: Delete result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/audit-events:
+    get:
+      operationId: listAdminAuditEvents
+      summary: Query security audit events.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Audit event page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditEventListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/health:
+    get:
+      operationId: getAdminHealth
+      summary: Read backend health.
+      responses:
+        "200":
+          description: Backend health.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminHealth"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema:
+        type: string
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Error:
+      description: Error response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    AdminOrg:
+      type: object
+      required: [org_id, name, allowed_email_domains, revision, updated_at]
+      properties:
+        org_id:
+          type: string
+        name:
+          type: string
+        allowed_email_domains:
+          type: array
+          items:
+            type: string
+        revision:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+    UpdateAdminOrgRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        allowed_email_domains:
+          type: array
+          items:
+            type: string
+    MemberListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Member"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    CreateMemberRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email:
+          type: string
+          format: email
+        role:
+          $ref: "#/components/schemas/OrgRole"
+    UpdateMemberRequest:
+      type: object
+      properties:
+        role:
+          $ref: "#/components/schemas/OrgRole"
+        status:
+          $ref: "#/components/schemas/MemberStatus"
+    Member:
+      type: object
+      required: [user_id, email, display_name, role, status, google_subject_bound, revision]
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: [string, "null"]
+        role:
+          $ref: "#/components/schemas/OrgRole"
+        status:
+          $ref: "#/components/schemas/MemberStatus"
+        google_subject_bound:
+          type: boolean
+        revision:
+          type: integer
+    AdminProjectListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminProject"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    AdminProject:
+      type: object
+      required: [project_id, name, member_count, updated_at]
+      properties:
+        project_id:
+          type: string
+        name:
+          type: string
+        member_count:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+    AccessTokenListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccessTokenMeta"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    AccessTokenMeta:
+      type: object
+      required: [token_id, user_id, kind, revoked, expires_at, created_at]
+      properties:
+        token_id:
+          type: string
+        user_id:
+          type: string
+        kind:
+          type: string
+          enum: [access, refresh, integration]
+        revoked:
+          type: boolean
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    AuditEventListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    AuditEvent:
+      type: object
+      required: [event_id, actor_user_id, action, target_type, target_id, created_at]
+      properties:
+        event_id:
+          type: string
+        actor_user_id:
+          type: [string, "null"]
+        action:
+          type: string
+        target_type:
+          type: string
+        target_id:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+    AdminHealth:
+      type: object
+      required: [status, version, database, snapshot_service, sync_queue]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        version:
+          type: string
+        database:
+          $ref: "#/components/schemas/HealthCheck"
+        snapshot_service:
+          $ref: "#/components/schemas/HealthCheck"
+        sync_queue:
+          $ref: "#/components/schemas/HealthCheck"
+    HealthCheck:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        message:
+          type: string
+    DeleteResult:
+      type: object
+      required: [deleted, id]
+      properties:
+        deleted:
+          type: boolean
+        id:
+          type: string
+    PageInfo:
+      type: object
+      required: [next_cursor, has_more]
+      properties:
+        next_cursor:
+          type: [string, "null"]
+        has_more:
+          type: boolean
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ApiError"
+    ApiError:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    OrgRole:
+      type: string
+      enum: [owner, admin, member]
+    MemberStatus:
+      type: string
+      enum: [invited, active, disabled]

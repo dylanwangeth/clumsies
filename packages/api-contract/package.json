@@ -1,0 +1,15 @@
+{
+  "name": "@clumsies/api-contract",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./public": "./generated/public.d.ts",
+    "./admin": "./generated/admin.d.ts",
+    "./runtime": "./generated/runtime.d.ts"
+  },
+  "scripts": {
+    "generate": "openapi-typescript openapi/clumsies.public.v1.yaml -o generated/public.d.ts && openapi-typescript openapi/clumsies.admin.v1.yaml -o generated/admin.d.ts && openapi-typescript openapi/clumsies.runtime.v1.yaml -o generated/runtime.d.ts",
+    "smoke": "tsc -p tsconfig.json --noEmit",
+    "check": "bun run generate && bun run smoke"
+  }
+}
