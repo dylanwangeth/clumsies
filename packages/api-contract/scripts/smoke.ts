@@ -79,8 +79,6 @@ type _daemonContract = [
   Expect<HasMethod<DaemonPaths, "/daemon/sync-status", "get">>,
   Expect<HasMethod<DaemonPaths, "/daemon/sync-retries", "post">>,
   Expect<HasMethod<DaemonPaths, "/daemon/mcp-status", "get">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/mcp-restarts", "post">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/mcp-stops", "post">>,
   Expect<HasMethod<DaemonPaths, "/daemon/drafts", "get">>,
   Expect<HasMethod<DaemonPaths, "/daemon/drafts/{draft_id}", "get">>,
   Expect<HasMethod<DaemonPaths, "/daemon/draft-operations", "post">>,

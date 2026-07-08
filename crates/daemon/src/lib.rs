@@ -1,10 +1,8 @@
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -36,7 +34,6 @@ pub struct DaemonConfig {
     pub root_dir: PathBuf,
     pub project: ProjectConfig,
     pub listen_addr: SocketAddr,
-    pub sidecar: SidecarConfig,
     pub sync: SyncConfig,
 }
 
@@ -46,14 +43,6 @@ pub struct ProjectConfig {
     pub author_user_id: Option<String>,
     pub project_id: Option<String>,
     pub access_token: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SidecarConfig {
-    pub enabled: bool,
-    pub command: Option<PathBuf>,
-    pub args: Vec<String>,
-    pub version: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,28 +72,10 @@ impl DaemonConfig {
             .map_err(|error| {
                 DaemonError::InvalidConfig(format!("invalid CLUMSIES_DAEMON_ADDR: {error}"))
             })?;
-        let sidecar = SidecarConfig {
-            enabled: parse_bool_env("CLUMSIES_SIDECAR_ENABLED")?.unwrap_or(false),
-            command: env::var_os("CLUMSIES_SIDECAR_COMMAND").map(PathBuf::from),
-            args: env::var("CLUMSIES_SIDECAR_ARGS")
-                .ok()
-                .map(|value| {
-                    value
-                        .split_whitespace()
-                        .map(ToOwned::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
-            version: env::var("CLUMSIES_SIDECAR_VERSION")
-                .ok()
-                .filter(|value| !value.trim().is_empty()),
-        };
-
         Ok(Self {
             root_dir,
             project,
             listen_addr,
-            sidecar,
             sync,
         })
     }
@@ -114,12 +85,6 @@ impl DaemonConfig {
             root_dir: root_dir.into(),
             project: ProjectConfig::default(),
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-            sidecar: SidecarConfig {
-                enabled: false,
-                command: None,
-                args: Vec::new(),
-                version: None,
-            },
             sync: SyncConfig {
                 enabled: false,
                 interval: Duration::from_secs(30),
@@ -210,7 +175,6 @@ struct DaemonInner {
     pool: SqlitePool,
     http: reqwest::Client,
     daemon_installation_id: String,
-    sidecar: Mutex<SidecarSupervisor>,
     sync_notify: Notify,
     sync_running: AtomicBool,
 }
@@ -225,7 +189,6 @@ impl DaemonState {
 
         Ok(Self {
             inner: Arc::new(DaemonInner {
-                sidecar: Mutex::new(SidecarSupervisor::new()),
                 config,
                 project_config: RwLock::new(project_config),
                 pool,
@@ -295,7 +258,6 @@ impl DaemonState {
             hub_url: project_config.hub_url,
             project_id: project_config.project_id,
             daemon_installation_id: self.inner.daemon_installation_id.clone(),
-            sidecar: self.sidecar_status(),
             log_dir: self.inner.config.logs_dir().display().to_string(),
             local_db: LocalDbStatus {
                 path: self.inner.config.local_db_path().display().to_string(),
@@ -306,78 +268,11 @@ impl DaemonState {
     }
 
     fn mcp_status(&self) -> DaemonMcpStatus {
-        let sidecar = self.sidecar_status();
-        let adapters = if sidecar.enabled {
-            vec![McpAdapterStatus {
-                name: "zig-sidecar".to_owned(),
-                running: sidecar.running,
-                last_error: None,
-            }]
-        } else {
-            Vec::new()
-        };
-
         DaemonMcpStatus {
-            running: sidecar.running,
+            running: false,
             endpoint: None,
-            adapters,
+            adapters: Vec::new(),
         }
-    }
-
-    fn restart_mcp(&self) -> Result<DaemonMcpRestartResponse, DaemonHttpError> {
-        if !self.inner.config.sidecar.enabled || self.inner.config.sidecar.command.is_none() {
-            return Err(DaemonHttpError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "mcp_not_configured",
-                "MCP supervisor is not configured in this daemon.",
-            ));
-        }
-
-        self.inner
-            .sidecar
-            .lock()
-            .expect("sidecar supervisor mutex poisoned")
-            .restart(&self.inner.config.sidecar)?;
-
-        let status = self.mcp_status();
-        Ok(DaemonMcpRestartResponse {
-            restart_id: format!("restart_{}", Uuid::new_v4().simple()),
-            running: status.running,
-            endpoint: status.endpoint,
-            adapters: status.adapters,
-        })
-    }
-
-    fn stop_mcp(&self) -> Result<DaemonMcpStopResponse, DaemonHttpError> {
-        if !self.inner.config.sidecar.enabled || self.inner.config.sidecar.command.is_none() {
-            return Err(DaemonHttpError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "mcp_not_configured",
-                "MCP supervisor is not configured in this daemon.",
-            ));
-        }
-
-        self.inner
-            .sidecar
-            .lock()
-            .expect("sidecar supervisor mutex poisoned")
-            .stop();
-
-        let status = self.mcp_status();
-        Ok(DaemonMcpStopResponse {
-            stop_id: format!("stop_{}", Uuid::new_v4().simple()),
-            running: status.running,
-            endpoint: status.endpoint,
-            adapters: status.adapters,
-        })
-    }
-
-    fn sidecar_status(&self) -> SidecarStatus {
-        self.inner
-            .sidecar
-            .lock()
-            .expect("sidecar supervisor mutex poisoned")
-            .status(&self.inner.config.sidecar)
     }
 
     async fn drain_draft_queue(&self) -> Result<(), DaemonError> {
@@ -441,8 +336,6 @@ pub fn router(state: DaemonState) -> Router {
         .route("/daemon/sync-status", get(get_daemon_sync_status))
         .route("/daemon/sync-retries", post(create_daemon_sync_retry))
         .route("/daemon/mcp-status", get(get_daemon_mcp_status))
-        .route("/daemon/mcp-restarts", post(create_daemon_mcp_restart))
-        .route("/daemon/mcp-stops", post(create_daemon_mcp_stop))
         .route("/daemon/drafts", get(list_daemon_drafts))
         .route("/daemon/drafts/{draft_id}", get(get_daemon_draft))
         .route(
@@ -511,18 +404,6 @@ async fn create_daemon_sync_retry(
 
 async fn get_daemon_mcp_status(State(state): State<DaemonState>) -> Json<DaemonMcpStatus> {
     Json(state.mcp_status())
-}
-
-async fn create_daemon_mcp_restart(
-    State(state): State<DaemonState>,
-) -> Result<Json<DaemonMcpRestartResponse>, DaemonHttpError> {
-    Ok(Json(state.restart_mcp()?))
-}
-
-async fn create_daemon_mcp_stop(
-    State(state): State<DaemonState>,
-) -> Result<Json<DaemonMcpStopResponse>, DaemonHttpError> {
-    Ok(Json(state.stop_mcp()?))
 }
 
 async fn list_daemon_drafts(
@@ -1632,61 +1513,6 @@ fn parse_u64_env(name: &str) -> Result<Option<u64>, DaemonError> {
     })
 }
 
-struct SidecarSupervisor {
-    child: Option<Child>,
-}
-
-impl SidecarSupervisor {
-    fn new() -> Self {
-        Self { child: None }
-    }
-
-    fn status(&mut self, config: &SidecarConfig) -> SidecarStatus {
-        if let Some(child) = &mut self.child {
-            match child.try_wait() {
-                Ok(Some(_)) | Err(_) => {
-                    self.child = None;
-                }
-                Ok(None) => {}
-            }
-        }
-
-        SidecarStatus {
-            enabled: config.enabled && config.command.is_some(),
-            running: self.child.is_some(),
-            version: config.version.clone(),
-        }
-    }
-
-    fn restart(&mut self, config: &SidecarConfig) -> Result<(), DaemonError> {
-        self.stop();
-        let command = config.command.as_ref().ok_or_else(|| {
-            DaemonError::InvalidConfig("CLUMSIES_SIDECAR_COMMAND is required".to_owned())
-        })?;
-        let child = Command::new(command)
-            .args(&config.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        self.child = Some(child);
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-impl Drop for SidecarSupervisor {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonProjectConfig {
     pub hub_url: String,
@@ -1717,7 +1543,6 @@ pub struct DaemonHealth {
     pub hub_url: String,
     pub project_id: Option<String>,
     pub daemon_installation_id: String,
-    pub sidecar: SidecarStatus,
     pub log_dir: String,
     pub local_db: LocalDbStatus,
 }
@@ -1727,13 +1552,6 @@ pub struct DaemonEndpointFile {
     pub endpoint: String,
     pub pid: u32,
     pub daemon_installation_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct SidecarStatus {
-    pub enabled: bool,
-    pub running: bool,
-    pub version: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1803,22 +1621,6 @@ pub struct DaemonRetryResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonMcpStatus {
-    pub running: bool,
-    pub endpoint: Option<String>,
-    pub adapters: Vec<McpAdapterStatus>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DaemonMcpRestartResponse {
-    pub restart_id: String,
-    pub running: bool,
-    pub endpoint: Option<String>,
-    pub adapters: Vec<McpAdapterStatus>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DaemonMcpStopResponse {
-    pub stop_id: String,
     pub running: bool,
     pub endpoint: Option<String>,
     pub adapters: Vec<McpAdapterStatus>,

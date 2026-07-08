@@ -80,44 +80,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read local MCP server and adapter status. */
+        /** Read local MCP adapter status. */
         get: operations["getDaemonMcpStatus"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/daemon/mcp-restarts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create a local MCP server restart request. */
-        post: operations["createDaemonMcpRestart"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/daemon/mcp-stops": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create a local MCP server stop request. */
-        post: operations["createDaemonMcpStop"];
         delete?: never;
         options?: never;
         head?: never;
@@ -200,14 +166,8 @@ export interface components {
             hub_url: string;
             project_id: string | null;
             daemon_installation_id: string;
-            sidecar: components["schemas"]["SidecarStatus"];
             log_dir: string;
             local_db: components["schemas"]["LocalDbStatus"];
-        };
-        SidecarStatus: {
-            enabled: boolean;
-            running: boolean;
-            version: string | null;
         };
         LocalDbStatus: {
             path: string;
@@ -244,15 +204,6 @@ export interface components {
             running: boolean;
             endpoint: string | null;
             adapters: components["schemas"]["McpAdapterStatus"][];
-        };
-        DaemonMcpRestartRequest: {
-            reason?: string | null;
-        };
-        DaemonMcpRestartResponse: components["schemas"]["DaemonMcpStatus"] & {
-            restart_id: string;
-        };
-        DaemonMcpStopResponse: components["schemas"]["DaemonMcpStatus"] & {
-            stop_id: string;
         };
         McpAdapterStatus: {
             name: string;
@@ -502,52 +453,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DaemonMcpStatus"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    createDaemonMcpRestart: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["DaemonMcpRestartRequest"];
-            };
-        };
-        responses: {
-            /** @description Daemon MCP restart result. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonMcpRestartResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    createDaemonMcpStop: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Daemon MCP stop result. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonMcpStopResponse"];
                 };
             };
             default: components["responses"]["Error"];

@@ -86,7 +86,7 @@ paths:
   /daemon/mcp-status:
     get:
       operationId: getDaemonMcpStatus
-      summary: Read local MCP server and adapter status.
+      summary: Read local MCP adapter status.
       responses:
         "200":
           description: Daemon MCP status.
@@ -94,38 +94,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DaemonMcpStatus"
-        default:
-          $ref: "#/components/responses/Error"
-  /daemon/mcp-restarts:
-    post:
-      operationId: createDaemonMcpRestart
-      summary: Create a local MCP server restart request.
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DaemonMcpRestartRequest"
-      responses:
-        "200":
-          description: Daemon MCP restart result.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonMcpRestartResponse"
-        default:
-          $ref: "#/components/responses/Error"
-  /daemon/mcp-stops:
-    post:
-      operationId: createDaemonMcpStop
-      summary: Create a local MCP server stop request.
-      responses:
-        "200":
-          description: Daemon MCP stop result.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonMcpStopResponse"
         default:
           $ref: "#/components/responses/Error"
   /daemon/drafts:
@@ -252,7 +220,6 @@ components:
         - hub_url
         - project_id
         - daemon_installation_id
-        - sidecar
         - log_dir
         - local_db
       properties:
@@ -264,22 +231,10 @@ components:
           type: [string, "null"]
         daemon_installation_id:
           type: string
-        sidecar:
-          $ref: "#/components/schemas/SidecarStatus"
         log_dir:
           type: string
         local_db:
           $ref: "#/components/schemas/LocalDbStatus"
-    SidecarStatus:
-      type: object
-      required: [enabled, running, version]
-      properties:
-        enabled:
-          type: boolean
-        running:
-          type: boolean
-        version:
-          type: [string, "null"]
     LocalDbStatus:
       type: object
       required: [path, ready, schema_version]
@@ -358,27 +313,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/McpAdapterStatus"
-    DaemonMcpRestartRequest:
-      type: object
-      properties:
-        reason:
-          type: [string, "null"]
-    DaemonMcpRestartResponse:
-      allOf:
-        - $ref: "#/components/schemas/DaemonMcpStatus"
-        - type: object
-          required: [restart_id]
-          properties:
-            restart_id:
-              type: string
-    DaemonMcpStopResponse:
-      allOf:
-        - $ref: "#/components/schemas/DaemonMcpStatus"
-        - type: object
-          required: [stop_id]
-          properties:
-            stop_id:
-              type: string
     McpAdapterStatus:
       type: object
       required: [name, running, last_error]

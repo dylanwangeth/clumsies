@@ -1,6 +1,5 @@
 mod common;
 
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,9 +11,8 @@ use axum::{Json, Router};
 use daemon::{
     DaemonConfig, DaemonDraftDetail, DaemonDraftListResponse, DaemonDraftOperationResponse,
     DaemonDraftOperationSource, DaemonDraftResourceKind, DaemonEndpointFile, DaemonHealth,
-    DaemonLocalDraftStatus, DaemonMcpRestartResponse, DaemonMcpStatus, DaemonMcpStopResponse,
-    DaemonProjectConfig, DaemonState, DaemonSyncStatus, DraftOperationSyncStatus, ErrorEnvelope,
-    SyncState, router,
+    DaemonLocalDraftStatus, DaemonMcpStatus, DaemonProjectConfig, DaemonState, DaemonSyncStatus,
+    DraftOperationSyncStatus, ErrorEnvelope, SyncState, router,
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -575,51 +573,14 @@ async fn draft_operation_rejects_multiple_operation_variants() {
 }
 
 #[tokio::test]
-async fn mcp_restart_and_stop_control_configured_sidecar_process() {
-    let root = tempfile::tempdir().unwrap();
-    let mut config = DaemonConfig::for_root(root.path());
-    config.sidecar.enabled = true;
-    config.sidecar.command = Some(PathBuf::from("/bin/sleep"));
-    config.sidecar.args = vec!["30".to_owned()];
-    let state = DaemonState::initialize(config).await.unwrap();
-    let app = router(state);
+async fn mcp_status_reports_no_daemon_owned_supervisor() {
+    let (_, _, app) = common::test_daemon().await;
 
-    let before: DaemonMcpStatus = get_json(app.clone(), "/daemon/mcp-status").await;
-    assert!(!before.running);
-    assert_eq!(before.adapters.len(), 1);
-    assert!(!before.adapters[0].running);
+    let status: DaemonMcpStatus = get_json(app, "/daemon/mcp-status").await;
 
-    let response = app
-        .clone()
-        .oneshot(empty_post("/daemon/mcp-restarts"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let restarted: DaemonMcpRestartResponse = response_json(response).await;
-    assert!(restarted.restart_id.starts_with("restart_"));
-    assert!(restarted.running);
-    assert_eq!(restarted.adapters.len(), 1);
-    assert!(restarted.adapters[0].running);
-
-    let after: DaemonMcpStatus = get_json(app.clone(), "/daemon/mcp-status").await;
-    assert!(after.running);
-    assert!(after.adapters[0].running);
-
-    let response = app
-        .clone()
-        .oneshot(empty_post("/daemon/mcp-stops"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let stopped: DaemonMcpStopResponse = response_json(response).await;
-    assert!(stopped.stop_id.starts_with("stop_"));
-    assert!(!stopped.running);
-    assert_eq!(stopped.adapters.len(), 1);
-    assert!(!stopped.adapters[0].running);
-
-    let final_status: DaemonMcpStatus = get_json(app, "/daemon/mcp-status").await;
-    assert!(!final_status.running);
-    assert!(!final_status.adapters[0].running);
+    assert!(!status.running);
+    assert_eq!(status.endpoint, None);
+    assert!(status.adapters.is_empty());
 }
 
 async fn get_json<T>(app: axum::Router, uri: &str) -> T
@@ -649,14 +610,6 @@ fn json_put_request(uri: &str, body: serde_json::Value) -> Request<Body> {
         .uri(uri)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap()
-}
-
-fn empty_post(uri: &str) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .body(Body::empty())
         .unwrap()
 }
 
