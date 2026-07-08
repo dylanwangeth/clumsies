@@ -230,6 +230,7 @@ export interface components {
             status: "ok" | "degraded" | "down";
             version: string;
             database: components["schemas"]["HealthCheck"];
+            schema: components["schemas"]["HealthCheck"];
             snapshot_service: components["schemas"]["HealthCheck"];
             sync_queue: components["schemas"]["HealthCheck"];
         };

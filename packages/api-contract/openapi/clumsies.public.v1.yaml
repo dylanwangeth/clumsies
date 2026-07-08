@@ -329,6 +329,23 @@ paths:
           description: ETag matched.
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/org/metaprompt:
+    get:
+      operationId: getOrgMetaprompt
+      summary: Read organization metaprompt.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Organization metaprompt detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetapromptDetail"
+        "304":
+          description: ETag matched.
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}/rules:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -443,12 +460,31 @@ paths:
           description: ETag matched.
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/metaprompt:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: getProjectMetaprompt
+      summary: Read project metaprompt.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Project metaprompt detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetapromptDetail"
+        "304":
+          description: ETag matched.
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}/org-selections:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
     get:
       operationId: getProjectOrgSelection
-      summary: Read organization memory selected by a project.
+      summary: Read organization resources selected by a project.
       responses:
         "200":
           description: Project organization memory selection.
@@ -460,7 +496,7 @@ paths:
           $ref: "#/components/responses/Error"
     put:
       operationId: replaceProjectOrgSelection
-      summary: Replace organization memory selected by a project.
+      summary: Replace organization resources selected by a project.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
       requestBody:
@@ -735,7 +771,7 @@ paths:
       - $ref: "#/components/parameters/ReviewId"
     post:
       operationId: createReviewMerge
-      summary: Merge an approved review and produce authoritative memory.
+      summary: Merge an approved review and produce authoritative external-memory resources.
       requestBody:
         required: true
         content:
@@ -754,7 +790,7 @@ paths:
   /api/v1/org/snapshots:
     get:
       operationId: listOrgSnapshots
-      summary: List organization memory snapshots.
+      summary: List organization external-memory snapshots.
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
@@ -794,7 +830,7 @@ paths:
       - $ref: "#/components/parameters/ProjectId"
     get:
       operationId: listProjectSnapshots
-      summary: List project memory snapshots.
+      summary: List project external-memory snapshots.
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
@@ -840,7 +876,7 @@ paths:
       - $ref: "#/components/parameters/SnapshotId"
     get:
       operationId: getSnapshot
-      summary: Download or read a memory snapshot payload.
+      summary: Download or read an external-memory snapshot payload.
       responses:
         "200":
           description: Snapshot payload.
@@ -996,8 +1032,10 @@ components:
             type: string
     CreateProjectRequest:
       type: object
-      required: [name]
+      required: [org_id, name]
       properties:
+        org_id:
+          type: string
         name:
           type: string
         description:
@@ -1045,8 +1083,10 @@ components:
           type: string
     PersonalBundleRequest:
       type: object
-      required: [name]
+      required: [owner_user_id, name]
       properties:
+        owner_user_id:
+          type: string
         name:
           type: string
         description:
@@ -1210,6 +1250,16 @@ components:
             $ref: "#/components/schemas/WorkflowStep"
         etag:
           type: string
+    MetapromptDetail:
+      type: object
+      required: [metaprompt, body, etag]
+      properties:
+        metaprompt:
+          $ref: "#/components/schemas/MetapromptMeta"
+        body:
+          type: string
+        etag:
+          type: string
     WorkflowStep:
       type: object
       required: [order, rule_id, body]
@@ -1247,8 +1297,12 @@ components:
           $ref: "#/components/schemas/PageInfo"
     CreateDraftRequest:
       type: object
-      required: [project_id, title, resource]
+      required: [author_user_id, runtime_installation_id, project_id, title, resource]
       properties:
+        author_user_id:
+          type: string
+        runtime_installation_id:
+          type: string
         project_id:
           type: string
         title:
@@ -1580,7 +1634,7 @@ components:
         rule_id:
           type: string
         scope:
-          $ref: "#/components/schemas/MemoryScope"
+          $ref: "#/components/schemas/ResourceScope"
         project_id:
           type: [string, "null"]
         path:
@@ -1590,7 +1644,7 @@ components:
         content_hash:
           type: string
         status:
-          $ref: "#/components/schemas/MemoryStatus"
+          $ref: "#/components/schemas/ResourceStatus"
         updated_at:
           type: string
           format: date-time
@@ -1601,7 +1655,7 @@ components:
         context_id:
           type: string
         scope:
-          $ref: "#/components/schemas/MemoryScope"
+          $ref: "#/components/schemas/ResourceScope"
         project_id:
           type: [string, "null"]
         kind:
@@ -1623,7 +1677,7 @@ components:
         workflow_id:
           type: string
         scope:
-          $ref: "#/components/schemas/MemoryScope"
+          $ref: "#/components/schemas/ResourceScope"
         project_id:
           type: [string, "null"]
         path:
@@ -1633,7 +1687,26 @@ components:
         content_hash:
           type: string
         status:
-          $ref: "#/components/schemas/MemoryStatus"
+          $ref: "#/components/schemas/ResourceStatus"
+        updated_at:
+          type: string
+          format: date-time
+    MetapromptMeta:
+      type: object
+      required: [metaprompt_id, scope, project_id, path, content_hash, status, updated_at]
+      properties:
+        metaprompt_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/ResourceScope"
+        project_id:
+          type: [string, "null"]
+        path:
+          type: string
+        content_hash:
+          type: string
+        status:
+          $ref: "#/components/schemas/ResourceStatus"
         updated_at:
           type: string
           format: date-time
@@ -1700,7 +1773,7 @@ components:
           type: string
         type:
           type: string
-          enum: [rule, context, workflow, mpf, project_org_selection]
+          enum: [rule, context, workflow, metaprompt, project_org_selection]
         scope:
           type: string
           enum: [org, project, runtime]
@@ -1721,7 +1794,7 @@ components:
           type: string
         type:
           type: string
-          enum: [rule, context, workflow, mpf]
+          enum: [rule, context, workflow, metaprompt]
         scope:
           type: string
           enum: [org, project, runtime]
@@ -1812,10 +1885,10 @@ components:
         details:
           type: object
           additionalProperties: true
-    MemoryScope:
+    ResourceScope:
       type: string
       enum: [org, project]
-    MemoryStatus:
+    ResourceStatus:
       type: string
       enum: [active, deprecated, archived]
     SnapshotScope:
@@ -1826,7 +1899,7 @@ components:
       enum: [open, submitted, discarded, conflicted]
     DraftResourceKind:
       type: string
-      enum: [context, rule, workflow, mpf]
+      enum: [context, rule, workflow, metaprompt]
     DraftOperationAction:
       type: string
       enum: [create, update, rename, delete]

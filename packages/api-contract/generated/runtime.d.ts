@@ -224,7 +224,7 @@ export interface components {
         /** @enum {string} */
         SyncState: "idle" | "queued" | "syncing" | "degraded" | "failed";
         /** @enum {string} */
-        RuntimeDraftResourceKind: "context" | "rule" | "workflow" | "mpf";
+        RuntimeDraftResourceKind: "context" | "rule" | "workflow" | "metaprompt";
         /** @enum {string} */
         DraftOperationSyncStatus: "queued" | "syncing" | "synced" | "failed";
     };

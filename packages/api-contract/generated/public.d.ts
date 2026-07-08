@@ -241,6 +241,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/org/metaprompt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read organization metaprompt. */
+        get: operations["getOrgMetaprompt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/rules": {
         parameters: {
             query?: never;
@@ -358,6 +375,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/metaprompt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        /** Read project metaprompt. */
+        get: operations["getProjectMetaprompt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/org-selections": {
         parameters: {
             query?: never;
@@ -367,9 +403,9 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** Read organization memory selected by a project. */
+        /** Read organization resources selected by a project. */
         get: operations["getProjectOrgSelection"];
-        /** Replace organization memory selected by a project. */
+        /** Replace organization resources selected by a project. */
         put: operations["replaceProjectOrgSelection"];
         post?: never;
         delete?: never;
@@ -557,7 +593,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Merge an approved review and produce authoritative memory. */
+        /** Merge an approved review and produce authoritative external-memory resources. */
         post: operations["createReviewMerge"];
         delete?: never;
         options?: never;
@@ -572,7 +608,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List organization memory snapshots. */
+        /** List organization external-memory snapshots. */
         get: operations["listOrgSnapshots"];
         put?: never;
         post?: never;
@@ -608,7 +644,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** List project memory snapshots. */
+        /** List project external-memory snapshots. */
         get: operations["listProjectSnapshots"];
         put?: never;
         post?: never;
@@ -646,7 +682,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** Download or read a memory snapshot payload. */
+        /** Download or read an external-memory snapshot payload. */
         get: operations["getSnapshot"];
         put?: never;
         post?: never;
@@ -685,6 +721,7 @@ export interface components {
             capabilities: string[];
         };
         CreateProjectRequest: {
+            org_id: string;
             name: string;
             description?: string;
         };
@@ -709,6 +746,7 @@ export interface components {
             name: string;
         };
         PersonalBundleRequest: {
+            owner_user_id: string;
             name: string;
             description?: string;
             rule_ids?: string[];
@@ -774,6 +812,11 @@ export interface components {
             steps: components["schemas"]["WorkflowStep"][];
             etag: string;
         };
+        MetapromptDetail: {
+            metaprompt: components["schemas"]["MetapromptMeta"];
+            body: string;
+            etag: string;
+        };
         WorkflowStep: {
             order: number;
             rule_id: string | null;
@@ -789,6 +832,8 @@ export interface components {
             page_info: components["schemas"]["PageInfo"];
         };
         CreateDraftRequest: {
+            author_user_id: string;
+            runtime_installation_id: string;
             project_id: string;
             title: string;
             description?: string;
@@ -936,18 +981,18 @@ export interface components {
         };
         RuleMeta: {
             rule_id: string;
-            scope: components["schemas"]["MemoryScope"];
+            scope: components["schemas"]["ResourceScope"];
             project_id: string | null;
             path: string;
             name: string;
             content_hash: string;
-            status: components["schemas"]["MemoryStatus"];
+            status: components["schemas"]["ResourceStatus"];
             /** Format: date-time */
             updated_at: string;
         };
         ContextMeta: {
             context_id: string;
-            scope: components["schemas"]["MemoryScope"];
+            scope: components["schemas"]["ResourceScope"];
             project_id: string | null;
             /** @enum {string} */
             kind: "file" | "note" | "decision" | "reference";
@@ -959,12 +1004,22 @@ export interface components {
         };
         WorkflowMeta: {
             workflow_id: string;
-            scope: components["schemas"]["MemoryScope"];
+            scope: components["schemas"]["ResourceScope"];
             project_id: string | null;
             path: string;
             name: string;
             content_hash: string;
-            status: components["schemas"]["MemoryStatus"];
+            status: components["schemas"]["ResourceStatus"];
+            /** Format: date-time */
+            updated_at: string;
+        };
+        MetapromptMeta: {
+            metaprompt_id: string;
+            scope: components["schemas"]["ResourceScope"];
+            project_id: string | null;
+            path: string;
+            content_hash: string;
+            status: components["schemas"]["ResourceStatus"];
             /** Format: date-time */
             updated_at: string;
         };
@@ -995,7 +1050,7 @@ export interface components {
         SnapshotManifestItem: {
             id: string;
             /** @enum {string} */
-            type: "rule" | "context" | "workflow" | "mpf" | "project_org_selection";
+            type: "rule" | "context" | "workflow" | "metaprompt" | "project_org_selection";
             /** @enum {string} */
             scope: "org" | "project" | "runtime";
             project_id: string | null;
@@ -1007,7 +1062,7 @@ export interface components {
         SnapshotContentItem: {
             id: string;
             /** @enum {string} */
-            type: "rule" | "context" | "workflow" | "mpf";
+            type: "rule" | "context" | "workflow" | "metaprompt";
             /** @enum {string} */
             scope: "org" | "project" | "runtime";
             project_id: string | null;
@@ -1055,15 +1110,15 @@ export interface components {
             };
         };
         /** @enum {string} */
-        MemoryScope: "org" | "project";
+        ResourceScope: "org" | "project";
         /** @enum {string} */
-        MemoryStatus: "active" | "deprecated" | "archived";
+        ResourceStatus: "active" | "deprecated" | "archived";
         /** @enum {string} */
         SnapshotScope: "org" | "project";
         /** @enum {string} */
         DraftStatus: "open" | "submitted" | "discarded" | "conflicted";
         /** @enum {string} */
-        DraftResourceKind: "context" | "rule" | "workflow" | "mpf";
+        DraftResourceKind: "context" | "rule" | "workflow" | "metaprompt";
         /** @enum {string} */
         DraftOperationAction: "create" | "update" | "rename" | "delete";
         /** @enum {string} */
@@ -1597,6 +1652,36 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getOrgMetaprompt: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Organization metaprompt detail. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetapromptDetail"];
+                };
+            };
+            /** @description ETag matched. */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     listProjectRules: {
         parameters: {
             query?: {
@@ -1762,6 +1847,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowDetail"];
+                };
+            };
+            /** @description ETag matched. */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProjectMetaprompt: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Project metaprompt detail. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetapromptDetail"];
                 };
             };
             /** @description ETag matched. */

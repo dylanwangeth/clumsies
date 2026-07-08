@@ -388,7 +388,7 @@ components:
           format: date-time
     AdminHealth:
       type: object
-      required: [status, version, database, snapshot_service, sync_queue]
+      required: [status, version, database, schema, snapshot_service, sync_queue]
       properties:
         status:
           type: string
@@ -396,6 +396,8 @@ components:
         version:
           type: string
         database:
+          $ref: "#/components/schemas/HealthCheck"
+        schema:
           $ref: "#/components/schemas/HealthCheck"
         snapshot_service:
           $ref: "#/components/schemas/HealthCheck"

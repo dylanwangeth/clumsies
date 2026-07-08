@@ -355,7 +355,7 @@ components:
       enum: [idle, queued, syncing, degraded, failed]
     RuntimeDraftResourceKind:
       type: string
-      enum: [context, rule, workflow, mpf]
+      enum: [context, rule, workflow, metaprompt]
     DraftOperationSyncStatus:
       type: string
       enum: [queued, syncing, synced, failed]

@@ -4,6 +4,9 @@ zig-cache/
 .zig-cache/
 zig-pkg/
 
+# Rust
+target/
+
 # Build artifacts
 *.o
 *.a
