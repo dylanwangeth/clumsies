@@ -127,7 +127,7 @@ CREATE TABLE drafts (
     path TEXT,
     status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'discarded', 'conflicted')),
     version BIGINT NOT NULL DEFAULT 1,
-    runtime_installation_id TEXT NOT NULL,
+    daemon_installation_id TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -152,7 +152,7 @@ CREATE TABLE draft_events (
     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
     event_type TEXT NOT NULL CHECK (event_type IN ('created', 'updated', 'operation_appended', 'discarded', 'submitted', 'conflicted')),
     version BIGINT NOT NULL,
-    runtime_installation_id TEXT,
+    daemon_installation_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -199,7 +199,7 @@ CREATE TABLE snapshot_items (
     snapshot_id TEXT NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,
     item_id TEXT NOT NULL,
     resource_kind TEXT NOT NULL CHECK (resource_kind IN ('rule', 'context', 'workflow', 'metaprompt', 'project_org_selection')),
-    scope TEXT NOT NULL CHECK (scope IN ('org', 'project', 'runtime')),
+    scope TEXT NOT NULL CHECK (scope IN ('org', 'project', 'daemon')),
     project_id TEXT REFERENCES projects(project_id) ON DELETE CASCADE,
     path TEXT,
     content_hash TEXT,

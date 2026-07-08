@@ -5,10 +5,10 @@
   "exports": {
     "./public": "./generated/public.d.ts",
     "./admin": "./generated/admin.d.ts",
-    "./runtime": "./generated/runtime.d.ts"
+    "./daemon": "./generated/daemon.d.ts"
   },
   "scripts": {
-    "generate": "openapi-typescript openapi/clumsies.public.v1.yaml -o generated/public.d.ts && openapi-typescript openapi/clumsies.admin.v1.yaml -o generated/admin.d.ts && openapi-typescript openapi/clumsies.runtime.v1.yaml -o generated/runtime.d.ts",
+    "generate": "openapi-typescript openapi/clumsies.public.v1.yaml -o generated/public.d.ts && openapi-typescript openapi/clumsies.admin.v1.yaml -o generated/admin.d.ts && openapi-typescript openapi/clumsies.daemon.v1.yaml -o generated/daemon.d.ts",
     "smoke": "tsc -p tsconfig.json --noEmit",
     "check": "bun run generate && bun run smoke"
   }

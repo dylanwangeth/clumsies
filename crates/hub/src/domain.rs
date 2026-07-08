@@ -225,7 +225,7 @@ pub enum DraftSyncStatus {
 pub struct DraftSyncState {
     pub status: DraftSyncStatus,
     pub server_cursor: Option<String>,
-    pub runtime_installation_id: Option<String>,
+    pub daemon_installation_id: Option<String>,
     pub conflict_count: i64,
 }
 
@@ -281,7 +281,7 @@ pub enum SnapshotScope {
 pub enum SnapshotItemScope {
     Org,
     Project,
-    Runtime,
+    Daemon,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

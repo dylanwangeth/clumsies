@@ -1,6 +1,6 @@
 import type { paths as AdminPaths } from "../generated/admin";
 import type { paths as PublicPaths } from "../generated/public";
-import type { paths as RuntimePaths } from "../generated/runtime";
+import type { paths as DaemonPaths } from "../generated/daemon";
 
 type Method = "get" | "put" | "post" | "delete" | "options" | "head" | "patch" | "trace";
 type Expect<T extends true> = T;
@@ -19,11 +19,11 @@ type HasMethod<TPaths, TPath extends string, TMethod extends Method> =
     : false;
 
 type HubPathWithoutApiPrefix<TPaths> = Exclude<Extract<keyof TPaths, string>, `/api/v1/${string}`>;
-type RuntimePathWithoutRuntimePrefix<TPaths> = Exclude<Extract<keyof TPaths, string>, `/runtime/${string}`>;
+type DaemonPathWithoutDaemonPrefix<TPaths> = Exclude<Extract<keyof TPaths, string>, `/daemon/${string}`>;
 
 type _publicPathsUseApiV1 = Expect<Equals<HubPathWithoutApiPrefix<PublicPaths>, never>>;
 type _adminPathsUseApiV1 = Expect<Equals<HubPathWithoutApiPrefix<AdminPaths>, never>>;
-type _runtimePathsUseRuntimePrefix = Expect<Equals<RuntimePathWithoutRuntimePrefix<RuntimePaths>, never>>;
+type _daemonPathsUseDaemonPrefix = Expect<Equals<DaemonPathWithoutDaemonPrefix<DaemonPaths>, never>>;
 
 type _publicContract = [
   Expect<HasMethod<PublicPaths, "/api/v1/auth/token", "post">>,
@@ -72,11 +72,16 @@ type _adminContract = [
   Expect<HasMethod<AdminPaths, "/api/v1/admin/health", "get">>,
 ];
 
-type _runtimeContract = [
-  Expect<HasMethod<RuntimePaths, "/runtime/health", "get">>,
-  Expect<HasMethod<RuntimePaths, "/runtime/sync-status", "get">>,
-  Expect<HasMethod<RuntimePaths, "/runtime/sync-retries", "post">>,
-  Expect<HasMethod<RuntimePaths, "/runtime/mcp-status", "get">>,
-  Expect<HasMethod<RuntimePaths, "/runtime/mcp-restarts", "post">>,
-  Expect<HasMethod<RuntimePaths, "/runtime/draft-operations", "post">>,
+type _daemonContract = [
+  Expect<HasMethod<DaemonPaths, "/daemon/health", "get">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/project-config", "get">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/project-config", "put">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/sync-status", "get">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/sync-retries", "post">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/mcp-status", "get">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/mcp-restarts", "post">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/mcp-stops", "post">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/drafts", "get">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/drafts/{draft_id}", "get">>,
+  Expect<HasMethod<DaemonPaths, "/daemon/draft-operations", "post">>,
 ];

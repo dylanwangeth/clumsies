@@ -195,7 +195,7 @@ pub enum DraftSyncStatus {
 pub struct DraftSyncState {
     pub status: DraftSyncStatus,
     pub server_cursor: Option<String>,
-    pub runtime_installation_id: Option<String>,
+    pub daemon_installation_id: Option<String>,
     pub conflict_count: i64,
 }
 
@@ -215,7 +215,7 @@ pub struct DraftListResponse {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateDraftRequest {
     pub author_user_id: String,
-    pub runtime_installation_id: String,
+    pub daemon_installation_id: String,
     pub project_id: String,
     pub title: String,
     pub description: Option<String>,
@@ -245,7 +245,7 @@ pub struct DraftEvent {
     pub project_id: String,
     pub event_type: DraftEventType,
     pub version: i64,
-    pub runtime_installation_id: Option<String>,
+    pub daemon_installation_id: Option<String>,
     pub created_at: OffsetDateTime,
 }
 
@@ -262,7 +262,7 @@ pub enum DraftEventType {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftOperationBatchRequest {
-    pub runtime_installation_id: String,
+    pub daemon_installation_id: String,
     pub operations: Vec<DraftOperationBatchItem>,
 }
 
@@ -367,7 +367,7 @@ pub enum SnapshotScope {
 pub enum SnapshotItemScope {
     Org,
     Project,
-    Runtime,
+    Daemon,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

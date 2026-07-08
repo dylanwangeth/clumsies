@@ -142,7 +142,7 @@ async fn draft_review_merge_produces_project_snapshot() {
         "/api/v1/drafts",
         &CreateDraftRequest {
             author_user_id: user_id.clone(),
-            runtime_installation_id: "runtime_test".to_owned(),
+            daemon_installation_id: "daemon_test".to_owned(),
             project_id: project_id.clone(),
             title: "Add project context".to_owned(),
             description: Some("First project context entry".to_owned()),
@@ -209,7 +209,7 @@ async fn draft_review_merge_produces_project_snapshot() {
         "/api/v1/drafts",
         &CreateDraftRequest {
             author_user_id: user_id.clone(),
-            runtime_installation_id: "runtime_batch_origin".to_owned(),
+            daemon_installation_id: "daemon_batch_origin".to_owned(),
             project_id: project_id.clone(),
             title: "Batch draft".to_owned(),
             description: None,
@@ -226,7 +226,7 @@ async fn draft_review_merge_produces_project_snapshot() {
         app.clone(),
         "/api/v1/draft-operation-batches",
         &DraftOperationBatchRequest {
-            runtime_installation_id: "runtime_batch".to_owned(),
+            daemon_installation_id: "daemon_batch".to_owned(),
             operations: vec![DraftOperationBatchItem {
                 local_operation_id: "local-op-1".to_owned(),
                 draft_id: batch_draft.draft.draft_id.clone(),
@@ -385,7 +385,7 @@ async fn draft_review_merge_produces_project_snapshot() {
     );
     assert!(events.events.iter().any(|event| {
         event.event_type == DraftEventType::OperationAppended
-            && event.runtime_installation_id.as_deref() == Some("runtime_batch")
+            && event.daemon_installation_id.as_deref() == Some("daemon_batch")
     }));
     let after_events: DraftEventListResponse = get_json(
         app.clone(),

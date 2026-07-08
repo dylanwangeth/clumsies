@@ -1,0 +1,22 @@
+[package]
+name = "daemon"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "clumsiesd"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8.9"
+reqwest = { version = "0.13.4", features = ["json", "rustls"], default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite", "uuid"] }
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+uuid = { version = "1.23.4", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }

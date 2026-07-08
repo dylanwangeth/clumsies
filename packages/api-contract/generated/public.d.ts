@@ -833,7 +833,7 @@ export interface components {
         };
         CreateDraftRequest: {
             author_user_id: string;
-            runtime_installation_id: string;
+            daemon_installation_id: string;
             project_id: string;
             title: string;
             description?: string;
@@ -886,7 +886,7 @@ export interface components {
             /** @enum {string} */
             status: "synced" | "pending" | "conflicted" | "failed";
             server_cursor: string | null;
-            runtime_installation_id: string | null;
+            daemon_installation_id: string | null;
             conflict_count: number;
         };
         DraftEventListResponse: {
@@ -901,12 +901,12 @@ export interface components {
             /** @enum {string} */
             event_type: "created" | "updated" | "operation_appended" | "discarded" | "submitted" | "conflicted";
             version: number;
-            runtime_installation_id: string | null;
+            daemon_installation_id: string | null;
             /** Format: date-time */
             created_at: string;
         };
         DraftOperationBatchRequest: {
-            runtime_installation_id: string;
+            daemon_installation_id: string;
             operations: components["schemas"]["DraftOperationBatchItem"][];
         };
         DraftOperationBatchItem: {
@@ -1052,7 +1052,7 @@ export interface components {
             /** @enum {string} */
             type: "rule" | "context" | "workflow" | "metaprompt" | "project_org_selection";
             /** @enum {string} */
-            scope: "org" | "project" | "runtime";
+            scope: "org" | "project" | "daemon";
             project_id: string | null;
             path: string | null;
             content_hash: string | null;
@@ -1064,7 +1064,7 @@ export interface components {
             /** @enum {string} */
             type: "rule" | "context" | "workflow" | "metaprompt";
             /** @enum {string} */
-            scope: "org" | "project" | "runtime";
+            scope: "org" | "project" | "daemon";
             project_id: string | null;
             path: string | null;
             content_hash: string;

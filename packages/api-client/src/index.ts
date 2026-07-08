@@ -1,11 +1,11 @@
 import createClient from "openapi-fetch";
 import type { paths as AdminPaths } from "@clumsies/api-contract/admin";
 import type { paths as PublicPaths } from "@clumsies/api-contract/public";
-import type { paths as RuntimePaths } from "@clumsies/api-contract/runtime";
+import type { paths as DaemonPaths } from "@clumsies/api-contract/daemon";
 
 export type PublicApiClient = ReturnType<typeof createClient<PublicPaths>>;
 export type AdminApiClient = ReturnType<typeof createClient<AdminPaths>>;
-export type RuntimeApiClient = ReturnType<typeof createClient<RuntimePaths>>;
+export type DaemonApiClient = ReturnType<typeof createClient<DaemonPaths>>;
 
 export interface CreateApiClientOptions {
   baseUrl: string;
@@ -30,8 +30,8 @@ export function createAdminApiClient(options: CreateApiClientOptions): AdminApiC
   });
 }
 
-export function createRuntimeApiClient(options: CreateApiClientOptions): RuntimeApiClient {
-  return createClient<RuntimePaths>({
+export function createDaemonApiClient(options: CreateApiClientOptions): DaemonApiClient {
+  return createClient<DaemonPaths>({
     baseUrl: normalizeBaseUrl(options.baseUrl),
     headers: createHeaders(options),
     fetch: options.fetch,

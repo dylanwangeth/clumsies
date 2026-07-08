@@ -577,7 +577,7 @@ impl HubRepository {
         sqlx::query(
             "INSERT INTO drafts (
                 draft_id, project_id, author_user_id, title, description,
-                resource_kind, target_id, path, status, version, runtime_installation_id
+                resource_kind, target_id, path, status, version, daemon_installation_id
              )
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', 1, $9)",
         )
@@ -589,7 +589,7 @@ impl HubRepository {
         .bind(request.resource.kind.as_str())
         .bind(&request.resource.id)
         .bind(&request.resource.path)
-        .bind(&request.runtime_installation_id)
+        .bind(&request.daemon_installation_id)
         .execute(&mut *tx)
         .await?;
 
@@ -602,7 +602,7 @@ impl HubRepository {
             &request.project_id,
             DraftEventType::Created,
             1,
-            Some(&request.runtime_installation_id),
+            Some(&request.daemon_installation_id),
         )
         .await?;
 
@@ -674,7 +674,7 @@ impl HubRepository {
     ) -> Result<DraftDetail, HubError> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT title, description, status, version, project_id, runtime_installation_id
+            "SELECT title, description, status, version, project_id, daemon_installation_id
              FROM drafts
              WHERE draft_id = $1
              FOR UPDATE",
@@ -715,7 +715,7 @@ impl HubRepository {
              SET title = $2, description = $3, status = $4,
                  version = version + 1, updated_at = now()
              WHERE draft_id = $1
-             RETURNING project_id, version, runtime_installation_id",
+             RETURNING project_id, version, daemon_installation_id",
         )
         .bind(draft_id)
         .bind(title)
@@ -735,7 +735,7 @@ impl HubRepository {
             event_type,
             updated.try_get("version")?,
             updated
-                .try_get::<Option<String>, _>("runtime_installation_id")?
+                .try_get::<Option<String>, _>("daemon_installation_id")?
                 .as_deref(),
         )
         .await?;
@@ -776,7 +776,7 @@ impl HubRepository {
         let mut tx = self.pool.begin().await?;
         let mut accepted_operations = Vec::new();
         let mut cursor = None;
-        let runtime_installation_id = request.runtime_installation_id;
+        let daemon_installation_id = request.daemon_installation_id;
         for item in request.operations {
             cursor = Some(
                 append_draft_operation_in_tx(
@@ -784,7 +784,7 @@ impl HubRepository {
                     &item.draft_id,
                     item.expected_draft_version,
                     item.operation,
-                    Some(&runtime_installation_id),
+                    Some(&daemon_installation_id),
                 )
                 .await?,
             );
@@ -807,7 +807,7 @@ impl HubRepository {
                 .map_err(|_| HubError::InvalidRequest("invalid draft event cursor".to_owned()))?;
             sqlx::query(
                 "SELECT server_sequence, event_id, draft_id, project_id, event_type, version,
-                        runtime_installation_id, created_at
+                        daemon_installation_id, created_at
                  FROM draft_events
                  WHERE server_sequence > $1
                  ORDER BY server_sequence
@@ -819,7 +819,7 @@ impl HubRepository {
         } else {
             sqlx::query(
                 "SELECT server_sequence, event_id, draft_id, project_id, event_type, version,
-                        runtime_installation_id, created_at
+                        daemon_installation_id, created_at
                  FROM draft_events
                  ORDER BY server_sequence
                  LIMIT 100",
@@ -883,7 +883,7 @@ impl HubRepository {
             "UPDATE drafts
              SET status = 'submitted', version = version + 1, updated_at = now()
              WHERE draft_id = $1
-             RETURNING project_id, version, runtime_installation_id",
+             RETURNING project_id, version, daemon_installation_id",
         )
         .bind(&request.draft_id)
         .fetch_one(&mut *tx)
@@ -895,7 +895,7 @@ impl HubRepository {
             DraftEventType::Submitted,
             draft_event_row.try_get("version")?,
             draft_event_row
-                .try_get::<Option<String>, _>("runtime_installation_id")?
+                .try_get::<Option<String>, _>("daemon_installation_id")?
                 .as_deref(),
         )
         .await?;
@@ -1022,14 +1022,14 @@ impl HubRepository {
         let project_id: String = row.try_get("project_id")?;
         let draft_id: String = row.try_get("draft_id")?;
         let project_version = current_project_revision(&mut tx, &project_id).await?;
-        if let Some(expected_target_version) = request.expected_target_version {
-            if project_version != expected_target_version {
-                return Err(HubError::version_conflict(
-                    "project",
-                    expected_target_version,
-                    project_version,
-                ));
-            }
+        if let Some(expected_target_version) = request.expected_target_version
+            && project_version != expected_target_version
+        {
+            return Err(HubError::version_conflict(
+                "project",
+                expected_target_version,
+                project_version,
+            ));
         }
 
         let operations = load_draft_operations(&mut tx, &draft_id).await?;
@@ -1197,7 +1197,7 @@ async fn append_draft_operation_in_tx(
     draft_id: &str,
     expected_draft_version: i64,
     operation: DraftOperationInput,
-    event_runtime_installation_id: Option<&str>,
+    event_daemon_installation_id: Option<&str>,
 ) -> Result<i64, HubError> {
     let row = sqlx::query(
         "SELECT status, version
@@ -1228,22 +1228,21 @@ async fn append_draft_operation_in_tx(
         "UPDATE drafts
          SET version = version + 1, updated_at = now()
          WHERE draft_id = $1
-         RETURNING project_id, version, runtime_installation_id",
+         RETURNING project_id, version, daemon_installation_id",
     )
     .bind(draft_id)
     .fetch_one(&mut **tx)
     .await?;
-    let draft_runtime_installation_id: Option<String> =
-        updated.try_get("runtime_installation_id")?;
-    let runtime_installation_id =
-        event_runtime_installation_id.or(draft_runtime_installation_id.as_deref());
+    let draft_daemon_installation_id: Option<String> = updated.try_get("daemon_installation_id")?;
+    let daemon_installation_id =
+        event_daemon_installation_id.or(draft_daemon_installation_id.as_deref());
     insert_draft_event(
         tx,
         draft_id,
         &updated.try_get::<String, _>("project_id")?,
         DraftEventType::OperationAppended,
         updated.try_get("version")?,
-        runtime_installation_id,
+        daemon_installation_id,
     )
     .await
 }
@@ -1254,11 +1253,11 @@ async fn insert_draft_event(
     project_id: &str,
     event_type: DraftEventType,
     version: i64,
-    runtime_installation_id: Option<&str>,
+    daemon_installation_id: Option<&str>,
 ) -> Result<i64, HubError> {
     let row = sqlx::query(
         "INSERT INTO draft_events (
-            event_id, draft_id, project_id, event_type, version, runtime_installation_id
+            event_id, draft_id, project_id, event_type, version, daemon_installation_id
          )
          VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING server_sequence",
@@ -1268,7 +1267,7 @@ async fn insert_draft_event(
     .bind(project_id)
     .bind(event_type.as_str())
     .bind(version)
-    .bind(runtime_installation_id)
+    .bind(daemon_installation_id)
     .fetch_one(&mut **tx)
     .await?;
     Ok(row.try_get("server_sequence")?)
@@ -1701,7 +1700,7 @@ fn draft_event_from_row(row: &sqlx::postgres::PgRow) -> Result<DraftEvent, HubEr
         project_id: row.try_get("project_id")?,
         event_type: draft_event_type(row.try_get::<String, _>("event_type")?.as_str())?,
         version: row.try_get("version")?,
-        runtime_installation_id: row.try_get("runtime_installation_id")?,
+        daemon_installation_id: row.try_get("daemon_installation_id")?,
         created_at: row.try_get("created_at")?,
     })
 }
@@ -1767,7 +1766,7 @@ async fn load_draft_detail(
     let row = sqlx::query(
         "SELECT
             d.draft_id, d.project_id, d.title, d.description, d.status, d.version,
-            d.resource_kind, d.target_id, d.path, d.runtime_installation_id,
+            d.resource_kind, d.target_id, d.path, d.daemon_installation_id,
             d.created_at, d.updated_at,
             u.user_id, u.email, u.display_name, u.role
          FROM drafts d
@@ -1779,7 +1778,7 @@ async fn load_draft_detail(
     .await?
     .ok_or_else(|| HubError::not_found("draft", draft_id))?;
 
-    let runtime_installation_id: String = row.try_get("runtime_installation_id")?;
+    let daemon_installation_id: String = row.try_get("daemon_installation_id")?;
     let draft = Draft {
         draft_id: row.try_get("draft_id")?,
         project_id: row.try_get("project_id")?,
@@ -1808,7 +1807,7 @@ async fn load_draft_detail(
                 draft_id,
                 row.try_get::<i64, _>("version")?
             )),
-            runtime_installation_id: Some(runtime_installation_id),
+            daemon_installation_id: Some(daemon_installation_id),
             conflict_count: 0,
         },
     })
@@ -2003,12 +2002,12 @@ async fn apply_metaprompt_operation(
             })?;
             if let Some(row) = existing {
                 let current_hash: String = row.try_get("content_hash")?;
-                if let Some(expected_hash) = operation.base_hash.as_deref() {
-                    if expected_hash != current_hash {
-                        return Err(HubError::InvalidRequest(format!(
-                            "metaprompt hash conflict: expected {expected_hash}, actual {current_hash}"
-                        )));
-                    }
+                if let Some(expected_hash) = operation.base_hash.as_deref()
+                    && expected_hash != current_hash
+                {
+                    return Err(HubError::InvalidRequest(format!(
+                        "metaprompt hash conflict: expected {expected_hash}, actual {current_hash}"
+                    )));
                 }
                 let metaprompt_id: String = row.try_get("metaprompt_id")?;
                 sqlx::query(
@@ -2042,12 +2041,12 @@ async fn apply_metaprompt_operation(
         DraftOperationAction::Delete => {
             let row = existing.ok_or_else(|| HubError::not_found("metaprompt", project_id))?;
             let current_hash: String = row.try_get("content_hash")?;
-            if let Some(expected_hash) = operation.base_hash.as_deref() {
-                if expected_hash != current_hash {
-                    return Err(HubError::InvalidRequest(format!(
-                        "metaprompt hash conflict: expected {expected_hash}, actual {current_hash}"
-                    )));
-                }
+            if let Some(expected_hash) = operation.base_hash.as_deref()
+                && expected_hash != current_hash
+            {
+                return Err(HubError::InvalidRequest(format!(
+                    "metaprompt hash conflict: expected {expected_hash}, actual {current_hash}"
+                )));
             }
             let metaprompt_id: String = row.try_get("metaprompt_id")?;
             sqlx::query(
@@ -2148,7 +2147,7 @@ async fn create_project_snapshot(
                 snapshot_id, item_id, resource_kind, scope, project_id,
                 path, content_hash, content, source
              )
-             VALUES ($1, $2, 'project_org_selection', 'runtime', $3, NULL, NULL, NULL, 'config')",
+             VALUES ($1, $2, 'project_org_selection', 'daemon', $3, NULL, NULL, NULL, 'config')",
         )
         .bind(&snapshot_id)
         .bind(format!("project_org_selection:{project_id}"))
@@ -2642,7 +2641,7 @@ fn snapshot_item_scope(value: &str) -> Result<SnapshotItemScope, HubError> {
     match value {
         "org" => Ok(SnapshotItemScope::Org),
         "project" => Ok(SnapshotItemScope::Project),
-        "runtime" => Ok(SnapshotItemScope::Runtime),
+        "daemon" => Ok(SnapshotItemScope::Daemon),
         other => Err(HubError::InvalidRequest(format!(
             "unknown snapshot item scope: {other}"
         ))),

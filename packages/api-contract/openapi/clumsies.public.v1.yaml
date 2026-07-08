@@ -1297,11 +1297,11 @@ components:
           $ref: "#/components/schemas/PageInfo"
     CreateDraftRequest:
       type: object
-      required: [author_user_id, runtime_installation_id, project_id, title, resource]
+      required: [author_user_id, daemon_installation_id, project_id, title, resource]
       properties:
         author_user_id:
           type: string
-        runtime_installation_id:
+        daemon_installation_id:
           type: string
         project_id:
           type: string
@@ -1411,14 +1411,14 @@ components:
           type: [string, "null"]
     DraftSyncState:
       type: object
-      required: [status, server_cursor, runtime_installation_id, conflict_count]
+      required: [status, server_cursor, daemon_installation_id, conflict_count]
       properties:
         status:
           type: string
           enum: [synced, pending, conflicted, failed]
         server_cursor:
           type: [string, "null"]
-        runtime_installation_id:
+        daemon_installation_id:
           type: [string, "null"]
         conflict_count:
           type: integer
@@ -1442,7 +1442,7 @@ components:
         - project_id
         - event_type
         - version
-        - runtime_installation_id
+        - daemon_installation_id
         - created_at
       properties:
         event_id:
@@ -1456,16 +1456,16 @@ components:
           enum: [created, updated, operation_appended, discarded, submitted, conflicted]
         version:
           type: integer
-        runtime_installation_id:
+        daemon_installation_id:
           type: [string, "null"]
         created_at:
           type: string
           format: date-time
     DraftOperationBatchRequest:
       type: object
-      required: [runtime_installation_id, operations]
+      required: [daemon_installation_id, operations]
       properties:
-        runtime_installation_id:
+        daemon_installation_id:
           type: string
         operations:
           type: array
@@ -1776,7 +1776,7 @@ components:
           enum: [rule, context, workflow, metaprompt, project_org_selection]
         scope:
           type: string
-          enum: [org, project, runtime]
+          enum: [org, project, daemon]
         project_id:
           type: [string, "null"]
         path:
@@ -1797,7 +1797,7 @@ components:
           enum: [rule, context, workflow, metaprompt]
         scope:
           type: string
-          enum: [org, project, runtime]
+          enum: [org, project, daemon]
         project_id:
           type: [string, "null"]
         path:

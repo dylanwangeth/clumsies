@@ -1,0 +1,599 @@
+openapi: 3.1.0
+info:
+  title: clumsies Local Daemon API
+  version: 1.0.0
+  summary: Local daemon contract for Desktop renderer, CLI bridge, and MCP server.
+servers:
+  - url: http://127.0.0.1:0
+security: []
+paths:
+  /daemon/health:
+    get:
+      operationId: getDaemonHealth
+      summary: Read local daemon health.
+      responses:
+        "200":
+          description: Daemon health.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonHealth"
+        default:
+          $ref: "#/components/responses/Error"
+  /daemon/project-config:
+    get:
+      operationId: getDaemonProjectConfig
+      summary: Read local daemon project config.
+      responses:
+        "200":
+          description: Local daemon project config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonProjectConfig"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: replaceDaemonProjectConfig
+      summary: Replace local daemon project config.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DaemonProjectConfigUpdateRequest"
+      responses:
+        "200":
+          description: Replaced local daemon project config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonProjectConfig"
+        default:
+          $ref: "#/components/responses/Error"
+  /daemon/sync-status:
+    get:
+      operationId: getDaemonSyncStatus
+      summary: Read local sync status.
+      responses:
+        "200":
+          description: Daemon sync status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonSyncStatus"
+        default:
+          $ref: "#/components/responses/Error"
+  /daemon/sync-retries:
+    post:
+      operationId: createDaemonSyncRetry
+      summary: Create a local sync retry request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DaemonSyncRetryRequest"
+      responses:
+        "200":
+          description: Sync retry request state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonRetryResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /daemon/mcp-status:
+    get:
+      operationId: getDaemonMcpStatus
+      summary: Read local MCP server and adapter status.
+      responses:
+        "200":
+          description: Daemon MCP status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonMcpStatus"
+        default:
+          $ref: "#/components/responses/Error"
+  /daemon/mcp-restarts:
+    post:
+      operationId: createDaemonMcpRestart
+      summary: Create a local MCP server restart request.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DaemonMcpRestartRequest"
+      responses:
+        "200":
+          description: Daemon MCP restart result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonMcpRestartResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /daemon/mcp-stops:
+    post:
+      operationId: createDaemonMcpStop
+      summary: Create a local MCP server stop request.
+      responses:
+        "200":
+          description: Daemon MCP stop result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonMcpStopResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /daemon/drafts:
+    get:
+      operationId: listDaemonDrafts
+      summary: List local daemon draft copies.
+      parameters:
+        - name: resource
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/DaemonDraftResourceKind"
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/DaemonLocalDraftStatus"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Local draft list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonDraftListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /daemon/drafts/{draft_id}:
+    get:
+      operationId: getDaemonDraft
+      summary: Read a local daemon draft copy and operation history.
+      parameters:
+        - name: draft_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Local draft detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonDraftDetail"
+        default:
+          $ref: "#/components/responses/Error"
+  /daemon/draft-operations:
+    post:
+      operationId: createDaemonDraftOperation
+      summary: Write a local draft operation and enqueue sync.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DaemonDraftOperationRequest"
+      responses:
+        "200":
+          description: Local draft operation result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonDraftOperationResponse"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: Error response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    DaemonProjectConfig:
+      type: object
+      required:
+        - hub_url
+        - author_user_id
+        - project_id
+        - has_access_token
+        - ready
+        - missing_fields
+      properties:
+        hub_url:
+          type: string
+          format: uri
+        author_user_id:
+          type: [string, "null"]
+        project_id:
+          type: [string, "null"]
+        has_access_token:
+          type: boolean
+        ready:
+          type: boolean
+        missing_fields:
+          type: array
+          items:
+            type: string
+    DaemonProjectConfigUpdateRequest:
+      type: object
+      required: [hub_url, author_user_id, project_id, access_token]
+      properties:
+        hub_url:
+          type: string
+          format: uri
+        author_user_id:
+          type: [string, "null"]
+        project_id:
+          type: [string, "null"]
+        access_token:
+          type: [string, "null"]
+    DaemonHealth:
+      type: object
+      required:
+        - daemon_version
+        - hub_url
+        - project_id
+        - daemon_installation_id
+        - sidecar
+        - log_dir
+        - local_db
+      properties:
+        daemon_version:
+          type: string
+        hub_url:
+          type: string
+        project_id:
+          type: [string, "null"]
+        daemon_installation_id:
+          type: string
+        sidecar:
+          $ref: "#/components/schemas/SidecarStatus"
+        log_dir:
+          type: string
+        local_db:
+          $ref: "#/components/schemas/LocalDbStatus"
+    SidecarStatus:
+      type: object
+      required: [enabled, running, version]
+      properties:
+        enabled:
+          type: boolean
+        running:
+          type: boolean
+        version:
+          type: [string, "null"]
+    LocalDbStatus:
+      type: object
+      required: [path, ready, schema_version]
+      properties:
+        path:
+          type: string
+        ready:
+          type: boolean
+        schema_version:
+          type: integer
+    DaemonSyncStatus:
+      type: object
+      required:
+        - draft_sync
+        - snapshot_sync
+        - pending_operation_count
+        - failed_operation_count
+        - conflict_count
+        - last_success_at
+      properties:
+        draft_sync:
+          $ref: "#/components/schemas/SyncChannelStatus"
+        snapshot_sync:
+          $ref: "#/components/schemas/SyncChannelStatus"
+        pending_operation_count:
+          type: integer
+        failed_operation_count:
+          type: integer
+        conflict_count:
+          type: integer
+        last_success_at:
+          type: [string, "null"]
+          format: date-time
+    SyncChannelStatus:
+      type: object
+      required: [state, server_cursor, last_attempt_at, last_success_at, last_error]
+      properties:
+        state:
+          $ref: "#/components/schemas/SyncState"
+        server_cursor:
+          type: [string, "null"]
+        last_attempt_at:
+          type: [string, "null"]
+          format: date-time
+        last_success_at:
+          type: [string, "null"]
+          format: date-time
+        last_error:
+          oneOf:
+            - $ref: "#/components/schemas/ApiError"
+            - type: "null"
+    DaemonSyncRetryRequest:
+      type: object
+      required: [channel]
+      properties:
+        channel:
+          type: string
+          enum: [drafts, snapshots, all]
+    DaemonRetryResponse:
+      type: object
+      required: [retry_id, started]
+      properties:
+        retry_id:
+          type: string
+        started:
+          type: boolean
+    DaemonMcpStatus:
+      type: object
+      required: [running, endpoint, adapters]
+      properties:
+        running:
+          type: boolean
+        endpoint:
+          type: [string, "null"]
+        adapters:
+          type: array
+          items:
+            $ref: "#/components/schemas/McpAdapterStatus"
+    DaemonMcpRestartRequest:
+      type: object
+      properties:
+        reason:
+          type: [string, "null"]
+    DaemonMcpRestartResponse:
+      allOf:
+        - $ref: "#/components/schemas/DaemonMcpStatus"
+        - type: object
+          required: [restart_id]
+          properties:
+            restart_id:
+              type: string
+    DaemonMcpStopResponse:
+      allOf:
+        - $ref: "#/components/schemas/DaemonMcpStatus"
+        - type: object
+          required: [stop_id]
+          properties:
+            stop_id:
+              type: string
+    McpAdapterStatus:
+      type: object
+      required: [name, running, last_error]
+      properties:
+        name:
+          type: string
+        running:
+          type: boolean
+        last_error:
+          oneOf:
+            - $ref: "#/components/schemas/ApiError"
+            - type: "null"
+    DaemonDraftListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DaemonDraftSummary"
+    DaemonDraftDetail:
+      type: object
+      required: [draft, operations]
+      properties:
+        draft:
+          $ref: "#/components/schemas/DaemonDraftSummary"
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/DaemonLocalDraftOperation"
+    DaemonDraftSummary:
+      type: object
+      required:
+        - draft_id
+        - server_draft_id
+        - server_version
+        - resource_kind
+        - target_id
+        - path
+        - status
+        - created_at
+        - updated_at
+        - pending_operation_count
+        - failed_operation_count
+      properties:
+        draft_id:
+          type: string
+        server_draft_id:
+          type: [string, "null"]
+        server_version:
+          type: integer
+        resource_kind:
+          $ref: "#/components/schemas/DaemonDraftResourceKind"
+        target_id:
+          type: [string, "null"]
+        path:
+          type: [string, "null"]
+        status:
+          $ref: "#/components/schemas/DaemonLocalDraftStatus"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        pending_operation_count:
+          type: integer
+        failed_operation_count:
+          type: integer
+    DaemonLocalDraftOperation:
+      type: object
+      required:
+        - local_operation_id
+        - resource_kind
+        - operation
+        - source
+        - sync_status
+        - last_error
+        - created_at
+        - updated_at
+      properties:
+        local_operation_id:
+          type: string
+        resource_kind:
+          $ref: "#/components/schemas/DaemonDraftResourceKind"
+        operation:
+          $ref: "#/components/schemas/DaemonDraftOperation"
+        source:
+          $ref: "#/components/schemas/DaemonDraftOperationSource"
+        sync_status:
+          $ref: "#/components/schemas/DraftOperationSyncStatus"
+        last_error:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DaemonDraftOperationRequest:
+      type: object
+      required: [resource, op]
+      properties:
+        resource:
+          $ref: "#/components/schemas/DaemonDraftResourceKind"
+        op:
+          $ref: "#/components/schemas/DaemonDraftOperation"
+        source:
+          $ref: "#/components/schemas/DaemonDraftOperationSource"
+    DaemonDraftOperation:
+      type: object
+      oneOf:
+        - required: [create]
+        - required: [update]
+        - required: [rename]
+        - required: [delete]
+        - required: [discard]
+      properties:
+        create:
+          $ref: "#/components/schemas/DaemonCreateDraftOperation"
+        update:
+          $ref: "#/components/schemas/DaemonUpdateDraftOperation"
+        rename:
+          $ref: "#/components/schemas/DaemonRenameDraftOperation"
+        delete:
+          $ref: "#/components/schemas/DaemonDeleteDraftOperation"
+        discard:
+          $ref: "#/components/schemas/DaemonDiscardDraftOperation"
+    DaemonCreateDraftOperation:
+      type: object
+      required: [path, body]
+      properties:
+        path:
+          type: string
+        body:
+          type: string
+        description:
+          type: string
+    DaemonUpdateDraftOperation:
+      type: object
+      required: [id, body]
+      properties:
+        id:
+          type: string
+        body:
+          type: string
+        description:
+          type: string
+    DaemonRenameDraftOperation:
+      type: object
+      required: [id, new_path]
+      properties:
+        id:
+          type: string
+        new_path:
+          type: string
+        description:
+          type: string
+    DaemonDeleteDraftOperation:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+    DaemonDiscardDraftOperation:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+    DaemonDraftOperationResponse:
+      type: object
+      required: [local_operation_id, draft_id, queued, sync_status]
+      properties:
+        local_operation_id:
+          type: string
+        draft_id:
+          type: string
+        queued:
+          type: boolean
+        sync_status:
+          $ref: "#/components/schemas/DraftOperationSyncStatus"
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ApiError"
+    ApiError:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    SyncState:
+      type: string
+      enum: [idle, queued, syncing, degraded, failed]
+    DaemonDraftResourceKind:
+      type: string
+      enum: [context, rule, workflow, metaprompt]
+    DaemonLocalDraftStatus:
+      type: string
+      enum: [open, submitted, discarded, conflicted]
+    DaemonDraftOperationSource:
+      type: string
+      enum: [desktop, cli, mcp_store]
+    DraftOperationSyncStatus:
+      type: string
+      enum: [queued, syncing, synced, failed]
