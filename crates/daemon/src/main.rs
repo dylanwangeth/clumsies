@@ -1,5 +1,5 @@
 use daemon::{
-    DaemonConfig, DaemonIpcService, DaemonState, DaemonXpcServer, LaunchAgentConfig,
+    DaemonConfig, DaemonIpcServer, DaemonIpcService, DaemonState, LaunchAgentConfig,
     LaunchAgentController,
 };
 
@@ -46,8 +46,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = DaemonState::initialize(config).await?;
     let service = DaemonIpcService::new(state.clone());
-    let _xpc_server =
-        DaemonXpcServer::start(launch_agent.mach_service_name.clone(), service.clone())?;
+    let _ipc_server =
+        DaemonIpcServer::start(launch_agent.mach_service_name.clone(), service.clone())?;
     let _sync_worker = state.start_sync_worker();
     let health = service.health().await;
 

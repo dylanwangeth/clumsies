@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use daemon::{
-    DaemonBootstrapStatus, DaemonConfig, DaemonHealth, DaemonXpcClient, LaunchAgentConfig,
+    DaemonBootstrapStatus, DaemonConfig, DaemonHealth, DaemonIpcClient, LaunchAgentConfig,
     LaunchAgentController,
 };
 
@@ -32,7 +32,7 @@ async fn stop_daemon_launch_agent() -> Result<DaemonBootstrapStatus, String> {
 
 #[tauri::command]
 async fn read_daemon_health() -> Result<DaemonHealth, String> {
-    let client = daemon_xpc_client()?;
+    let client = daemon_ipc_client()?;
     tauri::async_runtime::spawn_blocking(move || client.health())
         .await
         .map_err(|error| error.to_string())?
@@ -45,10 +45,10 @@ fn launch_agent_controller() -> Result<LaunchAgentController, String> {
     LaunchAgentController::for_current_user(launch_agent).map_err(|error| error.to_string())
 }
 
-fn daemon_xpc_client() -> Result<DaemonXpcClient, String> {
+fn daemon_ipc_client() -> Result<DaemonIpcClient, String> {
     let config = DaemonConfig::from_env().map_err(|error| error.to_string())?;
     let launch_agent = LaunchAgentConfig::from_daemon_config(&config, daemon_program_path()?);
-    Ok(DaemonXpcClient::new(launch_agent.mach_service_name))
+    Ok(DaemonIpcClient::new(launch_agent.mach_service_name))
 }
 
 fn daemon_program_path() -> Result<PathBuf, String> {

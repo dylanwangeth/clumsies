@@ -7,7 +7,7 @@ type DaemonBootstrapStatus = {
   plist_path: string;
   installed: boolean;
   endpoint: {
-    transport: "xpc_mach_service";
+    transport: "macos_xpc_mach_service";
     service_name: string;
   };
   runtime: {
@@ -44,12 +44,12 @@ const navItems = [
   "Project Memory",
   "Drafts",
   "Reviews",
-  "Daemon",
+  "macOS Daemon",
   "Settings",
 ];
 
 export function App() {
-  const [selected, setSelected] = useState("Daemon");
+  const [selected, setSelected] = useState("macOS Daemon");
   const [loadState, setLoadState] = useState<LoadState>({ status: "idle" });
 
   const runLaunchAgentCommand = useCallback(async (command: string) => {
@@ -115,7 +115,7 @@ export function App() {
         <header className="topbar">
           <div>
             <h1>{selected}</h1>
-            <p>Desktop workspace backed by the local LaunchAgent daemon.</p>
+            <p>Desktop workspace backed by the macOS LaunchAgent daemon.</p>
           </div>
           <div className="topbar-actions">
             <button
@@ -155,9 +155,9 @@ export function App() {
           </div>
         </header>
 
-        <section className="panel" aria-label="Daemon status">
+        <section className="panel" aria-label="macOS daemon status">
           <div className="panel-header">
-            <h2>Local Daemon</h2>
+            <h2>macOS Daemon</h2>
             <span className={statusClass(loadState)}>
               {statusLabel(loadState)}
             </span>

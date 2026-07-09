@@ -8,7 +8,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        DaemonIpcTransport: "xpc_mach_service";
+        DaemonIpcTransport: "macos_xpc_mach_service";
         DaemonIpcEndpoint: {
             transport: components["schemas"]["DaemonIpcTransport"];
             service_name: string;

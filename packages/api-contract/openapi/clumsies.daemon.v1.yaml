@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: clumsies Local Daemon IPC Schema
   version: 1.0.0
-  summary: Schema-only local daemon IPC contract for Tauri core, CLI XPC client, and MCP adapter.
+  summary: Schema-only local daemon IPC contract for local daemon clients.
 security: []
 paths: {}
 components:
@@ -16,7 +16,7 @@ components:
   schemas:
     DaemonIpcTransport:
       type: string
-      enum: [xpc_mach_service]
+      enum: [macos_xpc_mach_service]
     DaemonIpcEndpoint:
       type: object
       required: [transport, service_name]

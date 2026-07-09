@@ -67,7 +67,7 @@ fn launch_agent_plist_uses_standard_identity_and_runtime_paths() {
     assert_eq!(bootstrap.mach_service_name, DAEMON_MACH_SERVICE_NAME);
     assert_eq!(
         bootstrap.endpoint.transport,
-        DaemonIpcTransport::XpcMachService
+        DaemonIpcTransport::MacosXpcMachService
     );
     assert_eq!(bootstrap.endpoint.service_name, DAEMON_MACH_SERVICE_NAME);
     assert!(!bootstrap.installed);

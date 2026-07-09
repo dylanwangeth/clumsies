@@ -19,8 +19,8 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-mod xpc_transport;
-pub use xpc_transport::{DaemonXpcClient, DaemonXpcServer};
+mod ipc;
+pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 
 pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
@@ -250,7 +250,7 @@ impl LaunchAgentConfig {
 
     pub fn ipc_endpoint(&self) -> DaemonIpcEndpoint {
         DaemonIpcEndpoint {
-            transport: DaemonIpcTransport::XpcMachService,
+            transport: DaemonIpcTransport::MacosXpcMachService,
             service_name: self.mach_service_name.clone(),
         }
     }
@@ -1921,7 +1921,7 @@ fn parse_u64_env(name: &str) -> Result<Option<u64>, DaemonError> {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonIpcTransport {
-    XpcMachService,
+    MacosXpcMachService,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

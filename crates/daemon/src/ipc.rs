@@ -6,11 +6,11 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-pub struct DaemonXpcClient {
+pub struct DaemonIpcClient {
     service_name: String,
 }
 
-impl DaemonXpcClient {
+impl DaemonIpcClient {
     pub fn new(service_name: impl Into<String>) -> Self {
         Self {
             service_name: service_name.into(),
@@ -83,17 +83,17 @@ impl DaemonXpcClient {
     }
 }
 
-pub struct DaemonXpcServer {
-    inner: platform::DaemonXpcServerInner,
+pub struct DaemonIpcServer {
+    inner: platform::DaemonIpcServerInner,
 }
 
-impl DaemonXpcServer {
+impl DaemonIpcServer {
     pub fn start(
         service_name: impl Into<String>,
         service: DaemonIpcService,
     ) -> Result<Self, DaemonError> {
         Ok(Self {
-            inner: platform::DaemonXpcServerInner::start(service_name.into(), service)?,
+            inner: platform::DaemonIpcServerInner::start(service_name.into(), service)?,
         })
     }
 
@@ -111,21 +111,21 @@ mod platform {
         _request: DaemonIpcRequest,
     ) -> Result<DaemonIpcResponse, DaemonError> {
         Err(DaemonError::Ipc(format!(
-            "XPC Mach service {service_name} is only available on macOS"
+            "local daemon IPC is only implemented on macOS; requested XPC Mach service {service_name}"
         )))
     }
 
-    pub struct DaemonXpcServerInner {
+    pub struct DaemonIpcServerInner {
         service_name: String,
     }
 
-    impl DaemonXpcServerInner {
+    impl DaemonIpcServerInner {
         pub fn start(
             service_name: String,
             _service: DaemonIpcService,
         ) -> Result<Self, DaemonError> {
             Err(DaemonError::Ipc(format!(
-                "XPC Mach service {service_name} is only available on macOS"
+                "local daemon IPC is only implemented on macOS; requested XPC Mach service {service_name}"
             )))
         }
 
@@ -219,13 +219,13 @@ mod platform {
         serde_json::from_str(&response_json).map_err(DaemonError::from)
     }
 
-    pub struct DaemonXpcServerInner {
+    pub struct DaemonIpcServerInner {
         service_name: String,
         _listener: XpcConnectionHandle,
         _handler: RcBlock<dyn Fn(XpcObject) + 'static>,
     }
 
-    impl DaemonXpcServerInner {
+    impl DaemonIpcServerInner {
         pub fn start(service_name: String, service: DaemonIpcService) -> Result<Self, DaemonError> {
             let runtime = Handle::try_current().map_err(|error| {
                 DaemonError::Ipc(format!("tokio runtime is required for XPC server: {error}"))

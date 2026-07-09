@@ -476,7 +476,7 @@ fn parseKnownHashes(
 fn storeErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
     return tool_result.buildErrorResult(allocator, switch (err) {
         error.InvalidParams => "invalid parameters",
-        error.XpcUnavailable => "local daemon XPC is unavailable on this platform",
+        error.XpcUnavailable => "local daemon IPC is only implemented on macOS",
         error.XpcReturnedNullConnection,
         error.XpcReturnedNullObject,
         error.XpcReturnedErrorObject,
