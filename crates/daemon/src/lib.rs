@@ -1,17 +1,12 @@
 use std::env;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
-use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,6 +19,12 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+mod xpc_transport;
+pub use xpc_transport::{DaemonXpcClient, DaemonXpcServer};
+
+pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
+pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
+pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
 pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 3;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
@@ -32,8 +33,10 @@ const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaemonConfig {
     pub root_dir: PathBuf,
+    pub cache_dir: PathBuf,
+    pub log_dir: PathBuf,
+    pub launch_agents_dir: PathBuf,
     pub project: ProjectConfig,
-    pub listen_addr: SocketAddr,
     pub sync: SyncConfig,
 }
 
@@ -53,10 +56,19 @@ pub struct SyncConfig {
 
 impl DaemonConfig {
     pub fn from_env() -> Result<Self, DaemonError> {
-        let root_dir = match env::var_os("CLUMSIES_DAEMON_ROOT") {
-            Some(value) => PathBuf::from(value),
-            None => default_root_dir()?,
+        let mut paths = match env::var_os("CLUMSIES_DAEMON_ROOT") {
+            Some(value) => DaemonRuntimePaths::for_root(PathBuf::from(value)),
+            None => DaemonRuntimePaths::from_home(home_dir()?),
         };
+        if let Some(value) = env::var_os("CLUMSIES_DAEMON_CACHE_DIR") {
+            paths.cache_dir = PathBuf::from(value);
+        }
+        if let Some(value) = env::var_os("CLUMSIES_DAEMON_LOG_DIR") {
+            paths.log_dir = PathBuf::from(value);
+        }
+        if let Some(value) = env::var_os("CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR") {
+            paths.launch_agents_dir = PathBuf::from(value);
+        }
         let project = ProjectConfig::from_env();
         let sync = SyncConfig {
             enabled: parse_bool_env("CLUMSIES_SYNC_ENABLED")?.unwrap_or(true),
@@ -66,25 +78,24 @@ impl DaemonConfig {
                     .max(1),
             ),
         };
-        let listen_addr = env::var("CLUMSIES_DAEMON_ADDR")
-            .unwrap_or_else(|_| "127.0.0.1:0".to_owned())
-            .parse()
-            .map_err(|error| {
-                DaemonError::InvalidConfig(format!("invalid CLUMSIES_DAEMON_ADDR: {error}"))
-            })?;
         Ok(Self {
-            root_dir,
+            root_dir: paths.root_dir,
+            cache_dir: paths.cache_dir,
+            log_dir: paths.log_dir,
+            launch_agents_dir: paths.launch_agents_dir,
             project,
-            listen_addr,
             sync,
         })
     }
 
     pub fn for_root(root_dir: impl Into<PathBuf>) -> Self {
+        let paths = DaemonRuntimePaths::for_root(root_dir.into());
         Self {
-            root_dir: root_dir.into(),
+            root_dir: paths.root_dir,
+            cache_dir: paths.cache_dir,
+            log_dir: paths.log_dir,
+            launch_agents_dir: paths.launch_agents_dir,
             project: ProjectConfig::default(),
-            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             sync: SyncConfig {
                 enabled: false,
                 interval: Duration::from_secs(30),
@@ -97,12 +108,334 @@ impl DaemonConfig {
     }
 
     pub fn logs_dir(&self) -> PathBuf {
-        self.root_dir.join("logs")
+        self.log_dir.clone()
     }
 
-    pub fn endpoint_file_path(&self) -> PathBuf {
-        self.root_dir.join("daemon-endpoint.json")
+    pub fn launch_agent_plist_path(&self) -> PathBuf {
+        self.launch_agents_dir
+            .join(format!("{DAEMON_AGENT_LABEL}.plist"))
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DaemonRuntimePaths {
+    root_dir: PathBuf,
+    cache_dir: PathBuf,
+    log_dir: PathBuf,
+    launch_agents_dir: PathBuf,
+}
+
+impl DaemonRuntimePaths {
+    fn for_root(root_dir: PathBuf) -> Self {
+        Self {
+            cache_dir: root_dir.join("cache"),
+            log_dir: root_dir.join("logs"),
+            launch_agents_dir: root_dir.join("LaunchAgents"),
+            root_dir,
+        }
+    }
+
+    fn from_home(home: PathBuf) -> Self {
+        Self {
+            root_dir: home
+                .join("Library")
+                .join("Application Support")
+                .join(APP_BUNDLE_IDENTIFIER),
+            cache_dir: home
+                .join("Library")
+                .join("Caches")
+                .join(APP_BUNDLE_IDENTIFIER),
+            log_dir: home
+                .join("Library")
+                .join("Logs")
+                .join(APP_BUNDLE_IDENTIFIER),
+            launch_agents_dir: home.join("Library").join("LaunchAgents"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchAgentConfig {
+    pub label: String,
+    pub mach_service_name: String,
+    pub program_path: PathBuf,
+    pub plist_path: PathBuf,
+    pub root_dir: PathBuf,
+    pub cache_dir: PathBuf,
+    pub log_dir: PathBuf,
+}
+
+impl LaunchAgentConfig {
+    pub fn from_daemon_config(config: &DaemonConfig, program_path: impl Into<PathBuf>) -> Self {
+        Self {
+            label: DAEMON_AGENT_LABEL.to_owned(),
+            mach_service_name: DAEMON_MACH_SERVICE_NAME.to_owned(),
+            program_path: program_path.into(),
+            plist_path: config.launch_agent_plist_path(),
+            root_dir: config.root_dir.clone(),
+            cache_dir: config.cache_dir.clone(),
+            log_dir: config.log_dir.clone(),
+        }
+    }
+
+    pub fn standard_output_path(&self) -> PathBuf {
+        self.log_dir.join("clumsiesd.out.log")
+    }
+
+    pub fn standard_error_path(&self) -> PathBuf {
+        self.log_dir.join("clumsiesd.err.log")
+    }
+
+    pub fn plist_contents(&self) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{program}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>MachServices</key>
+  <dict>
+    <key>{mach_service}</key>
+    <true/>
+  </dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CLUMSIES_DAEMON_ROOT</key>
+    <string>{root_dir}</string>
+    <key>CLUMSIES_DAEMON_CACHE_DIR</key>
+    <string>{cache_dir}</string>
+    <key>CLUMSIES_DAEMON_LOG_DIR</key>
+    <string>{log_dir}</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>{stdout}</string>
+  <key>StandardErrorPath</key>
+  <string>{stderr}</string>
+</dict>
+</plist>
+"#,
+            label = escape_plist_value(&self.label),
+            program = escape_plist_value(self.program_path.to_string_lossy().as_ref()),
+            mach_service = escape_plist_value(&self.mach_service_name),
+            root_dir = escape_plist_value(self.root_dir.to_string_lossy().as_ref()),
+            cache_dir = escape_plist_value(self.cache_dir.to_string_lossy().as_ref()),
+            log_dir = escape_plist_value(self.log_dir.to_string_lossy().as_ref()),
+            stdout = escape_plist_value(self.standard_output_path().to_string_lossy().as_ref()),
+            stderr = escape_plist_value(self.standard_error_path().to_string_lossy().as_ref()),
+        )
+    }
+
+    pub fn install_plist(&self) -> Result<(), DaemonError> {
+        if let Some(parent) = self.plist_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::create_dir_all(&self.root_dir)?;
+        std::fs::create_dir_all(&self.cache_dir)?;
+        std::fs::create_dir_all(&self.log_dir)?;
+        let tmp_path = self.plist_path.with_extension("plist.tmp");
+        std::fs::write(&tmp_path, self.plist_contents())?;
+        set_owner_only_permissions(&tmp_path)?;
+        std::fs::rename(tmp_path, &self.plist_path)?;
+        Ok(())
+    }
+
+    pub fn ipc_endpoint(&self) -> DaemonIpcEndpoint {
+        DaemonIpcEndpoint {
+            transport: DaemonIpcTransport::XpcMachService,
+            service_name: self.mach_service_name.clone(),
+        }
+    }
+
+    pub fn bootstrap_status(&self) -> DaemonBootstrapStatus {
+        DaemonBootstrapStatus {
+            label: self.label.clone(),
+            mach_service_name: self.mach_service_name.clone(),
+            plist_path: self.plist_path.display().to_string(),
+            installed: self.plist_path.exists(),
+            endpoint: self.ipc_endpoint(),
+            runtime: LaunchAgentRuntimeStatus::not_bootstrapped(self.plist_path.exists(), None),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchAgentController {
+    config: LaunchAgentConfig,
+    domain: String,
+}
+
+impl LaunchAgentController {
+    pub fn for_current_user(config: LaunchAgentConfig) -> Result<Self, DaemonError> {
+        Ok(Self {
+            config,
+            domain: current_user_launchctl_domain()?,
+        })
+    }
+
+    pub fn with_domain(config: LaunchAgentConfig, domain: impl Into<String>) -> Self {
+        Self {
+            config,
+            domain: domain.into(),
+        }
+    }
+
+    pub fn config(&self) -> &LaunchAgentConfig {
+        &self.config
+    }
+
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    pub fn service_target(&self) -> String {
+        format!("{}/{}", self.domain, self.config.label)
+    }
+
+    pub fn bootstrap_args(&self) -> Vec<String> {
+        vec![
+            "bootstrap".to_owned(),
+            self.domain.clone(),
+            self.config.plist_path.display().to_string(),
+        ]
+    }
+
+    pub fn bootout_args(&self) -> Vec<String> {
+        vec!["bootout".to_owned(), self.service_target()]
+    }
+
+    pub fn kickstart_args(&self) -> Vec<String> {
+        vec![
+            "kickstart".to_owned(),
+            "-k".to_owned(),
+            self.service_target(),
+        ]
+    }
+
+    pub fn print_args(&self) -> Vec<String> {
+        vec!["print".to_owned(), self.service_target()]
+    }
+
+    pub fn status(&self) -> Result<DaemonBootstrapStatus, DaemonError> {
+        let installed = self.config.plist_path.exists();
+        let output = run_launchctl_allow_failure(&self.print_args())?;
+        let runtime = if output.status.success() {
+            LaunchAgentRuntimeStatus::from_launchctl_print(
+                installed,
+                &String::from_utf8_lossy(&output.stdout),
+            )
+        } else {
+            LaunchAgentRuntimeStatus::not_bootstrapped(installed, command_output_message(&output))
+        };
+        Ok(self.config.bootstrap_status().with_runtime(runtime))
+    }
+
+    pub fn install(&self) -> Result<DaemonBootstrapStatus, DaemonError> {
+        self.config.install_plist()?;
+        self.status()
+    }
+
+    pub fn bootstrap(&self) -> Result<DaemonBootstrapStatus, DaemonError> {
+        self.config.install_plist()?;
+        run_launchctl_success(&self.bootstrap_args())?;
+        self.status()
+    }
+
+    pub fn bootout(&self) -> Result<DaemonBootstrapStatus, DaemonError> {
+        run_launchctl_success(&self.bootout_args())?;
+        self.status()
+    }
+
+    pub fn kickstart(&self) -> Result<DaemonBootstrapStatus, DaemonError> {
+        let status = self.status()?;
+        if status.runtime.bootstrapped {
+            run_launchctl_success(&self.kickstart_args())?;
+        } else {
+            self.config.install_plist()?;
+            run_launchctl_success(&self.bootstrap_args())?;
+        }
+        self.status()
+    }
+}
+
+fn current_user_launchctl_domain() -> Result<String, DaemonError> {
+    if let Some(uid) = env::var("UID").ok().and_then(non_empty_string) {
+        return Ok(format!("gui/{uid}"));
+    }
+    let output = Command::new("id").arg("-u").output()?;
+    if !output.status.success() {
+        return Err(DaemonError::Launchctl(format!(
+            "id -u failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let uid = non_empty_string(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .ok_or_else(|| DaemonError::Launchctl("id -u returned an empty uid".to_owned()))?;
+    Ok(format!("gui/{uid}"))
+}
+
+fn run_launchctl_success(args: &[String]) -> Result<(), DaemonError> {
+    let output = run_launchctl_allow_failure(args)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(DaemonError::Launchctl(format!(
+            "launchctl {} failed: {}",
+            args.join(" "),
+            command_output_message(&output).unwrap_or_else(|| "no output".to_owned())
+        )))
+    }
+}
+
+fn run_launchctl_allow_failure(args: &[String]) -> Result<Output, DaemonError> {
+    Ok(Command::new("launchctl").args(args).output()?)
+}
+
+fn command_output_message(output: &Output) -> Option<String> {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if !stderr.is_empty() {
+        return Some(stderr);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !stdout.is_empty() {
+        return Some(stdout);
+    }
+    output
+        .status
+        .code()
+        .map(|code| format!("exit status {code}"))
+}
+
+fn escape_plist_value(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(unix)]
+fn set_owner_only_permissions(path: &Path) -> Result<(), DaemonError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o600);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_permissions(_path: &Path) -> Result<(), DaemonError> {
+    Ok(())
 }
 
 impl Default for ProjectConfig {
@@ -208,6 +541,10 @@ impl DaemonState {
         &self.inner.daemon_installation_id
     }
 
+    pub fn project_config_status(&self) -> DaemonProjectConfig {
+        self.project_config_view()
+    }
+
     fn project_config(&self) -> ProjectConfig {
         self.inner
             .project_config
@@ -216,7 +553,7 @@ impl DaemonState {
             .clone()
     }
 
-    async fn replace_project_config(
+    pub async fn replace_project_config(
         &self,
         request: DaemonProjectConfigUpdateRequest,
     ) -> Result<DaemonProjectConfig, DaemonError> {
@@ -250,7 +587,7 @@ impl DaemonState {
         }
     }
 
-    async fn health(&self) -> DaemonHealth {
+    pub async fn health(&self) -> DaemonHealth {
         let schema_version = current_schema_version(&self.inner.pool).await.unwrap_or(0);
         let project_config = self.project_config();
         DaemonHealth {
@@ -267,12 +604,110 @@ impl DaemonState {
         }
     }
 
-    fn mcp_status(&self) -> DaemonMcpStatus {
+    pub fn mcp_status(&self) -> DaemonMcpStatus {
         DaemonMcpStatus {
             running: false,
             endpoint: None,
             adapters: Vec::new(),
         }
+    }
+
+    pub async fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
+        load_sync_status(self).await
+    }
+
+    pub async fn retry_sync(
+        &self,
+        request: DaemonSyncRetryRequest,
+    ) -> Result<DaemonRetryResponse, DaemonError> {
+        let retry_id = format!("retry_{}", Uuid::new_v4().simple());
+        let channel = request.channel.as_str();
+
+        sqlx::query(
+            "INSERT INTO sync_retries (retry_id, channel)
+             VALUES ($1, $2)",
+        )
+        .bind(&retry_id)
+        .bind(channel)
+        .execute(&self.inner.pool)
+        .await?;
+
+        if matches!(
+            request.channel,
+            SyncRetryChannel::Drafts | SyncRetryChannel::All
+        ) {
+            sqlx::query(
+                "UPDATE local_draft_operations
+                 SET sync_status = 'queued', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE sync_status = 'failed'",
+            )
+            .execute(&self.inner.pool)
+            .await?;
+            self.run_sync_cycle().await?;
+        }
+
+        Ok(DaemonRetryResponse {
+            retry_id,
+            started: true,
+        })
+    }
+
+    pub async fn store_draft_operation(
+        &self,
+        request: DaemonDraftOperationRequest,
+    ) -> Result<DaemonDraftOperationResponse, DaemonError> {
+        request.op.validate_exactly_one()?;
+        let source = request
+            .source
+            .unwrap_or(DaemonDraftOperationSource::Desktop);
+        let operation_json = serde_json::to_string(&request.op)?;
+        let mut tx = self.inner.pool.begin().await?;
+
+        let draft_id = resolve_local_draft(&mut tx, request.resource, &request.op).await?;
+        let local_operation_id = format!("op_{}", Uuid::new_v4().simple());
+
+        sqlx::query(
+            "INSERT INTO local_draft_operations (
+                local_operation_id, draft_id, resource_kind, operation_json, source, sync_status
+             )
+             VALUES ($1, $2, $3, $4, $5, 'queued')",
+        )
+        .bind(&local_operation_id)
+        .bind(&draft_id)
+        .bind(request.resource.as_str())
+        .bind(operation_json)
+        .bind(source.as_str())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE local_drafts
+             SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE draft_id = $1",
+        )
+        .bind(&draft_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        self.request_sync();
+
+        Ok(DaemonDraftOperationResponse {
+            local_operation_id,
+            draft_id,
+            queued: true,
+            sync_status: DraftOperationSyncStatus::Queued,
+        })
+    }
+
+    pub async fn list_drafts(
+        &self,
+        query: DaemonDraftListQuery,
+    ) -> Result<DaemonDraftListResponse, DaemonError> {
+        list_local_drafts(&self.inner.pool, query).await
+    }
+
+    pub async fn get_draft(&self, draft_id: &str) -> Result<DaemonDraftDetail, DaemonError> {
+        load_local_draft_detail(&self.inner.pool, draft_id).await
     }
 
     async fn drain_draft_queue(&self) -> Result<(), DaemonError> {
@@ -326,147 +761,142 @@ impl DaemonState {
     }
 }
 
-pub fn router(state: DaemonState) -> Router {
-    Router::new()
-        .route("/daemon/health", get(get_daemon_health))
-        .route(
-            "/daemon/project-config",
-            get(get_daemon_project_config).put(put_daemon_project_config),
-        )
-        .route("/daemon/sync-status", get(get_daemon_sync_status))
-        .route("/daemon/sync-retries", post(create_daemon_sync_retry))
-        .route("/daemon/mcp-status", get(get_daemon_mcp_status))
-        .route("/daemon/drafts", get(list_daemon_drafts))
-        .route("/daemon/drafts/{draft_id}", get(get_daemon_draft))
-        .route(
-            "/daemon/draft-operations",
-            post(create_daemon_draft_operation),
-        )
-        .with_state(state)
+#[derive(Clone)]
+pub struct DaemonIpcService {
+    state: DaemonState,
 }
 
-async fn get_daemon_health(State(state): State<DaemonState>) -> Json<DaemonHealth> {
-    Json(state.health().await)
-}
-
-async fn get_daemon_project_config(State(state): State<DaemonState>) -> Json<DaemonProjectConfig> {
-    Json(state.project_config_view())
-}
-
-async fn put_daemon_project_config(
-    State(state): State<DaemonState>,
-    Json(request): Json<DaemonProjectConfigUpdateRequest>,
-) -> Result<Json<DaemonProjectConfig>, DaemonHttpError> {
-    Ok(Json(state.replace_project_config(request).await?))
-}
-
-async fn get_daemon_sync_status(
-    State(state): State<DaemonState>,
-) -> Result<Json<DaemonSyncStatus>, DaemonHttpError> {
-    Ok(Json(load_sync_status(&state).await?))
-}
-
-async fn create_daemon_sync_retry(
-    State(state): State<DaemonState>,
-    Json(request): Json<DaemonSyncRetryRequest>,
-) -> Result<Json<DaemonRetryResponse>, DaemonHttpError> {
-    let retry_id = format!("retry_{}", Uuid::new_v4().simple());
-    let channel = request.channel.as_str();
-
-    sqlx::query(
-        "INSERT INTO sync_retries (retry_id, channel)
-         VALUES ($1, $2)",
-    )
-    .bind(&retry_id)
-    .bind(channel)
-    .execute(&state.inner.pool)
-    .await?;
-
-    if matches!(
-        request.channel,
-        SyncRetryChannel::Drafts | SyncRetryChannel::All
-    ) {
-        sqlx::query(
-            "UPDATE local_draft_operations
-             SET sync_status = 'queued', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE sync_status = 'failed'",
-        )
-        .execute(&state.inner.pool)
-        .await?;
-        state.run_sync_cycle().await?;
+impl DaemonIpcService {
+    pub fn new(state: DaemonState) -> Self {
+        Self { state }
     }
 
-    Ok(Json(DaemonRetryResponse {
-        retry_id,
-        started: true,
-    }))
-}
+    pub async fn health(&self) -> DaemonHealth {
+        self.state.health().await
+    }
 
-async fn get_daemon_mcp_status(State(state): State<DaemonState>) -> Json<DaemonMcpStatus> {
-    Json(state.mcp_status())
-}
+    pub fn project_config(&self) -> DaemonProjectConfig {
+        self.state.project_config_status()
+    }
 
-async fn list_daemon_drafts(
-    State(state): State<DaemonState>,
-    Query(query): Query<DaemonDraftListQuery>,
-) -> Result<Json<DaemonDraftListResponse>, DaemonHttpError> {
-    Ok(Json(list_local_drafts(&state.inner.pool, query).await?))
-}
+    pub async fn replace_project_config(
+        &self,
+        request: DaemonProjectConfigUpdateRequest,
+    ) -> Result<DaemonProjectConfig, DaemonError> {
+        self.state.replace_project_config(request).await
+    }
 
-async fn get_daemon_draft(
-    State(state): State<DaemonState>,
-    AxumPath(draft_id): AxumPath<String>,
-) -> Result<Json<DaemonDraftDetail>, DaemonHttpError> {
-    Ok(Json(
-        load_local_draft_detail(&state.inner.pool, &draft_id).await?,
-    ))
-}
+    pub async fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
+        self.state.sync_status().await
+    }
 
-async fn create_daemon_draft_operation(
-    State(state): State<DaemonState>,
-    Json(request): Json<DaemonDraftOperationRequest>,
-) -> Result<Json<DaemonDraftOperationResponse>, DaemonHttpError> {
-    request.op.validate_exactly_one()?;
-    let source = request
-        .source
-        .unwrap_or(DaemonDraftOperationSource::Desktop);
-    let operation_json = serde_json::to_string(&request.op)?;
-    let mut tx = state.inner.pool.begin().await?;
+    pub async fn retry_sync(
+        &self,
+        request: DaemonSyncRetryRequest,
+    ) -> Result<DaemonRetryResponse, DaemonError> {
+        self.state.retry_sync(request).await
+    }
 
-    let draft_id = resolve_local_draft(&mut tx, request.resource, &request.op).await?;
-    let local_operation_id = format!("op_{}", Uuid::new_v4().simple());
+    pub fn mcp_status(&self) -> DaemonMcpStatus {
+        self.state.mcp_status()
+    }
 
-    sqlx::query(
-        "INSERT INTO local_draft_operations (
-            local_operation_id, draft_id, resource_kind, operation_json, source, sync_status
-         )
-         VALUES ($1, $2, $3, $4, $5, 'queued')",
-    )
-    .bind(&local_operation_id)
-    .bind(&draft_id)
-    .bind(request.resource.as_str())
-    .bind(operation_json)
-    .bind(source.as_str())
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "UPDATE local_drafts
-         SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE draft_id = $1",
-    )
-    .bind(&draft_id)
-    .execute(&mut *tx)
-    .await?;
+    pub async fn list_drafts(
+        &self,
+        query: DaemonDraftListQuery,
+    ) -> Result<DaemonDraftListResponse, DaemonError> {
+        self.state.list_drafts(query).await
+    }
 
-    tx.commit().await?;
-    state.request_sync();
+    pub async fn get_draft(&self, draft_id: &str) -> Result<DaemonDraftDetail, DaemonError> {
+        self.state.get_draft(draft_id).await
+    }
 
-    Ok(Json(DaemonDraftOperationResponse {
-        local_operation_id,
-        draft_id,
-        queued: true,
-        sync_status: DraftOperationSyncStatus::Queued,
-    }))
+    pub async fn store_draft_operation(
+        &self,
+        request: DaemonDraftOperationRequest,
+    ) -> Result<DaemonDraftOperationResponse, DaemonError> {
+        self.state.store_draft_operation(request).await
+    }
+
+    pub async fn dispatch(&self, request: DaemonIpcRequest) -> DaemonIpcResponse {
+        let result = match request.method.as_str() {
+            "health" => serde_json::to_value(self.health().await).map_err(DaemonError::from),
+            "project_config" => {
+                serde_json::to_value(self.project_config()).map_err(DaemonError::from)
+            }
+            "replace_project_config" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectConfigUpdateRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .replace_project_config(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "sync_status" => self
+                .sync_status()
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+            "retry_sync" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonSyncRetryRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .retry_sync(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "mcp_status" => serde_json::to_value(self.mcp_status()).map_err(DaemonError::from),
+            "list_drafts" => {
+                let payload = self.decode_dispatch_payload::<DaemonDraftListQuery>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .list_drafts(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "get_draft" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonDraftDetailRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .get_draft(&payload.draft_id)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "store_draft_operation" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonDraftOperationRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .store_draft_operation(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            method => Err(DaemonError::InvalidRequest(format!(
+                "unknown daemon IPC method: {method}"
+            ))),
+        };
+        DaemonIpcResponse::from_result(result)
+    }
+
+    fn decode_dispatch_payload<T>(&self, payload: serde_json::Value) -> Result<T, DaemonError>
+    where
+        T: DeserializeOwned,
+    {
+        serde_json::from_value(payload).map_err(DaemonError::from)
+    }
 }
 
 async fn resolve_local_draft(
@@ -1229,31 +1659,9 @@ async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonError> {
 
 fn prepare_directories(config: &DaemonConfig) -> Result<(), DaemonError> {
     std::fs::create_dir_all(&config.root_dir)?;
+    std::fs::create_dir_all(&config.cache_dir)?;
     std::fs::create_dir_all(config.logs_dir())?;
     Ok(())
-}
-
-pub fn write_daemon_endpoint_file(
-    config: &DaemonConfig,
-    actual_addr: SocketAddr,
-    daemon_installation_id: &str,
-) -> Result<DaemonEndpointFile, DaemonError> {
-    let endpoint = DaemonEndpointFile {
-        endpoint: format!("http://{actual_addr}"),
-        pid: std::process::id(),
-        daemon_installation_id: daemon_installation_id.to_owned(),
-    };
-    let body = serde_json::to_vec_pretty(&endpoint)?;
-    std::fs::write(config.endpoint_file_path(), body)?;
-    Ok(endpoint)
-}
-
-pub fn remove_daemon_endpoint_file(config: &DaemonConfig) -> Result<(), DaemonError> {
-    match std::fs::remove_file(config.endpoint_file_path()) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 async fn connect_local_db(path: &Path) -> Result<SqlitePool, DaemonError> {
@@ -1475,15 +1883,12 @@ async fn upsert_meta_value(
     Ok(())
 }
 
-fn default_root_dir() -> Result<PathBuf, DaemonError> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".clumsies").join("daemon"))
-        .ok_or_else(|| {
-            DaemonError::InvalidConfig(
-                "HOME is required when CLUMSIES_DAEMON_ROOT is not set".to_owned(),
-            )
-        })
+fn home_dir() -> Result<PathBuf, DaemonError> {
+    env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+        DaemonError::InvalidConfig(
+            "HOME is required when daemon runtime paths are not configured".to_owned(),
+        )
+    })
 }
 
 fn non_empty_string(value: String) -> Option<String> {
@@ -1511,6 +1916,154 @@ fn parse_u64_env(name: &str) -> Result<Option<u64>, DaemonError> {
     value.parse::<u64>().map(Some).map_err(|error| {
         DaemonError::InvalidConfig(format!("{name} must be a positive integer: {error}"))
     })
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonIpcTransport {
+    XpcMachService,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonIpcEndpoint {
+    pub transport: DaemonIpcTransport,
+    pub service_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonIpcRequest {
+    pub method: String,
+    pub payload: serde_json::Value,
+}
+
+impl DaemonIpcRequest {
+    pub fn new(method: impl Into<String>, payload: serde_json::Value) -> Self {
+        Self {
+            method: method.into(),
+            payload,
+        }
+    }
+
+    pub fn empty(method: impl Into<String>) -> Self {
+        Self::new(method, json!({}))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonIpcResponse {
+    pub ok: bool,
+    pub payload: serde_json::Value,
+    pub error: Option<ApiError>,
+}
+
+impl DaemonIpcResponse {
+    fn from_result(result: Result<serde_json::Value, DaemonError>) -> Self {
+        match result {
+            Ok(payload) => Self {
+                ok: true,
+                payload,
+                error: None,
+            },
+            Err(error) => Self {
+                ok: false,
+                payload: json!({}),
+                error: Some(api_error_from_daemon_error(error)),
+            },
+        }
+    }
+
+    pub fn into_payload<T>(self) -> Result<T, DaemonError>
+    where
+        T: DeserializeOwned,
+    {
+        if self.ok {
+            serde_json::from_value(self.payload).map_err(DaemonError::from)
+        } else {
+            let message = self
+                .error
+                .map(|error| format!("{}: {}", error.code, error.message))
+                .unwrap_or_else(|| "daemon IPC call failed without error details".to_owned());
+            Err(DaemonError::Ipc(message))
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonBootstrapStatus {
+    pub label: String,
+    pub mach_service_name: String,
+    pub plist_path: String,
+    pub installed: bool,
+    pub endpoint: DaemonIpcEndpoint,
+    pub runtime: LaunchAgentRuntimeStatus,
+}
+
+impl DaemonBootstrapStatus {
+    fn with_runtime(mut self, runtime: LaunchAgentRuntimeStatus) -> Self {
+        self.runtime = runtime;
+        self
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LaunchAgentRuntimeStatus {
+    pub installed: bool,
+    pub bootstrapped: bool,
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub state: Option<String>,
+    pub last_exit_code: Option<i32>,
+    pub last_error: Option<String>,
+}
+
+impl LaunchAgentRuntimeStatus {
+    pub fn from_launchctl_print(installed: bool, output: &str) -> Self {
+        let mut status = Self {
+            installed,
+            bootstrapped: true,
+            running: false,
+            pid: None,
+            state: None,
+            last_exit_code: None,
+            last_error: None,
+        };
+        for raw_line in output.lines() {
+            let line = raw_line.trim();
+            if let Some(value) = line.strip_prefix("pid =") {
+                status.pid = value.trim().parse::<u32>().ok();
+                continue;
+            }
+            if let Some(value) = line.strip_prefix("state =") {
+                let value = value.trim();
+                status.state = (!value.is_empty()).then(|| value.to_owned());
+                continue;
+            }
+            if let Some(value) = line
+                .strip_prefix("last exit code =")
+                .or_else(|| line.strip_prefix("last exit status ="))
+            {
+                status.last_exit_code = value.trim().parse::<i32>().ok();
+            }
+        }
+        status.running = status.pid.is_some()
+            || status
+                .state
+                .as_deref()
+                .is_some_and(|state| state == "running");
+        status
+    }
+
+    fn not_bootstrapped(installed: bool, last_error: Option<String>) -> Self {
+        Self {
+            installed,
+            bootstrapped: false,
+            running: false,
+            pid: None,
+            state: None,
+            last_exit_code: None,
+            last_error,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1545,13 +2098,6 @@ pub struct DaemonHealth {
     pub daemon_installation_id: String,
     pub log_dir: String,
     pub local_db: LocalDbStatus,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DaemonEndpointFile {
-    pub endpoint: String,
-    pub pid: u32,
-    pub daemon_installation_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1590,12 +2136,12 @@ pub enum SyncState {
     Failed,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonSyncRetryRequest {
     pub channel: SyncRetryChannel,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncRetryChannel {
     Drafts,
@@ -1633,7 +2179,7 @@ pub struct McpAdapterStatus {
     pub last_error: Option<ApiError>,
 }
 
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
 pub struct DaemonDraftListQuery {
     pub resource: Option<String>,
     pub status: Option<String>,
@@ -1698,11 +2244,16 @@ impl DaemonLocalDraftStatus {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonDraftOperationRequest {
     pub resource: DaemonDraftResourceKind,
     pub op: DaemonDraftOperation,
     pub source: Option<DaemonDraftOperationSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonDraftDetailRequest {
+    pub draft_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1753,7 +2304,7 @@ pub struct DaemonDraftOperation {
 }
 
 impl DaemonDraftOperation {
-    fn validate_exactly_one(&self) -> Result<(), DaemonHttpError> {
+    fn validate_exactly_one(&self) -> Result<(), DaemonError> {
         let count = [
             self.create.is_some(),
             self.update.is_some(),
@@ -1767,10 +2318,8 @@ impl DaemonDraftOperation {
         if count == 1 {
             Ok(())
         } else {
-            Err(DaemonHttpError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_draft_operation",
-                "draft operation must contain exactly one operation variant",
+            Err(DaemonError::InvalidRequest(
+                "draft operation must contain exactly one operation variant".to_owned(),
             ))
         }
     }
@@ -1945,6 +2494,27 @@ pub struct ApiError {
     pub details: serde_json::Value,
 }
 
+fn api_error_from_daemon_error(error: DaemonError) -> ApiError {
+    let (code, message) = match error {
+        DaemonError::InvalidConfig(message) => ("invalid_config", message),
+        DaemonError::InvalidRequest(message) => ("invalid_request", message),
+        DaemonError::NotFound(message) => ("not_found", message),
+        DaemonError::Io(error) => ("io_error", error.to_string()),
+        DaemonError::Sqlx(error) => ("local_db_error", error.to_string()),
+        DaemonError::SerdeJson(error) => ("invalid_json", error.to_string()),
+        DaemonError::Reqwest(error) => ("hub_request_failed", error.to_string()),
+        DaemonError::Hub(message) => ("hub_sync_failed", message),
+        DaemonError::Launchctl(message) => ("launchctl_failed", message),
+        DaemonError::Ipc(message) => ("daemon_ipc_failed", message),
+    };
+    ApiError {
+        code: code.to_owned(),
+        message,
+        request_id: format!("req_{}", Uuid::new_v4().simple()),
+        details: json!({}),
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
     #[error("invalid config: {0}")]
@@ -1963,6 +2533,10 @@ pub enum DaemonError {
     Reqwest(#[from] reqwest::Error),
     #[error("hub sync error: {0}")]
     Hub(String),
+    #[error("launchctl error: {0}")]
+    Launchctl(String),
+    #[error("daemon IPC error: {0}")]
+    Ipc(String),
 }
 
 #[derive(Debug)]
@@ -1991,85 +2565,3 @@ impl std::fmt::Display for DraftSyncError {
 }
 
 impl std::error::Error for DraftSyncError {}
-
-#[derive(Debug)]
-pub struct DaemonHttpError {
-    status: StatusCode,
-    code: &'static str,
-    message: String,
-    details: serde_json::Value,
-}
-
-impl DaemonHttpError {
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            status,
-            code,
-            message: message.into(),
-            details: json!({}),
-        }
-    }
-}
-
-impl IntoResponse for DaemonHttpError {
-    fn into_response(self) -> Response {
-        let body = ErrorEnvelope {
-            error: ApiError {
-                code: self.code.to_owned(),
-                message: self.message,
-                request_id: format!("req_{}", Uuid::new_v4().simple()),
-                details: self.details,
-            },
-        };
-        (self.status, Json(body)).into_response()
-    }
-}
-
-impl From<DaemonError> for DaemonHttpError {
-    fn from(error: DaemonError) -> Self {
-        match error {
-            DaemonError::InvalidRequest(message) => {
-                Self::new(StatusCode::BAD_REQUEST, "invalid_request", message)
-            }
-            DaemonError::NotFound(message) => {
-                Self::new(StatusCode::NOT_FOUND, "not_found", message)
-            }
-            DaemonError::InvalidConfig(message) => {
-                Self::new(StatusCode::INTERNAL_SERVER_ERROR, "invalid_config", message)
-            }
-            DaemonError::Io(error) => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "io_error",
-                error.to_string(),
-            ),
-            DaemonError::Sqlx(error) => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "local_db_error",
-                error.to_string(),
-            ),
-            DaemonError::SerdeJson(error) => {
-                Self::new(StatusCode::BAD_REQUEST, "invalid_json", error.to_string())
-            }
-            DaemonError::Reqwest(error) => Self::new(
-                StatusCode::BAD_GATEWAY,
-                "hub_request_failed",
-                error.to_string(),
-            ),
-            DaemonError::Hub(message) => {
-                Self::new(StatusCode::BAD_GATEWAY, "hub_sync_failed", message)
-            }
-        }
-    }
-}
-
-impl From<sqlx::Error> for DaemonHttpError {
-    fn from(error: sqlx::Error) -> Self {
-        DaemonError::Sqlx(error).into()
-    }
-}
-
-impl From<serde_json::Error> for DaemonHttpError {
-    fn from(error: serde_json::Error) -> Self {
-        DaemonError::SerdeJson(error).into()
-    }
-}

@@ -1,171 +1,10 @@
 openapi: 3.1.0
 info:
-  title: clumsies Local Daemon API
+  title: clumsies Local Daemon IPC Schema
   version: 1.0.0
-  summary: Local daemon contract for Desktop renderer, CLI bridge, and MCP server.
-servers:
-  - url: http://127.0.0.1:0
+  summary: Schema-only local daemon IPC contract for Tauri core, CLI XPC client, and MCP adapter.
 security: []
-paths:
-  /daemon/health:
-    get:
-      operationId: getDaemonHealth
-      summary: Read local daemon health.
-      responses:
-        "200":
-          description: Daemon health.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonHealth"
-        default:
-          $ref: "#/components/responses/Error"
-  /daemon/project-config:
-    get:
-      operationId: getDaemonProjectConfig
-      summary: Read local daemon project config.
-      responses:
-        "200":
-          description: Local daemon project config.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonProjectConfig"
-        default:
-          $ref: "#/components/responses/Error"
-    put:
-      operationId: replaceDaemonProjectConfig
-      summary: Replace local daemon project config.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DaemonProjectConfigUpdateRequest"
-      responses:
-        "200":
-          description: Replaced local daemon project config.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonProjectConfig"
-        default:
-          $ref: "#/components/responses/Error"
-  /daemon/sync-status:
-    get:
-      operationId: getDaemonSyncStatus
-      summary: Read local sync status.
-      responses:
-        "200":
-          description: Daemon sync status.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonSyncStatus"
-        default:
-          $ref: "#/components/responses/Error"
-  /daemon/sync-retries:
-    post:
-      operationId: createDaemonSyncRetry
-      summary: Create a local sync retry request.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DaemonSyncRetryRequest"
-      responses:
-        "200":
-          description: Sync retry request state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonRetryResponse"
-        default:
-          $ref: "#/components/responses/Error"
-  /daemon/mcp-status:
-    get:
-      operationId: getDaemonMcpStatus
-      summary: Read local MCP adapter status.
-      responses:
-        "200":
-          description: Daemon MCP status.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonMcpStatus"
-        default:
-          $ref: "#/components/responses/Error"
-  /daemon/drafts:
-    get:
-      operationId: listDaemonDrafts
-      summary: List local daemon draft copies.
-      parameters:
-        - name: resource
-          in: query
-          required: false
-          schema:
-            $ref: "#/components/schemas/DaemonDraftResourceKind"
-        - name: status
-          in: query
-          required: false
-          schema:
-            $ref: "#/components/schemas/DaemonLocalDraftStatus"
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 500
-            default: 100
-      responses:
-        "200":
-          description: Local draft list.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonDraftListResponse"
-        default:
-          $ref: "#/components/responses/Error"
-  /daemon/drafts/{draft_id}:
-    get:
-      operationId: getDaemonDraft
-      summary: Read a local daemon draft copy and operation history.
-      parameters:
-        - name: draft_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Local draft detail.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonDraftDetail"
-        default:
-          $ref: "#/components/responses/Error"
-  /daemon/draft-operations:
-    post:
-      operationId: createDaemonDraftOperation
-      summary: Write a local draft operation and enqueue sync.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DaemonDraftOperationRequest"
-      responses:
-        "200":
-          description: Local draft operation result.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DaemonDraftOperationResponse"
-        default:
-          $ref: "#/components/responses/Error"
+paths: {}
 components:
   responses:
     Error:
@@ -175,6 +14,86 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    DaemonIpcTransport:
+      type: string
+      enum: [xpc_mach_service]
+    DaemonIpcEndpoint:
+      type: object
+      required: [transport, service_name]
+      properties:
+        transport:
+          $ref: "#/components/schemas/DaemonIpcTransport"
+        service_name:
+          type: string
+    DaemonIpcRequest:
+      type: object
+      required: [method, payload]
+      properties:
+        method:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+    DaemonIpcResponse:
+      type: object
+      required: [ok, payload, error]
+      properties:
+        ok:
+          type: boolean
+        payload:
+          type: object
+          additionalProperties: true
+        error:
+          oneOf:
+            - $ref: "#/components/schemas/ApiError"
+            - type: "null"
+    DaemonBootstrapStatus:
+      type: object
+      required:
+        - label
+        - mach_service_name
+        - plist_path
+        - installed
+        - endpoint
+        - runtime
+      properties:
+        label:
+          type: string
+        mach_service_name:
+          type: string
+        plist_path:
+          type: string
+        installed:
+          type: boolean
+        endpoint:
+          $ref: "#/components/schemas/DaemonIpcEndpoint"
+        runtime:
+          $ref: "#/components/schemas/LaunchAgentRuntimeStatus"
+    LaunchAgentRuntimeStatus:
+      type: object
+      required:
+        - installed
+        - bootstrapped
+        - running
+        - pid
+        - state
+        - last_exit_code
+        - last_error
+      properties:
+        installed:
+          type: boolean
+        bootstrapped:
+          type: boolean
+        running:
+          type: boolean
+        pid:
+          type: [integer, "null"]
+        state:
+          type: [string, "null"]
+        last_exit_code:
+          type: [integer, "null"]
+        last_error:
+          type: [string, "null"]
     DaemonProjectConfig:
       type: object
       required:

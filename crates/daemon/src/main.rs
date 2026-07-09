@@ -1,29 +1,70 @@
 use daemon::{
-    DaemonConfig, DaemonState, remove_daemon_endpoint_file, router, write_daemon_endpoint_file,
+    DaemonConfig, DaemonIpcService, DaemonState, DaemonXpcServer, LaunchAgentConfig,
+    LaunchAgentController,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = DaemonConfig::from_env()?;
-    let listen_addr = config.listen_addr;
-    let state = DaemonState::initialize(config.clone()).await?;
+    let launch_agent = LaunchAgentConfig::from_daemon_config(&config, std::env::current_exe()?);
+    let launch_agent_controller = LaunchAgentController::for_current_user(launch_agent.clone())?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    match args.as_slice() {
+        [command] if command == "--print-launch-agent-plist" => {
+            print!("{}", launch_agent.plist_contents());
+            return Ok(());
+        }
+        [command] if command == "--install-launch-agent" => {
+            print_status(&launch_agent_controller.install()?)?;
+            return Ok(());
+        }
+        [command] if command == "--status-launch-agent" => {
+            print_status(&launch_agent_controller.status()?)?;
+            return Ok(());
+        }
+        [command] if command == "--bootstrap-launch-agent" => {
+            print_status(&launch_agent_controller.bootstrap()?)?;
+            return Ok(());
+        }
+        [command] if command == "--bootout-launch-agent" => {
+            print_status(&launch_agent_controller.bootout()?)?;
+            return Ok(());
+        }
+        [command] if command == "--restart-launch-agent" => {
+            print_status(&launch_agent_controller.kickstart()?)?;
+            return Ok(());
+        }
+        [] => {}
+        _ => {
+            eprintln!(
+                "usage: clumsiesd [--print-launch-agent-plist|--install-launch-agent|--status-launch-agent|--bootstrap-launch-agent|--bootout-launch-agent|--restart-launch-agent]"
+            );
+            std::process::exit(64);
+        }
+    }
+
+    let state = DaemonState::initialize(config).await?;
+    let service = DaemonIpcService::new(state.clone());
+    let _xpc_server =
+        DaemonXpcServer::start(launch_agent.mach_service_name.clone(), service.clone())?;
     let _sync_worker = state.start_sync_worker();
-    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    let actual_addr = listener.local_addr()?;
-    let endpoint =
-        write_daemon_endpoint_file(&config, actual_addr, state.daemon_installation_id())?;
+    let health = service.health().await;
 
-    eprintln!("clumsiesd listening on {}", endpoint.endpoint);
+    eprintln!(
+        "clumsiesd initialized for Mach service {} with installation {}",
+        launch_agent.mach_service_name, health.daemon_installation_id
+    );
 
-    let serve_result = axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await;
-    let cleanup_result = remove_daemon_endpoint_file(&config);
-    serve_result?;
-    cleanup_result?;
+    shutdown_signal().await;
     Ok(())
 }
 
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+fn print_status(status: &daemon::DaemonBootstrapStatus) -> Result<(), serde_json::Error> {
+    println!("{}", serde_json::to_string_pretty(status)?);
+    Ok(())
 }

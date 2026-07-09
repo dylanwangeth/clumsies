@@ -10,7 +10,9 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
     const enable_keychain = target.result.os.tag == .macos and builtin.os.tag == .macos;
+    const enable_xpc = target.result.os.tag == .macos and builtin.os.tag == .macos;
     options.addOption(bool, "enable_keychain", enable_keychain);
+    options.addOption(bool, "enable_xpc", enable_xpc);
     addCodexAdapterAssetOptions(b, options);
     addClaudeCodeAdapterAssetOptions(b, options);
     const build_options_module = options.createModule();
@@ -60,6 +62,7 @@ pub fn build(b: *std.Build) void {
         vaxis_dep.module("vaxis"),
         hub_module,
         enable_keychain,
+        enable_xpc,
     );
 
     const exe = b.addExecutable(.{
@@ -99,6 +102,7 @@ pub fn build(b: *std.Build) void {
         vaxis_dep.module("vaxis"),
         hub_module,
         enable_keychain,
+        enable_xpc,
     );
     const unit_tests = b.addTest(.{
         .root_module = client_test_module,
@@ -136,6 +140,7 @@ fn createClientModule(
     vaxis_module: *std.Build.Module,
     hub_module: *std.Build.Module,
     enable_keychain: bool,
+    enable_xpc: bool,
 ) *std.Build.Module {
     const module = b.createModule(.{
         .root_source_file = b.path("src/client/main.zig"),
@@ -152,6 +157,9 @@ fn createClientModule(
     if (enable_keychain) {
         module.linkFramework("Security", .{});
         module.linkFramework("CoreFoundation", .{});
+    }
+    if (enable_xpc) {
+        module.linkSystemLibrary("System", .{});
     }
     return module;
 }

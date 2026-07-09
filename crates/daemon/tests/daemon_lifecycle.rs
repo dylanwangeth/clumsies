@@ -1,29 +1,28 @@
 mod common;
 
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use axum::body::{Body, to_bytes};
-use axum::http::{Request, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use daemon::{
-    DaemonConfig, DaemonDraftDetail, DaemonDraftListResponse, DaemonDraftOperationResponse,
-    DaemonDraftOperationSource, DaemonDraftResourceKind, DaemonEndpointFile, DaemonHealth,
-    DaemonLocalDraftStatus, DaemonMcpStatus, DaemonProjectConfig, DaemonState, DaemonSyncStatus,
-    DraftOperationSyncStatus, ErrorEnvelope, SyncState, router,
+    APP_BUNDLE_IDENTIFIER, DAEMON_AGENT_LABEL, DAEMON_MACH_SERVICE_NAME, DaemonConfig,
+    DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDraftListQuery,
+    DaemonDraftOperation, DaemonDraftOperationRequest, DaemonDraftOperationSource,
+    DaemonDraftResourceKind, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcService,
+    DaemonIpcTransport, DaemonLocalDraftStatus, DaemonProjectConfigUpdateRequest, DaemonState,
+    DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
+    LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus, SyncRetryChannel,
+    SyncState,
 };
-use serde::de::DeserializeOwned;
 use serde_json::json;
-use tower::ServiceExt;
 
 #[tokio::test]
 async fn health_initializes_local_database_and_stable_installation_id() {
-    let (root, state, app) = common::test_daemon().await;
+    let (root, state, service) = common::test_daemon().await;
     let first_id = state.daemon_installation_id().to_owned();
 
-    let health: DaemonHealth = get_json(app, "/daemon/health").await;
+    let health = service.health().await;
 
     assert!(health.local_db.ready);
     assert_eq!(health.local_db.schema_version, 3);
@@ -38,76 +37,164 @@ async fn health_initializes_local_database_and_stable_installation_id() {
     assert_eq!(restarted.daemon_installation_id(), first_id);
 }
 
-#[tokio::test]
-async fn binary_writes_endpoint_file_for_random_port() {
+#[test]
+fn launch_agent_plist_uses_standard_identity_and_runtime_paths() {
     let root = tempfile::tempdir().unwrap();
-    let endpoint_path = root.path().join("daemon-endpoint.json");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_clumsiesd"))
-        .env("CLUMSIES_DAEMON_ROOT", root.path())
-        .env("CLUMSIES_DAEMON_ADDR", "127.0.0.1:0")
-        .env("CLUMSIES_SYNC_ENABLED", "false")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let config = DaemonConfig::for_root(root.path());
+    let program_path = root.path().join("bin").join("clumsiesd");
+    let launch_agent = LaunchAgentConfig::from_daemon_config(&config, &program_path);
 
-    let endpoint = wait_for_endpoint_file(&endpoint_path, &mut child).await;
-    assert_eq!(endpoint.pid, child.id());
-    assert!(endpoint.endpoint.starts_with("http://127.0.0.1:"));
-    assert!(endpoint.daemon_installation_id.starts_with("daemon_"));
-
-    let health: DaemonHealth = reqwest::get(format!("{}/daemon/health", endpoint.endpoint))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    assert_eq!(launch_agent.label, DAEMON_AGENT_LABEL);
+    assert_eq!(launch_agent.mach_service_name, DAEMON_MACH_SERVICE_NAME);
     assert_eq!(
-        health.daemon_installation_id,
-        endpoint.daemon_installation_id
+        launch_agent.plist_path,
+        root.path()
+            .join("LaunchAgents")
+            .join(format!("{DAEMON_AGENT_LABEL}.plist"))
     );
-    assert!(health.local_db.ready);
 
-    let interrupt_status = Command::new("kill")
-        .arg("-INT")
-        .arg(child.id().to_string())
-        .status()
-        .unwrap();
-    assert!(interrupt_status.success());
-    let exit_status = child.wait().unwrap();
-    assert!(exit_status.success());
-    assert!(!endpoint_path.exists());
+    let plist = launch_agent.plist_contents();
+    assert!(plist.contains(&format!("<string>{DAEMON_AGENT_LABEL}</string>")));
+    assert!(plist.contains(&format!("<key>{DAEMON_MACH_SERVICE_NAME}</key>")));
+    assert!(plist.contains("<key>MachServices</key>"));
+    assert!(plist.contains("<key>CLUMSIES_DAEMON_ROOT</key>"));
+    assert!(plist.contains(&format!("<string>{}</string>", root.path().display())));
+    assert!(!plist.contains("127.0.0.1"));
+    assert!(!plist.contains("daemon-endpoint.json"));
+
+    let bootstrap = launch_agent.bootstrap_status();
+    assert_eq!(bootstrap.label, DAEMON_AGENT_LABEL);
+    assert_eq!(bootstrap.mach_service_name, DAEMON_MACH_SERVICE_NAME);
+    assert_eq!(
+        bootstrap.endpoint.transport,
+        DaemonIpcTransport::XpcMachService
+    );
+    assert_eq!(bootstrap.endpoint.service_name, DAEMON_MACH_SERVICE_NAME);
+    assert!(!bootstrap.installed);
+}
+
+#[test]
+fn launch_agent_install_writes_owner_only_plist() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_root(root.path());
+    let launch_agent =
+        LaunchAgentConfig::from_daemon_config(&config, root.path().join("bin/clumsiesd"));
+
+    launch_agent.install_plist().unwrap();
+
+    let plist = std::fs::read_to_string(&launch_agent.plist_path).unwrap();
+    assert!(plist.contains(APP_BUNDLE_IDENTIFIER));
+    assert!(launch_agent.root_dir.is_dir());
+    assert!(launch_agent.cache_dir.is_dir());
+    assert!(launch_agent.log_dir.is_dir());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = std::fs::metadata(&launch_agent.plist_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+}
+
+#[test]
+fn launch_agent_controller_uses_standard_launchctl_targets() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_root(root.path());
+    let launch_agent =
+        LaunchAgentConfig::from_daemon_config(&config, root.path().join("bin/clumsiesd"));
+    let controller = LaunchAgentController::with_domain(launch_agent, "gui/501");
+
+    assert_eq!(controller.domain(), "gui/501");
+    assert_eq!(
+        controller.service_target(),
+        format!("gui/501/{DAEMON_AGENT_LABEL}")
+    );
+    assert_eq!(
+        controller.bootstrap_args(),
+        vec![
+            "bootstrap".to_owned(),
+            "gui/501".to_owned(),
+            root.path()
+                .join("LaunchAgents")
+                .join(format!("{DAEMON_AGENT_LABEL}.plist"))
+                .display()
+                .to_string(),
+        ]
+    );
+    assert_eq!(
+        controller.bootout_args(),
+        vec![
+            "bootout".to_owned(),
+            format!("gui/501/{DAEMON_AGENT_LABEL}"),
+        ]
+    );
+    assert_eq!(
+        controller.kickstart_args(),
+        vec![
+            "kickstart".to_owned(),
+            "-k".to_owned(),
+            format!("gui/501/{DAEMON_AGENT_LABEL}"),
+        ]
+    );
+    assert_eq!(
+        controller.print_args(),
+        vec!["print".to_owned(), format!("gui/501/{DAEMON_AGENT_LABEL}")],
+    );
+}
+
+#[test]
+fn launchctl_print_parser_reports_runtime_status() {
+    let status = LaunchAgentRuntimeStatus::from_launchctl_print(
+        true,
+        r#"
+        state = running
+        pid = 12345
+        last exit code = 0
+        "#,
+    );
+
+    assert!(status.installed);
+    assert!(status.bootstrapped);
+    assert!(status.running);
+    assert_eq!(status.pid, Some(12345));
+    assert_eq!(status.state.as_deref(), Some("running"));
+    assert_eq!(status.last_exit_code, Some(0));
+    assert_eq!(status.last_error, None);
 }
 
 #[tokio::test]
 async fn draft_operation_is_written_to_local_queue_and_visible_in_sync_status() {
-    let (_root, _state, app) = common::test_daemon().await;
-    let operation = json!({
-        "resource": "context",
-        "op": {
-            "create": {
-                "path": "docs/architecture.md",
-                "body": "Initial context",
-                "description": "seed project context"
-            }
-        },
-        "source": "mcp_store"
-    });
-
-    let response = app
-        .clone()
-        .oneshot(json_request("/daemon/draft-operations", operation))
+    let (_root, _state, service) = common::test_daemon().await;
+    let body = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "docs/architecture.md".to_owned(),
+                    body: "Initial context".to_owned(),
+                    description: Some("seed project context".to_owned()),
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::McpStore),
+        })
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body: DaemonDraftOperationResponse = response_json(response).await;
     assert!(body.local_operation_id.starts_with("op_"));
     assert!(body.draft_id.starts_with("draft_"));
     assert!(body.queued);
     assert_eq!(body.sync_status, DraftOperationSyncStatus::Queued);
 
-    let status: DaemonSyncStatus = get_json(app, "/daemon/sync-status").await;
+    let status = service.sync_status().await.unwrap();
     assert_eq!(status.pending_operation_count, 1);
     assert_eq!(status.failed_operation_count, 0);
     assert_eq!(status.draft_sync.state, SyncState::Queued);
@@ -118,50 +205,141 @@ async fn draft_operation_is_written_to_local_queue_and_visible_in_sync_status() 
 }
 
 #[tokio::test]
+async fn draft_operation_service_method_writes_local_queue_without_http() {
+    let (_root, _state, service) = common::test_daemon().await;
+
+    let response = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "docs/ipc.md".to_owned(),
+                    body: "Created through daemon service".to_owned(),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+
+    assert!(response.local_operation_id.starts_with("op_"));
+    assert!(response.draft_id.starts_with("draft_"));
+
+    let status = service.sync_status().await.unwrap();
+    assert_eq!(status.pending_operation_count, 1);
+    assert_eq!(status.draft_sync.state, SyncState::Queued);
+
+    let drafts = service
+        .list_drafts(Default::default())
+        .await
+        .expect("service should list local drafts");
+    assert_eq!(drafts.items.len(), 1);
+    assert_eq!(drafts.items[0].draft_id, response.draft_id);
+
+    let draft = service
+        .get_draft(&response.draft_id)
+        .await
+        .expect("service should read local draft details");
+    assert_eq!(draft.operations.len(), 1);
+    assert_eq!(
+        draft.operations[0].source,
+        DaemonDraftOperationSource::Desktop
+    );
+}
+
+#[tokio::test]
+async fn ipc_dispatch_routes_health_and_draft_store_methods() {
+    let (_root, _state, service) = common::test_daemon().await;
+
+    let health: DaemonHealth = service
+        .dispatch(DaemonIpcRequest::empty("health"))
+        .await
+        .into_payload()
+        .unwrap();
+    assert!(health.local_db.ready);
+
+    let response = service
+        .dispatch(DaemonIpcRequest::new(
+            "store_draft_operation",
+            serde_json::to_value(DaemonDraftOperationRequest {
+                resource: DaemonDraftResourceKind::Context,
+                op: DaemonDraftOperation {
+                    create: Some(DaemonCreateDraftOperation {
+                        path: "docs/ipc-dispatch.md".to_owned(),
+                        body: "Created through IPC dispatch".to_owned(),
+                        description: None,
+                    }),
+                    update: None,
+                    rename: None,
+                    delete: None,
+                    discard: None,
+                },
+                source: Some(DaemonDraftOperationSource::Desktop),
+            })
+            .unwrap(),
+        ))
+        .await;
+    assert!(response.ok);
+
+    let status = service.sync_status().await.unwrap();
+    assert_eq!(status.pending_operation_count, 1);
+}
+
+#[tokio::test]
 async fn local_drafts_can_be_listed_and_read_with_operation_history() {
-    let (_root, _state, app) = common::test_daemon().await;
+    let (_root, _state, service) = common::test_daemon().await;
 
-    let created = app
-        .clone()
-        .oneshot(json_request(
-            "/daemon/draft-operations",
-            json!({
-                "resource": "context",
-                "op": {
-                    "create": {
-                        "path": "docs/local.md",
-                        "body": "Local draft"
-                    }
-                },
-                "source": "mcp_store"
-            }),
-        ))
+    let created = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "docs/local.md".to_owned(),
+                    body: "Local draft".to_owned(),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::McpStore),
+        })
         .await
         .unwrap();
-    assert_eq!(created.status(), StatusCode::OK);
-    let created: DaemonDraftOperationResponse = response_json(created).await;
 
-    let updated = app
-        .clone()
-        .oneshot(json_request(
-            "/daemon/draft-operations",
-            json!({
-                "resource": "context",
-                "op": {
-                    "update": {
-                        "id": created.draft_id,
-                        "body": "Local draft v2"
-                    }
-                },
-                "source": "cli"
-            }),
-        ))
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation {
+                    id: created.draft_id.clone(),
+                    body: "Local draft v2".to_owned(),
+                    description: None,
+                }),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Cli),
+        })
         .await
         .unwrap();
-    assert_eq!(updated.status(), StatusCode::OK);
 
-    let list: DaemonDraftListResponse =
-        get_json(app.clone(), "/daemon/drafts?resource=context&status=open").await;
+    let list = service
+        .list_drafts(DaemonDraftListQuery {
+            resource: Some("context".to_owned()),
+            status: Some("open".to_owned()),
+            limit: None,
+        })
+        .await
+        .unwrap();
     assert_eq!(list.items.len(), 1);
     let item = &list.items[0];
     assert_eq!(item.draft_id, created.draft_id);
@@ -173,8 +351,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
     assert_eq!(item.pending_operation_count, 2);
     assert_eq!(item.failed_operation_count, 0);
 
-    let detail: DaemonDraftDetail =
-        get_json(app.clone(), &format!("/daemon/drafts/{}", created.draft_id)).await;
+    let detail = service.get_draft(&created.draft_id).await.unwrap();
     assert_eq!(detail.draft.draft_id, created.draft_id);
     assert_eq!(detail.operations.len(), 2);
     assert_eq!(
@@ -195,25 +372,17 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
         "Local draft v2"
     );
 
-    let missing = app
-        .oneshot(
-            Request::builder()
-                .uri("/daemon/drafts/missing")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-    let body: ErrorEnvelope = response_json(missing).await;
-    assert_eq!(body.error.code, "not_found");
+    assert!(matches!(
+        service.get_draft("missing").await,
+        Err(DaemonError::NotFound(_))
+    ));
 }
 
 #[tokio::test]
 async fn project_config_can_be_replaced_and_persists_across_restarts() {
-    let (root, _state, app) = common::test_daemon().await;
+    let (root, _state, service) = common::test_daemon().await;
 
-    let initial: DaemonProjectConfig = get_json(app.clone(), "/daemon/project-config").await;
+    let initial = service.project_config();
     assert_eq!(initial.hub_url, "http://127.0.0.1:8080");
     assert_eq!(initial.author_user_id, None);
     assert_eq!(initial.project_id, None);
@@ -221,21 +390,15 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
     assert!(!initial.ready);
     assert_eq!(initial.missing_fields, vec!["author_user_id", "project_id"]);
 
-    let response = app
-        .clone()
-        .oneshot(json_put_request(
-            "/daemon/project-config",
-            json!({
-                "hub_url": "http://127.0.0.1:18080",
-                "author_user_id": "usr_config",
-                "project_id": "prj_config",
-                "access_token": "secret-token"
-            }),
-        ))
+    let updated = service
+        .replace_project_config(DaemonProjectConfigUpdateRequest {
+            hub_url: "http://127.0.0.1:18080".to_owned(),
+            author_user_id: Some("usr_config".to_owned()),
+            project_id: Some("prj_config".to_owned()),
+            access_token: Some("secret-token".to_owned()),
+        })
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let updated: DaemonProjectConfig = response_json(response).await;
     assert_eq!(updated.hub_url, "http://127.0.0.1:18080");
     assert_eq!(updated.author_user_id.as_deref(), Some("usr_config"));
     assert_eq!(updated.project_id.as_deref(), Some("prj_config"));
@@ -243,15 +406,15 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
     assert!(updated.ready);
     assert!(updated.missing_fields.is_empty());
 
-    let health: DaemonHealth = get_json(app, "/daemon/health").await;
+    let health = service.health().await;
     assert_eq!(health.hub_url, "http://127.0.0.1:18080");
     assert_eq!(health.project_id.as_deref(), Some("prj_config"));
 
     let restarted = DaemonState::initialize(DaemonConfig::for_root(root.path()))
         .await
         .unwrap();
-    let restarted_app = router(restarted);
-    let persisted: DaemonProjectConfig = get_json(restarted_app, "/daemon/project-config").await;
+    let restarted_service = DaemonIpcService::new(restarted);
+    let persisted = restarted_service.project_config();
     assert_eq!(persisted.hub_url, "http://127.0.0.1:18080");
     assert_eq!(persisted.author_user_id.as_deref(), Some("usr_config"));
     assert_eq!(persisted.project_id.as_deref(), Some("prj_config"));
@@ -268,36 +431,35 @@ async fn sync_retry_uploads_new_local_draft_to_hub() {
     config.project.author_user_id = Some("usr_test".to_owned());
     config.project.project_id = Some("prj_test".to_owned());
     let state = DaemonState::initialize(config).await.unwrap();
-    let app = router(state.clone());
+    let service = DaemonIpcService::new(state.clone());
 
-    let operation = json!({
-        "resource": "context",
-        "op": {
-            "create": {
-                "path": "docs/sync.md",
-                "body": "Sync me"
-            }
-        },
-        "source": "desktop"
-    });
-    let queued = app
-        .clone()
-        .oneshot(json_request("/daemon/draft-operations", operation))
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "docs/sync.md".to_owned(),
+                    body: "Sync me".to_owned(),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
         .await
         .unwrap();
-    assert_eq!(queued.status(), StatusCode::OK);
 
-    let retry = app
-        .clone()
-        .oneshot(json_request(
-            "/daemon/sync-retries",
-            json!({ "channel": "drafts" }),
-        ))
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
         .await
         .unwrap();
-    assert_eq!(retry.status(), StatusCode::OK);
 
-    let status: DaemonSyncStatus = get_json(app, "/daemon/sync-status").await;
+    let status = service.sync_status().await.unwrap();
     assert_eq!(status.pending_operation_count, 0);
     assert_eq!(status.failed_operation_count, 0);
     assert_eq!(status.draft_sync.state, SyncState::Idle);
@@ -346,28 +508,29 @@ async fn queued_draft_syncs_after_project_config_is_set() {
     config.sync.interval = Duration::from_secs(60);
     let state = DaemonState::initialize(config).await.unwrap();
     let worker = state.start_sync_worker().unwrap();
-    let app = router(state);
+    let service = DaemonIpcService::new(state);
 
-    let queued = app
-        .clone()
-        .oneshot(json_request(
-            "/daemon/draft-operations",
-            json!({
-                "resource": "context",
-                "op": {
-                    "create": {
-                        "path": "docs/later-config.md",
-                        "body": "sync after config"
-                    }
-                }
-            }),
-        ))
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "docs/later-config.md".to_owned(),
+                    body: "sync after config".to_owned(),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: None,
+        })
         .await
         .unwrap();
-    assert_eq!(queued.status(), StatusCode::OK);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let before: DaemonSyncStatus = get_json(app.clone(), "/daemon/sync-status").await;
+    let before = service.sync_status().await.unwrap();
     assert_eq!(before.pending_operation_count, 1);
     assert_eq!(before.failed_operation_count, 0);
     assert_eq!(before.draft_sync.state, SyncState::Degraded);
@@ -380,23 +543,18 @@ async fn queued_draft_syncs_after_project_config_is_set() {
     );
     assert!(hub.create_requests.lock().unwrap().is_empty());
 
-    let configured = app
-        .clone()
-        .oneshot(json_put_request(
-            "/daemon/project-config",
-            json!({
-                "hub_url": hub.url.clone(),
-                "author_user_id": "usr_late",
-                "project_id": "prj_late",
-                "access_token": null
-            }),
-        ))
+    service
+        .replace_project_config(DaemonProjectConfigUpdateRequest {
+            hub_url: hub.url.clone(),
+            author_user_id: Some("usr_late".to_owned()),
+            project_id: Some("prj_late".to_owned()),
+            access_token: None,
+        })
         .await
         .unwrap();
-    assert_eq!(configured.status(), StatusCode::OK);
 
     wait_for_create_request(&hub).await;
-    let after: DaemonSyncStatus = get_json(app, "/daemon/sync-status").await;
+    let after = service.sync_status().await.unwrap();
     assert_eq!(after.pending_operation_count, 0);
     assert_eq!(after.failed_operation_count, 0);
     assert_eq!(after.draft_sync.state, SyncState::Idle);
@@ -422,28 +580,29 @@ async fn draft_operation_notifies_auto_sync_worker() {
     config.sync.interval = Duration::from_secs(60);
     let state = DaemonState::initialize(config).await.unwrap();
     let worker = state.start_sync_worker().unwrap();
-    let app = router(state);
+    let service = DaemonIpcService::new(state);
 
-    let queued = app
-        .clone()
-        .oneshot(json_request(
-            "/daemon/draft-operations",
-            json!({
-                "resource": "context",
-                "op": {
-                    "create": {
-                        "path": "docs/auto.md",
-                        "body": "automatic"
-                    }
-                }
-            }),
-        ))
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "docs/auto.md".to_owned(),
+                    body: "automatic".to_owned(),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: None,
+        })
         .await
         .unwrap();
-    assert_eq!(queued.status(), StatusCode::OK);
 
     wait_for_create_request(&hub).await;
-    let status: DaemonSyncStatus = get_json(app, "/daemon/sync-status").await;
+    let status = service.sync_status().await.unwrap();
     assert_eq!(status.pending_operation_count, 0);
     assert_eq!(status.failed_operation_count, 0);
 
@@ -463,68 +622,61 @@ async fn sync_retry_uploads_existing_draft_operations_as_batch() {
     config.project.author_user_id = Some("usr_test".to_owned());
     config.project.project_id = Some("prj_test".to_owned());
     let state = DaemonState::initialize(config).await.unwrap();
-    let app = router(state);
+    let service = DaemonIpcService::new(state);
 
-    let first = app
-        .clone()
-        .oneshot(json_request(
-            "/daemon/draft-operations",
-            json!({
-                "resource": "context",
-                "op": {
-                    "create": {
-                        "path": "docs/batch.md",
-                        "body": "one"
-                    }
-                }
-            }),
-        ))
+    let first = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "docs/batch.md".to_owned(),
+                    body: "one".to_owned(),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: None,
+        })
         .await
         .unwrap();
-    assert_eq!(first.status(), StatusCode::OK);
-    let first: DaemonDraftOperationResponse = response_json(first).await;
-    assert_eq!(
-        app.clone()
-            .oneshot(json_request(
-                "/daemon/sync-retries",
-                json!({ "channel": "drafts" }),
-            ))
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::OK
-    );
 
-    let second = app
-        .clone()
-        .oneshot(json_request(
-            "/daemon/draft-operations",
-            json!({
-                "resource": "context",
-                "op": {
-                    "update": {
-                        "id": first.draft_id,
-                        "body": "two"
-                    }
-                }
-            }),
-        ))
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
         .await
         .unwrap();
-    assert_eq!(second.status(), StatusCode::OK);
-    assert_eq!(
-        app.clone()
-            .oneshot(json_request(
-                "/daemon/sync-retries",
-                json!({ "channel": "drafts" }),
-            ))
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::OK
-    );
 
-    let status: DaemonSyncStatus = get_json(app, "/daemon/sync-status").await;
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation {
+                    id: first.draft_id,
+                    body: "two".to_owned(),
+                    description: None,
+                }),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: None,
+        })
+        .await
+        .unwrap();
+
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+
+    let status = service.sync_status().await.unwrap();
     assert_eq!(status.pending_operation_count, 0);
     assert_eq!(status.failed_operation_count, 0);
 
@@ -548,98 +700,41 @@ async fn sync_retry_uploads_existing_draft_operations_as_batch() {
 
 #[tokio::test]
 async fn draft_operation_rejects_multiple_operation_variants() {
-    let (_root, _state, app) = common::test_daemon().await;
-    let operation = json!({
-        "resource": "rule",
-        "op": {
-            "create": {
-                "path": "rules/a.md",
-                "body": "Rule"
+    let (_root, _state, service) = common::test_daemon().await;
+
+    let response = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            resource: DaemonDraftResourceKind::Rule,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "rules/a.md".to_owned(),
+                    body: "Rule".to_owned(),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: Some(DaemonDeleteDraftOperation {
+                    id: "rule_1".to_owned(),
+                    description: None,
+                }),
+                discard: None,
             },
-            "delete": {
-                "id": "rule_1"
-            }
-        }
-    });
+            source: None,
+        })
+        .await;
 
-    let response = app
-        .oneshot(json_request("/daemon/draft-operations", operation))
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body: ErrorEnvelope = response_json(response).await;
-    assert_eq!(body.error.code, "invalid_draft_operation");
+    assert!(matches!(response, Err(DaemonError::InvalidRequest(_))));
 }
 
 #[tokio::test]
 async fn mcp_status_reports_no_daemon_owned_supervisor() {
-    let (_, _, app) = common::test_daemon().await;
+    let (_, _, service) = common::test_daemon().await;
 
-    let status: DaemonMcpStatus = get_json(app, "/daemon/mcp-status").await;
+    let status = service.mcp_status();
 
     assert!(!status.running);
     assert_eq!(status.endpoint, None);
     assert!(status.adapters.is_empty());
-}
-
-async fn get_json<T>(app: axum::Router, uri: &str) -> T
-where
-    T: DeserializeOwned,
-{
-    let response = app
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    response_json(response).await
-}
-
-fn json_request(uri: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap()
-}
-
-fn json_put_request(uri: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method("PUT")
-        .uri(uri)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap()
-}
-
-async fn response_json<T>(response: axum::response::Response) -> T
-where
-    T: DeserializeOwned,
-{
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    serde_json::from_slice(&body).unwrap()
-}
-
-async fn wait_for_endpoint_file(
-    path: &std::path::Path,
-    child: &mut std::process::Child,
-) -> DaemonEndpointFile {
-    let started_at = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("clumsiesd exited before writing endpoint file: {status}");
-        }
-        if let Ok(body) = std::fs::read_to_string(path) {
-            return serde_json::from_str(&body).unwrap();
-        }
-        if started_at.elapsed() > Duration::from_secs(5) {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for clumsiesd endpoint file");
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
 }
 
 async fn wait_for_create_request(hub: &FakeHub) {

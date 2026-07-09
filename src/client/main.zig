@@ -305,6 +305,7 @@ test {
     _ = @import("commands/init_cmd.zig");
     _ = @import("commands/login_cmd.zig");
     _ = @import("commands/sync_cmd.zig");
+    _ = @import("daemon/ipc.zig");
 
     _ = @import("mcp/jsonrpc.zig");
     _ = @import("mcp/server.zig");

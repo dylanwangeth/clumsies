@@ -15,6 +15,6 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-reqwest = { version = "0.13.4", features = ["json", "rustls"], default-features = false }
+daemon = { version = "0.1.0", path = "../../../crates/daemon" }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }

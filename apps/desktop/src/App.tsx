@@ -1,6 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { createDaemonApiClient } from "@clumsies/api-client";
+
+type DaemonBootstrapStatus = {
+  label: string;
+  mach_service_name: string;
+  plist_path: string;
+  installed: boolean;
+  endpoint: {
+    transport: "xpc_mach_service";
+    service_name: string;
+  };
+  runtime: {
+    installed: boolean;
+    bootstrapped: boolean;
+    running: boolean;
+    pid: number | null;
+    state: string | null;
+    last_exit_code: number | null;
+    last_error: string | null;
+  };
+};
 
 type DaemonHealth = {
   daemon_version: string;
@@ -17,7 +36,7 @@ type DaemonHealth = {
 
 type LoadState =
   | { status: "idle" | "loading" }
-  | { status: "ready"; health: DaemonHealth }
+  | { status: "ready"; bootstrap: DaemonBootstrapStatus; health: DaemonHealth | null }
   | { status: "failed"; message: string };
 
 const navItems = [
@@ -29,44 +48,47 @@ const navItems = [
   "Settings",
 ];
 
-const daemonUrl = "http://127.0.0.1:37123";
-
 export function App() {
   const [selected, setSelected] = useState("Daemon");
   const [loadState, setLoadState] = useState<LoadState>({ status: "idle" });
 
-  const daemonClient = useMemo(
-    () => createDaemonApiClient({ baseUrl: daemonUrl }),
-    [],
-  );
-
-  const refreshHealth = useCallback(async () => {
+  const runLaunchAgentCommand = useCallback(async (command: string) => {
     setLoadState({ status: "loading" });
     try {
-      const health = await invoke<DaemonHealth>("read_daemon_health", {
-        daemonUrl,
-      });
-      setLoadState({ status: "ready", health });
+      const bootstrap = await invoke<DaemonBootstrapStatus>(command);
+      setLoadState({ status: "ready", bootstrap, health: null });
     } catch (error) {
-      const { data, error: responseError } = await daemonClient.GET(
-        "/daemon/health",
-      );
-      if (data) {
-        setLoadState({ status: "ready", health: data });
-        return;
-      }
       setLoadState({
         status: "failed",
-        message:
-          responseError?.error.message ??
-          (error instanceof Error ? error.message : String(error)),
+        message: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [daemonClient]);
+  }, []);
+
+  const refreshBootstrap = useCallback(
+    () => runLaunchAgentCommand("read_daemon_bootstrap_status"),
+    [runLaunchAgentCommand],
+  );
+
+  const readHealth = useCallback(async () => {
+    setLoadState({ status: "loading" });
+    try {
+      const [bootstrap, health] = await Promise.all([
+        invoke<DaemonBootstrapStatus>("read_daemon_bootstrap_status"),
+        invoke<DaemonHealth>("read_daemon_health"),
+      ]);
+      setLoadState({ status: "ready", bootstrap, health });
+    } catch (error) {
+      setLoadState({
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, []);
 
   useEffect(() => {
-    void refreshHealth();
-  }, [refreshHealth]);
+    void refreshBootstrap();
+  }, [refreshBootstrap]);
 
   return (
     <main className="shell">
@@ -93,11 +115,44 @@ export function App() {
         <header className="topbar">
           <div>
             <h1>{selected}</h1>
-            <p>Desktop workspace backed by the local clumsies daemon.</p>
+            <p>Desktop workspace backed by the local LaunchAgent daemon.</p>
           </div>
-          <button className="primary" onClick={refreshHealth} type="button">
-            Refresh
-          </button>
+          <div className="topbar-actions">
+            <button
+              className="secondary"
+              onClick={() => runLaunchAgentCommand("install_daemon_launch_agent")}
+              type="button"
+            >
+              Install Agent
+            </button>
+            <button
+              className="secondary"
+              onClick={() => runLaunchAgentCommand("start_daemon_launch_agent")}
+              type="button"
+            >
+              Start
+            </button>
+            <button
+              className="secondary"
+              onClick={() => runLaunchAgentCommand("restart_daemon_launch_agent")}
+              type="button"
+            >
+              Restart
+            </button>
+            <button
+              className="secondary"
+              onClick={() => runLaunchAgentCommand("stop_daemon_launch_agent")}
+              type="button"
+            >
+              Stop
+            </button>
+            <button className="secondary" onClick={readHealth} type="button">
+              Health
+            </button>
+            <button className="primary" onClick={refreshBootstrap} type="button">
+              Refresh
+            </button>
+          </div>
         </header>
 
         <section className="panel" aria-label="Daemon status">
@@ -108,11 +163,11 @@ export function App() {
             </span>
           </div>
           {loadState.status === "ready" ? (
-            <DaemonStatus health={loadState.health} />
+            <DaemonStatus bootstrap={loadState.bootstrap} health={loadState.health} />
           ) : loadState.status === "failed" ? (
             <p className="error">{loadState.message}</p>
           ) : (
-            <p className="muted">Checking daemon health...</p>
+            <p className="muted">Checking LaunchAgent status...</p>
           )}
         </section>
       </section>
@@ -120,15 +175,37 @@ export function App() {
   );
 }
 
-function DaemonStatus({ health }: { health: DaemonHealth }) {
+function DaemonStatus({
+  bootstrap,
+  health,
+}: {
+  bootstrap: DaemonBootstrapStatus;
+  health: DaemonHealth | null;
+}) {
   const rows = [
-    ["Version", health.daemon_version],
-    ["Hub", health.hub_url],
-    ["Project", health.project_id ?? "Not selected"],
-    ["Installation", health.daemon_installation_id],
-    ["Logs", health.log_dir],
-    ["Local DB", health.local_db.ready ? "Ready" : "Not ready"],
-    ["Schema", String(health.local_db.schema_version)],
+    ["LaunchAgent", bootstrap.label],
+    ["Mach Service", bootstrap.mach_service_name],
+    ["Transport", bootstrap.endpoint.transport],
+    ["Endpoint", bootstrap.endpoint.service_name],
+    ["Plist", bootstrap.plist_path],
+    ["Installed", bootstrap.installed ? "Yes" : "No"],
+    ["Bootstrapped", bootstrap.runtime.bootstrapped ? "Yes" : "No"],
+    ["Running", bootstrap.runtime.running ? "Yes" : "No"],
+    ["PID", bootstrap.runtime.pid ? String(bootstrap.runtime.pid) : "None"],
+    ["State", bootstrap.runtime.state ?? "Unknown"],
+    [
+      "Last Exit",
+      bootstrap.runtime.last_exit_code === null
+        ? "None"
+        : String(bootstrap.runtime.last_exit_code),
+    ],
+    ["Last Error", bootstrap.runtime.last_error ?? "None"],
+    ["Version", health?.daemon_version ?? "Unknown"],
+    ["Installation", health?.daemon_installation_id ?? "Unknown"],
+    ["Hub", health?.hub_url ?? "Unknown"],
+    ["Project", health?.project_id ?? "Not selected"],
+    ["Local DB", health ? (health.local_db.ready ? "Ready" : "Not ready") : "Unknown"],
+    ["Schema", health ? String(health.local_db.schema_version) : "Unknown"],
   ];
 
   return (
@@ -144,7 +221,11 @@ function DaemonStatus({ health }: { health: DaemonHealth }) {
 }
 
 function statusLabel(state: LoadState): string {
-  if (state.status === "ready") return "Ready";
+  if (state.status === "ready") {
+    if (state.bootstrap.runtime.running) return "Running";
+    if (state.bootstrap.runtime.bootstrapped) return "Loaded";
+    return state.bootstrap.installed ? "Installed" : "Missing";
+  }
   if (state.status === "failed") return "Offline";
   if (state.status === "loading") return "Checking";
   return "Idle";

@@ -3,148 +3,46 @@
  * Do not make direct changes to the file.
  */
 
-export interface paths {
-    "/daemon/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read local daemon health. */
-        get: operations["getDaemonHealth"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/daemon/project-config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read local daemon project config. */
-        get: operations["getDaemonProjectConfig"];
-        /** Replace local daemon project config. */
-        put: operations["replaceDaemonProjectConfig"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/daemon/sync-status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read local sync status. */
-        get: operations["getDaemonSyncStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/daemon/sync-retries": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create a local sync retry request. */
-        post: operations["createDaemonSyncRetry"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/daemon/mcp-status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read local MCP adapter status. */
-        get: operations["getDaemonMcpStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/daemon/drafts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List local daemon draft copies. */
-        get: operations["listDaemonDrafts"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/daemon/drafts/{draft_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read a local daemon draft copy and operation history. */
-        get: operations["getDaemonDraft"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/daemon/draft-operations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Write a local draft operation and enqueue sync. */
-        post: operations["createDaemonDraftOperation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-}
+export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        DaemonIpcTransport: "xpc_mach_service";
+        DaemonIpcEndpoint: {
+            transport: components["schemas"]["DaemonIpcTransport"];
+            service_name: string;
+        };
+        DaemonIpcRequest: {
+            method: string;
+            payload: {
+                [key: string]: unknown;
+            };
+        };
+        DaemonIpcResponse: {
+            ok: boolean;
+            payload: {
+                [key: string]: unknown;
+            };
+            error: components["schemas"]["ApiError"] | null;
+        };
+        DaemonBootstrapStatus: {
+            label: string;
+            mach_service_name: string;
+            plist_path: string;
+            installed: boolean;
+            endpoint: components["schemas"]["DaemonIpcEndpoint"];
+            runtime: components["schemas"]["LaunchAgentRuntimeStatus"];
+        };
+        LaunchAgentRuntimeStatus: {
+            installed: boolean;
+            bootstrapped: boolean;
+            running: boolean;
+            pid: number | null;
+            state: string | null;
+            last_exit_code: number | null;
+            last_error: string | null;
+        };
         DaemonProjectConfig: {
             /** Format: uri */
             hub_url: string;
@@ -323,212 +221,4 @@ export interface components {
     pathItems: never;
 }
 export type $defs = Record<string, never>;
-export interface operations {
-    getDaemonHealth: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Daemon health. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonHealth"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getDaemonProjectConfig: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Local daemon project config. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonProjectConfig"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    replaceDaemonProjectConfig: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DaemonProjectConfigUpdateRequest"];
-            };
-        };
-        responses: {
-            /** @description Replaced local daemon project config. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonProjectConfig"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getDaemonSyncStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Daemon sync status. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonSyncStatus"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    createDaemonSyncRetry: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DaemonSyncRetryRequest"];
-            };
-        };
-        responses: {
-            /** @description Sync retry request state. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonRetryResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getDaemonMcpStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Daemon MCP status. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonMcpStatus"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    listDaemonDrafts: {
-        parameters: {
-            query?: {
-                resource?: components["schemas"]["DaemonDraftResourceKind"];
-                status?: components["schemas"]["DaemonLocalDraftStatus"];
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Local draft list. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonDraftListResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getDaemonDraft: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                draft_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Local draft detail. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonDraftDetail"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    createDaemonDraftOperation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DaemonDraftOperationRequest"];
-            };
-        };
-        responses: {
-            /** @description Local draft operation result. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DaemonDraftOperationResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-}
+export type operations = Record<string, never>;

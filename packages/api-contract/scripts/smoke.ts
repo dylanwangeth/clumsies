@@ -1,6 +1,6 @@
 import type { paths as AdminPaths } from "../generated/admin";
 import type { paths as PublicPaths } from "../generated/public";
-import type { paths as DaemonPaths } from "../generated/daemon";
+import type { components as DaemonComponents, paths as DaemonPaths } from "../generated/daemon";
 
 type Method = "get" | "put" | "post" | "delete" | "options" | "head" | "patch" | "trace";
 type Expect<T extends true> = T;
@@ -19,11 +19,10 @@ type HasMethod<TPaths, TPath extends string, TMethod extends Method> =
     : false;
 
 type HubPathWithoutApiPrefix<TPaths> = Exclude<Extract<keyof TPaths, string>, `/api/v1/${string}`>;
-type DaemonPathWithoutDaemonPrefix<TPaths> = Exclude<Extract<keyof TPaths, string>, `/daemon/${string}`>;
 
 type _publicPathsUseApiV1 = Expect<Equals<HubPathWithoutApiPrefix<PublicPaths>, never>>;
 type _adminPathsUseApiV1 = Expect<Equals<HubPathWithoutApiPrefix<AdminPaths>, never>>;
-type _daemonPathsUseDaemonPrefix = Expect<Equals<DaemonPathWithoutDaemonPrefix<DaemonPaths>, never>>;
+type _daemonHasNoHttpPaths = Expect<Equals<DaemonPaths, Record<string, never>>>;
 
 type _publicContract = [
   Expect<HasMethod<PublicPaths, "/api/v1/auth/token", "post">>,
@@ -72,14 +71,16 @@ type _adminContract = [
   Expect<HasMethod<AdminPaths, "/api/v1/admin/health", "get">>,
 ];
 
+type DaemonSchemas = DaemonComponents["schemas"];
 type _daemonContract = [
-  Expect<HasMethod<DaemonPaths, "/daemon/health", "get">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/project-config", "get">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/project-config", "put">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/sync-status", "get">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/sync-retries", "post">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/mcp-status", "get">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/drafts", "get">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/drafts/{draft_id}", "get">>,
-  Expect<HasMethod<DaemonPaths, "/daemon/draft-operations", "post">>,
+  Expect<Equals<"DaemonBootstrapStatus" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonIpcEndpoint" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonIpcRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonIpcResponse" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"LaunchAgentRuntimeStatus" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonHealth" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonSyncStatus" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonMcpStatus" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonDraftOperationRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonDraftOperationResponse" extends keyof DaemonSchemas ? true : false, true>>,
 ];

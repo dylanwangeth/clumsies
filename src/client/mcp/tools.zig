@@ -1,16 +1,12 @@
 //! MCP tool definitions and dispatch. Exposes the agent-facing memory tools.
-//! Each call generates an attestation event.
 const std = @import("std");
 const testing = std.testing;
 const encoding = @import("clumsies_lib").util.encoding;
-const env_util = @import("clumsies_lib").util.env_util;
-const util_hash = @import("clumsies_lib").util.hash;
 const workspace_rule = @import("../rule.zig");
-const drafts_mod = @import("../drafts.zig");
+const daemon_ipc = @import("../daemon/ipc.zig");
 const session_mod = @import("session.zig");
 const tool_names = @import("tool_names.zig");
 const tool_result = @import("tool_result.zig");
-const attestation = @import("../attestation.zig");
 
 const DISCOVER_RESULT_NAMES_MAX_COUNT = 20;
 const DISCOVER_RESULT_NAMES_MAX_BYTES = 1024;
@@ -480,13 +476,24 @@ fn parseKnownHashes(
 fn storeErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
     return tool_result.buildErrorResult(allocator, switch (err) {
         error.InvalidParams => "invalid parameters",
-        error.FileNotFound => "memory artifact or draft not found",
-        error.DraftAlreadyExists => "draft already exists for this path",
-        error.DraftOperationConflict => "memory artifact already has an incompatible local change",
-        error.UnsafeDraftPath => "unsafe path",
+        error.XpcUnavailable => "local daemon XPC is unavailable on this platform",
+        error.XpcReturnedNullConnection,
+        error.XpcReturnedNullObject,
+        error.XpcReturnedErrorObject,
+        error.XpcExpectedDictionary,
+        error.XpcMissingResponseJson,
+        error.InvalidDaemonIpcResponse,
+        error.DaemonIpcRejected,
+        => "local daemon is unavailable or did not accept the draft operation",
         else => "internal error",
     }) catch @constCast("{\"error\":{\"code\":-32603,\"message\":\"internal error\"}}");
 }
+
+const StoreResource = enum {
+    context,
+    rule,
+    metaprompt,
+};
 
 const DraftOp = enum {
     create,
@@ -498,12 +505,12 @@ const DraftOp = enum {
 
 fn handleStore(
     allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
+    _: []const u8,
+    _: *session_mod.Session,
     args: std.json.ObjectMap,
 ) ![]u8 {
     const resource = requiredString(args, "resource") orelse return try tool_result.buildErrorResult(allocator, "resource name is required");
-    const category = parseDraftCategory(resource) orelse return try tool_result.buildErrorResult(allocator, "resource must be 'context', 'rule', or 'mpf'");
+    const store_resource = parseStoreResource(resource) orelse return try tool_result.buildErrorResult(allocator, "resource must be 'context', 'rule', or 'mpf'");
     const tagged_op = switch (args.get("op") orelse return try tool_result.buildErrorResult(allocator, "op is required")) {
         .object => |obj| obj,
         else => return try tool_result.buildErrorResult(allocator, "op must be a JSON object"),
@@ -513,23 +520,31 @@ fn handleStore(
         .object => |obj| obj,
         else => return try tool_result.buildErrorResult(allocator, "operation details must be a JSON object"),
     };
+    if (try validateStoreOperation(allocator, store_resource, parsed, op_args)) |result| return result;
 
-    try drafts_mod.normalizeDrafts(allocator, workspace_root);
+    const daemon_payload = try daemon_ipc.storeDraftOperationPayloadJson(
+        allocator,
+        daemonResourceName(store_resource),
+        .{ .object = tagged_op },
+    );
+    defer allocator.free(daemon_payload);
 
-    return switch (parsed) {
-        .create => handleProposeCreate(allocator, workspace_root, session, op_args, category),
-        .update => handleProposeUpdate(allocator, workspace_root, session, op_args, category),
-        .rename => handleProposeRename(allocator, workspace_root, session, op_args, category),
-        .delete => handleProposeDelete(allocator, workspace_root, session, op_args, category),
-        .discard => handleDraftDiscard(allocator, workspace_root, session, op_args, category),
-    };
+    return try tool_result.buildSuccessResult(allocator, daemon_payload);
 }
 
-fn parseDraftCategory(resource: []const u8) ?drafts_mod.DraftCategory {
+fn parseStoreResource(resource: []const u8) ?StoreResource {
     if (std.mem.eql(u8, resource, "context")) return .context;
     if (std.mem.eql(u8, resource, "rule")) return .rule;
-    if (std.mem.eql(u8, resource, "mpf")) return .meta_prompt;
+    if (std.mem.eql(u8, resource, "mpf")) return .metaprompt;
     return null;
+}
+
+fn daemonResourceName(resource: StoreResource) []const u8 {
+    return switch (resource) {
+        .context => "context",
+        .rule => "rule",
+        .metaprompt => "metaprompt",
+    };
 }
 
 fn parseDraftOp(obj: std.json.ObjectMap) ?DraftOp {
@@ -554,280 +569,39 @@ fn draftOpName(op: DraftOp) []const u8 {
     };
 }
 
-fn handleDraftDiscard(
+fn validateStoreOperation(
     allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
+    resource: StoreResource,
+    op: DraftOp,
     args: std.json.ObjectMap,
-    category: drafts_mod.DraftCategory,
-) ![]u8 {
-    const id = resourceId(args, category) orelse return try tool_result.buildErrorResult(allocator, "id is required");
-    if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
-
-    const draft_path = (try drafts_mod.discardDraftById(allocator, workspace_root, category, id)) orelse blk: {
-        if (category != .meta_prompt) return error.FileNotFound;
-        break :blk (try drafts_mod.discardDraftById(allocator, workspace_root, category, "META_PROMPT.md")) orelse return error.FileNotFound;
-    };
-    defer allocator.free(draft_path);
-
-    session.recordEvent(allocator, .{ .draft_discard = .{
-        .resource = draftCategoryName(category),
-        .id = id,
-        .path = draft_path,
-    } });
-
-    return buildOkDraftPath(allocator, draft_path);
-}
-
-fn resourceId(obj: std.json.ObjectMap, category: drafts_mod.DraftCategory) ?[]const u8 {
-    if (requiredString(obj, "id")) |id| return id;
-    return switch (category) {
-        .context => requiredString(obj, "context_id"),
-        .rule => requiredString(obj, "rule_id"),
-        .meta_prompt => requiredString(obj, "mpf_id") orelse requiredString(obj, "path"),
-    };
-}
-
-fn draftCategoryName(category: drafts_mod.DraftCategory) []const u8 {
-    return switch (category) {
-        .context => "context",
-        .rule => "rule",
-        .meta_prompt => "mpf",
-    };
-}
-
-fn handleProposeCreate(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
-    args: std.json.ObjectMap,
-    category: drafts_mod.DraftCategory,
-) ![]u8 {
-    const path = requiredString(args, "path") orelse return try tool_result.buildErrorResult(allocator, "path is required and must not be empty");
-    const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
-    if (path.len == 0) return try tool_result.buildErrorResult(allocator, "path must not be empty");
-    if (body.len == 0) return try tool_result.buildErrorResult(allocator, "body must not be empty");
-    const description = optionalString(args, "description");
-    if (category == .meta_prompt and !std.mem.eql(u8, path, "META_PROMPT.md")) return try tool_result.buildErrorResult(allocator, "mpf path must be 'META_PROMPT.md'");
-    const draft_path = try drafts_mod.canonicalArtifactDraftPath(allocator, category, path);
-    defer allocator.free(draft_path);
-
-    const local_temp_id = try drafts_mod.createDraftLocalTempId(allocator, category, draft_path);
-    defer allocator.free(local_temp_id);
-
-    try drafts_mod.createDraft(allocator, workspace_root, .{
-        .category = category,
-        .operation = .create,
-        .draft_path = draft_path,
-        .local_temp_id = local_temp_id,
-        .description = description,
-    }, body);
-
-    const payload: attestation.AttestationEvent.Payload = switch (category) {
-        .context => .{ .context_propose_create = .{ .path = draft_path } },
-        .rule => .{ .rule_propose_create = .{ .path = draft_path } },
-        .meta_prompt => .{ .mpf_propose_create = .{ .path = draft_path } },
-    };
-    session.recordEvent(allocator, payload);
-
-    return buildOkDraftIdentity(allocator, draft_path, local_temp_id);
-}
-
-fn handleProposeUpdate(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
-    args: std.json.ObjectMap,
-    category: drafts_mod.DraftCategory,
-) ![]u8 {
-    const id = resourceId(args, category) orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
-    if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
-    const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
-    if (body.len == 0) return try tool_result.buildErrorResult(allocator, "body must not be empty");
-    const description = optionalString(args, "description");
-
-    var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
-    defer manifest.deinit(allocator);
-
-    const m_entry: workspace_rule.ManifestEntry = switch (category) {
-        .context => manifest.context.get(id) orelse {
-            if (try drafts_mod.updateCreateDraftContentById(allocator, workspace_root, category, id, body, description)) |draft| {
-                defer draft.deinit(allocator);
-                const event_id = draft.local_temp_id orelse id;
-                session.recordEvent(allocator, .{ .context_propose_update = .{ .id = event_id, .path = draft.draft_path } });
-                return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
-            }
-            return error.FileNotFound;
+) !?[]u8 {
+    switch (op) {
+        .create => {
+            const path = requiredString(args, "path") orelse return try tool_result.buildErrorResult(allocator, "path is required and must not be empty");
+            const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
+            if (path.len == 0) return try tool_result.buildErrorResult(allocator, "path must not be empty");
+            if (body.len == 0) return try tool_result.buildErrorResult(allocator, "body must not be empty");
+            if (resource == .metaprompt and !std.mem.eql(u8, path, "META_PROMPT.md")) return try tool_result.buildErrorResult(allocator, "mpf path must be 'META_PROMPT.md'");
         },
-        .rule => manifest.rules.get(id) orelse {
-            if (try drafts_mod.updateCreateDraftContentById(allocator, workspace_root, category, id, body, description)) |draft| {
-                defer draft.deinit(allocator);
-                const event_id = draft.local_temp_id orelse id;
-                session.recordEvent(allocator, .{ .rule_propose_update = .{ .id = event_id, .path = draft.draft_path } });
-                return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
-            }
-            return error.FileNotFound;
+        .update => {
+            const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
+            const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
+            if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
+            if (body.len == 0) return try tool_result.buildErrorResult(allocator, "body must not be empty");
         },
-        .meta_prompt => .{ .path = "META_PROMPT.md", .hash = "" },
-    };
-    const draft_category = if ((category == .rule and isMetaPromptPath(m_entry.path)) or category == .meta_prompt)
-        drafts_mod.DraftCategory.meta_prompt
-    else
-        category;
-
-    const cache_content = switch (category) {
-        .context => try workspace_rule.readContextCacheFile(allocator, workspace_root, m_entry.path),
-        .rule => if (draft_category == .meta_prompt)
-            try readMetaPromptCacheFile(allocator, workspace_root)
-        else
-            try readRuleCacheFile(allocator, workspace_root, m_entry.path),
-        .meta_prompt => try readMetaPromptCacheFile(allocator, workspace_root),
-    };
-    defer allocator.free(cache_content);
-
-    const base_hash = util_hash.contentHash(cache_content);
-
-    const draft = try drafts_mod.upsertUpdateDraft(allocator, workspace_root, .{
-        .category = draft_category,
-        .current_path = m_entry.path,
-        .base_hash = base_hash[0..],
-        .rule_id = if (category == .rule and draft_category == .rule) id else null,
-        .context_id = if (category == .context) id else null,
-        .description = description,
-    }, body);
-    defer draft.deinit(allocator);
-
-    const payload: attestation.AttestationEvent.Payload = switch (category) {
-        .context => .{ .context_propose_update = .{ .id = id, .path = draft.draft_path } },
-        .rule => .{ .rule_propose_update = .{ .id = id, .path = draft.draft_path } },
-        .meta_prompt => .{ .mpf_propose_update = .{ .id = id, .path = draft.draft_path } },
-    };
-    session.recordEvent(allocator, payload);
-
-    return buildOkDraftPath(allocator, draft.draft_path);
-}
-
-fn handleProposeRename(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
-    args: std.json.ObjectMap,
-    category: drafts_mod.DraftCategory,
-) ![]u8 {
-    const id = resourceId(args, category) orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
-    if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
-    const new_path = requiredString(args, "new_path") orelse return try tool_result.buildErrorResult(allocator, "new_path is required and must not be empty");
-    if (new_path.len == 0) return try tool_result.buildErrorResult(allocator, "new_path must not be empty");
-    if (category == .meta_prompt) return try tool_result.buildErrorResult(allocator, "mpf cannot be renamed");
-    const description = optionalString(args, "description");
-    const canonical_new_path = try drafts_mod.canonicalArtifactDraftPath(allocator, category, new_path);
-    defer allocator.free(canonical_new_path);
-
-    var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
-    defer manifest.deinit(allocator);
-
-    const m_entry = switch (category) {
-        .context => manifest.context.get(id) orelse {
-            if (try drafts_mod.renameCreateDraftById(allocator, workspace_root, category, id, canonical_new_path, description)) |draft| {
-                defer draft.deinit(allocator);
-                const event_id = draft.local_temp_id orelse id;
-                session.recordEvent(allocator, .{ .context_propose_rename = .{ .id = event_id, .path = draft.previous_path.?, .new_path = draft.draft_path } });
-                return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
-            }
-            return error.FileNotFound;
+        .rename => {
+            const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
+            const new_path = requiredString(args, "new_path") orelse return try tool_result.buildErrorResult(allocator, "new_path is required and must not be empty");
+            if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
+            if (new_path.len == 0) return try tool_result.buildErrorResult(allocator, "new_path must not be empty");
+            if (resource == .metaprompt) return try tool_result.buildErrorResult(allocator, "mpf cannot be renamed");
         },
-        .rule => manifest.rules.get(id) orelse {
-            if (try drafts_mod.renameCreateDraftById(allocator, workspace_root, category, id, canonical_new_path, description)) |draft| {
-                defer draft.deinit(allocator);
-                const event_id = draft.local_temp_id orelse id;
-                session.recordEvent(allocator, .{ .rule_propose_rename = .{ .id = event_id, .path = draft.previous_path.?, .new_path = draft.draft_path } });
-                return buildOkDraftIdentity(allocator, draft.draft_path, draft.local_temp_id);
-            }
-            return error.FileNotFound;
+        .delete, .discard => {
+            const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
+            if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
         },
-        .meta_prompt => return error.InvalidParams,
-    };
-
-    const cache_content = switch (category) {
-        .context => try workspace_rule.readContextCacheFile(allocator, workspace_root, m_entry.path),
-        .rule => try readRuleCacheFile(allocator, workspace_root, m_entry.path),
-        .meta_prompt => return error.InvalidParams,
-    };
-    defer allocator.free(cache_content);
-
-    const base_hash = util_hash.contentHash(cache_content);
-
-    const draft = try drafts_mod.upsertRenameDraft(allocator, workspace_root, .{
-        .category = category,
-        .current_path = m_entry.path,
-        .base_hash = base_hash[0..],
-        .rule_id = if (category == .rule) id else null,
-        .context_id = if (category == .context) id else null,
-        .description = description,
-    }, canonical_new_path, cache_content);
-    defer draft.deinit(allocator);
-
-    const payload: attestation.AttestationEvent.Payload = switch (category) {
-        .context => .{ .context_propose_rename = .{ .id = id, .path = m_entry.path, .new_path = canonical_new_path } },
-        .rule => .{ .rule_propose_rename = .{ .id = id, .path = m_entry.path, .new_path = canonical_new_path } },
-        .meta_prompt => return error.InvalidParams,
-    };
-    session.recordEvent(allocator, payload);
-
-    return buildOkDraftPath(allocator, draft.draft_path);
-}
-
-fn handleProposeDelete(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
-    args: std.json.ObjectMap,
-    category: drafts_mod.DraftCategory,
-) ![]u8 {
-    const id = resourceId(args, category) orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
-    if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
-    const description = optionalString(args, "description");
-
-    var manifest = try workspace_rule.loadManifest(allocator, workspace_root);
-    defer manifest.deinit(allocator);
-
-    const m_entry: workspace_rule.ManifestEntry = switch (category) {
-        .context => manifest.context.get(id) orelse {
-            if (try drafts_mod.discardCreateDraftById(allocator, workspace_root, category, id)) |draft_path| {
-                defer allocator.free(draft_path);
-                session.recordEvent(allocator, .{ .context_propose_delete = .{ .id = id, .path = draft_path } });
-                return buildOkDraftPath(allocator, draft_path);
-            }
-            return error.FileNotFound;
-        },
-        .rule => manifest.rules.get(id) orelse {
-            if (try drafts_mod.discardCreateDraftById(allocator, workspace_root, category, id)) |draft_path| {
-                defer allocator.free(draft_path);
-                session.recordEvent(allocator, .{ .rule_propose_delete = .{ .id = id, .path = draft_path } });
-                return buildOkDraftPath(allocator, draft_path);
-            }
-            return error.FileNotFound;
-        },
-        .meta_prompt => .{ .path = "META_PROMPT.md", .hash = "" },
-    };
-
-    const draft = try drafts_mod.upsertDeleteDraft(allocator, workspace_root, .{
-        .category = category,
-        .current_path = m_entry.path,
-        .rule_id = if (category == .rule) id else null,
-        .context_id = if (category == .context) id else null,
-        .description = description,
-    });
-    defer draft.deinit(allocator);
-
-    const payload: attestation.AttestationEvent.Payload = switch (category) {
-        .context => .{ .context_propose_delete = .{ .id = id, .path = m_entry.path } },
-        .rule => .{ .rule_propose_delete = .{ .id = id, .path = m_entry.path } },
-        .meta_prompt => .{ .mpf_propose_delete = .{ .id = id, .path = m_entry.path } },
-    };
-    session.recordEvent(allocator, payload);
-
-    return buildOkDraftPath(allocator, draft.draft_path);
+    }
+    return null;
 }
 
 fn requiredString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -836,101 +610,6 @@ fn requiredString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
         .string => |s| s,
         else => null,
     };
-}
-
-fn optionalString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    return requiredString(obj, key);
-}
-
-fn readRuleCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8, rel_path: []const u8) ![]const u8 {
-    return workspace_rule.readRuleCacheFile(allocator, ws_dir, rel_path);
-}
-
-fn readMetaPromptCacheFile(allocator: std.mem.Allocator, ws_dir: []const u8) ![]const u8 {
-    const path = try std.fs.path.join(allocator, &.{ ws_dir, "cache", "META_PROMPT.md" });
-    defer allocator.free(path);
-    const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return error.FileNotFound,
-        else => return err,
-    };
-    defer file.close(std.Options.debug_io);
-    var read_buf: [4096]u8 = undefined;
-    var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-    return try fr.interface.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024));
-}
-
-fn isMetaPromptPath(path: []const u8) bool {
-    return std.mem.eql(u8, path, "META_PROMPT.md");
-}
-
-fn buildOkDraftPath(allocator: std.mem.Allocator, draft_path: []const u8) ![]u8 {
-    return buildOkDraftIdentity(allocator, draft_path, null);
-}
-
-fn buildOkDraftIdentity(
-    allocator: std.mem.Allocator,
-    draft_path: []const u8,
-    local_temp_id: ?[]const u8,
-) ![]u8 {
-    const esc = try encoding.jsonEscapeAlloc(allocator, draft_path);
-    defer allocator.free(esc);
-    const structured = if (local_temp_id) |id| blk: {
-        const esc_id = try encoding.jsonEscapeAlloc(allocator, id);
-        defer allocator.free(esc_id);
-        break :blk try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"draft_path\":\"{s}\",\"id\":\"{s}\"}}", .{ esc, esc_id });
-    } else try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"draft_path\":\"{s}\"}}", .{esc});
-    defer allocator.free(structured);
-    return try tool_result.buildSuccessResult(allocator, structured);
-}
-
-fn writeTestFile(dir: std.Io.Dir, sub_path: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(std.Options.debug_io, sub_path, .{});
-    defer file.close(std.Options.debug_io);
-    var write_buf: [4096]u8 = undefined;
-    var fw = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
-    defer fw.interface.flush() catch {};
-    try fw.interface.writeAll(content);
-}
-
-fn tmpDirAbsolutePath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) []const u8 {
-    const len = tmp.dir.realPathFile(std.Options.debug_io, ".", buf) catch return "";
-    return buf[0..len];
-}
-
-const TestHomeEnv = struct {
-    environ: std.process.Environ,
-
-    fn init(allocator: std.mem.Allocator, home: []const u8) !TestHomeEnv {
-        var map = std.process.Environ.Map.init(allocator);
-        defer map.deinit();
-        try map.put("HOME", home);
-        try map.put("USERPROFILE", home);
-        return .{ .environ = .{ .block = try map.createPosixBlock(allocator, .{}) } };
-    }
-
-    fn activate(self: TestHomeEnv) void {
-        env_util.init(self.environ);
-    }
-
-    fn deinit(self: *TestHomeEnv, allocator: std.mem.Allocator) void {
-        env_util.init(.empty);
-        self.environ.block.deinit(allocator);
-    }
-};
-
-fn draftRenameEventUsesPath(
-    allocator: std.mem.Allocator,
-    ws_id: []const u8,
-    session_id: []const u8,
-    path: []const u8,
-) bool {
-    const attestation_path = attestation.sessionAttestationFilePath(allocator, ws_id, session_id) catch return false;
-    defer allocator.free(attestation_path);
-    const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, attestation_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch return false;
-    defer allocator.free(content);
-    const needle = std.fmt.allocPrint(allocator, "\"path\":\"{s}\"", .{path}) catch return false;
-    defer allocator.free(needle);
-    return std.mem.indexOf(u8, content, needle) != null;
 }
 
 test "buildListResult: exposes activate retrieve and store tools" {
@@ -1073,508 +752,74 @@ test "parseKnownHashes accepts empty hash as explicit unknown" {
     try testing.expectEqualStrings("", known.items[0].hash);
 }
 
-test "store tool creates context change through tagged op" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-    var test_env = try TestHomeEnv.init(testing.allocator, root);
-    defer test_env.deinit(testing.allocator);
-    test_env.activate();
-
-    const args_json =
-        \\{
-        \\  "resource": "context",
-        \\  "op": {
-        \\    "create": {
-        \\      "path": "research/new-context.md",
-        \\      "body": "draft body",
-        \\      "description": "new context"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
-    defer parsed.deinit();
-
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, root),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"draft_path\":\"research/NEW_CONTEXT.md\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"id\":\"tmp-context-") != null);
-
-    var index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer index.deinit(testing.allocator);
-    const entry = index.findCreateByDraftPath("research/NEW_CONTEXT.md") orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(drafts_mod.DraftCategory.context, entry.category);
+test "store resource maps MCP mpf to daemon metaprompt" {
+    try testing.expectEqual(StoreResource.context, parseStoreResource("context").?);
+    try testing.expectEqual(StoreResource.rule, parseStoreResource("rule").?);
+    try testing.expectEqual(StoreResource.metaprompt, parseStoreResource("mpf").?);
+    try testing.expectEqualStrings("metaprompt", daemonResourceName(.metaprompt));
+    try testing.expect(parseStoreResource("metaprompt") == null);
 }
 
-test "store tool updates newly created context draft" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-    var test_env = try TestHomeEnv.init(testing.allocator, root);
-    defer test_env.deinit(testing.allocator);
-    test_env.activate();
-
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, root),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const create_json =
-        \\{
-        \\  "resource": "context",
-        \\  "op": {
-        \\    "create": {
-        \\      "path": "research/new-context.md",
-        \\      "body": "first body",
-        \\      "description": "first"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const create = try std.json.parseFromSlice(std.json.Value, testing.allocator, create_json, .{});
-    defer create.deinit();
-    const create_result = try handleStore(testing.allocator, root, &session, create.value.object);
-    defer testing.allocator.free(create_result);
-    try testing.expect(std.mem.indexOf(u8, create_result, "\"id\":\"tmp-context-") != null);
-
-    const update_json =
-        \\{
-        \\  "resource": "context",
-        \\  "op": {
-        \\    "update": {
-        \\      "id": "research/NEW_CONTEXT.md",
-        \\      "body": "second body",
-        \\      "description": "second"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const update = try std.json.parseFromSlice(std.json.Value, testing.allocator, update_json, .{});
-    defer update.deinit();
-    const update_result = try handleStore(testing.allocator, root, &session, update.value.object);
-    defer testing.allocator.free(update_result);
-    try testing.expect(std.mem.indexOf(u8, update_result, "\"ok\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, update_result, "\"id\":\"tmp-context-") != null);
-
-    const content = try drafts_mod.readDraftFile(testing.allocator, root, .context, "research/NEW_CONTEXT.md");
-    defer testing.allocator.free(content);
-    try testing.expectEqualStrings("second body", content);
-
-    var index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer index.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
-    const entry = index.findCreateByDraftPath("research/NEW_CONTEXT.md") orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(drafts_mod.DraftOperation.create, entry.operation);
-    try testing.expectEqualStrings("second", entry.description.?);
-}
-
-test "store tool renames newly created context draft" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-    var test_env = try TestHomeEnv.init(testing.allocator, root);
-    defer test_env.deinit(testing.allocator);
-    test_env.activate();
-
-    try drafts_mod.createDraft(testing.allocator, root, .{
-        .category = .context,
-        .operation = .create,
-        .draft_path = "notes/UI.md",
-        .local_temp_id = "tmp-context-1",
-        .description = "first",
-    }, "draft body");
-
-    const args_json =
-        \\{
-        \\  "resource": "context",
-        \\  "op": {
-        \\    "rename": {
-        \\      "id": "tmp-context-1",
-        \\      "new_path": "Specs/UI module-plan.md",
-        \\      "description": "move to specs"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
-    defer parsed.deinit();
-
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, root),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"id\":\"tmp-context-1\"") != null);
-
-    const content = try drafts_mod.readDraftFile(testing.allocator, root, .context, "specs/UI_MODULE_PLAN.md");
-    defer testing.allocator.free(content);
-    try testing.expectEqualStrings("draft body", content);
-
-    try testing.expectError(error.FileNotFound, drafts_mod.readDraftFile(testing.allocator, root, .context, "notes/UI.md"));
-    try testing.expect(draftRenameEventUsesPath(testing.allocator, "ws-test", "test-session", "notes/UI.md"));
-
-    var index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer index.deinit(testing.allocator);
-    try testing.expect(index.findCreateByDraftPath("notes/UI.md") == null);
-    const entry = index.findCreateByDraftPath("specs/UI_MODULE_PLAN.md") orelse return error.TestUnexpectedResult;
-    try testing.expectEqualStrings("tmp-context-1", entry.local_temp_id.?);
-    try testing.expectEqualStrings("move to specs", entry.description.?);
-}
-
-test "store tool discards rule change by local temp id" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-    var test_env = try TestHomeEnv.init(testing.allocator, root);
-    defer test_env.deinit(testing.allocator);
-    test_env.activate();
-
-    try drafts_mod.createDraft(testing.allocator, root, .{
-        .category = .rule,
-        .operation = .create,
-        .draft_path = "coding/TEMP.md",
-        .local_temp_id = "tmp-rule-1",
-    }, "draft body");
-
-    const args_json =
-        \\{
-        \\  "resource": "rule",
-        \\  "op": {
-        \\    "discard": {
-        \\      "id": "tmp-rule-1"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
-    defer parsed.deinit();
-
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, root),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
-
-    var index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer index.deinit(testing.allocator);
-    try testing.expect(index.findByLocalTempId("tmp-rule-1") == null);
-}
-
-test "store tool discards MPF draft by manifest id" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-    var test_env = try TestHomeEnv.init(testing.allocator, root);
-    defer test_env.deinit(testing.allocator);
-    test_env.activate();
-
-    try drafts_mod.createDraft(testing.allocator, root, .{
-        .category = .meta_prompt,
-        .operation = .update,
-        .draft_path = "META_PROMPT.md",
-        .current_path = "META_PROMPT.md",
-        .base_hash = "sha256:old",
-    }, "draft mpf");
-
-    const args_json =
-        \\{
-        \\  "resource": "mpf",
-        \\  "op": {
-        \\    "discard": {
-        \\      "id": "p-0cba8168-fcc6-4151-b06b-b5e1b1c6bc29"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
-    defer parsed.deinit();
-
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, root),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
-
-    var index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer index.deinit(testing.allocator);
-    try testing.expect(index.findByCurrentPath(.meta_prompt, "META_PROMPT.md") == null);
-}
-
-test "store tool updates MPF change" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-    var test_env = try TestHomeEnv.init(testing.allocator, root);
-    defer test_env.deinit(testing.allocator);
-    test_env.activate();
-    try tmp.dir.createDirPath(std.Options.debug_io, "cache");
-    try writeTestFile(tmp.dir, "cache/META_PROMPT.md", "old mpf");
-
-    const args_json =
-        \\{
-        \\  "resource": "mpf",
-        \\  "op": {
-        \\    "update": {
-        \\      "id": "META_PROMPT.md",
-        \\      "body": "new mpf"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
-    defer parsed.deinit();
-
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, root),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const result = try handleStore(testing.allocator, root, &session, parsed.value.object);
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
-
-    var index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer index.deinit(testing.allocator);
-    const entry = index.findByCurrentPath(.meta_prompt, "META_PROMPT.md") orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(drafts_mod.DraftOperation.update, entry.operation);
-}
-
-test "store update overwrites existing context update draft" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-    var test_env = try TestHomeEnv.init(testing.allocator, root);
-    defer test_env.deinit(testing.allocator);
-    test_env.activate();
-
-    try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
-    try writeTestFile(tmp.dir, "cache/context/spec/API.md", "old api");
-    try writeTestFile(tmp.dir, "manifest.json",
-        \\{
-        \\  "rules": {},
-        \\  "context": {
-        \\    "c-api": {"path": "spec/API.md", "hash": "sha256:old"}
-        \\  }
-        \\}
-    );
-
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, root),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const first_json =
-        \\{
-        \\  "resource": "context",
-        \\  "op": {
-        \\    "update": {
-        \\      "id": "c-api",
-        \\      "body": "first api",
-        \\      "description": "first"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const first = try std.json.parseFromSlice(std.json.Value, testing.allocator, first_json, .{});
-    defer first.deinit();
-    const first_result = try handleStore(testing.allocator, root, &session, first.value.object);
-    defer testing.allocator.free(first_result);
-    try testing.expect(std.mem.indexOf(u8, first_result, "\"ok\":true") != null);
-
-    const second_json =
-        \\{
-        \\  "resource": "context",
-        \\  "op": {
-        \\    "update": {
-        \\      "id": "c-api",
-        \\      "body": "second api",
-        \\      "description": "second"
-        \\    }
-        \\  }
-        \\}
-    ;
-    const second = try std.json.parseFromSlice(std.json.Value, testing.allocator, second_json, .{});
-    defer second.deinit();
-    const second_result = try handleStore(testing.allocator, root, &session, second.value.object);
-    defer testing.allocator.free(second_result);
-    try testing.expect(std.mem.indexOf(u8, second_result, "\"ok\":true") != null);
-
-    const content = try drafts_mod.readDraftFile(testing.allocator, root, .context, "spec/API.md");
-    defer testing.allocator.free(content);
-    try testing.expectEqualStrings("second api", content);
-
-    var index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer index.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 1), index.entries.items.len);
-    const entry = index.findByCurrentPath(.context, "spec/API.md") orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(drafts_mod.DraftOperation.update, entry.operation);
-    try testing.expectEqualStrings("second", entry.description.?);
-}
-
-test "context propose delete discards create-only draft by local temp id" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-    var test_env = try TestHomeEnv.init(testing.allocator, root);
-    defer test_env.deinit(testing.allocator);
-    test_env.activate();
-    const draft_path = "projects/eth-p2p-z/project-context.md";
-
-    try drafts_mod.createDraft(testing.allocator, root, .{
-        .category = .context,
-        .operation = .create,
-        .draft_path = draft_path,
-        .description = "bad context",
-    }, "draft body");
-
-    var before_index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer before_index.deinit(testing.allocator);
-    const canonical_draft_path = try drafts_mod.canonicalArtifactDraftPath(testing.allocator, .context, draft_path);
-    defer testing.allocator.free(canonical_draft_path);
-    const local_temp_id = before_index.findCreateByDraftPath(canonical_draft_path).?.local_temp_id.?;
-
-    const args_json =
-        try std.fmt.allocPrint(
-            testing.allocator,
-            \\{{
-            \\  "context_id": "{s}",
-            \\  "description": "discard bad draft"
-            \\}}
-        ,
-            .{local_temp_id},
-        );
-    defer testing.allocator.free(args_json);
-    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
-    defer parsed.deinit();
-
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, root),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const result = try handleProposeDelete(
+test "store op parser requires one tagged operation" {
+    const valid = try std.json.parseFromSlice(
+        std.json.Value,
         testing.allocator,
-        root,
-        &session,
-        parsed.value.object,
-        .context,
+        \\{"update":{"id":"c-api","body":"new"}}
+    ,
+        .{},
     );
-    defer testing.allocator.free(result);
+    defer valid.deinit();
+    try testing.expectEqual(DraftOp.update, parseDraftOp(valid.value.object).?);
 
-    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
-
-    var index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer index.deinit(testing.allocator);
-    try testing.expect(index.findCreateByDraftPath(draft_path) == null);
-
-    var discovered = try workspace_rule.discoverSearchable(testing.allocator, root, .context, null, "eth-p2p-z");
-    defer workspace_rule.deinitRuleItems(testing.allocator, &discovered);
-    try testing.expectEqual(@as(usize, 0), discovered.items.len);
+    const multiple = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"update":{"id":"c-api","body":"new"},"delete":{"id":"c-api"}}
+    ,
+        .{},
+    );
+    defer multiple.deinit();
+    try testing.expect(parseDraftOp(multiple.value.object) == null);
 }
 
-test "rule propose delete discards create-only draft by local temp id" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = tmpDirAbsolutePath(&tmp, &buf);
-    var test_env = try TestHomeEnv.init(testing.allocator, root);
-    defer test_env.deinit(testing.allocator);
-    test_env.activate();
-    const draft_path = "learning/zig-libp2p/eth-p2p-z.md";
-
-    try drafts_mod.createDraft(testing.allocator, root, .{
-        .category = .rule,
-        .operation = .create,
-        .draft_path = draft_path,
-        .local_temp_id = "tmp-rule-1",
-        .description = "bad rule",
-    }, "draft body");
-
-    const args_json =
-        \\{
-        \\  "rule_id": "tmp-rule-1",
-        \\  "description": "discard bad draft"
-        \\}
-    ;
-    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+test "store validation rejects metaprompt rename before daemon call" {
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"id":"META_PROMPT.md","new_path":"other.md"}
+    ,
+        .{},
+    );
     defer parsed.deinit();
 
-    var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
-        .workspace_root = try testing.allocator.dupe(u8, root),
-    };
-    defer session.deinit(testing.allocator);
-    try session.bind(testing.allocator, "test-session");
-
-    const result = try handleProposeDelete(
-        testing.allocator,
-        root,
-        &session,
-        parsed.value.object,
-        .rule,
-    );
+    const result = (try validateStoreOperation(testing.allocator, .metaprompt, .rename, parsed.value.object)).?;
     defer testing.allocator.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"isError\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "mpf cannot be renamed") != null);
+}
 
-    var index = try drafts_mod.loadIndex(testing.allocator, root);
-    defer index.deinit(testing.allocator);
-    try testing.expect(index.findByLocalTempId("tmp-rule-1") == null);
-    try testing.expect(index.findCreateByDraftPath(draft_path) == null);
+test "store request keeps MCP operation shape for daemon" {
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"create":{"path":"META_PROMPT.md","body":"body"}}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    const json = try daemon_ipc.storeDraftOperationRequestJsonAlloc(
+        testing.allocator,
+        daemonResourceName(.metaprompt),
+        parsed.value,
+    );
+    defer testing.allocator.free(json);
+
+    try testing.expect(std.mem.indexOf(u8, json, "\"method\":\"store_draft_operation\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"resource\":\"metaprompt\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"source\":\"mcp_store\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"create\"") != null);
 }
 
 test "discoverResultNames caps recorded names" {
