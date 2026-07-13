@@ -506,7 +506,7 @@ const DraftOp = enum {
 fn handleStore(
     allocator: std.mem.Allocator,
     _: []const u8,
-    _: *session_mod.Session,
+    session: *session_mod.Session,
     args: std.json.ObjectMap,
 ) ![]u8 {
     const resource = requiredString(args, "resource") orelse return try tool_result.buildErrorResult(allocator, "resource name is required");
@@ -524,6 +524,7 @@ fn handleStore(
 
     const daemon_payload = try daemon_ipc.storeDraftOperationPayloadJson(
         allocator,
+        session.ws_id,
         daemonResourceName(store_resource),
         .{ .object = tagged_op },
     );
@@ -811,12 +812,15 @@ test "store request keeps MCP operation shape for daemon" {
 
     const json = try daemon_ipc.storeDraftOperationRequestJsonAlloc(
         testing.allocator,
+        "prj_test",
         daemonResourceName(.metaprompt),
         parsed.value,
     );
     defer testing.allocator.free(json);
 
     try testing.expect(std.mem.indexOf(u8, json, "\"method\":\"store_draft_operation\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"project_id\":\"prj_test\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"scope\":\"project\"") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"resource\":\"metaprompt\"") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"source\":\"mcp_store\"") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"create\"") != null);

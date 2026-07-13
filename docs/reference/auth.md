@@ -1,102 +1,73 @@
-# Auth and session reference
+# Authentication and sessions
 
-This page defines the current authentication contract for clumsies clients,
-Hub sessions, and local credential storage.
+## Login flow
 
-## Product contract
+Clumsies uses the organization's OpenID Connect provider. Desktop starts the
+flow in the system browser and listens on an ephemeral `127.0.0.1` port for the
+final authorization code.
+Client and provider exchanges both use PKCE with `S256`; state and OIDC nonce
+are validated before a session is issued.
 
-`clumsies` is the primary interactive entry point. If a user launches the TUI
-without usable credentials, the client must present an in-product login flow
-rather than requiring the user to exit and run a separate command first.
+```text
+Desktop native
+  -> Server /oauth2/authorization/oidc
+  -> organization OIDC provider
+  -> Server /login/oauth2/code/oidc
+  -> Desktop loopback callback
+  -> Server /api/v1/auth/token
+  -> daemon credential store
+```
 
-`clumsies login` remains available as a CLI wrapper around the same auth
-capability. It is a management and scripting entry point, not the only way to
-authenticate.
+The WebView renderer never receives the access token or refresh token. All
+authenticated product requests are sent through daemon, which injects the
+bearer token outside renderer JavaScript.
 
-Automation should use environment-provided credentials or a non-interactive
-token source. Automation must not enter an interactive TUI login flow.
+## Member admission
 
-## Session lifecycle
+An organization owner or admin creates a member admission record through the
+admin API. On first successful OIDC login, Server matches the verified email
+and binds the stable `(issuer, subject)` identity to that record. Later logins
+resolve the external identity directly, so an email claim change cannot move
+the identity to another user. Unknown, disabled, unverified, or
+disallowed-domain identities are rejected.
 
-Hub issues two token classes:
+The bootstrap owner environment variables create the first organization owner
+for a new self-hosted database. They do not create a password login path.
 
-| Token | Default lifetime | Purpose |
-| --- | ---: | --- |
-| access token | 1 hour | Short-lived bearer token for API requests |
-| refresh token | 90 days | Long-lived device session used to rotate tokens |
+## Token lifecycle
 
-The access lifetime is controlled by `HUB_TOKEN_TTL`. The refresh lifetime is
-controlled independently by `HUB_REFRESH_TOKEN_TTL`. Refresh token lifetime
-must not be derived from access token lifetime.
+Server issues opaque access and refresh tokens. Only hashes are stored in
+PostgreSQL. Refresh is rotating: the presented refresh token is revoked and a
+new access/refresh pair is returned.
 
-When a client receives `401 Unauthorized` for an authenticated request, it may
-try exactly one refresh attempt. A successful refresh returns a new access
-token and a new refresh token. The presented refresh token is revoked
-server-side.
+Daemon handles a `401 Unauthorized` by attempting one refresh and one request
+retry. It does not expose secrets through health, project config, IPC response,
+or renderer state.
 
-Clients must persist the rotated token pair when possible. Persistence failure
-does not invalidate the in-memory session for the current process, but the next
-process may have to refresh or log in again.
+Sign-out calls `DELETE /api/v1/auth/session`, revokes the active session, and
+clears local credentials.
 
-## Local credential storage
+## Required Server configuration
 
-Local credentials contain:
-
-| Field | Meaning |
+| Variable | Meaning |
 | --- | --- |
-| `hub_url` | Hub base URL |
-| `username` | Hub username associated with the token pair |
-| `access_token` | Current access token |
-| `refresh_token` | Current refresh token |
+| `CLUMSIES_OIDC_ISSUER` | exact organization OIDC issuer |
+| `CLUMSIES_OIDC_CLIENT_ID` | OIDC confidential client ID |
+| `CLUMSIES_OIDC_CLIENT_SECRET` | OIDC confidential client secret |
+| `CLUMSIES_OIDC_CALLBACK_URL` | public Server callback ending in `/login/oauth2/code/oidc` |
+| `CLUMSIES_CLIENT_REDIRECT_URIS` | comma-separated trusted client callbacks |
 
-The credential store is selected by `CLUMSIES_AUTH_STORE`:
+For Desktop dynamic loopback ports, configure
+`CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback`. The missing port is a
+deliberate template: Server accepts any ephemeral port only for that exact
+loopback host, scheme, path, and query.
 
-| Value | Behavior |
-| --- | --- |
-| `file` | Store credentials in `~/.clumsies/auth.json` |
-| `keychain` | Store credentials in macOS Keychain; unsupported platforms fail |
-| `auto` | Try Keychain when available, otherwise use `auth.json` |
-| `memory` | Do not persist credentials; used for ephemeral sessions |
+Remote Server URLs used by Desktop must be HTTPS. Plain HTTP is accepted only
+for loopback development addresses.
 
-The default is `file`. This avoids frequent macOS Keychain prompts during local
-development and TUI startup. Deployments that require OS-native secret storage
-should set `CLUMSIES_AUTH_STORE=keychain` or `auto`.
+## Remaining hardening
 
-The file store must create `~/.clumsies/auth.json` with mode `0600` where the
-platform supports POSIX file modes.
-
-## TUI behavior
-
-On startup, the TUI loads local credentials. If an access token is expired but
-the refresh token is valid, the TUI should refresh silently and continue into
-the main workspace.
-
-If no credentials exist, or both access and refresh tokens are unusable, the TUI
-must enter a login state. The current TUI flow supports username/password login
-and invite activation. The login modal is an overlay, so the user does not have
-to leave the TUI to recover an expired or missing session.
-
-Network reachability and authentication are separate states. A successful
-unauthenticated health check must not clear an authentication failure.
-
-Sign out clears local credentials and exits the TUI. A later launch starts from
-the same login flow.
-
-## CLI behavior
-
-`clumsies login` prompts for Hub URL, username, and password today. If the
-server rejects the login for an invited user, it may prompt for the invitation
-token and activate the account.
-
-Future browser/device login should reuse the same credential storage and token
-rotation behavior. The command name can stay, but the underlying flow must be
-shared with the TUI.
-
-## Security notes
-
-Refresh token rotation reduces the value of a captured old refresh token. Hub
-should keep explicit revoke support and should treat refresh token reuse as a
-security signal when token families are added.
-
-Longer refresh lifetimes improve daily UX but increase device-session risk.
-Administrators can lower `HUB_REFRESH_TOKEN_TTL` for stricter environments.
+The daemon currently persists its token pair in its owner-only local SQLite
+database. Moving those secrets to macOS Keychain is required before a production
+Desktop release. This is a known implementation gap, not an alternate supported
+credential mode.

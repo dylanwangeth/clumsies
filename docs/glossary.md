@@ -1,8 +1,8 @@
 # Glossary
 
-## Hub
+## Server
 
-Hub is the authority layer. It owns the server-side state for Artifact, Workspace, context collaboration, and aggregated attestation data.
+Server is the authority layer. It owns the server-side state for Artifact, Workspace, context collaboration, and aggregated attestation data.
 
 This is the architectural center of gravity for the whole project. If a page explains clumsies as a set of local files plus some helper commands, it is missing the point.
 
@@ -58,7 +58,7 @@ Workspace is the project boundary where rules, workflows, bundles, and context a
 | selected rules, workflows, and bundles | references to Artifact |
 | context files | workspace-owned |
 | local drafts | local working state |
-| manifest | Hub-maintained index of current state |
+| manifest | Server-maintained index of current state |
 
 That is why a workspace is not just a folder and not simply a git repository. It is the collaboration boundary around a project.
 
@@ -66,7 +66,7 @@ Workspace also has its own membership model. Org-level maintainers exist above i
 
 ## Manifest
 
-Manifest is the current indexed snapshot of workspace state. It bridges Hub and local runtime by recording which rules, workflows, bundles, and context files belong to the workspace and which content hashes are current.
+Manifest is the current indexed snapshot of workspace state. It bridges Server and local runtime by recording which rules, workflows, bundles, and context files belong to the workspace and which content hashes are current.
 
 That matters because sync, cache refresh, rename handling, and non-blocking local reads all depend on it.
 
@@ -83,7 +83,7 @@ Older specs and pages may still call this layer `Trace`. The current codebase an
 
 Adapter is the host integration layer. It connects clumsies to coding agents such as Codex or Claude Code by installing the hooks, config, skills, and runtime glue needed for the protocol to actually run.
 
-Adapter is not the Hub and not the MCP protocol itself. It is the layer that makes the runtime usable inside a specific host.
+Adapter is not the Server and not the MCP protocol itself. It is the layer that makes the runtime usable inside a specific host.
 
 ## MCP
 

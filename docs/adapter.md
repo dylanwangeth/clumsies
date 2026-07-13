@@ -4,7 +4,7 @@
 
 Adapter is the host integration layer. It is the system layer that makes clumsies actually run inside a concrete coding agent host such as Codex or Claude Code.
 
-It is not Hub. It is not MCP. It is not just a bundle of convenience scripts. It is the layer that installs and manages the host-side runtime surfaces required for the protocol to work reliably.
+It is not Server. It is not MCP. It is not just a bundle of convenience scripts. It is the layer that installs and manages the host-side runtime surfaces required for the protocol to work reliably.
 
 ## Why Adapter is a first-class layer
 
@@ -82,7 +82,7 @@ Clumsies skills should stay thin. A skill installed into Codex, Claude Code, or 
 
 That indirection is the design advantage. The workflow content remains an Artifact object, so the team can update the real process through the normal review flow without asking every user to reinstall or hand-edit host skill files. The adapter only needs to keep the proxy stable.
 
-Workflow proxies should load by workflow name or path alias, such as `workflow:GEN_COMMIT_MSG`, rather than requiring the generated skill author to know a Hub `p-*` id. The proxy should pass a remembered hash to `retrieve` when it has one, and use an empty string only when the hash is unknown.
+Workflow proxies should load by workflow name or path alias, such as `workflow:GEN_COMMIT_MSG`, rather than requiring the generated skill author to know a Server `p-*` id. The proxy should pass a remembered hash to `retrieve` when it has one, and use an empty string only when the hash is unknown.
 
 ## Workflow skill auto-import
 

@@ -4,7 +4,7 @@
 //! and org stats without blocking workspace selection.
 
 const std = @import("std");
-const HubClient = @import("../../hub_client.zig").HubClient;
+const ServerClient = @import("../../server_client.zig").ServerClient;
 const logger = @import("clumsies_lib").logger;
 const model = @import("model.zig");
 const parse = @import("parse.zig");
@@ -13,11 +13,11 @@ const state = @import("state.zig");
 const log = std.log.scoped(.tui_api);
 
 const AuthSnapshot = struct {
-    hub_url: []const u8,
+    server_url: []const u8,
     access_token: []const u8,
 
     fn deinit(self: AuthSnapshot, alloc: std.mem.Allocator) void {
-        alloc.free(self.hub_url);
+        alloc.free(self.server_url);
         alloc.free(self.access_token);
     }
 };
@@ -27,21 +27,21 @@ const AuthSnapshot = struct {
 /// the shared thread registry so main.zig's exit path joins it.
 pub fn startFetch(
     api_state: *state.ApiState,
-    hub_url: []const u8,
+    server_url: []const u8,
     username: []const u8,
     access_token: []const u8,
     refresh_token: []const u8,
 ) !void {
     const alloc = api_state.allocator();
     const token_alloc = api_state.backing_allocator;
-    const url_copy = try alloc.dupe(u8, hub_url);
+    const url_copy = try alloc.dupe(u8, server_url);
     const username_copy = try alloc.dupe(u8, username);
     const token_copy = try token_alloc.dupe(u8, access_token);
     const refresh_copy = token_alloc.dupe(u8, refresh_token) catch |err| {
         token_alloc.free(token_copy);
         return err;
     };
-    const worker_auth = try dupeAuthSnapshot(token_alloc, hub_url, access_token);
+    const worker_auth = try dupeAuthSnapshot(token_alloc, server_url, access_token);
     var worker_auth_owned = true;
     errdefer if (worker_auth_owned) worker_auth.deinit(token_alloc);
 
@@ -49,7 +49,7 @@ pub fn startFetch(
     api_state.mutex.lockUncancelable(std.Options.debug_io);
     const old_access = api_state.access_token;
     const old_refresh = api_state.refresh_token;
-    api_state.hub_url = url_copy;
+    api_state.server_url = url_copy;
     api_state.username = username_copy;
     api_state.access_token = token_copy;
     api_state.refresh_token = refresh_copy;
@@ -90,7 +90,7 @@ fn fetchAll(
     api_state: *state.ApiState,
     auth: AuthSnapshot,
 ) void {
-    const hub_url = auth.hub_url;
+    const server_url = auth.server_url;
     const access_token = auth.access_token;
     defer auth.deinit(api_state.backing_allocator);
     defer {
@@ -115,7 +115,7 @@ fn fetchAll(
     state.refreshLocalState(api_state);
     log.info("bootstrap_local_state_refreshed", .{});
 
-    var client = HubClient.init(alloc, hub_url, access_token);
+    var client = ServerClient.init(alloc, server_url, access_token);
     client.client_id = api_state.clientIdHex();
     defer client.deinit();
 
@@ -138,7 +138,7 @@ fn fetchAll(
         me_resp.deinit();
         me_resp_active = false;
 
-        var retry_client = HubClient.init(alloc, hub_url, tokens.access_token);
+        var retry_client = ServerClient.init(alloc, server_url, tokens.access_token);
         retry_client.client_id = api_state.clientIdHex();
         defer retry_client.deinit();
         me_resp = retry_client.get("/api/auth/me") catch {
@@ -212,14 +212,14 @@ fn fetchAll(
 
 fn dupeAuthSnapshot(
     alloc: std.mem.Allocator,
-    hub_url: []const u8,
+    server_url: []const u8,
     access_token: []const u8,
 ) !AuthSnapshot {
-    const hub_url_copy = try alloc.dupe(u8, hub_url);
-    errdefer alloc.free(hub_url_copy);
+    const server_url_copy = try alloc.dupe(u8, server_url);
+    errdefer alloc.free(server_url_copy);
     const access_copy = try alloc.dupe(u8, access_token);
     return .{
-        .hub_url = hub_url_copy,
+        .server_url = server_url_copy,
         .access_token = access_copy,
     };
 }
@@ -229,7 +229,7 @@ fn beginRefetch(api_state: *state.ApiState) !?AuthSnapshot {
     api_state.mutex.lockUncancelable(std.Options.debug_io);
     defer api_state.mutex.unlock(std.Options.debug_io);
 
-    if (api_state.hub_url == null or api_state.username == null or api_state.access_token == null or api_state.refresh_token == null) {
+    if (api_state.server_url == null or api_state.username == null or api_state.access_token == null or api_state.refresh_token == null) {
         return null;
     }
     if (api_state.bootstrap_inflight) {
@@ -240,7 +240,7 @@ fn beginRefetch(api_state: *state.ApiState) !?AuthSnapshot {
 
     const auth = try dupeAuthSnapshot(
         alloc,
-        api_state.hub_url.?,
+        api_state.server_url.?,
         api_state.access_token.?,
     );
     api_state.bootstrap_inflight = true;
@@ -257,7 +257,7 @@ fn takeQueuedRefetch(api_state: *state.ApiState) ?AuthSnapshot {
         api_state.bootstrap_inflight = false;
         return null;
     }
-    if (api_state.hub_url == null or api_state.username == null or api_state.access_token == null or api_state.refresh_token == null) {
+    if (api_state.server_url == null or api_state.username == null or api_state.access_token == null or api_state.refresh_token == null) {
         api_state.bootstrap_refetch_requested = false;
         api_state.bootstrap_inflight = false;
         return null;
@@ -265,7 +265,7 @@ fn takeQueuedRefetch(api_state: *state.ApiState) ?AuthSnapshot {
 
     const auth = dupeAuthSnapshot(
         alloc,
-        api_state.hub_url.?,
+        api_state.server_url.?,
         api_state.access_token.?,
     ) catch |err| {
         log.warn("bootstrap_refetch_queued_prepare_failed error={s}", .{@errorName(err)});
@@ -293,7 +293,7 @@ fn setStatus(api_state: *state.ApiState, status: state.ConnectionStatus) void {
 }
 
 fn doFetchParse(
-    client: *HubClient,
+    client: *ServerClient,
     alloc: std.mem.Allocator,
     path: []const u8,
     comptime T: type,
@@ -317,7 +317,7 @@ fn doFetchParse(
 }
 
 fn seedAuthForTest(api_state: *state.ApiState) !void {
-    api_state.hub_url = try api_state.allocator().dupe(u8, "http://127.0.0.1:8499");
+    api_state.server_url = try api_state.allocator().dupe(u8, "http://127.0.0.1:8499");
     api_state.username = try api_state.allocator().dupe(u8, "tester");
     api_state.access_token = try api_state.backing_allocator.dupe(u8, "access-token");
     api_state.refresh_token = try api_state.backing_allocator.dupe(u8, "refresh-token");
@@ -351,7 +351,7 @@ test "beginRefetch creates snapshot and clears queued flag" {
 
     try std.testing.expect(api_state.bootstrap_inflight);
     try std.testing.expect(!api_state.bootstrap_refetch_requested);
-    try std.testing.expectEqualStrings("http://127.0.0.1:8499", auth.hub_url);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8499", auth.server_url);
     try std.testing.expectEqualStrings("access-token", auth.access_token);
 }
 
@@ -369,7 +369,7 @@ test "takeQueuedRefetch consumes queued snapshot" {
 
     try std.testing.expect(api_state.bootstrap_inflight);
     try std.testing.expect(!api_state.bootstrap_refetch_requested);
-    try std.testing.expectEqualStrings("http://127.0.0.1:8499", auth.hub_url);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8499", auth.server_url);
     try std.testing.expectEqualStrings("access-token", auth.access_token);
 }
 

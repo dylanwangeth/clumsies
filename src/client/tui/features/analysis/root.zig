@@ -1,4 +1,4 @@
-//! Analysis feature container. Renders hub statistics for rules, members,
+//! Analysis feature container. Renders server statistics for rules, members,
 //! models, and attestation activity with local focus state.
 
 const std = @import("std");
@@ -81,7 +81,7 @@ pub fn drawRules(
     const rules = ranked_rules.items;
 
     if (rules.len == 0) {
-        w.writeText(&surface, ctx, 2, 1, "No rule analysis data returned by the hub.", theme.fg(theme.MUTED));
+        w.writeText(&surface, ctx, 2, 1, "No rule analysis data returned by the server.", theme.fg(theme.MUTED));
         return surface;
     }
     if (self.analysis.rule_cursor >= rules.len) self.analysis.rule_cursor = rules.len - 1;

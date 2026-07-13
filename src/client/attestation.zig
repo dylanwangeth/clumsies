@@ -1,6 +1,6 @@
 //! Attestation event recording. Each MCP setup/discover/load/refer/submit interaction
 //! is serialized as an AttestationEvent and appended to
-//! ~/.clumsies/workspaces/{workspace_name}/attestation/{session_id}.jsonl. The Hub later
+//! ~/.clumsies/workspaces/{workspace_name}/attestation/{session_id}.jsonl. The Server later
 //! ingests these events via POST /api/attestations to compute constraint-level usage statistics.
 //!
 //! The data model uses a tagged union (Payload) so each event type carries only
@@ -116,7 +116,7 @@ pub const AttestationEvent = struct {
 };
 
 /// Generate an opaque idempotency key for local attestation uploads.
-/// Ordering must use `timestamp`; `event_id` only backs Hub de-duplication.
+/// Ordering must use `timestamp`; `event_id` only backs Server de-duplication.
 pub fn nextEventId() i64 {
     const random_source: std.Random.IoSource = .{ .io = std.Options.debug_io };
     const raw = random_source.interface().int(u64) & @as(u64, @intCast(std.math.maxInt(i64)));

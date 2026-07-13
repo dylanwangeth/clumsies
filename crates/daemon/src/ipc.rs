@@ -1,8 +1,9 @@
 use crate::{
     DaemonDraftDetail, DaemonDraftDetailRequest, DaemonDraftListQuery, DaemonDraftListResponse,
     DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonError, DaemonHealth,
-    DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService, DaemonMcpStatus, DaemonRetryResponse,
-    DaemonSyncRetryRequest, DaemonSyncStatus,
+    DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService, DaemonMcpStatus, DaemonProjectConfig,
+    DaemonProjectConfigUpdateRequest, DaemonRetryResponse, DaemonServerRequest,
+    DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus,
 };
 
 #[derive(Clone, Debug)]
@@ -27,6 +28,22 @@ impl DaemonIpcClient {
 
     pub fn health(&self) -> Result<DaemonHealth, DaemonError> {
         self.call(DaemonIpcRequest::empty("health"))?.into_payload()
+    }
+
+    pub fn project_config(&self) -> Result<DaemonProjectConfig, DaemonError> {
+        self.call(DaemonIpcRequest::empty("project_config"))?
+            .into_payload()
+    }
+
+    pub fn replace_project_config(
+        &self,
+        request: DaemonProjectConfigUpdateRequest,
+    ) -> Result<DaemonProjectConfig, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "replace_project_config",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
     }
 
     pub fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
@@ -77,6 +94,17 @@ impl DaemonIpcClient {
     ) -> Result<DaemonDraftOperationResponse, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "store_draft_operation",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn server_request(
+        &self,
+        request: DaemonServerRequest,
+    ) -> Result<DaemonServerResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "server_request",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

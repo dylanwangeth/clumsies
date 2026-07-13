@@ -25,7 +25,7 @@ pub const FlushError = error{
 
 pub const MAX_EVENTS_PER_BATCH: usize = 1000;
 pub const MAX_BYTES_PER_BATCH: usize = 512 * 1024;
-/// Hard upper bound on a single event's size. The hub server rejects bodies
+/// Hard upper bound on a single event's size. The server server rejects bodies
 /// larger than 1 MB, so any single event above ~900 KB can never be uploaded
 /// successfully. Such events are logged and skipped so the pipeline cannot be
 /// wedged by a malformed or pathologically large attestation line.
@@ -51,7 +51,7 @@ const RawLine = struct {
 };
 
 /// Upload helper injected by callers. flushOnce is agnostic to the transport
-/// so the library can be tested without a live hub server. Implementations
+/// so the library can be tested without a live server server. Implementations
 /// should POST {"events": [...]} to /api/attestations and return true on 2xx.
 pub const Uploader = struct {
     ctx: *anyopaque,
@@ -62,7 +62,7 @@ pub const Uploader = struct {
     }
 };
 
-/// Flush pending attestation events for a workspace to the hub server.
+/// Flush pending attestation events for a workspace to the server server.
 ///
 /// Cursor semantics: byte offset into each attestation log. A successful batch POST
 /// advances the cursor atomically via temp file + rename. Network failures

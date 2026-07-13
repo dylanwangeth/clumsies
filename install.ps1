@@ -57,5 +57,5 @@ if ($UserPath -notlike "*$BinDir*") {
 Success "clumsies installed successfully!"
 Write-Host "Restart your terminal, then try:"
 Write-Host "    clumsies --help" -ForegroundColor Cyan
-Write-Host "    clumsies login --hub-url http://127.0.0.1:8400 --username admin" -ForegroundColor Cyan
+Write-Host "    clumsies login --server-url http://127.0.0.1:8400 --username admin" -ForegroundColor Cyan
 Write-Host "    clumsies adapt" -ForegroundColor Cyan

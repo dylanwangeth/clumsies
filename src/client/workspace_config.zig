@@ -251,7 +251,7 @@ pub fn addWorkspace(allocator: std.mem.Allocator, server_url: []const u8, name: 
 
 /// Remove a workspace binding from ~/.clumsies/config.toml.
 ///
-/// Hub owns the workspace record; this only cleans local path bindings so stale
+/// Server owns the workspace record; this only cleans local path bindings so stale
 /// deleted workspaces cannot keep resolving MCP/CLI calls from the current dir.
 pub fn removeWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) !void {
     const base = try auth.getBasePath(allocator);

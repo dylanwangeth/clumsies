@@ -7,10 +7,28 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type {
+  DaemonBootstrapStatus,
+  DaemonHealth,
+  DaemonMcpStatus,
+  DaemonProjectConfig,
+  DaemonSyncStatus,
+  NativeInvoke,
+} from "@clumsies/api-client";
 import type { LucideIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import koalMark from "./assets/koal-mark.svg";
+import {
+  AuthenticationRequiredError,
+  daemonDiscardOperationForDraft,
+  daemonOperationsForDraft,
+  DesktopBackend,
+  mapBundle,
+  mapReviewSummary,
+  syncStateForDaemonDraft,
+  type ProjectOption,
+} from "./backend";
 import {
   Activity,
   AlertTriangle,
@@ -90,37 +108,19 @@ type UtilityView = "Diagnostics" | "Settings";
 type View = PrimaryView | UtilityView;
 type ReviewFilter = ReviewStatus;
 
-type DaemonBootstrapStatus = {
-  label: string;
-  mach_service_name: string;
-  plist_path: string;
-  installed: boolean;
-  endpoint: { transport: "macos_xpc_mach_service"; service_name: string };
-  runtime: {
-    installed: boolean;
-    bootstrapped: boolean;
-    running: boolean;
-    pid: number | null;
-    state: string | null;
-    last_exit_code: number | null;
-    last_error: string | null;
-  };
-};
-
-type DaemonHealth = {
-  daemon_version: string;
-  hub_url: string;
-  project_id: string | null;
-  daemon_installation_id: string;
-  log_dir: string;
-  local_db: { path: string; ready: boolean; schema_version: number };
-};
-
 type LoadState =
   | { status: "loading" }
   | { status: "preview" }
+  | { status: "authentication_required"; serverUrl: string; message?: string }
   | { status: "failed"; message: string }
-  | { status: "ready"; bootstrap: DaemonBootstrapStatus; health: DaemonHealth | null };
+  | {
+      status: "ready";
+      bootstrap: DaemonBootstrapStatus;
+      health: DaemonHealth | null;
+      projectConfig: DaemonProjectConfig | null;
+      syncStatus: DaemonSyncStatus | null;
+      mcpStatus: DaemonMcpStatus | null;
+    };
 
 type ConfirmState = {
   title: string;
@@ -162,14 +162,14 @@ const primaryNavigation: NavigationItem[] = [
   { view: "Reviews", label: "Reviews", icon: GitPullRequest },
 ];
 
-const projects = [
-  { id: "koal", name: "Koal" },
-  { id: "infinite", name: "Infinite" },
-  { id: "clumsies", name: "Clumsies" },
-  { id: "pi-mono", name: "Pi Mono" },
-  { id: "aider", name: "Aider" },
-  { id: "okra", name: "Okra" },
-  { id: "hands-on-os", name: "Hands on OS" },
+const previewProjects: ProjectOption[] = [
+  { id: "koal", name: "Koal", refCommitId: null },
+  { id: "infinite", name: "Infinite", refCommitId: null },
+  { id: "clumsies", name: "Clumsies", refCommitId: null },
+  { id: "pi-mono", name: "Pi Mono", refCommitId: null },
+  { id: "aider", name: "Aider", refCommitId: null },
+  { id: "okra", name: "Okra", refCommitId: null },
+  { id: "hands-on-os", name: "Hands on OS", refCommitId: null },
 ];
 
 const projectPreviewLimit = 3;
@@ -205,33 +205,54 @@ function isTauriRuntime(): boolean {
 }
 
 export function App() {
+  const previewMode = !isTauriRuntime();
+  const backendRef = useRef<DesktopBackend | null>(null);
+  if (!previewMode && backendRef.current === null) {
+    const nativeInvoke: NativeInvoke = <T,>(
+      command: string,
+      args?: Record<string, unknown>,
+    ) => invoke<T>(command, args);
+    backendRef.current = new DesktopBackend(nativeInvoke);
+  }
   const [selectedView, setSelectedView] = useState<View>("Local");
-  const [selectedProjectId, setSelectedProjectId] = useState("koal");
+  const [projects, setProjects] = useState<ProjectOption[]>(
+    previewMode ? previewProjects : [],
+  );
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    previewMode ? "koal" : "",
+  );
+  const [hubRefCommitId, setHubRefCommitId] = useState<string | null>(null);
   const [hubKind, setHubKind] = useState<MemoryKind>("Context");
   const [projectKind, setProjectKind] = useState<MemoryKind>("Context");
   const [selectedHubId, setSelectedHubId] = useState<string | null>(
-    "hub-context-desktop-product",
+    previewMode ? "hub-context-desktop-product" : null,
   );
   const [selectedProjectResourceId, setSelectedProjectResourceId] = useState<
     string | null
-  >("project-context-daemon");
+  >(previewMode ? "project-context-daemon" : null);
   const [resources, setResources] =
-    useState<AuthorityResource[]>(initialResources);
-  const [drafts, setDrafts] = useState<DraftRecord[]>(initialDrafts);
-  const [reviews, setReviews] = useState<ReviewRecord[]>(initialReviews);
-  const [bundles, setBundles] = useState<PersonalBundle[]>(initialBundles);
+    useState<AuthorityResource[]>(previewMode ? initialResources : []);
+  const [drafts, setDrafts] = useState<DraftRecord[]>(
+    previewMode ? initialDrafts : [],
+  );
+  const [reviews, setReviews] = useState<ReviewRecord[]>(
+    previewMode ? initialReviews : [],
+  );
+  const [bundles, setBundles] = useState<PersonalBundle[]>(
+    previewMode ? initialBundles : [],
+  );
   const [selectedBundleId, setSelectedBundleId] = useState(
-    initialBundles[0]?.id ?? "",
+    previewMode ? (initialBundles[0]?.id ?? "") : "",
   );
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("open");
   const [selectedReviewId, setSelectedReviewId] = useState(
-    initialReviews[0]?.id ?? "",
+    previewMode ? (initialReviews[0]?.id ?? "") : "",
   );
-  const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([
-    initialWorkspaceTab,
-  ]);
+  const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>(
+    previewMode ? [initialWorkspaceTab] : [],
+  );
   const [activeTabKey, setActiveTabKey] = useState<string | null>(
-    initialWorkspaceTab.key,
+    previewMode ? initialWorkspaceTab.key : null,
   );
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -256,38 +277,73 @@ export function App() {
   const bundleSyncTimers = useRef(new Map<string, number>());
   const undoTimer = useRef<number | null>(null);
 
-  const refreshBootstrap = useCallback(async () => {
-    if (!isTauriRuntime()) {
+  const refreshBackend = useCallback(async () => {
+    const backend = backendRef.current;
+    if (!backend) {
       setLoadState({ status: "preview" });
       return;
     }
     setLoadState({ status: "loading" });
     try {
-      const bootstrap = await invoke<DaemonBootstrapStatus>(
-        "read_daemon_bootstrap_status",
-      );
-      setLoadState({ status: "ready", bootstrap, health: null });
-    } catch (error) {
-      setLoadState({
-        status: "failed",
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }, []);
+      const backendState = await backend.load();
+      setProjects(backendState.projects);
+      setHubRefCommitId(backendState.orgRefCommitId);
+      setResources(backendState.resources);
+      setDrafts(backendState.drafts);
+      setBundles(backendState.bundles);
+      setReviews(backendState.reviews);
+      setSelectedProjectId(backendState.activeProjectId ?? "");
+      setSelectedBundleId(backendState.bundles[0]?.id ?? "");
+      setSelectedReviewId(backendState.reviews[0]?.id ?? "");
 
-  const readHealth = useCallback(async () => {
-    if (!isTauriRuntime()) {
-      setLoadState({ status: "preview" });
-      return;
-    }
-    setLoadState({ status: "loading" });
-    try {
-      const [bootstrap, health] = await Promise.all([
-        invoke<DaemonBootstrapStatus>("read_daemon_bootstrap_status"),
-        invoke<DaemonHealth>("read_daemon_health"),
-      ]);
-      setLoadState({ status: "ready", bootstrap, health });
+      const firstProjectItem = backendState.resources.find(
+        (resource) =>
+          resource.scope === "Project" &&
+          resource.projectId === backendState.activeProjectId,
+      );
+      const firstDraft = backendState.drafts.find(
+        (draft) => draft.projectId === backendState.activeProjectId,
+      );
+      const initialItem = firstProjectItem ?? firstDraft ?? null;
+      if (initialItem) {
+        const targetId =
+          "baseResourceId" in initialItem
+            ? (initialItem.baseResourceId ?? initialItem.id)
+            : initialItem.id;
+        const tab: WorkspaceTab = {
+          key: memoryTabKey("Local", targetId, "source"),
+          view: "Local",
+          targetId,
+          kind: initialItem.kind,
+          projectId: initialItem.projectId,
+          surface: "source",
+          pinned: true,
+        };
+        setProjectKind(initialItem.kind);
+        setSelectedProjectResourceId(targetId);
+        setWorkspaceTabs([tab]);
+        setActiveTabKey(tab.key);
+      } else {
+        setSelectedProjectResourceId(null);
+        setWorkspaceTabs([]);
+        setActiveTabKey(null);
+      }
+      setLoadState({
+        status: "ready",
+        bootstrap: backendState.runtime.bootstrap,
+        health: backendState.runtime.health,
+        projectConfig: backendState.runtime.projectConfig,
+        syncStatus: backendState.runtime.syncStatus,
+        mcpStatus: backendState.runtime.mcpStatus,
+      });
     } catch (error) {
+      if (error instanceof AuthenticationRequiredError) {
+        setLoadState({
+          status: "authentication_required",
+          serverUrl: error.serverUrl,
+        });
+        return;
+      }
       setLoadState({
         status: "failed",
         message: error instanceof Error ? error.message : String(error),
@@ -296,25 +352,82 @@ export function App() {
   }, []);
 
   const runDaemonCommand = useCallback(async (command: string) => {
-    if (!isTauriRuntime()) {
+    const backend = backendRef.current;
+    if (!backend) {
       setLoadState({ status: "preview" });
       return;
     }
     setLoadState({ status: "loading" });
     try {
-      const bootstrap = await invoke<DaemonBootstrapStatus>(command);
-      setLoadState({ status: "ready", bootstrap, health: null });
+      const commands: Record<string, () => Promise<DaemonBootstrapStatus>> = {
+        install_daemon_launch_agent: backend.daemon.install,
+        start_daemon_launch_agent: backend.daemon.start,
+        restart_daemon_launch_agent: backend.daemon.restart,
+        stop_daemon_launch_agent: backend.daemon.stop,
+      };
+      const run = commands[command];
+      if (!run) {
+        throw new Error(`Unknown daemon command: ${command}`);
+      }
+      const bootstrap = await run();
+      if (command === "start_daemon_launch_agent" || command === "restart_daemon_launch_agent") {
+        await refreshBackend();
+      } else {
+        setLoadState({
+          status: "ready",
+          bootstrap,
+          health: null,
+          projectConfig: null,
+          syncStatus: null,
+          mcpStatus: null,
+        });
+      }
     } catch (error) {
       setLoadState({
         status: "failed",
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  }, []);
+  }, [refreshBackend]);
+
+  const retryDaemonSync = useCallback(async () => {
+    const backend = backendRef.current;
+    if (!backend) {
+      return;
+    }
+    setLoadState({ status: "loading" });
+    try {
+      await backend.daemon.retrySync({ channel: "all" });
+      await refreshBackend();
+    } catch (error) {
+      setLoadState({
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [refreshBackend]);
+
+  const authenticateDesktop = useCallback(async (serverUrl: string) => {
+    const backend = backendRef.current;
+    if (!backend) {
+      return;
+    }
+    setLoadState({ status: "loading" });
+    try {
+      await backend.authenticate(serverUrl);
+      await refreshBackend();
+    } catch (error) {
+      setLoadState({
+        status: "authentication_required",
+        serverUrl,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [refreshBackend]);
 
   useEffect(() => {
-    void refreshBootstrap();
-  }, [refreshBootstrap]);
+    void refreshBackend();
+  }, [refreshBackend]);
 
   useEffect(() => {
     try {
@@ -397,41 +510,136 @@ export function App() {
     return () => window.cancelAnimationFrame(frame);
   }, [searchOpen]);
 
-  const queueDraftSync = useCallback((draftId: string) => {
-    const previous = draftSyncTimers.current.get(draftId);
+  const queueDraftSync = useCallback((draft: DraftRecord, resource: AuthorityResource | null) => {
+    const previous = draftSyncTimers.current.get(draft.id);
     if (previous !== undefined) {
       window.clearTimeout(previous);
     }
-    const timer = window.setTimeout(() => {
-      setDrafts((current) =>
-        current.map((draft) =>
-          draft.id === draftId && draft.syncState !== "conflict"
-            ? { ...draft, syncState: "synced", updatedAt: "just now" }
-            : draft,
-        ),
-      );
-      draftSyncTimers.current.delete(draftId);
+    const timer = window.setTimeout(async () => {
+      const backend = backendRef.current;
+      if (!backend) {
+        setDrafts((current) =>
+          current.map((item) =>
+            item.id === draft.id && item.syncState !== "conflict"
+              ? { ...item, syncState: "synced", updatedAt: "just now" }
+              : item,
+          ),
+        );
+        draftSyncTimers.current.delete(draft.id);
+        return;
+      }
+      try {
+        let localId = draft.localId ?? null;
+        for (const request of daemonOperationsForDraft(draft, resource)) {
+          const response = await backend.daemon.storeDraftOperation(request);
+          localId = response.draft_id;
+        }
+        if (!localId) {
+          draftSyncTimers.current.delete(draft.id);
+          return;
+        }
+        setDrafts((current) =>
+          current.map((item) =>
+            item.id === draft.id
+              ? { ...item, localId, syncState: "syncing", updatedAt: "just now" }
+              : item,
+          ),
+        );
+
+        const poll = (attempt: number) => {
+          const pollTimer = window.setTimeout(async () => {
+            try {
+              const detail = await backend.daemon.draft(localId);
+              const syncState = syncStateForDaemonDraft(detail);
+              setDrafts((current) =>
+                current.map((item) =>
+                  item.id === draft.id
+                    ? {
+                        ...item,
+                        localId,
+                        serverId: detail.draft.server_draft_id,
+                        serverVersion: detail.draft.server_version,
+                        syncState,
+                        updatedAt: "just now",
+                      }
+                    : item,
+                ),
+              );
+              if (syncState === "syncing" && attempt < 20) {
+                poll(attempt + 1);
+              } else {
+                draftSyncTimers.current.delete(draft.id);
+              }
+            } catch {
+              setDrafts((current) =>
+                current.map((item) =>
+                  item.id === draft.id ? { ...item, syncState: "failed" } : item,
+                ),
+              );
+              draftSyncTimers.current.delete(draft.id);
+            }
+          }, 500);
+          draftSyncTimers.current.set(draft.id, pollTimer);
+        };
+        poll(0);
+      } catch {
+        setDrafts((current) =>
+          current.map((item) =>
+            item.id === draft.id ? { ...item, syncState: "failed" } : item,
+          ),
+        );
+        draftSyncTimers.current.delete(draft.id);
+      }
     }, 650);
-    draftSyncTimers.current.set(draftId, timer);
+    draftSyncTimers.current.set(draft.id, timer);
   }, []);
 
-  const queueBundleSync = useCallback((bundleId: string) => {
-    const previous = bundleSyncTimers.current.get(bundleId);
+  const queueBundleSync = useCallback((bundle: PersonalBundle) => {
+    const previous = bundleSyncTimers.current.get(bundle.id);
     if (previous !== undefined) {
       window.clearTimeout(previous);
     }
-    const timer = window.setTimeout(() => {
-      setBundles((current) =>
-        current.map((bundle) =>
-          bundle.id === bundleId
-            ? { ...bundle, syncState: "synced", updatedAt: "just now" }
-            : bundle,
-        ),
+    const timer = window.setTimeout(async () => {
+      const backend = backendRef.current;
+      if (!backend?.api || bundle.revision === undefined) {
+        setBundles((current) =>
+          current.map((item) =>
+            item.id === bundle.id
+              ? { ...item, syncState: backend ? "failed" : "synced", updatedAt: "just now" }
+              : item,
+          ),
+        );
+        bundleSyncTimers.current.delete(bundle.id);
+        return;
+      }
+      const selected = resources.filter((resource) =>
+        bundle.resourceIds.includes(resource.id),
       );
-      bundleSyncTimers.current.delete(bundleId);
+      try {
+        const detail = await backend.api.updateBundle(bundle.id, bundle.revision, {
+          name: bundle.name,
+          description: bundle.description,
+          rule_ids: selected.filter((item) => item.kind === "Rules").map((item) => item.id),
+          context_ids: selected.filter((item) => item.kind === "Context").map((item) => item.id),
+          workflow_ids: selected
+            .filter((item) => item.kind === "Workflows")
+            .map((item) => item.id),
+        });
+        const saved = mapBundle(detail);
+        setBundles((current) =>
+          current.map((item) => (item.id === bundle.id ? saved : item)),
+        );
+      } catch {
+        setBundles((current) =>
+          current.map((item) =>
+            item.id === bundle.id ? { ...item, syncState: "failed" } : item,
+          ),
+        );
+      }
+      bundleSyncTimers.current.delete(bundle.id);
     }, 500);
-    bundleSyncTimers.current.set(bundleId, timer);
-  }, []);
+    bundleSyncTimers.current.set(bundle.id, timer);
+  }, [resources]);
 
   const showWorkspaceTab = useCallback((tab: WorkspaceTab, pin = tab.pinned) => {
     setWorkspaceTabs((current) => openWorkspaceTab(current, tab, pin));
@@ -549,11 +757,17 @@ export function App() {
       if (item.draft?.status === "in_review") {
         return;
       }
-      const startingDraft = item.draft
+      const baseDraft = item.draft
         ? { ...item.draft, document: cloneDocument(item.draft.document) }
         : item.resource
           ? createDraftFromResource(item.resource)
           : null;
+      const project =
+        projects.find((entry) => entry.id === selectedProjectId) ?? projects[0] ?? null;
+      const startingDraft =
+        baseDraft?.scope === "Hub" && !baseDraft.projectId && project
+          ? { ...baseDraft, projectId: project.id, projectName: project.name }
+          : baseDraft;
       if (!startingDraft) {
         return;
       }
@@ -565,68 +779,105 @@ export function App() {
           "source",
         ),
       );
-      setDrafts((current) => {
-        const currentDraft = current.find((draft) => draft.id === draftId);
-        const basis = currentDraft ?? startingDraft;
-        const updated: DraftRecord = {
-          ...basis,
-          operation: "upsert",
-          syncState: "syncing",
-          updatedAt: "just now",
-          document: update(cloneDocument(basis.document)),
-        };
-        return currentDraft
+      const updated: DraftRecord = {
+        ...startingDraft,
+        operation: "upsert",
+        syncState: "syncing",
+        updatedAt: "just now",
+        document: update(cloneDocument(startingDraft.document)),
+      };
+      setDrafts((current) =>
+        current.some((draft) => draft.id === draftId)
           ? current.map((draft) => (draft.id === draftId ? updated : draft))
-          : [updated, ...current];
-      });
-      queueDraftSync(draftId);
+          : [updated, ...current],
+      );
+      queueDraftSync(updated, item.resource);
     },
-    [pinWorkspaceTabByKey, queueDraftSync],
+    [pinWorkspaceTabByKey, projects, queueDraftSync, selectedProjectId],
   );
 
   const createMemoryDraft = useCallback(
     (scope: MemoryScope, kind: MemoryKind) => {
       const project =
-        scope === "Project"
-          ? projects.find((item) => item.id === selectedProjectId) ?? projects[0]
-          : null;
+        projects.find((item) => item.id === selectedProjectId) ?? projects[0] ?? null;
+      if (!project) {
+        setLoadState({
+          status: "failed",
+          message: "A project is required to create a draft.",
+        });
+        return;
+      }
+      const baseCommitId =
+        scope === "Hub"
+          ? hubRefCommitId
+          : project.refCommitId;
       const draft = {
         ...createBlankDraft(
           scope,
           kind,
-          project?.id ?? null,
-          project?.name ?? null,
+          project.id,
+          project.name,
+          baseCommitId,
         ),
         syncState: "syncing" as const,
       };
       setDrafts((current) => [draft, ...current]);
-      queueDraftSync(draft.id);
+      queueDraftSync(draft, null);
       openMemoryWorkspaceTab(
         scope === "Hub" ? "Hub" : "Local",
         draft.id,
         kind,
-        project?.id ?? null,
+        project.id,
         true,
       );
     },
-    [openMemoryWorkspaceTab, queueDraftSync, selectedProjectId],
+    [hubRefCommitId, openMemoryWorkspaceTab, projects, queueDraftSync, selectedProjectId],
   );
 
   const submitReview = useCallback(
-    (item: ResourceListItem) => {
+    async (item: ResourceListItem) => {
       if (!item.draft || item.draft.status !== "editing") {
         return;
       }
-      const review: ReviewRecord = {
-        id: `review-${Date.now().toString(36)}`,
-        draftId: item.draft.id,
-        title: item.draft.document.title,
-        author: "weiwang",
-        status: "open",
-        createdAt: "just now",
-        decisionNote: null,
-        comments: [],
-      };
+      const backend = backendRef.current;
+      let review: ReviewRecord;
+      if (backend) {
+        if (!backend.api || !item.draft.serverId || item.draft.serverVersion === undefined) {
+          setDrafts((current) =>
+            current.map((draft) =>
+              draft.id === item.draft?.id ? { ...draft, syncState: "failed" } : draft,
+            ),
+          );
+          return;
+        }
+        try {
+          review = mapReviewSummary(
+            await backend.api.createReview({
+              draft_id: item.draft.serverId,
+              expected_draft_version: item.draft.serverVersion,
+              title: item.draft.document.title,
+            }),
+          );
+        } catch {
+          setDrafts((current) =>
+            current.map((draft) =>
+              draft.id === item.draft?.id ? { ...draft, syncState: "failed" } : draft,
+            ),
+          );
+          return;
+        }
+      } else {
+        review = {
+          id: `review-${Date.now().toString(36)}`,
+          draftId: item.draft.id,
+          title: item.draft.document.title,
+          author: "weiwang",
+          status: "open",
+          createdAt: "just now",
+          decisionNote: null,
+          comments: [],
+        };
+      }
       setDrafts((current) =>
         current.map((draft) =>
           draft.id === item.draft?.id
@@ -653,7 +904,12 @@ export function App() {
 
   const openReviewForDraft = useCallback(
     (draftId: string) => {
-      const review = reviews.find((entry) => entry.draftId === draftId);
+      const draft = drafts.find((entry) => entry.id === draftId);
+      const review = reviews.find(
+        (entry) =>
+          entry.draftId === draftId ||
+          (draft?.serverId !== null && entry.draftId === draft?.serverId),
+      );
       if (!review) {
         return;
       }
@@ -670,7 +926,7 @@ export function App() {
         true,
       );
     },
-    [reviews, showWorkspaceTab],
+    [drafts, reviews, showWorkspaceTab],
   );
 
   const discardDraft = useCallback(
@@ -685,7 +941,22 @@ export function App() {
           "The published resource is unchanged. You can undo this action for a short time.",
         confirmLabel: "Discard Draft",
         tone: "danger",
-        onConfirm: () => {
+        onConfirm: async () => {
+          const backend = backendRef.current;
+          const request = daemonDiscardOperationForDraft(removed);
+          if (backend && request) {
+            try {
+              await backend.daemon.storeDraftOperation(request);
+            } catch {
+              setDrafts((current) =>
+                current.map((draft) =>
+                  draft.id === removed.id ? { ...draft, syncState: "failed" } : draft,
+                ),
+              );
+              setConfirmState(null);
+              return;
+            }
+          }
           setDrafts((current) => current.filter((draft) => draft.id !== removed.id));
           setConfirmState(null);
           if (!item.resource) {
@@ -699,10 +970,12 @@ export function App() {
               setSelectedProjectResourceId(null);
             }
           }
-          showUndo({
-            message: "Draft discarded",
-            run: () => setDrafts((current) => [removed, ...current]),
-          });
+          if (!backend) {
+            showUndo({
+              message: "Draft discarded",
+              run: () => setDrafts((current) => [removed, ...current]),
+            });
+          }
         },
       });
     },
@@ -740,7 +1013,7 @@ export function App() {
               "source",
             ),
           );
-          queueDraftSync(updated.id);
+          queueDraftSync(updated, item.resource);
           setConfirmState(null);
         },
       });
@@ -749,22 +1022,47 @@ export function App() {
   );
 
   const updateReviewStatus = useCallback(
-    (reviewId: string, status: ReviewStatus, note: string | null) => {
+    async (reviewId: string, status: ReviewStatus, note: string | null) => {
       const review = reviews.find((item) => item.id === reviewId);
       if (!review) {
         return;
       }
+      const backend = backendRef.current;
+      let saved = { ...review, status, decisionNote: note };
+      if (backend) {
+        if (!backend.api || review.version === undefined || status === "merged") {
+          return;
+        }
+        try {
+          const response = await backend.api.createReviewDecision(reviewId, {
+            decision: status === "approved" ? "approved" : "rejected",
+            expected_review_version: review.version,
+            body: note ?? undefined,
+          });
+          saved = {
+            ...mapReviewSummary(response),
+            comments: review.comments,
+            decisionNote: note,
+          };
+        } catch {
+          return;
+        }
+      }
       setReviews((current) =>
         current.map((item) =>
-          item.id === reviewId ? { ...item, status, decisionNote: note } : item,
+          item.id === reviewId ? saved : item,
         ),
       );
       if (status === "rejected") {
-        setDrafts((current) =>
-          current.map((draft) =>
-            draft.id === review.draftId ? { ...draft, status: "editing" } : draft,
-          ),
-        );
+        if (!backend) {
+          setDrafts((current) =>
+            current.map((draft) =>
+              draft.id === review.draftId || draft.serverId === review.draftId
+                ? { ...draft, status: "editing" }
+                : draft,
+            ),
+          );
+        }
         setReviewFilter("rejected");
       } else if (status === "approved") {
         setReviewFilter("approved");
@@ -774,13 +1072,63 @@ export function App() {
   );
 
   const mergeReview = useCallback(
-    (reviewId: string) => {
+    async (reviewId: string) => {
       const review = reviews.find((item) => item.id === reviewId);
-      const draft = drafts.find((item) => item.id === review?.draftId);
+      const draft = drafts.find(
+        (item) => item.id === review?.draftId || item.serverId === review?.draftId,
+      );
       if (!review || !draft || review.status !== "approved") {
         return;
       }
-      setResources((current) => applyDraft(current, draft));
+      const backend = backendRef.current;
+      let mergedCommitId: string | null = null;
+      if (backend) {
+        if (!backend.api || review.version === undefined) {
+          return;
+        }
+        try {
+          if (!draft.projectId) {
+            return;
+          }
+          const commitState =
+            draft.scope === "Hub"
+              ? await backend.api.orgCommitState()
+              : await backend.api.projectCommitState(draft.projectId);
+          const merge = await backend.api.createReviewMerge(
+            reviewId,
+            commitState.etag,
+            { expected_review_version: review.version },
+          );
+          mergedCommitId = merge.commit_id;
+        } catch {
+          return;
+        }
+      }
+      setResources((current) => {
+        const applied = applyDraft(current, draft);
+        if (!mergedCommitId) {
+          return applied;
+        }
+        return applied.map((resource) =>
+          resource.scope === draft.scope &&
+          (draft.scope === "Hub" || resource.projectId === draft.projectId)
+            ? { ...resource, refCommitId: mergedCommitId }
+            : resource,
+        );
+      });
+      if (mergedCommitId) {
+        if (draft.scope === "Hub") {
+          setHubRefCommitId(mergedCommitId);
+        } else {
+          setProjects((current) =>
+            current.map((project) =>
+              project.id === draft.projectId
+                ? { ...project, refCommitId: mergedCommitId }
+                : project,
+            ),
+          );
+        }
+      }
       const memoryView = draft.scope === "Hub" ? "Hub" : "Local";
       if (draft.operation === "delete" && draft.baseResourceId) {
         removeMemoryWorkspaceTabs(memoryView, draft.baseResourceId);
@@ -819,9 +1167,41 @@ export function App() {
     [drafts, removeMemoryWorkspaceTabs, reviews],
   );
 
-  const addReviewComment = useCallback((reviewId: string, body: string) => {
+  const addReviewComment = useCallback(async (reviewId: string, body: string) => {
     const trimmed = body.trim();
     if (!trimmed) {
+      return;
+    }
+    const backend = backendRef.current;
+    if (backend) {
+      if (!backend.api) {
+        return;
+      }
+      try {
+        const comment = await backend.api.createReviewComment(reviewId, {
+          body: trimmed,
+        });
+        setReviews((current) =>
+          current.map((review) =>
+            review.id === reviewId
+              ? {
+                  ...review,
+                  comments: [
+                    ...review.comments,
+                    {
+                      id: comment.comment_id,
+                      author: comment.author.display_name ?? comment.author.email,
+                      body: comment.body,
+                      createdAt: comment.created_at.slice(0, 10),
+                    },
+                  ],
+                }
+              : review,
+          ),
+        );
+      } catch {
+        return;
+      }
       return;
     }
     setReviews((current) =>
@@ -846,32 +1226,54 @@ export function App() {
 
   const updateBundle = useCallback(
     (bundleId: string, update: (bundle: PersonalBundle) => PersonalBundle) => {
+      const bundle = bundles.find((item) => item.id === bundleId);
+      if (!bundle) {
+        return;
+      }
+      const updated = {
+        ...update(bundle),
+        syncState: "syncing" as const,
+        updatedAt: "just now",
+      };
       pinWorkspaceTabByKey(`bundle:${bundleId}`);
       setBundles((current) =>
-        current.map((bundle) =>
-          bundle.id === bundleId
-            ? {
-                ...update(bundle),
-                syncState: "syncing",
-                updatedAt: "just now",
-              }
-            : bundle,
-        ),
+        current.map((item) => (item.id === bundleId ? updated : item)),
       );
-      queueBundleSync(bundleId);
+      queueBundleSync(updated);
     },
-    [pinWorkspaceTabByKey, queueBundleSync],
+    [bundles, pinWorkspaceTabByKey, queueBundleSync],
   );
 
-  const createBundle = useCallback(() => {
-    const bundle: PersonalBundle = {
-      id: `bundle-${Date.now().toString(36)}`,
-      name: "Untitled bundle",
-      description: "",
-      resourceIds: [],
-      syncState: "syncing",
-      updatedAt: "just now",
-    };
+  const createBundle = useCallback(async () => {
+    const backend = backendRef.current;
+    let bundle: PersonalBundle;
+    if (backend) {
+      if (!backend.api) {
+        return;
+      }
+      try {
+        bundle = mapBundle(
+          await backend.api.createBundle({
+            name: "Untitled bundle",
+            description: "",
+            rule_ids: [],
+            context_ids: [],
+            workflow_ids: [],
+          }),
+        );
+      } catch {
+        return;
+      }
+    } else {
+      bundle = {
+        id: `bundle-${Date.now().toString(36)}`,
+        name: "Untitled bundle",
+        description: "",
+        resourceIds: [],
+        syncState: "syncing",
+        updatedAt: "just now",
+      };
+    }
     setBundles((current) => [bundle, ...current]);
     setSelectedBundleId(bundle.id);
     setSelectedView("Bundles");
@@ -884,7 +1286,9 @@ export function App() {
       },
       true,
     );
-    queueBundleSync(bundle.id);
+    if (!backend) {
+      queueBundleSync(bundle);
+    }
   }, [queueBundleSync, showWorkspaceTab]);
 
   const deleteBundle = useCallback(
@@ -894,15 +1298,28 @@ export function App() {
         message: "This only removes your personal selection set. It does not delete resources.",
         confirmLabel: "Delete Bundle",
         tone: "danger",
-        onConfirm: () => {
+        onConfirm: async () => {
+          const backend = backendRef.current;
+          if (backend) {
+            if (!backend.api || bundle.revision === undefined) {
+              return;
+            }
+            try {
+              await backend.api.deleteBundle(bundle.id, bundle.revision);
+            } catch {
+              return;
+            }
+          }
           setBundles((current) => current.filter((item) => item.id !== bundle.id));
           removeWorkspaceTabByKey(`bundle:${bundle.id}`);
           setSelectedBundleId("");
           setConfirmState(null);
-          showUndo({
-            message: "Bundle deleted",
-            run: () => setBundles((current) => [bundle, ...current]),
-          });
+          if (!backend) {
+            showUndo({
+              message: "Bundle deleted",
+              run: () => setBundles((current) => [bundle, ...current]),
+            });
+          }
         },
       });
     },
@@ -1004,7 +1421,10 @@ export function App() {
       ? reviews.find((review) => review.id === activeWorkspaceTab.targetId) ?? null
       : null;
   const currentReviewDraft = currentReview
-    ? drafts.find((draft) => draft.id === currentReview.draftId) ?? null
+    ? drafts.find(
+        (draft) =>
+          draft.id === currentReview.draftId || draft.serverId === currentReview.draftId,
+      ) ?? null
     : null;
   const currentReviewResource = currentReviewDraft?.baseResourceId
     ? resources.find((resource) => resource.id === currentReviewDraft.baseResourceId) ?? null
@@ -1042,7 +1462,9 @@ export function App() {
           };
         }
         const review = reviews.find((entry) => entry.id === tab.targetId);
-        const draft = drafts.find((entry) => entry.id === review?.draftId);
+        const draft = drafts.find(
+          (entry) => entry.id === review?.draftId || entry.serverId === review?.draftId,
+        );
         return {
           tab,
           label: draft
@@ -1307,6 +1729,7 @@ export function App() {
       <TitleBar />
       <Sidebar
         collapsed={sidebarCollapsed}
+        projects={projects}
         selectedProjectId={selectedProjectId}
         selectedView={selectedView}
         userMenuOpen={userMenuOpen}
@@ -1334,7 +1757,21 @@ export function App() {
         >
           <section className="content-region">
             <div className="workspace-content">
-              {selectedView === "Hub" ? (
+              {loadState.status === "authentication_required" ? (
+                <AuthenticationView
+                  message={loadState.message}
+                  serverUrl={loadState.serverUrl}
+                  onAuthenticate={authenticateDesktop}
+                />
+              ) : loadState.status === "loading" && !previewMode ? (
+                <ConnectionStateView state="loading" onRetry={refreshBackend} />
+              ) : loadState.status === "failed" && selectedView !== "Diagnostics" ? (
+                <ConnectionStateView
+                  message={loadState.message}
+                  state="failed"
+                  onRetry={refreshBackend}
+                />
+              ) : selectedView === "Hub" ? (
                 <MemoryWorkspace
               counts={kindCounts(resources, drafts, "Hub", null)}
               item={currentHubItem}
@@ -1478,10 +1915,18 @@ export function App() {
                 <DiagnosticsView
                   loadState={loadState}
                   onCommand={runDaemonCommand}
-                  onRefresh={readHealth}
+                  onRefresh={refreshBackend}
+                  onRetrySync={retryDaemonSync}
                 />
               ) : selectedView === "Settings" ? (
-                <SettingsView onOpenDiagnostics={() => navigateToView("Diagnostics")} />
+                <SettingsView
+                  loadState={loadState}
+                  projectName={
+                    projects.find((project) => project.id === selectedProjectId)?.name ??
+                    "Not selected"
+                  }
+                  onOpenDiagnostics={() => navigateToView("Diagnostics")}
+                />
               ) : (
                 <EmptyState icon={FileText} title="No open item" />
               )}
@@ -1579,6 +2024,7 @@ function Sidebar({
   onSelectView,
   onToggleCollapsed,
   onToggleUserMenu,
+  projects,
   selectedProjectId,
   selectedView,
   userMenuOpen,
@@ -1590,6 +2036,7 @@ function Sidebar({
   onSelectView: (view: PrimaryView) => void;
   onToggleCollapsed: () => void;
   onToggleUserMenu: () => void;
+  projects: ProjectOption[];
   selectedProjectId: string;
   selectedView: View;
   userMenuOpen: boolean;
@@ -1597,11 +2044,11 @@ function Sidebar({
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [collapsedProjectsOpen, setCollapsedProjectsOpen] = useState(false);
   const selectedProject =
-    projects.find((project) => project.id === selectedProjectId) ?? projects[0];
+    projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const projectPreview = projects.slice(0, projectPreviewLimit);
   const visibleProjects = showAllProjects
     ? projects
-    : projectPreview.some((project) => project.id === selectedProjectId)
+    : !selectedProject || projectPreview.some((project) => project.id === selectedProjectId)
       ? projectPreview
       : [...projectPreview.slice(0, projectPreviewLimit - 1), selectedProject];
 
@@ -1665,7 +2112,7 @@ function Sidebar({
       <nav className="primary-nav" aria-label="Primary">
         {primaryNavigation.map((item) => {
           const active = selectedView === item.view;
-          if (collapsed && item.view === "Local") {
+          if (collapsed && item.view === "Local" && selectedProject) {
             return (
               <div className="nav-entry local-nav-entry" key={item.view}>
                 <button
@@ -2504,7 +2951,7 @@ function MemoryItemToolbar({
     }
     if (draft?.status === "editing") {
       toolbarActions.push({
-        disabled: draft.syncState === "syncing",
+        disabled: draft.syncState !== "synced",
         icon: GitPullRequest,
         label: "Submit Review",
         onClick: onSubmit,
@@ -3651,10 +4098,12 @@ function DiagnosticsView({
   loadState,
   onCommand,
   onRefresh,
+  onRetrySync,
 }: {
   loadState: LoadState;
   onCommand: (command: string) => void;
   onRefresh: () => void;
+  onRetrySync: () => void;
 }) {
   const rows = daemonRows(loadState);
   return (
@@ -3672,6 +4121,7 @@ function DiagnosticsView({
         <button className="button" onClick={() => onCommand("stop_daemon_launch_agent")} type="button">
           Stop
         </button>
+        <IconButton icon={RefreshCw} label="Retry synchronization" onClick={onRetrySync} />
         <IconButton icon={RefreshCw} label="Refresh daemon status" onClick={onRefresh} />
       </div>
       {loadState.status === "failed" ? (
@@ -3692,18 +4142,30 @@ function DiagnosticsView({
   );
 }
 
-function SettingsView({ onOpenDiagnostics }: { onOpenDiagnostics: () => void }) {
+function SettingsView({
+  loadState,
+  onOpenDiagnostics,
+  projectName,
+}: {
+  loadState: LoadState;
+  onOpenDiagnostics: () => void;
+  projectName: string;
+}) {
+  const hubUrl =
+    loadState.status === "ready"
+      ? (loadState.projectConfig?.server_url ?? loadState.health?.server_url ?? "Not configured")
+      : "Unavailable";
   return (
     <section className="utility-view settings-view" aria-label="Settings">
       <section className="settings-section">
         <h2>Connection</h2>
         <label className="settings-row">
-          <span>Hub URL</span>
-          <input readOnly value="http://127.0.0.1:3000" />
+          <span>Server URL</span>
+          <input readOnly value={hubUrl} />
         </label>
         <label className="settings-row">
           <span>Project</span>
-          <input readOnly value="Koal" />
+          <input readOnly value={projectName} />
         </label>
       </section>
       <section className="settings-section">
@@ -3725,6 +4187,83 @@ function SettingsView({ onOpenDiagnostics }: { onOpenDiagnostics: () => void }) 
           <strong>Open</strong>
         </button>
       </section>
+    </section>
+  );
+}
+
+function AuthenticationView({
+  message,
+  onAuthenticate,
+  serverUrl,
+}: {
+  message?: string;
+  onAuthenticate: (serverUrl: string) => void;
+  serverUrl: string;
+}) {
+  const [value, setValue] = useState(serverUrl);
+
+  useEffect(() => setValue(serverUrl), [serverUrl]);
+
+  return (
+    <section className="session-view" aria-labelledby="sign-in-title">
+      <form
+        className="session-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onAuthenticate(value.trim());
+        }}
+      >
+        <h1 id="sign-in-title">Sign in</h1>
+        <p>Use your organization account.</p>
+        <label>
+          <span>Server URL</span>
+          <input
+            autoCapitalize="none"
+            autoCorrect="off"
+            onChange={(event) => setValue(event.target.value)}
+            required
+            spellCheck={false}
+            type="url"
+            value={value}
+          />
+        </label>
+        {message ? <p className="session-error" role="alert">{message}</p> : null}
+        <button className="button primary" type="submit">
+          Continue with SSO
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function ConnectionStateView({
+  message,
+  onRetry,
+  state,
+}: {
+  message?: string;
+  onRetry: () => void;
+  state: "loading" | "failed";
+}) {
+  return (
+    <section className="session-view" aria-live="polite">
+      <div className="connection-state">
+        {state === "loading" ? (
+          <>
+            <LoaderCircle aria-hidden="true" className="spin" size={18} />
+            <p>Connecting to Server…</p>
+          </>
+        ) : (
+          <>
+            <strong>Server unavailable</strong>
+            <p>{message}</p>
+            <button className="button" onClick={onRetry} type="button">
+              <RefreshCw aria-hidden="true" size={14} />
+              Retry
+            </button>
+          </>
+        )}
+      </div>
     </section>
   );
 }
@@ -3798,7 +4337,7 @@ function SyncMark({
   const Icon =
     state === "syncing"
       ? LoaderCircle
-      : state === "conflict"
+      : state === "conflict" || state === "failed"
         ? AlertTriangle
         : state === "local"
           ? CloudOff
@@ -3938,6 +4477,9 @@ function syncLabel(state: SyncState): string {
   if (state === "conflict") {
     return "Conflict";
   }
+  if (state === "failed") {
+    return "Save failed";
+  }
   if (state === "local") {
     return "Saved locally";
   }
@@ -3980,7 +4522,13 @@ function daemonRows(state: LoadState): [string, string][] {
   if (state.status === "failed") {
     return [["Status", "Unavailable"]];
   }
-  const { bootstrap, health } = state;
+  if (state.status === "authentication_required") {
+    return [
+      ["Status", "Sign-in required"],
+      ["Server", state.serverUrl],
+    ];
+  }
+  const { bootstrap, health, mcpStatus, projectConfig, syncStatus } = state;
   return [
     ["LaunchAgent", bootstrap.label],
     ["Mach service", bootstrap.mach_service_name],
@@ -3988,9 +4536,16 @@ function daemonRows(state: LoadState): [string, string][] {
     ["Running", bootstrap.runtime.running ? "Yes" : "No"],
     ["PID", bootstrap.runtime.pid ? String(bootstrap.runtime.pid) : "None"],
     ["Version", health?.daemon_version ?? "Unknown"],
-    ["Hub", health?.hub_url ?? "Unknown"],
+    ["Server", health?.server_url ?? "Unknown"],
     ["Project", health?.project_id ?? "Not selected"],
     ["Local database", health?.local_db.ready ? "Ready" : "Unknown"],
+    ["Project config", projectConfig?.ready ? "Ready" : "Incomplete"],
+    ["Draft sync", syncStatus?.draft_sync.state ?? "Unknown"],
+    ["Commit sync", syncStatus?.commit_sync.state ?? "Unknown"],
+    ["Pending operations", String(syncStatus?.pending_operation_count ?? 0)],
+    ["Failed operations", String(syncStatus?.failed_operation_count ?? 0)],
+    ["Conflicts", String(syncStatus?.conflict_count ?? 0)],
+    ["MCP", mcpStatus?.running ? "Running" : "Not daemon-managed"],
     ["Last error", bootstrap.runtime.last_error ?? "None"],
   ];
 }

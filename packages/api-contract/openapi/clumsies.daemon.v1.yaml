@@ -97,21 +97,21 @@ components:
     DaemonProjectConfig:
       type: object
       required:
-        - hub_url
-        - author_user_id
+        - server_url
         - project_id
         - has_access_token
+        - has_refresh_token
         - ready
         - missing_fields
       properties:
-        hub_url:
+        server_url:
           type: string
           format: uri
-        author_user_id:
-          type: [string, "null"]
         project_id:
           type: [string, "null"]
         has_access_token:
+          type: boolean
+        has_refresh_token:
           type: boolean
         ready:
           type: boolean
@@ -121,22 +121,51 @@ components:
             type: string
     DaemonProjectConfigUpdateRequest:
       type: object
-      required: [hub_url, author_user_id, project_id, access_token]
+      required: [server_url, project_id, access_token, refresh_token]
       properties:
-        hub_url:
+        server_url:
           type: string
           format: uri
-        author_user_id:
-          type: [string, "null"]
         project_id:
           type: [string, "null"]
         access_token:
           type: [string, "null"]
+        refresh_token:
+          type: [string, "null"]
+    DaemonServerRequest:
+      type: object
+      required: [method, path, headers, body]
+      properties:
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE]
+        path:
+          type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        body:
+          type: [string, "null"]
+    DaemonServerResponse:
+      type: object
+      required: [status, headers, body]
+      properties:
+        status:
+          type: integer
+          minimum: 100
+          maximum: 599
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        body:
+          type: string
     DaemonHealth:
       type: object
       required:
         - daemon_version
-        - hub_url
+        - server_url
         - project_id
         - daemon_installation_id
         - log_dir
@@ -144,7 +173,7 @@ components:
       properties:
         daemon_version:
           type: string
-        hub_url:
+        server_url:
           type: string
         project_id:
           type: [string, "null"]
@@ -168,7 +197,7 @@ components:
       type: object
       required:
         - draft_sync
-        - snapshot_sync
+        - commit_sync
         - pending_operation_count
         - failed_operation_count
         - conflict_count
@@ -176,7 +205,7 @@ components:
       properties:
         draft_sync:
           $ref: "#/components/schemas/SyncChannelStatus"
-        snapshot_sync:
+        commit_sync:
           $ref: "#/components/schemas/SyncChannelStatus"
         pending_operation_count:
           type: integer
@@ -211,7 +240,7 @@ components:
       properties:
         channel:
           type: string
-          enum: [drafts, snapshots, all]
+          enum: [drafts, commits, all]
     DaemonRetryResponse:
       type: object
       required: [retry_id, started]
@@ -266,8 +295,11 @@ components:
       type: object
       required:
         - draft_id
+        - project_id
         - server_draft_id
         - server_version
+        - base_commit_id
+        - scope
         - resource_kind
         - target_id
         - path
@@ -279,10 +311,16 @@ components:
       properties:
         draft_id:
           type: string
+        project_id:
+          type: string
         server_draft_id:
           type: [string, "null"]
         server_version:
           type: integer
+        base_commit_id:
+          type: [string, "null"]
+        scope:
+          $ref: "#/components/schemas/DaemonDraftScope"
         resource_kind:
           $ref: "#/components/schemas/DaemonDraftResourceKind"
         target_id:
@@ -333,8 +371,16 @@ components:
           format: date-time
     DaemonDraftOperationRequest:
       type: object
-      required: [resource, op]
+      required: [project_id, scope, resource, op]
       properties:
+        draft_id:
+          type: [string, "null"]
+        base_commit_id:
+          type: [string, "null"]
+        project_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/DaemonDraftScope"
         resource:
           $ref: "#/components/schemas/DaemonDraftResourceKind"
         op:
@@ -441,6 +487,9 @@ components:
     DaemonDraftResourceKind:
       type: string
       enum: [context, rule, workflow, metaprompt]
+    DaemonDraftScope:
+      type: string
+      enum: [org, project]
     DaemonLocalDraftStatus:
       type: string
       enum: [open, submitted, discarded, conflicted]

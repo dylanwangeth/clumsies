@@ -147,7 +147,7 @@ main() {
     success "clumsies installed successfully!"
     printf "Run %bsource $RC_FILE%b or restart your terminal, then try:\n" "$CYAN" "$RESET"
     printf "    %bclumsies --help%b\n" "$CYAN" "$RESET"
-    printf "    %bclumsies login --hub-url http://127.0.0.1:8400 --username admin%b\n" "$CYAN" "$RESET"
+    printf "    %bclumsies login --server-url http://127.0.0.1:8400 --username admin%b\n" "$CYAN" "$RESET"
     printf "    %bclumsies adapt%b\n" "$CYAN" "$RESET"
 }
 

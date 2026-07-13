@@ -2157,6 +2157,81 @@ pre {
   background: var(--bg-hover);
 }
 
+.session-view {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  place-items: center;
+  overflow: auto;
+  background: var(--bg-primary);
+  padding: 32px;
+}
+
+.session-form {
+  display: grid;
+  width: min(360px, 100%);
+  gap: 14px;
+}
+
+.session-form h1 {
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 620;
+}
+
+.session-form > p,
+.connection-state > p {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.session-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+
+.session-form input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg-raised);
+  color: var(--text);
+  font: inherit;
+  padding: 0 9px;
+}
+
+.session-form input:focus {
+  border-color: var(--accent);
+  outline: 0;
+  box-shadow: 0 0 0 1px var(--focus);
+}
+
+.session-form .button {
+  justify-self: start;
+}
+
+.session-form .session-error {
+  color: var(--danger);
+}
+
+.connection-state {
+  display: grid;
+  max-width: 440px;
+  justify-items: start;
+  gap: 10px;
+}
+
+.connection-state > strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .empty-state {
   display: grid;
   width: 100%;

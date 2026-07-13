@@ -141,7 +141,7 @@ Each item can include:
 
 When `ids` is present and `session_id` is absent, `retrieve` resolves full content for the selected IDs. This is the old load parameter structure under the new tool name.
 
-Do not retrieve every item returned by `activate`. Read activated metadata first, then retrieve only the items that are relevant to the current task. If the user gives an exact Hub id, local draft id, alias, or path, retrieve that reference directly without a broad activation search.
+Do not retrieve every item returned by `activate`. Read activated metadata first, then retrieve only the items that are relevant to the current task. If the user gives an exact Server id, local draft id, alias, or path, retrieve that reference directly without a broad activation search.
 
 ### Input
 

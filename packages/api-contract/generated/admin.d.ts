@@ -32,7 +32,7 @@ export interface paths {
         /** List organization members. */
         get: operations["listAdminMembers"];
         put?: never;
-        /** Create a Google email member admission record. */
+        /** Create an organization member admission record. */
         post: operations["createAdminMember"];
         delete?: never;
         options?: never;
@@ -183,7 +183,7 @@ export interface components {
             display_name: string | null;
             role: components["schemas"]["OrgRole"];
             status: components["schemas"]["MemberStatus"];
-            google_subject_bound: boolean;
+            external_identity_bound: boolean;
             revision: number;
         };
         AdminProjectListResponse: {
@@ -231,8 +231,8 @@ export interface components {
             version: string;
             database: components["schemas"]["HealthCheck"];
             schema: components["schemas"]["HealthCheck"];
-            snapshot_service: components["schemas"]["HealthCheck"];
-            sync_queue: components["schemas"]["HealthCheck"];
+            commit_service: components["schemas"]["HealthCheck"];
+            oidc: components["schemas"]["HealthCheck"];
         };
         HealthCheck: {
             /** @enum {string} */
@@ -385,9 +385,7 @@ export interface operations {
     };
     deleteAdminMember: {
         parameters: {
-            query?: {
-                transfer_projects_to?: string;
-            };
+            query?: never;
             header: {
                 "If-Match": components["parameters"]["IfMatch"];
             };

@@ -21,7 +21,7 @@ const auth_mod = @import("../auth.zig");
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
-const HubClient = @import("../hub_client.zig").HubClient;
+const ServerClient = @import("../server_client.zig").ServerClient;
 const drafts_mod = @import("../drafts.zig");
 const workspace_rule = @import("../rule.zig");
 const workspace_config = @import("../workspace_config.zig");
@@ -33,7 +33,7 @@ const util_hash = @import("clumsies_lib").util.hash;
 const tui_prefs = @import("prefs.zig");
 
 const log = std.log.scoped(.tui_event);
-const DEFAULT_HUB_URL = "http://127.0.0.1:8400";
+const DEFAULT_SERVER_URL = "http://127.0.0.1:8400";
 const CONTENT_PREFETCH_LIMIT: usize = 24;
 
 const editor_host = runtime.editor_host;
@@ -159,7 +159,7 @@ const PathTreeState = workspace_panel.PathTreeState;
 const DraftTarget = features.drafts.DraftTarget;
 const PendingPrAction = features.drafts.PendingPrAction;
 const LoginMode = enum { sign_in, activate };
-const LoginFocus = enum { hub_url, username, invite_token, password, submit };
+const LoginFocus = enum { server_url, username, invite_token, password, submit };
 const ProfileDialogKind = enum { username, password };
 const ProfileDialogFocus = enum { first, second, submit };
 const InviteDialogFocus = enum { username, role, submit };
@@ -249,8 +249,8 @@ pub const Shell = struct {
     search_active: bool = false,
     search_buf: [160]u8 = .{0} ** 160,
     search_len: usize = 0,
-    login_hub_url_buf: [160]u8 = .{0} ** 160,
-    login_hub_url_len: usize = 0,
+    login_server_url_buf: [160]u8 = .{0} ** 160,
+    login_server_url_len: usize = 0,
     login_username_buf: [80]u8 = .{0} ** 80,
     login_username_len: usize = 0,
     login_password_buf: [128]u8 = .{0} ** 128,
@@ -258,7 +258,7 @@ pub const Shell = struct {
     login_invite_token_buf: [128]u8 = .{0} ** 128,
     login_invite_token_len: usize = 0,
     login_mode: LoginMode = .sign_in,
-    login_focus: LoginFocus = .hub_url,
+    login_focus: LoginFocus = .server_url,
     login_message: []const u8 = "",
     show_profile_dialog: bool = false,
     profile_dialog_kind: ProfileDialogKind = .username,
@@ -297,7 +297,7 @@ pub const Shell = struct {
 
     // Editor shell-out plumbing. `app` and `env_map` stay borrowed from
     // main.zig for the lifetime of the Shell. Active workspace is
-    // resolved dynamically from `ws_sel` against the hub-provided
+    // resolved dynamically from `ws_sel` against the server-provided
     // workspace list (see `activeWsId()`), not from a cwd binding.
     app: *vxfw.App,
     env_map: *const std.process.Environ.Map,
@@ -1247,10 +1247,10 @@ pub const Shell = struct {
         const alloc = self.api_state.allocator();
         const configured_url = workspace_config.loadServerUrl(alloc) catch null;
         defer if (configured_url) |url| alloc.free(url);
-        const default_url = configured_url orelse DEFAULT_HUB_URL;
-        const url = if (default_url.len <= self.login_hub_url_buf.len) default_url else DEFAULT_HUB_URL;
-        @memcpy(self.login_hub_url_buf[0..url.len], url);
-        self.login_hub_url_len = url.len;
+        const default_url = configured_url orelse DEFAULT_SERVER_URL;
+        const url = if (default_url.len <= self.login_server_url_buf.len) default_url else DEFAULT_SERVER_URL;
+        @memcpy(self.login_server_url_buf[0..url.len], url);
+        self.login_server_url_len = url.len;
         self.login_focus = .username;
     }
 
@@ -1385,7 +1385,7 @@ pub const Shell = struct {
         }
 
         var input = switch (self.login_focus) {
-            .hub_url => w.TextInput{ .buf = &self.login_hub_url_buf, .len = &self.login_hub_url_len },
+            .server_url => w.TextInput{ .buf = &self.login_server_url_buf, .len = &self.login_server_url_len },
             .username => w.TextInput{ .buf = &self.login_username_buf, .len = &self.login_username_len },
             .invite_token => w.TextInput{ .buf = &self.login_invite_token_buf, .len = &self.login_invite_token_len },
             .password => w.TextInput{ .buf = &self.login_password_buf, .len = &self.login_password_len },
@@ -1406,21 +1406,21 @@ pub const Shell = struct {
     }
 
     fn submitLoginForm(self: *Shell) void {
-        const hub_url_raw = self.login_hub_url_buf[0..self.login_hub_url_len];
+        const server_url_raw = self.login_server_url_buf[0..self.login_server_url_len];
         const username = self.login_username_buf[0..self.login_username_len];
         const password = self.login_password_buf[0..self.login_password_len];
         const invite_token = self.login_invite_token_buf[0..self.login_invite_token_len];
-        if (hub_url_raw.len == 0 or username.len == 0 or password.len == 0 or (self.login_mode == .activate and invite_token.len == 0)) {
-            self.login_message = if (self.login_mode == .activate) "Hub, user, invite token, and password are required." else "Hub URL, username, and password are required.";
+        if (server_url_raw.len == 0 or username.len == 0 or password.len == 0 or (self.login_mode == .activate and invite_token.len == 0)) {
+            self.login_message = if (self.login_mode == .activate) "Server, user, invite token, and password are required." else "Server URL, username, and password are required.";
             return;
         }
 
         const alloc = self.api_state.backing_allocator;
-        const hub_url = normalizeLoginHubUrl(alloc, hub_url_raw) catch {
-            self.login_message = "Hub URL must use http:// or https://.";
+        const server_url = normalizeLoginServerUrl(alloc, server_url_raw) catch {
+            self.login_message = "Server URL must use http:// or https://.";
             return;
         };
-        defer alloc.free(hub_url);
+        defer alloc.free(server_url);
 
         const body = switch (self.login_mode) {
             .sign_in => blk: {
@@ -1453,11 +1453,11 @@ pub const Shell = struct {
         defer alloc.free(body);
 
         api.state.setConnectionStatus(self.api_state, .connecting);
-        var client = HubClient.init(alloc, hub_url, null);
+        var client = ServerClient.init(alloc, server_url, null);
         defer client.deinit();
         const response = client.post(path, body) catch {
             api.state.setConnectionStatus(self.api_state, .error_network);
-            self.login_message = "Hub is unreachable. Check the URL and server.";
+            self.login_message = "Server is unreachable. Check the URL and server.";
             return;
         };
         defer response.deinit();
@@ -1469,7 +1469,7 @@ pub const Shell = struct {
         }
         if (response.status != .ok) {
             api.state.setConnectionStatus(self.api_state, .error_auth);
-            self.login_message = "Login failed. Check Hub logs for details.";
+            self.login_message = "Login failed. Check Server logs for details.";
             return;
         }
 
@@ -1478,13 +1478,13 @@ pub const Shell = struct {
             .ignore_unknown_fields = true,
         }) catch {
             api.state.setConnectionStatus(self.api_state, .error_auth);
-            self.login_message = "Hub returned an invalid login response.";
+            self.login_message = "Server returned an invalid login response.";
             return;
         };
         defer parsed.deinit();
 
-        _ = auth_mod.saveAuth(alloc, hub_url, username, parsed.value.access_token, parsed.value.refresh_token) catch {};
-        api.fetch.startFetch(self.api_state, hub_url, username, parsed.value.access_token, parsed.value.refresh_token) catch {
+        _ = auth_mod.saveAuth(alloc, server_url, username, parsed.value.access_token, parsed.value.refresh_token) catch {};
+        api.fetch.startFetch(self.api_state, server_url, username, parsed.value.access_token, parsed.value.refresh_token) catch {
             api.state.setConnectionStatus(self.api_state, .error_network);
             self.login_message = "Logged in, but startup fetch failed.";
             return;
@@ -1505,7 +1505,7 @@ pub const Shell = struct {
         const box_w: u16 = @min(@as(u16, 58), size.width -| 6);
         const box_h: u16 = if (self.login_mode == .activate) 17 else 15;
         const modal = Modal{
-            .title = "Connect to Clumsies Hub",
+            .title = "Connect to Clumsies Server",
             .box_width = box_w,
             .box_height = box_h,
         };
@@ -1517,7 +1517,7 @@ pub const Shell = struct {
         const switch_label = if (self.login_mode == .activate) "F2 sign in" else "F2 activate invite";
         const switch_w: u16 = @intCast(@min(ctx.stringWidth(switch_label), result.content_width));
         w.writeText(&surface, ctx, col + result.content_width -| switch_w, field_start -| 2, switch_label, theme.textOn(theme.PANEL_ALT, theme.MUTED));
-        self.drawLoginField(&surface, ctx, col, field_start, result.content_width, "Hub", self.login_hub_url_buf[0..self.login_hub_url_len], .hub_url);
+        self.drawLoginField(&surface, ctx, col, field_start, result.content_width, "Server", self.login_server_url_buf[0..self.login_server_url_len], .server_url);
         self.drawLoginField(&surface, ctx, col, field_start + 2, result.content_width, "User", self.login_username_buf[0..self.login_username_len], .username);
         var password_row = field_start + 4;
         if (self.login_mode == .activate) {
@@ -1615,24 +1615,24 @@ pub const Shell = struct {
 
     fn nextLoginFocus(self: *const Shell) LoginFocus {
         return switch (self.login_focus) {
-            .hub_url => .username,
+            .server_url => .username,
             .username => if (self.login_mode == .activate) .invite_token else .password,
             .invite_token => .password,
             .password => .submit,
-            .submit => .hub_url,
+            .submit => .server_url,
         };
     }
 
-    fn normalizeLoginHubUrl(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    fn normalizeLoginServerUrl(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
         const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-        if (trimmed.len == 0) return error.InvalidHubUrl;
+        if (trimmed.len == 0) return error.InvalidServerUrl;
         const with_scheme = if (std.mem.indexOf(u8, trimmed, "://") == null)
             try std.fmt.allocPrint(allocator, "http://{s}", .{trimmed})
         else
             try allocator.dupe(u8, trimmed);
         errdefer allocator.free(with_scheme);
         if (!std.mem.startsWith(u8, with_scheme, "http://") and !std.mem.startsWith(u8, with_scheme, "https://")) {
-            return error.UnsupportedHubUrlScheme;
+            return error.UnsupportedServerUrlScheme;
         }
         const normalized = std.mem.trimEnd(u8, with_scheme, "/");
         if (normalized.len == with_scheme.len) return with_scheme;
@@ -1962,19 +1962,19 @@ pub const Shell = struct {
         };
         defer alloc.free(cwd);
 
-        var hub_url_copy: ?[]const u8 = null;
+        var server_url_copy: ?[]const u8 = null;
         self.api_state.mutex.lockUncancelable(std.Options.debug_io);
-        if (self.api_state.hub_url) |hub_url| {
-            hub_url_copy = alloc.dupe(u8, hub_url) catch null;
+        if (self.api_state.server_url) |server_url| {
+            server_url_copy = alloc.dupe(u8, server_url) catch null;
         }
         self.api_state.mutex.unlock(std.Options.debug_io);
-        const hub_url = hub_url_copy orelse {
-            self.confirm_error_message = "Hub URL is not loaded.";
+        const server_url = server_url_copy orelse {
+            self.confirm_error_message = "Server URL is not loaded.";
             return false;
         };
-        defer alloc.free(hub_url);
+        defer alloc.free(server_url);
 
-        workspace_config.addWorkspace(alloc, hub_url, workspace.name, workspace.ws_id, cwd) catch {
+        workspace_config.addWorkspace(alloc, server_url, workspace.name, workspace.ws_id, cwd) catch {
             self.confirm_error_message = "Could not bind current directory.";
             return false;
         };
@@ -1996,10 +1996,10 @@ pub const Shell = struct {
         const auth_info = try auth_mod.loadAuth(alloc);
         defer auth_info.deinit(alloc);
 
-        var hub = HubClient.init(alloc, auth_info.hub_url, auth_info.access_token);
-        defer hub.deinit();
-        try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
-        const summary = try sync_cmd.materializeWorkspace(alloc, &hub, ws_id, .{});
+        var server = ServerClient.init(alloc, auth_info.server_url, auth_info.access_token);
+        defer server.deinit();
+        try server.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
+        const summary = try sync_cmd.materializeWorkspace(alloc, &server, ws_id, .{});
         self.api_state.workspace_paths_cache.invalidate();
         self.resetLocalWorkspaceDetail();
         return summary;
@@ -2007,19 +2007,19 @@ pub const Shell = struct {
 
     pub fn bindWorkspacePath(self: *Shell, name: []const u8, ws_id: []const u8, path: []const u8) !void {
         const alloc = self.api_state.backing_allocator;
-        var hub_url_copy: ?[]const u8 = null;
+        var server_url_copy: ?[]const u8 = null;
         self.api_state.mutex.lockUncancelable(std.Options.debug_io);
-        if (self.api_state.hub_url) |hub_url| {
-            hub_url_copy = alloc.dupe(u8, hub_url) catch {
+        if (self.api_state.server_url) |server_url| {
+            server_url_copy = alloc.dupe(u8, server_url) catch {
                 self.api_state.mutex.unlock(std.Options.debug_io);
                 return error.OutOfMemory;
             };
         }
         self.api_state.mutex.unlock(std.Options.debug_io);
-        const hub_url = hub_url_copy orelse return error.HubUrlNotLoaded;
-        defer alloc.free(hub_url);
+        const server_url = server_url_copy orelse return error.ServerUrlNotLoaded;
+        defer alloc.free(server_url);
 
-        try workspace_config.addWorkspace(alloc, hub_url, name, ws_id, path);
+        try workspace_config.addWorkspace(alloc, server_url, name, ws_id, path);
         self.api_state.workspace_paths_cache.invalidate();
     }
 
@@ -3273,7 +3273,7 @@ pub const Shell = struct {
                 if (self.activeWsId()) |ws_id| {
                     const has_remote_snapshot = self.api_state.workspace_context_cache.lookup(.{ .value = ws_id }) != null;
                     self.api_state.workspace_context_cache.markFailedAt(.{ .value = ws_id }, self.tick_count);
-                    if (!self.isHubConnected()) return;
+                    if (!self.isServerConnected()) return;
                     const text: []const u8 = if (has_remote_snapshot)
                         "Workspace context refresh failed; showing latest remote snapshot."
                     else if (self.hasLocalWorkspaceDetail(ws_id))
@@ -3298,7 +3298,7 @@ pub const Shell = struct {
                 if (self.activeWsId()) |ws_id| {
                     const has_remote_snapshot = self.api_state.workspace_manifest_cache.lookup(.{ .value = ws_id }) != null;
                     self.api_state.workspace_manifest_cache.markFailedAt(.{ .value = ws_id }, self.tick_count);
-                    if (!self.isHubConnected()) return;
+                    if (!self.isServerConnected()) return;
                     const text: []const u8 = if (has_remote_snapshot)
                         "Workspace manifest refresh failed; showing latest remote snapshot."
                     else if (self.hasLocalWorkspaceDetail(ws_id))
@@ -3666,7 +3666,7 @@ pub const Shell = struct {
         const state_alloc = self.api_state.allocator();
         const org_name_copy = state_alloc.dupe(u8, resp.org_name) catch return;
         const username_copy = state_alloc.dupe(u8, resp.username) catch return;
-        var hub_url_copy: ?[]const u8 = null;
+        var server_url_copy: ?[]const u8 = null;
         var access_copy: ?[]const u8 = null;
         var refresh_copy: ?[]const u8 = null;
 
@@ -3678,17 +3678,17 @@ pub const Shell = struct {
             u.role = resp.role;
             u.scopes = resp.scopes;
         }
-        if (self.api_state.hub_url) |value| hub_url_copy = alloc.dupe(u8, value) catch null;
+        if (self.api_state.server_url) |value| server_url_copy = alloc.dupe(u8, value) catch null;
         if (self.api_state.access_token) |value| access_copy = alloc.dupe(u8, value) catch null;
         if (self.api_state.refresh_token) |value| refresh_copy = alloc.dupe(u8, value) catch null;
         self.api_state.mutex.unlock(std.Options.debug_io);
 
-        defer if (hub_url_copy) |value| alloc.free(value);
+        defer if (server_url_copy) |value| alloc.free(value);
         defer if (access_copy) |value| alloc.free(value);
         defer if (refresh_copy) |value| alloc.free(value);
 
-        if (hub_url_copy != null and access_copy != null and refresh_copy != null) {
-            _ = auth_mod.saveAuth(alloc, hub_url_copy.?, resp.username, access_copy.?, refresh_copy.?) catch |err| {
+        if (server_url_copy != null and access_copy != null and refresh_copy != null) {
+            _ = auth_mod.saveAuth(alloc, server_url_copy.?, resp.username, access_copy.?, refresh_copy.?) catch |err| {
                 log.warn("profile_auth_persist_failed error={s}", .{@errorName(err)});
             };
         }
@@ -3775,7 +3775,7 @@ pub const Shell = struct {
 
     /// Pump the workspace context content batch slot. Each item is
     /// stored under its workspace/path key; failed in-flight items are
-    /// remembered so a disconnected Hub does not trigger a retry loop.
+    /// remembered so a disconnected Server does not trigger a retry loop.
     fn consumeWsContextContentResult(self: *Shell) void {
         const result = self.api_state.workspace_context_content_batch_pending.consume() orelse return;
         switch (result) {
@@ -3799,13 +3799,13 @@ pub const Shell = struct {
             else => {
                 self.api_state.workspace_context_content_cache.markInflightFailed();
                 workspace_panel.failPendingWorkspacePullAll(self, .context, "Pull failed: context content fetch failed.");
-                if (!self.isHubConnected()) return;
+                if (!self.isServerConnected()) return;
                 self.system_notices.push(.workspace_context_content, .failure, .persistent, "Workspace context content failed; showing local cache when available.");
             },
         }
     }
 
-    fn isHubConnected(self: *Shell) bool {
+    fn isServerConnected(self: *Shell) bool {
         self.api_state.mutex.lockUncancelable(std.Options.debug_io);
         defer self.api_state.mutex.unlock(std.Options.debug_io);
         return self.api_state.status == .connected;
@@ -5538,7 +5538,7 @@ pub const Shell = struct {
     /// its selection. Returns null when the active module doesn't have
     /// an editable selection (e.g. no workspace bound or a directory
     /// row is highlighted). Workspace context create-draft rows remain
-    /// editable even before hub detail has loaded.
+    /// editable even before server detail has loaded.
     pub fn selectedDraftTarget(self: *Shell) ?DraftTarget {
         const ws_id = self.activeWsId() orelse return null;
         switch (self.selected_module) {

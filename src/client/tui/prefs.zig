@@ -1,4 +1,4 @@
-//! TUI-local preferences. These are client UI state, not Hub-synced content.
+//! TUI-local preferences. These are client UI state, not Server-synced content.
 //! The first preference is the last selected workspace id so the next TUI
 //! launch can restore the user's previous workspace when `/api/auth/me`
 //! returns a matching workspace in scope.

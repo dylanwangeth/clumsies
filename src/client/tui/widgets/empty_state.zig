@@ -30,8 +30,8 @@ pub const EmptyState = struct {
         return switch (self.status) {
             .connecting => std.fmt.allocPrint(arena, "Loading {s}...", .{self.entity_name}) catch "Loading...",
             .error_auth => "Authentication required. Use the login panel to continue.",
-            .error_network => "Hub unavailable. Run clumsies hub.",
-            .disconnected => "Not connected to hub.",
+            .error_network => "Server unavailable. Check the deployment.",
+            .disconnected => "Not connected to server.",
             .connected => std.fmt.allocPrint(arena, "No {s} loaded.", .{self.entity_name}) catch "No data loaded.",
         };
     }

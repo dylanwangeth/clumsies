@@ -15,8 +15,8 @@
 //! the process tears down.
 
 const std = @import("std");
-const hub_client = @import("../../hub_client.zig");
-const HubClient = hub_client.HubClient;
+const server_client = @import("../../server_client.zig");
+const ServerClient = server_client.ServerClient;
 const api_error = @import("clumsies_lib").protocol.api_error;
 const logger = @import("clumsies_lib").logger;
 const request = @import("request.zig");
@@ -43,7 +43,7 @@ pub const Result = request.Result;
 pub const ApiErrorPayload = request.ApiErrorPayload;
 pub const PendingRequest = request.PendingRequest;
 
-/// Declarative description of a single Hub endpoint.
+/// Declarative description of a single Server endpoint.
 ///
 /// `ReqT` is the input shape a caller hands to `dispatch`. `RespT` is the
 /// deserialized success type. For write endpoints that do not need a
@@ -123,7 +123,7 @@ pub const ThreadRegistry = struct {
 ///   hands across the thread boundary — this struct, the url and token
 ///   dupes, and the deep-copied request. The worker frees them at exit.
 ///   The worker also creates a per-request `ArenaAllocator` from it to
-///   back path/body/HubClient allocations that live for one request.
+///   back path/body/ServerClient allocations that live for one request.
 /// * `result_alloc` is the long-lived arena shared with the UI.
 ///   `spec.parse_ok` and `parseApiError` write into it so parsed values
 ///   and api_error strings outlive the worker and land in caches.
@@ -133,7 +133,7 @@ fn WorkerContext(comptime ReqT: type, comptime RespT: type) type {
         pending: *PendingRequest(Result(RespT)),
         req: ReqT,
         generation: u64,
-        hub_url: []const u8,
+        server_url: []const u8,
         access_token: []const u8,
         client_id: []const u8,
         update_ctx: ?*anyopaque,
@@ -157,7 +157,7 @@ pub fn dispatch(
     pending: *PendingRequest(Result(RespT)),
     registry: *ThreadRegistry,
     registry_alloc: std.mem.Allocator,
-    hub_url: []const u8,
+    server_url: []const u8,
     access_token: []const u8,
     client_id: []const u8,
     refresh_config: ?RefreshConfig,
@@ -175,8 +175,8 @@ pub fn dispatch(
         pending.complete(gen, .network_error);
         return;
     };
-    const url_copy = transient_parent.dupe(u8, hub_url) catch {
-        log.warn("dispatch_prepare_failed method={s} stage=hub_url_copy", .{methodName(spec.method)});
+    const url_copy = transient_parent.dupe(u8, server_url) catch {
+        log.warn("dispatch_prepare_failed method={s} stage=server_url_copy", .{methodName(spec.method)});
         freeDeepCopy(ReqT, transient_parent, req_copy);
         pending.complete(gen, .network_error);
         return;
@@ -203,7 +203,7 @@ pub fn dispatch(
         .pending = pending,
         .req = req_copy,
         .generation = gen,
-        .hub_url = url_copy,
+        .server_url = url_copy,
         .access_token = token_copy,
         .client_id = client_id,
         .update_ctx = if (refresh_config) |refresh| refresh.update_ctx else null,
@@ -237,10 +237,10 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
 
             defer transient_parent.destroy(ctx);
             defer transient_parent.free(ctx.access_token);
-            defer transient_parent.free(ctx.hub_url);
+            defer transient_parent.free(ctx.server_url);
             defer freeDeepCopy(ReqT, transient_parent, ctx.req);
 
-            // Per-request arena for path, body, HubClient response
+            // Per-request arena for path, body, ServerClient response
             // buffers, and any other single-request scratch. Deinit at
             // end of worker so these do not accumulate in the long-lived
             // UI arena.
@@ -268,7 +268,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
 
             log.info("dispatch {s} {s}", .{ methodName(ctx.spec.method), logger.redactedPath(path) });
 
-            var client = HubClient.init(t_alloc, ctx.hub_url, ctx.access_token);
+            var client = ServerClient.init(t_alloc, ctx.server_url, ctx.access_token);
             client.client_id = ctx.client_id;
             defer client.deinit();
             var resp = switch (ctx.spec.method) {
@@ -301,7 +301,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
                 resp.deinit();
                 resp_active = false;
 
-                var retry_client = HubClient.init(t_alloc, ctx.hub_url, tokens.access_token);
+                var retry_client = ServerClient.init(t_alloc, ctx.server_url, tokens.access_token);
                 retry_client.client_id = ctx.client_id;
                 defer retry_client.deinit();
                 resp = switch (ctx.spec.method) {
@@ -331,7 +331,7 @@ fn runWorker(comptime ReqT: type, comptime RespT: type) fn (ctx: *WorkerContext(
 ///
 /// 2xx goes through `spec.parse_ok`. A parse failure becomes
 /// `invalid_response` (body was 2xx but malformed, which should not
-/// happen in practice and indicates a Hub contract regression).
+/// happen in practice and indicates a Server contract regression).
 ///
 /// Non-2xx tries to decode the shared `ApiErrorEnvelope`. If the body is
 /// not valid JSON or missing the envelope, synthesize an `api_error`

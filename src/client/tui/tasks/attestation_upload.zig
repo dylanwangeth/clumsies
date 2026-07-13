@@ -1,6 +1,6 @@
 const std = @import("std");
 const attestation_upload = @import("../../attestation_upload.zig");
-const HubClient = @import("../../hub_client.zig").HubClient;
+const ServerClient = @import("../../server_client.zig").ServerClient;
 const workspace_config = @import("../../workspace_config.zig");
 const state = @import("../api/state.zig");
 
@@ -12,11 +12,11 @@ const ApiStateUploader = struct {
     last_status: ?std.http.Status = null,
 
     const AuthSnapshot = struct {
-        hub_url: []const u8,
+        server_url: []const u8,
         access_token: []const u8,
 
         fn deinit(self: AuthSnapshot, allocator: std.mem.Allocator) void {
-            allocator.free(self.hub_url);
+            allocator.free(self.server_url);
             allocator.free(self.access_token);
         }
     };
@@ -26,7 +26,7 @@ const ApiStateUploader = struct {
         const snapshot = try self.snapshotAuth();
         defer snapshot.deinit(self.allocator);
 
-        var client = HubClient.init(self.allocator, snapshot.hub_url, snapshot.access_token);
+        var client = ServerClient.init(self.allocator, snapshot.server_url, snapshot.access_token);
         client.client_id = self.api_state.clientIdHex();
         defer client.deinit();
         var response = client.post("/api/attestations", body) catch |err| {
@@ -46,7 +46,7 @@ const ApiStateUploader = struct {
             response.deinit();
             response_active = false;
 
-            var retry_client = HubClient.init(self.allocator, snapshot.hub_url, tokens.access_token);
+            var retry_client = ServerClient.init(self.allocator, snapshot.server_url, tokens.access_token);
             retry_client.client_id = self.api_state.clientIdHex();
             defer retry_client.deinit();
             response = retry_client.post("/api/attestations", body) catch |err| {
@@ -74,10 +74,10 @@ const ApiStateUploader = struct {
     fn snapshotAuth(self: *ApiStateUploader) !AuthSnapshot {
         self.api_state.mutex.lockUncancelable(std.Options.debug_io);
         defer self.api_state.mutex.unlock(std.Options.debug_io);
-        const hub_url = self.api_state.hub_url orelse return error.NotAuthenticated;
+        const server_url = self.api_state.server_url orelse return error.NotAuthenticated;
         const access_token = self.api_state.access_token orelse return error.NotAuthenticated;
         return .{
-            .hub_url = try self.allocator.dupe(u8, hub_url),
+            .server_url = try self.allocator.dupe(u8, server_url),
             .access_token = try self.allocator.dupe(u8, access_token),
         };
     }

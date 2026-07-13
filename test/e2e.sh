@@ -83,7 +83,7 @@ done
 # 6. Login help
 step "6. login help"
 OUTPUT=$("$CLUMSIES" login -h 2>&1 || true)
-assert_output "login help shown" "hub-url" "$OUTPUT"
+assert_output "login help shown" "server-url" "$OUTPUT"
 
 # 7. Init help
 step "7. init help"

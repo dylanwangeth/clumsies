@@ -174,7 +174,7 @@ pub const DetailArgs = struct {
     /// Path of the selected context file — set for both server-side
     /// files and virtual create-op drafts. drawDetail treats this as
     /// the primary identity and only uses `context_sel` to pull
-    /// hub-side metadata (hash / author / updated_at).
+    /// server-side metadata (hash / author / updated_at).
     context_sel_path: ?[]const u8,
     context_sel_hash: ?[]const u8,
     context_local_path: ?[]const u8,
@@ -1340,7 +1340,7 @@ pub fn syncWsRows(self: anytype) void {
             }
             // Append local create-op rule drafts as virtual rows so
             // workspace-scoped drafts remain visible even before the
-            // hub manifest knows about them.
+            // server manifest knows about them.
             const create_paths = self.drafts.create_rule_paths;
             for (create_paths, 0..) |path, k| {
                 if (search_query.len > 0 and !self.searchMatchesQuery(path, search_query)) continue;
@@ -1892,7 +1892,7 @@ pub fn applyCreateResult(
         .invalid_response => {
             self.workspace.create_phase = .form;
             self.workspace.create_error_kind = .invalid_response;
-            writeErrorMessage(self, "Unexpected response from Hub.");
+            writeErrorMessage(self, "Unexpected response from Server.");
         },
     }
 }

@@ -4,6 +4,40 @@
  */
 
 export interface paths {
+    "/oauth2/authorization/oidc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Begin organization OIDC authorization for a clumsies client. */
+        get: operations["beginOidcAuthorization"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/login/oauth2/code/oidc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Complete the organization OIDC callback and redirect to the requesting client. */
+        get: operations["completeOidcAuthorization"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/token": {
         parameters: {
             query?: never;
@@ -601,15 +635,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/org/snapshots": {
+    "/api/v1/org/commits": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List organization external-memory snapshots. */
-        get: operations["listOrgSnapshots"];
+        /** List organization external-memory commits. */
+        get: operations["listOrgCommits"];
         put?: never;
         post?: never;
         delete?: never;
@@ -618,15 +652,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/org/snapshot-state": {
+    "/api/v1/org/commit-state": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Read organization snapshot update state. */
-        get: operations["getOrgSnapshotState"];
+        /** Read organization commit update state. */
+        get: operations["getOrgCommitState"];
         put?: never;
         post?: never;
         delete?: never;
@@ -635,7 +669,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/projects/{project_id}/snapshots": {
+    "/api/v1/projects/{project_id}/commits": {
         parameters: {
             query?: never;
             header?: never;
@@ -644,8 +678,8 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** List project external-memory snapshots. */
-        get: operations["listProjectSnapshots"];
+        /** List project external-memory commits. */
+        get: operations["listProjectCommits"];
         put?: never;
         post?: never;
         delete?: never;
@@ -654,7 +688,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/projects/{project_id}/snapshot-state": {
+    "/api/v1/projects/{project_id}/commit-state": {
         parameters: {
             query?: never;
             header?: never;
@@ -663,8 +697,8 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** Read project snapshot update state. */
-        get: operations["getProjectSnapshotState"];
+        /** Read project commit update state. */
+        get: operations["getProjectCommitState"];
         put?: never;
         post?: never;
         delete?: never;
@@ -673,17 +707,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/snapshots/{snapshot_id}": {
+    "/api/v1/commits/{commit_id}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                snapshot_id: components["parameters"]["SnapshotId"];
+                commit_id: components["parameters"]["CommitId"];
             };
             cookie?: never;
         };
-        /** Download or read an external-memory snapshot payload. */
-        get: operations["getSnapshot"];
+        /** Download or read an external-memory commit payload. */
+        get: operations["getCommit"];
         put?: never;
         post?: never;
         delete?: never;
@@ -700,6 +734,8 @@ export interface components {
             /** @enum {string} */
             grant_type?: "authorization_code" | "refresh_token";
             code?: string;
+            /** Format: uri */
+            redirect_uri?: string;
             code_verifier?: string;
             refresh_token?: string;
         } & (unknown | unknown);
@@ -709,6 +745,9 @@ export interface components {
             /** @enum {string} */
             token_type: "Bearer";
             expires_in: number;
+            user: components["schemas"]["UserRef"];
+            org: components["schemas"]["OrgRef"];
+            capabilities: string[];
         };
         SessionRevoked: {
             revoked: boolean;
@@ -721,7 +760,6 @@ export interface components {
             capabilities: string[];
         };
         CreateProjectRequest: {
-            org_id: string;
             name: string;
             description?: string;
         };
@@ -746,7 +784,6 @@ export interface components {
             name: string;
         };
         PersonalBundleRequest: {
-            owner_user_id: string;
             name: string;
             description?: string;
             rule_ids?: string[];
@@ -832,9 +869,9 @@ export interface components {
             page_info: components["schemas"]["PageInfo"];
         };
         CreateDraftRequest: {
-            author_user_id: string;
             daemon_installation_id: string;
             project_id: string;
+            base_commit_id?: string | null;
             title: string;
             description?: string;
             resource: components["schemas"]["DraftResourceRef"];
@@ -854,6 +891,7 @@ export interface components {
         Draft: {
             draft_id: string;
             project_id: string;
+            base_commit_id: string | null;
             author: components["schemas"]["UserRef"];
             title: string;
             description: string;
@@ -878,6 +916,8 @@ export interface components {
             new_path?: string | null;
         };
         DraftResourceRef: {
+            /** @enum {string} */
+            scope: "org" | "project";
             kind: components["schemas"]["DraftResourceKind"];
             id: string | null;
             path: string | null;
@@ -972,11 +1012,10 @@ export interface components {
         };
         CreateReviewMergeRequest: {
             expected_review_version: number;
-            expected_target_version?: number | null;
         };
         ReviewMergeResult: {
             review: components["schemas"]["Review"];
-            snapshot_id: string | null;
+            commit_id: string | null;
             applied_operation_count: number;
         };
         RuleMeta: {
@@ -1023,31 +1062,49 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
-        SnapshotListResponse: {
-            items: components["schemas"]["SnapshotManifest"][];
+        CommitListResponse: {
+            items: components["schemas"]["Commit"][];
             page_info: components["schemas"]["PageInfo"];
         };
-        SnapshotStateResponse: {
+        CommitStateResponse: {
             update_available: boolean;
-            latest: components["schemas"]["SnapshotManifest"];
-            download_url: string;
+            ref: components["schemas"]["Ref"];
+            latest: components["schemas"]["Commit"] | null;
+            download_url: string | null;
             incremental_supported: boolean;
         };
-        SnapshotPayload: {
-            manifest: components["schemas"]["SnapshotManifest"];
-            content_items: components["schemas"]["SnapshotContentItem"][];
+        CommitPayload: {
+            commit: components["schemas"]["Commit"];
+            tree: components["schemas"]["Tree"];
+            blobs: components["schemas"]["Blob"][];
             project_org_selection: components["schemas"]["ProjectOrgSelection"] | null;
         };
-        SnapshotManifest: {
-            snapshot_id: string;
-            scope: components["schemas"]["SnapshotScope"];
+        Commit: {
+            commit_id: string;
+            scope: components["schemas"]["CommitScope"];
+            org_id: string;
             project_id: string | null;
+            tree_id: string;
+            parent_commit_id: string | null;
             version: number;
             /** Format: date-time */
             created_at: string;
-            items: components["schemas"]["SnapshotManifestItem"][];
         };
-        SnapshotManifestItem: {
+        Ref: {
+            /** @enum {string} */
+            name: "refs/heads/main";
+            scope: components["schemas"]["CommitScope"];
+            org_id: string;
+            project_id: string | null;
+            commit_id: string | null;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        Tree: {
+            tree_id: string;
+            entries: components["schemas"]["TreeEntry"][];
+        };
+        TreeEntry: {
             id: string;
             /** @enum {string} */
             type: "rule" | "context" | "workflow" | "metaprompt" | "project_org_selection";
@@ -1055,19 +1112,12 @@ export interface components {
             scope: "org" | "project" | "daemon";
             project_id: string | null;
             path: string | null;
-            content_hash: string | null;
+            blob_id: string;
             /** @enum {string} */
             source: "org" | "project" | "selected_org" | "bootstrap" | "config";
         };
-        SnapshotContentItem: {
-            id: string;
-            /** @enum {string} */
-            type: "rule" | "context" | "workflow" | "metaprompt";
-            /** @enum {string} */
-            scope: "org" | "project" | "daemon";
-            project_id: string | null;
-            path: string | null;
-            content_hash: string;
+        Blob: {
+            blob_id: string;
             content: string;
         };
         ProjectOrgSelection: {
@@ -1091,9 +1141,9 @@ export interface components {
             email: string;
             display_name: string | null;
             role: string;
-            /** @enum {string} */
-            auth_provider: "google";
         };
+        /** @enum {string} */
+        ClientKind: "desktop" | "cli" | "web_admin";
         OrgRef: {
             org_id: string;
             name: string;
@@ -1114,7 +1164,7 @@ export interface components {
         /** @enum {string} */
         ResourceStatus: "active" | "deprecated" | "archived";
         /** @enum {string} */
-        SnapshotScope: "org" | "project";
+        CommitScope: "org" | "project";
         /** @enum {string} */
         DraftStatus: "open" | "submitted" | "discarded" | "conflicted";
         /** @enum {string} */
@@ -1148,7 +1198,7 @@ export interface components {
         BundleId: string;
         DraftId: string;
         ReviewId: string;
-        SnapshotId: string;
+        CommitId: string;
     };
     requestBodies: never;
     headers: never;
@@ -1156,6 +1206,59 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    beginOidcAuthorization: {
+        parameters: {
+            query: {
+                client_kind: components["schemas"]["ClientKind"];
+                redirect_uri: string;
+                code_challenge: string;
+                code_challenge_method: "S256";
+                state?: string;
+                login_hint?: string;
+                return_to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the configured OIDC authorization endpoint. */
+            302: {
+                headers: {
+                    Location: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    completeOidcAuthorization: {
+        parameters: {
+            query: {
+                code?: string;
+                state: string;
+                error?: string;
+                error_description?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the validated client callback URI. */
+            302: {
+                headers: {
+                    Location: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     createAuthToken: {
         parameters: {
             query?: never;
@@ -2304,7 +2407,9 @@ export interface operations {
     createReviewMerge: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "If-Match": components["parameters"]["IfMatch"];
+            };
             path: {
                 review_id: components["parameters"]["ReviewId"];
             };
@@ -2328,7 +2433,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    listOrgSnapshots: {
+    listOrgCommits: {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
@@ -2340,23 +2445,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Organization snapshot page. */
+            /** @description Organization commit page. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SnapshotListResponse"];
+                    "application/json": components["schemas"]["CommitListResponse"];
                 };
             };
             default: components["responses"]["Error"];
         };
     };
-    getOrgSnapshotState: {
+    getOrgCommitState: {
         parameters: {
             query?: {
-                local_snapshot_id?: string;
-                local_org_version?: number;
+                local_commit_id?: string;
             };
             header?: never;
             path?: never;
@@ -2364,19 +2468,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Organization snapshot update state. */
+            /** @description Organization commit update state. */
             200: {
                 headers: {
+                    /** @description Current organization refs/heads/main commit ID. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SnapshotStateResponse"];
+                    "application/json": components["schemas"]["CommitStateResponse"];
                 };
             };
             default: components["responses"]["Error"];
         };
     };
-    listProjectSnapshots: {
+    listProjectCommits: {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
@@ -2390,24 +2496,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Project snapshot page. */
+            /** @description Project commit page. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SnapshotListResponse"];
+                    "application/json": components["schemas"]["CommitListResponse"];
                 };
             };
             default: components["responses"]["Error"];
         };
     };
-    getProjectSnapshotState: {
+    getProjectCommitState: {
         parameters: {
             query?: {
-                local_snapshot_id?: string;
-                local_project_version?: number;
-                local_org_snapshot_id?: string;
+                local_commit_id?: string;
             };
             header?: never;
             path: {
@@ -2417,36 +2521,38 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Project snapshot update state. */
+            /** @description Project commit update state. */
             200: {
                 headers: {
+                    /** @description Current project refs/heads/main commit ID. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SnapshotStateResponse"];
+                    "application/json": components["schemas"]["CommitStateResponse"];
                 };
             };
             default: components["responses"]["Error"];
         };
     };
-    getSnapshot: {
+    getCommit: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                snapshot_id: components["parameters"]["SnapshotId"];
+                commit_id: components["parameters"]["CommitId"];
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Snapshot payload. */
+            /** @description Commit payload. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SnapshotPayload"];
+                    "application/json": components["schemas"]["CommitPayload"];
                 };
             };
             default: components["responses"]["Error"];

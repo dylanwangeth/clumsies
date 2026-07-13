@@ -2,12 +2,98 @@ openapi: 3.1.0
 info:
   title: clumsies Public API
   version: 1.0.0
-  summary: Public Hub API for Desktop and CLI.
+  summary: Public Server API for Desktop and CLI.
 servers:
-  - url: https://hub.clumsies.local
+  - url: https://server.clumsies.local
 security:
   - bearerAuth: []
 paths:
+  /oauth2/authorization/oidc:
+    get:
+      operationId: beginOidcAuthorization
+      summary: Begin organization OIDC authorization for a clumsies client.
+      security: []
+      parameters:
+        - name: client_kind
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/ClientKind"
+        - name: redirect_uri
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+        - name: code_challenge
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: code_challenge_method
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [S256]
+        - name: state
+          in: query
+          schema:
+            type: string
+        - name: login_hint
+          in: query
+          schema:
+            type: string
+            format: email
+        - name: return_to
+          in: query
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to the configured OIDC authorization endpoint.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                format: uri
+        default:
+          $ref: "#/components/responses/Error"
+  /login/oauth2/code/oidc:
+    get:
+      operationId: completeOidcAuthorization
+      summary: Complete the organization OIDC callback and redirect to the requesting client.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: error
+          in: query
+          schema:
+            type: string
+        - name: error_description
+          in: query
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to the validated client callback URI.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                format: uri
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/auth/token:
     post:
       operationId: createAuthToken
@@ -772,6 +858,8 @@ paths:
     post:
       operationId: createReviewMerge
       summary: Merge an approved review and produce authoritative external-memory resources.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       requestBody:
         required: true
         content:
@@ -787,103 +875,101 @@ paths:
                 $ref: "#/components/schemas/ReviewMergeResult"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/org/snapshots:
+  /api/v1/org/commits:
     get:
-      operationId: listOrgSnapshots
-      summary: List organization external-memory snapshots.
+      operationId: listOrgCommits
+      summary: List organization external-memory commits.
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
-          description: Organization snapshot page.
+          description: Organization commit page.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SnapshotListResponse"
+                $ref: "#/components/schemas/CommitListResponse"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/org/snapshot-state:
+  /api/v1/org/commit-state:
     get:
-      operationId: getOrgSnapshotState
-      summary: Read organization snapshot update state.
+      operationId: getOrgCommitState
+      summary: Read organization commit update state.
       parameters:
-        - name: local_snapshot_id
+        - name: local_commit_id
           in: query
           schema:
             type: string
-        - name: local_org_version
-          in: query
-          schema:
-            type: integer
       responses:
         "200":
-          description: Organization snapshot update state.
+          description: Organization commit update state.
+          headers:
+            ETag:
+              description: Current organization refs/heads/main commit ID.
+              schema:
+                type: string
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SnapshotStateResponse"
+                $ref: "#/components/schemas/CommitStateResponse"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/projects/{project_id}/snapshots:
+  /api/v1/projects/{project_id}/commits:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
     get:
-      operationId: listProjectSnapshots
-      summary: List project external-memory snapshots.
+      operationId: listProjectCommits
+      summary: List project external-memory commits.
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
-          description: Project snapshot page.
+          description: Project commit page.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SnapshotListResponse"
+                $ref: "#/components/schemas/CommitListResponse"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/projects/{project_id}/snapshot-state:
+  /api/v1/projects/{project_id}/commit-state:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
     get:
-      operationId: getProjectSnapshotState
-      summary: Read project snapshot update state.
+      operationId: getProjectCommitState
+      summary: Read project commit update state.
       parameters:
-        - name: local_snapshot_id
-          in: query
-          schema:
-            type: string
-        - name: local_project_version
-          in: query
-          schema:
-            type: integer
-        - name: local_org_snapshot_id
+        - name: local_commit_id
           in: query
           schema:
             type: string
       responses:
         "200":
-          description: Project snapshot update state.
+          description: Project commit update state.
+          headers:
+            ETag:
+              description: Current project refs/heads/main commit ID.
+              schema:
+                type: string
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SnapshotStateResponse"
+                $ref: "#/components/schemas/CommitStateResponse"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/snapshots/{snapshot_id}:
+  /api/v1/commits/{commit_id}:
     parameters:
-      - $ref: "#/components/parameters/SnapshotId"
+      - $ref: "#/components/parameters/CommitId"
     get:
-      operationId: getSnapshot
-      summary: Download or read an external-memory snapshot payload.
+      operationId: getCommit
+      summary: Download or read an external-memory commit payload.
       responses:
         "200":
-          description: Snapshot payload.
+          description: Commit payload.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SnapshotPayload"
+                $ref: "#/components/schemas/CommitPayload"
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -891,7 +977,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      bearerFormat: opaque
   parameters:
     Limit:
       name: limit
@@ -964,8 +1050,8 @@ components:
       required: true
       schema:
         type: string
-    SnapshotId:
-      name: snapshot_id
+    CommitId:
+      name: commit_id
       in: path
       required: true
       schema:
@@ -981,7 +1067,7 @@ components:
     TokenRequest:
       type: object
       oneOf:
-        - required: [grant_type, code, code_verifier]
+        - required: [grant_type, code, redirect_uri, code_verifier]
         - required: [grant_type, refresh_token]
       properties:
         grant_type:
@@ -989,13 +1075,23 @@ components:
           enum: [authorization_code, refresh_token]
         code:
           type: string
+        redirect_uri:
+          type: string
+          format: uri
         code_verifier:
           type: string
         refresh_token:
           type: string
     TokenResponse:
       type: object
-      required: [access_token, refresh_token, token_type, expires_in]
+      required:
+        - access_token
+        - refresh_token
+        - token_type
+        - expires_in
+        - user
+        - org
+        - capabilities
       properties:
         access_token:
           type: string
@@ -1006,6 +1102,14 @@ components:
           enum: [Bearer]
         expires_in:
           type: integer
+        user:
+          $ref: "#/components/schemas/UserRef"
+        org:
+          $ref: "#/components/schemas/OrgRef"
+        capabilities:
+          type: array
+          items:
+            type: string
     SessionRevoked:
       type: object
       required: [revoked]
@@ -1032,10 +1136,8 @@ components:
             type: string
     CreateProjectRequest:
       type: object
-      required: [org_id, name]
+      required: [name]
       properties:
-        org_id:
-          type: string
         name:
           type: string
         description:
@@ -1083,10 +1185,8 @@ components:
           type: string
     PersonalBundleRequest:
       type: object
-      required: [owner_user_id, name]
+      required: [name]
       properties:
-        owner_user_id:
-          type: string
         name:
           type: string
         description:
@@ -1297,14 +1397,14 @@ components:
           $ref: "#/components/schemas/PageInfo"
     CreateDraftRequest:
       type: object
-      required: [author_user_id, daemon_installation_id, project_id, title, resource]
+      required: [daemon_installation_id, project_id, title, resource]
       properties:
-        author_user_id:
-          type: string
         daemon_installation_id:
           type: string
         project_id:
           type: string
+        base_commit_id:
+          type: [string, "null"]
         title:
           type: string
         description:
@@ -1343,6 +1443,7 @@ components:
       required:
         - draft_id
         - project_id
+        - base_commit_id
         - author
         - title
         - description
@@ -1356,6 +1457,8 @@ components:
           type: string
         project_id:
           type: string
+        base_commit_id:
+          type: [string, "null"]
         author:
           $ref: "#/components/schemas/UserRef"
         title:
@@ -1401,8 +1504,11 @@ components:
           type: [string, "null"]
     DraftResourceRef:
       type: object
-      required: [kind, id, path]
+      required: [scope, kind, id, path]
       properties:
+        scope:
+          type: string
+          enum: [org, project]
         kind:
           $ref: "#/components/schemas/DraftResourceKind"
         id:
@@ -1615,15 +1721,13 @@ components:
       properties:
         expected_review_version:
           type: integer
-        expected_target_version:
-          type: [integer, "null"]
     ReviewMergeResult:
       type: object
-      required: [review, snapshot_id, applied_operation_count]
+      required: [review, commit_id, applied_operation_count]
       properties:
         review:
           $ref: "#/components/schemas/Review"
-        snapshot_id:
+        commit_id:
           type: [string, "null"]
         applied_operation_count:
           type: integer
@@ -1710,64 +1814,100 @@ components:
         updated_at:
           type: string
           format: date-time
-    SnapshotListResponse:
+    CommitListResponse:
       type: object
       required: [items, page_info]
       properties:
         items:
           type: array
           items:
-            $ref: "#/components/schemas/SnapshotManifest"
+            $ref: "#/components/schemas/Commit"
         page_info:
           $ref: "#/components/schemas/PageInfo"
-    SnapshotStateResponse:
+    CommitStateResponse:
       type: object
-      required: [update_available, latest, download_url, incremental_supported]
+      required: [update_available, ref, latest, download_url, incremental_supported]
       properties:
         update_available:
           type: boolean
+        ref:
+          $ref: "#/components/schemas/Ref"
         latest:
-          $ref: "#/components/schemas/SnapshotManifest"
+          oneOf:
+            - $ref: "#/components/schemas/Commit"
+            - type: "null"
         download_url:
-          type: string
+          type: [string, "null"]
         incremental_supported:
           type: boolean
-    SnapshotPayload:
+    CommitPayload:
       type: object
-      required: [manifest, content_items, project_org_selection]
+      required: [commit, tree, blobs, project_org_selection]
       properties:
-        manifest:
-          $ref: "#/components/schemas/SnapshotManifest"
-        content_items:
+        commit:
+          $ref: "#/components/schemas/Commit"
+        tree:
+          $ref: "#/components/schemas/Tree"
+        blobs:
           type: array
           items:
-            $ref: "#/components/schemas/SnapshotContentItem"
+            $ref: "#/components/schemas/Blob"
         project_org_selection:
           oneOf:
             - $ref: "#/components/schemas/ProjectOrgSelection"
             - type: "null"
-    SnapshotManifest:
+    Commit:
       type: object
-      required: [snapshot_id, scope, project_id, version, created_at, items]
+      required: [commit_id, scope, org_id, project_id, tree_id, parent_commit_id, version, created_at]
       properties:
-        snapshot_id:
+        commit_id:
           type: string
         scope:
-          $ref: "#/components/schemas/SnapshotScope"
+          $ref: "#/components/schemas/CommitScope"
+        org_id:
+          type: string
         project_id:
+          type: [string, "null"]
+        tree_id:
+          type: string
+        parent_commit_id:
           type: [string, "null"]
         version:
           type: integer
         created_at:
           type: string
           format: date-time
-        items:
+    Ref:
+      type: object
+      required: [name, scope, org_id, project_id, commit_id, updated_at]
+      properties:
+        name:
+          type: string
+          enum: [refs/heads/main]
+        scope:
+          $ref: "#/components/schemas/CommitScope"
+        org_id:
+          type: string
+        project_id:
+          type: [string, "null"]
+        commit_id:
+          type: [string, "null"]
+        updated_at:
+          type: string
+          format: date-time
+    Tree:
+      type: object
+      required: [tree_id, entries]
+      properties:
+        tree_id:
+          type: string
+        entries:
           type: array
           items:
-            $ref: "#/components/schemas/SnapshotManifestItem"
-    SnapshotManifestItem:
+            $ref: "#/components/schemas/TreeEntry"
+    TreeEntry:
       type: object
-      required: [id, type, scope, project_id, path, content_hash, source]
+      required: [id, type, scope, project_id, path, blob_id, source]
       properties:
         id:
           type: string
@@ -1781,28 +1921,16 @@ components:
           type: [string, "null"]
         path:
           type: [string, "null"]
-        content_hash:
-          type: [string, "null"]
+        blob_id:
+          type: string
         source:
           type: string
           enum: [org, project, selected_org, bootstrap, config]
-    SnapshotContentItem:
+    Blob:
       type: object
-      required: [id, type, scope, project_id, path, content_hash, content]
+      required: [blob_id, content]
       properties:
-        id:
-          type: string
-        type:
-          type: string
-          enum: [rule, context, workflow, metaprompt]
-        scope:
-          type: string
-          enum: [org, project, daemon]
-        project_id:
-          type: [string, "null"]
-        path:
-          type: [string, "null"]
-        content_hash:
+        blob_id:
           type: string
         content:
           type: string
@@ -1844,7 +1972,7 @@ components:
           type: boolean
     UserRef:
       type: object
-      required: [user_id, email, display_name, role, auth_provider]
+      required: [user_id, email, display_name, role]
       properties:
         user_id:
           type: string
@@ -1855,9 +1983,9 @@ components:
           type: [string, "null"]
         role:
           type: string
-        auth_provider:
-          type: string
-          enum: [google]
+    ClientKind:
+      type: string
+      enum: [desktop, cli, web_admin]
     OrgRef:
       type: object
       required: [org_id, name]
@@ -1891,7 +2019,7 @@ components:
     ResourceStatus:
       type: string
       enum: [active, deprecated, archived]
-    SnapshotScope:
+    CommitScope:
       type: string
       enum: [org, project]
     DraftStatus:

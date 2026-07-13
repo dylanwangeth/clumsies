@@ -27,10 +27,11 @@ pub fn requestJsonAlloc(allocator: std.mem.Allocator, method: []const u8) ![]u8 
 
 pub fn storeDraftOperationPayloadJson(
     allocator: std.mem.Allocator,
+    project_id: []const u8,
     resource: []const u8,
     op: std.json.Value,
 ) ![]u8 {
-    const request_json = try storeDraftOperationRequestJsonAlloc(allocator, resource, op);
+    const request_json = try storeDraftOperationRequestJsonAlloc(allocator, project_id, resource, op);
     defer allocator.free(request_json);
 
     const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
@@ -41,14 +42,19 @@ pub fn storeDraftOperationPayloadJson(
 
 pub fn storeDraftOperationRequestJsonAlloc(
     allocator: std.mem.Allocator,
+    project_id: []const u8,
     resource: []const u8,
     op: std.json.Value,
 ) ![]u8 {
     const payload = struct {
+        project_id: []const u8,
+        scope: []const u8,
         resource: []const u8,
         op: std.json.Value,
         source: []const u8,
     }{
+        .project_id = project_id,
+        .scope = "project",
         .resource = resource,
         .op = op,
         .source = "mcp_store",
@@ -201,10 +207,17 @@ test "storeDraftOperationRequestJsonAlloc builds daemon store envelope" {
     );
     defer parsed.deinit();
 
-    const json = try storeDraftOperationRequestJsonAlloc(std.testing.allocator, "metaprompt", parsed.value);
+    const json = try storeDraftOperationRequestJsonAlloc(
+        std.testing.allocator,
+        "prj_test",
+        "metaprompt",
+        parsed.value,
+    );
     defer std.testing.allocator.free(json);
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"method\":\"store_draft_operation\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"project_id\":\"prj_test\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"scope\":\"project\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"resource\":\"metaprompt\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"source\":\"mcp_store\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"create\"") != null);

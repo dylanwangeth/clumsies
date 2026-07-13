@@ -1,4 +1,4 @@
-//! Authentication credential storage. Persists Hub URL, username, and tokens
+//! Authentication credential storage. Persists Server URL, username, and tokens
 //! to the configured local credential store. Shared by CLI login, MCP startup,
 //! and TUI init.
 const std = @import("std");
@@ -8,13 +8,13 @@ const enable_keychain = build_options.enable_keychain;
 const log = std.log.scoped(.auth);
 
 pub const AuthInfo = struct {
-    hub_url: []const u8,
+    server_url: []const u8,
     username: []const u8,
     access_token: []const u8,
     refresh_token: []const u8,
 
     pub fn deinit(self: AuthInfo, allocator: std.mem.Allocator) void {
-        allocator.free(self.hub_url);
+        allocator.free(self.server_url);
         allocator.free(self.username);
         allocator.free(self.access_token);
         allocator.free(self.refresh_token);
@@ -36,7 +36,7 @@ pub const AuthStore = enum {
 };
 
 const SERVICE_NAME = "clumsies";
-const ACCOUNT_NAME = "hub-auth";
+const ACCOUNT_NAME = "server-auth";
 const STORE_ENV = "CLUMSIES_AUTH_STORE";
 
 pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
@@ -45,9 +45,9 @@ pub fn getBasePath(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ home, ".clumsies" });
 }
 
-pub fn saveAuth(allocator: std.mem.Allocator, hub_url: []const u8, username: []const u8, access_token: []const u8, refresh_token: []const u8) !SaveLocation {
+pub fn saveAuth(allocator: std.mem.Allocator, server_url: []const u8, username: []const u8, access_token: []const u8, refresh_token: []const u8) !SaveLocation {
     const payload = AuthJson{
-        .hub_url = hub_url,
+        .server_url = server_url,
         .username = username,
         .access_token = access_token,
         .refresh_token = refresh_token,
@@ -81,18 +81,18 @@ pub fn saveAuth(allocator: std.mem.Allocator, hub_url: []const u8, username: []c
     }
 }
 
-/// `HubClient.PersistFn`-shaped callback. Saves the rotated token
-/// pair after HubClient has refreshed in response to a 401. Thin
-/// wrapper around `saveAuth` so the HubClient module doesn't have
+/// `ServerClient.PersistFn`-shaped callback. Saves the rotated token
+/// pair after ServerClient has refreshed in response to a 401. Thin
+/// wrapper around `saveAuth` so the ServerClient module doesn't have
 /// to import the keychain plumbing directly.
 pub fn persistRotatedTokens(
     allocator: std.mem.Allocator,
-    hub_url: []const u8,
+    server_url: []const u8,
     username: []const u8,
     access_token: []const u8,
     refresh_token: []const u8,
 ) anyerror!void {
-    _ = try saveAuth(allocator, hub_url, username, access_token, refresh_token);
+    _ = try saveAuth(allocator, server_url, username, access_token, refresh_token);
 }
 
 pub fn loadAuth(allocator: std.mem.Allocator) !AuthInfo {
@@ -121,7 +121,7 @@ pub fn loadAuth(allocator: std.mem.Allocator) !AuthInfo {
     defer parsed.deinit();
 
     return .{
-        .hub_url = try allocator.dupe(u8, parsed.value.hub_url),
+        .server_url = try allocator.dupe(u8, parsed.value.server_url),
         .username = try allocator.dupe(u8, parsed.value.username),
         .access_token = try allocator.dupe(u8, parsed.value.access_token),
         .refresh_token = try allocator.dupe(u8, parsed.value.refresh_token),
@@ -148,7 +148,7 @@ pub fn clearAuth(allocator: std.mem.Allocator) !void {
 }
 
 const AuthJson = struct {
-    hub_url: []const u8,
+    server_url: []const u8,
     username: []const u8,
     access_token: []const u8,
     refresh_token: []const u8,

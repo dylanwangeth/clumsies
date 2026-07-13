@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "test": "bun test tests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

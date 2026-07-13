@@ -63,7 +63,7 @@ try {
     # 6. Login help
     Step "6. login help"
     $output = & $Clumsies login -h 2>&1 | Out-String
-    Assert-Output "login help shown" "hub-url" $output
+    Assert-Output "login help shown" "server-url" $output
 
     # 7. Init help
     Step "7. init help"

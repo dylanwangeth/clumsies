@@ -2,9 +2,9 @@ openapi: 3.1.0
 info:
   title: clumsies Admin API
   version: 1.0.0
-  summary: Admin Hub API for Web Admin.
+  summary: Admin Server API for Web Admin.
 servers:
-  - url: https://hub.clumsies.local
+  - url: https://server.clumsies.local
 security:
   - bearerAuth: []
 paths:
@@ -59,7 +59,7 @@ paths:
           $ref: "#/components/responses/Error"
     post:
       operationId: createAdminMember
-      summary: Create a Google email member admission record.
+      summary: Create an organization member admission record.
       requestBody:
         required: true
         content:
@@ -103,10 +103,6 @@ paths:
       summary: Remove or disable an organization member.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
-        - name: transfer_projects_to
-          in: query
-          schema:
-            type: string
       responses:
         "200":
           description: Delete result.
@@ -187,6 +183,7 @@ paths:
     get:
       operationId: getAdminHealth
       summary: Read backend health.
+      security: []
       responses:
         "200":
           description: Backend health.
@@ -201,7 +198,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      bearerFormat: opaque
   parameters:
     Limit:
       name: limit
@@ -290,7 +287,7 @@ components:
           $ref: "#/components/schemas/MemberStatus"
     Member:
       type: object
-      required: [user_id, email, display_name, role, status, google_subject_bound, revision]
+      required: [user_id, email, display_name, role, status, external_identity_bound, revision]
       properties:
         user_id:
           type: string
@@ -303,7 +300,7 @@ components:
           $ref: "#/components/schemas/OrgRole"
         status:
           $ref: "#/components/schemas/MemberStatus"
-        google_subject_bound:
+        external_identity_bound:
           type: boolean
         revision:
           type: integer
@@ -388,7 +385,7 @@ components:
           format: date-time
     AdminHealth:
       type: object
-      required: [status, version, database, schema, snapshot_service, sync_queue]
+      required: [status, version, database, schema, commit_service, oidc]
       properties:
         status:
           type: string
@@ -399,9 +396,9 @@ components:
           $ref: "#/components/schemas/HealthCheck"
         schema:
           $ref: "#/components/schemas/HealthCheck"
-        snapshot_service:
+        commit_service:
           $ref: "#/components/schemas/HealthCheck"
-        sync_queue:
+        oidc:
           $ref: "#/components/schemas/HealthCheck"
     HealthCheck:
       type: object

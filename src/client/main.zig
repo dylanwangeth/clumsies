@@ -1,7 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
 const build_options = @import("build_options");
-const hub_main = @import("clumsies_hub_main");
 const logger = @import("clumsies_lib").logger;
 const env_util = @import("clumsies_lib").util.env_util;
 const styles = @import("styles.zig");
@@ -51,7 +50,6 @@ const Command = enum {
     sync,
     adapt,
     mcp,
-    hub,
     help,
     version,
     none,
@@ -63,7 +61,6 @@ const command_map = std.StaticStringMap(Command).initComptime(.{
     .{ "sync", .sync },
     .{ "adapt", .adapt },
     .{ "mcp", .mcp },
-    .{ "hub", .hub },
     .{ "help", .help },
     .{ "-h", .help },
     .{ "--help", .help },
@@ -136,22 +133,6 @@ fn run(init: std.process.Init) !void {
 
     const cmd_args = args[cmd_args_start..];
 
-    if (cmd == .hub) {
-        if (cmd_args.len > 0) {
-            if (std.mem.eql(u8, cmd_args[0], "-h") or std.mem.eql(u8, cmd_args[0], "--help")) {
-                try printHubHelp(stdout_writer);
-                return;
-            }
-            try stderr_writer.print("{s}{s}{s}Error:{s} unknown hub argument: {s}\n", .{ P, Color.bold, Color.red, Color.reset, cmd_args[0] });
-            return error.CommandFailed;
-        }
-        hub_main.run(allocator, init.minimal.environ) catch |err| switch (err) {
-            error.HubStartupFailed => return error.CommandFailed,
-            else => return err,
-        };
-        return;
-    }
-
     initClientLogger(allocator, init.minimal.environ);
     defer logger.deinit();
 
@@ -185,7 +166,6 @@ fn run(init: std.process.Init) !void {
         .sync => try cmd_sync.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .adapt => try cmd_adapt.run(stdout_writer, stderr_writer, allocator, cmd_args),
         .mcp => try cmd_mcp.run(stdout_writer, stderr_writer, allocator, cmd_args, version),
-        .hub => unreachable,
         .none => {
             if (args.len > 1) {
                 // Unknown command
@@ -236,12 +216,6 @@ fn initClientLogger(allocator: std.mem.Allocator, environ: std.process.Environ) 
     if (config.invalid_level) |raw| logger.noteInvalidLevel(raw);
 }
 
-fn printHubHelp(stdout: *std.Io.Writer) !void {
-    try stdout.print("{s}{s}{s}Usage:{s}\n", .{ P, Color.bold, Color.orange, Color.reset });
-    try stdout.print("{s}    {s}clumsies hub{s}    Start Hub server\n\n", .{ P, Color.cyan, Color.reset });
-    try stdout.print("Hub reads configuration from environment variables and .env.\n", .{});
-}
-
 fn clientLogFilePath(allocator: std.mem.Allocator, env_map: *const std.process.Environ.Map) ![]const u8 {
     const env_path = env_map.get("CLUMSIES_LOG_FILE") orelse return logger.clientDefaultLogPath(allocator);
     return logger.resolveLogFilePath(allocator, env_path);
@@ -254,7 +228,6 @@ test "command_map: all commands resolve" {
         .{ .str = "sync", .cmd = .sync },
         .{ .str = "adapt", .cmd = .adapt },
         .{ .str = "mcp", .cmd = .mcp },
-        .{ .str = "hub", .cmd = .hub },
         .{ .str = "help", .cmd = .help },
         .{ .str = "-h", .cmd = .help },
         .{ .str = "--help", .cmd = .help },

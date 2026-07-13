@@ -41,80 +41,40 @@ store draft refinements through the same system.
   memory and initialize workspaces from that set.
 - **Agent adapters.** The adapter layer installs the runtime hooks and skills
   needed by supported agents. Codex and Claude Code are supported today.
-- **Self-hosted, zero vendor lock-in.** Runs entirely in your infrastructure
-  with PostgreSQL and Zig.
+- **Self-hosted authority.** The Rust Server and PostgreSQL run in your
+  infrastructure; Zig remains focused on CLI and MCP client surfaces.
 
 ## Quick start
 
-This gets a local clumsies install running for one project. For the product
-model and system shape, see the [overview](https://lilhammerfun.github.io/clumsies/overview/)
-and [architecture](https://lilhammerfun.github.io/clumsies/architecture/).
-
-Install the latest release:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lilhammerfun/clumsies/main/install.sh | sh
-```
-
-Start local PostgreSQL:
-
-```bash
-docker compose up -d
-```
-
-Start the Hub. See the [deployment guide](https://lilhammerfun.github.io/clumsies/guides/deploy-for-an-org/)
-for organization bootstrap and self-hosted deployment notes.
-
-```bash
-clumsies hub
-```
-
-Sign in:
-
-```bash
-clumsies login --hub-url http://127.0.0.1:8400 --username admin
-```
-
-Set up the current project for your agent:
-
-```bash
-clumsies adapt
-```
-
-`adapt` installs the selected agent integration. If the current directory is
-not bound to a workspace, the workspace scope can create and bind one for this
-project before installing.
-
-Optionally launch the current terminal UI:
-
-```bash
-clumsies
-```
-
-The TUI is available for inspecting workspace state and managing current Hub
-objects, but the core runtime path is the Hub, CLI, adapter, and MCP memory
-loop.
-
-`clumsies init` and `clumsies sync` still exist for explicit setup and
-automation, but they are no longer required for the normal quick start.
-
-Non-interactive adapter installs are still available:
-
-```bash
-clumsies adapt --agent codex --scope workspace --yes
-```
-
-For exact command flags, use the
-[CLI reference](https://lilhammerfun.github.io/clumsies/guides/cli-commands/).
-
-Development from source requires [Zig 0.16+](https://ziglang.org/download/):
+The current product is run from source while the Desktop distribution is being
+prepared. Configure the organization's OIDC provider in `.env`, then start
+Server and PostgreSQL:
 
 ```bash
 git clone https://github.com/lilhammerfun/clumsies.git
 cd clumsies
 cp .env.example .env
+docker compose up --build -d
+```
+
+Install the Bun workspace and launch Desktop. Its Tauri build prepares the Rust
+daemon binary automatically:
+
+```bash
+bun install
+bun run --cwd apps/desktop dev
+```
+
+Desktop opens organization SSO in the system browser. The renderer talks to
+the local daemon; daemon owns automatic draft synchronization and authenticated
+Server transport.
+
+For the self-hosted configuration, see the
+[deployment guide](https://lilhammerfun.github.io/clumsies/guides/deploy-for-an-org/).
+The Zig CLI and MCP server can still be built separately:
+
+```bash
 zig build -Doptimize=ReleaseFast
-export PATH="$PWD/zig-out/bin:$PATH"
 ```
 
 ## License

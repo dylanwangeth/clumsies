@@ -3,17 +3,17 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use daemon::{
     APP_BUNDLE_IDENTIFIER, DAEMON_AGENT_LABEL, DAEMON_MACH_SERVICE_NAME, DaemonConfig,
-    DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDraftListQuery,
-    DaemonDraftOperation, DaemonDraftOperationRequest, DaemonDraftOperationSource,
-    DaemonDraftResourceKind, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcService,
-    DaemonIpcTransport, DaemonLocalDraftStatus, DaemonProjectConfigUpdateRequest, DaemonState,
-    DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
-    LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus, SyncRetryChannel,
-    SyncState,
+    DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDiscardDraftOperation,
+    DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRequest,
+    DaemonDraftOperationSource, DaemonDraftResourceKind, DaemonDraftScope, DaemonError,
+    DaemonHealth, DaemonIpcRequest, DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus,
+    DaemonProjectConfigUpdateRequest, DaemonState, DaemonSyncRetryRequest,
+    DaemonUpdateDraftOperation, DraftOperationSyncStatus, LaunchAgentConfig, LaunchAgentController,
+    LaunchAgentRuntimeStatus, SyncRetryChannel, SyncState,
 };
 use serde_json::json;
 
@@ -25,7 +25,7 @@ async fn health_initializes_local_database_and_stable_installation_id() {
     let health = service.health().await;
 
     assert!(health.local_db.ready);
-    assert_eq!(health.local_db.schema_version, 3);
+    assert_eq!(health.local_db.schema_version, 5);
     assert_eq!(health.daemon_installation_id, first_id);
     assert!(health.local_db.path.ends_with("local.db"));
     assert!(health.log_dir.ends_with("logs"));
@@ -35,6 +35,33 @@ async fn health_initializes_local_database_and_stable_installation_id() {
         .await
         .unwrap();
     assert_eq!(restarted.daemon_installation_id(), first_id);
+}
+
+#[tokio::test]
+async fn initialization_rejects_an_old_local_schema() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database_path.display()))
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '3')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+
+    let error = DaemonState::initialize(DaemonConfig::for_root(root.path()))
+        .await
+        .err()
+        .unwrap();
+
+    assert!(matches!(error, DaemonError::InvalidConfig(_)));
+    assert!(error.to_string().contains("recreate the daemon database"));
 }
 
 #[test]
@@ -172,6 +199,10 @@ async fn draft_operation_is_written_to_local_queue_and_visible_in_sync_status() 
     let (_root, _state, service) = common::test_daemon().await;
     let body = service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -210,6 +241,10 @@ async fn draft_operation_service_method_writes_local_queue_without_http() {
 
     let response = service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -253,7 +288,7 @@ async fn draft_operation_service_method_writes_local_queue_without_http() {
 }
 
 #[tokio::test]
-async fn ipc_dispatch_routes_health_and_draft_store_methods() {
+async fn ipc_dispatch_routes_the_complete_daemon_api() {
     let (_root, _state, service) = common::test_daemon().await;
 
     let health: DaemonHealth = service
@@ -263,10 +298,40 @@ async fn ipc_dispatch_routes_health_and_draft_store_methods() {
         .unwrap();
     assert!(health.local_db.ready);
 
+    let project_config = service
+        .dispatch(DaemonIpcRequest::empty("project_config"))
+        .await;
+    assert!(project_config.ok);
+
+    let sync_status = service
+        .dispatch(DaemonIpcRequest::empty("sync_status"))
+        .await;
+    assert!(sync_status.ok);
+
+    let retry = service
+        .dispatch(DaemonIpcRequest::new(
+            "retry_sync",
+            serde_json::to_value(DaemonSyncRetryRequest {
+                channel: SyncRetryChannel::All,
+            })
+            .unwrap(),
+        ))
+        .await;
+    assert!(retry.ok);
+
+    let mcp_status = service
+        .dispatch(DaemonIpcRequest::empty("mcp_status"))
+        .await;
+    assert!(mcp_status.ok);
+
     let response = service
         .dispatch(DaemonIpcRequest::new(
             "store_draft_operation",
             serde_json::to_value(DaemonDraftOperationRequest {
+                draft_id: None,
+                base_commit_id: None,
+                project_id: "prj_test".to_owned(),
+                scope: DaemonDraftScope::Project,
                 resource: DaemonDraftResourceKind::Context,
                 op: DaemonDraftOperation {
                     create: Some(DaemonCreateDraftOperation {
@@ -286,8 +351,85 @@ async fn ipc_dispatch_routes_health_and_draft_store_methods() {
         .await;
     assert!(response.ok);
 
+    let list = service
+        .dispatch(DaemonIpcRequest::new(
+            "list_drafts",
+            serde_json::to_value(DaemonDraftListQuery::default()).unwrap(),
+        ))
+        .await;
+    assert!(list.ok);
+    let list: daemon::DaemonDraftListResponse = list.into_payload().unwrap();
+    assert_eq!(list.items.len(), 1);
+
+    let detail = service
+        .dispatch(DaemonIpcRequest::new(
+            "get_draft",
+            json!({ "draft_id": list.items[0].draft_id }),
+        ))
+        .await;
+    assert!(detail.ok);
+
+    let replaced = service
+        .dispatch(DaemonIpcRequest::new(
+            "replace_project_config",
+            serde_json::to_value(DaemonProjectConfigUpdateRequest {
+                server_url: "http://127.0.0.1:8080".to_owned(),
+                project_id: Some("prj_test".to_owned()),
+                access_token: Some("secret".to_owned()),
+                refresh_token: Some("refresh-secret".to_owned()),
+            })
+            .unwrap(),
+        ))
+        .await;
+    assert!(replaced.ok);
+
     let status = service.sync_status().await.unwrap();
     assert_eq!(status.pending_operation_count, 1);
+}
+
+#[tokio::test]
+async fn mcp_store_envelope_matches_the_daemon_contract() {
+    let (_root, _state, service) = common::test_daemon().await;
+    let request: DaemonIpcRequest = serde_json::from_str(
+        r#"{
+            "method": "store_draft_operation",
+            "payload": {
+                "project_id": "prj_mcp",
+                "scope": "project",
+                "resource": "context",
+                "op": {
+                    "create": {
+                        "path": "notes/from-mcp.md",
+                        "body": "Stored through the Zig MCP envelope"
+                    }
+                },
+                "source": "mcp_store"
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let response = service.dispatch(request).await;
+    assert!(
+        response.ok,
+        "daemon rejected MCP envelope: {:?}",
+        response.error
+    );
+
+    let drafts = service
+        .list_drafts(DaemonDraftListQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(drafts.items.len(), 1);
+    assert_eq!(drafts.items[0].project_id, "prj_mcp");
+    assert_eq!(drafts.items[0].scope, DaemonDraftScope::Project);
+
+    let detail = service.get_draft(&drafts.items[0].draft_id).await.unwrap();
+    assert_eq!(detail.operations.len(), 1);
+    assert_eq!(
+        detail.operations[0].source,
+        DaemonDraftOperationSource::McpStore
+    );
 }
 
 #[tokio::test]
@@ -296,6 +438,10 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
 
     let created = service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -315,6 +461,10 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
 
     service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: Some(created.draft_id.clone()),
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: None,
@@ -383,31 +533,30 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
     let (root, _state, service) = common::test_daemon().await;
 
     let initial = service.project_config();
-    assert_eq!(initial.hub_url, "http://127.0.0.1:8080");
-    assert_eq!(initial.author_user_id, None);
+    assert_eq!(initial.server_url, "http://127.0.0.1:8080");
     assert_eq!(initial.project_id, None);
     assert!(!initial.has_access_token);
     assert!(!initial.ready);
-    assert_eq!(initial.missing_fields, vec!["author_user_id", "project_id"]);
+    assert_eq!(initial.missing_fields, vec!["project_id", "access_token"]);
 
     let updated = service
         .replace_project_config(DaemonProjectConfigUpdateRequest {
-            hub_url: "http://127.0.0.1:18080".to_owned(),
-            author_user_id: Some("usr_config".to_owned()),
+            server_url: "http://127.0.0.1:18080".to_owned(),
             project_id: Some("prj_config".to_owned()),
             access_token: Some("secret-token".to_owned()),
+            refresh_token: Some("refresh-token".to_owned()),
         })
         .await
         .unwrap();
-    assert_eq!(updated.hub_url, "http://127.0.0.1:18080");
-    assert_eq!(updated.author_user_id.as_deref(), Some("usr_config"));
+    assert_eq!(updated.server_url, "http://127.0.0.1:18080");
     assert_eq!(updated.project_id.as_deref(), Some("prj_config"));
     assert!(updated.has_access_token);
+    assert!(updated.has_refresh_token);
     assert!(updated.ready);
     assert!(updated.missing_fields.is_empty());
 
     let health = service.health().await;
-    assert_eq!(health.hub_url, "http://127.0.0.1:18080");
+    assert_eq!(health.server_url, "http://127.0.0.1:18080");
     assert_eq!(health.project_id.as_deref(), Some("prj_config"));
 
     let restarted = DaemonState::initialize(DaemonConfig::for_root(root.path()))
@@ -415,26 +564,32 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
         .unwrap();
     let restarted_service = DaemonIpcService::new(restarted);
     let persisted = restarted_service.project_config();
-    assert_eq!(persisted.hub_url, "http://127.0.0.1:18080");
-    assert_eq!(persisted.author_user_id.as_deref(), Some("usr_config"));
+    assert_eq!(persisted.server_url, "http://127.0.0.1:18080");
     assert_eq!(persisted.project_id.as_deref(), Some("prj_config"));
     assert!(persisted.has_access_token);
+    assert!(persisted.has_refresh_token);
     assert!(persisted.ready);
 }
 
 #[tokio::test]
-async fn sync_retry_uploads_new_local_draft_to_hub() {
-    let hub = FakeHub::start().await;
+async fn sync_retry_uploads_new_local_draft_to_server() {
+    let server = FakeServer::start().await;
     let root = tempfile::tempdir().unwrap();
     let mut config = DaemonConfig::for_root(root.path());
-    config.project.hub_url = hub.url.clone();
-    config.project.author_user_id = Some("usr_test".to_owned());
-    config.project.project_id = Some("prj_test".to_owned());
+    config.project.server_url = server.url.clone();
+    config.project.project_id = Some("prj_default".to_owned());
+    config.project.access_token = Some("test-token".to_owned());
     let state = DaemonState::initialize(config).await.unwrap();
     let service = DaemonIpcService::new(state.clone());
 
     service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: Some(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            ),
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -483,10 +638,15 @@ async fn sync_retry_uploads_new_local_draft_to_hub() {
     assert_eq!(remote_event_count, 1);
     assert_eq!(cursor, "42");
 
-    let requests = hub.create_requests.lock().unwrap();
+    let requests = server.create_requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0]["author_user_id"], "usr_test");
+    assert!(requests[0].get("author_user_id").is_none());
     assert_eq!(requests[0]["project_id"], "prj_test");
+    assert_eq!(requests[0]["resource"]["scope"], "project");
+    assert_eq!(
+        requests[0]["base_commit_id"],
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
     assert!(
         requests[0]["daemon_installation_id"]
             .as_str()
@@ -501,7 +661,7 @@ async fn sync_retry_uploads_new_local_draft_to_hub() {
 
 #[tokio::test]
 async fn queued_draft_syncs_after_project_config_is_set() {
-    let hub = FakeHub::start().await;
+    let server = FakeServer::start().await;
     let root = tempfile::tempdir().unwrap();
     let mut config = DaemonConfig::for_root(root.path());
     config.sync.enabled = true;
@@ -512,6 +672,10 @@ async fn queued_draft_syncs_after_project_config_is_set() {
 
     service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_late".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -541,27 +705,27 @@ async fn queued_draft_syncs_after_project_config_is_set() {
         before.draft_sync.last_error.unwrap().code,
         "daemon_project_config_incomplete"
     );
-    assert!(hub.create_requests.lock().unwrap().is_empty());
+    assert!(server.create_requests.lock().unwrap().is_empty());
 
     service
         .replace_project_config(DaemonProjectConfigUpdateRequest {
-            hub_url: hub.url.clone(),
-            author_user_id: Some("usr_late".to_owned()),
+            server_url: server.url.clone(),
             project_id: Some("prj_late".to_owned()),
-            access_token: None,
+            access_token: Some("test-token".to_owned()),
+            refresh_token: None,
         })
         .await
         .unwrap();
 
-    wait_for_create_request(&hub).await;
+    wait_for_create_request(&server).await;
     let after = service.sync_status().await.unwrap();
     assert_eq!(after.pending_operation_count, 0);
     assert_eq!(after.failed_operation_count, 0);
     assert_eq!(after.draft_sync.state, SyncState::Idle);
 
-    let requests = hub.create_requests.lock().unwrap();
+    let requests = server.create_requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0]["author_user_id"], "usr_late");
+    assert!(requests[0].get("author_user_id").is_none());
     assert_eq!(requests[0]["project_id"], "prj_late");
     assert_eq!(requests[0]["operations"][0]["body"], "sync after config");
     drop(requests);
@@ -570,12 +734,12 @@ async fn queued_draft_syncs_after_project_config_is_set() {
 
 #[tokio::test]
 async fn draft_operation_notifies_auto_sync_worker() {
-    let hub = FakeHub::start().await;
+    let server = FakeServer::start().await;
     let root = tempfile::tempdir().unwrap();
     let mut config = DaemonConfig::for_root(root.path());
-    config.project.hub_url = hub.url.clone();
-    config.project.author_user_id = Some("usr_test".to_owned());
+    config.project.server_url = server.url.clone();
     config.project.project_id = Some("prj_test".to_owned());
+    config.project.access_token = Some("test-token".to_owned());
     config.sync.enabled = true;
     config.sync.interval = Duration::from_secs(60);
     let state = DaemonState::initialize(config).await.unwrap();
@@ -584,6 +748,10 @@ async fn draft_operation_notifies_auto_sync_worker() {
 
     service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -601,12 +769,12 @@ async fn draft_operation_notifies_auto_sync_worker() {
         .await
         .unwrap();
 
-    wait_for_create_request(&hub).await;
-    let status = service.sync_status().await.unwrap();
+    wait_for_create_request(&server).await;
+    let status = wait_for_draft_sync_idle(&service).await;
     assert_eq!(status.pending_operation_count, 0);
     assert_eq!(status.failed_operation_count, 0);
 
-    let requests = hub.create_requests.lock().unwrap();
+    let requests = server.create_requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0]["operations"][0]["body"], "automatic");
     drop(requests);
@@ -614,18 +782,22 @@ async fn draft_operation_notifies_auto_sync_worker() {
 }
 
 #[tokio::test]
-async fn sync_retry_uploads_existing_draft_operations_as_batch() {
-    let hub = FakeHub::start().await;
+async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
+    let server = FakeServer::start().await;
     let root = tempfile::tempdir().unwrap();
     let mut config = DaemonConfig::for_root(root.path());
-    config.project.hub_url = hub.url.clone();
-    config.project.author_user_id = Some("usr_test".to_owned());
+    config.project.server_url = server.url.clone();
     config.project.project_id = Some("prj_test".to_owned());
+    config.project.access_token = Some("test-token".to_owned());
     let state = DaemonState::initialize(config).await.unwrap();
     let service = DaemonIpcService::new(state);
 
     let first = service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -652,17 +824,49 @@ async fn sync_retry_uploads_existing_draft_operations_as_batch() {
 
     service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: Some(first.draft_id.clone()),
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
-                create: None,
-                update: Some(DaemonUpdateDraftOperation {
-                    id: first.draft_id,
+                create: Some(DaemonCreateDraftOperation {
+                    path: "docs/batch.md".to_owned(),
                     body: "two".to_owned(),
                     description: None,
                 }),
+                update: None,
                 rename: None,
                 delete: None,
                 discard: None,
+            },
+            source: None,
+        })
+        .await
+        .unwrap();
+
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: Some(first.draft_id),
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: None,
+                update: None,
+                rename: None,
+                delete: None,
+                discard: Some(DaemonDiscardDraftOperation {
+                    id: "draft_local".to_owned(),
+                }),
             },
             source: None,
         })
@@ -680,11 +884,11 @@ async fn sync_retry_uploads_existing_draft_operations_as_batch() {
     assert_eq!(status.pending_operation_count, 0);
     assert_eq!(status.failed_operation_count, 0);
 
-    let creates = hub.create_requests.lock().unwrap();
+    let creates = server.create_requests.lock().unwrap();
     assert_eq!(creates.len(), 1);
     drop(creates);
 
-    let batches = hub.batch_requests.lock().unwrap();
+    let batches = server.batch_requests.lock().unwrap();
     assert_eq!(batches.len(), 1);
     assert!(
         batches[0]["daemon_installation_id"]
@@ -694,8 +898,19 @@ async fn sync_retry_uploads_existing_draft_operations_as_batch() {
     );
     assert_eq!(batches[0]["operations"][0]["draft_id"], "drf_remote");
     assert_eq!(batches[0]["operations"][0]["expected_draft_version"], 1);
-    assert_eq!(batches[0]["operations"][0]["operation"]["action"], "update");
+    assert_eq!(batches[0]["operations"][0]["operation"]["action"], "create");
+    assert_eq!(
+        batches[0]["operations"][0]["operation"]["resource"]["path"],
+        "docs/batch.md"
+    );
     assert_eq!(batches[0]["operations"][0]["operation"]["body"], "two");
+    drop(batches);
+
+    let deletes = server.delete_requests.lock().unwrap();
+    assert_eq!(
+        deletes.as_slice(),
+        &[("drf_remote".to_owned(), "2".to_owned())]
+    );
 }
 
 #[tokio::test]
@@ -704,6 +919,10 @@ async fn draft_operation_rejects_multiple_operation_variants() {
 
     let response = service
         .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
             resource: DaemonDraftResourceKind::Rule,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -737,33 +956,48 @@ async fn mcp_status_reports_no_daemon_owned_supervisor() {
     assert!(status.adapters.is_empty());
 }
 
-async fn wait_for_create_request(hub: &FakeHub) {
+async fn wait_for_create_request(server: &FakeServer) {
     for _ in 0..50 {
-        if !hub.create_requests.lock().unwrap().is_empty() {
+        if !server.create_requests.lock().unwrap().is_empty() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("timed out waiting for fake Hub create request");
+    panic!("timed out waiting for fake Server create request");
 }
 
-struct FakeHub {
+async fn wait_for_draft_sync_idle(service: &DaemonIpcService) -> daemon::DaemonSyncStatus {
+    for _ in 0..50 {
+        let status = service.sync_status().await.unwrap();
+        if status.pending_operation_count == 0 {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("timed out waiting for daemon draft sync");
+}
+
+struct FakeServer {
     url: String,
     create_requests: Arc<Mutex<Vec<serde_json::Value>>>,
     batch_requests: Arc<Mutex<Vec<serde_json::Value>>>,
+    delete_requests: Arc<Mutex<Vec<(String, String)>>>,
 }
 
-impl FakeHub {
+impl FakeServer {
     async fn start() -> Self {
         let create_requests = Arc::new(Mutex::new(Vec::new()));
         let batch_requests = Arc::new(Mutex::new(Vec::new()));
-        let state = FakeHubState {
+        let delete_requests = Arc::new(Mutex::new(Vec::new()));
+        let state = FakeServerState {
             create_requests: create_requests.clone(),
             batch_requests: batch_requests.clone(),
+            delete_requests: delete_requests.clone(),
         };
         let app = Router::new()
             .route("/api/v1/drafts", post(fake_create_draft))
             .route("/api/v1/draft-events", get(fake_list_draft_events))
+            .route("/api/v1/drafts/{draft_id}", delete(fake_delete_draft))
             .route(
                 "/api/v1/draft-operation-batches",
                 post(fake_create_draft_operation_batch),
@@ -778,18 +1012,20 @@ impl FakeHub {
             url: format!("http://{addr}"),
             create_requests,
             batch_requests,
+            delete_requests,
         }
     }
 }
 
 #[derive(Clone)]
-struct FakeHubState {
+struct FakeServerState {
     create_requests: Arc<Mutex<Vec<serde_json::Value>>>,
     batch_requests: Arc<Mutex<Vec<serde_json::Value>>>,
+    delete_requests: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 async fn fake_create_draft(
-    axum::extract::State(state): axum::extract::State<FakeHubState>,
+    axum::extract::State(state): axum::extract::State<FakeServerState>,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     state.create_requests.lock().unwrap().push(body);
@@ -802,7 +1038,7 @@ async fn fake_create_draft(
 }
 
 async fn fake_create_draft_operation_batch(
-    axum::extract::State(state): axum::extract::State<FakeHubState>,
+    axum::extract::State(state): axum::extract::State<FakeServerState>,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let accepted_operations = body["operations"]
@@ -816,6 +1052,24 @@ async fn fake_create_draft_operation_batch(
         "accepted_operations": accepted_operations,
         "cursor": "2"
     }))
+}
+
+async fn fake_delete_draft(
+    axum::extract::State(state): axum::extract::State<FakeServerState>,
+    axum::extract::Path(draft_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Json<serde_json::Value> {
+    let version = headers
+        .get("if-match")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    state
+        .delete_requests
+        .lock()
+        .unwrap()
+        .push((draft_id.clone(), version));
+    Json(json!({ "deleted": true, "id": draft_id }))
 }
 
 async fn fake_list_draft_events() -> Json<serde_json::Value> {

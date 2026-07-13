@@ -32,7 +32,7 @@ pub fn run(
     // api_state.thread_registry, so joinAll above catches it on exit.
     if (auth_mod.loadAuth(allocator)) |auth_info| {
         defer auth_info.deinit(allocator);
-        api.fetch.startFetch(&api_state, auth_info.hub_url, auth_info.username, auth_info.access_token, auth_info.refresh_token) catch {};
+        api.fetch.startFetch(&api_state, auth_info.server_url, auth_info.username, auth_info.access_token, auth_info.refresh_token) catch {};
         tasks.attestation_upload.start(&api_state) catch {};
     } else |_| {}
 
@@ -44,7 +44,7 @@ pub fn run(
         var title_buffer: [64]u8 = undefined;
         var title_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &title_buffer);
         defer title_writer.interface.flush() catch {};
-        title_writer.interface.writeAll("\x1b]2;clumsies hub\x07") catch {};
+        title_writer.interface.writeAll("\x1b]2;clumsies\x07") catch {};
     }
 
     var dashboard = Shell.init(&api_state, &app, env_map, environ, io);

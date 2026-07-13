@@ -7,15 +7,15 @@ const util_hash = @import("clumsies_lib").util.hash;
 const auth_mod = @import("../auth.zig");
 const drafts_mod = @import("../drafts.zig");
 const ws_config = @import("../workspace_config.zig");
-const HubClient = @import("../hub_client.zig").HubClient;
+const ServerClient = @import("../server_client.zig").ServerClient;
 const styles = @import("../styles.zig");
 
 const Color = styles.Color;
 const P = styles.P;
 const log = std.log.scoped(.sync);
 
-/// Must stay ≤ the hub-side cap (`BATCH_MAX_IDS` / `BATCH_MAX_PATHS`
-/// in src/hub/artifact.zig and context.zig). Oversized batches
+/// Must stay ≤ the server-side cap (`BATCH_MAX_IDS` / `BATCH_MAX_PATHS`
+/// in src/server/artifact.zig and context.zig). Oversized batches
 /// currently 400 with "too many rule_ids" / "too many paths";
 /// chunking here keeps sync working on workspaces with more than
 /// that many changed entries.
@@ -80,13 +80,13 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
     defer auth_info.deinit(allocator);
 
-    var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
-    defer hub.deinit();
+    var server = ServerClient.init(allocator, auth_info.server_url, auth_info.access_token);
+    defer server.deinit();
     // Wire refresh-on-401 so a long-idle access token rotates
     // transparently during sync instead of forcing `clumsies login`.
-    try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
+    try server.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
 
-    const summary = materializeWorkspace(allocator, &hub, ws_id, .{ .progress = stdout, .errors = stderr }) catch |err| {
+    const summary = materializeWorkspace(allocator, &server, ws_id, .{ .progress = stdout, .errors = stderr }) catch |err| {
         try stderr.print("{s}{s}{s}Error:{s} Sync failed: {s}\n", .{ P, Color.bold, Color.red, Color.reset, @errorName(err) });
         return;
     };
@@ -103,7 +103,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
 
 pub fn materializeWorkspace(
     allocator: std.mem.Allocator,
-    hub: *HubClient,
+    server: *ServerClient,
     ws_id: []const u8,
     options: MaterializeOptions,
 ) !MaterializeSummary {
@@ -111,7 +111,7 @@ pub fn materializeWorkspace(
     const manifest_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/manifest", .{ws_id});
     defer allocator.free(manifest_path);
 
-    const manifest_response = try hub.get(manifest_path);
+    const manifest_response = try server.get(manifest_path);
     defer manifest_response.deinit();
     if (manifest_response.status != .ok) return error.ManifestFetchFailed;
 
@@ -198,7 +198,7 @@ pub fn materializeWorkspace(
         var start: usize = 0;
         while (start < rule_to_fetch.items.len) {
             const end = @min(start + BATCH_CHUNK_SIZE, rule_to_fetch.items.len);
-            rule_fetched += fetchRuleBatch(allocator, hub, options.errors, cache_dir, ws_id, rule_to_fetch.items[start..end], &rule_path_for_id) catch |err| {
+            rule_fetched += fetchRuleBatch(allocator, server, options.errors, cache_dir, ws_id, rule_to_fetch.items[start..end], &rule_path_for_id) catch |err| {
                 if (options.errors) |writer| try writer.print("{s}{s}{s}Error:{s} Rule batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
                 return error.RuleBatchFetchFailed;
             };
@@ -216,7 +216,7 @@ pub fn materializeWorkspace(
         var start: usize = 0;
         while (start < contexts_to_fetch.items.len) {
             const end = @min(start + BATCH_CHUNK_SIZE, contexts_to_fetch.items.len);
-            context_fetched += fetchContextBatch(allocator, hub, options.errors, cache_dir, ws_id, contexts_to_fetch.items[start..end]) catch |err| {
+            context_fetched += fetchContextBatch(allocator, server, options.errors, cache_dir, ws_id, contexts_to_fetch.items[start..end]) catch |err| {
                 if (options.errors) |writer| try writer.print("{s}{s}{s}Error:{s} Context batch fetch failed for items {d}-{d}: {s}\n", .{ P, Color.bold, Color.red, Color.reset, start + 1, end, @errorName(err) });
                 return error.ContextBatchFetchFailed;
             };
@@ -353,13 +353,13 @@ fn joinManifestPath(allocator: std.mem.Allocator, dir: []const u8, name: []const
 }
 
 /// Batch-fetch rule bodies in a single POST. Per-item errors from
-/// the Hub response and local write failures are printed to stderr
+/// the Server response and local write failures are printed to stderr
 /// so the user can tell why a "46 of 46" manifest only produced
 /// "44 written"; the overall return value is the count of rules
 /// successfully written to cache.
 fn fetchRuleBatch(
     allocator: std.mem.Allocator,
-    hub: *HubClient,
+    server: *ServerClient,
     stderr: ?*std.Io.Writer,
     cache_dir: []const u8,
     ws_id: []const u8,
@@ -376,7 +376,7 @@ fn fetchRuleBatch(
     const api_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/rules/content", .{ws_id});
     defer allocator.free(api_path);
 
-    const resp = try hub.post(api_path, body_json);
+    const resp = try server.post(api_path, body_json);
     defer resp.deinit();
     if (resp.status != .ok) return error.BatchFetchFailed;
 
@@ -394,7 +394,7 @@ fn fetchRuleBatch(
         }
         // Prefer the path the server reports (authoritative) but fall
         // back to the manifest-side path we had when building the
-        // request, so a blank server path (older Hub, partial row)
+        // request, so a blank server path (older Server, partial row)
         // still lands in the right cache slot.
         const target_path = if (item.path.len > 0)
             item.path
@@ -426,7 +426,7 @@ fn cacheSubDirForRulePath(rule_path: []const u8) []const u8 {
 /// keyed by path inside a single workspace.
 fn fetchContextBatch(
     allocator: std.mem.Allocator,
-    hub: *HubClient,
+    server: *ServerClient,
     stderr: ?*std.Io.Writer,
     cache_dir: []const u8,
     ws_id: []const u8,
@@ -442,7 +442,7 @@ fn fetchContextBatch(
     const api_path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/context/content", .{ws_id});
     defer allocator.free(api_path);
 
-    const resp = try hub.post(api_path, body_json);
+    const resp = try server.post(api_path, body_json);
     defer resp.deinit();
     if (resp.status != .ok) return error.BatchFetchFailed;
 
@@ -570,7 +570,7 @@ fn percentEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
 
 fn printHelp(out: *std.Io.Writer) !void {
     try out.print("{s}Usage: {s}clumsies sync{s}\n", .{ P, Color.cyan, Color.reset });
-    try out.print("{s}Sync workspace rules and context files from Hub to local cache.\n", .{P});
+    try out.print("{s}Sync workspace rules and context files from Server to local cache.\n", .{P});
     try out.print("{s}Requires workspace binding (run {s}clumsies init{s} first).\n", .{ P, Color.cyan, Color.reset });
 }
 

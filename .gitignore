@@ -6,6 +6,7 @@ zig-pkg/
 
 # Rust
 target/
+apps/desktop/src-tauri/binaries/clumsiesd-*
 
 # Build artifacts
 dist/

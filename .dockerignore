@@ -1,0 +1,8 @@
+.git
+.zig-cache
+node_modules
+target
+zig-out
+zig-pkg
+apps/desktop/dist
+apps/desktop/src-tauri/target

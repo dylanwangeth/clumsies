@@ -45,23 +45,39 @@ export interface components {
         };
         DaemonProjectConfig: {
             /** Format: uri */
-            hub_url: string;
-            author_user_id: string | null;
+            server_url: string;
             project_id: string | null;
             has_access_token: boolean;
+            has_refresh_token: boolean;
             ready: boolean;
             missing_fields: string[];
         };
         DaemonProjectConfigUpdateRequest: {
             /** Format: uri */
-            hub_url: string;
-            author_user_id: string | null;
+            server_url: string;
             project_id: string | null;
             access_token: string | null;
+            refresh_token: string | null;
+        };
+        DaemonServerRequest: {
+            /** @enum {string} */
+            method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+            path: string;
+            headers: {
+                [key: string]: string;
+            };
+            body: string | null;
+        };
+        DaemonServerResponse: {
+            status: number;
+            headers: {
+                [key: string]: string;
+            };
+            body: string;
         };
         DaemonHealth: {
             daemon_version: string;
-            hub_url: string;
+            server_url: string;
             project_id: string | null;
             daemon_installation_id: string;
             log_dir: string;
@@ -74,7 +90,7 @@ export interface components {
         };
         DaemonSyncStatus: {
             draft_sync: components["schemas"]["SyncChannelStatus"];
-            snapshot_sync: components["schemas"]["SyncChannelStatus"];
+            commit_sync: components["schemas"]["SyncChannelStatus"];
             pending_operation_count: number;
             failed_operation_count: number;
             conflict_count: number;
@@ -92,7 +108,7 @@ export interface components {
         };
         DaemonSyncRetryRequest: {
             /** @enum {string} */
-            channel: "drafts" | "snapshots" | "all";
+            channel: "drafts" | "commits" | "all";
         };
         DaemonRetryResponse: {
             retry_id: string;
@@ -117,8 +133,11 @@ export interface components {
         };
         DaemonDraftSummary: {
             draft_id: string;
+            project_id: string;
             server_draft_id: string | null;
             server_version: number;
+            base_commit_id: string | null;
+            scope: components["schemas"]["DaemonDraftScope"];
             resource_kind: components["schemas"]["DaemonDraftResourceKind"];
             target_id: string | null;
             path: string | null;
@@ -143,6 +162,10 @@ export interface components {
             updated_at: string;
         };
         DaemonDraftOperationRequest: {
+            draft_id?: string | null;
+            base_commit_id?: string | null;
+            project_id: string;
+            scope: components["schemas"]["DaemonDraftScope"];
             resource: components["schemas"]["DaemonDraftResourceKind"];
             op: components["schemas"]["DaemonDraftOperation"];
             source?: components["schemas"]["DaemonDraftOperationSource"];
@@ -197,6 +220,8 @@ export interface components {
         SyncState: "idle" | "queued" | "syncing" | "degraded" | "failed";
         /** @enum {string} */
         DaemonDraftResourceKind: "context" | "rule" | "workflow" | "metaprompt";
+        /** @enum {string} */
+        DaemonDraftScope: "org" | "project";
         /** @enum {string} */
         DaemonLocalDraftStatus: "open" | "submitted" | "discarded" | "conflicted";
         /** @enum {string} */

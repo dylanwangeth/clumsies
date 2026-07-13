@@ -28,26 +28,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const httpz = b.dependency("httpz", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const pg = b.dependency("pg", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const hub_module = createHubModule(
-        b,
-        target,
-        optimize,
-        build_options_module,
-        lib_module,
-        httpz.module("httpz"),
-        pg.module("pg"),
-    );
-
-    // Local client and Hub artifact
+    // Local CLI, TUI, and MCP client artifact.
     const vaxis_dep = b.dependency("vaxis", .{
         .target = target,
         .optimize = optimize,
@@ -60,7 +41,6 @@ pub fn build(b: *std.Build) void {
         lib_module,
         toml_dep.module("toml"),
         vaxis_dep.module("vaxis"),
-        hub_module,
         enable_keychain,
         enable_xpc,
     );
@@ -81,16 +61,6 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run clumsies CLI");
     run_step.dependOn(&run_cmd.step);
 
-    const hub_run_cmd = b.addRunArtifact(exe);
-    hub_run_cmd.step.dependOn(b.getInstallStep());
-    hub_run_cmd.addArg("hub");
-    if (b.args) |args| {
-        hub_run_cmd.addArgs(args);
-    }
-
-    const hub_run_step = b.step("hub", "Run clumsies Hub Server");
-    hub_run_step.dependOn(&hub_run_cmd.step);
-
     // Client tests
     const client_test_module = createClientModule(
         b,
@@ -100,7 +70,6 @@ pub fn build(b: *std.Build) void {
         lib_module,
         toml_dep.module("toml"),
         vaxis_dep.module("vaxis"),
-        hub_module,
         enable_keychain,
         enable_xpc,
     );
@@ -111,23 +80,6 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run CLI unit tests");
     test_step.dependOn(&run_unit_tests.step);
-
-    // Hub tests
-    const hub_tests = b.addTest(.{
-        .root_module = createHubModule(
-            b,
-            target,
-            optimize,
-            build_options_module,
-            lib_module,
-            httpz.module("httpz"),
-            pg.module("pg"),
-        ),
-    });
-
-    const run_hub_tests = b.addRunArtifact(hub_tests);
-    const hub_test_step = b.step("test-hub", "Run Hub Server unit tests");
-    hub_test_step.dependOn(&run_hub_tests.step);
 }
 
 fn createClientModule(
@@ -138,7 +90,6 @@ fn createClientModule(
     lib_module: *std.Build.Module,
     toml_module: *std.Build.Module,
     vaxis_module: *std.Build.Module,
-    hub_module: *std.Build.Module,
     enable_keychain: bool,
     enable_xpc: bool,
 ) *std.Build.Module {
@@ -153,7 +104,6 @@ fn createClientModule(
         },
     });
     module.addImport("vaxis", vaxis_module);
-    module.addImport("clumsies_hub_main", hub_module);
     if (enable_keychain) {
         module.linkFramework("Security", .{});
         module.linkFramework("CoreFoundation", .{});
@@ -162,28 +112,6 @@ fn createClientModule(
         module.linkSystemLibrary("System", .{});
     }
     return module;
-}
-
-fn createHubModule(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    build_options_module: *std.Build.Module,
-    lib_module: *std.Build.Module,
-    httpz_module: *std.Build.Module,
-    pg_module: *std.Build.Module,
-) *std.Build.Module {
-    return b.createModule(.{
-        .root_source_file = b.path("src/hub/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "build_options", .module = build_options_module },
-            .{ .name = "clumsies_lib", .module = lib_module },
-            .{ .name = "httpz", .module = httpz_module },
-            .{ .name = "pg", .module = pg_module },
-        },
-    });
 }
 
 fn addCodexAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) void {

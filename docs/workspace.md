@@ -19,7 +19,7 @@ A workspace combines several distinct object types that should not be collapsed 
 | selected rules and workflows | reference to Artifact | shared behavioral assets chosen for this project |
 | selected bundles | reference to Artifact | named group selections that expand into behavior content |
 | context files | workspace-owned | project knowledge such as specs, ADRs, research, design notes |
-| manifest | Hub-generated | current indexed snapshot of workspace runtime state |
+| manifest | Server-generated | current indexed snapshot of workspace runtime state |
 | local drafts | local in-progress work | edits not yet merged into Artifact or workspace mainline |
 
 The first three rows are the most important. They explain why workspace exists as its own object rather than being implied by a local checkout path.
@@ -42,7 +42,7 @@ That file stores at least:
 
 | Field | Meaning |
 | --- | --- |
-| `server.url` | Hub base URL |
+| `server.url` | Server base URL |
 | `[[workspaces]].name` | local label |
 | `[[workspaces]].ws_id` | authoritative workspace ID |
 | `[[workspaces]].paths` | local filesystem paths bound to this workspace |
@@ -79,7 +79,7 @@ workspace ID.
 
 ## Manifest: the current workspace snapshot
 
-The manifest is the bridge between Hub authority and local runtime. In the current implementation it is written to:
+The manifest is the bridge between Server authority and local runtime. In the current implementation it is written to:
 
 ```text
 ~/.clumsies/workspaces/{workspace_name}/manifest.json
@@ -203,7 +203,7 @@ That distinction is what keeps the object model clean:
 
 The TUI exposes that split directly. From Artifact, a user can select rules and
 import them into the active workspace. From Workspace, a user can select rules
-and detach them from the workspace. Both flows update Hub state and the local
+and detach them from the workspace. Both flows update Server state and the local
 manifest/cache instead of editing files by hand.
 
 Import means "make this Artifact rule active in this workspace." Detach means
@@ -231,7 +231,7 @@ That is why the server-side workspace object has to stay authoritative. If local
 
 The TUI Settings surface includes workspace membership management. Maintainers
 can create invite tokens, change workspace roles, and remove members. These
-operations are checked against Hub policy; the client presents errors in the
+operations are checked against Server policy; the client presents errors in the
 same modal when the user can retry the operation.
 
 ## Why Workspace matters in the docs

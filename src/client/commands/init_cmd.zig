@@ -2,7 +2,7 @@ const std = @import("std");
 const flag = @import("../flags.zig");
 const auth_mod = @import("../auth.zig");
 const ws_config = @import("../workspace_config.zig");
-const HubClient = @import("../hub_client.zig").HubClient;
+const ServerClient = @import("../server_client.zig").ServerClient;
 const styles = @import("../styles.zig");
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const api_error = @import("clumsies_lib").protocol.api_error;
@@ -74,9 +74,9 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
     defer auth_info.deinit(allocator);
 
-    var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
-    defer hub.deinit();
-    try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
+    var server = ServerClient.init(allocator, auth_info.server_url, auth_info.access_token);
+    defer server.deinit();
+    try server.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
 
     var ws_id_owned: ?[]const u8 = null;
     defer if (ws_id_owned) |o| allocator.free(o);
@@ -96,7 +96,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         ) catch return error.OutOfMemory;
         defer allocator.free(body);
 
-        const response = try hub.post("/api/workspaces", body);
+        const response = try server.post("/api/workspaces", body);
         defer response.deinit();
         if (response.status != .ok and response.status != .created) {
             try reportApiError(stderr, allocator, "Failed to create workspace", response.status, response.body);
@@ -118,7 +118,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
         const path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}", .{id});
         defer allocator.free(path);
 
-        const response = try hub.get(path);
+        const response = try server.get(path);
         defer response.deinit();
         if (response.status != .ok) {
             try reportApiError(stderr, allocator, "Cannot access workspace", response.status, response.body);
@@ -140,7 +140,7 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd_path);
 
-    ws_config.addWorkspace(allocator, auth_info.hub_url, ws_name, ws_id, cwd_path) catch {
+    ws_config.addWorkspace(allocator, auth_info.server_url, ws_name, ws_id, cwd_path) catch {
         try stderr.print("{s}{s}{s}Error:{s} Failed to save workspace config\n", .{ P, Color.bold, Color.red, Color.reset });
         return;
     };
@@ -166,8 +166,8 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     };
 
     try stdout.print("{s}{s}{s}Workspace {s} bound to current directory (ws_id: {s}){s}\n", .{ P, Color.bold, Color.green, ws_name, ws_id, Color.reset });
-    const summary = sync_cmd.materializeWorkspace(allocator, &hub, ws_id, .{ .errors = stderr }) catch |err| {
-        try stderr.print("{s}{s}{s}Warning:{s} Initial sync failed: {s}. Run {s}clumsies sync{s} after Hub/auth is fixed.\n", .{ P, Color.bold, Color.orange, Color.reset, @errorName(err), Color.cyan, Color.reset });
+    const summary = sync_cmd.materializeWorkspace(allocator, &server, ws_id, .{ .errors = stderr }) catch |err| {
+        try stderr.print("{s}{s}{s}Warning:{s} Initial sync failed: {s}. Run {s}clumsies sync{s} after Server/auth is fixed.\n", .{ P, Color.bold, Color.orange, Color.reset, @errorName(err), Color.cyan, Color.reset });
         return;
     };
     try stdout.print("{s}{s}{s}Synced:{s} {d} rules, {d} context files into local cache\n", .{ P, Color.bold, Color.green, Color.reset, summary.rules_total, summary.context_total });

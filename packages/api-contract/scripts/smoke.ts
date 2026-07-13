@@ -18,13 +18,20 @@ type HasMethod<TPaths, TPath extends string, TMethod extends Method> =
       : false
     : false;
 
-type HubPathWithoutApiPrefix<TPaths> = Exclude<Extract<keyof TPaths, string>, `/api/v1/${string}`>;
+type ServerPathWithoutApiPrefix<TPaths> = Exclude<Extract<keyof TPaths, string>, `/api/v1/${string}`>;
+type PublicBrowserAuthPath =
+  | "/oauth2/authorization/oidc"
+  | "/login/oauth2/code/oidc";
 
-type _publicPathsUseApiV1 = Expect<Equals<HubPathWithoutApiPrefix<PublicPaths>, never>>;
-type _adminPathsUseApiV1 = Expect<Equals<HubPathWithoutApiPrefix<AdminPaths>, never>>;
+type _publicPathsUseApiV1 = Expect<
+  Equals<ServerPathWithoutApiPrefix<PublicPaths>, PublicBrowserAuthPath>
+>;
+type _adminPathsUseApiV1 = Expect<Equals<ServerPathWithoutApiPrefix<AdminPaths>, never>>;
 type _daemonHasNoHttpPaths = Expect<Equals<DaemonPaths, Record<string, never>>>;
 
 type _publicContract = [
+  Expect<HasMethod<PublicPaths, "/oauth2/authorization/oidc", "get">>,
+  Expect<HasMethod<PublicPaths, "/login/oauth2/code/oidc", "get">>,
   Expect<HasMethod<PublicPaths, "/api/v1/auth/token", "post">>,
   Expect<HasMethod<PublicPaths, "/api/v1/auth/session", "delete">>,
   Expect<HasMethod<PublicPaths, "/api/v1/me", "get">>,
@@ -50,11 +57,11 @@ type _publicContract = [
   Expect<HasMethod<PublicPaths, "/api/v1/draft-operation-batches", "post">>,
   Expect<HasMethod<PublicPaths, "/api/v1/reviews", "post">>,
   Expect<HasMethod<PublicPaths, "/api/v1/reviews/{review_id}/merges", "post">>,
-  Expect<HasMethod<PublicPaths, "/api/v1/org/snapshots", "get">>,
-  Expect<HasMethod<PublicPaths, "/api/v1/org/snapshot-state", "get">>,
-  Expect<HasMethod<PublicPaths, "/api/v1/projects/{project_id}/snapshots", "get">>,
-  Expect<HasMethod<PublicPaths, "/api/v1/projects/{project_id}/snapshot-state", "get">>,
-  Expect<HasMethod<PublicPaths, "/api/v1/snapshots/{snapshot_id}", "get">>,
+  Expect<HasMethod<PublicPaths, "/api/v1/org/commits", "get">>,
+  Expect<HasMethod<PublicPaths, "/api/v1/org/commit-state", "get">>,
+  Expect<HasMethod<PublicPaths, "/api/v1/projects/{project_id}/commits", "get">>,
+  Expect<HasMethod<PublicPaths, "/api/v1/projects/{project_id}/commit-state", "get">>,
+  Expect<HasMethod<PublicPaths, "/api/v1/commits/{commit_id}", "get">>,
 ];
 
 type _adminContract = [
@@ -83,4 +90,6 @@ type _daemonContract = [
   Expect<Equals<"DaemonMcpStatus" extends keyof DaemonSchemas ? true : false, true>>,
   Expect<Equals<"DaemonDraftOperationRequest" extends keyof DaemonSchemas ? true : false, true>>,
   Expect<Equals<"DaemonDraftOperationResponse" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonServerRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonServerResponse" extends keyof DaemonSchemas ? true : false, true>>,
 ];

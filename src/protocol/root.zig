@@ -1,4 +1,4 @@
-//! Shared data contracts between Hub Server and clients. These types define the shape of
+//! Shared data contracts between the Server and clients. These types define the shape of
 //! HTTP API responses consumed by CLI, MCP, and TUI to deserialize server data.
 pub const revision = @import("revision.zig");
 pub const manifest = @import("manifest.zig");

@@ -1,4 +1,4 @@
-//! Parsers that convert Hub JSON responses into TUI API models. Parsing is
+//! Parsers that convert Server JSON responses into TUI API models. Parsing is
 //! centralized here so fetch and endpoint dispatch code can stay focused on
 //! transport, request routing, and error classification.
 
@@ -322,7 +322,7 @@ fn dupeOperationTargets(alloc: std.mem.Allocator, targets: []const collab_api.Re
     };
 }
 
-test "parseWorkspaceContext accepts content_hash from hub response" {
+test "parseWorkspaceContext accepts content_hash from server response" {
     const testing = std.testing;
     const body =
         \\{"files":[{"context_id":"ctx-1","path":"spec/ARCHITECTURE.md","content_hash":"sha256:abc","size":123,"author":"admin","updated_at":"2026-04-14T00:00:00Z"}]}
@@ -348,7 +348,7 @@ test "parseWorkspaceContext accepts content_hash from hub response" {
 test "rule content response parsing ignores extra fields" {
     const testing = std.testing;
     const body =
-        \\{"rule_id":"p-1","path":"rule/architecture/HUB_SINGLE_SOURCE.md","content_hash":"sha256:def","body":"hello"}
+        \\{"rule_id":"p-1","path":"rule/architecture/SERVER_SINGLE_SOURCE.md","content_hash":"sha256:def","body":"hello"}
     ;
 
     const parsed = try std.json.parseFromSlice(artifact_api.RuleContentResponse, testing.allocator, body, .{

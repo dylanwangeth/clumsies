@@ -1,4 +1,4 @@
-//! Rule resolution engine. Resolves rules from the workspace cache (synced from Hub via
+//! Rule resolution engine. Resolves rules from the workspace cache (synced from Server via
 //! manifest) with draft overlay support. Handles discovery (listing by kind/group), content
 //! loading (drafts override cache), and constraint parsing (extracting atomic tracking units
 //! from rule markdown for the refer protocol).
@@ -641,7 +641,7 @@ fn lessThanRuleItem(_: void, a: RuleItem, b: RuleItem) bool {
     return std.mem.order(u8, a.id, b.id) == .lt;
 }
 
-/// Load rule content by hub-issued rule_id. Resolves each id through
+/// Load rule content by server-issued rule_id. Resolves each id through
 /// the local manifest, then consults drafts/index.json: an active draft
 /// with operation != "delete" wins over the cache copy. Unknown ids return
 /// `error.UnknownRuleId`. Drafts marked for deletion behave as NotFound.
@@ -1184,7 +1184,7 @@ test "loadManifest: missing file returns empty manifest" {
     try testing.expectEqual(@as(usize, 0), manifest.context.count());
 }
 
-test "discoverSearchable: returns hub rule_ids classified by path prefix" {
+test "discoverSearchable: returns server rule_ids classified by path prefix" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1373,7 +1373,7 @@ test "discoverSearchable: META_PROMPT.md is excluded" {
     try testing.expectEqualStrings("p-style", items.items[0].id);
 }
 
-test "loadRules: looks up by hub rule_id and reads cache file" {
+test "loadRules: looks up by server rule_id and reads cache file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 

@@ -1,5 +1,5 @@
-//! Shared error response envelope. Every non-2xx response from Hub carries
-//! {"error": {"code": "...", "message": "..."}}. Encoder (hub/api_error.zig)
+//! Shared error response envelope. Every non-2xx response from Server carries
+//! {"error": {"code": "...", "message": "..."}}. Encoder (server/api_error.zig)
 //! and decoders (cli, tui, mcp) import this module so the wire shape stays
 //! consistent across artifacts.
 

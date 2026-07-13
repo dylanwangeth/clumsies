@@ -3,14 +3,6 @@
     .name = .clumsies,
     .version = "0.19.2-alpha",
     .dependencies = .{
-        .httpz = .{
-            .url = "https://github.com/karlseguin/http.zig/archive/86a44b63bda353338f2dbddc35eeb260f0f5c299.tar.gz",
-            .hash = "httpz-0.0.0-PNVzrEnoCADpf8B42EMPO2WmIlvsQJ0dJ8oCWjnl6CIX",
-        },
-        .pg = .{
-            .url = "https://github.com/karlseguin/pg.zig/archive/a4e126413decee1ba141db7dfd37c84b6cc385af.tar.gz",
-            .hash = "pg-0.0.0-Wp_7gW2hBgAOtBRRbTZtrQYx39itKpPR1A2rxiDCjT3A",
-        },
         .toml = .{
             .url = "https://github.com/sam701/zig-toml/archive/8685923e32e8b8a795eb2715684236975a70faed.tar.gz",
             .hash = "toml-0.3.0-bV14BRmKAQAWR0FT0KUKFwVJTImaFhWjSe6HfSMtNZOH",

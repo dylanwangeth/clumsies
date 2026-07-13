@@ -49,7 +49,7 @@ The value of the TUI is not hypothetical. The current source tree already has de
 - drafts and session readers
 - diff viewer, modal, chart, split-pane, and input widgets
 
-That matters because it shows the TUI is already a serious Hub client, not a thin terminal wrapper around a few CLI commands.
+That matters because it shows the TUI is already a serious Server client, not a thin terminal wrapper around a few CLI commands.
 
 ## Where it sits in the system
 
@@ -74,21 +74,21 @@ flowchart LR
     classDef external fill:#ffffff,color:#6b6b72,stroke:#d1d1d6,stroke-dasharray: 4 4;
 
     TUI["TUI"]
-    Hub["Hub"]
+    Server["Server"]
     Cache["cache"]
     API["API"]
 
     TUI -->|query| API
-    API -->|resolve| Hub
+    API -->|resolve| Server
     TUI -->|read| Cache
 
     class TUI surface;
-    class Hub authority;
+    class Server authority;
     class Cache runtime;
     class API external;
 ```
 
-Like the CLI, the TUI is a client of Hub. It reads server-backed state through the same authority model and uses local state where that improves responsiveness. It does not introduce a second truth source.
+Like the CLI, the TUI is a client of Server. It reads server-backed state through the same authority model and uses local state where that improves responsiveness. It does not introduce a second truth source.
 
 ## What the TUI wants to show
 
@@ -175,16 +175,16 @@ operation can be retried.
 
 ### Analysis
 
-The analysis screen is where Hub stats become operator-readable.
+The analysis screen is where Server stats become operator-readable.
 
 The current code renders:
 
 - rule ranking by reference count
 - rank movement relative to the previous snapshot
 - member and rule detail drill-down
-- a remote-analysis availability message when Hub stats have not loaded yet
+- a remote-analysis availability message when Server stats have not loaded yet
 
-This is exactly why Hub interface detail and TUI detail belong together in the docs. The stats endpoints are not abstract. They drive a real operator surface.
+This is exactly why Server interface detail and TUI detail belong together in the docs. The stats endpoints are not abstract. They drive a real operator surface.
 
 ## TUI and review work
 

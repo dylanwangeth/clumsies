@@ -1,4 +1,4 @@
 [workspace]
-members = ["crates/hub", "crates/daemon"]
+members = ["crates/server", "crates/daemon"]
 exclude = ["apps/desktop/src-tauri"]
 resolver = "3"

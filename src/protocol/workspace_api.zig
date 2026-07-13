@@ -2,7 +2,7 @@
 //! context tree (project knowledge). WorkspaceManifestResponse carries the manifest that drives
 //! the sync protocol — each entry maps a rule path to its content hash.
 //! CreateWorkspaceRequest / CreateWorkspaceResponse are the wire contract for POST
-//! /api/workspaces, shared between hub, cli and tui.
+//! /api/workspaces, shared between server, cli and tui.
 const manifest = @import("manifest.zig");
 
 pub const ContextFile = struct {

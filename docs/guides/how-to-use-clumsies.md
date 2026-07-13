@@ -1,125 +1,72 @@
-# Member workflow
+# Use clumsies
 
-This page is for a human team member working inside a workspace. It is not the agent runtime page. It is not the Hub deployment page.
+Desktop is the primary human client. The normal workflow does not start in the
+TUI and does not require manual draft synchronization.
 
-## What you actually do
+## Sign in
 
-The normal project setup flow has two commands:
+Open Desktop, enter your organization's Server URL, and continue with SSO.
+The system browser handles authentication. Your email must already be admitted
+by an organization owner or admin.
 
-```bash
-clumsies login
-clumsies adapt
+For local development, the Server URL is usually:
+
+```text
+http://127.0.0.1:8080
 ```
 
-`login` connects the client to Hub. `adapt` installs the selected agent
-integration and, for workspace scope, can create and bind a workspace for the
-current directory before installing.
+Remote URLs must use HTTPS.
 
-After that, open the TUI whenever you want to observe the project or inspect
-its context:
+## Browse memory
 
-```bash
-clumsies
-```
+Desktop has two memory scopes:
 
-From there, the TUI handles the normal product workflow:
+- **Hub** contains organization-shared Context, Rules, Workflows, and
+  Metaprompt.
+- **Local** contains the selected project's resources and local drafts.
 
-1. inspect the active workspace
-2. read local context and rules
-3. browse shared artifact rules and bundles
-4. review changes and manage workspace membership
-5. check activity and runtime signals
+Choose a resource kind in the Content Region navigator, then open a file or
+structured resource in the workbench. Context behaves as a file tree; Rules
+and Workflows retain their domain identity even when their bodies are textual.
 
-You do not need to run `init` or `sync` for the quick start. Those commands
-remain available for scripts, automation, and explicit troubleshooting.
+## Edit and review
 
-That is the member path. The MCP server belongs to the agent runtime path, not to the normal user path.
+Editing creates or reuses a local draft. The daemon persists each operation and
+automatically synchronizes it to Server. Saving a draft does not publish it.
 
-## Step 1: log in
+The collaboration flow is:
 
-Run:
+1. edit a Hub or Local resource
+2. submit the draft for review
+3. review comments and a decision
+4. merge an approved review
+5. receive the new authority Commit
 
-```bash
-clumsies login --hub-url http://127.0.0.1:8400 --username admin
-```
+If the target Ref changed after the draft's base Commit, merge stops with a
+conflict. Clumsies does not silently overwrite the newer authority state.
 
-Current flags:
+## Agent workflow
 
-| Flag | Meaning |
-| --- | --- |
-| `--hub-url <url>` | Hub base URL. Default is `http://127.0.0.1:8400` |
-| `--username <user>` | username to authenticate as |
+The MCP server exposes:
 
-If you omit `--username`, the CLI prompts for it.
+- `activate` to list task-relevant candidates
+- `retrieve` to load selected content
+- `store` to create or update a local project draft
 
-## Step 2: adapt the project
+MCP `store` and Desktop editing use the same daemon queue, so a change created
+by an agent appears in Desktop for review. Organization-scoped MCP writes are
+not exposed yet; Hub edits remain explicit Desktop operations.
 
-Run:
+## Bundles
 
-```bash
-clumsies adapt
-```
+Bundles are personal, Server-stored selections of shared memory. They help one
+user reuse a curated set without making that selection an organization-wide
+authority object.
 
-The interactive flow asks which agent to adapt for and where to install
-Clumsies. Choose workspace scope when this repository should carry its own
-agent integration. If the current directory is not bound to a workspace,
-workspace scope creates and binds one before it builds the install plan.
+## Administration
 
-Use explicit flags when you already know what you want:
+Web Admin is reserved for organization settings, member admission, projects,
+tokens, audit events, and health. It is not a second memory editor.
 
-```bash
-clumsies adapt --agent codex --scope workspace --yes
-```
-
-Current flags:
-
-| Flag | Meaning |
-| --- | --- |
-| `--agent <name>` | skip adapter selection and choose a package directly |
-| `--scope workspace|user` | skip scope selection |
-| `--yes` | skip the final confirmation |
-| `--update` | update an existing install instead of doing a fresh install flow |
-
-## Step 3: open the TUI
-
-Launch:
-
-```bash
-clumsies
-```
-
-Use Workspace to inspect what the current project has selected. Use Artifact
-to browse the organization library and import rules into the active workspace.
-Use Review to handle changes, and Settings to manage account, organization,
-tokens, members, workspaces, and local path bindings.
-
-## Explicit setup commands
-
-`init` and `sync` are still useful when you want direct control.
-
-```bash
-clumsies init --create my-workspace
-clumsies init --ws-id ws-123
-clumsies sync
-```
-
-Use them for automation, recovery, or cases where you do not want the adapter
-flow to create or bind the workspace.
-
-Remove an install:
-
-```bash
-clumsies adapt --remove --agent codex --scope workspace --yes
-```
-
-Adapter setup is still a member-facing action because it configures your
-machine or repo. The runtime behavior that follows belongs to the agent path,
-which is documented separately.
-
-## What to read next
-
-If you are deploying the system rather than just using it, go to [Deployment](/guides/deploy-for-an-org).
-
-If you are wiring an agent host into clumsies, go to [Agent runtime](/guides/agent-runtime).
-
-If you want the command surface in one place, go to [CLI reference](/guides/cli-commands).
+See [Deployment](/guides/deploy-for-an-org) for Server configuration and
+[Architecture](/architecture) for component boundaries.

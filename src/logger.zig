@@ -192,9 +192,9 @@ pub fn httpAccessLogFn(
     };
 }
 
-pub fn hubEventLogFn(
+pub fn serverEventLogFn(
     message_level: std.log.Level,
-    event: HubEvent,
+    event: ServerEvent,
 ) void {
     mutex.lockUncancelable(std.Options.debug_io);
     defer mutex.unlock(std.Options.debug_io);
@@ -207,7 +207,7 @@ pub fn hubEventLogFn(
         return;
     };
 
-    writeHubEventLine(&writer.interface, event) catch {
+    writeServerEventLine(&writer.interface, event) catch {
         disableLocked();
         return;
     };
@@ -236,7 +236,7 @@ pub const HttpAccess = struct {
     error_message: []const u8 = "-",
 };
 
-pub const HubEvent = struct {
+pub const ServerEvent = struct {
     name: []const u8,
     outcome: []const u8 = "ok",
     action: []const u8 = "-",
@@ -315,10 +315,10 @@ pub fn writeHttpAccessLine(
     try writer.writeByte('\n');
 }
 
-pub fn writeHubEventLine(writer: *std.Io.Writer, event: HubEvent) std.Io.Writer.Error!void {
+pub fn writeServerEventLine(writer: *std.Io.Writer, event: ServerEvent) std.Io.Writer.Error!void {
     var ts_buf: [19]u8 = undefined;
     formatTimestamp(&ts_buf);
-    try writer.print("{s} [EVENT] hub.{s} outcome={s}", .{ ts_buf, event.name, event.outcome });
+    try writer.print("{s} [EVENT] server.{s} outcome={s}", .{ ts_buf, event.name, event.outcome });
     try writeOptionalField(writer, "action", event.action);
     try writeOptionalField(writer, "target_kind", event.target_kind);
     try writeOptionalField(writer, "actor_user_id", event.actor_user_id);
@@ -798,7 +798,7 @@ test "writeLogLine includes ANSI color codes when enabled" {
     var buffer: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
 
-    try writeLogLine(&writer, .info, .hub, "starting", .{}, true);
+    try writeLogLine(&writer, .info, .server, "starting", .{}, true);
     const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[2m") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[32m") != null);
@@ -836,7 +836,7 @@ test "writeHttpAccessLine omits application log prefix" {
     }, false);
     const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "[WARN ]") == null);
-    try testing.expect(std.mem.indexOf(u8, output, "(hub_request)") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "(server_request)") == null);
     try testing.expect(std.mem.indexOf(u8, output, "| 400 |   1.23ms | 127.0.0.1       |") != null);
     try testing.expect(std.mem.indexOf(u8, output, "client_id=client-1") != null);
     try testing.expect(std.mem.indexOf(u8, output, "request_id=\"req-1 error_code=OK\"") != null);
@@ -849,11 +849,11 @@ test "writeHttpAccessLine omits application log prefix" {
     try testing.expect(std.mem.indexOf(u8, output, "| GET    /bad") != null);
 }
 
-test "writeHubEventLine emits business event fields" {
+test "writeServerEventLine emits business event fields" {
     var buffer: [512]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
 
-    try writeHubEventLine(&writer, .{
+    try writeServerEventLine(&writer, .{
         .name = "rule_pr.accepted",
         .action = "accept",
         .target_kind = "rule_pr",
@@ -864,7 +864,7 @@ test "writeHubEventLine emits business event fields" {
         .op_count = 3,
     });
     const output = writer.buffered();
-    try testing.expect(std.mem.indexOf(u8, output, "[EVENT] hub.rule_pr.accepted outcome=ok") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "[EVENT] server.rule_pr.accepted outcome=ok") != null);
     try testing.expect(std.mem.indexOf(u8, output, "action=accept") != null);
     try testing.expect(std.mem.indexOf(u8, output, "target_kind=rule_pr") != null);
     try testing.expect(std.mem.indexOf(u8, output, "actor_user_id=usr-1") != null);

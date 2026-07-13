@@ -7,11 +7,11 @@ This page is the command surface in one place. Every command listed here is base
 | Command | Purpose |
 | --- | --- |
 | `clumsies` | launch the TUI |
-| `clumsies login` | authenticate with Hub or refresh local credentials |
+| `clumsies login` | authenticate with Server or refresh local credentials |
 | `clumsies init` | bind the current directory to a workspace |
-| `clumsies sync` | sync local cache from Hub |
+| `clumsies sync` | sync local cache from Server |
 | `clumsies adapt` | install or update an adapter |
-| `clumsies hub` | start the Hub server |
+| `clumsies server` | start the Server server |
 | `clumsies mcp serve` | start the MCP server |
 
 ## login
@@ -19,12 +19,12 @@ This page is the command surface in one place. Every command listed here is base
 Usage:
 
 ```bash
-clumsies login [--hub-url <url>] [--username <user>]
+clumsies login [--server-url <url>] [--username <user>]
 ```
 
 | Flag | Meaning |
 | --- | --- |
-| `--hub-url <url>` | Hub URL. Default is `http://127.0.0.1:8400` |
+| `--server-url <url>` | Server URL. Default is `http://127.0.0.1:8400` |
 | `--username <user>` | username. Prompted if omitted |
 
 `clumsies login` is the CLI wrapper for the same auth capability the TUI uses.
@@ -57,7 +57,7 @@ Usage:
 clumsies sync
 ```
 
-This syncs workspace rules and context files from Hub into the local cache.
+This syncs workspace rules and context files from Server into the local cache.
 
 ## adapt
 
@@ -90,15 +90,15 @@ clumsies adapt --agent codex --scope workspace --yes
 
 If multiple adapter packages are available, omitting `--agent` leaves package selection to the interactive flow.
 
-## hub
+## server
 
 Usage:
 
 ```bash
-clumsies hub
+clumsies server
 ```
 
-This starts the Hub HTTP server. It reads configuration from environment
+This starts the Server HTTP server. It reads configuration from environment
 variables and `.env`, including PostgreSQL connection settings.
 
 ## mcp serve

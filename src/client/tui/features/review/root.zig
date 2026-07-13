@@ -251,7 +251,7 @@ fn writeRuleMetaOnPanelChrome(
     rule: *const data.RuleEntry,
 ) std.mem.Allocator.Error!void {
     // Virtual row (local create-op draft not yet submitted) has no
-    // hub metadata yet. Its local identity is already shown in the
+    // server metadata yet. Its local identity is already shown in the
     // title, so leave the right side empty.
     if (rule.revision == 0 and rule.content_hash.len == 0 and rule.updated.len == 0) {
         return;

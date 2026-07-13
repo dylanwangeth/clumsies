@@ -637,7 +637,7 @@ fn drawSettingsAccount(self: anytype, ctx: vxfw.DrawContext) std.mem.Allocator.E
     const cfg: data.ClientConfig = blk: {
         self.api_state.mutex.lockUncancelable(std.Options.debug_io);
         defer self.api_state.mutex.unlock(std.Options.debug_io);
-        const url = if (self.api_state.hub_url) |u| u else "\xe2\x80\x94";
+        const url = if (self.api_state.server_url) |u| u else "\xe2\x80\x94";
         if (self.api_state.current_user) |_|
             break :blk .{ .server_url = url, .sync_strategy = "session", .token_status = "active", .token_expires = "\xe2\x80\x94" };
         break :blk .{ .server_url = url, .sync_strategy = "\xe2\x80\x94", .token_status = "\xe2\x80\x94", .token_expires = "\xe2\x80\x94" };

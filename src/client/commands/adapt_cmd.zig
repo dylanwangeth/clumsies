@@ -5,7 +5,7 @@ const adapter = @import("../adapter/root.zig");
 const adapter_cli = @import("adapter_cli.zig");
 const styles = @import("../styles.zig");
 const workspace_config = @import("../workspace_config.zig");
-const HubClient = @import("../hub_client.zig").HubClient;
+const ServerClient = @import("../server_client.zig").ServerClient;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const auth_api = @import("clumsies_lib").protocol.auth_api;
@@ -579,11 +579,11 @@ fn chooseWorkspaceBundles(
     };
     defer auth_info.deinit(allocator);
 
-    var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
-    defer hub.deinit();
-    try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
+    var server = ServerClient.init(allocator, auth_info.server_url, auth_info.access_token);
+    defer server.deinit();
+    try server.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
 
-    const response = hub.get("/api/bundles") catch |err| {
+    const response = server.get("/api/bundles") catch |err| {
         try stderr.print("{s}{s}{s}Warning:{s} Bundle import skipped: {s}.\n", .{ P, Color.bold, Color.orange, Color.reset, @errorName(err) });
         return .{};
     };
@@ -732,9 +732,9 @@ fn createAndBindCurrentWorkspace(
     const description = try std.fmt.allocPrint(allocator, "Workspace for {s}", .{cwd_path});
     defer allocator.free(description);
 
-    var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
-    defer hub.deinit();
-    try hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
+    var server = ServerClient.init(allocator, auth_info.server_url, auth_info.access_token);
+    defer server.deinit();
+    try server.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens);
 
     const body = try std.json.Stringify.valueAlloc(
         allocator,
@@ -745,7 +745,7 @@ fn createAndBindCurrentWorkspace(
 
     const created = blk: {
         log.info("workspace_create_request_start name={s}", .{pending_workspace.name});
-        const response = try hub.post("/api/workspaces", body);
+        const response = try server.post("/api/workspaces", body);
         defer response.deinit();
         log.info("workspace_create_request_done status={d}", .{@intFromEnum(response.status)});
         if (response.status == .ok or response.status == .created) {
@@ -758,7 +758,7 @@ fn createAndBindCurrentWorkspace(
             break :blk parsed;
         }
         if (response.status == .conflict) {
-            if (try bindExistingWorkspaceByName(stdout, stderr, allocator, &hub, auth_info.hub_url, cwd_path, pending_workspace.name, bundle_import)) {
+            if (try bindExistingWorkspaceByName(stdout, stderr, allocator, &server, auth_info.server_url, cwd_path, pending_workspace.name, bundle_import)) {
                 return cwd_path;
             }
         }
@@ -767,7 +767,7 @@ fn createAndBindCurrentWorkspace(
     };
     defer created.deinit();
 
-    try workspace_config.addWorkspace(allocator, auth_info.hub_url, created.value.name, created.value.ws_id, cwd_path);
+    try workspace_config.addWorkspace(allocator, auth_info.server_url, created.value.name, created.value.ws_id, cwd_path);
     try stdout.print(
         "{s}  {s}{s}Workspace \"{s}\" bound to current directory (ws_id: {s}){s}\n",
         .{ P, Color.bold, Color.green, created.value.name, created.value.ws_id, Color.reset },
@@ -779,7 +779,7 @@ fn createAndBindCurrentWorkspace(
     try stdout.flush();
 
     log.info("workspace_sync_start ws_id={s}", .{created.value.ws_id});
-    const summary = sync_cmd.materializeWorkspace(allocator, &hub, created.value.ws_id, .{ .progress = stdout, .errors = stderr }) catch |err| {
+    const summary = sync_cmd.materializeWorkspace(allocator, &server, created.value.ws_id, .{ .progress = stdout, .errors = stderr }) catch |err| {
         log.warn("workspace_sync_failed ws_id={s} error={s}", .{ created.value.ws_id, @errorName(err) });
         try stderr.print(
             "{s}{s}{s}Warning:{s} Initial sync failed: {s}. The adapter install will continue.\n",
@@ -799,14 +799,14 @@ fn bindExistingWorkspaceByName(
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
     allocator: std.mem.Allocator,
-    hub: *HubClient,
-    hub_url: []const u8,
+    server: *ServerClient,
+    server_url: []const u8,
     cwd_path: []const u8,
     workspace_name: []const u8,
     bundle_import: *const BundleImportSelection,
 ) !bool {
     log.info("workspace_bind_existing_lookup_start name={s}", .{workspace_name});
-    const me_response = hub.get("/api/auth/me") catch |err| {
+    const me_response = server.get("/api/auth/me") catch |err| {
         try stderr.print(
             "{s}{s}{s}Warning:{s} Workspace \"{s}\" already exists, but lookup failed: {s}.\n",
             .{ P, Color.bold, Color.orange, Color.reset, workspace_name, @errorName(err) },
@@ -828,17 +828,17 @@ fn bindExistingWorkspaceByName(
     defer parsed.deinit();
 
     const existing = findAccessibleWorkspaceByName(parsed.value.workspaces, workspace_name) orelse return false;
-    try workspace_config.addWorkspace(allocator, hub_url, existing.name, existing.ws_id, cwd_path);
+    try workspace_config.addWorkspace(allocator, server_url, existing.name, existing.ws_id, cwd_path);
     try stdout.print(
         "{s}  {s}{s}Workspace \"{s}\" already exists; bound current directory (ws_id: {s}){s}\n",
         .{ P, Color.bold, Color.green, existing.name, existing.ws_id, Color.reset },
     );
-    try attachImportedBundleRules(stdout, stderr, allocator, hub, existing.ws_id, bundle_import.rule_ids);
+    try attachImportedBundleRules(stdout, stderr, allocator, server, existing.ws_id, bundle_import.rule_ids);
     try stdout.print("{s}  Syncing initial workspace memory...\n", .{P});
     try stdout.flush();
 
     log.info("workspace_sync_start ws_id={s}", .{existing.ws_id});
-    const summary = sync_cmd.materializeWorkspace(allocator, hub, existing.ws_id, .{ .progress = stdout, .errors = stderr }) catch |err| {
+    const summary = sync_cmd.materializeWorkspace(allocator, server, existing.ws_id, .{ .progress = stdout, .errors = stderr }) catch |err| {
         log.warn("workspace_sync_failed ws_id={s} error={s}", .{ existing.ws_id, @errorName(err) });
         try stderr.print(
             "{s}{s}{s}Warning:{s} Initial sync failed: {s}. The adapter install will continue.\n",
@@ -858,7 +858,7 @@ fn attachImportedBundleRules(
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
     allocator: std.mem.Allocator,
-    hub: *HubClient,
+    server: *ServerClient,
     ws_id: []const u8,
     rule_ids: []const []const u8,
 ) !void {
@@ -877,7 +877,7 @@ fn attachImportedBundleRules(
     const path = try std.fmt.allocPrint(allocator, "/api/workspaces/{s}/rules", .{ws_id});
     defer allocator.free(path);
 
-    const response = hub.post(path, body) catch |err| {
+    const response = server.post(path, body) catch |err| {
         try stderr.print("{s}{s}{s}Warning:{s} Bundle import failed: {s}.\n", .{ P, Color.bold, Color.orange, Color.reset, @errorName(err) });
         return;
     };

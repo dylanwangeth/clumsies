@@ -6,7 +6,7 @@ Attestation is the structured usage signal produced when agents work through clu
 
 This matters because rule systems often fail in a familiar way: teams write more and more instructions, but nobody can tell which ones are actually being used. Attestation is the mechanism that turns that vague situation into evidence.
 
-Earlier architecture notes and older docs may still call this layer `Trace`. In the current codebase, the event model, local files, upload endpoints, and Hub handlers have largely moved to `Attestation`.
+Earlier architecture notes and older docs may still call this layer `Trace`. In the current codebase, the event model, local files, upload endpoints, and Server handlers have largely moved to `Attestation`.
 
 ## What attestation records
 
@@ -58,9 +58,9 @@ If two versions of a rule share a name but differ in content, the system should 
 
 ## Local buffering matters
 
-Attestation is designed to be buffered locally and uploaded asynchronously rather than synchronously sent to Hub on every action.
+Attestation is designed to be buffered locally and uploaded asynchronously rather than synchronously sent to Server on every action.
 
-That is an architectural choice, not an implementation accident. It keeps runtime work non-blocking while still letting Hub become the place where deduplication, persistence, and aggregation happen.
+That is an architectural choice, not an implementation accident. It keeps runtime work non-blocking while still letting Server become the place where deduplication, persistence, and aggregation happen.
 
 The current local files are session-scoped:
 
@@ -79,7 +79,7 @@ The upload path on the server side is:
 POST /api/attestations
 ```
 
-That endpoint is the handoff between local runtime evidence and Hub-side aggregation.
+That endpoint is the handoff between local runtime evidence and Server-side aggregation.
 
 ## Attestation and refinement
 

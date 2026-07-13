@@ -1,4 +1,4 @@
-//! View model types for TUI display, transformed from Hub API responses.
+//! View model types for TUI display, transformed from Server API responses.
 const std = @import("std");
 
 pub const RuleEntry = struct {

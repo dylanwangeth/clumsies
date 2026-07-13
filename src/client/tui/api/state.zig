@@ -1,6 +1,6 @@
 //! Shared TUI API state. This module defines the long-lived caches, pending
 //! request slots, local runtime snapshots, and helper accessors that connect
-//! asynchronous Hub fetches to synchronous draw code.
+//! asynchronous Server fetches to synchronous draw code.
 
 const std = @import("std");
 const collab_api = @import("clumsies_lib").protocol.collab_api;
@@ -8,7 +8,7 @@ const artifact_api = @import("clumsies_lib").protocol.artifact_api;
 const auth_api = @import("clumsies_lib").protocol.auth_api;
 const workspace_api = @import("clumsies_lib").protocol.workspace_api;
 const auth_mod = @import("../../auth.zig");
-const HubClient = @import("../../hub_client.zig").HubClient;
+const ServerClient = @import("../../server_client.zig").ServerClient;
 const data = @import("../models/view_types.zig");
 const drafts_reader = @import("../runtime/drafts_reader.zig");
 const attestation_reader = @import("../runtime/attestation_reader.zig");
@@ -179,7 +179,7 @@ pub const ApiState = struct {
     pr_detail_op_base_hash: ?[]const u8 = null,
     pr_detail_op_index: u16 = 0,
     pr_detail_op_total: u16 = 0,
-    hub_url: ?[]const u8 = null,
+    server_url: ?[]const u8 = null,
     username: ?[]const u8 = null,
     access_token: ?[]const u8 = null,
     refresh_token: ?[]const u8 = null,
@@ -303,14 +303,14 @@ pub const ApiState = struct {
             }
         }
 
-        const hub_url = if (self.hub_url) |value| alloc.dupe(u8, value) catch |err| {
+        const server_url = if (self.server_url) |value| alloc.dupe(u8, value) catch |err| {
             self.mutex.unlock(std.Options.debug_io);
             return err;
         } else {
             self.mutex.unlock(std.Options.debug_io);
             return error.NotAuthenticated;
         };
-        defer alloc.free(hub_url);
+        defer alloc.free(server_url);
         const username = if (self.username) |value| alloc.dupe(u8, value) catch |err| {
             self.mutex.unlock(std.Options.debug_io);
             return err;
@@ -329,7 +329,7 @@ pub const ApiState = struct {
         self.mutex.unlock(std.Options.debug_io);
         defer alloc.free(refresh_token);
 
-        var client = HubClient.init(alloc, hub_url, null);
+        var client = ServerClient.init(alloc, server_url, null);
         client.client_id = self.clientIdHex();
         defer client.deinit();
 
@@ -356,7 +356,7 @@ pub const ApiState = struct {
         errdefer alloc.free(next_refresh_copy);
 
         self.updateAuthTokens(access_copy, next_refresh_copy);
-        auth_mod.persistRotatedTokens(alloc, hub_url, username, access_copy, next_refresh_copy) catch {};
+        auth_mod.persistRotatedTokens(alloc, server_url, username, access_copy, next_refresh_copy) catch {};
         return .{ .access_token = access_copy, .refresh_token = next_refresh_copy };
     }
 };

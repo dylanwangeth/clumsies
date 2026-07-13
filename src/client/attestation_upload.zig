@@ -1,9 +1,9 @@
-//! Attestation upload orchestrator. Authenticates with the Hub and wraps batch_upload with an HTTP
+//! Attestation upload orchestrator. Authenticates with the Server and wraps batch_upload with an HTTP
 //! POST uploader targeting /api/attestations for the TUI background upload task.
 const std = @import("std");
 const upload_worker = @import("batch_upload.zig");
 const auth_mod = @import("auth.zig");
-const HubClient = @import("hub_client.zig").HubClient;
+const ServerClient = @import("server_client.zig").ServerClient;
 
 const log = std.log.scoped(.attestation_upload);
 
@@ -15,13 +15,13 @@ pub const FlushOutcome = union(enum) {
     failed: anyerror,
 };
 
-const HubUploader = struct {
+const ServerUploader = struct {
     allocator: std.mem.Allocator,
-    client: *HubClient,
+    client: *ServerClient,
     last_status: ?std.http.Status = null,
 
     fn post(ctx: *anyopaque, body: []const u8) !bool {
-        const self: *HubUploader = @ptrCast(@alignCast(ctx));
+        const self: *ServerUploader = @ptrCast(@alignCast(ctx));
         var response = self.client.post("/api/attestations", body) catch |err| {
             log.warn("POST /api/attestations transport error: {}", .{err});
             return err;
@@ -38,12 +38,12 @@ const HubUploader = struct {
         return false;
     }
 
-    fn uploader(self: *HubUploader) upload_worker.Uploader {
-        return .{ .ctx = @ptrCast(self), .postFn = HubUploader.post };
+    fn uploader(self: *ServerUploader) upload_worker.Uploader {
+        return .{ .ctx = @ptrCast(self), .postFn = ServerUploader.post };
     }
 };
 
-/// Flush pending attestation events for the given workspace to the hub server.
+/// Flush pending attestation events for the given workspace to the Server.
 /// Loads credentials from `auth.loadAuth`; returns `not_authenticated` if
 /// no credentials are available so callers can skip silently.
 pub fn flushWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) FlushOutcome {
@@ -53,10 +53,10 @@ pub fn flushWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) FlushOutc
     };
     defer auth_info.deinit(allocator);
 
-    var hub = HubClient.init(allocator, auth_info.hub_url, auth_info.access_token);
-    defer hub.deinit();
-    hub.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens) catch |err| return .{ .failed = err };
-    var adapter: HubUploader = .{ .allocator = allocator, .client = &hub };
+    var server = ServerClient.init(allocator, auth_info.server_url, auth_info.access_token);
+    defer server.deinit();
+    server.enableRefresh(auth_info.refresh_token, auth_info.username, auth_mod.persistRotatedTokens) catch |err| return .{ .failed = err };
+    var adapter: ServerUploader = .{ .allocator = allocator, .client = &server };
 
     return flushWorkspaceWithUploader(allocator, ws_id, adapter.uploader());
 }

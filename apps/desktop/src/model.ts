@@ -4,7 +4,7 @@ export type MemoryKind = (typeof memoryKinds)[number];
 export type MemoryScope = "Hub" | "Project";
 export type DraftOrigin = "Desktop" | "MCP" | "CLI";
 export type DraftStatus = "editing" | "in_review" | "merged";
-export type SyncState = "local" | "syncing" | "synced" | "conflict";
+export type SyncState = "local" | "syncing" | "synced" | "failed" | "conflict";
 export type ReviewStatus = "open" | "approved" | "rejected" | "merged";
 export type ResourceWorkingState =
   | "clean"
@@ -30,12 +30,18 @@ export type AuthorityResource = {
   projectName: string | null;
   kind: MemoryKind;
   version: number;
+  refCommitId?: string | null;
+  contentHash?: string;
   updatedAt: string;
   document: MemoryDocument;
 };
 
 export type DraftRecord = {
   id: string;
+  localId?: string;
+  serverId?: string | null;
+  serverVersion?: number;
+  baseCommitId: string | null;
   baseResourceId: string | null;
   scope: MemoryScope;
   projectId: string | null;
@@ -63,6 +69,7 @@ export type ReviewRecord = {
   title: string;
   author: string;
   status: ReviewStatus;
+  version?: number;
   createdAt: string;
   decisionNote: string | null;
   comments: ReviewComment[];
@@ -73,6 +80,7 @@ export type PersonalBundle = {
   name: string;
   description: string;
   resourceIds: string[];
+  revision?: number;
   syncState: SyncState;
   updatedAt: string;
 };
@@ -120,10 +128,12 @@ export function createBlankDraft(
   kind: MemoryKind,
   projectId: string | null,
   projectName: string | null,
+  baseCommitId: string | null = null,
 ): DraftRecord {
   const suffix = Date.now().toString(36);
   return {
     id: `draft-${scope.toLowerCase()}-${kind.toLowerCase()}-${suffix}`,
+    baseCommitId,
     baseResourceId: null,
     scope,
     projectId,
@@ -142,6 +152,7 @@ export function createBlankDraft(
 export function createDraftFromResource(resource: AuthorityResource): DraftRecord {
   return {
     id: `draft-${resource.id}-${Date.now().toString(36)}`,
+    baseCommitId: resource.refCommitId ?? null,
     baseResourceId: resource.id,
     scope: resource.scope,
     projectId: resource.projectId,
@@ -923,6 +934,7 @@ export const initialResources: AuthorityResource[] = [
 export const initialDrafts: DraftRecord[] = [
   {
     id: "draft-mcp-production-architecture",
+    baseCommitId: null,
     baseResourceId: "project-context-production",
     scope: "Project",
     projectId: "koal",
@@ -942,6 +954,7 @@ export const initialDrafts: DraftRecord[] = [
   },
   {
     id: "draft-review-desktop-shell",
+    baseCommitId: null,
     baseResourceId: "hub-context-desktop-product",
     scope: "Hub",
     projectId: null,
@@ -961,6 +974,7 @@ export const initialDrafts: DraftRecord[] = [
   },
   {
     id: "draft-cli-infinite-context",
+    baseCommitId: null,
     baseResourceId: null,
     scope: "Project",
     projectId: "infinite",

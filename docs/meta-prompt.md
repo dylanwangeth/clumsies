@@ -48,7 +48,7 @@ but take priority when they conflict.
    descriptions to decide what is relevant.
 2. **Retrieve.** Call `retrieve()` with the ids you need and a `knownHashes`
    entry for every id. Retrieve only selected relevant items from activation,
-   or retrieve directly when the user provides an exact Hub id, local draft id,
+   or retrieve directly when the user provides an exact Server id, local draft id,
    alias, or path. Use a remembered hash when available, otherwise pass an
    empty string. Loaded content includes parsed rule ids.
 3. **Apply.** Follow loaded rules in your work. Rules override your defaults.

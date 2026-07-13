@@ -1,100 +1,77 @@
 # Overview
 
-## What clumsies is
+Clumsies is external memory infrastructure for coding agents. It keeps durable
+Context, Rules, Workflows, and Metaprompt outside one model conversation, makes
+the relevant subset available to an agent, and turns changes into reviewable
+drafts instead of invisible local edits.
 
-clumsies is building the persistent, observable, and collaborative context infrastructure that coexists with agents' self-managed memory.
+## Memory model
 
-In practical terms, that means shared rules stop living as scattered local copies, project context stops being glued onto one agent runtime at a time, and real usage produces attestation data that a team can inspect later.
+Memory is a product concept, not one database table.
 
-The point is not just to store rule text. The system is trying to solve three problems at the same time:
-
-- rule lifecycle management across many workspaces
-- project context management at workspace scope
-- attestation-backed observability for how agents actually used those materials
-
-## Why the project exists
-
-The architecture documents describe a specific failure mode in agent-heavy teams: rules get copied into local repos, drift independently, and become impossible to review, measure, or refine across projects.
-
-That produces four structural problems:
-
-1. rule reuse is manual and fragile
-2. rule identity gets tied to local file paths
-3. local improvements have no clean path back to shared infrastructure
-4. attestation data stays trapped inside per-project islands
-
-clumsies exists to turn that into a managed system. Artifact owns shared rule truth. Workspace binds that truth to a project. Context carries project knowledge. Attestation makes the runtime legible enough to support review and refinement.
-
-## The stable object model
-
-The clearest way to understand clumsies is through eight core objects:
-
-| Object | Role |
+| Type | Meaning |
 | --- | --- |
-| Hub | the authority layer that owns server-side state and coordination |
-| Artifact | the organization-level source of rules, workflows, and bundles |
-| Rule | the basic behavioral asset that the rest of the lifecycle is built around |
-| Workspace | the project boundary that selects Artifact content and owns context |
-| Context | project facts such as specs, ADRs, and research |
-| Attestation | usage signals from activate, retrieve, and draft operations |
-| Draft | local in-progress work before review or merge |
-| PR | the review path that moves changes back into shared authority |
+| Context | file-oriented project or organization knowledge |
+| Rule | structured strong constraints |
+| Workflow | ordered operational behavior with its own lifecycle |
+| Metaprompt | bootstrap instructions used to enter the memory loop |
+| Bundle | a personal selection of shared memory resources |
 
-Everything else in the system exists to serve those objects. CLI, MCP, TUI, adapters, manifests, and local cache all sit around this model rather than replacing it.
+Organization resources are general and shared. Projects may consume selected
+organization resources and own independent Context, Rules, Workflows, and
+Metaprompt.
 
-## The authority model
+## Product surfaces
 
-Hub is the authority layer. It owns artifact state, workspace manifests, collaboration flow, and aggregated attestation data. CLI, MCP, TUI, and adapters are client or integration surfaces around that authority.
+| Surface | Role |
+| --- | --- |
+| Desktop | primary human product for browsing, editing, reviewing, and merging memory |
+| daemon | always-on local runtime for drafts, sync, native transport, and client coordination |
+| Server | self-hosted authority service backed by PostgreSQL |
+| MCP | agent-facing `activate`, `retrieve`, and `store` interface |
+| CLI | optional command-line client for useful product operations |
+| Web Admin | organization, member, project, token, audit, and health administration |
 
-That distinction matters because the repository already contains a lot of local runtime code. Public docs should not describe those surfaces as separate truth sources. They are execution layers built around the Hub-centered model.
+In Desktop, **Hub** means organization-scoped shared memory. **Local** means the
+selected project's resources and local drafts. Server is the process name; Hub
+is not a second backend.
 
-This also implies a hard design rule: business logic belongs in Hub. Clients execute against it. Adapters bridge host runtimes into it. They do not become parallel authority layers.
+## Memory lifecycle
 
-## What a workspace actually contains
+```text
+task cue
+  -> activate candidates
+  -> retrieve selected memory
+  -> use it in working context
+  -> store a local draft
+  -> daemon synchronizes the draft
+  -> review and merge
+  -> new Commit advances the target Ref
+```
 
-The specs make one boundary explicit: a workspace is not "a repo with rules in it."
+`store` never edits authoritative memory. Desktop and MCP both write to daemon,
+and daemon automatically sends queued operations to Server. Only an approved
+merge creates the next authority Commit.
 
-It contains:
+## Version model
 
-- rule, workflow, and bundle selections from Artifact
-- workspace-owned context files
-- a Hub-maintained manifest that indexes current rule, workflow, and context hashes
-- local drafts used for in-progress editing before review or merge
+Clumsies uses Git terminology for Git-equivalent concepts:
 
-That model is what keeps shared policy and project-specific knowledge from collapsing into one bucket. Artifact content stays organization-owned. Context stays workspace-owned. The workspace binds them together for actual work.
+- Blob: immutable resource content
+- Tree: the indexed resource set for a version
+- Commit: an immutable authority version with a parent
+- Ref: the movable organization or project head
 
-## The collaboration split
+HTTP `ETag` and `If-Match` protect Ref updates. They do not replace Commit
+history. A draft records `base_commit_id`; a merge is rejected if the target Ref
+has moved.
 
-clumsies has two different collaboration models, and the docs need to preserve that distinction.
+## Current implementation boundary
 
-Artifact content moves through proposal and review flow before it becomes shared truth again. Workspace context uses workspace-scoped collaboration and PR flow because it is project knowledge rather than cross-org policy.
+The Rust Server, generic organization OIDC, complete Public/Admin contracts,
+Desktop transport, local draft queue, refresh-token retry, and reviewed Commit
+creation are implemented and covered by real PostgreSQL integration tests.
 
-If docs flatten those two workflows into one vague "edit and sync" story, the system becomes much harder to reason about than it actually is.
-
-## Current implementation and stable system shape
-
-This repository already has a working Hub-centered runtime. The docs should not undersell that by talking as if the real architecture only exists in the future.
-
-At the same time, some details are still evolving. The useful documentation move is not to blur those together. It is to separate:
-
-- what is already implemented and user-visible now
-- what is clearly part of the stable product boundary
-- what is still being refined inside that boundary
-
-## The naming transition is real
-
-The project also still carries some older naming. The design intent has moved from prompt-heavy wording toward rule-oriented wording, and from Trace toward Attestation, but older terms still appear in parts of the implementation and historical documents.
-
-Good docs for this project need to do two things at once:
-
-1. explain what exists now
-2. show what the system is clearly moving toward
-
-## Recommended reading order
-
-1. Start with [Architecture](/architecture).
-2. Use [Glossary](/glossary) when you need the stable meaning of project terms.
-3. Read [Hub](/hub) if you want the server-side model directly.
-4. Read [Runtime surfaces](/runtime) to understand CLI, MCP, TUI, cache, and adapters.
-5. Read [MCP](/mcp) and [Adapter](/adapter) when you care about agent execution paths.
-6. Use [Codebase map](/repos) when you want to connect the model back to the repository.
+Authoritative Commit download/materialization into the local MCP read cache is
+not implemented yet. The daemon currently synchronizes drafts upward; its
+`commit_sync` channel is a truthful idle placeholder until that path is built.

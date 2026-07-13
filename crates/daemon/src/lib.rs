@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -15,7 +16,7 @@ use sqlx::sqlite::{
 };
 use sqlx::{Row, SqlitePool};
 use thiserror::Error;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -25,7 +26,7 @@ pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 5;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
@@ -42,10 +43,10 @@ pub struct DaemonConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectConfig {
-    pub hub_url: String,
-    pub author_user_id: Option<String>,
+    pub server_url: String,
     pub project_id: Option<String>,
     pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -441,10 +442,10 @@ fn set_owner_only_permissions(_path: &Path) -> Result<(), DaemonError> {
 impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
-            hub_url: "http://127.0.0.1:8080".to_owned(),
-            author_user_id: None,
+            server_url: "http://127.0.0.1:8080".to_owned(),
             project_id: None,
             access_token: None,
+            refresh_token: None,
         }
     }
 }
@@ -452,43 +453,43 @@ impl Default for ProjectConfig {
 impl ProjectConfig {
     fn from_env() -> Self {
         Self {
-            hub_url: env::var("CLUMSIES_HUB_URL")
+            server_url: env::var("CLUMSIES_SERVER_URL")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned()),
-            author_user_id: env::var("CLUMSIES_AUTHOR_USER_ID")
-                .ok()
-                .and_then(non_empty_string),
             project_id: env::var("CLUMSIES_PROJECT_ID")
                 .ok()
                 .and_then(non_empty_string),
             access_token: env::var("CLUMSIES_ACCESS_TOKEN")
                 .ok()
                 .and_then(non_empty_string),
+            refresh_token: env::var("CLUMSIES_REFRESH_TOKEN")
+                .ok()
+                .and_then(non_empty_string),
         }
     }
 
     fn validate(&self) -> Result<(), DaemonError> {
-        let url = reqwest::Url::parse(&self.hub_url)
-            .map_err(|error| DaemonError::InvalidConfig(format!("invalid hub_url: {error}")))?;
+        let url = reqwest::Url::parse(&self.server_url)
+            .map_err(|error| DaemonError::InvalidConfig(format!("invalid server_url: {error}")))?;
         match url.scheme() {
             "http" | "https" => Ok(()),
             scheme => Err(DaemonError::InvalidConfig(format!(
-                "hub_url scheme must be http or https, got {scheme}"
+                "server_url scheme must be http or https, got {scheme}"
             ))),
         }
     }
 
     fn readiness(&self) -> ProjectConfigReadiness {
         let mut missing_fields = Vec::new();
-        if self.hub_url.trim().is_empty() {
-            missing_fields.push("hub_url".to_owned());
-        }
-        if self.author_user_id.as_deref().is_none_or(str::is_empty) {
-            missing_fields.push("author_user_id".to_owned());
+        if self.server_url.trim().is_empty() {
+            missing_fields.push("server_url".to_owned());
         }
         if self.project_id.as_deref().is_none_or(str::is_empty) {
             missing_fields.push("project_id".to_owned());
+        }
+        if self.access_token.as_deref().is_none_or(str::is_empty) {
+            missing_fields.push("access_token".to_owned());
         }
         ProjectConfigReadiness {
             ready: missing_fields.is_empty(),
@@ -510,6 +511,7 @@ struct DaemonInner {
     daemon_installation_id: String,
     sync_notify: Notify,
     sync_running: AtomicBool,
+    token_refresh: Mutex<()>,
 }
 
 impl DaemonState {
@@ -529,6 +531,7 @@ impl DaemonState {
                 daemon_installation_id,
                 sync_notify: Notify::new(),
                 sync_running: AtomicBool::new(false),
+                token_refresh: Mutex::new(()),
             }),
         })
     }
@@ -558,10 +561,10 @@ impl DaemonState {
         request: DaemonProjectConfigUpdateRequest,
     ) -> Result<DaemonProjectConfig, DaemonError> {
         let project_config = ProjectConfig {
-            hub_url: request.hub_url.trim().to_owned(),
-            author_user_id: request.author_user_id.and_then(non_empty_string),
+            server_url: request.server_url.trim().to_owned(),
             project_id: request.project_id.and_then(non_empty_string),
             access_token: request.access_token.and_then(non_empty_string),
+            refresh_token: request.refresh_token.and_then(non_empty_string),
         };
         project_config.validate()?;
         save_project_config(&self.inner.pool, &project_config).await?;
@@ -574,14 +577,62 @@ impl DaemonState {
         Ok(self.project_config_view())
     }
 
+    pub async fn server_request(
+        &self,
+        request: DaemonServerRequest,
+    ) -> Result<DaemonServerResponse, DaemonError> {
+        validate_server_proxy_path(&request.path)?;
+        if request
+            .body
+            .as_ref()
+            .is_some_and(|body| body.len() > 10 * 1024 * 1024)
+        {
+            return Err(DaemonError::InvalidRequest(
+                "server request body exceeds 10 MiB".to_owned(),
+            ));
+        }
+        let method = reqwest::Method::from_bytes(request.method.as_bytes())
+            .map_err(|_| DaemonError::InvalidRequest("invalid server request method".to_owned()))?;
+        if ![
+            reqwest::Method::GET,
+            reqwest::Method::POST,
+            reqwest::Method::PUT,
+            reqwest::Method::PATCH,
+            reqwest::Method::DELETE,
+        ]
+        .contains(&method)
+        {
+            return Err(DaemonError::InvalidRequest(
+                "server request method is not allowed".to_owned(),
+            ));
+        }
+        let headers = filter_proxy_request_headers(request.headers);
+        let response = execute_authenticated_server_request(
+            self,
+            method,
+            &request.path,
+            &headers,
+            request.body.map(String::into_bytes),
+        )
+        .await?;
+        let status = response.status().as_u16();
+        let headers = filter_proxy_response_headers(response.headers());
+        let body = response.text().await?;
+        Ok(DaemonServerResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+
     fn project_config_view(&self) -> DaemonProjectConfig {
         let project_config = self.project_config();
         let readiness = project_config.readiness();
         DaemonProjectConfig {
-            hub_url: project_config.hub_url,
-            author_user_id: project_config.author_user_id,
+            server_url: project_config.server_url,
             project_id: project_config.project_id,
             has_access_token: project_config.access_token.is_some(),
+            has_refresh_token: project_config.refresh_token.is_some(),
             ready: readiness.ready,
             missing_fields: readiness.missing_fields,
         }
@@ -592,7 +643,7 @@ impl DaemonState {
         let project_config = self.project_config();
         DaemonHealth {
             daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
-            hub_url: project_config.hub_url,
+            server_url: project_config.server_url,
             project_id: project_config.project_id,
             daemon_installation_id: self.inner.daemon_installation_id.clone(),
             log_dir: self.inner.config.logs_dir().display().to_string(),
@@ -663,7 +714,16 @@ impl DaemonState {
         let operation_json = serde_json::to_string(&request.op)?;
         let mut tx = self.inner.pool.begin().await?;
 
-        let draft_id = resolve_local_draft(&mut tx, request.resource, &request.op).await?;
+        let draft_id = resolve_local_draft(
+            &mut tx,
+            request.draft_id.as_deref(),
+            &request.project_id,
+            request.base_commit_id.as_deref(),
+            request.scope,
+            request.resource,
+            &request.op,
+        )
+        .await?;
         let local_operation_id = format!("op_{}", Uuid::new_v4().simple());
 
         sqlx::query(
@@ -819,6 +879,13 @@ impl DaemonIpcService {
         self.state.store_draft_operation(request).await
     }
 
+    pub async fn server_request(
+        &self,
+        request: DaemonServerRequest,
+    ) -> Result<DaemonServerResponse, DaemonError> {
+        self.state.server_request(request).await
+    }
+
     pub async fn dispatch(&self, request: DaemonIpcRequest) -> DaemonIpcResponse {
         let result = match request.method.as_str() {
             "health" => serde_json::to_value(self.health().await).map_err(DaemonError::from),
@@ -884,6 +951,16 @@ impl DaemonIpcService {
                     Err(error) => Err(error),
                 }
             }
+            "server_request" => {
+                let payload = self.decode_dispatch_payload::<DaemonServerRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .server_request(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
             method => Err(DaemonError::InvalidRequest(format!(
                 "unknown daemon IPC method: {method}"
             ))),
@@ -901,16 +978,71 @@ impl DaemonIpcService {
 
 async fn resolve_local_draft(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    requested_draft_id: Option<&str>,
+    project_id: &str,
+    base_commit_id: Option<&str>,
+    scope: DaemonDraftScope,
     resource: DaemonDraftResourceKind,
     op: &DaemonDraftOperation,
 ) -> Result<String, DaemonError> {
+    if let Some(draft_id) = requested_draft_id {
+        let row = sqlx::query(
+            "SELECT project_id, resource_scope, resource_kind, base_commit_id, status
+             FROM local_drafts
+             WHERE draft_id = $1",
+        )
+        .bind(draft_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("local draft not found: {draft_id}")))?;
+        let stored_kind: String = row.try_get("resource_kind")?;
+        let stored_project_id: String = row.try_get("project_id")?;
+        let stored_scope: String = row.try_get("resource_scope")?;
+        if stored_project_id != project_id
+            || stored_scope != scope.as_str()
+            || stored_kind != resource.as_str()
+        {
+            return Err(DaemonError::InvalidRequest(format!(
+                "local draft {draft_id} belongs to a different project, scope, or resource kind"
+            )));
+        }
+        let stored_base_commit_id: Option<String> = row.try_get("base_commit_id")?;
+        if base_commit_id.is_some() && stored_base_commit_id.as_deref() != base_commit_id {
+            return Err(DaemonError::InvalidRequest(format!(
+                "local draft {draft_id} has a different base commit"
+            )));
+        }
+        let status: String = row.try_get("status")?;
+        if status != "open" {
+            return Err(DaemonError::InvalidRequest(format!(
+                "local draft {draft_id} is {status}"
+            )));
+        }
+        if op.discard.is_some() {
+            mark_local_draft_discarded(tx, draft_id).await?;
+        }
+        if let Some(create) = &op.create {
+            sqlx::query("UPDATE local_drafts SET path = $2 WHERE draft_id = $1")
+                .bind(draft_id)
+                .bind(&create.path)
+                .execute(&mut **tx)
+                .await?;
+        }
+        return Ok(draft_id.to_owned());
+    }
+
     if let Some(create) = &op.create {
         let draft_id = format!("draft_{}", Uuid::new_v4().simple());
         sqlx::query(
-            "INSERT INTO local_drafts (draft_id, resource_kind, target_id, path, status)
-             VALUES ($1, $2, NULL, $3, 'open')",
+            "INSERT INTO local_drafts (
+                draft_id, project_id, base_commit_id, resource_scope, resource_kind, target_id, path, status
+             )
+             VALUES ($1, $2, $3, $4, $5, NULL, $6, 'open')",
         )
         .bind(&draft_id)
+        .bind(project_id)
+        .bind(base_commit_id)
+        .bind(scope.as_str())
         .bind(resource.as_str())
         .bind(&create.path)
         .execute(&mut **tx)
@@ -922,7 +1054,7 @@ async fn resolve_local_draft(
         .target_id()
         .ok_or_else(|| DaemonError::InvalidRequest("operation target id is required".to_owned()))?;
     if let Some(existing) = sqlx::query(
-        "SELECT draft_id
+        "SELECT draft_id, project_id, resource_scope, resource_kind, base_commit_id
          FROM local_drafts
          WHERE draft_id = $1 OR target_id = $1
          ORDER BY updated_at DESC
@@ -933,6 +1065,23 @@ async fn resolve_local_draft(
     .await?
     {
         let draft_id: String = existing.try_get("draft_id")?;
+        let stored_project_id: String = existing.try_get("project_id")?;
+        let stored_scope: String = existing.try_get("resource_scope")?;
+        let stored_kind: String = existing.try_get("resource_kind")?;
+        if stored_project_id != project_id
+            || stored_scope != scope.as_str()
+            || stored_kind != resource.as_str()
+        {
+            return Err(DaemonError::InvalidRequest(format!(
+                "local draft {draft_id} belongs to a different project, scope, or resource kind"
+            )));
+        }
+        let stored_base_commit_id: Option<String> = existing.try_get("base_commit_id")?;
+        if base_commit_id.is_some() && stored_base_commit_id.as_deref() != base_commit_id {
+            return Err(DaemonError::InvalidRequest(format!(
+                "local draft {draft_id} has a different base commit"
+            )));
+        }
         if op.discard.is_some() {
             mark_local_draft_discarded(tx, &draft_id).await?;
         }
@@ -941,10 +1090,15 @@ async fn resolve_local_draft(
 
     let draft_id = format!("draft_{}", Uuid::new_v4().simple());
     sqlx::query(
-        "INSERT INTO local_drafts (draft_id, resource_kind, target_id, path, status)
-         VALUES ($1, $2, $3, NULL, $4)",
+        "INSERT INTO local_drafts (
+            draft_id, project_id, base_commit_id, resource_scope, resource_kind, target_id, path, status
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)",
     )
     .bind(&draft_id)
+    .bind(project_id)
+    .bind(base_commit_id)
+    .bind(scope.as_str())
     .bind(resource.as_str())
     .bind(target_id)
     .bind(if op.discard.is_some() {
@@ -989,7 +1143,8 @@ async fn list_local_drafts(
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let rows = sqlx::query(
         "SELECT
-            d.draft_id, d.server_draft_id, d.server_version, d.resource_kind, d.target_id,
+            d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
+            d.resource_scope, d.resource_kind, d.target_id,
             d.path, d.status, d.created_at, d.updated_at,
             (
                 SELECT COUNT(*)
@@ -1026,7 +1181,8 @@ async fn load_local_draft_detail(
 ) -> Result<DaemonDraftDetail, DaemonError> {
     let row = sqlx::query(
         "SELECT
-            d.draft_id, d.server_draft_id, d.server_version, d.resource_kind, d.target_id,
+            d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
+            d.resource_scope, d.resource_kind, d.target_id,
             d.path, d.status, d.created_at, d.updated_at,
             (
                 SELECT COUNT(*)
@@ -1067,8 +1223,11 @@ async fn load_local_draft_detail(
 fn local_draft_summary_from_row(row: &SqliteRow) -> Result<DaemonDraftSummary, DaemonError> {
     Ok(DaemonDraftSummary {
         draft_id: row.try_get("draft_id")?,
+        project_id: row.try_get("project_id")?,
         server_draft_id: row.try_get("server_draft_id")?,
         server_version: row.try_get("server_version")?,
+        base_commit_id: row.try_get("base_commit_id")?,
+        scope: daemon_draft_scope_from_str(row.try_get::<String, _>("resource_scope")?.as_str())?,
         resource_kind: draft_resource_kind_from_str(
             row.try_get::<String, _>("resource_kind")?.as_str(),
         )?,
@@ -1167,7 +1326,7 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
                 })
             }),
         },
-        snapshot_sync: SyncChannelStatus {
+        commit_sync: SyncChannelStatus {
             state: SyncState::Idle,
             server_cursor: None,
             last_attempt_at: None,
@@ -1206,8 +1365,23 @@ async fn sync_one_draft_operation(
     let local_operation_id = operation.local_operation_id.clone();
     let draft_operation: DaemonDraftOperation = serde_json::from_str(&operation.operation_json)
         .map_err(|error| DraftSyncError::new(local_operation_id.clone(), error.to_string()))?;
-    let Some(hub_operation) =
-        map_daemon_operation_to_hub(operation.resource_kind, &draft_operation)
+    if draft_operation.discard.is_some() {
+        if let Some(server_draft_id) = operation.server_draft_id.as_deref() {
+            delete_server_json(
+                state,
+                &format!("/api/v1/drafts/{server_draft_id}"),
+                operation.server_version,
+            )
+            .await
+            .map_err(|error| DraftSyncError::new(local_operation_id.clone(), error.to_string()))?;
+        }
+        mark_operation_synced(&state.inner.pool, &local_operation_id)
+            .await
+            .map_err(|error| DraftSyncError::new(local_operation_id.clone(), error.to_string()))?;
+        return Ok(());
+    }
+    let Some(server_operation) =
+        map_daemon_operation_to_server(operation.scope, operation.resource_kind, &draft_operation)
             .map_err(|error| DraftSyncError::new(local_operation_id.clone(), error.to_string()))?
     else {
         mark_operation_synced(&state.inner.pool, &local_operation_id)
@@ -1217,17 +1391,17 @@ async fn sync_one_draft_operation(
     };
 
     if let Some(server_draft_id) = operation.server_draft_id {
-        let request = HubDraftOperationBatchRequest {
+        let request = ServerDraftOperationBatchRequest {
             daemon_installation_id: state.inner.daemon_installation_id.clone(),
-            operations: vec![HubDraftOperationBatchItem {
+            operations: vec![ServerDraftOperationBatchItem {
                 local_operation_id: local_operation_id.clone(),
                 draft_id: server_draft_id,
                 expected_draft_version: operation.server_version,
-                operation: hub_operation,
+                operation: server_operation,
             }],
         };
-        let response: HubDraftOperationBatchResponse =
-            post_hub_json(state, "/api/v1/draft-operation-batches", &request)
+        let response: ServerDraftOperationBatchResponse =
+            post_server_json(state, "/api/v1/draft-operation-batches", &request)
                 .await
                 .map_err(|error| {
                     DraftSyncError::new(local_operation_id.clone(), error.to_string())
@@ -1239,7 +1413,7 @@ async fn sync_one_draft_operation(
         {
             return Err(DraftSyncError::new(
                 local_operation_id,
-                "Hub did not accept local operation",
+                "Server did not accept local operation",
             ));
         }
         mark_batch_operation_synced(
@@ -1254,29 +1428,16 @@ async fn sync_one_draft_operation(
         return Ok(());
     }
 
-    let project_config = state.project_config();
-    let author_user_id = project_config.author_user_id.clone().ok_or_else(|| {
-        DraftSyncError::new(
-            local_operation_id.clone(),
-            "author_user_id is required to create a server draft",
-        )
-    })?;
-    let project_id = project_config.project_id.clone().ok_or_else(|| {
-        DraftSyncError::new(
-            local_operation_id.clone(),
-            "project_id is required to create a server draft",
-        )
-    })?;
-    let request = HubCreateDraftRequest {
-        author_user_id,
+    let request = ServerCreateDraftRequest {
         daemon_installation_id: state.inner.daemon_installation_id.clone(),
-        project_id,
+        project_id: operation.project_id.clone(),
+        base_commit_id: operation.base_commit_id.clone(),
         title: draft_title(&operation),
         description: None,
-        resource: hub_operation.resource.clone(),
-        operations: vec![hub_operation],
+        resource: server_operation.resource.clone(),
+        operations: vec![server_operation],
     };
-    let response: HubDraftDetail = post_hub_json(state, "/api/v1/drafts", &request)
+    let response: ServerDraftDetail = post_server_json(state, "/api/v1/drafts", &request)
         .await
         .map_err(|error| DraftSyncError::new(local_operation_id.clone(), error.to_string()))?;
     mark_initial_operation_synced(
@@ -1297,7 +1458,8 @@ async fn load_next_queued_operation(
     let Some(row) = sqlx::query(
         "SELECT
             o.local_operation_id, o.draft_id, o.resource_kind, o.operation_json,
-            d.server_draft_id, d.server_version, d.target_id, d.path
+            d.project_id, d.resource_scope, d.server_draft_id, d.server_version,
+            d.base_commit_id, d.target_id, d.path
          FROM local_draft_operations o
          JOIN local_drafts d ON d.draft_id = o.draft_id
          WHERE o.sync_status = 'queued'
@@ -1313,12 +1475,15 @@ async fn load_next_queued_operation(
     Ok(Some(QueuedDraftOperation {
         local_operation_id: row.try_get("local_operation_id")?,
         draft_id: row.try_get("draft_id")?,
+        project_id: row.try_get("project_id")?,
+        scope: daemon_draft_scope_from_str(row.try_get::<String, _>("resource_scope")?.as_str())?,
         resource_kind: draft_resource_kind_from_str(
             row.try_get::<String, _>("resource_kind")?.as_str(),
         )?,
         operation_json: row.try_get("operation_json")?,
         server_draft_id: row.try_get("server_draft_id")?,
         server_version: row.try_get("server_version")?,
+        base_commit_id: row.try_get("base_commit_id")?,
         target_id: row.try_get("target_id")?,
         path: row.try_get("path")?,
     }))
@@ -1439,65 +1604,275 @@ async fn mark_batch_operation_synced(
     Ok(())
 }
 
-async fn post_hub_json<T, R>(state: &DaemonState, path: &str, request: &T) -> Result<R, DaemonError>
+async fn post_server_json<T, R>(
+    state: &DaemonState,
+    path: &str,
+    request: &T,
+) -> Result<R, DaemonError>
 where
     T: Serialize + ?Sized,
     R: DeserializeOwned,
 {
-    let project_config = state.project_config();
-    let url = format!(
-        "{}/{}",
-        project_config.hub_url.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    );
-    let mut builder = state.inner.http.post(url).json(request);
-    if let Some(token) = &project_config.access_token {
-        builder = builder.bearer_auth(token);
-    }
-    let response = builder.send().await?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(DaemonError::Hub(format!(
-            "Hub request failed with status {status}: {body}"
-        )));
-    }
-    Ok(response.json::<R>().await?)
+    let mut headers = BTreeMap::new();
+    headers.insert("content-type".to_owned(), "application/json".to_owned());
+    let response = execute_authenticated_server_request(
+        state,
+        reqwest::Method::POST,
+        path,
+        &headers,
+        Some(serde_json::to_vec(request)?),
+    )
+    .await?;
+    decode_server_json(response).await
 }
 
-async fn get_hub_json<R>(state: &DaemonState, path: &str) -> Result<R, DaemonError>
+async fn get_server_json<R>(state: &DaemonState, path: &str) -> Result<R, DaemonError>
 where
     R: DeserializeOwned,
 {
-    let project_config = state.project_config();
+    let response = execute_authenticated_server_request(
+        state,
+        reqwest::Method::GET,
+        path,
+        &BTreeMap::new(),
+        None,
+    )
+    .await?;
+    decode_server_json(response).await
+}
+
+async fn delete_server_json(
+    state: &DaemonState,
+    path: &str,
+    expected_version: i64,
+) -> Result<(), DaemonError> {
+    let mut headers = BTreeMap::new();
+    headers.insert("if-match".to_owned(), expected_version.to_string());
+    let response =
+        execute_authenticated_server_request(state, reqwest::Method::DELETE, path, &headers, None)
+            .await?;
+    ensure_server_success(response).await?;
+    Ok(())
+}
+
+async fn execute_authenticated_server_request(
+    state: &DaemonState,
+    method: reqwest::Method,
+    path: &str,
+    headers: &BTreeMap<String, String>,
+    body: Option<Vec<u8>>,
+) -> Result<reqwest::Response, DaemonError> {
+    validate_server_proxy_path(path)?;
+    let config = state.project_config();
+    let access_token = config.access_token.clone().ok_or_else(|| {
+        DaemonError::InvalidConfig("access_token is required for Server requests".to_owned())
+    })?;
+    let response = send_server_request(
+        state,
+        &config.server_url,
+        &access_token,
+        method.clone(),
+        path,
+        headers,
+        body.clone(),
+    )
+    .await?;
+    if response.status() != reqwest::StatusCode::UNAUTHORIZED || config.refresh_token.is_none() {
+        return Ok(response);
+    }
+
+    refresh_server_tokens(state, &access_token).await?;
+    let refreshed = state.project_config();
+    let refreshed_access_token = refreshed.access_token.ok_or_else(|| {
+        DaemonError::InvalidConfig("Server session is no longer authenticated".to_owned())
+    })?;
+    send_server_request(
+        state,
+        &refreshed.server_url,
+        &refreshed_access_token,
+        method,
+        path,
+        headers,
+        body,
+    )
+    .await
+}
+
+async fn send_server_request(
+    state: &DaemonState,
+    server_url: &str,
+    access_token: &str,
+    method: reqwest::Method,
+    path: &str,
+    headers: &BTreeMap<String, String>,
+    body: Option<Vec<u8>>,
+) -> Result<reqwest::Response, DaemonError> {
     let url = format!(
         "{}/{}",
-        project_config.hub_url.trim_end_matches('/'),
+        server_url.trim_end_matches('/'),
         path.trim_start_matches('/')
     );
-    let mut builder = state.inner.http.get(url);
-    if let Some(token) = &project_config.access_token {
-        builder = builder.bearer_auth(token);
+    let mut builder = state
+        .inner
+        .http
+        .request(method, url)
+        .bearer_auth(access_token);
+    for (name, value) in headers {
+        builder = builder.header(name, value);
     }
-    let response = builder.send().await?;
+    if let Some(body) = body {
+        builder = builder.body(body);
+    }
+    Ok(builder.send().await?)
+}
+
+async fn refresh_server_tokens(
+    state: &DaemonState,
+    stale_access_token: &str,
+) -> Result<(), DaemonError> {
+    let _refresh_guard = state.inner.token_refresh.lock().await;
+    let config = state.project_config();
+    if config.access_token.as_deref() != Some(stale_access_token) {
+        return Ok(());
+    }
+    let refresh_token = config.refresh_token.clone().ok_or_else(|| {
+        DaemonError::InvalidConfig("refresh_token is required to refresh the session".to_owned())
+    })?;
+    let url = format!(
+        "{}/api/v1/auth/token",
+        config.server_url.trim_end_matches('/')
+    );
+    let response = state
+        .inner
+        .http
+        .post(url)
+        .json(&json!({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token
+        }))
+        .send()
+        .await?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(DaemonError::Hub(format!(
-            "Hub request failed with status {status}: {body}"
+        if status == reqwest::StatusCode::BAD_REQUEST
+            || status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
+            clear_server_tokens(state).await?;
+        }
+        return Err(DaemonError::Server(format!(
+            "Server token refresh failed with status {status}: {body}"
         )));
     }
+    let tokens: ServerTokenRefreshResponse = response.json().await?;
+    let mut refreshed = config;
+    refreshed.access_token = Some(tokens.access_token);
+    refreshed.refresh_token = Some(tokens.refresh_token);
+    save_project_config(&state.inner.pool, &refreshed).await?;
+    *state
+        .inner
+        .project_config
+        .write()
+        .expect("project config rwlock poisoned") = refreshed;
+    Ok(())
+}
+
+async fn clear_server_tokens(state: &DaemonState) -> Result<(), DaemonError> {
+    let mut config = state.project_config();
+    config.access_token = None;
+    config.refresh_token = None;
+    save_project_config(&state.inner.pool, &config).await?;
+    *state
+        .inner
+        .project_config
+        .write()
+        .expect("project config rwlock poisoned") = config;
+    Ok(())
+}
+
+async fn decode_server_json<R>(response: reqwest::Response) -> Result<R, DaemonError>
+where
+    R: DeserializeOwned,
+{
+    let response = ensure_server_success(response).await?;
     Ok(response.json::<R>().await?)
 }
 
-fn map_daemon_operation_to_hub(
+async fn ensure_server_success(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, DaemonError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().await.unwrap_or_default();
+    Err(DaemonError::Server(format!(
+        "Server request failed with status {status}: {body}"
+    )))
+}
+
+fn validate_server_proxy_path(path: &str) -> Result<(), DaemonError> {
+    if !path.starts_with("/api/v1/")
+        || path.contains("\r")
+        || path.contains("\n")
+        || path.contains("#")
+        || path.split('?').next().is_some_and(|path| {
+            path.split('/')
+                .any(|segment| segment == "." || segment == "..")
+        })
+    {
+        return Err(DaemonError::InvalidRequest(
+            "Server proxy path must be a normalized /api/v1 resource".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn filter_proxy_request_headers(headers: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    const ALLOWED: &[&str] = &[
+        "accept",
+        "content-type",
+        "if-match",
+        "if-none-match",
+        "x-clumsies-request-id",
+    ];
+    headers
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let name = name.to_ascii_lowercase();
+            ALLOWED.contains(&name.as_str()).then_some((name, value))
+        })
+        .collect()
+}
+
+fn filter_proxy_response_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
+    const ALLOWED: &[&str] = &["content-type", "etag", "x-request-id"];
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let name = name.as_str();
+            if !ALLOWED.contains(&name) {
+                return None;
+            }
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+fn map_daemon_operation_to_server(
+    scope: DaemonDraftScope,
     resource: DaemonDraftResourceKind,
     operation: &DaemonDraftOperation,
-) -> Result<Option<HubDraftOperationInput>, DaemonError> {
+) -> Result<Option<ServerDraftOperationInput>, DaemonError> {
     if let Some(create) = &operation.create {
-        return Ok(Some(HubDraftOperationInput {
-            action: HubDraftOperationAction::Create,
-            resource: HubDraftResourceRef {
+        return Ok(Some(ServerDraftOperationInput {
+            action: ServerDraftOperationAction::Create,
+            resource: ServerDraftResourceRef {
+                scope,
                 kind: resource,
                 id: None,
                 path: Some(create.path.clone()),
@@ -1508,9 +1883,10 @@ fn map_daemon_operation_to_hub(
         }));
     }
     if let Some(update) = &operation.update {
-        return Ok(Some(HubDraftOperationInput {
-            action: HubDraftOperationAction::Update,
-            resource: HubDraftResourceRef {
+        return Ok(Some(ServerDraftOperationInput {
+            action: ServerDraftOperationAction::Update,
+            resource: ServerDraftResourceRef {
+                scope,
                 kind: resource,
                 id: Some(update.id.clone()),
                 path: None,
@@ -1521,9 +1897,10 @@ fn map_daemon_operation_to_hub(
         }));
     }
     if let Some(rename) = &operation.rename {
-        return Ok(Some(HubDraftOperationInput {
-            action: HubDraftOperationAction::Rename,
-            resource: HubDraftResourceRef {
+        return Ok(Some(ServerDraftOperationInput {
+            action: ServerDraftOperationAction::Rename,
+            resource: ServerDraftResourceRef {
+                scope,
                 kind: resource,
                 id: Some(rename.id.clone()),
                 path: None,
@@ -1534,9 +1911,10 @@ fn map_daemon_operation_to_hub(
         }));
     }
     if let Some(delete) = &operation.delete {
-        return Ok(Some(HubDraftOperationInput {
-            action: HubDraftOperationAction::Delete,
-            resource: HubDraftResourceRef {
+        return Ok(Some(ServerDraftOperationInput {
+            action: ServerDraftOperationAction::Delete,
+            resource: ServerDraftResourceRef {
+                scope,
                 kind: resource,
                 id: Some(delete.id.clone()),
                 path: None,
@@ -1562,6 +1940,16 @@ fn draft_resource_kind_from_str(value: &str) -> Result<DaemonDraftResourceKind, 
         "metaprompt" => Ok(DaemonDraftResourceKind::Metaprompt),
         other => Err(DaemonError::InvalidRequest(format!(
             "unknown draft resource kind: {other}"
+        ))),
+    }
+}
+
+fn daemon_draft_scope_from_str(value: &str) -> Result<DaemonDraftScope, DaemonError> {
+    match value {
+        "org" => Ok(DaemonDraftScope::Org),
+        "project" => Ok(DaemonDraftScope::Project),
+        other => Err(DaemonError::InvalidRequest(format!(
+            "unknown draft scope: {other}"
         ))),
     }
 }
@@ -1618,7 +2006,7 @@ async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonError> {
         .as_deref()
         .map(|cursor| format!("/api/v1/draft-events?after_cursor={cursor}"))
         .unwrap_or_else(|| "/api/v1/draft-events".to_owned());
-    let response: HubDraftEventListResponse = get_hub_json(state, &path).await?;
+    let response: ServerDraftEventListResponse = get_server_json(state, &path).await?;
 
     let mut tx = state.inner.pool.begin().await?;
     for event in response.events {
@@ -1684,11 +2072,20 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     )
     .execute(pool)
     .await?;
+    let existing_schema_version = current_schema_version(pool).await?;
+    if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
+        return Err(DaemonError::InvalidConfig(format!(
+            "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
+        )));
+    }
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS local_drafts (
             draft_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
             server_draft_id TEXT,
             server_version BIGINT NOT NULL DEFAULT 0,
+            base_commit_id TEXT,
+            resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
             resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'metaprompt')),
             target_id TEXT,
             path TEXT,
@@ -1729,7 +2126,7 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS sync_retries (
             retry_id TEXT PRIMARY KEY,
-            channel TEXT NOT NULL CHECK (channel IN ('drafts', 'snapshots', 'all')),
+            channel TEXT NOT NULL CHECK (channel IN ('drafts', 'commits', 'all')),
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )",
     )
@@ -1797,28 +2194,27 @@ async fn load_project_config(
     defaults: &ProjectConfig,
 ) -> Result<ProjectConfig, DaemonError> {
     Ok(ProjectConfig {
-        hub_url: load_meta_value(pool, "project_config_hub_url")
+        server_url: load_meta_value(pool, "project_config_server_url")
             .await?
-            .unwrap_or_else(|| defaults.hub_url.clone()),
-        author_user_id: load_meta_value(pool, "project_config_author_user_id")
-            .await?
-            .or_else(|| defaults.author_user_id.clone()),
+            .unwrap_or_else(|| defaults.server_url.clone()),
         project_id: load_meta_value(pool, "project_config_project_id")
             .await?
             .or_else(|| defaults.project_id.clone()),
         access_token: load_meta_value(pool, "project_config_access_token")
             .await?
             .or_else(|| defaults.access_token.clone()),
+        refresh_token: load_meta_value(pool, "project_config_refresh_token")
+            .await?
+            .or_else(|| defaults.refresh_token.clone()),
     })
 }
 
 async fn save_project_config(pool: &SqlitePool, config: &ProjectConfig) -> Result<(), DaemonError> {
     let mut tx = pool.begin().await?;
-    upsert_meta_value(&mut tx, "project_config_hub_url", Some(&config.hub_url)).await?;
     upsert_meta_value(
         &mut tx,
-        "project_config_author_user_id",
-        config.author_user_id.as_deref(),
+        "project_config_server_url",
+        Some(&config.server_url),
     )
     .await?;
     upsert_meta_value(
@@ -1831,6 +2227,12 @@ async fn save_project_config(pool: &SqlitePool, config: &ProjectConfig) -> Resul
         &mut tx,
         "project_config_access_token",
         config.access_token.as_deref(),
+    )
+    .await?;
+    upsert_meta_value(
+        &mut tx,
+        "project_config_refresh_token",
+        config.refresh_token.as_deref(),
     )
     .await?;
     tx.commit().await?;
@@ -2068,20 +2470,35 @@ impl LaunchAgentRuntimeStatus {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonProjectConfig {
-    pub hub_url: String,
-    pub author_user_id: Option<String>,
+    pub server_url: String,
     pub project_id: Option<String>,
     pub has_access_token: bool,
+    pub has_refresh_token: bool,
     pub ready: bool,
     pub missing_fields: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonProjectConfigUpdateRequest {
-    pub hub_url: String,
-    pub author_user_id: Option<String>,
+    pub server_url: String,
     pub project_id: Option<String>,
     pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonServerRequest {
+    pub method: String,
+    pub path: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonServerResponse {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2093,7 +2510,7 @@ struct ProjectConfigReadiness {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonHealth {
     pub daemon_version: String,
-    pub hub_url: String,
+    pub server_url: String,
     pub project_id: Option<String>,
     pub daemon_installation_id: String,
     pub log_dir: String,
@@ -2110,7 +2527,7 @@ pub struct LocalDbStatus {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonSyncStatus {
     pub draft_sync: SyncChannelStatus,
-    pub snapshot_sync: SyncChannelStatus,
+    pub commit_sync: SyncChannelStatus,
     pub pending_operation_count: i64,
     pub failed_operation_count: i64,
     pub conflict_count: i64,
@@ -2145,7 +2562,7 @@ pub struct DaemonSyncRetryRequest {
 #[serde(rename_all = "snake_case")]
 pub enum SyncRetryChannel {
     Drafts,
-    Snapshots,
+    Commits,
     All,
 }
 
@@ -2153,7 +2570,7 @@ impl SyncRetryChannel {
     fn as_str(self) -> &'static str {
         match self {
             Self::Drafts => "drafts",
-            Self::Snapshots => "snapshots",
+            Self::Commits => "commits",
             Self::All => "all",
         }
     }
@@ -2200,8 +2617,11 @@ pub struct DaemonDraftDetail {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonDraftSummary {
     pub draft_id: String,
+    pub project_id: String,
     pub server_draft_id: Option<String>,
     pub server_version: i64,
+    pub base_commit_id: Option<String>,
+    pub scope: DaemonDraftScope,
     pub resource_kind: DaemonDraftResourceKind,
     pub target_id: Option<String>,
     pub path: Option<String>,
@@ -2246,6 +2666,12 @@ impl DaemonLocalDraftStatus {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonDraftOperationRequest {
+    #[serde(default)]
+    pub draft_id: Option<String>,
+    #[serde(default)]
+    pub base_commit_id: Option<String>,
+    pub project_id: String,
+    pub scope: DaemonDraftScope,
     pub resource: DaemonDraftResourceKind,
     pub op: DaemonDraftOperation,
     pub source: Option<DaemonDraftOperationSource>,
@@ -2254,6 +2680,22 @@ pub struct DaemonDraftOperationRequest {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonDraftDetailRequest {
     pub draft_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonDraftScope {
+    Org,
+    Project,
+}
+
+impl DaemonDraftScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Org => "org",
+            Self::Project => "project",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -2387,55 +2829,58 @@ pub enum DraftOperationSyncStatus {
 struct QueuedDraftOperation {
     local_operation_id: String,
     draft_id: String,
+    project_id: String,
+    scope: DaemonDraftScope,
     resource_kind: DaemonDraftResourceKind,
     operation_json: String,
     server_draft_id: Option<String>,
     server_version: i64,
+    base_commit_id: Option<String>,
     target_id: Option<String>,
     path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct HubCreateDraftRequest {
-    author_user_id: String,
+struct ServerCreateDraftRequest {
     daemon_installation_id: String,
     project_id: String,
+    base_commit_id: Option<String>,
     title: String,
     description: Option<String>,
-    resource: HubDraftResourceRef,
-    operations: Vec<HubDraftOperationInput>,
+    resource: ServerDraftResourceRef,
+    operations: Vec<ServerDraftOperationInput>,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct HubDraftOperationBatchRequest {
+struct ServerDraftOperationBatchRequest {
     daemon_installation_id: String,
-    operations: Vec<HubDraftOperationBatchItem>,
+    operations: Vec<ServerDraftOperationBatchItem>,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct HubDraftOperationBatchItem {
+struct ServerDraftOperationBatchItem {
     local_operation_id: String,
     draft_id: String,
     expected_draft_version: i64,
-    operation: HubDraftOperationInput,
+    operation: ServerDraftOperationInput,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct HubDraftOperationBatchResponse {
+struct ServerDraftOperationBatchResponse {
     accepted_operations: Vec<String>,
     cursor: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct HubDraftEventListResponse {
-    events: Vec<HubDraftEvent>,
+struct ServerDraftEventListResponse {
+    events: Vec<ServerDraftEvent>,
     next_cursor: Option<String>,
     #[serde(rename = "has_more")]
     _has_more: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct HubDraftEvent {
+struct ServerDraftEvent {
     event_id: String,
     draft_id: String,
     project_id: String,
@@ -2446,20 +2891,26 @@ struct HubDraftEvent {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct HubDraftDetail {
-    draft: HubDraft,
+struct ServerTokenRefreshResponse {
+    access_token: String,
+    refresh_token: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct HubDraft {
+struct ServerDraftDetail {
+    draft: ServerDraft,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ServerDraft {
     draft_id: String,
     version: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct HubDraftOperationInput {
-    action: HubDraftOperationAction,
-    resource: HubDraftResourceRef,
+struct ServerDraftOperationInput {
+    action: ServerDraftOperationAction,
+    resource: ServerDraftResourceRef,
     base_hash: Option<String>,
     body: Option<String>,
     new_path: Option<String>,
@@ -2467,7 +2918,7 @@ struct HubDraftOperationInput {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum HubDraftOperationAction {
+enum ServerDraftOperationAction {
     Create,
     Update,
     Rename,
@@ -2475,7 +2926,8 @@ enum HubDraftOperationAction {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct HubDraftResourceRef {
+struct ServerDraftResourceRef {
+    scope: DaemonDraftScope,
     kind: DaemonDraftResourceKind,
     id: Option<String>,
     path: Option<String>,
@@ -2502,8 +2954,8 @@ fn api_error_from_daemon_error(error: DaemonError) -> ApiError {
         DaemonError::Io(error) => ("io_error", error.to_string()),
         DaemonError::Sqlx(error) => ("local_db_error", error.to_string()),
         DaemonError::SerdeJson(error) => ("invalid_json", error.to_string()),
-        DaemonError::Reqwest(error) => ("hub_request_failed", error.to_string()),
-        DaemonError::Hub(message) => ("hub_sync_failed", message),
+        DaemonError::Reqwest(error) => ("server_request_failed", error.to_string()),
+        DaemonError::Server(message) => ("server_sync_failed", message),
         DaemonError::Launchctl(message) => ("launchctl_failed", message),
         DaemonError::Ipc(message) => ("daemon_ipc_failed", message),
     };
@@ -2531,8 +2983,8 @@ pub enum DaemonError {
     SerdeJson(#[from] serde_json::Error),
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
-    #[error("hub sync error: {0}")]
-    Hub(String),
+    #[error("server sync error: {0}")]
+    Server(String),
     #[error("launchctl error: {0}")]
     Launchctl(String),
     #[error("daemon IPC error: {0}")]

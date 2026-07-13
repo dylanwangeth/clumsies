@@ -1,4 +1,4 @@
-//! Declarative endpoint specs. Each constant describes one Hub endpoint:
+//! Declarative endpoint specs. Each constant describes one Server endpoint:
 //! method, path, body shape, response parser. Consumers hand one of these
 //! specs — along with the PendingRequest slot that will receive the
 //! result — to `dispatchFromState`, which extracts transport credentials
@@ -372,9 +372,9 @@ pub const create_context_pr_batch = dispatcher.RequestSpec(CreateContextPrBatchP
 };
 
 fn createRulePrBody(alloc: std.mem.Allocator, p: CreateRulePrParams) anyerror![]const u8 {
-    // Every op-type field is optional on the wire — the hub tolerates
+    // Every op-type field is optional on the wire — the server tolerates
     // `"field": null` as equivalent to "field absent" (see
-    // hub/collab.zig `Operation`), so emitting all fields keeps the
+    // server/collab.zig `Operation`), so emitting all fields keeps the
     // body shape uniform and lets the validator branch on `type`.
     // submit code in shell.zig decides which fields to populate per
     // operation_type based on the draft index entry; this function
@@ -801,12 +801,12 @@ fn parsePrCommentsPayload(
 }
 
 /// Dispatch a request using the transport state already held on
-/// `api_state`. Hides the mutex-guarded read of `hub_url` and
+/// `api_state`. Hides the mutex-guarded read of `server_url` and
 /// `access_token`, the ApiState arena allocator, and the thread
 /// registry plumbing so consumers stay at the level of "call this spec
 /// and land the result in this slot."
 ///
-/// If the ApiState has no hub_url or access_token (not yet authed), the
+/// If the ApiState has no server_url or access_token (not yet authed), the
 /// call marks the slot as `network_error` via `tryBegin` + immediate
 /// `complete`, so the consumer's next `consume` sees a classified
 /// failure instead of silent inaction.
@@ -822,7 +822,7 @@ pub fn dispatchFromState(
     var access_token_copy: ?[]const u8 = null;
 
     api_state.mutex.lockUncancelable(std.Options.debug_io);
-    const hub_url = api_state.hub_url;
+    const server_url = api_state.server_url;
     const username = api_state.username;
     const access_token = api_state.access_token;
     const refresh_token = api_state.refresh_token;
@@ -833,7 +833,7 @@ pub fn dispatchFromState(
     api_state.mutex.unlock(std.Options.debug_io);
     defer if (access_token_copy) |token| token_alloc.free(token);
 
-    if (hub_url == null or access_token_copy == null) {
+    if (server_url == null or access_token_copy == null) {
         const gen = pending.tryBegin() orelse return;
         pending.complete(gen, .network_error);
         return;
@@ -846,7 +846,7 @@ pub fn dispatchFromState(
         pending,
         &api_state.thread_registry,
         api_state.backing_allocator,
-        hub_url.?,
+        server_url.?,
         access_token_copy.?,
         api_state.clientIdHex(),
         if (has_refresh) .{
@@ -874,7 +874,7 @@ pub const health = dispatcher.RequestSpec(EmptyParams, void){
 
 pub fn dispatchHealthCheck(api_state: *state.ApiState) void {
     api_state.mutex.lockUncancelable(std.Options.debug_io);
-    const hub_url = api_state.hub_url orelse {
+    const server_url = api_state.server_url orelse {
         api_state.mutex.unlock(std.Options.debug_io);
         return;
     };
@@ -887,7 +887,7 @@ pub fn dispatchHealthCheck(api_state: *state.ApiState) void {
         &api_state.health_pending,
         &api_state.thread_registry,
         api_state.backing_allocator,
-        hub_url,
+        server_url,
         "",
         api_state.clientIdHex(),
         null,
