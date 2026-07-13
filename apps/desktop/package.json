@@ -3,18 +3,30 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 1420",
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "dev": "tauri dev",
+    "dev:web": "vite --host 127.0.0.1 --port 1420",
+    "build": "tauri build",
+    "build:web": "tsc -p tsconfig.json --noEmit && vite build",
+    "test": "bun test tests",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "tauri": "tauri"
   },
   "dependencies": {
     "@clumsies/api-client": "workspace:*",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.6",
     "@tauri-apps/api": "^2.11.1",
+    "codemirror": "^6.0.2",
+    "lucide-react": "^1.24.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",

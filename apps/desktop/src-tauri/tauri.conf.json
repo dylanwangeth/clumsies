@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "fun.lilhammer.clumsies.desktop",
   "build": {
-    "beforeDevCommand": "bun run dev",
-    "beforeBuildCommand": "bun run build",
+    "beforeDevCommand": "bun run dev:web",
+    "beforeBuildCommand": "bun run build:web",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
@@ -16,7 +16,14 @@
         "width": 1180,
         "height": 780,
         "minWidth": 900,
-        "minHeight": 620
+        "minHeight": 620,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 16
+        }
       }
     ],
     "security": {
