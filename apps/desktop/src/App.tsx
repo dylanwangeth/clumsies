@@ -18,7 +18,7 @@ import type {
 import type { LucideIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import koalMark from "./assets/koal-mark.svg";
+import clumsiesMark from "./assets/clumsies-mark.svg";
 import {
   AuthenticationRequiredError,
   daemonDiscardOperationForDraft,
@@ -28,6 +28,7 @@ import {
   mapReviewSummary,
   syncStateForDaemonDraft,
   type DesktopAccount,
+  type DesktopOrganization,
   type ProjectOption,
 } from "./backend";
 import {
@@ -154,7 +155,10 @@ type WorkspaceTabPresentation = {
   syncState?: SyncState;
 };
 
-const organization = { name: "Koal", logo: koalMark };
+const defaultOrganization: DesktopOrganization = {
+  id: "preview-org",
+  name: "Clumsies Lab",
+};
 const previewAccount: DesktopAccount = {
   userId: "preview-user",
   email: "weiwang@example.com",
@@ -228,6 +232,7 @@ export function App() {
   const [account, setAccount] = useState<DesktopAccount | null>(
     previewMode ? previewAccount : null,
   );
+  const [organization, setOrganization] = useState(defaultOrganization);
   const [selectedProjectId, setSelectedProjectId] = useState(
     previewMode ? "koal" : "",
   );
@@ -297,6 +302,7 @@ export function App() {
     try {
       const backendState = await backend.load();
       setAccount(backendState.account);
+      setOrganization(backendState.organization);
       setProjects(backendState.projects);
       setHubRefCommitId(backendState.orgRefCommitId);
       setResources(backendState.resources);
@@ -1740,6 +1746,7 @@ export function App() {
       <Sidebar
         account={account}
         collapsed={sidebarCollapsed}
+        organization={organization}
         projects={projects}
         selectedProjectId={selectedProjectId}
         selectedView={selectedView}
@@ -2035,6 +2042,7 @@ function Sidebar({
   onSelectView,
   onToggleCollapsed,
   onToggleUserMenu,
+  organization,
   projects,
   selectedProjectId,
   selectedView,
@@ -2048,6 +2056,7 @@ function Sidebar({
   onSelectView: (view: PrimaryView) => void;
   onToggleCollapsed: () => void;
   onToggleUserMenu: () => void;
+  organization: DesktopOrganization;
   projects: ProjectOption[];
   selectedProjectId: string;
   selectedView: View;
@@ -2101,7 +2110,7 @@ function Sidebar({
               alt=""
               aria-hidden="true"
               className="sidebar-brand-logo"
-              src={organization.logo}
+              src={clumsiesMark}
             />
           </button>
         ) : (
@@ -2111,7 +2120,7 @@ function Sidebar({
                 alt=""
                 aria-hidden="true"
                 className="sidebar-brand-logo"
-                src={organization.logo}
+                src={clumsiesMark}
               />
               <span>{organization.name}</span>
             </div>

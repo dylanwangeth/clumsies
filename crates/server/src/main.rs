@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_migrations(&pool).await?;
     if let Ok(owner_email) = env::var("CLUMSIES_BOOTSTRAP_OWNER_EMAIL") {
         let org_name =
-            env::var("CLUMSIES_BOOTSTRAP_ORG_NAME").unwrap_or_else(|_| "Clumsies".to_owned());
+            env::var("CLUMSIES_BOOTSTRAP_ORG_NAME").unwrap_or_else(|_| "Clumsies Lab".to_owned());
         let owner_name = env::var("CLUMSIES_BOOTSTRAP_OWNER_NAME").ok();
         let project_name =
             env::var("CLUMSIES_BOOTSTRAP_PROJECT_NAME").unwrap_or_else(|_| "Default".to_owned());

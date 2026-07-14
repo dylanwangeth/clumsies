@@ -40,6 +40,11 @@ export type DesktopAccount = {
   avatarUrl: string | null;
 };
 
+export type DesktopOrganization = {
+  id: string;
+  name: string;
+};
+
 export type DesktopBackendRuntime = {
   bootstrap: DaemonBootstrapStatus;
   health: DaemonHealth;
@@ -50,6 +55,7 @@ export type DesktopBackendRuntime = {
 
 export type DesktopBackendState = {
   account: DesktopAccount;
+  organization: DesktopOrganization;
   projects: ProjectOption[];
   orgRefCommitId: string | null;
   activeProjectId: string | null;
@@ -143,6 +149,10 @@ export class DesktopBackend {
         email: me.user.email,
         displayName: me.user.display_name,
         avatarUrl: me.user.avatar_url,
+      },
+      organization: {
+        id: me.org.org_id,
+        name: me.org.name,
       },
       projects,
       orgRefCommitId: orgCommitState.state.ref.commit_id,
