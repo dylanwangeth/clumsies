@@ -194,7 +194,7 @@ mod platform {
             flags: u64,
         ) -> XpcConnection;
         fn xpc_connection_set_event_handler(connection: XpcConnection, handler: *mut c_void);
-        fn xpc_connection_resume(connection: XpcConnection);
+        fn xpc_connection_activate(connection: XpcConnection);
         fn xpc_connection_cancel(connection: XpcConnection);
         fn xpc_connection_send_message(connection: XpcConnection, message: XpcObject);
         fn xpc_connection_send_message_with_reply_sync(
@@ -228,8 +228,10 @@ mod platform {
                 0,
             ))?
         };
+        let handler = RcBlock::new(|_event: XpcObject| {});
         unsafe {
-            xpc_connection_resume(connection.as_ptr());
+            xpc_connection_set_event_handler(connection.as_ptr(), RcBlock::as_ptr(&handler).cast());
+            xpc_connection_activate(connection.as_ptr());
         }
 
         let message =
@@ -278,7 +280,7 @@ mod platform {
                     listener.as_ptr(),
                     RcBlock::as_ptr(&handler).cast(),
                 );
-                xpc_connection_resume(listener.as_ptr());
+                xpc_connection_activate(listener.as_ptr());
             }
             Ok(Self {
                 service_name,
@@ -313,7 +315,7 @@ mod platform {
         });
         unsafe {
             xpc_connection_set_event_handler(peer, RcBlock::as_ptr(&peer_handler).cast());
-            xpc_connection_resume(peer);
+            xpc_connection_activate(peer);
         }
     }
 
@@ -435,5 +437,19 @@ mod platform {
                 xpc_release(self.connection.cast());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_mach_service_returns_an_ipc_error() {
+        let client = DaemonIpcClient::new("io.github.lilhammerfun.clumsies.missing-test-service");
+
+        let error = client.health().unwrap_err();
+
+        assert!(matches!(error, DaemonError::Ipc(_)));
     }
 }
