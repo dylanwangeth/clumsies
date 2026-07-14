@@ -26,6 +26,7 @@ cp .env.example .env
 Set at least these values in `.env`:
 
 ```dotenv
+CLUMSIES_SERVER_HOST=memory.example.com
 CLUMSIES_DB_PASSWORD=replace-with-a-random-password
 CLUMSIES_BOOTSTRAP_ORG_NAME=Example
 CLUMSIES_BOOTSTRAP_OWNER_EMAIL=owner@example.com
@@ -46,24 +47,30 @@ it does not allow arbitrary remote redirects.
 are native and travel through daemon, so Tauri origins do not belong in this
 list.
 
+When the host requires an outbound proxy, set the standard `HTTP_PROXY`,
+`HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` variables in its environment. The
+production Compose file passes them to image builds, Server, and Caddy; images
+do not embed deployment-specific mirrors or proxy addresses.
+
 ## Start
 
 ```bash
-docker compose up --build -d
+docker compose -f compose.production.yml up --build -d
 ```
 
 Server runs database migrations before listening and bootstraps the first
 organization, owner, project, and organization/project Refs when the database
 is empty.
 
-Put a TLS reverse proxy or ingress in front of port `8080`. Do not expose the
-default PostgreSQL port publicly.
+The production Compose stack exposes only Caddy on ports `80` and `443`.
+Caddy obtains and renews the TLS certificate for `CLUMSIES_SERVER_HOST`; Server
+and PostgreSQL remain reachable only through the Compose network.
 
 ## Verify
 
 ```bash
 curl --fail --silent https://memory.example.com/api/v1/admin/health
-docker compose ps
+docker compose -f compose.production.yml ps
 ```
 
 A usable deployment reports `ok` for database, schema, commit service, and
@@ -85,8 +92,8 @@ database and must be backed up together.
 To inspect logs and stop the stack:
 
 ```bash
-docker compose logs server
-docker compose down
+docker compose -f compose.production.yml logs server
+docker compose -f compose.production.yml down
 ```
 
 Do not use `down -v` for an installed organization; it deletes the database

@@ -51,3 +51,4 @@ GEMINI.md
 # Local developer environment
 .env
 .env.local
+client_secret_*.json
