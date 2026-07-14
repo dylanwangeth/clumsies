@@ -15,6 +15,11 @@ export {
   type ProjectPageQuery,
   type ProjectCommitStateQuery,
 } from "./public-api";
+export {
+  ClumsiesAdminApi,
+  type AdminPageQuery,
+  type AdminProjectMemberQuery,
+} from "./admin-api";
 
 export type PublicApiClient = ReturnType<typeof createClient<PublicPaths>>;
 export type AdminApiClient = ReturnType<typeof createClient<AdminPaths>>;

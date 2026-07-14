@@ -150,6 +150,7 @@ async fn bearer_identity_enforces_personal_and_project_boundaries() {
     assert_eq!(org_draft.status(), StatusCode::FORBIDDEN);
 
     let create_project = member_app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -167,4 +168,18 @@ async fn bearer_identity_enforces_personal_and_project_boundaries() {
         .await
         .unwrap();
     assert_eq!(create_project.status(), StatusCode::FORBIDDEN);
+
+    let administer_project_members = member_app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/admin/projects/{}/members",
+                    bootstrap.project_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(administer_project_members.status(), StatusCode::FORBIDDEN);
 }

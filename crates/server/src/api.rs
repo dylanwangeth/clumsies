@@ -186,6 +186,47 @@ pub struct AdminProjectListResponse {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ProjectRole {
+    Member,
+    Admin,
+}
+
+impl ProjectRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectMember {
+    pub project_id: String,
+    pub user: UserRef,
+    pub role: ProjectRole,
+    pub joined_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectMemberListResponse {
+    pub items: Vec<ProjectMember>,
+    pub page_info: PageInfo,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateProjectMemberRequest {
+    pub user_id: String,
+    pub role: ProjectRole,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateProjectMemberRequest {
+    pub role: ProjectRole,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum AccessTokenKind {
     Access,
     Refresh,

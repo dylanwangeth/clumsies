@@ -9,21 +9,22 @@ use crate::api::{
     AccessTokenKind, AccessTokenListResponse, AccessTokenMeta, AdminOrg, AdminProject,
     AdminProjectListResponse, AuditEvent, AuditEventListResponse, Blob, Commit, CommitListResponse,
     CommitPayload, CommitScope, CommitStateResponse, ContextDetail, ContextListResponse,
-    ContextMeta, CreateDraftRequest, CreateMemberRequest, CreateProjectRequest,
-    CreateReviewCommentRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest,
-    CreateReviewRequest, DeleteResult, Draft, DraftDetail, DraftEvent, DraftEventListResponse,
-    DraftEventType, DraftListResponse, DraftOperation, DraftOperationAction,
-    DraftOperationBatchRequest, DraftOperationBatchResponse, DraftOperationInput,
-    DraftResourceKind, DraftResourceRef, DraftStatus, DraftSyncState, DraftSyncStatus, MeResponse,
-    Member, MemberListResponse, MemberStatus, MetapromptDetail, MetapromptMeta, OrgRef, OrgRole,
-    PageInfo, PersonalBundleDetail, PersonalBundleListResponse, PersonalBundleMeta,
-    PersonalBundleRequest, PersonalBundleUpdateRequest, Project, ProjectListResponse,
-    ProjectOrgSelection, ProjectRef, Ref, ReplaceProjectOrgSelectionRequest, ResourceScope, Review,
-    ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse,
-    ReviewMergeResult, ReviewStatus, RuleDetail, RuleListResponse, RuleMeta, Tree, TreeEntry,
-    TreeEntryKind, TreeEntryScope, TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest,
-    UpdateMemberRequest, UpdateProjectRequest, UserRef, WorkflowDetail, WorkflowListResponse,
-    WorkflowMeta, WorkflowStep,
+    ContextMeta, CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest,
+    CreateProjectRequest, CreateReviewCommentRequest, CreateReviewDecisionRequest,
+    CreateReviewMergeRequest, CreateReviewRequest, DeleteResult, Draft, DraftDetail, DraftEvent,
+    DraftEventListResponse, DraftEventType, DraftListResponse, DraftOperation,
+    DraftOperationAction, DraftOperationBatchRequest, DraftOperationBatchResponse,
+    DraftOperationInput, DraftResourceKind, DraftResourceRef, DraftStatus, DraftSyncState,
+    DraftSyncStatus, MeResponse, Member, MemberListResponse, MemberStatus, MetapromptDetail,
+    MetapromptMeta, OrgRef, OrgRole, PageInfo, PersonalBundleDetail, PersonalBundleListResponse,
+    PersonalBundleMeta, PersonalBundleRequest, PersonalBundleUpdateRequest, Project,
+    ProjectListResponse, ProjectMember, ProjectMemberListResponse, ProjectOrgSelection, ProjectRef,
+    ProjectRole, Ref, ReplaceProjectOrgSelectionRequest, ResourceScope, Review, ReviewComment,
+    ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse, ReviewMergeResult,
+    ReviewStatus, RuleDetail, RuleListResponse, RuleMeta, Tree, TreeEntry, TreeEntryKind,
+    TreeEntryScope, TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest,
+    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest, UserRef, WorkflowDetail,
+    WorkflowListResponse, WorkflowMeta, WorkflowStep,
 };
 use crate::auth::AuthPrincipal;
 
@@ -551,6 +552,158 @@ impl ServerRepository {
                 })
                 .collect::<Result<Vec<_>, ServerError>>()?,
             page_info: page_info(),
+        })
+    }
+
+    pub async fn list_admin_project_members(
+        &self,
+        org_id: &str,
+        project_id: &str,
+        role: Option<ProjectRole>,
+    ) -> Result<ProjectMemberListResponse, ServerError> {
+        ensure_project_in_org(&self.pool, org_id, project_id).await?;
+        let rows = sqlx::query(
+            "SELECT p.project_id, u.user_id, u.email, u.display_name, u.avatar_url,
+                    u.role AS org_role, m.role AS project_role, m.joined_at
+             FROM project_members m
+             JOIN projects p ON p.project_id = m.project_id
+             JOIN users u ON u.user_id = m.user_id
+             WHERE p.project_id = $1
+               AND p.org_id = $2
+               AND ($3::TEXT IS NULL OR m.role = $3)
+             ORDER BY m.joined_at, u.user_id
+             LIMIT 200",
+        )
+        .bind(project_id)
+        .bind(org_id)
+        .bind(role.map(ProjectRole::as_str))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ProjectMemberListResponse {
+            items: rows
+                .iter()
+                .map(project_member_from_row)
+                .collect::<Result<Vec<_>, _>>()?,
+            page_info: page_info(),
+        })
+    }
+
+    pub async fn create_admin_project_member(
+        &self,
+        principal: &AuthPrincipal,
+        project_id: &str,
+        request: CreateProjectMemberRequest,
+    ) -> Result<ProjectMember, ServerError> {
+        let mut tx = self.pool.begin().await?;
+        ensure_project_in_org_tx(&mut tx, &principal.org_id, project_id).await?;
+        let status = sqlx::query_scalar::<_, String>("SELECT status FROM users WHERE user_id = $1")
+            .bind(&request.user_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| ServerError::not_found("user", &request.user_id))?;
+        if status == "disabled" {
+            return Err(ServerError::InvalidRequest(
+                "a disabled organization member cannot be added to a project".to_owned(),
+            ));
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO project_members (project_id, user_id, role)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (project_id, user_id) DO NOTHING",
+        )
+        .bind(project_id)
+        .bind(&request.user_id)
+        .bind(request.role.as_str())
+        .execute(&mut *tx)
+        .await?;
+        if inserted.rows_affected() == 0 {
+            return Err(ServerError::already_exists(
+                "project_member",
+                format!("{project_id}:{}", request.user_id),
+            ));
+        }
+        insert_repository_audit_event(
+            &mut tx,
+            &principal.org_id,
+            Some(&principal.user_id),
+            "admin.project_member_created",
+            "project_member",
+            Some(&format!("{project_id}:{}", request.user_id)),
+        )
+        .await?;
+        tx.commit().await?;
+        load_project_member(&self.pool, &principal.org_id, project_id, &request.user_id).await
+    }
+
+    pub async fn update_admin_project_member(
+        &self,
+        principal: &AuthPrincipal,
+        project_id: &str,
+        user_id: &str,
+        request: UpdateProjectMemberRequest,
+    ) -> Result<ProjectMember, ServerError> {
+        let mut tx = self.pool.begin().await?;
+        ensure_project_in_org_tx(&mut tx, &principal.org_id, project_id).await?;
+        let updated = sqlx::query(
+            "UPDATE project_members SET role = $3 WHERE project_id = $1 AND user_id = $2",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .bind(request.role.as_str())
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(ServerError::not_found(
+                "project_member",
+                format!("{project_id}:{user_id}"),
+            ));
+        }
+        insert_repository_audit_event(
+            &mut tx,
+            &principal.org_id,
+            Some(&principal.user_id),
+            "admin.project_member_updated",
+            "project_member",
+            Some(&format!("{project_id}:{user_id}")),
+        )
+        .await?;
+        tx.commit().await?;
+        load_project_member(&self.pool, &principal.org_id, project_id, user_id).await
+    }
+
+    pub async fn delete_admin_project_member(
+        &self,
+        principal: &AuthPrincipal,
+        project_id: &str,
+        user_id: &str,
+    ) -> Result<DeleteResult, ServerError> {
+        let mut tx = self.pool.begin().await?;
+        ensure_project_in_org_tx(&mut tx, &principal.org_id, project_id).await?;
+        let deleted =
+            sqlx::query("DELETE FROM project_members WHERE project_id = $1 AND user_id = $2")
+                .bind(project_id)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(ServerError::not_found(
+                "project_member",
+                format!("{project_id}:{user_id}"),
+            ));
+        }
+        insert_repository_audit_event(
+            &mut tx,
+            &principal.org_id,
+            Some(&principal.user_id),
+            "admin.project_member_deleted",
+            "project_member",
+            Some(&format!("{project_id}:{user_id}")),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(DeleteResult {
+            deleted: true,
+            id: user_id.to_owned(),
         })
     }
 
@@ -2010,6 +2163,8 @@ pub enum ServerError {
     Forbidden(String),
     #[error("{entity} not found: {id}")]
     NotFound { entity: &'static str, id: String },
+    #[error("{entity} already exists: {id}")]
+    AlreadyExists { entity: &'static str, id: String },
     #[error("{entity} version conflict: expected {expected}, actual {actual}")]
     VersionConflict {
         entity: &'static str,
@@ -2036,6 +2191,13 @@ pub enum ServerError {
 impl ServerError {
     fn not_found(entity: &'static str, id: impl Into<String>) -> Self {
         Self::NotFound {
+            entity,
+            id: id.into(),
+        }
+    }
+
+    fn already_exists(entity: &'static str, id: impl Into<String>) -> Self {
+        Self::AlreadyExists {
             entity,
             id: id.into(),
         }
@@ -3865,6 +4027,82 @@ fn user_ref_from_row(row: &sqlx::postgres::PgRow) -> Result<UserRef, ServerError
     })
 }
 
+async fn ensure_project_in_org(
+    pool: &PgPool,
+    org_id: &str,
+    project_id: &str,
+) -> Result<(), ServerError> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM projects WHERE project_id = $1 AND org_id = $2)",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .fetch_one(pool)
+    .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(ServerError::not_found("project", project_id))
+    }
+}
+
+async fn ensure_project_in_org_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    project_id: &str,
+) -> Result<(), ServerError> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM projects WHERE project_id = $1 AND org_id = $2)",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(ServerError::not_found("project", project_id))
+    }
+}
+
+async fn load_project_member(
+    pool: &PgPool,
+    org_id: &str,
+    project_id: &str,
+    user_id: &str,
+) -> Result<ProjectMember, ServerError> {
+    let row = sqlx::query(
+        "SELECT p.project_id, u.user_id, u.email, u.display_name, u.avatar_url,
+                u.role AS org_role, m.role AS project_role, m.joined_at
+         FROM project_members m
+         JOIN projects p ON p.project_id = m.project_id
+         JOIN users u ON u.user_id = m.user_id
+         WHERE p.project_id = $1 AND p.org_id = $2 AND u.user_id = $3",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| ServerError::not_found("project_member", format!("{project_id}:{user_id}")))?;
+    project_member_from_row(&row)
+}
+
+fn project_member_from_row(row: &sqlx::postgres::PgRow) -> Result<ProjectMember, ServerError> {
+    Ok(ProjectMember {
+        project_id: row.try_get("project_id")?,
+        user: UserRef {
+            user_id: row.try_get("user_id")?,
+            email: row.try_get("email")?,
+            display_name: row.try_get("display_name")?,
+            avatar_url: row.try_get("avatar_url")?,
+            role: row.try_get("org_role")?,
+        },
+        role: project_role(row.try_get::<String, _>("project_role")?.as_str())?,
+        joined_at: row.try_get("joined_at")?,
+    })
+}
+
 fn admin_org_from_row(row: &sqlx::postgres::PgRow) -> Result<AdminOrg, ServerError> {
     Ok(AdminOrg {
         org_id: row.try_get("org_id")?,
@@ -4232,6 +4470,16 @@ fn org_role(value: &str) -> Result<OrgRole, ServerError> {
         "member" => Ok(OrgRole::Member),
         other => Err(ServerError::InvalidRequest(format!(
             "unknown organization role: {other}"
+        ))),
+    }
+}
+
+fn project_role(value: &str) -> Result<ProjectRole, ServerError> {
+    match value {
+        "admin" => Ok(ProjectRole::Admin),
+        "member" => Ok(ProjectRole::Member),
+        other => Err(ServerError::InvalidRequest(format!(
+            "unknown project role: {other}"
         ))),
     }
 }

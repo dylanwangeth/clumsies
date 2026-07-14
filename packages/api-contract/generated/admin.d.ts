@@ -77,6 +77,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/projects/{project_id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        /** List project members. */
+        get: operations["listAdminProjectMembers"];
+        put?: never;
+        /** Add an organization member to a project. */
+        post: operations["createAdminProjectMember"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/projects/{project_id}/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+                user_id: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove a member from a project. */
+        delete: operations["deleteAdminProjectMember"];
+        options?: never;
+        head?: never;
+        /** Update a project member role. */
+        patch: operations["updateAdminProjectMember"];
+        trace?: never;
+    };
     "/api/v1/admin/tokens": {
         parameters: {
             query?: never;
@@ -197,6 +238,24 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        ProjectMemberListResponse: {
+            items: components["schemas"]["ProjectMember"][];
+            page_info: components["schemas"]["PageInfo"];
+        };
+        CreateProjectMemberRequest: {
+            user_id: string;
+            role: components["schemas"]["ProjectRole"];
+        };
+        UpdateProjectMemberRequest: {
+            role: components["schemas"]["ProjectRole"];
+        };
+        ProjectMember: {
+            project_id: string;
+            user: components["schemas"]["UserRef"];
+            role: components["schemas"]["ProjectRole"];
+            /** Format: date-time */
+            joined_at: string;
+        };
         AccessTokenListResponse: {
             items: components["schemas"]["AccessTokenMeta"][];
             page_info: components["schemas"]["PageInfo"];
@@ -262,6 +321,17 @@ export interface components {
         OrgRole: "owner" | "admin" | "member";
         /** @enum {string} */
         MemberStatus: "invited" | "active" | "disabled";
+        /** @enum {string} */
+        ProjectRole: "member" | "admin";
+        UserRef: {
+            user_id: string;
+            /** Format: email */
+            email: string;
+            display_name: string | null;
+            /** Format: uri */
+            avatar_url: string | null;
+            role: string;
+        };
     };
     responses: {
         /** @description Error response. */
@@ -279,6 +349,7 @@ export interface components {
         Cursor: string;
         IfMatch: string;
         UserId: string;
+        ProjectId: string;
     };
     requestBodies: never;
     headers: never;
@@ -456,6 +527,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminProjectListResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listAdminProjectMembers: {
+        parameters: {
+            query?: {
+                role?: components["schemas"]["ProjectRole"];
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Project member page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMemberListResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createAdminProjectMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProjectMemberRequest"];
+            };
+        };
+        responses: {
+            /** @description Created project membership. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMember"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteAdminProjectMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+                user_id: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delete result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateAdminProjectMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+                user_id: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProjectMemberRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated project membership. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMember"];
                 };
             };
             default: components["responses"]["Error"];

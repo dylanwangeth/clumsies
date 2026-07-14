@@ -128,6 +128,80 @@ paths:
                 $ref: "#/components/schemas/AdminProjectListResponse"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/admin/projects/{project_id}/members:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listAdminProjectMembers
+      summary: List project members.
+      parameters:
+        - name: role
+          in: query
+          schema:
+            $ref: "#/components/schemas/ProjectRole"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Project member page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createAdminProjectMember
+      summary: Add an organization member to a project.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectMemberRequest"
+      responses:
+        "200":
+          description: Created project membership.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMember"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/projects/{project_id}/members/{user_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/UserId"
+    patch:
+      operationId: updateAdminProjectMember
+      summary: Update a project member role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProjectMemberRequest"
+      responses:
+        "200":
+          description: Updated project membership.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMember"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAdminProjectMember
+      summary: Remove a member from a project.
+      responses:
+        "200":
+          description: Delete result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/admin/tokens:
     get:
       operationId: listAdminTokens
@@ -221,6 +295,12 @@ components:
         type: string
     UserId:
       name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+    ProjectId:
+      name: project_id
       in: path
       required: true
       schema:
@@ -325,6 +405,43 @@ components:
         member_count:
           type: integer
         updated_at:
+          type: string
+          format: date-time
+    ProjectMemberListResponse:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectMember"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+    CreateProjectMemberRequest:
+      type: object
+      required: [user_id, role]
+      properties:
+        user_id:
+          type: string
+        role:
+          $ref: "#/components/schemas/ProjectRole"
+    UpdateProjectMemberRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/ProjectRole"
+    ProjectMember:
+      type: object
+      required: [project_id, user, role, joined_at]
+      properties:
+        project_id:
+          type: string
+        user:
+          $ref: "#/components/schemas/UserRef"
+        role:
+          $ref: "#/components/schemas/ProjectRole"
+        joined_at:
           type: string
           format: date-time
     AccessTokenListResponse:
@@ -450,3 +567,22 @@ components:
     MemberStatus:
       type: string
       enum: [invited, active, disabled]
+    ProjectRole:
+      type: string
+      enum: [member, admin]
+    UserRef:
+      type: object
+      required: [user_id, email, display_name, avatar_url, role]
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: [string, "null"]
+        avatar_url:
+          type: [string, "null"]
+          format: uri
+        role:
+          type: string
