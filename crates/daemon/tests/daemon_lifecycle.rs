@@ -533,11 +533,14 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
     let (root, _state, service) = common::test_daemon().await;
 
     let initial = service.project_config();
-    assert_eq!(initial.server_url, "http://127.0.0.1:8080");
+    assert_eq!(initial.server_url, "");
     assert_eq!(initial.project_id, None);
     assert!(!initial.has_access_token);
     assert!(!initial.ready);
-    assert_eq!(initial.missing_fields, vec!["project_id", "access_token"]);
+    assert_eq!(
+        initial.missing_fields,
+        vec!["server_url", "project_id", "access_token"]
+    );
 
     let updated = service
         .replace_project_config(DaemonProjectConfigUpdateRequest {

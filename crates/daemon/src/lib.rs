@@ -442,7 +442,7 @@ fn set_owner_only_permissions(_path: &Path) -> Result<(), DaemonError> {
 impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
-            server_url: "http://127.0.0.1:8080".to_owned(),
+            server_url: String::new(),
             project_id: None,
             access_token: None,
             refresh_token: None,
@@ -456,7 +456,7 @@ impl ProjectConfig {
             server_url: env::var("CLUMSIES_SERVER_URL")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned()),
+                .unwrap_or_default(),
             project_id: env::var("CLUMSIES_PROJECT_ID")
                 .ok()
                 .and_then(non_empty_string),

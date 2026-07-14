@@ -27,6 +27,7 @@ import {
   mapBundle,
   mapReviewSummary,
   syncStateForDaemonDraft,
+  type DesktopAccount,
   type ProjectOption,
 } from "./backend";
 import {
@@ -111,7 +112,7 @@ type ReviewFilter = ReviewStatus;
 type LoadState =
   | { status: "loading" }
   | { status: "preview" }
-  | { status: "authentication_required"; serverUrl: string; message?: string }
+  | { status: "authentication_required"; message?: string }
   | { status: "failed"; message: string }
   | {
       status: "ready";
@@ -154,6 +155,12 @@ type WorkspaceTabPresentation = {
 };
 
 const organization = { name: "Koal", logo: koalMark };
+const previewAccount: DesktopAccount = {
+  userId: "preview-user",
+  email: "weiwang@example.com",
+  displayName: "Wei Wang",
+  avatarUrl: null,
+};
 
 const primaryNavigation: NavigationItem[] = [
   { view: "Hub", label: "Hub", icon: Cloud },
@@ -217,6 +224,9 @@ export function App() {
   const [selectedView, setSelectedView] = useState<View>("Local");
   const [projects, setProjects] = useState<ProjectOption[]>(
     previewMode ? previewProjects : [],
+  );
+  const [account, setAccount] = useState<DesktopAccount | null>(
+    previewMode ? previewAccount : null,
   );
   const [selectedProjectId, setSelectedProjectId] = useState(
     previewMode ? "koal" : "",
@@ -286,6 +296,7 @@ export function App() {
     setLoadState({ status: "loading" });
     try {
       const backendState = await backend.load();
+      setAccount(backendState.account);
       setProjects(backendState.projects);
       setHubRefCommitId(backendState.orgRefCommitId);
       setResources(backendState.resources);
@@ -338,9 +349,9 @@ export function App() {
       });
     } catch (error) {
       if (error instanceof AuthenticationRequiredError) {
+        setAccount(null);
         setLoadState({
           status: "authentication_required",
-          serverUrl: error.serverUrl,
         });
         return;
       }
@@ -407,19 +418,18 @@ export function App() {
     }
   }, [refreshBackend]);
 
-  const authenticateDesktop = useCallback(async (serverUrl: string) => {
+  const authenticateDesktop = useCallback(async () => {
     const backend = backendRef.current;
     if (!backend) {
       return;
     }
     setLoadState({ status: "loading" });
     try {
-      await backend.authenticate(serverUrl);
+      await backend.authenticate();
       await refreshBackend();
     } catch (error) {
       setLoadState({
         status: "authentication_required",
-        serverUrl,
         message: error instanceof Error ? error.message : String(error),
       });
     }
@@ -1728,6 +1738,7 @@ export function App() {
     <main className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
       <TitleBar />
       <Sidebar
+        account={account}
         collapsed={sidebarCollapsed}
         projects={projects}
         selectedProjectId={selectedProjectId}
@@ -1760,7 +1771,6 @@ export function App() {
               {loadState.status === "authentication_required" ? (
                 <AuthenticationView
                   message={loadState.message}
-                  serverUrl={loadState.serverUrl}
                   onAuthenticate={authenticateDesktop}
                 />
               ) : loadState.status === "loading" && !previewMode ? (
@@ -2017,6 +2027,7 @@ function TitleBar() {
 }
 
 function Sidebar({
+  account,
   collapsed,
   onCloseUserMenu,
   onOpenSettings,
@@ -2029,6 +2040,7 @@ function Sidebar({
   selectedView,
   userMenuOpen,
 }: {
+  account: DesktopAccount | null;
   collapsed: boolean;
   onCloseUserMenu: () => void;
   onOpenSettings: () => void;
@@ -2051,6 +2063,12 @@ function Sidebar({
     : !selectedProject || projectPreview.some((project) => project.id === selectedProjectId)
       ? projectPreview
       : [...projectPreview.slice(0, projectPreviewLimit - 1), selectedProject];
+  const accountLabel = account
+    ? account.displayName?.trim() || account.email
+    : "";
+  const showAccountEmail = Boolean(
+    account?.displayName?.trim() && account.displayName.trim() !== account.email,
+  );
 
   useEffect(() => {
     if (!collapsed) {
@@ -2222,19 +2240,22 @@ function Sidebar({
           );
         })}
       </nav>
-      {userMenuOpen ? (
+      {account && userMenuOpen ? (
         <div
           aria-hidden="true"
           className="user-menu-backdrop"
           onMouseDown={onCloseUserMenu}
         />
       ) : null}
-      <div className="user-area">
+      {account ? <div className="user-area">
         {userMenuOpen ? (
           <div aria-label="User menu" className="user-menu" role="menu">
             <div className="user-menu-identity">
-              <span aria-hidden="true" className="user-avatar">WW</span>
-              <strong>weiwang</strong>
+              <UserAvatar account={account} />
+              <span className="user-menu-copy">
+                <strong>{accountLabel}</strong>
+                {showAccountEmail ? <span>{account.email}</span> : null}
+              </span>
             </div>
             <button
               aria-current={selectedView === "Settings" ? "page" : undefined}
@@ -2254,18 +2275,37 @@ function Sidebar({
         <button
           aria-expanded={userMenuOpen}
           aria-haspopup="menu"
-          aria-label="User menu for weiwang"
+          aria-label={`User menu for ${accountLabel}`}
           className={selectedView === "Settings" ? "user-item active" : "user-item"}
           onClick={onToggleUserMenu}
-          title={collapsed ? "weiwang" : undefined}
+          title={collapsed ? accountLabel : undefined}
           type="button"
         >
-          <span aria-hidden="true" className="user-avatar">WW</span>
-          <span className="user-name">weiwang</span>
+          <UserAvatar account={account} />
+          <span className="user-name">{accountLabel}</span>
           <ChevronDown aria-hidden="true" className="user-menu-chevron" size={13} />
         </button>
-      </div>
+      </div> : null}
     </aside>
+  );
+}
+
+function UserAvatar({ account }: { account: DesktopAccount }) {
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => setImageFailed(false), [account.avatarUrl]);
+
+  return (
+    <span aria-hidden="true" className="user-avatar">
+      {account.avatarUrl && !imageFailed ? (
+        <img
+          alt=""
+          onError={() => setImageFailed(true)}
+          referrerPolicy="no-referrer"
+          src={account.avatarUrl}
+        />
+      ) : accountInitials(account)}
+    </span>
   );
 }
 
@@ -4194,39 +4234,21 @@ function SettingsView({
 function AuthenticationView({
   message,
   onAuthenticate,
-  serverUrl,
 }: {
   message?: string;
-  onAuthenticate: (serverUrl: string) => void;
-  serverUrl: string;
+  onAuthenticate: () => void;
 }) {
-  const [value, setValue] = useState(serverUrl);
-
-  useEffect(() => setValue(serverUrl), [serverUrl]);
-
   return (
     <section className="session-view" aria-labelledby="sign-in-title">
       <form
         className="session-form"
         onSubmit={(event) => {
           event.preventDefault();
-          onAuthenticate(value.trim());
+          onAuthenticate();
         }}
       >
         <h1 id="sign-in-title">Sign in</h1>
-        <p>Use your organization account.</p>
-        <label>
-          <span>Server URL</span>
-          <input
-            autoCapitalize="none"
-            autoCorrect="off"
-            onChange={(event) => setValue(event.target.value)}
-            required
-            spellCheck={false}
-            type="url"
-            value={value}
-          />
-        </label>
+        <p>Continue with your organization account.</p>
         {message ? <p className="session-error" role="alert">{message}</p> : null}
         <button className="button primary" type="submit">
           Continue with SSO
@@ -4490,6 +4512,15 @@ function capitalize(value: string): string {
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
+function accountInitials(account: DesktopAccount): string {
+  const source = account.displayName?.trim() || account.email.split("@")[0] || "?";
+  const words = source.split(/\s+/).filter(Boolean);
+  const initials = words.length > 1
+    ? `${words[0][0] ?? ""}${words[words.length - 1][0] ?? ""}`
+    : Array.from(source).slice(0, 2).join("");
+  return initials.toUpperCase();
+}
+
 function markdownTitle(body: string, fallback: string): string {
   const heading = body.match(/^#\s+(.+)$/m)?.[1].trim();
   return heading || fallback;
@@ -4523,10 +4554,7 @@ function daemonRows(state: LoadState): [string, string][] {
     return [["Status", "Unavailable"]];
   }
   if (state.status === "authentication_required") {
-    return [
-      ["Status", "Sign-in required"],
-      ["Server", state.serverUrl],
-    ];
+    return [["Status", "Sign-in required"]];
   }
   const { bootstrap, health, mcpStatus, projectConfig, syncStatus } = state;
   return [

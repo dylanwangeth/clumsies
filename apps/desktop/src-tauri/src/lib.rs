@@ -1,3 +1,4 @@
+use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -120,9 +121,8 @@ async fn proxy_server_request(
 #[tauri::command]
 async fn authenticate_desktop(
     app: tauri::AppHandle,
-    server_url: String,
 ) -> Result<DaemonProjectConfig, String> {
-    let server_url = normalize_server_url(&server_url)?;
+    let server_url = configured_server_url()?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|error| format!("failed to bind the OIDC callback listener: {error}"))?;
@@ -285,6 +285,20 @@ fn normalize_server_url(value: &str) -> Result<String, String> {
     }
     url.set_path("");
     Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+
+fn configured_server_url() -> Result<String, String> {
+    let value = env::var("CLUMSIES_SERVER_URL").map_err(|_| {
+        "This Desktop is not connected to an organization. Install it from your organization's Clumsies Server."
+            .to_owned()
+    })?;
+    if value.trim().is_empty() {
+        return Err(
+            "This Desktop is not connected to an organization. Install it from your organization's Clumsies Server."
+                .to_owned(),
+        );
+    }
+    normalize_server_url(&value)
 }
 
 fn authorization_url(

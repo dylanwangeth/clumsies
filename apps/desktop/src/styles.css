@@ -447,6 +447,14 @@ pre {
   font-size: 9px;
   font-weight: 700;
   line-height: 1;
+  overflow: hidden;
+}
+
+.user-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
 }
 
 .user-name {
@@ -513,13 +521,28 @@ pre {
   padding: 5px 6px 9px;
 }
 
-.user-menu-identity strong {
+.user-menu-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.user-menu-copy strong,
+.user-menu-copy > span {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-menu-copy strong {
   color: var(--text);
   font-size: 12px;
   font-weight: 620;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.user-menu-copy > span {
+  color: var(--text-tertiary);
+  font-size: 10.5px;
 }
 
 .user-menu-item {
@@ -2185,30 +2208,6 @@ pre {
   color: var(--text-secondary);
   font-size: 12.5px;
   line-height: 1.5;
-}
-
-.session-form label {
-  display: grid;
-  gap: 6px;
-  color: var(--text-secondary);
-  font-size: 11.5px;
-}
-
-.session-form input {
-  width: 100%;
-  height: 34px;
-  border: 1px solid var(--border-strong);
-  border-radius: 5px;
-  background: var(--bg-raised);
-  color: var(--text);
-  font: inherit;
-  padding: 0 9px;
-}
-
-.session-form input:focus {
-  border-color: var(--accent);
-  outline: 0;
-  box-shadow: 0 0 0 1px var(--focus);
 }
 
 .session-form .button {

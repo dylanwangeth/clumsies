@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "CLUMSIES_SERVER_URL=${CLUMSIES_SERVER_URL:-http://127.0.0.1:18080} tauri dev",
     "dev:web": "bun run prepare:daemon && vite --host 127.0.0.1 --port 1420",
     "build": "tauri build",
     "build:web": "bun run prepare:daemon:release && tsc -p tsconfig.json --noEmit && vite build",

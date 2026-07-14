@@ -33,6 +33,13 @@ export type ProjectOption = {
   refCommitId: string | null;
 };
 
+export type DesktopAccount = {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+};
+
 export type DesktopBackendRuntime = {
   bootstrap: DaemonBootstrapStatus;
   health: DaemonHealth;
@@ -42,6 +49,7 @@ export type DesktopBackendRuntime = {
 };
 
 export type DesktopBackendState = {
+  account: DesktopAccount;
   projects: ProjectOption[];
   orgRefCommitId: string | null;
   activeProjectId: string | null;
@@ -53,12 +61,9 @@ export type DesktopBackendState = {
 };
 
 export class AuthenticationRequiredError extends Error {
-  readonly serverUrl: string;
-
-  constructor(serverUrl: string) {
+  constructor() {
     super("Sign in to connect this Desktop to the Server");
     this.name = "AuthenticationRequiredError";
-    this.serverUrl = serverUrl;
   }
 }
 
@@ -72,8 +77,8 @@ export class DesktopBackend {
     this.daemon = createDaemonApiClient(invoke);
   }
 
-  authenticate(serverUrl: string): Promise<DaemonProjectConfig> {
-    return this.invoke<DaemonProjectConfig>("authenticate_desktop", { serverUrl });
+  authenticate(): Promise<DaemonProjectConfig> {
+    return this.invoke<DaemonProjectConfig>("authenticate_desktop");
   }
 
   async load(): Promise<DesktopBackendState> {
@@ -83,7 +88,7 @@ export class DesktopBackend {
       this.daemon.projectConfig(),
     ]);
     if (!projectConfig.has_access_token || !projectConfig.has_refresh_token) {
-      throw new AuthenticationRequiredError(projectConfig.server_url);
+      throw new AuthenticationRequiredError();
     }
     if (!projectConfig.project_id) {
       throw new Error("Authenticated Desktop has no active project");
@@ -101,12 +106,12 @@ export class DesktopBackend {
       this.daemon.listDrafts({ limit: 200 }),
     ]);
 
-    const [projectPage, orgCommitState] = await Promise.all([
-      api.listProjects({ limit: 200 }),
+    const [me, orgCommitState] = await Promise.all([
+      api.me(),
       api.orgCommitState(),
     ]);
     const projects = await Promise.all(
-      projectPage.items.map(async (project) => {
+      me.projects.map(async (project) => {
         const commitState = await api.projectCommitState(project.project_id);
         return {
           id: project.project_id,
@@ -133,6 +138,12 @@ export class DesktopBackend {
     ]);
 
     return {
+      account: {
+        userId: me.user.user_id,
+        email: me.user.email,
+        displayName: me.user.display_name,
+        avatarUrl: me.user.avatar_url,
+      },
       projects,
       orgRefCommitId: orgCommitState.state.ref.commit_id,
       activeProjectId,
@@ -156,12 +167,24 @@ export function createDaemonFetch(daemon: DaemonApiClient): typeof fetch {
     request.headers.forEach((value, name) => {
       headers[name] = value;
     });
-    const response = await daemon.serverRequest({
-      method,
-      path: `${url.pathname}${url.search}`,
-      headers,
-      body: request.body === null ? null : await request.text(),
-    });
+    let response;
+    try {
+      response = await daemon.serverRequest({
+        method,
+        path: `${url.pathname}${url.search}`,
+        headers,
+        body: request.body === null ? null : await request.text(),
+      });
+    } catch (error) {
+      const projectConfig = await daemon.projectConfig().catch(() => null);
+      if (
+        projectConfig
+        && (!projectConfig.has_access_token || !projectConfig.has_refresh_token)
+      ) {
+        throw new AuthenticationRequiredError();
+      }
+      throw error;
+    }
     return new Response(response.body, {
       status: response.status,
       headers: response.headers,

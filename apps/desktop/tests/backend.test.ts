@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AuthenticationRequiredError,
   createDaemonFetch,
   daemonOperationsForDraft,
   syncStateForDaemonDraft,
@@ -71,6 +72,26 @@ describe("Desktop backend mapping", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("etag")).toBe('"commit_1"');
     expect(await response.json()).toEqual({ ok: true });
+  });
+
+  test("maps a cleared daemon session directly to sign-in", async () => {
+    const daemon = {
+      serverRequest: async () => {
+        throw new Error("Server token refresh failed");
+      },
+      projectConfig: async () => ({
+        server_url: "http://127.0.0.1:18080",
+        project_id: "prj_test",
+        has_access_token: false,
+        has_refresh_token: false,
+        ready: false,
+        missing_fields: ["access_token"],
+      }),
+    } as DaemonApiClient;
+
+    await expect(
+      createDaemonFetch(daemon)("http://127.0.0.1:18080/api/v1/me"),
+    ).rejects.toBeInstanceOf(AuthenticationRequiredError);
   });
 
   test("writes repeated new-resource edits to one local draft", () => {
