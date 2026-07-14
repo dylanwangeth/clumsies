@@ -19,6 +19,11 @@ async fn oidc_identity_survives_an_email_claim_change() {
     )
     .await;
     assert_eq!(first_token.user.user_id, bootstrap.user_id);
+    assert_eq!(first_token.user.display_name.as_deref(), Some("Owner"));
+    assert_eq!(
+        first_token.user.avatar_url.as_deref(),
+        Some("https://images.example.test/avatar.png")
+    );
 
     let (_, second_token) = common::authenticated_router_as(
         postgres.pool.clone(),

@@ -201,6 +201,7 @@ impl OidcIdentityProvider for FakeOidcProvider {
             email: self.email.clone(),
             email_verified: true,
             display_name: Some(self.display_name.clone()),
+            avatar_url: Some("https://images.example.test/avatar.png".to_owned()),
         })
     }
 }

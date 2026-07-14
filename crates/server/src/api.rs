@@ -6,6 +6,7 @@ pub struct UserRef {
     pub user_id: String,
     pub email: String,
     pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
     pub role: String,
 }
 

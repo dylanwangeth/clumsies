@@ -54,6 +54,7 @@ pub struct OidcIdentity {
     pub email: String,
     pub email_verified: bool,
     pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 #[async_trait]
@@ -184,12 +185,23 @@ impl OidcIdentityProvider for DiscoveredOidcProvider {
             .email()
             .map(|email| email.as_str().to_owned())
             .ok_or(AuthError::EmailNotVerified)?;
+        let display_name = claims
+            .name()
+            .and_then(|claim| claim.get(None))
+            .map(|name| name.as_str().to_owned())
+            .filter(|name| !name.trim().is_empty());
+        let avatar_url = claims
+            .picture()
+            .and_then(|claim| claim.get(None))
+            .map(|picture| picture.as_str().to_owned())
+            .filter(|value| Url::parse(value).is_ok_and(|url| url.scheme() == "https"));
         Ok(OidcIdentity {
             issuer: self.issuer.clone(),
             subject: claims.subject().as_str().to_owned(),
             email,
             email_verified: claims.email_verified().unwrap_or(false),
-            display_name: None,
+            display_name,
+            avatar_url,
         })
     }
 }
@@ -648,11 +660,12 @@ async fn issue_token_pair(
         .execute(&mut **tx)
         .await?;
     }
-    let user_row =
-        sqlx::query("SELECT user_id, email, display_name, role FROM users WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&mut **tx)
-            .await?;
+    let user_row = sqlx::query(
+        "SELECT user_id, email, display_name, avatar_url, role FROM users WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&mut **tx)
+    .await?;
     let org_row = sqlx::query("SELECT org_id, name FROM orgs WHERE org_id = $1")
         .bind(org_id)
         .fetch_one(&mut **tx)
@@ -662,6 +675,7 @@ async fn issue_token_pair(
         user_id: user_row.try_get("user_id")?,
         email: user_row.try_get("email")?,
         display_name: user_row.try_get("display_name")?,
+        avatar_url: user_row.try_get("avatar_url")?,
         role: role.clone(),
     };
     Ok(TokenResponse {
@@ -696,7 +710,13 @@ async fn resolve_external_identity(
     if let Some(user) = bound_user {
         let user_id: String = user.try_get("user_id")?;
         ensure_member_enabled(user.try_get("status")?)?;
-        activate_member(tx, &user_id, identity.display_name.as_deref()).await?;
+        activate_member(
+            tx,
+            &user_id,
+            identity.display_name.as_deref(),
+            identity.avatar_url.as_deref(),
+        )
+        .await?;
         return Ok(user_id);
     }
 
@@ -743,7 +763,13 @@ async fn resolve_external_identity(
             .await?;
         }
     }
-    activate_member(tx, &user_id, identity.display_name.as_deref()).await?;
+    activate_member(
+        tx,
+        &user_id,
+        identity.display_name.as_deref(),
+        identity.avatar_url.as_deref(),
+    )
+    .await?;
     Ok(user_id)
 }
 
@@ -759,16 +785,24 @@ async fn activate_member(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &str,
     display_name: Option<&str>,
+    avatar_url: Option<&str>,
 ) -> Result<(), AuthError> {
     sqlx::query(
         "UPDATE users
-         SET status = 'active', display_name = COALESCE(display_name, $2),
+         SET status = 'active',
+             display_name = COALESCE($2, display_name),
+             avatar_url = COALESCE($3, avatar_url),
              revision = revision + 1, updated_at = now()
          WHERE user_id = $1
-           AND (status <> 'active' OR (display_name IS NULL AND $2 IS NOT NULL))",
+           AND (
+               status <> 'active'
+               OR ($2 IS NOT NULL AND display_name IS DISTINCT FROM $2)
+               OR ($3 IS NOT NULL AND avatar_url IS DISTINCT FROM $3)
+           )",
     )
     .bind(user_id)
     .bind(display_name)
+    .bind(avatar_url)
     .execute(&mut **tx)
     .await?;
     Ok(())

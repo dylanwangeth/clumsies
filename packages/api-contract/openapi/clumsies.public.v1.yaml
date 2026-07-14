@@ -1972,7 +1972,7 @@ components:
           type: boolean
     UserRef:
       type: object
-      required: [user_id, email, display_name, role]
+      required: [user_id, email, display_name, avatar_url, role]
       properties:
         user_id:
           type: string
@@ -1981,6 +1981,9 @@ components:
           format: email
         display_name:
           type: [string, "null"]
+        avatar_url:
+          type: [string, "null"]
+          format: uri
         role:
           type: string
     ClientKind:

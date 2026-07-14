@@ -135,7 +135,7 @@ impl ServerRepository {
     pub async fn get_me(&self, principal: &AuthPrincipal) -> Result<MeResponse, ServerError> {
         let mut tx = self.pool.begin().await?;
         let user_row = sqlx::query(
-            "SELECT user_id, email, display_name, role
+            "SELECT user_id, email, display_name, avatar_url, role
              FROM users
              WHERE user_id = $1",
         )
@@ -1627,7 +1627,7 @@ impl ServerRepository {
                 "SELECT
                     r.review_id, r.project_id, r.draft_id, r.title, r.description,
                     r.status, r.version, r.created_at, r.updated_at,
-                    u.user_id, u.email, u.display_name, u.role
+                    u.user_id, u.email, u.display_name, u.avatar_url, u.role
                  FROM reviews r
                  JOIN users u ON u.user_id = r.author_user_id
                  JOIN projects p ON p.project_id = r.project_id
@@ -1646,7 +1646,7 @@ impl ServerRepository {
                 "SELECT
                     r.review_id, r.project_id, r.draft_id, r.title, r.description,
                     r.status, r.version, r.created_at, r.updated_at,
-                    u.user_id, u.email, u.display_name, u.role
+                    u.user_id, u.email, u.display_name, u.avatar_url, u.role
                  FROM reviews r
                  JOIN users u ON u.user_id = r.author_user_id
                  JOIN projects p ON p.project_id = r.project_id
@@ -2734,7 +2734,7 @@ async fn load_draft_detail(
             d.status, d.version,
             d.resource_scope, d.resource_kind, d.target_id, d.path, d.daemon_installation_id,
             d.created_at, d.updated_at,
-            u.user_id, u.email, u.display_name, u.role
+            u.user_id, u.email, u.display_name, u.avatar_url, u.role
          FROM drafts d
          JOIN users u ON u.user_id = d.author_user_id
          WHERE d.draft_id = $1",
@@ -2830,7 +2830,7 @@ async fn load_review(
         "SELECT
             r.review_id, r.project_id, r.draft_id, r.title, r.description,
             r.status, r.version, r.created_at, r.updated_at,
-            u.user_id, u.email, u.display_name, u.role
+            u.user_id, u.email, u.display_name, u.avatar_url, u.role
          FROM reviews r
          JOIN users u ON u.user_id = r.author_user_id
          WHERE r.review_id = $1",
@@ -2865,7 +2865,7 @@ async fn load_review_comments(
     let rows = sqlx::query(
         "SELECT
             c.comment_id, c.review_id, c.body, c.created_at,
-            u.user_id, u.email, u.display_name, u.role
+            u.user_id, u.email, u.display_name, u.avatar_url, u.role
          FROM review_comments c
          JOIN users u ON u.user_id = c.author_user_id
          WHERE c.review_id = $1
@@ -3844,7 +3844,7 @@ async fn user_ref(
     user_id: &str,
 ) -> Result<UserRef, ServerError> {
     let row = sqlx::query(
-        "SELECT user_id, email, display_name, role
+        "SELECT user_id, email, display_name, avatar_url, role
          FROM users
          WHERE user_id = $1",
     )
@@ -3860,6 +3860,7 @@ fn user_ref_from_row(row: &sqlx::postgres::PgRow) -> Result<UserRef, ServerError
         user_id: row.try_get("user_id")?,
         email: row.try_get("email")?,
         display_name: row.try_get("display_name")?,
+        avatar_url: row.try_get("avatar_url")?,
         role: row.try_get("role")?,
     })
 }

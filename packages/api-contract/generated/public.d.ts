@@ -1140,6 +1140,8 @@ export interface components {
             /** Format: email */
             email: string;
             display_name: string | null;
+            /** Format: uri */
+            avatar_url: string | null;
             role: string;
         };
         /** @enum {string} */

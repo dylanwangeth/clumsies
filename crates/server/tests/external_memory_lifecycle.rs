@@ -59,6 +59,11 @@ async fn draft_review_merge_produces_project_commit() {
 
     let me: MeResponse = get_json(app.clone(), "/api/v1/me").await;
     assert_eq!(me.user.user_id, user_id);
+    assert_eq!(me.user.display_name.as_deref(), Some("Owner"));
+    assert_eq!(
+        me.user.avatar_url.as_deref(),
+        Some("https://images.example.test/avatar.png")
+    );
     assert_eq!(me.org.org_id, org_id);
     assert_eq!(me.default_project_id.as_deref(), Some(project_id.as_str()));
 

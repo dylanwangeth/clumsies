@@ -21,7 +21,7 @@ use crate::api::{
 use crate::auth::{AuthError, AuthPrincipal, AuthService};
 use crate::repository::{ServerError, ServerRepository};
 
-const CURRENT_SCHEMA_MIGRATION: i64 = 20260708000100;
+const CURRENT_SCHEMA_MIGRATION: i64 = 20260714000100;
 
 #[derive(Clone)]
 struct AppState {
