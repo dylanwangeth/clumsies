@@ -47,7 +47,9 @@ export interface components {
             /** Format: uri */
             server_url: string;
             project_id: string | null;
+            /** @description Whether the daemon loaded an access token from macOS Keychain. */
             has_access_token: boolean;
+            /** @description Whether the daemon loaded a refresh token from macOS Keychain. */
             has_refresh_token: boolean;
             ready: boolean;
             missing_fields: string[];
@@ -56,7 +58,9 @@ export interface components {
             /** Format: uri */
             server_url: string;
             project_id: string | null;
+            /** @description Written directly to macOS Keychain and never returned by daemon APIs. */
             access_token: string | null;
+            /** @description Written atomically with the access token to macOS Keychain and never returned. */
             refresh_token: string | null;
         };
         DaemonMemoryCacheRequest: {

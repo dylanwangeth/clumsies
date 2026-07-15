@@ -1,8 +1,10 @@
+mod common;
+
 use daemon::{
     DaemonConfig, DaemonCreateDraftOperation, DaemonDraftListQuery, DaemonDraftOperation,
     DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
     DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService, DaemonMemoryCacheRequest,
-    DaemonState, DaemonSyncRetryRequest, SyncRetryChannel, SyncState,
+    DaemonSyncRetryRequest, SyncRetryChannel, SyncState,
 };
 use server::api::{
     CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
@@ -71,9 +73,12 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
     let mut config = DaemonConfig::for_root(root.path());
     config.project.server_url = format!("http://{server_address}");
     config.project.project_id = Some(bootstrap.project_id.clone());
-    config.project.access_token = Some(stale_access_token.to_owned());
-    config.project.refresh_token = Some(refresh_token.to_owned());
-    let state = DaemonState::initialize(config).await.unwrap();
+    let (state, credential_store) = common::initialize_authenticated_daemon(
+        config,
+        stale_access_token,
+        Some(refresh_token.to_owned()),
+    )
+    .await;
     let service = DaemonIpcService::new(state);
 
     service
@@ -112,6 +117,12 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
     let project_config = service.project_config();
     assert!(project_config.has_access_token);
     assert!(project_config.has_refresh_token);
+    let refreshed_credentials = credential_store.credentials().unwrap();
+    assert_ne!(refreshed_credentials.access_token, stale_access_token);
+    assert_ne!(
+        refreshed_credentials.refresh_token.as_deref(),
+        Some(refresh_token)
+    );
 
     let active_token_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM access_tokens
@@ -196,16 +207,15 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
     let mut config_a = DaemonConfig::for_root(root_a.path());
     config_a.project.server_url = format!("http://{server_address}");
     config_a.project.project_id = Some(bootstrap.project_id.clone());
-    config_a.project.access_token = Some(access_token.to_owned());
-    let state_a = DaemonState::initialize(config_a.clone()).await.unwrap();
+    let (state_a, credential_store_a) =
+        common::initialize_authenticated_daemon(config_a.clone(), access_token, None).await;
     let service_a = DaemonIpcService::new(state_a);
 
     let root_b = tempfile::tempdir().unwrap();
     let mut config_b = DaemonConfig::for_root(root_b.path());
     config_b.project.server_url = format!("http://{server_address}");
     config_b.project.project_id = Some(bootstrap.project_id.clone());
-    config_b.project.access_token = Some(access_token.to_owned());
-    let state_b = DaemonState::initialize(config_b).await.unwrap();
+    let (state_b, _) = common::initialize_authenticated_daemon(config_b, access_token, None).await;
     let service_b = DaemonIpcService::new(state_b);
 
     let first = service_a
@@ -353,7 +363,9 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
     );
 
     drop(service_a);
-    let restarted_a = DaemonIpcService::new(DaemonState::initialize(config_a).await.unwrap());
+    let restarted_a = DaemonIpcService::new(
+        common::initialize_daemon(config_a, credential_store_a.clone()).await,
+    );
     restarted_a
         .retry_sync(DaemonSyncRetryRequest {
             channel: SyncRetryChannel::Drafts,
@@ -422,15 +434,16 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     let mut config_a = DaemonConfig::for_root(root_a.path());
     config_a.project.server_url = format!("http://{server_address}");
     config_a.project.project_id = Some(bootstrap.project_id.clone());
-    config_a.project.access_token = Some(access_token.to_owned());
-    let service_a = DaemonIpcService::new(DaemonState::initialize(config_a.clone()).await.unwrap());
+    let (state_a, credential_store_a) =
+        common::initialize_authenticated_daemon(config_a.clone(), access_token, None).await;
+    let service_a = DaemonIpcService::new(state_a);
 
     let root_b = tempfile::tempdir().unwrap();
     let mut config_b = DaemonConfig::for_root(root_b.path());
     config_b.project.server_url = format!("http://{server_address}");
     config_b.project.project_id = Some(bootstrap.project_id.clone());
-    config_b.project.access_token = Some(access_token.to_owned());
-    let service_b = DaemonIpcService::new(DaemonState::initialize(config_b).await.unwrap());
+    let (state_b, _) = common::initialize_authenticated_daemon(config_b, access_token, None).await;
+    let service_b = DaemonIpcService::new(state_b);
 
     for service in [&service_a, &service_b] {
         service
@@ -555,7 +568,9 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     );
 
     drop(service_a);
-    let restarted_a = DaemonIpcService::new(DaemonState::initialize(config_a).await.unwrap());
+    let restarted_a = DaemonIpcService::new(
+        common::initialize_daemon(config_a, credential_store_a.clone()).await,
+    );
     let cache_after_restart = restarted_a
         .memory_cache(DaemonMemoryCacheRequest {
             project_id: bootstrap.project_id.clone(),

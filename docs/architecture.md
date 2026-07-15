@@ -145,6 +145,7 @@ contract. It is not implemented as a degraded fallback.
 
 Draft upload, remote draft projection, Commit download, atomic local
 materialization, and MCP authority reads are operational. Open drafts are not
-yet overlaid onto the immutable authority generation used by MCP. Type-aware
-three-way merge, user-resolvable conflicts, Keychain token storage, and Windows
-service transport are also outside the implemented boundary.
+yet overlaid onto the immutable authority generation used by MCP. Explicit
+user-resolvable conflicts and macOS Keychain token storage are operational;
+type-aware automatic three-way merge and Windows service transport remain
+outside the implemented boundary.

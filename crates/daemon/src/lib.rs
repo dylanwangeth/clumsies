@@ -21,14 +21,19 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 mod commit_sync;
+mod credentials;
 mod ipc;
 pub use commit_sync::{DaemonMemoryCacheRequest, DaemonMemoryCacheStatus};
+pub use credentials::{
+    CredentialStore, CredentialStoreError, KEYCHAIN_ACCOUNT, ServerCredentials,
+    SystemCredentialStore,
+};
 pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 
 pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 8;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 9;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
@@ -43,12 +48,10 @@ pub struct DaemonConfig {
     pub sync: SyncConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectConfig {
     pub server_url: String,
     pub project_id: Option<String>,
-    pub access_token: Option<String>,
-    pub refresh_token: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -441,17 +444,6 @@ fn set_owner_only_permissions(_path: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-impl Default for ProjectConfig {
-    fn default() -> Self {
-        Self {
-            server_url: String::new(),
-            project_id: None,
-            access_token: None,
-            refresh_token: None,
-        }
-    }
-}
-
 impl ProjectConfig {
     fn from_env() -> Self {
         Self {
@@ -460,12 +452,6 @@ impl ProjectConfig {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_default(),
             project_id: env::var("CLUMSIES_PROJECT_ID")
-                .ok()
-                .and_then(non_empty_string),
-            access_token: env::var("CLUMSIES_ACCESS_TOKEN")
-                .ok()
-                .and_then(non_empty_string),
-            refresh_token: env::var("CLUMSIES_REFRESH_TOKEN")
                 .ok()
                 .and_then(non_empty_string),
         }
@@ -480,6 +466,47 @@ impl ProjectConfig {
                 "server_url scheme must be http or https, got {scheme}"
             ))),
         }
+    }
+}
+
+#[derive(Clone)]
+struct RuntimeProjectConfig {
+    server_url: String,
+    project_id: Option<String>,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+}
+
+impl RuntimeProjectConfig {
+    fn validate(&self) -> Result<(), DaemonError> {
+        ProjectConfig {
+            server_url: self.server_url.clone(),
+            project_id: self.project_id.clone(),
+        }
+        .validate()?;
+        if self.access_token.is_none() && self.refresh_token.is_some() {
+            return Err(DaemonError::InvalidConfig(
+                "refresh_token cannot be configured without access_token".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> ProjectConfig {
+        ProjectConfig {
+            server_url: self.server_url.clone(),
+            project_id: self.project_id.clone(),
+        }
+    }
+
+    fn credentials(&self) -> Option<ServerCredentials> {
+        self.access_token
+            .as_ref()
+            .map(|access_token| ServerCredentials {
+                server_url: self.server_url.clone(),
+                access_token: access_token.clone(),
+                refresh_token: self.refresh_token.clone(),
+            })
     }
 
     fn readiness(&self) -> ProjectConfigReadiness {
@@ -507,7 +534,8 @@ pub struct DaemonState {
 
 struct DaemonInner {
     config: DaemonConfig,
-    project_config: RwLock<ProjectConfig>,
+    project_config: RwLock<RuntimeProjectConfig>,
+    credential_store: Arc<dyn CredentialStore>,
     pool: SqlitePool,
     http: reqwest::Client,
     daemon_installation_id: String,
@@ -519,16 +547,26 @@ struct DaemonInner {
 
 impl DaemonState {
     pub async fn initialize(config: DaemonConfig) -> Result<Self, DaemonError> {
+        Self::initialize_with_credential_store(config, Arc::new(SystemCredentialStore::default()))
+            .await
+    }
+
+    pub async fn initialize_with_credential_store(
+        config: DaemonConfig,
+        credential_store: Arc<dyn CredentialStore>,
+    ) -> Result<Self, DaemonError> {
         prepare_directories(&config)?;
         let pool = connect_local_db(&config.local_db_path()).await?;
         migrate_local_db(&pool).await?;
         let daemon_installation_id = load_or_create_installation_id(&pool).await?;
-        let project_config = load_project_config(&pool, &config.project).await?;
+        let credentials = load_server_credentials(credential_store.clone()).await?;
+        let project_config = load_project_config(&pool, &config.project, credentials).await?;
 
         Ok(Self {
             inner: Arc::new(DaemonInner {
                 config,
                 project_config: RwLock::new(project_config),
+                credential_store,
                 pool,
                 http: reqwest::Client::new(),
                 daemon_installation_id,
@@ -552,7 +590,7 @@ impl DaemonState {
         self.project_config_view()
     }
 
-    fn project_config(&self) -> ProjectConfig {
+    fn project_config(&self) -> RuntimeProjectConfig {
         self.inner
             .project_config
             .read()
@@ -564,14 +602,36 @@ impl DaemonState {
         &self,
         request: DaemonProjectConfigUpdateRequest,
     ) -> Result<DaemonProjectConfig, DaemonError> {
-        let project_config = ProjectConfig {
+        let project_config = RuntimeProjectConfig {
             server_url: request.server_url.trim().to_owned(),
             project_id: request.project_id.and_then(non_empty_string),
             access_token: request.access_token.and_then(non_empty_string),
             refresh_token: request.refresh_token.and_then(non_empty_string),
         };
         project_config.validate()?;
-        save_project_config(&self.inner.pool, &project_config).await?;
+        let previous_credentials = self.project_config().credentials();
+        replace_server_credentials(
+            self.inner.credential_store.clone(),
+            project_config.credentials(),
+        )
+        .await?;
+        if let Err(error) =
+            save_project_metadata(&self.inner.pool, &project_config.metadata()).await
+        {
+            if let Err(rollback_error) = replace_server_credentials(
+                self.inner.credential_store.clone(),
+                previous_credentials,
+            )
+            .await
+            {
+                return Err(DaemonError::CredentialStore(CredentialStoreError::new(
+                    format!(
+                        "failed to persist project metadata ({error}) and failed to restore the previous Keychain session ({rollback_error})"
+                    ),
+                )));
+            }
+            return Err(error);
+        }
         *self
             .inner
             .project_config
@@ -1850,7 +1910,11 @@ async fn refresh_server_tokens(
     let mut refreshed = config;
     refreshed.access_token = Some(tokens.access_token);
     refreshed.refresh_token = Some(tokens.refresh_token);
-    save_project_config(&state.inner.pool, &refreshed).await?;
+    replace_server_credentials(
+        state.inner.credential_store.clone(),
+        refreshed.credentials(),
+    )
+    .await?;
     *state
         .inner
         .project_config
@@ -1861,9 +1925,9 @@ async fn refresh_server_tokens(
 
 async fn clear_server_tokens(state: &DaemonState) -> Result<(), DaemonError> {
     let mut config = state.project_config();
+    replace_server_credentials(state.inner.credential_store.clone(), None).await?;
     config.access_token = None;
     config.refresh_token = None;
-    save_project_config(&state.inner.pool, &config).await?;
     *state
         .inner
         .project_config
@@ -2522,6 +2586,12 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
         )));
     }
     sqlx::query(
+        "DELETE FROM daemon_meta
+         WHERE key IN ('project_config_access_token', 'project_config_refresh_token')",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS local_drafts (
             draft_id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
@@ -2654,24 +2724,29 @@ async fn load_or_create_installation_id(pool: &SqlitePool) -> Result<String, Dae
 async fn load_project_config(
     pool: &SqlitePool,
     defaults: &ProjectConfig,
-) -> Result<ProjectConfig, DaemonError> {
-    Ok(ProjectConfig {
-        server_url: load_meta_value(pool, "project_config_server_url")
-            .await?
-            .unwrap_or_else(|| defaults.server_url.clone()),
-        project_id: load_meta_value(pool, "project_config_project_id")
-            .await?
-            .or_else(|| defaults.project_id.clone()),
-        access_token: load_meta_value(pool, "project_config_access_token")
-            .await?
-            .or_else(|| defaults.access_token.clone()),
-        refresh_token: load_meta_value(pool, "project_config_refresh_token")
-            .await?
-            .or_else(|| defaults.refresh_token.clone()),
+    credentials: Option<ServerCredentials>,
+) -> Result<RuntimeProjectConfig, DaemonError> {
+    let server_url = load_meta_value(pool, "project_config_server_url")
+        .await?
+        .unwrap_or_else(|| defaults.server_url.clone());
+    let project_id = load_meta_value(pool, "project_config_project_id")
+        .await?
+        .or_else(|| defaults.project_id.clone());
+    let credentials = credentials.filter(|credentials| credentials.server_url == server_url);
+    Ok(RuntimeProjectConfig {
+        server_url,
+        project_id,
+        access_token: credentials
+            .as_ref()
+            .map(|credentials| credentials.access_token.clone()),
+        refresh_token: credentials.and_then(|credentials| credentials.refresh_token),
     })
 }
 
-async fn save_project_config(pool: &SqlitePool, config: &ProjectConfig) -> Result<(), DaemonError> {
+async fn save_project_metadata(
+    pool: &SqlitePool,
+    config: &ProjectConfig,
+) -> Result<(), DaemonError> {
     let mut tx = pool.begin().await?;
     upsert_meta_value(
         &mut tx,
@@ -2685,19 +2760,37 @@ async fn save_project_config(pool: &SqlitePool, config: &ProjectConfig) -> Resul
         config.project_id.as_deref(),
     )
     .await?;
-    upsert_meta_value(
-        &mut tx,
-        "project_config_access_token",
-        config.access_token.as_deref(),
-    )
-    .await?;
-    upsert_meta_value(
-        &mut tx,
-        "project_config_refresh_token",
-        config.refresh_token.as_deref(),
-    )
-    .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+async fn load_server_credentials(
+    credential_store: Arc<dyn CredentialStore>,
+) -> Result<Option<ServerCredentials>, DaemonError> {
+    let credentials = tokio::task::spawn_blocking(move || credential_store.load())
+        .await
+        .map_err(|error| {
+            DaemonError::CredentialStore(CredentialStoreError::new(format!(
+                "credential worker failed: {error}"
+            )))
+        })??;
+    Ok(credentials)
+}
+
+async fn replace_server_credentials(
+    credential_store: Arc<dyn CredentialStore>,
+    credentials: Option<ServerCredentials>,
+) -> Result<(), DaemonError> {
+    tokio::task::spawn_blocking(move || match credentials {
+        Some(credentials) => credential_store.replace(&credentials),
+        None => credential_store.clear(),
+    })
+    .await
+    .map_err(|error| {
+        DaemonError::CredentialStore(CredentialStoreError::new(format!(
+            "credential worker failed: {error}"
+        )))
+    })??;
     Ok(())
 }
 
@@ -3471,6 +3564,7 @@ fn api_error_from_daemon_error(error: DaemonError) -> ApiError {
         DaemonError::Sqlx(error) => ("local_db_error", error.to_string()),
         DaemonError::SerdeJson(error) => ("invalid_json", error.to_string()),
         DaemonError::Reqwest(error) => ("server_request_failed", error.to_string()),
+        DaemonError::CredentialStore(error) => ("credential_store_failed", error.to_string()),
         DaemonError::Server(message) => ("server_sync_failed", message),
         DaemonError::Launchctl(message) => ("launchctl_failed", message),
         DaemonError::Ipc(message) => ("daemon_ipc_failed", message),
@@ -3499,6 +3593,8 @@ pub enum DaemonError {
     SerdeJson(#[from] serde_json::Error),
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
+    #[error(transparent)]
+    CredentialStore(#[from] CredentialStoreError),
     #[error("server sync error: {0}")]
     Server(String),
     #[error("launchctl error: {0}")]

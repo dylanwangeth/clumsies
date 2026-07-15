@@ -10,15 +10,14 @@ The database currently stores:
 
 - installation identity and schema version
 - Server URL and selected project configuration
-- access and refresh tokens
 - local drafts and ordered operations
 - synchronization status, failures, and Server draft identity
 - immutable Blob, Tree, and Commit metadata
 - installed organization and project Refs
 
-File permissions are owner-only. Token storage must move to macOS Keychain
-before production release; SQLite token persistence is not the desired final
-security boundary.
+File permissions are owner-only. Access and refresh tokens are stored as one
+Server-bound generic-password item in macOS Keychain. SQLite never persists
+either token, and daemon has no plaintext credential fallback.
 
 ## Desktop request path
 

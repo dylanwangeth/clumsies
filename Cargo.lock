@@ -557,6 +557,8 @@ dependencies = [
  "block2",
  "hex",
  "reqwest 0.13.4",
+ "security-framework",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "server",

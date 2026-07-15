@@ -15,7 +15,7 @@ use daemon::{
     DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
     DaemonMemoryCacheStatus, DaemonProjectConfigUpdateRequest, DaemonState, DaemonSyncRetryRequest,
     DaemonUpdateDraftOperation, DraftOperationSyncStatus, LaunchAgentConfig, LaunchAgentController,
-    LaunchAgentRuntimeStatus, SyncRetryChannel, SyncState,
+    LaunchAgentRuntimeStatus, ServerCredentials, SyncRetryChannel, SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -38,9 +38,11 @@ async fn health_initializes_local_database_and_stable_installation_id() {
     assert!(health.log_dir.ends_with("logs"));
     assert!(root.path().join("logs").is_dir());
 
-    let restarted = DaemonState::initialize(DaemonConfig::for_root(root.path()))
-        .await
-        .unwrap();
+    let restarted = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
     assert_eq!(restarted.daemon_installation_id(), first_id);
 }
 
@@ -62,10 +64,13 @@ async fn initialization_rejects_an_old_local_schema() {
         .unwrap();
     pool.close().await;
 
-    let error = DaemonState::initialize(DaemonConfig::for_root(root.path()))
-        .await
-        .err()
-        .unwrap();
+    let error = DaemonState::initialize_with_credential_store(
+        DaemonConfig::for_root(root.path()),
+        Arc::new(common::TestCredentialStore::default()),
+    )
+    .await
+    .err()
+    .unwrap();
 
     assert!(matches!(error, DaemonError::InvalidConfig(_)));
     assert!(error.to_string().contains("recreate the daemon database"));
@@ -553,7 +558,14 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
 
 #[tokio::test]
 async fn project_config_can_be_replaced_and_persists_across_restarts() {
-    let (root, _state, service) = common::test_daemon().await;
+    let root = tempfile::tempdir().unwrap();
+    let credential_store = common::TestCredentialStore::default();
+    let state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        credential_store.clone(),
+    )
+    .await;
+    let service = DaemonIpcService::new(state);
 
     let initial = service.project_config();
     assert_eq!(initial.server_url, "");
@@ -580,14 +592,39 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
     assert!(updated.has_refresh_token);
     assert!(updated.ready);
     assert!(updated.missing_fields.is_empty());
+    let stored_credentials = credential_store.credentials().unwrap();
+    assert_eq!(stored_credentials.server_url, "http://127.0.0.1:18080");
+    assert_eq!(stored_credentials.access_token, "secret-token");
+    assert_eq!(
+        stored_credentials.refresh_token.as_deref(),
+        Some("refresh-token")
+    );
+
+    let metadata_pool = sqlx::SqlitePool::connect(&format!(
+        "sqlite://{}",
+        root.path().join("local.db").display()
+    ))
+    .await
+    .unwrap();
+    let persisted_secret_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM daemon_meta
+         WHERE key IN ('project_config_access_token', 'project_config_refresh_token')",
+    )
+    .fetch_one(&metadata_pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted_secret_count, 0);
+    metadata_pool.close().await;
 
     let health = service.health().await;
     assert_eq!(health.server_url, "http://127.0.0.1:18080");
     assert_eq!(health.project_id.as_deref(), Some("prj_config"));
 
-    let restarted = DaemonState::initialize(DaemonConfig::for_root(root.path()))
-        .await
-        .unwrap();
+    let restarted = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        credential_store.clone(),
+    )
+    .await;
     let restarted_service = DaemonIpcService::new(restarted);
     let persisted = restarted_service.project_config();
     assert_eq!(persisted.server_url, "http://127.0.0.1:18080");
@@ -595,6 +632,115 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
     assert!(persisted.has_access_token);
     assert!(persisted.has_refresh_token);
     assert!(persisted.ready);
+
+    let signed_out = restarted_service
+        .replace_project_config(DaemonProjectConfigUpdateRequest {
+            server_url: "http://127.0.0.1:18080".to_owned(),
+            project_id: Some("prj_config".to_owned()),
+            access_token: None,
+            refresh_token: None,
+        })
+        .await
+        .unwrap();
+    assert!(!signed_out.has_access_token);
+    assert!(!signed_out.has_refresh_token);
+    assert!(credential_store.credentials().is_none());
+}
+
+#[tokio::test]
+async fn keychain_credentials_are_bound_to_the_configured_server() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = "https://current.example.com".to_owned();
+    config.project.project_id = Some("prj_current".to_owned());
+    let credential_store = common::TestCredentialStore::new(Some(ServerCredentials {
+        server_url: "https://previous.example.com".to_owned(),
+        access_token: "previous-access".to_owned(),
+        refresh_token: Some("previous-refresh".to_owned()),
+    }));
+
+    let state = common::initialize_daemon(config, credential_store.clone()).await;
+    let project_config = state.project_config_status();
+
+    assert_eq!(project_config.server_url, "https://current.example.com");
+    assert!(!project_config.has_access_token);
+    assert!(!project_config.has_refresh_token);
+    assert!(!project_config.ready);
+    assert!(credential_store.credentials().is_some());
+}
+
+#[tokio::test]
+async fn refresh_token_without_access_token_is_rejected_before_persistence() {
+    let root = tempfile::tempdir().unwrap();
+    let credential_store = common::TestCredentialStore::default();
+    let state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        credential_store.clone(),
+    )
+    .await;
+
+    let error = state
+        .replace_project_config(DaemonProjectConfigUpdateRequest {
+            server_url: "https://clumsies.example.com".to_owned(),
+            project_id: Some("prj_test".to_owned()),
+            access_token: None,
+            refresh_token: Some("orphan-refresh".to_owned()),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("without access_token"));
+    assert!(credential_store.credentials().is_none());
+    assert_eq!(state.project_config_status().server_url, "");
+}
+
+#[tokio::test]
+async fn credential_write_failure_does_not_change_project_metadata_or_runtime_state() {
+    let root = tempfile::tempdir().unwrap();
+    let credential_store = common::TestCredentialStore::default();
+    let state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        credential_store.clone(),
+    )
+    .await;
+    credential_store.set_fail_writes(true);
+
+    let error = state
+        .replace_project_config(DaemonProjectConfigUpdateRequest {
+            server_url: "https://clumsies.example.com".to_owned(),
+            project_id: Some("prj_test".to_owned()),
+            access_token: Some("access-secret".to_owned()),
+            refresh_token: Some("refresh-secret".to_owned()),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected credential write failure")
+    );
+    assert!(credential_store.credentials().is_none());
+    let project_config = state.project_config_status();
+    assert_eq!(project_config.server_url, "");
+    assert_eq!(project_config.project_id, None);
+    assert!(!project_config.has_access_token);
+
+    let metadata_pool = sqlx::SqlitePool::connect(&format!(
+        "sqlite://{}",
+        root.path().join("local.db").display()
+    ))
+    .await
+    .unwrap();
+    let persisted_config_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM daemon_meta
+         WHERE key IN ('project_config_server_url', 'project_config_project_id')",
+    )
+    .fetch_one(&metadata_pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted_config_count, 0);
+    metadata_pool.close().await;
 }
 
 #[tokio::test]
@@ -604,8 +750,7 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
     let mut config = DaemonConfig::for_root(root.path());
     config.project.server_url = server.url.clone();
     config.project.project_id = Some("prj_default".to_owned());
-    config.project.access_token = Some("test-token".to_owned());
-    let state = DaemonState::initialize(config).await.unwrap();
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
     let service = DaemonIpcService::new(state.clone());
 
     service
@@ -726,8 +871,7 @@ async fn failed_remote_projection_does_not_advance_the_event_cursor() {
     let mut config = DaemonConfig::for_root(root.path());
     config.project.server_url = format!("http://{address}");
     config.project.project_id = Some("prj_test".to_owned());
-    config.project.access_token = Some("test-token".to_owned());
-    let state = DaemonState::initialize(config).await.unwrap();
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
     let service = DaemonIpcService::new(state.clone());
 
     let error = service
@@ -784,8 +928,7 @@ async fn server_conflict_event_converges_into_local_draft_state() {
     let mut config = DaemonConfig::for_root(root.path());
     config.project.server_url = format!("http://{address}");
     config.project.project_id = Some("prj_conflict".to_owned());
-    config.project.access_token = Some("test-token".to_owned());
-    let state = DaemonState::initialize(config).await.unwrap();
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
     let service = DaemonIpcService::new(state);
 
     service
@@ -845,7 +988,7 @@ async fn queued_draft_syncs_after_project_config_is_set() {
     let mut config = DaemonConfig::for_root(root.path());
     config.sync.enabled = true;
     config.sync.interval = Duration::from_secs(60);
-    let state = DaemonState::initialize(config).await.unwrap();
+    let state = common::initialize_daemon(config, common::TestCredentialStore::default()).await;
     let worker = state.start_sync_worker().unwrap();
     let service = DaemonIpcService::new(state);
 
@@ -918,10 +1061,9 @@ async fn draft_operation_notifies_auto_sync_worker() {
     let mut config = DaemonConfig::for_root(root.path());
     config.project.server_url = server.url.clone();
     config.project.project_id = Some("prj_test".to_owned());
-    config.project.access_token = Some("test-token".to_owned());
     config.sync.enabled = true;
     config.sync.interval = Duration::from_secs(60);
-    let state = DaemonState::initialize(config).await.unwrap();
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
     let worker = state.start_sync_worker().unwrap();
     let service = DaemonIpcService::new(state);
 
@@ -967,8 +1109,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
     let mut config = DaemonConfig::for_root(root.path());
     config.project.server_url = server.url.clone();
     config.project.project_id = Some("prj_test".to_owned());
-    config.project.access_token = Some("test-token".to_owned());
-    let state = DaemonState::initialize(config).await.unwrap();
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
     let service = DaemonIpcService::new(state);
 
     let first = service
@@ -1162,8 +1303,9 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
     let mut config = DaemonConfig::for_root(root.path());
     config.project.server_url = server.url.clone();
     config.project.project_id = Some("prj_atomic".to_owned());
-    config.project.access_token = Some("fake-access-token".to_owned());
-    let service = DaemonIpcService::new(DaemonState::initialize(config).await.unwrap());
+    let (state, _) =
+        common::initialize_authenticated_daemon(config, "fake-access-token", None).await;
+    let service = DaemonIpcService::new(state);
 
     service
         .retry_sync(DaemonSyncRetryRequest {

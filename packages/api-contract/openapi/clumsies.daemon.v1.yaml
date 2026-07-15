@@ -111,8 +111,10 @@ components:
           type: [string, "null"]
         has_access_token:
           type: boolean
+          description: Whether the daemon loaded an access token from macOS Keychain.
         has_refresh_token:
           type: boolean
+          description: Whether the daemon loaded a refresh token from macOS Keychain.
         ready:
           type: boolean
         missing_fields:
@@ -130,8 +132,10 @@ components:
           type: [string, "null"]
         access_token:
           type: [string, "null"]
+          description: Written directly to macOS Keychain and never returned by daemon APIs.
         refresh_token:
           type: [string, "null"]
+          description: Written atomically with the access token to macOS Keychain and never returned.
     DaemonMemoryCacheRequest:
       type: object
       required: [project_id]

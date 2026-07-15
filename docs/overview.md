@@ -69,11 +69,12 @@ has moved.
 ## Current implementation boundary
 
 The Rust Server, generic organization OIDC, complete Public/Admin contracts,
-Desktop transport, local draft queue, refresh-token retry, reviewed Commit
-creation, daemon Commit synchronization, and atomic MCP authority generations
-are implemented. Real PostgreSQL tests cover merge-to-Commit, two-daemon
+Desktop transport, local draft queue, refresh-token retry, macOS Keychain
+credential storage, reviewed Commit creation, daemon Commit synchronization,
+user-resolvable stale conflicts, and atomic MCP authority generations are
+implemented. Real PostgreSQL tests cover merge-to-Commit, two-daemon
 convergence, restart recovery, and failure without Ref advancement.
 
 Open drafts are not yet composed with the immutable authority generation into
-one effective MCP read view. Type-aware conflict resolution, secure Keychain
-token storage, and production installation lifecycle also remain incomplete.
+one effective MCP read view. Type-aware automatic conflict resolution and the
+production installation lifecycle remain incomplete.

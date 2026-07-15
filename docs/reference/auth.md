@@ -65,9 +65,16 @@ loopback host, scheme, path, and query.
 Remote Server URLs used by Desktop must be HTTPS. Plain HTTP is accepted only
 for loopback development addresses.
 
-## Remaining hardening
+## Local credential storage
 
-The daemon currently persists its token pair in its owner-only local SQLite
-database. Moving those secrets to macOS Keychain is required before a production
-Desktop release. This is a known implementation gap, not an alternate supported
-credential mode.
+Daemon stores one generic-password item in macOS Keychain. The service is
+`io.github.lilhammerfun.clumsies`, the account is `server-session`, and the
+encrypted value contains the Server URL plus the access/refresh token pair. The
+Server URL binds the credentials to one endpoint; daemon refuses to load a
+Keychain session when it does not match the configured Server.
+
+SQLite stores only non-secret Server and project configuration. Login and token
+refresh replace the Keychain value as one record, while clearing the daemon
+session or an invalid refresh session deletes it. There is no SQLite or
+plaintext-file credential fallback. Tests inject an isolated credential store;
+a separately gated smoke test exercises the real macOS Keychain.
