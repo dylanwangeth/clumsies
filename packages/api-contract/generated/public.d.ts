@@ -874,26 +874,39 @@ export interface components {
         };
         RuleDetail: {
             rule: components["schemas"]["RuleMeta"];
-            body: string;
+            content: components["schemas"]["RuleContent"];
             etag: string;
         };
         ContextDetail: {
             context: components["schemas"]["ContextMeta"];
-            body: string;
+            content: string;
             etag: string;
         };
         WorkflowDetail: {
             workflow: components["schemas"]["WorkflowMeta"];
-            steps: components["schemas"]["WorkflowStep"][];
+            content: components["schemas"]["WorkflowContent"];
             etag: string;
         };
         MetapromptDetail: {
             metaprompt: components["schemas"]["MetapromptMeta"];
-            body: string;
+            content: string;
             etag: string;
+        };
+        RuleContent: {
+            applies_when: string;
+            constraint: string;
+            tags: string[];
+        };
+        WorkflowContent: {
+            description: string;
+            steps: components["schemas"]["WorkflowStep"][];
         };
         WorkflowStep: {
             order: number;
+            rule_id: string | null;
+            body: string | null;
+        };
+        WorkflowStepInput: {
             rule_id: string | null;
             body: string | null;
         };
@@ -956,9 +969,34 @@ export interface components {
         DraftOperationInput: {
             action: components["schemas"]["DraftOperationAction"];
             resource: components["schemas"]["DraftResourceRef"];
-            base_hash: string | null;
-            body?: string | null;
+            content?: components["schemas"]["DraftResourceContent"] | null;
             new_path?: string | null;
+        };
+        DraftResourceContent: components["schemas"]["ContextDraftContent"] | components["schemas"]["RuleDraftContent"] | components["schemas"]["WorkflowDraftContent"] | components["schemas"]["MetapromptDraftContent"];
+        ContextDraftContent: {
+            /** @enum {string} */
+            kind: "context";
+            content: string;
+        };
+        RuleDraftContent: {
+            /** @enum {string} */
+            kind: "rule";
+            name?: string | null;
+            applies_when?: string | null;
+            constraint: string;
+            tags?: string[] | null;
+        };
+        WorkflowDraftContent: {
+            /** @enum {string} */
+            kind: "workflow";
+            name?: string | null;
+            description: string;
+            steps: components["schemas"]["WorkflowStepInput"][];
+        };
+        MetapromptDraftContent: {
+            /** @enum {string} */
+            kind: "metaprompt";
+            content: string;
         };
         DraftResourceRef: {
             /** @enum {string} */

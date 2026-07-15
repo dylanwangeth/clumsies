@@ -1,20 +1,27 @@
 mod common;
 
 use daemon::{
-    DaemonConfig, DaemonCreateDraftOperation, DaemonDraftListQuery, DaemonDraftOperation,
-    DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
-    DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus,
-    DaemonMemoryCacheRequest, DaemonSyncRetryRequest, SyncRetryChannel, SyncState,
+    DaemonConfig, DaemonCreateDraftOperation, DaemonDraftContent, DaemonDraftListQuery,
+    DaemonDraftOperation, DaemonDraftOperationRecordSource, DaemonDraftOperationRequest,
+    DaemonDraftOperationSource, DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService,
+    DaemonLocalDraftStatus, DaemonMemoryCacheRequest, DaemonSyncRetryRequest, SyncRetryChannel,
+    SyncState,
 };
 use server::api::{
     CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
-    CreateReviewSubmissionRequest, DraftOperationAction, DraftOperationInput, DraftResourceKind,
-    DraftResourceRef, ResourceScope, ReviewDecision,
+    CreateReviewSubmissionRequest, DraftOperationAction, DraftOperationInput, DraftResourceContent,
+    DraftResourceKind, DraftResourceRef, ResourceScope, ReviewDecision,
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres;
+
+fn context_content(content: &str) -> DaemonDraftContent {
+    DaemonDraftContent::Context {
+        content: content.to_owned(),
+    }
+}
 
 #[tokio::test]
 async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
@@ -91,7 +98,7 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "context/from-daemon.md".to_owned(),
-                    body: "# Synced\n\nCreated through the local daemon.".to_owned(),
+                    content: context_content("# Synced\n\nCreated through the local daemon."),
                     description: Some("Real Server integration".to_owned()),
                 }),
                 update: None,
@@ -145,8 +152,10 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
         .unwrap();
     assert_eq!(draft.operations.len(), 1);
     assert_eq!(
-        draft.operations[0].input.body.as_deref(),
-        Some("# Synced\n\nCreated through the local daemon.")
+        draft.operations[0].input.content,
+        Some(DraftResourceContent::Context {
+            content: "# Synced\n\nCreated through the local daemon.".to_owned(),
+        })
     );
 
     let review = repository
@@ -199,7 +208,7 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "context/from-daemon.md".to_owned(),
-                    body: "# Revised\n\nEdited after the rejected review.".to_owned(),
+                    content: context_content("# Revised\n\nEdited after the rejected review."),
                     description: Some("Rejected review revision".to_owned()),
                 }),
                 update: None,
@@ -324,7 +333,7 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "context/converged.md".to_owned(),
-                    body: "First installation".to_owned(),
+                    content: context_content("First installation"),
                     description: None,
                 }),
                 update: None,
@@ -370,8 +379,8 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
             .create
             .as_ref()
             .unwrap()
-            .body,
-        "First installation"
+            .content,
+        context_content("First installation")
     );
 
     service_b
@@ -384,7 +393,7 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "context/converged.md".to_owned(),
-                    body: "Second installation".to_owned(),
+                    content: context_content("Second installation"),
                     description: None,
                 }),
                 update: None,
@@ -432,8 +441,8 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
             .create
             .as_ref()
             .unwrap()
-            .body,
-        "Second installation"
+            .content,
+        context_content("Second installation")
     );
 
     service_a
@@ -581,8 +590,9 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
                         id: None,
                         path: Some("context/commit-sync.md".to_owned()),
                     },
-                    base_hash: None,
-                    body: Some("# Commit sync\n\nInstalled from an immutable Commit.".to_owned()),
+                    content: Some(DraftResourceContent::Context {
+                        content: "# Commit sync\n\nInstalled from an immutable Commit.".to_owned(),
+                    }),
                     new_path: None,
                 }],
             },
@@ -693,7 +703,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "context/next.md".to_owned(),
-                    body: "Uses the installed Ref as its base.".to_owned(),
+                    content: context_content("Uses the installed Ref as its base."),
                     description: None,
                 }),
                 update: None,

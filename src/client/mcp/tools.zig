@@ -564,15 +564,59 @@ fn handleStore(
     };
     if (try validateStoreOperation(allocator, store_resource, parsed, op_args)) |result| return result;
 
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const daemon_op = try daemonDraftOperationValue(
+        arena.allocator(),
+        store_resource,
+        parsed,
+        op_args,
+        .{ .object = tagged_op },
+    );
     const daemon_payload = try daemon_ipc.storeDraftOperationPayloadJson(
         allocator,
         session.ws_id,
         daemonResourceName(store_resource),
-        .{ .object = tagged_op },
+        daemon_op,
     );
     defer allocator.free(daemon_payload);
 
     return try tool_result.buildSuccessResult(allocator, daemon_payload);
+}
+
+fn daemonDraftOperationValue(
+    allocator: std.mem.Allocator,
+    resource: StoreResource,
+    op: DraftOp,
+    args: std.json.ObjectMap,
+    original: std.json.Value,
+) !std.json.Value {
+    if (op != .create and op != .update) return original;
+
+    const body = requiredString(args, "body") orelse return error.InvalidParams;
+    var content: std.json.ObjectMap = .empty;
+    try content.put(allocator, "kind", .{ .string = daemonResourceName(resource) });
+    switch (resource) {
+        .context, .metaprompt => try content.put(allocator, "content", .{ .string = body }),
+        .rule => try content.put(allocator, "constraint", .{ .string = body }),
+    }
+
+    var details: std.json.ObjectMap = .empty;
+    if (op == .create) {
+        const path = requiredString(args, "path") orelse return error.InvalidParams;
+        try details.put(allocator, "path", .{ .string = path });
+    } else {
+        const id = requiredString(args, "id") orelse return error.InvalidParams;
+        try details.put(allocator, "id", .{ .string = id });
+    }
+    try details.put(allocator, "content", .{ .object = content });
+    if (args.get("description")) |description| {
+        try details.put(allocator, "description", description);
+    }
+
+    var tagged: std.json.ObjectMap = .empty;
+    try tagged.put(allocator, draftOpName(op), .{ .object = details });
+    return .{ .object = tagged };
 }
 
 fn parseStoreResource(resource: []const u8) ?StoreResource {
@@ -842,7 +886,7 @@ test "store validation rejects metaprompt rename before daemon call" {
     try testing.expect(std.mem.indexOf(u8, result, "mpf cannot be renamed") != null);
 }
 
-test "store request keeps MCP operation shape for daemon" {
+test "store request translates MCP text into typed daemon content" {
     const parsed = try std.json.parseFromSlice(
         std.json.Value,
         testing.allocator,
@@ -852,11 +896,21 @@ test "store request keeps MCP operation shape for daemon" {
     );
     defer parsed.deinit();
 
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const daemon_op = try daemonDraftOperationValue(
+        arena.allocator(),
+        .metaprompt,
+        .create,
+        parsed.value.object.get("create").?.object,
+        parsed.value,
+    );
+
     const json = try daemon_ipc.storeDraftOperationRequestJsonAlloc(
         testing.allocator,
         "prj_test",
         daemonResourceName(.metaprompt),
-        parsed.value,
+        daemon_op,
     );
     defer testing.allocator.free(json);
 
@@ -866,6 +920,9 @@ test "store request keeps MCP operation shape for daemon" {
     try testing.expect(std.mem.indexOf(u8, json, "\"resource\":\"metaprompt\"") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"source\":\"mcp_store\"") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"create\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"kind\":\"metaprompt\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"content\":\"body\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"body\":") == null);
 }
 
 test "discoverResultNames caps recorded names" {

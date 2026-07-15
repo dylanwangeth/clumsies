@@ -42,7 +42,7 @@ describe("daemon API client", () => {
       op: {
         create: {
           path: "context/new.md",
-          body: "# New",
+          content: { kind: "context", content: "# New" },
         },
       },
       source: "desktop",

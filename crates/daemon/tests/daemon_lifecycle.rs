@@ -9,7 +9,7 @@ use axum::{Json, Router};
 use daemon::{
     APP_BUNDLE_IDENTIFIER, CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL,
     DAEMON_MACH_SERVICE_NAME, DaemonConfig, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
-    DaemonDiscardDraftOperation, DaemonDraftListQuery, DaemonDraftOperation,
+    DaemonDiscardDraftOperation, DaemonDraftContent, DaemonDraftListQuery, DaemonDraftOperation,
     DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
     DaemonDraftResourceKind, DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest,
     DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
@@ -23,6 +23,21 @@ use sha2::{Digest, Sha256};
 
 const COMMIT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const COMMIT_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+fn context_content(content: &str) -> DaemonDraftContent {
+    DaemonDraftContent::Context {
+        content: content.to_owned(),
+    }
+}
+
+fn rule_content(constraint: &str) -> DaemonDraftContent {
+    DaemonDraftContent::Rule {
+        name: None,
+        applies_when: None,
+        constraint: constraint.to_owned(),
+        tags: None,
+    }
+}
 
 #[tokio::test]
 async fn health_initializes_local_database_and_stable_installation_id() {
@@ -219,7 +234,7 @@ async fn draft_operation_is_written_to_local_queue_and_visible_in_sync_status() 
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/architecture.md".to_owned(),
-                    body: "Initial context".to_owned(),
+                    content: context_content("Initial context"),
                     description: Some("seed project context".to_owned()),
                 }),
                 update: None,
@@ -261,7 +276,7 @@ async fn draft_operation_service_method_writes_local_queue_without_http() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/ipc.md".to_owned(),
-                    body: "Created through daemon service".to_owned(),
+                    content: context_content("Created through daemon service"),
                     description: None,
                 }),
                 update: None,
@@ -361,7 +376,7 @@ async fn ipc_dispatch_routes_the_complete_daemon_api() {
                 op: DaemonDraftOperation {
                     create: Some(DaemonCreateDraftOperation {
                         path: "docs/ipc-dispatch.md".to_owned(),
-                        body: "Created through IPC dispatch".to_owned(),
+                        content: context_content("Created through IPC dispatch"),
                         description: None,
                     }),
                     update: None,
@@ -425,7 +440,10 @@ async fn mcp_store_envelope_matches_the_daemon_contract() {
                 "op": {
                     "create": {
                         "path": "notes/from-mcp.md",
-                        "body": "Stored through the Zig MCP envelope"
+                        "content": {
+                            "kind": "context",
+                            "content": "Stored through the Zig MCP envelope"
+                        }
                     }
                 },
                 "source": "mcp_store"
@@ -471,7 +489,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/local.md".to_owned(),
-                    body: "Local draft".to_owned(),
+                    content: context_content("Local draft"),
                     description: None,
                 }),
                 update: None,
@@ -495,7 +513,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
                 create: None,
                 update: Some(DaemonUpdateDraftOperation {
                     id: created.draft_id.clone(),
-                    body: "Local draft v2".to_owned(),
+                    content: context_content("Local draft v2"),
                     description: None,
                 }),
                 rename: None,
@@ -538,16 +556,26 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
         DraftOperationSyncStatus::Queued
     );
     assert_eq!(
-        detail.operations[0].operation.create.as_ref().unwrap().body,
-        "Local draft"
+        detail.operations[0]
+            .operation
+            .create
+            .as_ref()
+            .unwrap()
+            .content,
+        context_content("Local draft")
     );
     assert_eq!(
         detail.operations[1].source,
         DaemonDraftOperationRecordSource::Cli
     );
     assert_eq!(
-        detail.operations[1].operation.update.as_ref().unwrap().body,
-        "Local draft v2"
+        detail.operations[1]
+            .operation
+            .update
+            .as_ref()
+            .unwrap()
+            .content,
+        context_content("Local draft v2")
     );
 
     assert!(matches!(
@@ -765,7 +793,7 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/sync.md".to_owned(),
-                    body: "Sync me".to_owned(),
+                    content: context_content("Sync me"),
                     description: None,
                 }),
                 update: None,
@@ -816,8 +844,8 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
             .create
             .as_ref()
             .unwrap()
-            .body,
-        "Remote revision"
+            .content,
+        context_content("Remote revision")
     );
 
     let pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
@@ -853,7 +881,11 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
     assert_eq!(requests[0]["resource"]["kind"], "context");
     assert_eq!(requests[0]["resource"]["path"], "docs/sync.md");
     assert_eq!(requests[0]["operations"][0]["action"], "create");
-    assert_eq!(requests[0]["operations"][0]["body"], "Sync me");
+    assert_eq!(requests[0]["operations"][0]["content"]["kind"], "context");
+    assert_eq!(
+        requests[0]["operations"][0]["content"]["content"],
+        "Sync me"
+    );
 }
 
 #[tokio::test]
@@ -973,8 +1005,8 @@ async fn server_conflict_event_converges_into_local_draft_state() {
             .update
             .as_ref()
             .unwrap()
-            .body,
-        "Resolved content"
+            .content,
+        context_content("Resolved content")
     );
     let sync = service.sync_status().await.unwrap();
     assert_eq!(sync.conflict_count, 0);
@@ -1002,7 +1034,7 @@ async fn queued_draft_syncs_after_project_config_is_set() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/later-config.md".to_owned(),
-                    body: "sync after config".to_owned(),
+                    content: context_content("sync after config"),
                     description: None,
                 }),
                 update: None,
@@ -1049,7 +1081,10 @@ async fn queued_draft_syncs_after_project_config_is_set() {
     assert_eq!(requests.len(), 1);
     assert!(requests[0].get("author_user_id").is_none());
     assert_eq!(requests[0]["project_id"], "prj_late");
-    assert_eq!(requests[0]["operations"][0]["body"], "sync after config");
+    assert_eq!(
+        requests[0]["operations"][0]["content"]["content"],
+        "sync after config"
+    );
     drop(requests);
     worker.abort();
 }
@@ -1077,7 +1112,7 @@ async fn draft_operation_notifies_auto_sync_worker() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/auto.md".to_owned(),
-                    body: "automatic".to_owned(),
+                    content: context_content("automatic"),
                     description: None,
                 }),
                 update: None,
@@ -1097,7 +1132,10 @@ async fn draft_operation_notifies_auto_sync_worker() {
 
     let requests = server.create_requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0]["operations"][0]["body"], "automatic");
+    assert_eq!(
+        requests[0]["operations"][0]["content"]["content"],
+        "automatic"
+    );
     drop(requests);
     worker.abort();
 }
@@ -1122,7 +1160,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/batch.md".to_owned(),
-                    body: "one".to_owned(),
+                    content: context_content("one"),
                     description: None,
                 }),
                 update: None,
@@ -1162,7 +1200,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/batch.md".to_owned(),
-                    body: "two".to_owned(),
+                    content: context_content("two"),
                     description: None,
                 }),
                 update: None,
@@ -1243,7 +1281,10 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
         batches[0]["operations"][0]["operation"]["resource"]["path"],
         "docs/batch.md"
     );
-    assert_eq!(batches[0]["operations"][0]["operation"]["body"], "two");
+    assert_eq!(
+        batches[0]["operations"][0]["operation"]["content"]["content"],
+        "two"
+    );
     drop(batches);
 
     let deletes = server.delete_requests.lock().unwrap();
@@ -1267,7 +1308,7 @@ async fn draft_operation_rejects_multiple_operation_variants() {
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "rules/a.md".to_owned(),
-                    body: "Rule".to_owned(),
+                    content: rule_content("Rule"),
                     description: None,
                 }),
                 update: None,
@@ -1751,8 +1792,10 @@ async fn fake_get_draft(
                         "id": null,
                         "path": "docs/remote.md"
                     },
-                    "base_hash": null,
-                    "body": "Remote base",
+                    "content": {
+                        "kind": "context",
+                        "content": "Remote base"
+                    },
                     "new_path": null
                 }]
             })
@@ -1775,8 +1818,7 @@ async fn fake_get_draft(
                 "operation_id": "dop_initial",
                 "action": initial_operation["action"],
                 "resource": initial_operation["resource"],
-                "base_hash": initial_operation["base_hash"],
-                "body": initial_operation["body"],
+                "content": initial_operation["content"],
                 "new_path": initial_operation["new_path"],
                 "created_at": "2026-07-08T00:00:00Z"
             },
@@ -1784,8 +1826,10 @@ async fn fake_get_draft(
                 "operation_id": "dop_remote",
                 "action": "create",
                 "resource": create_request["resource"],
-                "base_hash": null,
-                "body": "Remote revision",
+                "content": {
+                    "kind": "context",
+                    "content": "Remote revision"
+                },
                 "new_path": null,
                 "created_at": "2026-07-08T00:01:00Z"
             }
@@ -1957,7 +2001,10 @@ async fn fake_conflicted_draft(
                         "id": "ctx_conflict",
                         "path": "docs/conflict.md"
                     },
-                    "body": "Resolved content",
+                    "content": {
+                        "kind": "context",
+                        "content": "Resolved content"
+                    },
                     "new_path": null,
                     "created_at": "2026-07-15T00:02:00Z"
                 }
@@ -1991,7 +2038,10 @@ async fn fake_conflicted_draft(
                     "id": "ctx_conflict",
                     "path": "docs/conflict.md"
                 },
-                "body": "Draft content",
+                "content": {
+                    "kind": "context",
+                    "content": "Draft content"
+                },
                 "new_path": null,
                 "created_at": "2026-07-15T00:00:30Z"
             }

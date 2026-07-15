@@ -33,7 +33,7 @@ pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 9;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 10;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
@@ -2134,8 +2134,7 @@ fn map_daemon_operation_to_server(
                 id: None,
                 path: Some(create.path.clone()),
             },
-            base_hash: None,
-            body: Some(create.body.clone()),
+            content: Some(create.content.clone()),
             new_path: None,
         }));
     }
@@ -2148,8 +2147,7 @@ fn map_daemon_operation_to_server(
                 id: Some(update.id.clone()),
                 path: None,
             },
-            base_hash: None,
-            body: Some(update.body.clone()),
+            content: Some(update.content.clone()),
             new_path: None,
         }));
     }
@@ -2162,8 +2160,7 @@ fn map_daemon_operation_to_server(
                 id: Some(rename.id.clone()),
                 path: None,
             },
-            base_hash: None,
-            body: None,
+            content: None,
             new_path: Some(rename.new_path.clone()),
         }));
     }
@@ -2176,8 +2173,7 @@ fn map_daemon_operation_to_server(
                 id: Some(delete.id.clone()),
                 path: None,
             },
-            base_hash: None,
-            body: None,
+            content: None,
             new_path: None,
         }));
     }
@@ -2585,14 +2581,20 @@ fn map_server_operation_to_daemon(
                     .path
                     .clone()
                     .ok_or_else(|| missing("path"))?,
-                body: operation.body.clone().unwrap_or_default(),
+                content: operation
+                    .content
+                    .clone()
+                    .ok_or_else(|| missing("content"))?,
                 description: None,
             });
         }
         ServerDraftOperationAction::Update => {
             mapped.update = Some(DaemonUpdateDraftOperation {
                 id: operation.resource.id.clone().ok_or_else(|| missing("id"))?,
-                body: operation.body.clone().unwrap_or_default(),
+                content: operation
+                    .content
+                    .clone()
+                    .ok_or_else(|| missing("content"))?,
                 description: None,
             });
         }
@@ -2626,7 +2628,7 @@ fn draft_operations_match(left: &DaemonDraftOperation, right: &DaemonDraftOperat
                 create: Some(right),
                 ..
             },
-        ) => left.path == right.path && left.body == right.body,
+        ) => left.path == right.path && left.content == right.content,
         (
             DaemonDraftOperation {
                 update: Some(left), ..
@@ -2635,7 +2637,7 @@ fn draft_operations_match(left: &DaemonDraftOperation, right: &DaemonDraftOperat
                 update: Some(right),
                 ..
             },
-        ) => left.id == right.id && left.body == right.body,
+        ) => left.id == right.id && left.content == right.content,
         (
             DaemonDraftOperation {
                 rename: Some(left), ..
@@ -3464,15 +3466,43 @@ impl DaemonDraftOperation {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonCreateDraftOperation {
     pub path: String,
-    pub body: String,
+    pub content: DaemonDraftContent,
     pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonUpdateDraftOperation {
     pub id: String,
-    pub body: String,
+    pub content: DaemonDraftContent,
     pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DaemonDraftContent {
+    Context {
+        content: String,
+    },
+    Rule {
+        name: Option<String>,
+        applies_when: Option<String>,
+        constraint: String,
+        tags: Option<Vec<String>>,
+    },
+    Workflow {
+        name: Option<String>,
+        description: String,
+        steps: Vec<DaemonWorkflowStepInput>,
+    },
+    Metaprompt {
+        content: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonWorkflowStepInput {
+    pub rule_id: Option<String>,
+    pub body: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -3623,7 +3653,7 @@ struct ServerDraftProjectionOperation {
     operation_id: String,
     action: ServerDraftOperationAction,
     resource: ServerDraftResourceRef,
-    body: Option<String>,
+    content: Option<DaemonDraftContent>,
     new_path: Option<String>,
     created_at: String,
 }
@@ -3632,8 +3662,7 @@ struct ServerDraftProjectionOperation {
 struct ServerDraftOperationInput {
     action: ServerDraftOperationAction,
     resource: ServerDraftResourceRef,
-    base_hash: Option<String>,
-    body: Option<String>,
+    content: Option<DaemonDraftContent>,
     new_path: Option<String>,
 }
 

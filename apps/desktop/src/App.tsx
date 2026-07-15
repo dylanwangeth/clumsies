@@ -26,6 +26,7 @@ import {
   daemonDiscardOperationForDraft,
   daemonOperationsForDraft,
   DesktopBackend,
+  draftContentForDocument,
   mapBundle,
   mapReviewWithConflict,
   syncStateForDaemonDraft,
@@ -1386,8 +1387,7 @@ export function App() {
       const operations = review.operations.map((operation) => ({
         action: operation.action,
         resource: operation.resource,
-        base_hash: operation.baseHash,
-        body: operation.body,
+        content: operation.content,
         new_path: operation.newPath,
       }));
       if (resolvedContent !== null) {
@@ -1403,7 +1403,11 @@ export function App() {
         }
         operations[bodyOperationIndex] = {
           ...operations[bodyOperationIndex],
-          body: resolvedContent,
+          content: draftContentForDocument(
+            review.change.kind,
+            review.change.document,
+            resolvedContent,
+          ),
         };
       }
 
@@ -3598,7 +3602,7 @@ function WorkflowEditor({
     onChange((current) => ({
       ...current,
       steps: current.steps.map((step, stepIndex) =>
-        stepIndex === index ? value : step,
+        stepIndex === index ? { ruleId: null, body: value } : step,
       ),
     }));
   const moveStep = (index: number, direction: -1 | 1) =>
@@ -3635,14 +3639,14 @@ function WorkflowEditor({
       />
       <ol className="workflow-steps">
         {document.steps.map((step, index) => (
-          <li key={`${index}-${step.slice(0, 16)}`}>
+          <li key={`${index}-${(step.body ?? step.ruleId ?? "").slice(0, 16)}`}>
             <span>{index + 1}</span>
             <textarea
               aria-label={`Step ${index + 1}`}
               disabled={disabled}
               onChange={(event) => updateStep(index, event.target.value)}
               rows={2}
-              value={step}
+              value={step.body ?? (step.ruleId ? `Apply rule ${step.ruleId}` : "")}
             />
             <div className="step-actions">
               <IconButton
@@ -3677,7 +3681,10 @@ function WorkflowEditor({
         className="button add-step"
         disabled={disabled}
         onClick={() =>
-          onChange((current) => ({ ...current, steps: [...current.steps, ""] }))
+          onChange((current) => ({
+            ...current,
+            steps: [...current.steps, { ruleId: null, body: "" }],
+          }))
         }
         type="button"
       >
@@ -4203,11 +4210,18 @@ function ReviewConflictResolver({
   onResolve: (resolvedContent: string | null) => void;
   review: ReviewRecord;
 }) {
-  const draftContent = review.operations
+  const draftOperationContent = review.operations
     ?.slice()
     .reverse()
     .find((operation) => operation.action === "create" || operation.action === "update")
-    ?.body ?? null;
+    ?.content ?? null;
+  const draftContent = draftOperationContent
+    ? draftOperationContent.kind === "context" || draftOperationContent.kind === "metaprompt"
+      ? draftOperationContent.content
+      : draftOperationContent.kind === "rule"
+        ? draftOperationContent.constraint
+        : draftOperationContent.description
+    : null;
   const terminalOperation = review.operations?.[review.operations.length - 1] ?? null;
   const operationOnlyLabel = terminalOperation?.action === "rename"
     ? `Rename to ${terminalOperation.newPath ?? change.document.path}`

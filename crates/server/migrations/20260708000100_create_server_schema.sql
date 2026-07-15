@@ -144,6 +144,8 @@ CREATE TABLE resources (
     revision BIGINT NOT NULL DEFAULT 1,
     content_hash TEXT NOT NULL,
     body TEXT NOT NULL DEFAULT '',
+    applies_when TEXT NOT NULL DEFAULT '',
+    tags TEXT[] NOT NULL DEFAULT '{}',
     context_kind TEXT CHECK (context_kind IN ('file', 'note', 'decision', 'reference')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -246,9 +248,8 @@ CREATE TABLE draft_operations (
     resource_kind TEXT NOT NULL CHECK (resource_kind IN ('rule', 'context', 'workflow', 'metaprompt')),
     target_id TEXT,
     path TEXT,
-    base_hash TEXT,
     new_path TEXT,
-    body TEXT,
+    content JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

@@ -14,13 +14,35 @@ export type ResourceWorkingState =
   | "review"
   | "conflict";
 
+export type WorkflowStepDocument = {
+  ruleId: string | null;
+  body: string | null;
+};
+
+export type DraftResourceContent =
+  | { kind: "context"; content: string }
+  | {
+      kind: "rule";
+      name?: string | null;
+      applies_when?: string | null;
+      constraint: string;
+      tags?: string[] | null;
+    }
+  | {
+      kind: "workflow";
+      name?: string | null;
+      description: string;
+      steps: Array<{ rule_id: string | null; body: string | null }>;
+    }
+  | { kind: "metaprompt"; content: string };
+
 export type MemoryDocument = {
   title: string;
   path: string;
   body: string;
   appliesWhen: string;
   tags: string[];
-  steps: string[];
+  steps: WorkflowStepDocument[];
 };
 
 export type AuthorityResource = {
@@ -79,8 +101,7 @@ export type ReviewOperation = {
     id: string | null;
     path: string | null;
   };
-  baseHash: string | null;
-  body: string | null;
+  content: DraftResourceContent | null;
   newPath: string | null;
 };
 
@@ -158,7 +179,10 @@ const blankDocument = (kind: MemoryKind, suffix: string): MemoryDocument => ({
         : "",
   appliesWhen: kind === "Rules" ? "Describe when this rule applies." : "",
   tags: [],
-  steps: kind === "Workflows" ? ["Describe the first step"] : [],
+  steps:
+    kind === "Workflows"
+      ? [{ ruleId: null, body: "Describe the first step" }]
+      : [],
 });
 
 export function createBlankDraft(
@@ -231,7 +255,7 @@ export function cloneDocument(document: MemoryDocument): MemoryDocument {
   return {
     ...document,
     tags: [...document.tags],
-    steps: [...document.steps],
+    steps: document.steps.map((step) => ({ ...step })),
   };
 }
 
@@ -385,7 +409,10 @@ export function documentText(kind: MemoryKind, document: MemoryDocument): string
       "",
       document.body,
       "",
-      ...document.steps.map((step, index) => `${index + 1}. ${step}`),
+      ...document.steps.map(
+        (step, index) =>
+          `${index + 1}. ${step.body ?? (step.ruleId ? `Apply rule \`${step.ruleId}\`.` : "")}`,
+      ),
     ].join("\n");
   }
   return document.body;
@@ -533,7 +560,7 @@ const workflow = (
   body,
   appliesWhen: "",
   tags: [],
-  steps,
+  steps: steps.map((step) => ({ ruleId: null, body: step })),
 });
 
 const koalResource = (

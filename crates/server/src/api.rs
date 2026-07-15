@@ -400,11 +400,32 @@ pub struct DraftResourceRef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DraftResourceContent {
+    Context {
+        content: String,
+    },
+    Rule {
+        name: Option<String>,
+        applies_when: Option<String>,
+        constraint: String,
+        tags: Option<Vec<String>>,
+    },
+    Workflow {
+        name: Option<String>,
+        description: String,
+        steps: Vec<WorkflowStepInput>,
+    },
+    Metaprompt {
+        content: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftOperationInput {
     pub action: DraftOperationAction,
     pub resource: DraftResourceRef,
-    pub base_hash: Option<String>,
-    pub body: Option<String>,
+    pub content: Option<DraftResourceContent>,
     pub new_path: Option<String>,
 }
 
@@ -785,21 +806,21 @@ pub struct WorkflowListResponse {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuleDetail {
     pub rule: RuleMeta,
-    pub body: String,
+    pub content: RuleContent,
     pub etag: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextDetail {
     pub context: ContextMeta,
-    pub body: String,
+    pub content: String,
     pub etag: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowDetail {
     pub workflow: WorkflowMeta,
-    pub steps: Vec<WorkflowStep>,
+    pub content: WorkflowContent,
     pub etag: String,
 }
 
@@ -811,9 +832,28 @@ pub struct WorkflowStep {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowStepInput {
+    pub rule_id: Option<String>,
+    pub body: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuleContent {
+    pub applies_when: String,
+    pub constraint: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowContent {
+    pub description: String,
+    pub steps: Vec<WorkflowStep>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MetapromptDetail {
     pub metaprompt: MetapromptMeta,
-    pub body: String,
+    pub content: String,
     pub etag: String,
 }
 
@@ -901,6 +941,17 @@ impl DraftResourceKind {
             Self::Rule => "rul",
             Self::Workflow => "wfl",
             Self::Metaprompt => "mpf",
+        }
+    }
+}
+
+impl DraftResourceContent {
+    pub fn kind(&self) -> DraftResourceKind {
+        match self {
+            Self::Context { .. } => DraftResourceKind::Context,
+            Self::Rule { .. } => DraftResourceKind::Rule,
+            Self::Workflow { .. } => DraftResourceKind::Workflow,
+            Self::Metaprompt { .. } => DraftResourceKind::Metaprompt,
         }
     }
 }

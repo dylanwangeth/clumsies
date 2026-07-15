@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction, types::Json};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -15,17 +15,19 @@ use crate::api::{
     CreateReviewSubmissionRequest, DeleteResult, Draft, DraftConflict, DraftDetail, DraftEvent,
     DraftEventListResponse, DraftEventType, DraftListResponse, DraftOperation,
     DraftOperationAction, DraftOperationBatchRequest, DraftOperationBatchResponse,
-    DraftOperationInput, DraftResourceKind, DraftResourceRef, DraftStatus, DraftSyncState,
-    DraftSyncStatus, MeResponse, Member, MemberListResponse, MemberStatus, MetapromptDetail,
-    MetapromptMeta, OrgRef, OrgRole, PageInfo, PersonalBundleDetail, PersonalBundleListResponse,
-    PersonalBundleMeta, PersonalBundleRequest, PersonalBundleUpdateRequest, Project,
-    ProjectListResponse, ProjectMember, ProjectMemberListResponse, ProjectOrgSelection, ProjectRef,
-    ProjectRole, Ref, ReplaceProjectOrgSelectionRequest, ResourceScope, Review, ReviewComment,
+    DraftOperationInput, DraftResourceContent, DraftResourceKind, DraftResourceRef, DraftStatus,
+    DraftSyncState, DraftSyncStatus, MeResponse, Member, MemberListResponse, MemberStatus,
+    MetapromptDetail, MetapromptMeta, OrgRef, OrgRole, PageInfo, PersonalBundleDetail,
+    PersonalBundleListResponse, PersonalBundleMeta, PersonalBundleRequest,
+    PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectMember,
+    ProjectMemberListResponse, ProjectOrgSelection, ProjectRef, ProjectRole, Ref,
+    ReplaceProjectOrgSelectionRequest, ResourceScope, Review, ReviewComment,
     ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse, ReviewMergeResult,
-    ReviewStatus, RuleDetail, RuleListResponse, RuleMeta, Tree, TreeEntry, TreeEntryKind,
-    TreeEntryScope, TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest,
-    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest, UserRef, WorkflowDetail,
-    WorkflowListResponse, WorkflowMeta, WorkflowStep,
+    ReviewStatus, RuleContent, RuleDetail, RuleListResponse, RuleMeta, Tree, TreeEntry,
+    TreeEntryKind, TreeEntryScope, TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest,
+    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest, UserRef,
+    WorkflowContent, WorkflowDetail, WorkflowListResponse, WorkflowMeta, WorkflowStep,
+    WorkflowStepInput,
 };
 use crate::auth::AuthPrincipal;
 
@@ -963,19 +965,13 @@ impl ServerRepository {
         })
     }
 
-    pub async fn create_org_resource(
+    pub async fn create_org_context(
         &self,
         org_id: &str,
-        kind: DraftResourceKind,
         path: &str,
         body: &str,
     ) -> Result<String, ServerError> {
-        if kind == DraftResourceKind::Metaprompt {
-            return Err(ServerError::InvalidRequest(
-                "metaprompt is not stored in resources".to_owned(),
-            ));
-        }
-        let resource_id = prefixed_id(kind.resource_id_prefix());
+        let resource_id = prefixed_id(DraftResourceKind::Context.resource_id_prefix());
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO resources (
@@ -986,12 +982,12 @@ impl ServerRepository {
         )
         .bind(&resource_id)
         .bind(org_id)
-        .bind(kind.as_str())
+        .bind(DraftResourceKind::Context.as_str())
         .bind(path)
         .bind(name_from_path(path))
         .bind(content_hash(body))
         .bind(body)
-        .bind(context_kind_for(kind))
+        .bind(context_kind_for(DraftResourceKind::Context))
         .execute(&mut *tx)
         .await?;
         let parent_commit_id = current_org_ref(&mut tx, org_id).await?;
@@ -2595,7 +2591,44 @@ fn validate_draft_operation_resource(
             "one draft cannot mix resource scopes or kinds".to_owned(),
         ));
     }
-    Ok(())
+    if operation
+        .content
+        .as_ref()
+        .is_some_and(|content| content.kind() != operation.resource.kind)
+    {
+        return Err(ServerError::InvalidRequest(
+            "draft content kind does not match its resource".to_owned(),
+        ));
+    }
+    let valid = match operation.action {
+        DraftOperationAction::Create => {
+            operation.resource.path.is_some()
+                && operation.content.is_some()
+                && operation.new_path.is_none()
+        }
+        DraftOperationAction::Update => {
+            (operation.resource.id.is_some() || operation.resource.path.is_some())
+                && operation.content.is_some()
+                && operation.new_path.is_none()
+        }
+        DraftOperationAction::Rename => {
+            (operation.resource.id.is_some() || operation.resource.path.is_some())
+                && operation.content.is_none()
+                && operation.new_path.is_some()
+        }
+        DraftOperationAction::Delete => {
+            (operation.resource.id.is_some() || operation.resource.path.is_some())
+                && operation.content.is_none()
+                && operation.new_path.is_none()
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(ServerError::InvalidRequest(
+            "draft operation fields do not match its action".to_owned(),
+        ))
+    }
 }
 
 async fn insert_draft_operation(
@@ -2607,9 +2640,9 @@ async fn insert_draft_operation(
     sqlx::query(
         "INSERT INTO draft_operations (
             operation_id, draft_id, action, resource_scope, resource_kind, target_id, path,
-            base_hash, new_path, body
+            new_path, content
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&operation_id)
     .bind(draft_id)
@@ -2618,9 +2651,8 @@ async fn insert_draft_operation(
     .bind(input.resource.kind.as_str())
     .bind(&input.resource.id)
     .bind(&input.resource.path)
-    .bind(&input.base_hash)
     .bind(&input.new_path)
-    .bind(&input.body)
+    .bind(input.content.as_ref().map(Json))
     .execute(&mut **tx)
     .await?;
     Ok(operation_id)
@@ -2973,7 +3005,11 @@ async fn load_rule_detail(
     let row = load_resource_detail_row(tx, rule_id, "rule", scope, org_id, project_id).await?;
     let rule = rule_meta_from_row(&row)?;
     Ok(RuleDetail {
-        body: row.try_get("body")?,
+        content: RuleContent {
+            applies_when: row.try_get("applies_when")?,
+            constraint: row.try_get("body")?,
+            tags: row.try_get("tags")?,
+        },
         etag: etag(row.try_get("revision")?),
         rule,
     })
@@ -2990,7 +3026,7 @@ async fn load_context_detail(
         load_resource_detail_row(tx, context_id, "context", scope, org_id, project_id).await?;
     let context = context_meta_from_row(&row)?;
     Ok(ContextDetail {
-        body: row.try_get("body")?,
+        content: row.try_get("body")?,
         etag: etag(row.try_get("revision")?),
         context,
     })
@@ -3008,9 +3044,12 @@ async fn load_workflow_detail(
     let workflow = workflow_meta_from_row(&row)?;
     let steps = load_workflow_steps(tx, workflow_id).await?;
     Ok(WorkflowDetail {
+        content: WorkflowContent {
+            description: row.try_get("body")?,
+            steps,
+        },
         etag: etag(row.try_get("revision")?),
         workflow,
-        steps,
     })
 }
 
@@ -3026,7 +3065,8 @@ async fn load_resource_detail_row(
         sqlx::query(
             "SELECT
                 resource_id, resource_kind, scope, project_id, path, name, status,
-                revision, content_hash, body, context_kind, octet_length(body) AS size,
+                revision, content_hash, body, applies_when, tags, context_kind,
+                octet_length(body) AS size,
                 updated_at
              FROM resources
              WHERE resource_id = $1
@@ -3045,7 +3085,8 @@ async fn load_resource_detail_row(
         sqlx::query(
             "SELECT
                 resource_id, resource_kind, scope, project_id, path, name, status,
-                revision, content_hash, body, context_kind, octet_length(body) AS size,
+                revision, content_hash, body, applies_when, tags, context_kind,
+                octet_length(body) AS size,
                 updated_at
              FROM resources
              WHERE resource_id = $1
@@ -3140,7 +3181,7 @@ async fn load_metaprompt_detail(
         updated_at: row.try_get("updated_at")?,
     };
     Ok(MetapromptDetail {
-        body: row.try_get("body")?,
+        content: row.try_get("body")?,
         etag: etag(row.try_get("revision")?),
         metaprompt,
     })
@@ -3331,8 +3372,8 @@ async fn load_draft_operations(
     draft_id: &str,
 ) -> Result<Vec<DraftOperation>, ServerError> {
     let rows = sqlx::query(
-        "SELECT operation_id, action, resource_scope, resource_kind, target_id, path, base_hash,
-                new_path, body, created_at
+        "SELECT operation_id, action, resource_scope, resource_kind, target_id, path,
+                new_path, content, created_at
          FROM draft_operations
          WHERE draft_id = $1
          ORDER BY created_at, operation_id",
@@ -3356,8 +3397,9 @@ async fn load_draft_operations(
                         id: row.try_get("target_id")?,
                         path: row.try_get("path")?,
                     },
-                    base_hash: row.try_get("base_hash")?,
-                    body: row.try_get("body")?,
+                    content: row
+                        .try_get::<Option<Json<DraftResourceContent>>, _>("content")?
+                        .map(|value| value.0),
                     new_path: row.try_get("new_path")?,
                 },
                 operation_id: row.try_get("operation_id")?,
@@ -3495,10 +3537,13 @@ fn materialize_draft_operations(
         match operation.input.action {
             DraftOperationAction::Create => {
                 materialized.resource.path = operation.input.resource.path.clone();
-                materialized.body = operation.input.body.clone();
+                materialized.content = operation.input.content.clone();
             }
             DraftOperationAction::Update => {
-                materialized.body = operation.input.body.clone();
+                materialized.content = merge_draft_contents(
+                    materialized.content.take(),
+                    operation.input.content.clone(),
+                )?;
             }
             DraftOperationAction::Rename => {
                 materialized.resource.path = operation.input.new_path.clone();
@@ -3507,6 +3552,53 @@ fn materialize_draft_operations(
         }
     }
     Ok(vec![materialized])
+}
+
+fn merge_draft_contents(
+    base: Option<DraftResourceContent>,
+    update: Option<DraftResourceContent>,
+) -> Result<Option<DraftResourceContent>, ServerError> {
+    match (base, update) {
+        (
+            Some(DraftResourceContent::Rule {
+                name: base_name,
+                applies_when: base_applies_when,
+                constraint: _,
+                tags: base_tags,
+            }),
+            Some(DraftResourceContent::Rule {
+                name,
+                applies_when,
+                constraint,
+                tags,
+            }),
+        ) => Ok(Some(DraftResourceContent::Rule {
+            name: name.or(base_name),
+            applies_when: applies_when.or(base_applies_when),
+            constraint,
+            tags: tags.or(base_tags),
+        })),
+        (
+            Some(DraftResourceContent::Workflow {
+                name: base_name, ..
+            }),
+            Some(DraftResourceContent::Workflow {
+                name,
+                description,
+                steps,
+            }),
+        ) => Ok(Some(DraftResourceContent::Workflow {
+            name: name.or(base_name),
+            description,
+            steps,
+        })),
+        (Some(base), Some(update)) if base.kind() != update.kind() => {
+            Err(ServerError::InvalidRequest(
+                "draft update content kind does not match its create operation".to_owned(),
+            ))
+        }
+        (_, update) => Ok(update),
+    }
 }
 
 async fn apply_resource_operation(
@@ -3522,14 +3614,17 @@ async fn apply_resource_operation(
             let path = operation.resource.path.as_ref().ok_or_else(|| {
                 ServerError::InvalidRequest("create operation requires path".to_owned())
             })?;
-            let body = operation.body.as_deref().unwrap_or_default();
+            let content = operation.content.as_ref().ok_or_else(|| {
+                ServerError::InvalidRequest("create operation requires content".to_owned())
+            })?;
+            let prepared = prepare_resource_content(operation.resource.kind, path, content, None)?;
             let resource_id = prefixed_id(operation.resource.kind.resource_id_prefix());
             sqlx::query(
                 "INSERT INTO resources (
                     resource_id, org_id, project_id, scope, resource_kind, path, name,
-                    status, revision, content_hash, body, context_kind
+                    status, revision, content_hash, body, applies_when, tags, context_kind
                  )
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', 1, $8, $9, $10)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', 1, $8, $9, $10, $11, $12)",
             )
             .bind(&resource_id)
             .bind(&org_id)
@@ -3537,42 +3632,77 @@ async fn apply_resource_operation(
             .bind(scope.as_str())
             .bind(operation.resource.kind.as_str())
             .bind(path)
-            .bind(name_from_path(path))
-            .bind(content_hash(body))
-            .bind(body)
+            .bind(&prepared.name)
+            .bind(content_hash(&prepared.blob_content))
+            .bind(&prepared.body)
+            .bind(&prepared.applies_when)
+            .bind(&prepared.tags)
             .bind(context_kind_for(operation.resource.kind))
             .execute(&mut **tx)
             .await?;
+            if operation.resource.kind == DraftResourceKind::Workflow {
+                replace_workflow_steps(
+                    tx,
+                    &resource_id,
+                    &org_id,
+                    resource_project_id,
+                    scope,
+                    &prepared.workflow_steps,
+                )
+                .await?;
+            }
         }
         DraftOperationAction::Update => {
             let resource =
                 load_target_resource(tx, &org_id, resource_project_id, &operation.resource).await?;
-            assert_base_hash(&resource, operation.base_hash.as_deref())?;
-            let body = operation.body.as_deref().ok_or_else(|| {
-                ServerError::InvalidRequest("update operation requires body".to_owned())
+            let content = operation.content.as_ref().ok_or_else(|| {
+                ServerError::InvalidRequest("update operation requires content".to_owned())
             })?;
+            let prepared = prepare_resource_content(
+                operation.resource.kind,
+                &resource.path,
+                content,
+                Some(&resource),
+            )?;
             sqlx::query(
                 "UPDATE resources
-                 SET body = $2, content_hash = $3, revision = revision + 1,
+                 SET name = $2, body = $3, applies_when = $4, tags = $5,
+                     content_hash = $6, revision = revision + 1,
                      status = 'active', updated_at = now()
                  WHERE resource_id = $1",
             )
             .bind(&resource.resource_id)
-            .bind(body)
-            .bind(content_hash(body))
+            .bind(&prepared.name)
+            .bind(&prepared.body)
+            .bind(&prepared.applies_when)
+            .bind(&prepared.tags)
+            .bind(content_hash(&prepared.blob_content))
             .execute(&mut **tx)
             .await?;
+            if operation.resource.kind == DraftResourceKind::Workflow {
+                replace_workflow_steps(
+                    tx,
+                    &resource.resource_id,
+                    &org_id,
+                    resource_project_id,
+                    scope,
+                    &prepared.workflow_steps,
+                )
+                .await?;
+            }
         }
         DraftOperationAction::Rename => {
             let resource =
                 load_target_resource(tx, &org_id, resource_project_id, &operation.resource).await?;
-            assert_base_hash(&resource, operation.base_hash.as_deref())?;
             let new_path = operation.new_path.as_ref().ok_or_else(|| {
                 ServerError::InvalidRequest("rename operation requires new_path".to_owned())
             })?;
             sqlx::query(
                 "UPDATE resources
-                 SET path = $2, name = $3, revision = revision + 1, updated_at = now()
+                 SET path = $2,
+                     name = CASE WHEN resource_kind = 'context' THEN $3 ELSE name END,
+                     revision = revision + 1,
+                     updated_at = now()
                  WHERE resource_id = $1",
             )
             .bind(&resource.resource_id)
@@ -3584,7 +3714,6 @@ async fn apply_resource_operation(
         DraftOperationAction::Delete => {
             let resource =
                 load_target_resource(tx, &org_id, resource_project_id, &operation.resource).await?;
-            assert_base_hash(&resource, operation.base_hash.as_deref())?;
             sqlx::query(
                 "UPDATE resources
                  SET status = 'archived', revision = revision + 1, updated_at = now()
@@ -3598,6 +3727,230 @@ async fn apply_resource_operation(
     Ok(())
 }
 
+struct PreparedResourceContent {
+    name: String,
+    body: String,
+    applies_when: String,
+    tags: Vec<String>,
+    workflow_steps: Vec<WorkflowStepInput>,
+    blob_content: String,
+}
+
+fn prepare_resource_content(
+    kind: DraftResourceKind,
+    path: &str,
+    content: &DraftResourceContent,
+    existing: Option<&TargetResource>,
+) -> Result<PreparedResourceContent, ServerError> {
+    if content.kind() != kind {
+        return Err(ServerError::InvalidRequest(
+            "draft content kind does not match its resource".to_owned(),
+        ));
+    }
+    match content {
+        DraftResourceContent::Context { content } => Ok(PreparedResourceContent {
+            name: existing
+                .map(|resource| resource.name.clone())
+                .unwrap_or_else(|| name_from_path(path)),
+            body: content.clone(),
+            applies_when: String::new(),
+            tags: Vec::new(),
+            workflow_steps: Vec::new(),
+            blob_content: content.clone(),
+        }),
+        DraftResourceContent::Rule {
+            name,
+            applies_when,
+            constraint,
+            tags,
+        } => {
+            let name = optional_non_empty(name.as_deref())
+                .map(ToOwned::to_owned)
+                .or_else(|| existing.map(|resource| resource.name.clone()))
+                .unwrap_or_else(|| name_from_path(path));
+            let applies_when = applies_when
+                .clone()
+                .or_else(|| existing.map(|resource| resource.applies_when.clone()))
+                .unwrap_or_default();
+            let tags = tags
+                .clone()
+                .map(normalize_tags)
+                .or_else(|| existing.map(|resource| resource.tags.clone()))
+                .unwrap_or_default();
+            let authority = RuleContent {
+                applies_when: applies_when.clone(),
+                constraint: constraint.clone(),
+                tags: tags.clone(),
+            };
+            let blob_content = rule_blob_content(&name, &authority)?;
+            Ok(PreparedResourceContent {
+                name,
+                body: constraint.clone(),
+                applies_when,
+                tags,
+                workflow_steps: Vec::new(),
+                blob_content,
+            })
+        }
+        DraftResourceContent::Workflow {
+            name,
+            description,
+            steps,
+        } => {
+            validate_workflow_step_shapes(steps)?;
+            let name = optional_non_empty(name.as_deref())
+                .map(ToOwned::to_owned)
+                .or_else(|| existing.map(|resource| resource.name.clone()))
+                .unwrap_or_else(|| name_from_path(path));
+            let authority = WorkflowContent {
+                description: description.clone(),
+                steps: ordered_workflow_steps(steps)?,
+            };
+            let blob_content = workflow_blob_content(&name, &authority)?;
+            Ok(PreparedResourceContent {
+                name,
+                body: description.clone(),
+                applies_when: String::new(),
+                tags: Vec::new(),
+                workflow_steps: steps.clone(),
+                blob_content,
+            })
+        }
+        DraftResourceContent::Metaprompt { .. } => Err(ServerError::InvalidRequest(
+            "metaprompt content cannot be stored as a resource".to_owned(),
+        )),
+    }
+}
+
+fn optional_non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn normalize_tags(tags: Vec<String>) -> Vec<String> {
+    tags.into_iter()
+        .map(|tag| tag.trim().to_owned())
+        .filter(|tag| !tag.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn validate_workflow_step_shapes(steps: &[WorkflowStepInput]) -> Result<(), ServerError> {
+    for step in steps {
+        let has_rule = step
+            .rule_id
+            .as_deref()
+            .is_some_and(|rule_id| !rule_id.trim().is_empty());
+        let has_body = step
+            .body
+            .as_deref()
+            .is_some_and(|body| !body.trim().is_empty());
+        if has_rule == has_body {
+            return Err(ServerError::InvalidRequest(
+                "workflow step must contain exactly one of rule_id or body".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ordered_workflow_steps(steps: &[WorkflowStepInput]) -> Result<Vec<WorkflowStep>, ServerError> {
+    steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            Ok(WorkflowStep {
+                order: i32::try_from(index + 1).map_err(|_| {
+                    ServerError::InvalidRequest("workflow has too many steps".to_owned())
+                })?,
+                rule_id: step.rule_id.clone(),
+                body: step.body.clone(),
+            })
+        })
+        .collect()
+}
+
+async fn replace_workflow_steps(
+    tx: &mut Transaction<'_, Postgres>,
+    workflow_id: &str,
+    org_id: &str,
+    project_id: Option<&str>,
+    scope: ResourceScope,
+    steps: &[WorkflowStepInput],
+) -> Result<(), ServerError> {
+    sqlx::query("DELETE FROM workflow_steps WHERE resource_id = $1")
+        .bind(workflow_id)
+        .execute(&mut **tx)
+        .await?;
+    for (index, step) in steps.iter().enumerate() {
+        if let Some(rule_id) = step.rule_id.as_deref() {
+            validate_workflow_rule_reference(tx, org_id, project_id, scope, rule_id).await?;
+        }
+        sqlx::query(
+            "INSERT INTO workflow_steps (resource_id, step_order, rule_id, body)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(workflow_id)
+        .bind(
+            i32::try_from(index + 1).map_err(|_| {
+                ServerError::InvalidRequest("workflow has too many steps".to_owned())
+            })?,
+        )
+        .bind(&step.rule_id)
+        .bind(&step.body)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn validate_workflow_rule_reference(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    project_id: Option<&str>,
+    workflow_scope: ResourceScope,
+    rule_id: &str,
+) -> Result<(), ServerError> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM resources r
+            WHERE r.resource_id = $1 AND r.org_id = $2 AND r.resource_kind = 'rule'
+              AND r.status = 'active'
+              AND (
+                ($3 = 'org' AND r.scope = 'org')
+                OR (
+                    $3 = 'project'
+                    AND (
+                        (r.scope = 'project' AND r.project_id = $4)
+                        OR (
+                            r.scope = 'org'
+                            AND EXISTS(
+                                SELECT 1
+                                FROM project_org_resource_selections s
+                                WHERE s.project_id = $4 AND s.resource_id = r.resource_id
+                            )
+                        )
+                    )
+                )
+              )
+         )",
+    )
+    .bind(rule_id)
+    .bind(org_id)
+    .bind(workflow_scope.as_str())
+    .bind(project_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(ServerError::InvalidRequest(format!(
+            "workflow references unavailable rule: {rule_id}"
+        )))
+    }
+}
+
 async fn apply_metaprompt_operation(
     tx: &mut Transaction<'_, Postgres>,
     project_id: &str,
@@ -3607,7 +3960,7 @@ async fn apply_metaprompt_operation(
     let org_id = project_org_id(tx, project_id).await?;
     let resource_project_id = (scope == ResourceScope::Project).then_some(project_id);
     let existing = sqlx::query(
-        "SELECT metaprompt_id, content_hash
+        "SELECT metaprompt_id
          FROM metaprompts
          WHERE scope = $1 AND org_id = $2
            AND (($1 = 'org' AND project_id IS NULL) OR project_id = $3)
@@ -3622,18 +3975,20 @@ async fn apply_metaprompt_operation(
 
     match operation.action {
         DraftOperationAction::Create | DraftOperationAction::Update => {
-            let body = operation.body.as_deref().ok_or_else(|| {
-                ServerError::InvalidRequest("metaprompt create/update requires body".to_owned())
-            })?;
-            if let Some(row) = existing {
-                let current_hash: String = row.try_get("content_hash")?;
-                if let Some(expected_hash) = operation.base_hash.as_deref()
-                    && expected_hash != current_hash
-                {
-                    return Err(ServerError::InvalidRequest(format!(
-                        "metaprompt hash conflict: expected {expected_hash}, actual {current_hash}"
-                    )));
+            let body = match operation.content.as_ref() {
+                Some(DraftResourceContent::Metaprompt { content }) => content,
+                Some(_) => {
+                    return Err(ServerError::InvalidRequest(
+                        "metaprompt operation has the wrong content kind".to_owned(),
+                    ));
                 }
+                None => {
+                    return Err(ServerError::InvalidRequest(
+                        "metaprompt create/update requires content".to_owned(),
+                    ));
+                }
+            };
+            if let Some(row) = existing {
                 let metaprompt_id: String = row.try_get("metaprompt_id")?;
                 sqlx::query(
                     "UPDATE metaprompts
@@ -3666,14 +4021,6 @@ async fn apply_metaprompt_operation(
         }
         DraftOperationAction::Delete => {
             let row = existing.ok_or_else(|| ServerError::not_found("metaprompt", project_id))?;
-            let current_hash: String = row.try_get("content_hash")?;
-            if let Some(expected_hash) = operation.base_hash.as_deref()
-                && expected_hash != current_hash
-            {
-                return Err(ServerError::InvalidRequest(format!(
-                    "metaprompt hash conflict: expected {expected_hash}, actual {current_hash}"
-                )));
-            }
             let metaprompt_id: String = row.try_get("metaprompt_id")?;
             sqlx::query(
                 "UPDATE metaprompts
@@ -3711,7 +4058,7 @@ async fn create_project_commit(
         + 1;
     let mut entries = Vec::new();
     let project_rows = sqlx::query(
-        "SELECT resource_id, resource_kind, path, body
+        "SELECT resource_id, resource_kind, path, name, body, applies_when, tags
          FROM resources
          WHERE scope = 'project' AND project_id = $1 AND status = 'active'
          ORDER BY resource_kind, path",
@@ -3725,7 +4072,8 @@ async fn create_project_commit(
     }
 
     let selected_rows = sqlx::query(
-        "SELECT r.resource_id, r.resource_kind, r.path, r.body
+        "SELECT r.resource_id, r.resource_kind, r.path, r.name, r.body,
+                r.applies_when, r.tags
          FROM project_org_resource_selections s
          JOIN resources r ON r.resource_id = s.resource_id
          WHERE s.project_id = $1 AND r.status = 'active'
@@ -3798,7 +4146,7 @@ async fn create_org_commit(
     .unwrap_or(0)
         + 1;
     let rows = sqlx::query(
-        "SELECT resource_id, resource_kind, path, body
+        "SELECT resource_id, resource_kind, path, name, body, applies_when, tags
          FROM resources
          WHERE scope = 'org' AND org_id = $1 AND status = 'active'
          ORDER BY resource_kind, path",
@@ -3844,14 +4192,39 @@ async fn pending_resource_entry(
     project_id: Option<&str>,
     source: &str,
 ) -> Result<PendingTreeEntry, ServerError> {
+    let resource_id: String = row.try_get("resource_id")?;
     let body: String = row.try_get("body")?;
+    let resource_kind: String = row.try_get("resource_kind")?;
+    let blob_content = match resource_kind.as_str() {
+        "context" => body,
+        "rule" => rule_blob_content(
+            &row.try_get::<String, _>("name")?,
+            &RuleContent {
+                applies_when: row.try_get("applies_when")?,
+                constraint: body,
+                tags: row.try_get("tags")?,
+            },
+        )?,
+        "workflow" => workflow_blob_content(
+            &row.try_get::<String, _>("name")?,
+            &WorkflowContent {
+                description: body,
+                steps: load_workflow_steps(tx, &resource_id).await?,
+            },
+        )?,
+        other => {
+            return Err(ServerError::InvalidRequest(format!(
+                "unknown resource kind while creating Commit: {other}"
+            )));
+        }
+    };
     Ok(PendingTreeEntry {
-        item_id: row.try_get("resource_id")?,
-        resource_kind: row.try_get("resource_kind")?,
+        item_id: resource_id,
+        resource_kind,
         scope: scope.to_owned(),
         project_id: project_id.map(ToOwned::to_owned),
         path: Some(row.try_get("path")?),
-        blob_id: store_blob(tx, &body).await?,
+        blob_id: store_blob(tx, &blob_content).await?,
         source: source.to_owned(),
     })
 }
@@ -4135,7 +4508,10 @@ async fn load_project_org_selection(
 #[derive(Debug)]
 struct TargetResource {
     resource_id: String,
-    content_hash: String,
+    path: String,
+    name: String,
+    applies_when: String,
+    tags: Vec<String>,
 }
 
 async fn load_target_resource(
@@ -4146,10 +4522,11 @@ async fn load_target_resource(
 ) -> Result<TargetResource, ServerError> {
     let row = if let Some(id) = resource.id.as_deref() {
         sqlx::query(
-            "SELECT resource_id, content_hash
+            "SELECT resource_id, path, name, applies_when, tags
              FROM resources
              WHERE resource_id = $1 AND org_id = $2 AND scope = $3
                AND (($3 = 'org' AND project_id IS NULL) OR project_id = $4)
+               AND resource_kind = $5
                AND status = 'active'
              FOR UPDATE",
         )
@@ -4157,11 +4534,12 @@ async fn load_target_resource(
         .bind(org_id)
         .bind(resource.scope.as_str())
         .bind(project_id)
+        .bind(resource.kind.as_str())
         .fetch_optional(&mut **tx)
         .await?
     } else if let Some(path) = resource.path.as_deref() {
         sqlx::query(
-            "SELECT resource_id, content_hash
+            "SELECT resource_id, path, name, applies_when, tags
              FROM resources
              WHERE org_id = $1 AND scope = $2
                AND (($2 = 'org' AND project_id IS NULL) OR project_id = $3)
@@ -4186,21 +4564,11 @@ async fn load_target_resource(
 
     Ok(TargetResource {
         resource_id: row.try_get("resource_id")?,
-        content_hash: row.try_get("content_hash")?,
+        path: row.try_get("path")?,
+        name: row.try_get("name")?,
+        applies_when: row.try_get("applies_when")?,
+        tags: row.try_get("tags")?,
     })
-}
-
-fn assert_base_hash(resource: &TargetResource, base_hash: Option<&str>) -> Result<(), ServerError> {
-    match base_hash {
-        Some(base_hash) if base_hash == resource.content_hash => Ok(()),
-        Some(base_hash) => Err(ServerError::InvalidRequest(format!(
-            "resource hash conflict: expected {base_hash}, actual {}",
-            resource.content_hash
-        ))),
-        None => Err(ServerError::InvalidRequest(
-            "update, rename, and delete operations require base_hash".to_owned(),
-        )),
-    }
 }
 
 async fn project_org_id(
@@ -4735,6 +5103,59 @@ fn content_hash(body: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(body.as_bytes());
     format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+#[derive(serde::Serialize)]
+struct StructuredBlob<'a, T> {
+    format: &'static str,
+    content: &'a T,
+}
+
+#[derive(serde::Serialize)]
+struct RuleBlobContent<'a> {
+    name: &'a str,
+    applies_when: &'a str,
+    constraint: &'a str,
+    tags: &'a [String],
+}
+
+#[derive(serde::Serialize)]
+struct WorkflowBlobContent<'a> {
+    name: &'a str,
+    description: &'a str,
+    steps: &'a [WorkflowStep],
+}
+
+fn rule_blob_content(name: &str, content: &RuleContent) -> Result<String, ServerError> {
+    structured_blob_content(
+        "clumsies.rule.v1",
+        &RuleBlobContent {
+            name,
+            applies_when: &content.applies_when,
+            constraint: &content.constraint,
+            tags: &content.tags,
+        },
+    )
+}
+
+fn workflow_blob_content(name: &str, content: &WorkflowContent) -> Result<String, ServerError> {
+    structured_blob_content(
+        "clumsies.workflow.v1",
+        &WorkflowBlobContent {
+            name,
+            description: &content.description,
+            steps: &content.steps,
+        },
+    )
+}
+
+fn structured_blob_content<T: serde::Serialize>(
+    format: &'static str,
+    content: &T,
+) -> Result<String, ServerError> {
+    serde_json::to_string(&StructuredBlob { format, content }).map_err(|error| {
+        ServerError::InvalidRequest(format!("failed to encode {format} Blob: {error}"))
+    })
 }
 
 fn object_id(kind: &str, content: &[u8]) -> String {

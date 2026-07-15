@@ -487,6 +487,7 @@ fn validate_commit_payload(
             }
         } else {
             validate_resource_path(entry)?;
+            materialized_resource_content(entry.kind, &blobs[entry.blob_id.as_str()].content)?;
         }
     }
     if referenced_blobs.len() != blobs.len() {
@@ -957,9 +958,10 @@ fn materialize_payload(
         let blob = blobs.get(entry.blob_id.as_str()).ok_or_else(|| {
             DaemonError::Server(format!("Tree entry {} references a missing Blob", entry.id))
         })?;
+        let materialized_content = materialized_resource_content(entry.kind, &blob.content)?;
         let manifest_entry = MaterializedManifestEntry {
             path,
-            hash: content_hash(&blob.content),
+            hash: content_hash(&materialized_content),
             description: "",
         };
         let relative_output = match entry.kind {
@@ -987,7 +989,7 @@ fn materialize_payload(
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(output, blob.content.as_bytes())?;
+        std::fs::write(output, materialized_content.as_bytes())?;
     }
 
     std::fs::create_dir_all(root.join("cache/rule"))?;
@@ -1005,6 +1007,125 @@ fn materialize_payload(
         serde_json::to_vec_pretty(&manifest)?,
     )?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct StructuredRuleBlob {
+    format: String,
+    content: StructuredRuleContent,
+}
+
+#[derive(Deserialize)]
+struct StructuredRuleContent {
+    name: String,
+    applies_when: String,
+    constraint: String,
+    tags: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct StructuredWorkflowBlob {
+    format: String,
+    content: StructuredWorkflowContent,
+}
+
+#[derive(Deserialize)]
+struct StructuredWorkflowContent {
+    name: String,
+    description: String,
+    steps: Vec<StructuredWorkflowStep>,
+}
+
+#[derive(Deserialize)]
+struct StructuredWorkflowStep {
+    order: i32,
+    rule_id: Option<String>,
+    body: Option<String>,
+}
+
+fn materialized_resource_content(
+    kind: ServerTreeEntryKind,
+    blob: &str,
+) -> Result<String, DaemonError> {
+    match kind {
+        ServerTreeEntryKind::Context | ServerTreeEntryKind::Metaprompt => Ok(blob.to_owned()),
+        ServerTreeEntryKind::Rule => {
+            let decoded: StructuredRuleBlob = serde_json::from_str(blob).map_err(|error| {
+                DaemonError::Server(format!("Rule Blob is not canonical JSON: {error}"))
+            })?;
+            if decoded.format != "clumsies.rule.v1" {
+                return Err(DaemonError::Server(format!(
+                    "Unsupported Rule Blob format: {}",
+                    decoded.format
+                )));
+            }
+            Ok([
+                format!("# {}", decoded.content.name),
+                String::new(),
+                "## Applies when".to_owned(),
+                String::new(),
+                decoded.content.applies_when,
+                String::new(),
+                "## Constraint".to_owned(),
+                String::new(),
+                decoded.content.constraint,
+                String::new(),
+                format!(
+                    "Tags: {}",
+                    if decoded.content.tags.is_empty() {
+                        "None".to_owned()
+                    } else {
+                        decoded.content.tags.join(", ")
+                    }
+                ),
+            ]
+            .join("\n"))
+        }
+        ServerTreeEntryKind::Workflow => {
+            let decoded: StructuredWorkflowBlob = serde_json::from_str(blob).map_err(|error| {
+                DaemonError::Server(format!("Workflow Blob is not canonical JSON: {error}"))
+            })?;
+            if decoded.format != "clumsies.workflow.v1" {
+                return Err(DaemonError::Server(format!(
+                    "Unsupported Workflow Blob format: {}",
+                    decoded.format
+                )));
+            }
+            let mut lines = vec![
+                format!("# {}", decoded.content.name),
+                String::new(),
+                decoded.content.description,
+            ];
+            for (index, step) in decoded.content.steps.into_iter().enumerate() {
+                let expected_order = i32::try_from(index + 1).map_err(|_| {
+                    DaemonError::Server("Workflow Blob contains too many steps".to_owned())
+                })?;
+                if step.order != expected_order {
+                    return Err(DaemonError::Server(
+                        "Workflow Blob step order is not contiguous".to_owned(),
+                    ));
+                }
+                let text = match (step.rule_id, step.body) {
+                    (Some(rule_id), None) => format!("Apply rule `{rule_id}`."),
+                    (None, Some(body)) if !body.trim().is_empty() => body,
+                    _ => {
+                        return Err(DaemonError::Server(
+                            "Workflow Blob step must contain exactly one of rule_id or body"
+                                .to_owned(),
+                        ));
+                    }
+                };
+                if lines.len() == 3 {
+                    lines.push(String::new());
+                }
+                lines.push(format!("{}. {text}", index + 1));
+            }
+            Ok(lines.join("\n"))
+        }
+        ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
+            "Project organization selection cannot be materialized as memory".to_owned(),
+        )),
+    }
 }
 
 fn generation_root(cache_dir: &Path, project_id: &str, generation: &str) -> PathBuf {
@@ -1222,7 +1343,7 @@ mod tests {
                 None,
                 "coding/STYLE.md",
                 ServerTreeEntrySource::SelectedOrg,
-                "Rule body",
+                r#"{"format":"clumsies.rule.v1","content":{"name":"Style","applies_when":"While coding","constraint":"Rule body","tags":["coding"]}}"#,
             ),
             (
                 "workflow_test",
@@ -1231,7 +1352,7 @@ mod tests {
                 Some("prj_test"),
                 "workflow/CODING.md",
                 ServerTreeEntrySource::Project,
-                "Workflow body",
+                r#"{"format":"clumsies.workflow.v1","content":{"name":"Coding","description":"Workflow body","steps":[{"order":1,"rule_id":null,"body":"Run tests"}]}}"#,
             ),
             (
                 "mpf_test",
@@ -1290,11 +1411,11 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(root.path().join("cache/rule/coding/STYLE.md")).unwrap(),
-            "Rule body"
+            "# Style\n\n## Applies when\n\nWhile coding\n\n## Constraint\n\nRule body\n\nTags: coding"
         );
         assert_eq!(
             std::fs::read_to_string(root.path().join("cache/rule/workflow/CODING.md")).unwrap(),
-            "Workflow body"
+            "# Coding\n\nWorkflow body\n\n1. Run tests"
         );
         assert_eq!(
             std::fs::read_to_string(root.path().join("cache/META_PROMPT.md")).unwrap(),

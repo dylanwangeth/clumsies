@@ -118,7 +118,12 @@ describe("Desktop backend mapping", () => {
         draft_id: null,
         base_commit_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         resource: "context",
-        op: { create: { path: "context/new.md", body: "# First" } },
+        op: {
+          create: {
+            path: "context/new.md",
+            content: { kind: "context", content: "# First" },
+          },
+        },
         source: "desktop",
       },
     ]);
@@ -132,13 +137,18 @@ describe("Desktop backend mapping", () => {
         draft_id: "draft_local",
         base_commit_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         resource: "context",
-        op: { create: { path: "context/new.md", body: "# Second" } },
+        op: {
+          create: {
+            path: "context/new.md",
+            content: { kind: "context", content: "# Second" },
+          },
+        },
         source: "desktop",
       },
     ]);
   });
 
-  test("preserves rename and body updates for an existing resource", () => {
+  test("preserves rename and content updates for an existing resource", () => {
     const draft = createDraftFromResource(resource);
     draft.localId = "draft_local";
     draft.document.path = "context/renamed.md";
@@ -162,10 +172,59 @@ describe("Desktop backend mapping", () => {
         draft_id: "draft_local",
         base_commit_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         resource: "context",
-        op: { update: { id: "ctx_existing", body: "# Updated" } },
+        op: {
+          update: {
+            id: "ctx_existing",
+            content: { kind: "context", content: "# Updated" },
+          },
+        },
         source: "desktop",
       },
     ]);
+  });
+
+  test("serializes structured Rule and Workflow drafts without flattening fields", () => {
+    const ruleDraft = createBlankDraft(
+      "Project",
+      "Rules",
+      "prj_test",
+      "Test",
+    );
+    ruleDraft.document.path = "rules/coding";
+    ruleDraft.document.title = "Coding discipline";
+    ruleDraft.document.appliesWhen = "While changing production code";
+    ruleDraft.document.body = "Run focused tests.";
+    ruleDraft.document.tags = ["coding", "quality"];
+    expect(daemonOperationsForDraft(ruleDraft, null)[0]?.op.create?.content).toEqual({
+      kind: "rule",
+      name: "Coding discipline",
+      applies_when: "While changing production code",
+      constraint: "Run focused tests.",
+      tags: ["coding", "quality"],
+    });
+
+    const workflowDraft = createBlankDraft(
+      "Project",
+      "Workflows",
+      "prj_test",
+      "Test",
+    );
+    workflowDraft.document.path = "workflows/coding";
+    workflowDraft.document.title = "Coding workflow";
+    workflowDraft.document.body = "Prepare a production change.";
+    workflowDraft.document.steps = [
+      { ruleId: "rul_coding", body: null },
+      { ruleId: null, body: "Summarize verification evidence." },
+    ];
+    expect(daemonOperationsForDraft(workflowDraft, null)[0]?.op.create?.content).toEqual({
+      kind: "workflow",
+      name: "Coding workflow",
+      description: "Prepare a production change.",
+      steps: [
+        { rule_id: "rul_coding", body: null },
+        { rule_id: null, body: "Summarize verification evidence." },
+      ],
+    });
   });
 
   test("uses daemon operation status instead of optimistic success", () => {
@@ -191,7 +250,10 @@ describe("Desktop backend mapping", () => {
           local_operation_id: "op_failed",
           resource_kind: "context" as const,
           operation: {
-            create: { path: "context/new.md", body: "# New" },
+            create: {
+              path: "context/new.md",
+              content: { kind: "context", content: "# New" },
+            },
           },
           source: "desktop" as const,
           sync_status: "failed" as const,
@@ -257,8 +319,7 @@ describe("Desktop backend mapping", () => {
             id: "ctx_existing",
             path: "context/existing.md",
           },
-          base_hash: "hash-base",
-          body: null,
+          content: null,
           new_path: "context/renamed.md",
           created_at: "2026-07-15T00:00:30Z",
         },
@@ -271,8 +332,7 @@ describe("Desktop backend mapping", () => {
             id: "ctx_existing",
             path: "context/existing.md",
           },
-          base_hash: "hash-base",
-          body: "# Shared update",
+          content: { kind: "context", content: "# Shared update" },
           new_path: null,
           created_at: "2026-07-15T00:01:00Z",
         },
@@ -373,8 +433,7 @@ describe("Desktop backend mapping", () => {
           id: "ctx_existing",
           path: "context/existing.md",
         },
-        base_hash: "hash-base",
-        body: "# Draft",
+        content: { kind: "context", content: "# Draft" },
         new_path: null,
         created_at: "2026-07-15T00:01:00Z",
       }],
@@ -421,7 +480,10 @@ describe("Desktop backend mapping", () => {
 
     expect(review.version).toBe(4);
     expect(review.draftVersion).toBe(3);
-    expect(review.operations?.[0]?.body).toBe("# Draft");
+    expect(review.operations?.[0]?.content).toEqual({
+      kind: "context",
+      content: "# Draft",
+    });
     expect(review.decisionNote).toBe("Approved after conflict resolution.");
     expect(review.conflict).toEqual({
       baseCommitId,

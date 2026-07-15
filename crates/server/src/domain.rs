@@ -101,6 +101,25 @@ pub struct WorkflowStep {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowStepInput {
+    pub rule_id: Option<String>,
+    pub body: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuleContent {
+    pub applies_when: String,
+    pub constraint: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowContent {
+    pub description: String,
+    pub steps: Vec<WorkflowStep>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResourceRecord {
     pub resource_id: String,
     pub org_id: String,
@@ -184,11 +203,32 @@ pub struct DraftResourceRef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DraftResourceContent {
+    Context {
+        content: String,
+    },
+    Rule {
+        name: Option<String>,
+        applies_when: Option<String>,
+        constraint: String,
+        tags: Option<Vec<String>>,
+    },
+    Workflow {
+        name: Option<String>,
+        description: String,
+        steps: Vec<WorkflowStepInput>,
+    },
+    Metaprompt {
+        content: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftOperationInput {
     pub action: DraftOperationAction,
     pub resource: DraftResourceRef,
-    pub base_hash: Option<String>,
-    pub body: Option<String>,
+    pub content: Option<DraftResourceContent>,
     pub new_path: Option<String>,
 }
 

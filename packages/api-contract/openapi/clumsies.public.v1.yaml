@@ -1382,52 +1382,80 @@ components:
           $ref: "#/components/schemas/PageInfo"
     RuleDetail:
       type: object
-      required: [rule, body, etag]
+      required: [rule, content, etag]
       properties:
         rule:
           $ref: "#/components/schemas/RuleMeta"
-        body:
-          type: string
+        content:
+          $ref: "#/components/schemas/RuleContent"
         etag:
           type: string
     ContextDetail:
       type: object
-      required: [context, body, etag]
+      required: [context, content, etag]
       properties:
         context:
           $ref: "#/components/schemas/ContextMeta"
-        body:
+        content:
           type: string
         etag:
           type: string
     WorkflowDetail:
       type: object
-      required: [workflow, steps, etag]
+      required: [workflow, content, etag]
       properties:
         workflow:
           $ref: "#/components/schemas/WorkflowMeta"
-        steps:
-          type: array
-          items:
-            $ref: "#/components/schemas/WorkflowStep"
+        content:
+          $ref: "#/components/schemas/WorkflowContent"
         etag:
           type: string
     MetapromptDetail:
       type: object
-      required: [metaprompt, body, etag]
+      required: [metaprompt, content, etag]
       properties:
         metaprompt:
           $ref: "#/components/schemas/MetapromptMeta"
-        body:
+        content:
           type: string
         etag:
           type: string
+    RuleContent:
+      type: object
+      required: [applies_when, constraint, tags]
+      properties:
+        applies_when:
+          type: string
+        constraint:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+    WorkflowContent:
+      type: object
+      required: [description, steps]
+      properties:
+        description:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowStep"
     WorkflowStep:
       type: object
       required: [order, rule_id, body]
       properties:
         order:
           type: integer
+        rule_id:
+          type: [string, "null"]
+        body:
+          type: [string, "null"]
+    WorkflowStepInput:
+      type: object
+      required: [rule_id, body]
+      properties:
         rule_id:
           type: [string, "null"]
         body:
@@ -1567,18 +1595,74 @@ components:
               format: date-time
     DraftOperationInput:
       type: object
-      required: [action, resource, base_hash]
+      required: [action, resource]
       properties:
         action:
           $ref: "#/components/schemas/DraftOperationAction"
         resource:
           $ref: "#/components/schemas/DraftResourceRef"
-        base_hash:
-          type: [string, "null"]
-        body:
-          type: [string, "null"]
+        content:
+          oneOf:
+            - $ref: "#/components/schemas/DraftResourceContent"
+            - type: "null"
         new_path:
           type: [string, "null"]
+    DraftResourceContent:
+      oneOf:
+        - $ref: "#/components/schemas/ContextDraftContent"
+        - $ref: "#/components/schemas/RuleDraftContent"
+        - $ref: "#/components/schemas/WorkflowDraftContent"
+        - $ref: "#/components/schemas/MetapromptDraftContent"
+    ContextDraftContent:
+      type: object
+      required: [kind, content]
+      properties:
+        kind:
+          type: string
+          enum: [context]
+        content:
+          type: string
+    RuleDraftContent:
+      type: object
+      required: [kind, constraint]
+      properties:
+        kind:
+          type: string
+          enum: [rule]
+        name:
+          type: [string, "null"]
+        applies_when:
+          type: [string, "null"]
+        constraint:
+          type: string
+        tags:
+          type: [array, "null"]
+          items:
+            type: string
+    WorkflowDraftContent:
+      type: object
+      required: [kind, description, steps]
+      properties:
+        kind:
+          type: string
+          enum: [workflow]
+        name:
+          type: [string, "null"]
+        description:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowStepInput"
+    MetapromptDraftContent:
+      type: object
+      required: [kind, content]
+      properties:
+        kind:
+          type: string
+          enum: [metaprompt]
+        content:
+          type: string
     DraftResourceRef:
       type: object
       required: [scope, kind, id, path]

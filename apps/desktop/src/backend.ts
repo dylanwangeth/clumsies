@@ -20,6 +20,7 @@ import {
   type AuthorityResource,
   type DraftOrigin,
   type DraftRecord,
+  type DraftResourceContent,
   type MemoryDocument,
   type MemoryKind,
   type PersonalBundle,
@@ -370,9 +371,9 @@ function mapRule(
     {
       title: detail.rule.name,
       path: detail.rule.path,
-      body: detail.body,
-      appliesWhen: "",
-      tags: [],
+      body: detail.content.constraint,
+      appliesWhen: detail.content.applies_when,
+      tags: detail.content.tags,
       steps: [],
     },
   );
@@ -393,7 +394,7 @@ function mapContext(
     detail.etag,
     detail.context.updated_at,
     detail.context.content_hash,
-    documentForBody(detail.context.path, detail.body),
+    documentForBody(detail.context.path, detail.content),
   );
 }
 
@@ -415,12 +416,13 @@ function mapWorkflow(
     {
       title: detail.workflow.name,
       path: detail.workflow.path,
-      body: "",
+      body: detail.content.description,
       appliesWhen: "",
       tags: [],
-      steps: detail.steps.map(
-        (step) => step.body ?? step.rule_id ?? `Step ${step.order}`,
-      ),
+      steps: detail.content.steps.map((step) => ({
+        ruleId: step.rule_id,
+        body: step.body,
+      })),
     },
   );
 }
@@ -440,7 +442,7 @@ function mapMetaprompt(
     detail.etag,
     detail.metaprompt.updated_at,
     detail.metaprompt.content_hash,
-    documentForBody(detail.metaprompt.path, detail.body),
+    documentForBody(detail.metaprompt.path, detail.content),
   );
 }
 
@@ -495,9 +497,9 @@ function mapDaemonDraft(
     if (op.create) {
       document.path = op.create.path;
       document.title = titleFromPath(op.create.path);
-      document.body = op.create.body;
+      applyDraftContent(document, op.create.content);
     } else if (op.update) {
-      document.body = op.update.body;
+      applyDraftContent(document, op.update.content);
     } else if (op.rename) {
       document.path = op.rename.new_path;
       document.title = titleFromPath(op.rename.new_path);
@@ -574,8 +576,7 @@ export function mapReview(
     operations: detail.operations.map((operation) => ({
       action: operation.action,
       resource: operation.resource,
-      baseHash: operation.base_hash,
-      body: operation.body ?? null,
+      content: operation.content ?? null,
       newPath: operation.new_path ?? null,
     })),
     conflict: detail.conflict
@@ -656,34 +657,36 @@ function mapReviewChange(
   const baseResource = resourceRef.id
     ? resources.find((resource) => resource.id === resourceRef.id) ?? null
     : null;
-  const beforeText = commitResourceContent(baseCommit, resourceRef) ??
-    (baseResource ? documentText(baseResource.kind, baseResource.document) : null);
-  let afterText = beforeText;
+  const commitDocument = commitResourceDocument(baseCommit, resourceRef);
+  const baseDocument = commitDocument ??
+    (baseResource ? cloneDocument(baseResource.document) : null);
+  const beforeText = baseDocument ? documentText(kind, baseDocument) : null;
   let path = resourceRef.path ?? baseResource?.document.path ?? defaultPath(kind);
   let operation: ReviewChange["operation"] = "upsert";
+  const document = baseDocument ?? blankDocumentForKind(kind, path);
 
   for (const change of detail.operations) {
     if (change.action === "create") {
-      afterText = change.body ?? "";
       path = change.resource.path ?? path;
+      if (change.content) {
+        applyDraftContent(document, change.content);
+      }
     } else if (change.action === "update") {
-      afterText = change.body ?? "";
+      if (change.content) {
+        applyDraftContent(document, change.content);
+      }
     } else if (change.action === "rename") {
       path = change.new_path ?? path;
     } else if (change.action === "delete") {
       operation = "delete";
-      afterText = null;
     }
   }
 
-  const document = baseResource
-    ? cloneDocument(baseResource.document)
-    : documentForBody(path, afterText ?? beforeText ?? "");
   document.path = path;
-  document.title = titleFromPath(path);
-  if (kind !== "Workflows" || !baseResource) {
-    document.body = afterText ?? beforeText ?? "";
+  if (kind === "Context" || kind === "Metaprompt") {
+    document.title = markdownTitle(document.body, titleFromPath(path));
   }
+  const afterText = operation === "delete" ? null : documentText(kind, document);
 
   return {
     baseCommitId: detail.draft.base_commit_id,
@@ -702,10 +705,10 @@ function mapReviewChange(
   };
 }
 
-function commitResourceContent(
+function commitResourceDocument(
   payload: PublicSchema<"CommitPayload"> | null,
   resource: PublicSchema<"DraftResourceRef">,
-): string | null {
+): MemoryDocument | null {
   if (!payload) {
     return null;
   }
@@ -717,7 +720,22 @@ function commitResourceContent(
   if (!entry) {
     return null;
   }
-  return payload.blobs.find((blob) => blob.blob_id === entry.blob_id)?.content ?? null;
+  const blob = payload.blobs.find((candidate) => candidate.blob_id === entry.blob_id);
+  return blob
+    ? documentFromBlob(
+        memoryKind(resource.kind),
+        entry.path ?? resource.path ?? defaultPath(memoryKind(resource.kind)),
+        blob.content,
+      )
+    : null;
+}
+
+function commitResourceContent(
+  payload: PublicSchema<"CommitPayload"> | null,
+  resource: PublicSchema<"DraftResourceRef">,
+): string | null {
+  const document = commitResourceDocument(payload, resource);
+  return document ? documentText(memoryKind(resource.kind), document) : null;
 }
 
 export function daemonOperationsForDraft(
@@ -749,10 +767,7 @@ export function daemonOperationsForDraft(
     ];
   }
 
-  const body =
-    draft.kind === "Workflows"
-      ? documentText(draft.kind, draft.document)
-      : draft.document.body;
+  const content = draftContentForDocument(draft.kind, draft.document);
   if (!draft.baseResourceId) {
     return [
       {
@@ -763,7 +778,7 @@ export function daemonOperationsForDraft(
         op: {
           create: {
             path: draft.document.path,
-            body,
+            content,
           },
         },
         source: "desktop",
@@ -798,7 +813,7 @@ export function daemonOperationsForDraft(
       draft_id: draft.localId ?? null,
       base_commit_id: draft.baseCommitId,
       resource: kind,
-      op: { update: { id: target, body } },
+      op: { update: { id: target, content } },
       source: "desktop",
     });
   }
@@ -868,6 +883,156 @@ function documentForBody(path: string, body: string): MemoryDocument {
     tags: [],
     steps: [],
   };
+}
+
+function blankDocumentForKind(kind: MemoryKind, path: string): MemoryDocument {
+  return {
+    title: titleFromPath(path),
+    path,
+    body: "",
+    appliesWhen: "",
+    tags: [],
+    steps: [],
+  };
+}
+
+function applyDraftContent(
+  document: MemoryDocument,
+  content: DraftResourceContent,
+): void {
+  if (content.kind === "context" || content.kind === "metaprompt") {
+    document.body = content.content;
+    document.title = markdownTitle(content.content, titleFromPath(document.path));
+    return;
+  }
+  if (content.kind === "rule") {
+    document.title = content.name ?? document.title;
+    document.appliesWhen = content.applies_when ?? document.appliesWhen;
+    document.body = content.constraint;
+    document.tags = content.tags ? [...content.tags] : document.tags;
+    return;
+  }
+  document.title = content.name ?? document.title;
+  document.body = content.description;
+  document.steps = content.steps.map((step) => ({
+    ruleId: step.rule_id,
+    body: step.body,
+  }));
+}
+
+export function draftContentForDocument(
+  kind: MemoryKind,
+  document: MemoryDocument,
+  bodyOverride?: string,
+): DraftResourceContent {
+  const body = bodyOverride ?? document.body;
+  if (kind === "Rules") {
+    return {
+      kind: "rule",
+      name: document.title,
+      applies_when: document.appliesWhen,
+      constraint: body,
+      tags: [...document.tags],
+    };
+  }
+  if (kind === "Workflows") {
+    return {
+      kind: "workflow",
+      name: document.title,
+      description: body,
+      steps: document.steps.map((step) => ({
+        rule_id: step.ruleId,
+        body: step.body,
+      })),
+    };
+  }
+  return {
+    kind: kind === "Metaprompt" ? "metaprompt" : "context",
+    content: body,
+  };
+}
+
+function documentFromBlob(
+  kind: MemoryKind,
+  path: string,
+  blob: string,
+): MemoryDocument {
+  if (kind === "Context" || kind === "Metaprompt") {
+    return documentForBody(path, blob);
+  }
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(blob);
+  } catch {
+    throw new Error(`${kind} commit blob is not valid JSON`);
+  }
+  if (!isObject(decoded) || !isObject(decoded.content)) {
+    throw new Error(`${kind} commit blob has no structured content`);
+  }
+
+  if (kind === "Rules") {
+    const content = decoded.content;
+    if (
+      decoded.format !== "clumsies.rule.v1"
+      || typeof content.name !== "string"
+      || typeof content.applies_when !== "string"
+      || typeof content.constraint !== "string"
+      || !isStringArray(content.tags)
+    ) {
+      throw new Error("Rule commit blob does not match clumsies.rule.v1");
+    }
+    return {
+      title: content.name,
+      path,
+      body: content.constraint,
+      appliesWhen: content.applies_when,
+      tags: [...content.tags],
+      steps: [],
+    };
+  }
+
+  const content = decoded.content;
+  if (
+    decoded.format !== "clumsies.workflow.v1"
+    || typeof content.name !== "string"
+    || typeof content.description !== "string"
+    || !Array.isArray(content.steps)
+  ) {
+    throw new Error("Workflow commit blob does not match clumsies.workflow.v1");
+  }
+  const steps = content.steps.map((step) => {
+    if (
+      !isObject(step)
+      || typeof step.order !== "number"
+      || (step.rule_id !== null && typeof step.rule_id !== "string")
+      || (step.body !== null && typeof step.body !== "string")
+    ) {
+      throw new Error("Workflow commit blob contains an invalid step");
+    }
+    return {
+      order: step.order,
+      ruleId: step.rule_id,
+      body: step.body,
+    };
+  });
+  steps.sort((left, right) => left.order - right.order);
+  return {
+    title: content.name,
+    path,
+    body: content.description,
+    appliesWhen: "",
+    tags: [],
+    steps: steps.map(({ ruleId, body }) => ({ ruleId, body })),
+  };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function memoryKind(kind: string): MemoryKind {

@@ -10,11 +10,12 @@ use server::api::{
     CreateReviewRequest, CreateReviewSubmissionRequest, DeleteResult, DraftDetail,
     DraftEventListResponse, DraftEventType, DraftListResponse, DraftOperationAction,
     DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationBatchResponse,
-    DraftOperationInput, DraftResourceKind, DraftResourceRef, DraftStatus, MeResponse,
-    PersonalBundleDetail, PersonalBundleRequest, PersonalBundleUpdateRequest, Project,
+    DraftOperationInput, DraftResourceContent, DraftResourceKind, DraftResourceRef, DraftStatus,
+    MeResponse, PersonalBundleDetail, PersonalBundleRequest, PersonalBundleUpdateRequest, Project,
     ProjectListResponse, ProjectOrgSelection, ReplaceProjectOrgSelectionRequest, ResourceScope,
     Review, ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail,
-    ReviewListResponse, ReviewMergeResult, ReviewStatus, UpdateDraftRequest, UpdateProjectRequest,
+    ReviewListResponse, ReviewMergeResult, ReviewStatus, RuleDetail, TreeEntryKind,
+    UpdateDraftRequest, UpdateProjectRequest, WorkflowDetail, WorkflowStepInput,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
@@ -36,18 +37,16 @@ async fn draft_review_merge_produces_project_commit() {
     let user_id = bootstrap.user_id;
     let project_id = bootstrap.project_id;
     let org_context_id = repo
-        .create_org_resource(
+        .create_org_context(
             &org_id,
-            DraftResourceKind::Context,
             "context/org-policy.md",
             "# Org Policy\n\nPrefer concise answers.",
         )
         .await
         .unwrap();
     let org_reference_id = repo
-        .create_org_resource(
+        .create_org_context(
             &org_id,
-            DraftResourceKind::Context,
             "context/org-reference.md",
             "# Org Reference\n\nUse project-specific context after shared context.",
         )
@@ -139,7 +138,10 @@ async fn draft_review_merge_produces_project_commit() {
         &format!("/api/v1/org/context/{org_context_id}"),
     )
     .await;
-    assert_eq!(org_context.body, "# Org Policy\n\nPrefer concise answers.");
+    assert_eq!(
+        org_context.content,
+        "# Org Policy\n\nPrefer concise answers."
+    );
 
     let org_context_page: ContextListResponse = get_json(app.clone(), "/api/v1/org/context").await;
     assert_eq!(org_context_page.items.len(), 2);
@@ -237,8 +239,7 @@ async fn draft_review_merge_produces_project_commit() {
                 id: None,
                 path: Some("context/intro.md".to_owned()),
             },
-            base_hash: None,
-            body: Some("# Intro\n\nUse retrieval before answering.".to_owned()),
+            content: context_draft_content("# Intro\n\nUse retrieval before answering."),
             new_path: None,
         },
     )
@@ -258,8 +259,7 @@ async fn draft_review_merge_produces_project_commit() {
                 id: None,
                 path: Some("context/intro.md".to_owned()),
             },
-            base_hash: None,
-            body: Some("# Intro\n\nUse activated memory before answering.".to_owned()),
+            content: context_draft_content("# Intro\n\nUse activated memory before answering."),
             new_path: None,
         },
     )
@@ -315,8 +315,7 @@ async fn draft_review_merge_produces_project_commit() {
                         id: None,
                         path: Some("context/batch.md".to_owned()),
                     },
-                    base_hash: None,
-                    body: Some("# Batch\n\nSubmitted from local sync.".to_owned()),
+                    content: context_draft_content("# Batch\n\nSubmitted from local sync."),
                     new_path: None,
                 },
             }],
@@ -612,17 +611,14 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
         .await
         .unwrap();
     let context_id = repo
-        .create_org_resource(
+        .create_org_context(
             &bootstrap.org_id,
-            DraftResourceKind::Context,
             "context/shared.md",
             "# Shared\n\nBefore review.",
         )
         .await
         .unwrap();
     let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
-    let context: ContextDetail =
-        get_json(app.clone(), &format!("/api/v1/org/context/{context_id}")).await;
     let (org_state, org_ref_etag): (CommitStateResponse, String) =
         get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
     let org_base_commit_id = org_state.latest.unwrap().commit_id;
@@ -650,8 +646,7 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
                     id: Some(context_id.clone()),
                     path: None,
                 },
-                base_hash: Some(context.context.content_hash),
-                body: Some("# Shared\n\nAfter review.".to_owned()),
+                content: context_draft_content("# Shared\n\nAfter review."),
                 new_path: None,
             }],
         },
@@ -691,7 +686,7 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
 
     let updated: ContextDetail =
         get_json(app.clone(), &format!("/api/v1/org/context/{context_id}")).await;
-    assert_eq!(updated.body, "# Shared\n\nAfter review.");
+    assert_eq!(updated.content, "# Shared\n\nAfter review.");
     let (org_state, org_ref_etag): (CommitStateResponse, String) =
         get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
     assert_eq!(
@@ -764,8 +759,7 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
                     id: None,
                     path: Some("context/review-lifecycle.md".to_owned()),
                 },
-                base_hash: None,
-                body: Some("# First submission".to_owned()),
+                content: context_draft_content("# First submission"),
                 new_path: None,
             }],
         },
@@ -843,8 +837,9 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         &DraftOperationInput {
             action: DraftOperationAction::Create,
             resource: rejected.draft.resource.clone(),
-            base_hash: None,
-            body: Some("# Revised submission\n\nApply the operational constraint.".to_owned()),
+            content: context_draft_content(
+                "# Revised submission\n\nApply the operational constraint.",
+            ),
             new_path: None,
         },
     )
@@ -1256,6 +1251,257 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     assert_eq!(context.items.len(), 2);
 }
 
+#[tokio::test]
+async fn structured_rule_and_workflow_survive_draft_review_and_commit_round_trip() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = repo
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Search Agent",
+        )
+        .await
+        .unwrap();
+    let project_id = bootstrap.project_id;
+    let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
+    let (initial_state, initial_etag): (CommitStateResponse, String) = get_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/projects/{project_id}/commit-state"),
+    )
+    .await;
+
+    let rule_draft: DraftDetail = post_json(
+        app.clone(),
+        "/api/v1/drafts",
+        &CreateDraftRequest {
+            daemon_installation_id: "daemon_structured".to_owned(),
+            project_id: project_id.clone(),
+            base_commit_id: initial_state.latest.map(|commit| commit.commit_id),
+            title: "Add coding rule".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                kind: DraftResourceKind::Rule,
+                id: None,
+                path: Some("rules/coding".to_owned()),
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Create,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Project,
+                    kind: DraftResourceKind::Rule,
+                    id: None,
+                    path: Some("rules/coding".to_owned()),
+                },
+                content: Some(DraftResourceContent::Rule {
+                    name: Some("Coding discipline".to_owned()),
+                    applies_when: Some("While changing production code".to_owned()),
+                    constraint: "Run the focused tests before committing.".to_owned(),
+                    tags: Some(vec!["quality".to_owned(), "coding".to_owned()]),
+                }),
+                new_path: None,
+            }],
+        },
+    )
+    .await;
+    let rule_review: ReviewDetail = post_json(
+        app.clone(),
+        "/api/v1/reviews",
+        &CreateReviewRequest {
+            draft_id: rule_draft.draft.draft_id,
+            expected_draft_version: rule_draft.draft.version,
+            title: None,
+            description: None,
+        },
+    )
+    .await;
+    let approved_rule: ReviewDetail = post_json(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/decisions", rule_review.review.review_id),
+        &CreateReviewDecisionRequest {
+            decision: ReviewDecision::Approved,
+            expected_review_version: rule_review.review.version,
+            body: None,
+        },
+    )
+    .await;
+    let rule_merge: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", approved_rule.review.review_id),
+        &initial_etag,
+        &CreateReviewMergeRequest {
+            expected_review_version: approved_rule.review.version,
+        },
+    )
+    .await;
+    let rule_commit_id = rule_merge
+        .commit_id
+        .expect("rule merge should create a Commit");
+    let rule_commit: CommitPayload =
+        get_json(app.clone(), &format!("/api/v1/commits/{rule_commit_id}")).await;
+    let rule_entry = rule_commit
+        .tree
+        .entries
+        .iter()
+        .find(|entry| entry.kind == TreeEntryKind::Rule)
+        .expect("rule Commit should contain the Rule");
+    let rule_id = rule_entry.id.clone();
+    let rule: RuleDetail = get_json(
+        app.clone(),
+        &format!("/api/v1/projects/{project_id}/rules/{rule_id}"),
+    )
+    .await;
+    assert_eq!(rule.rule.name, "Coding discipline");
+    assert_eq!(rule.content.applies_when, "While changing production code");
+    assert_eq!(
+        rule.content.constraint,
+        "Run the focused tests before committing."
+    );
+    assert_eq!(rule.content.tags, vec!["coding", "quality"]);
+    let rule_blob = rule_commit
+        .blobs
+        .iter()
+        .find(|blob| blob.blob_id == rule_entry.blob_id)
+        .expect("rule Blob should be present");
+    let encoded_rule: serde_json::Value = serde_json::from_str(&rule_blob.content).unwrap();
+    assert_eq!(encoded_rule["format"], "clumsies.rule.v1");
+    assert_eq!(encoded_rule["content"]["name"], "Coding discipline");
+
+    let (_, rule_ref_etag): (CommitStateResponse, String) = get_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/projects/{project_id}/commit-state"),
+    )
+    .await;
+    let workflow_draft: DraftDetail = post_json(
+        app.clone(),
+        "/api/v1/drafts",
+        &CreateDraftRequest {
+            daemon_installation_id: "daemon_structured".to_owned(),
+            project_id: project_id.clone(),
+            base_commit_id: Some(rule_commit_id),
+            title: "Add coding workflow".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                kind: DraftResourceKind::Workflow,
+                id: None,
+                path: Some("workflows/coding".to_owned()),
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Create,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Project,
+                    kind: DraftResourceKind::Workflow,
+                    id: None,
+                    path: Some("workflows/coding".to_owned()),
+                },
+                content: Some(DraftResourceContent::Workflow {
+                    name: Some("Coding workflow".to_owned()),
+                    description: "Prepare a production change.".to_owned(),
+                    steps: vec![
+                        WorkflowStepInput {
+                            rule_id: Some(rule_id.clone()),
+                            body: None,
+                        },
+                        WorkflowStepInput {
+                            rule_id: None,
+                            body: Some("Summarize verification evidence.".to_owned()),
+                        },
+                    ],
+                }),
+                new_path: None,
+            }],
+        },
+    )
+    .await;
+    let workflow_review: ReviewDetail = post_json(
+        app.clone(),
+        "/api/v1/reviews",
+        &CreateReviewRequest {
+            draft_id: workflow_draft.draft.draft_id,
+            expected_draft_version: workflow_draft.draft.version,
+            title: None,
+            description: None,
+        },
+    )
+    .await;
+    let approved_workflow: ReviewDetail = post_json(
+        app.clone(),
+        &format!(
+            "/api/v1/reviews/{}/decisions",
+            workflow_review.review.review_id
+        ),
+        &CreateReviewDecisionRequest {
+            decision: ReviewDecision::Approved,
+            expected_review_version: workflow_review.review.version,
+            body: None,
+        },
+    )
+    .await;
+    let workflow_merge: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!(
+            "/api/v1/reviews/{}/merges",
+            approved_workflow.review.review_id
+        ),
+        &rule_ref_etag,
+        &CreateReviewMergeRequest {
+            expected_review_version: approved_workflow.review.version,
+        },
+    )
+    .await;
+    let workflow_commit_id = workflow_merge
+        .commit_id
+        .expect("workflow merge should create a Commit");
+    let workflow_commit: CommitPayload = get_json(
+        app.clone(),
+        &format!("/api/v1/commits/{workflow_commit_id}"),
+    )
+    .await;
+    let workflow_entry = workflow_commit
+        .tree
+        .entries
+        .iter()
+        .find(|entry| entry.kind == TreeEntryKind::Workflow)
+        .expect("workflow Commit should contain the Workflow");
+    let workflow: WorkflowDetail = get_json(
+        app,
+        &format!(
+            "/api/v1/projects/{project_id}/workflows/{}",
+            workflow_entry.id
+        ),
+    )
+    .await;
+    assert_eq!(workflow.workflow.name, "Coding workflow");
+    assert_eq!(workflow.content.description, "Prepare a production change.");
+    assert_eq!(workflow.content.steps.len(), 2);
+    assert_eq!(workflow.content.steps[0].order, 1);
+    assert_eq!(
+        workflow.content.steps[0].rule_id.as_deref(),
+        Some(rule_id.as_str())
+    );
+    assert_eq!(
+        workflow.content.steps[1].body.as_deref(),
+        Some("Summarize verification evidence.")
+    );
+    let workflow_blob = workflow_commit
+        .blobs
+        .iter()
+        .find(|blob| blob.blob_id == workflow_entry.blob_id)
+        .expect("workflow Blob should be present");
+    let encoded_workflow: serde_json::Value = serde_json::from_str(&workflow_blob.content).unwrap();
+    assert_eq!(encoded_workflow["format"], "clumsies.workflow.v1");
+    assert_eq!(encoded_workflow["content"]["steps"][0]["rule_id"], rule_id);
+}
+
+fn context_draft_content(content: &str) -> Option<DraftResourceContent> {
+    Some(DraftResourceContent::Context {
+        content: content.to_owned(),
+    })
+}
+
 async fn create_approved_context_review(
     app: axum::Router,
     project_id: &str,
@@ -1286,8 +1532,7 @@ async fn create_approved_context_review(
                     id: None,
                     path: Some(path.to_owned()),
                 },
-                base_hash: None,
-                body: Some(body.to_owned()),
+                content: context_draft_content(body),
                 new_path: None,
             }],
         },

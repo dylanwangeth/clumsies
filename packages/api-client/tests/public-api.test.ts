@@ -69,7 +69,7 @@ describe("Clumsies API", () => {
     await api.appendDraftOperation("draft", 1, {
       action: "create",
       resource: { scope: "project", kind: "context", id: null, path: "context/new.md" },
-      body: "# New",
+      content: { kind: "context", content: "# New" },
     });
     await api.listDraftEvents();
     await api.createDraftOperationBatch({
@@ -95,8 +95,7 @@ describe("Clumsies API", () => {
       operations: [{
         action: "update",
         resource: { scope: "project", kind: "context", id: "context", path: null },
-        base_hash: null,
-        body: "Resolved",
+        content: { kind: "context", content: "Resolved" },
       }],
     });
     await api.createReviewMerge("review", '"ref-none"', {

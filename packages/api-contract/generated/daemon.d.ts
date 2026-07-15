@@ -199,13 +199,43 @@ export interface components {
         } & (unknown | unknown | unknown | unknown | unknown);
         DaemonCreateDraftOperation: {
             path: string;
-            body: string;
+            content: components["schemas"]["DaemonDraftContent"];
             description?: string;
         };
         DaemonUpdateDraftOperation: {
             id: string;
-            body: string;
+            content: components["schemas"]["DaemonDraftContent"];
             description?: string;
+        };
+        DaemonDraftContent: components["schemas"]["DaemonContextDraftContent"] | components["schemas"]["DaemonRuleDraftContent"] | components["schemas"]["DaemonWorkflowDraftContent"] | components["schemas"]["DaemonMetapromptDraftContent"];
+        DaemonContextDraftContent: {
+            /** @enum {string} */
+            kind: "context";
+            content: string;
+        };
+        DaemonRuleDraftContent: {
+            /** @enum {string} */
+            kind: "rule";
+            name?: string | null;
+            applies_when?: string | null;
+            constraint: string;
+            tags?: string[] | null;
+        };
+        DaemonWorkflowDraftContent: {
+            /** @enum {string} */
+            kind: "workflow";
+            name?: string | null;
+            description: string;
+            steps: components["schemas"]["DaemonWorkflowStepInput"][];
+        };
+        DaemonMetapromptDraftContent: {
+            /** @enum {string} */
+            kind: "metaprompt";
+            content: string;
+        };
+        DaemonWorkflowStepInput: {
+            rule_id: string | null;
+            body: string | null;
         };
         DaemonRenameDraftOperation: {
             id: string;

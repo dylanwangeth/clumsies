@@ -230,7 +230,7 @@ test "storeDraftOperationRequestJsonAlloc builds daemon store envelope" {
     const parsed = try std.json.parseFromSlice(
         std.json.Value,
         std.testing.allocator,
-        \\{"create":{"path":"META_PROMPT.md","body":"body"}}
+        \\{"create":{"path":"META_PROMPT.md","content":{"kind":"metaprompt","content":"body"}}}
     ,
         .{},
     );
