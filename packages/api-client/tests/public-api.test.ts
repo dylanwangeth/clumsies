@@ -12,7 +12,7 @@ describe("Clumsies API", () => {
       const request = new Request(input, init);
       const url = new URL(request.url);
       requests.push(`${request.method} ${url.pathname}`);
-      if (url.pathname.endsWith("/merges")) {
+      if (url.pathname.endsWith("/merges") || url.pathname.endsWith("/conflict-resolutions")) {
         mergeIfMatch = request.headers.get("if-match");
       }
       return new Response("{}", {
@@ -85,6 +85,16 @@ describe("Clumsies API", () => {
       decision: "approved",
       expected_review_version: 1,
     });
+    await api.createReviewConflictResolution("review", '"commit"', {
+      expected_review_version: 2,
+      expected_draft_version: 3,
+      operations: [{
+        action: "update",
+        resource: { scope: "project", kind: "context", id: "context", path: null },
+        base_hash: null,
+        body: "Resolved",
+      }],
+    });
     await api.createReviewMerge("review", '"ref-none"', {
       expected_review_version: 2,
     });
@@ -138,6 +148,7 @@ describe("Clumsies API", () => {
       "GET /api/v1/reviews/review/comments",
       "POST /api/v1/reviews/review/comments",
       "POST /api/v1/reviews/review/decisions",
+      "POST /api/v1/reviews/review/conflict-resolutions",
       "POST /api/v1/reviews/review/merges",
       "GET /api/v1/org/commits",
       "GET /api/v1/org/commit-state",

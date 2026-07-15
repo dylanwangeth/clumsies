@@ -403,6 +403,22 @@ export class ClumsiesApi {
     );
   }
 
+  createReviewConflictResolution(
+    reviewId: string,
+    refEtag: string,
+    request: Schema<"CreateReviewConflictResolutionRequest">,
+  ) {
+    return unwrap(
+      this.raw.POST("/api/v1/reviews/{review_id}/conflict-resolutions", {
+        params: {
+          path: { review_id: reviewId },
+          header: { "If-Match": refEtag },
+        },
+        body: request,
+      }),
+    );
+  }
+
   createReviewMerge(
     reviewId: string,
     refEtag: string,

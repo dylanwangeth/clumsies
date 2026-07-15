@@ -6,14 +6,15 @@ use serde::Serialize;
 use server::api::{
     CommitListResponse, CommitPayload, CommitStateResponse, ContextDetail, ContextListResponse,
     CreateDraftRequest, CreateProjectRequest, CreateReviewCommentRequest,
-    CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest, DeleteResult,
-    DraftDetail, DraftEventListResponse, DraftEventType, DraftListResponse, DraftOperationAction,
-    DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationBatchResponse,
-    DraftOperationInput, DraftResourceKind, DraftResourceRef, DraftStatus, MeResponse,
-    PersonalBundleDetail, PersonalBundleRequest, PersonalBundleUpdateRequest, Project,
-    ProjectListResponse, ProjectOrgSelection, ReplaceProjectOrgSelectionRequest, ResourceScope,
-    Review, ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail,
-    ReviewListResponse, ReviewMergeResult, ReviewStatus, UpdateDraftRequest, UpdateProjectRequest,
+    CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest,
+    CreateReviewRequest, DeleteResult, DraftDetail, DraftEventListResponse, DraftEventType,
+    DraftListResponse, DraftOperationAction, DraftOperationBatchItem, DraftOperationBatchRequest,
+    DraftOperationBatchResponse, DraftOperationInput, DraftResourceKind, DraftResourceRef,
+    DraftStatus, MeResponse, PersonalBundleDetail, PersonalBundleRequest,
+    PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectOrgSelection,
+    ReplaceProjectOrgSelectionRequest, ResourceScope, Review, ReviewComment,
+    ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse, ReviewMergeResult,
+    ReviewStatus, UpdateDraftRequest, UpdateProjectRequest,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
@@ -735,6 +736,14 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
         "# Stale",
     )
     .await;
+    let discardable = create_approved_context_review(
+        app.clone(),
+        &project_id,
+        None,
+        "context/discarded.md",
+        "# Discarded",
+    )
+    .await;
 
     let first_merge: ReviewMergeResult = post_json_with_etag(
         app.clone(),
@@ -746,6 +755,45 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     )
     .await;
     let first_commit_id = first_merge.commit_id.unwrap();
+
+    let discardable_conflict_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/reviews/{}/merges", discardable.review_id))
+                .header("content-type", "application/json")
+                .header("if-match", format!("\"{first_commit_id}\""))
+                .body(Body::from(
+                    serde_json::to_vec(&CreateReviewMergeRequest {
+                        expected_review_version: discardable.version,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(discardable_conflict_response.status(), StatusCode::CONFLICT);
+    let discardable_conflict: ReviewDetail = get_json(
+        app.clone(),
+        &format!("/api/v1/reviews/{}", discardable.review_id),
+    )
+    .await;
+    let _: DeleteResult = delete_json_with_if_match(
+        app.clone(),
+        &format!("/api/v1/drafts/{}", discardable.draft_id),
+        discardable_conflict.draft.version,
+    )
+    .await;
+    let discarded: ReviewDetail = get_json(
+        app.clone(),
+        &format!("/api/v1/reviews/{}", discardable.review_id),
+    )
+    .await;
+    assert_eq!(discarded.review.status, ReviewStatus::Rejected);
+    assert_eq!(discarded.draft.status, DraftStatus::Discarded);
+    assert_eq!(discarded.conflict, None);
 
     let current = create_approved_context_review(
         app.clone(),
@@ -775,7 +823,47 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
         )
         .await
         .unwrap();
-    assert_eq!(wrong_head_response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        wrong_head_response.status(),
+        StatusCode::PRECONDITION_FAILED
+    );
+    let wrong_head_error: serde_json::Value = decode_json(wrong_head_response).await;
+    assert_eq!(wrong_head_error["error"]["code"], "precondition_failed");
+    assert_eq!(
+        wrong_head_error["error"]["details"]["current_commit_id"],
+        first_commit_id
+    );
+
+    let stale_wrong_head_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/reviews/{}/merges", stale.review_id))
+                .header("content-type", "application/json")
+                .header(
+                    "if-match",
+                    "\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"",
+                )
+                .body(Body::from(
+                    serde_json::to_vec(&CreateReviewMergeRequest {
+                        expected_review_version: stale.version,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stale_wrong_head_response.status(),
+        StatusCode::PRECONDITION_FAILED
+    );
+    let unchanged: ReviewDetail =
+        get_json(app.clone(), &format!("/api/v1/reviews/{}", stale.review_id)).await;
+    assert_eq!(unchanged.draft.status, DraftStatus::Submitted);
+    assert_eq!(unchanged.draft.version, 2);
+    assert_eq!(unchanged.conflict, None);
 
     let stale_body = serde_json::to_vec(&CreateReviewMergeRequest {
         expected_review_version: stale.version,
@@ -795,6 +883,60 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
         .await
         .unwrap();
     assert_eq!(stale_response.status(), StatusCode::CONFLICT);
+    let stale_error: serde_json::Value = decode_json(stale_response).await;
+    assert_eq!(stale_error["error"]["code"], "draft_conflict");
+    assert_eq!(stale_error["error"]["details"]["draft_id"], stale.draft_id);
+    assert_eq!(
+        stale_error["error"]["details"]["current_commit_id"],
+        first_commit_id
+    );
+
+    let conflicted: ReviewDetail =
+        get_json(app.clone(), &format!("/api/v1/reviews/{}", stale.review_id)).await;
+    assert_eq!(conflicted.draft.status, DraftStatus::Conflicted);
+    assert_eq!(conflicted.draft.version, 3);
+    assert_eq!(
+        conflicted
+            .conflict
+            .as_ref()
+            .and_then(|conflict| conflict.current_commit_id.as_deref()),
+        Some(first_commit_id.as_str())
+    );
+    let illegal_reopen_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/drafts/{}", stale.draft_id))
+                .header("content-type", "application/json")
+                .header("if-match", conflicted.draft.version.to_string())
+                .body(Body::from(
+                    serde_json::to_vec(&UpdateDraftRequest {
+                        title: None,
+                        description: None,
+                        status: Some(DraftStatus::Open),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(illegal_reopen_response.status(), StatusCode::BAD_REQUEST);
+    let still_conflicted: DraftDetail =
+        get_json(app.clone(), &format!("/api/v1/drafts/{}", stale.draft_id)).await;
+    assert_eq!(still_conflicted.draft.status, DraftStatus::Conflicted);
+    assert_eq!(still_conflicted.draft.version, conflicted.draft.version);
+    assert!(still_conflicted.conflict.is_some());
+    let events: DraftEventListResponse = get_json(app.clone(), "/api/v1/draft-events").await;
+    let conflict_event = events
+        .events
+        .iter()
+        .find(|event| {
+            event.draft_id == stale.draft_id && event.event_type == DraftEventType::Conflicted
+        })
+        .expect("stale merge should emit a conflict event");
+    assert_eq!(conflict_event.daemon_installation_id, None);
 
     let context: ContextListResponse = get_json(
         app.clone(),
@@ -803,10 +945,60 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     .await;
     assert_eq!(context.items.len(), 1);
     assert_eq!(context.items[0].path, "context/first.md");
-    let commits: CommitListResponse =
-        get_json(app, &format!("/api/v1/projects/{project_id}/commits")).await;
+    let commits: CommitListResponse = get_json(
+        app.clone(),
+        &format!("/api/v1/projects/{project_id}/commits"),
+    )
+    .await;
     assert_eq!(commits.items.len(), 1);
     assert_eq!(commits.items[0].commit_id, first_commit_id);
+
+    let resolved: ReviewDetail = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/conflict-resolutions", stale.review_id),
+        &format!("\"{first_commit_id}\""),
+        &CreateReviewConflictResolutionRequest {
+            expected_review_version: conflicted.review.version,
+            expected_draft_version: conflicted.draft.version,
+            operations: conflicted
+                .operations
+                .iter()
+                .map(|operation| operation.input.clone())
+                .collect(),
+        },
+    )
+    .await;
+    assert_eq!(resolved.review.status, ReviewStatus::Open);
+    assert_eq!(resolved.draft.status, DraftStatus::Submitted);
+    assert_eq!(
+        resolved.draft.base_commit_id.as_deref(),
+        Some(first_commit_id.as_str())
+    );
+    assert_eq!(resolved.conflict, None);
+
+    let approved: Review = post_json(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/decisions", stale.review_id),
+        &CreateReviewDecisionRequest {
+            decision: ReviewDecision::Approved,
+            expected_review_version: resolved.review.version,
+            body: Some("Resolved against the current Commit.".to_owned()),
+        },
+    )
+    .await;
+    let merge: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", stale.review_id),
+        &format!("\"{first_commit_id}\""),
+        &CreateReviewMergeRequest {
+            expected_review_version: approved.version,
+        },
+    )
+    .await;
+    assert!(merge.commit_id.is_some());
+    let context: ContextListResponse =
+        get_json(app, &format!("/api/v1/projects/{project_id}/context")).await;
+    assert_eq!(context.items.len(), 2);
 }
 
 async fn create_approved_context_review(

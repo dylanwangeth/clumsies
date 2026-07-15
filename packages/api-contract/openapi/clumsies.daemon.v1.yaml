@@ -321,6 +321,7 @@ components:
         - resource_kind
         - target_id
         - path
+        - conflict
         - status
         - created_at
         - updated_at
@@ -345,6 +346,10 @@ components:
           type: [string, "null"]
         path:
           type: [string, "null"]
+        conflict:
+          oneOf:
+            - $ref: "#/components/schemas/DaemonDraftConflict"
+            - type: "null"
         status:
           $ref: "#/components/schemas/DaemonLocalDraftStatus"
         created_at:
@@ -357,6 +362,17 @@ components:
           type: integer
         failed_operation_count:
           type: integer
+    DaemonDraftConflict:
+      type: object
+      required: [base_commit_id, current_commit_id, detected_at]
+      properties:
+        base_commit_id:
+          type: [string, "null"]
+        current_commit_id:
+          type: [string, "null"]
+        detected_at:
+          type: string
+          format: date-time
     DaemonLocalDraftOperation:
       type: object
       required:
@@ -501,7 +517,7 @@ components:
           additionalProperties: true
     SyncState:
       type: string
-      enum: [idle, queued, syncing, degraded, failed]
+      enum: [idle, queued, syncing, degraded, conflicted, failed]
     DaemonDraftResourceKind:
       type: string
       enum: [context, rule, workflow, metaprompt]

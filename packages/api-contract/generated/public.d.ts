@@ -616,6 +616,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reviews/{review_id}/conflict-resolutions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: components["parameters"]["ReviewId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replace a conflicted draft with a resolution based on the current Ref. */
+        post: operations["createReviewConflictResolution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/reviews/{review_id}/merges": {
         parameters: {
             query?: never;
@@ -887,6 +906,13 @@ export interface components {
             draft: components["schemas"]["Draft"];
             operations: components["schemas"]["DraftOperation"][];
             sync_state: components["schemas"]["DraftSyncState"];
+            conflict: components["schemas"]["DraftConflict"] | null;
+        };
+        DraftConflict: {
+            base_commit_id: string | null;
+            current_commit_id: string | null;
+            /** Format: date-time */
+            detected_at: string;
         };
         Draft: {
             draft_id: string;
@@ -974,6 +1000,7 @@ export interface components {
             draft: components["schemas"]["Draft"];
             operations: components["schemas"]["DraftOperation"][];
             comments: components["schemas"]["ReviewComment"][];
+            conflict: components["schemas"]["DraftConflict"] | null;
         };
         Review: {
             review_id: string;
@@ -1012,6 +1039,11 @@ export interface components {
         };
         CreateReviewMergeRequest: {
             expected_review_version: number;
+        };
+        CreateReviewConflictResolutionRequest: {
+            expected_review_version: number;
+            expected_draft_version: number;
+            operations: components["schemas"]["DraftOperationInput"][];
         };
         ReviewMergeResult: {
             review: components["schemas"]["Review"];
@@ -2406,6 +2438,44 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    createReviewConflictResolution: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                review_id: components["parameters"]["ReviewId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateReviewConflictResolutionRequest"];
+            };
+        };
+        responses: {
+            /** @description Reopened review with the resolved draft. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewDetail"];
+                };
+            };
+            /** @description The target Ref changed before the resolution was applied. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     createReviewMerge: {
         parameters: {
             query?: never;
@@ -2430,6 +2500,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewMergeResult"];
+                };
+            };
+            /** @description The draft base Commit is no longer the current Ref. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description The If-Match Ref is no longer current. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             default: components["responses"]["Error"];

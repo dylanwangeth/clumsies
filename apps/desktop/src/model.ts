@@ -51,9 +51,34 @@ export type DraftRecord = {
   origin: DraftOrigin;
   status: DraftStatus;
   syncState: SyncState;
+  conflict?: DraftConflictRecord | null;
   baseVersion: number | null;
   updatedAt: string;
   document: MemoryDocument;
+};
+
+export type DraftConflictRecord = {
+  baseCommitId: string | null;
+  currentCommitId: string | null;
+  detectedAt: string;
+};
+
+export type ReviewOperation = {
+  action: "create" | "update" | "rename" | "delete";
+  resource: {
+    scope: "org" | "project";
+    kind: "context" | "rule" | "workflow" | "metaprompt";
+    id: string | null;
+    path: string | null;
+  };
+  baseHash: string | null;
+  body: string | null;
+  newPath: string | null;
+};
+
+export type ReviewConflict = DraftConflictRecord & {
+  baseContent: string | null;
+  currentContent: string | null;
 };
 
 export type ReviewComment = {
@@ -70,6 +95,9 @@ export type ReviewRecord = {
   author: string;
   status: ReviewStatus;
   version?: number;
+  draftVersion?: number;
+  operations?: ReviewOperation[];
+  conflict?: ReviewConflict | null;
   createdAt: string;
   decisionNote: string | null;
   comments: ReviewComment[];

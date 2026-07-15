@@ -28,7 +28,7 @@ pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 7;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 8;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
@@ -1218,7 +1218,8 @@ async fn list_local_drafts(
         "SELECT
             d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
             d.resource_scope, d.resource_kind, d.target_id,
-            d.path, d.status, d.created_at, d.updated_at,
+            d.path, d.conflict_base_commit_id, d.conflict_current_commit_id, d.conflicted_at,
+            d.status, d.created_at, d.updated_at,
             (
                 SELECT COUNT(*)
                 FROM local_draft_operations o
@@ -1256,7 +1257,8 @@ async fn load_local_draft_detail(
         "SELECT
             d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
             d.resource_scope, d.resource_kind, d.target_id,
-            d.path, d.status, d.created_at, d.updated_at,
+            d.path, d.conflict_base_commit_id, d.conflict_current_commit_id, d.conflicted_at,
+            d.status, d.created_at, d.updated_at,
             (
                 SELECT COUNT(*)
                 FROM local_draft_operations o
@@ -1294,6 +1296,15 @@ async fn load_local_draft_detail(
 }
 
 fn local_draft_summary_from_row(row: &SqliteRow) -> Result<DaemonDraftSummary, DaemonError> {
+    let conflicted_at: Option<String> = row.try_get("conflicted_at")?;
+    let conflict = match conflicted_at {
+        Some(detected_at) => Some(DaemonDraftConflict {
+            base_commit_id: row.try_get("conflict_base_commit_id")?,
+            current_commit_id: row.try_get("conflict_current_commit_id")?,
+            detected_at,
+        }),
+        None => None,
+    };
     Ok(DaemonDraftSummary {
         draft_id: row.try_get("draft_id")?,
         project_id: row.try_get("project_id")?,
@@ -1306,6 +1317,7 @@ fn local_draft_summary_from_row(row: &SqliteRow) -> Result<DaemonDraftSummary, D
         )?,
         target_id: row.try_get("target_id")?,
         path: row.try_get("path")?,
+        conflict,
         status: local_draft_status_from_str(row.try_get::<String, _>("status")?.as_str())?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -1349,6 +1361,10 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
     )
     .fetch_one(pool)
     .await?;
+    let conflict_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts WHERE status = 'conflicted'")
+            .fetch_one(pool)
+            .await?;
     let server_cursor = load_meta_value(pool, META_DRAFT_EVENTS_CURSOR).await?;
     let last_attempt_at = load_meta_value(pool, META_DRAFT_SYNC_LAST_ATTEMPT_AT).await?;
     let last_success_at = load_meta_value(pool, META_DRAFT_SYNC_LAST_SUCCESS_AT).await?;
@@ -1380,6 +1396,8 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
         SyncState::Failed
     } else if pending_operation_count > 0 {
         SyncState::Queued
+    } else if conflict_count > 0 {
+        SyncState::Conflicted
     } else {
         SyncState::Idle
     };
@@ -1409,7 +1427,7 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
         commit_sync,
         pending_operation_count,
         failed_operation_count,
-        conflict_count: 0,
+        conflict_count,
         last_success_at: overall_last_success_at,
     })
 }
@@ -2185,7 +2203,8 @@ async fn project_server_draft(
             "UPDATE local_drafts
              SET project_id = $2, server_version = $3, base_commit_id = $4,
                  resource_scope = $5, resource_kind = $6, target_id = $7, path = $8,
-                 status = $9, updated_at = $10
+                 conflict_base_commit_id = $9, conflict_current_commit_id = $10,
+                 conflicted_at = $11, status = $12, updated_at = $13
              WHERE draft_id = $1",
         )
         .bind(&local_draft_id)
@@ -2196,6 +2215,24 @@ async fn project_server_draft(
         .bind(detail.draft.resource.kind.as_str())
         .bind(&detail.draft.resource.id)
         .bind(&detail.draft.resource.path)
+        .bind(
+            detail
+                .conflict
+                .as_ref()
+                .and_then(|conflict| conflict.base_commit_id.as_deref()),
+        )
+        .bind(
+            detail
+                .conflict
+                .as_ref()
+                .and_then(|conflict| conflict.current_commit_id.as_deref()),
+        )
+        .bind(
+            detail
+                .conflict
+                .as_ref()
+                .map(|conflict| conflict.detected_at.as_str()),
+        )
         .bind(detail.draft.status.as_str())
         .bind(&detail.draft.updated_at)
         .execute(&mut **tx)
@@ -2205,9 +2242,11 @@ async fn project_server_draft(
         sqlx::query(
             "INSERT INTO local_drafts (
                 draft_id, project_id, server_draft_id, server_version, base_commit_id,
-                resource_scope, resource_kind, target_id, path, status, created_at, updated_at
+                resource_scope, resource_kind, target_id, path,
+                conflict_base_commit_id, conflict_current_commit_id, conflicted_at,
+                status, created_at, updated_at
              )
-             VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+             VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(&detail.draft.draft_id)
         .bind(&detail.draft.project_id)
@@ -2217,6 +2256,24 @@ async fn project_server_draft(
         .bind(detail.draft.resource.kind.as_str())
         .bind(&detail.draft.resource.id)
         .bind(&detail.draft.resource.path)
+        .bind(
+            detail
+                .conflict
+                .as_ref()
+                .and_then(|conflict| conflict.base_commit_id.as_deref()),
+        )
+        .bind(
+            detail
+                .conflict
+                .as_ref()
+                .and_then(|conflict| conflict.current_commit_id.as_deref()),
+        )
+        .bind(
+            detail
+                .conflict
+                .as_ref()
+                .map(|conflict| conflict.detected_at.as_str()),
+        )
         .bind(detail.draft.status.as_str())
         .bind(&detail.draft.created_at)
         .bind(&detail.draft.updated_at)
@@ -2224,6 +2281,29 @@ async fn project_server_draft(
         .await?;
         detail.draft.draft_id.clone()
     };
+
+    let linked_rows = sqlx::query(
+        "SELECT local_operation_id, server_operation_id
+         FROM local_draft_operations
+         WHERE draft_id = $1 AND server_operation_id IS NOT NULL",
+    )
+    .bind(&local_draft_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in linked_rows {
+        let server_operation_id: String = row.try_get("server_operation_id")?;
+        if detail
+            .operations
+            .iter()
+            .any(|operation| operation.operation_id == server_operation_id)
+        {
+            continue;
+        }
+        sqlx::query("DELETE FROM local_draft_operations WHERE local_operation_id = $1")
+            .bind(row.try_get::<String, _>("local_operation_id")?)
+            .execute(&mut **tx)
+            .await?;
+    }
 
     let rows = sqlx::query(
         "SELECT local_operation_id, operation_json
@@ -2452,6 +2532,9 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
             resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'metaprompt')),
             target_id TEXT,
             path TEXT,
+            conflict_base_commit_id TEXT,
+            conflict_current_commit_id TEXT,
+            conflicted_at TEXT,
             status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'discarded', 'conflicted')) DEFAULT 'open',
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -2929,6 +3012,7 @@ pub enum SyncState {
     Queued,
     Syncing,
     Degraded,
+    Conflicted,
     Failed,
 }
 
@@ -3004,11 +3088,19 @@ pub struct DaemonDraftSummary {
     pub resource_kind: DaemonDraftResourceKind,
     pub target_id: Option<String>,
     pub path: Option<String>,
+    pub conflict: Option<DaemonDraftConflict>,
     pub status: DaemonLocalDraftStatus,
     pub created_at: String,
     pub updated_at: String,
     pub pending_operation_count: i64,
     pub failed_operation_count: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonDraftConflict {
+    pub base_commit_id: Option<String>,
+    pub current_commit_id: Option<String>,
+    pub detected_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -3299,6 +3391,14 @@ struct ServerDraftVersion {
 struct ServerDraftProjectionDetail {
     draft: ServerDraftProjection,
     operations: Vec<ServerDraftProjectionOperation>,
+    conflict: Option<ServerDraftConflict>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ServerDraftConflict {
+    base_commit_id: Option<String>,
+    current_commit_id: Option<String>,
+    detected_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

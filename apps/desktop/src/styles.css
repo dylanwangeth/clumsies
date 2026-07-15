@@ -1797,6 +1797,110 @@ pre {
   white-space: pre-wrap;
 }
 
+.conflict-resolver {
+  display: grid;
+  min-width: 0;
+  min-height: 360px;
+  grid-template-rows: minmax(150px, 0.75fr) minmax(210px, 1fr);
+  gap: 10px;
+}
+
+.conflict-sources {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.conflict-source,
+.conflict-result {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: 31px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-pane);
+}
+
+.conflict-source > header,
+.conflict-result > header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  padding: 0 9px;
+}
+
+.conflict-source code {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+}
+
+.conflict-source pre {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 9px;
+  white-space: pre-wrap;
+}
+
+.conflict-result {
+  background: var(--bg-primary);
+}
+
+.conflict-result > header {
+  padding-right: 4px;
+}
+
+.conflict-result .button {
+  min-height: 24px;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.conflict-resolution-editor,
+.conflict-resolution-editor .text-editor {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.conflict-operation {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 12px;
+}
+
+.conflict-operation.danger {
+  color: var(--danger);
+}
+
+.conflict-operation span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .diff-add {
   background: rgba(22, 133, 63, 0.11);
   color: #0e6830;

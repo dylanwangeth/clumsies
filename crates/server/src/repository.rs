@@ -10,16 +10,17 @@ use crate::api::{
     AdminProjectListResponse, AuditEvent, AuditEventListResponse, Blob, Commit, CommitListResponse,
     CommitPayload, CommitScope, CommitStateResponse, ContextDetail, ContextListResponse,
     ContextMeta, CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest,
-    CreateProjectRequest, CreateReviewCommentRequest, CreateReviewDecisionRequest,
-    CreateReviewMergeRequest, CreateReviewRequest, DeleteResult, Draft, DraftDetail, DraftEvent,
-    DraftEventListResponse, DraftEventType, DraftListResponse, DraftOperation,
-    DraftOperationAction, DraftOperationBatchRequest, DraftOperationBatchResponse,
-    DraftOperationInput, DraftResourceKind, DraftResourceRef, DraftStatus, DraftSyncState,
-    DraftSyncStatus, MeResponse, Member, MemberListResponse, MemberStatus, MetapromptDetail,
-    MetapromptMeta, OrgRef, OrgRole, PageInfo, PersonalBundleDetail, PersonalBundleListResponse,
-    PersonalBundleMeta, PersonalBundleRequest, PersonalBundleUpdateRequest, Project,
-    ProjectListResponse, ProjectMember, ProjectMemberListResponse, ProjectOrgSelection, ProjectRef,
-    ProjectRole, Ref, ReplaceProjectOrgSelectionRequest, ResourceScope, Review, ReviewComment,
+    CreateProjectRequest, CreateReviewCommentRequest, CreateReviewConflictResolutionRequest,
+    CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest, DeleteResult,
+    Draft, DraftConflict, DraftDetail, DraftEvent, DraftEventListResponse, DraftEventType,
+    DraftListResponse, DraftOperation, DraftOperationAction, DraftOperationBatchRequest,
+    DraftOperationBatchResponse, DraftOperationInput, DraftResourceKind, DraftResourceRef,
+    DraftStatus, DraftSyncState, DraftSyncStatus, MeResponse, Member, MemberListResponse,
+    MemberStatus, MetapromptDetail, MetapromptMeta, OrgRef, OrgRole, PageInfo,
+    PersonalBundleDetail, PersonalBundleListResponse, PersonalBundleMeta, PersonalBundleRequest,
+    PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectMember,
+    ProjectMemberListResponse, ProjectOrgSelection, ProjectRef, ProjectRole, Ref,
+    ReplaceProjectOrgSelectionRequest, ResourceScope, Review, ReviewComment,
     ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse, ReviewMergeResult,
     ReviewStatus, RuleDetail, RuleListResponse, RuleMeta, Tree, TreeEntry, TreeEntryKind,
     TreeEntryScope, TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest,
@@ -1536,8 +1537,18 @@ impl ServerRepository {
             return Err(ServerError::invalid_transition("draft", &status, "updated"));
         }
         let next_status = match request.status {
-            Some(DraftStatus::Open) => "open",
-            Some(DraftStatus::Conflicted) => "conflicted",
+            Some(DraftStatus::Open) if status == "open" => "open",
+            Some(DraftStatus::Conflicted) if status == "conflicted" => "conflicted",
+            Some(DraftStatus::Open) => {
+                return Err(ServerError::invalid_transition("draft", &status, "open"));
+            }
+            Some(DraftStatus::Conflicted) => {
+                return Err(ServerError::invalid_transition(
+                    "draft",
+                    &status,
+                    "conflicted",
+                ));
+            }
             Some(DraftStatus::Discarded) => "discarded",
             Some(DraftStatus::Submitted) => {
                 return Err(ServerError::InvalidRequest(
@@ -1577,6 +1588,21 @@ impl ServerRepository {
             None,
         )
         .await?;
+        if next_status == "discarded" {
+            sqlx::query(
+                "UPDATE reviews
+                 SET status = 'rejected', version = version + 1,
+                     decision_body = 'Draft discarded after conflict.', updated_at = now()
+                 WHERE draft_id = $1 AND status IN ('open', 'approved')",
+            )
+            .bind(draft_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DELETE FROM draft_conflicts WHERE draft_id = $1")
+                .bind(draft_id)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
         self.get_draft(draft_id).await
     }
@@ -1848,6 +1874,7 @@ impl ServerRepository {
             draft: draft.draft,
             operations: draft.operations,
             comments,
+            conflict: draft.conflict,
         })
     }
 
@@ -1959,7 +1986,8 @@ impl ServerRepository {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             "SELECT r.review_id, r.draft_id, r.project_id, r.status, r.version,
-                    d.resource_scope, d.base_commit_id
+                    d.resource_scope, d.base_commit_id, d.status AS draft_status,
+                    d.version AS draft_version
              FROM reviews r
              JOIN drafts d ON d.draft_id = r.draft_id
              WHERE r.review_id = $1
@@ -1992,17 +2020,63 @@ impl ServerRepository {
             ResourceScope::Project => current_project_ref(&mut tx, &project_id).await?,
         };
         if current_head.as_deref() != expected_project_ref {
-            return Err(ServerError::ref_conflict(
+            return Err(ServerError::precondition_failed(
                 expected_project_ref,
                 current_head.as_deref(),
             ));
         }
         let draft_base_commit_id: Option<String> = row.try_get("base_commit_id")?;
         if draft_base_commit_id != current_head {
-            return Err(ServerError::ref_conflict(
-                draft_base_commit_id.as_deref(),
-                current_head.as_deref(),
-            ));
+            let draft_status: String = row.try_get("draft_status")?;
+            let existing_conflict = load_draft_conflict(&mut tx, &draft_id).await?;
+            let conflict_changed = draft_status != "conflicted"
+                || existing_conflict.as_ref().is_none_or(|conflict| {
+                    conflict.base_commit_id != draft_base_commit_id
+                        || conflict.current_commit_id != current_head
+                });
+            if conflict_changed {
+                sqlx::query(
+                    "INSERT INTO draft_conflicts (
+                        draft_id, base_commit_id, current_commit_id, detected_at
+                     ) VALUES ($1, $2, $3, now())
+                     ON CONFLICT (draft_id) DO UPDATE
+                     SET base_commit_id = excluded.base_commit_id,
+                         current_commit_id = excluded.current_commit_id,
+                         detected_at = excluded.detected_at",
+                )
+                .bind(&draft_id)
+                .bind(&draft_base_commit_id)
+                .bind(&current_head)
+                .execute(&mut *tx)
+                .await?;
+                let updated_version: i64 = sqlx::query_scalar(
+                    "UPDATE drafts
+                     SET status = 'conflicted', version = version + 1, updated_at = now()
+                     WHERE draft_id = $1
+                     RETURNING version",
+                )
+                .bind(&draft_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                insert_draft_event(
+                    &mut tx,
+                    &draft_id,
+                    &project_id,
+                    DraftEventType::Conflicted,
+                    updated_version,
+                    None,
+                )
+                .await?;
+            }
+            let error = ServerError::DraftConflict {
+                review_id: review_id.to_owned(),
+                draft_id,
+                scope: resource_scope,
+                base_commit_id: draft_base_commit_id,
+                current_commit_id: current_head,
+            };
+            tx.commit().await?;
+            return Err(error);
         }
 
         let operations = load_draft_operations(&mut tx, &draft_id).await?;
@@ -2053,6 +2127,143 @@ impl ServerRepository {
             commit_id: Some(commit_id),
             applied_operation_count: materialized_operations.len() as i64,
         })
+    }
+
+    pub async fn create_review_conflict_resolution(
+        &self,
+        review_id: &str,
+        author_user_id: &str,
+        expected_ref: Option<&str>,
+        request: CreateReviewConflictResolutionRequest,
+    ) -> Result<ReviewDetail, ServerError> {
+        if request.operations.is_empty() {
+            return Err(ServerError::InvalidRequest(
+                "conflict resolution must contain at least one operation".to_owned(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT r.draft_id, r.project_id, r.status AS review_status,
+                    r.version AS review_version, d.author_user_id, d.status AS draft_status,
+                    d.version AS draft_version, d.resource_scope, d.resource_kind,
+                    d.target_id, d.path
+             FROM reviews r
+             JOIN drafts d ON d.draft_id = r.draft_id
+             WHERE r.review_id = $1
+             FOR UPDATE",
+        )
+        .bind(review_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ServerError::not_found("review", review_id))?;
+
+        let draft_id: String = row.try_get("draft_id")?;
+        let draft_author_user_id: String = row.try_get("author_user_id")?;
+        if draft_author_user_id != author_user_id {
+            return Err(ServerError::Forbidden(
+                "only the draft author can resolve its conflict".to_owned(),
+            ));
+        }
+        let review_status: String = row.try_get("review_status")?;
+        if review_status != "approved" {
+            return Err(ServerError::invalid_transition(
+                "review",
+                &review_status,
+                "conflict_resolved",
+            ));
+        }
+        let review_version: i64 = row.try_get("review_version")?;
+        if review_version != request.expected_review_version {
+            return Err(ServerError::version_conflict(
+                "review",
+                request.expected_review_version,
+                review_version,
+            ));
+        }
+        let draft_status: String = row.try_get("draft_status")?;
+        if draft_status != "conflicted" {
+            return Err(ServerError::invalid_transition(
+                "draft",
+                &draft_status,
+                "conflict_resolved",
+            ));
+        }
+        let draft_version: i64 = row.try_get("draft_version")?;
+        if draft_version != request.expected_draft_version {
+            return Err(ServerError::version_conflict(
+                "draft",
+                request.expected_draft_version,
+                draft_version,
+            ));
+        }
+
+        let project_id: String = row.try_get("project_id")?;
+        let resource_scope = resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
+        let draft_resource = DraftResourceRef {
+            scope: resource_scope,
+            kind: draft_resource_kind(row.try_get::<String, _>("resource_kind")?.as_str())?,
+            id: row.try_get("target_id")?,
+            path: row.try_get("path")?,
+        };
+        for operation in &request.operations {
+            validate_draft_operation_resource(&draft_resource, operation)?;
+        }
+
+        let org_id = project_org_id(&mut tx, &project_id).await?;
+        let current_head = match resource_scope {
+            ResourceScope::Org => current_org_ref(&mut tx, &org_id).await?,
+            ResourceScope::Project => current_project_ref(&mut tx, &project_id).await?,
+        };
+        if current_head.as_deref() != expected_ref {
+            return Err(ServerError::precondition_failed(
+                expected_ref,
+                current_head.as_deref(),
+            ));
+        }
+
+        sqlx::query("DELETE FROM draft_operations WHERE draft_id = $1")
+            .bind(&draft_id)
+            .execute(&mut *tx)
+            .await?;
+        for operation in request.operations {
+            insert_draft_operation(&mut tx, &draft_id, operation).await?;
+        }
+        let next_draft_version: i64 = sqlx::query_scalar(
+            "UPDATE drafts
+             SET base_commit_id = $2, status = 'submitted', version = version + 1,
+                 updated_at = now()
+             WHERE draft_id = $1
+             RETURNING version",
+        )
+        .bind(&draft_id)
+        .bind(&current_head)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM draft_conflicts WHERE draft_id = $1")
+            .bind(&draft_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE reviews
+             SET status = 'open', version = version + 1, decision_body = NULL,
+                 updated_at = now()
+             WHERE review_id = $1",
+        )
+        .bind(review_id)
+        .execute(&mut *tx)
+        .await?;
+        insert_draft_event(
+            &mut tx,
+            &draft_id,
+            &project_id,
+            DraftEventType::Updated,
+            next_draft_version,
+            None,
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_review_detail(review_id).await
     }
 
     pub async fn list_project_commits(
@@ -2179,10 +2390,20 @@ pub enum ServerError {
         expected: i64,
         actual: i64,
     },
-    #[error("ref conflict: expected {expected:?}, actual {actual:?}")]
-    RefConflict {
+    #[error("ref precondition failed: expected {expected:?}, actual {actual:?}")]
+    PreconditionFailed {
         expected: Option<String>,
         actual: Option<String>,
+    },
+    #[error(
+        "draft {draft_id} is based on {base_commit_id:?}, but the current ref is {current_commit_id:?}"
+    )]
+    DraftConflict {
+        review_id: String,
+        draft_id: String,
+        scope: ResourceScope,
+        base_commit_id: Option<String>,
+        current_commit_id: Option<String>,
     },
     #[error("{entity} cannot transition from {from} to {to}")]
     InvalidTransition {
@@ -2227,8 +2448,8 @@ impl ServerError {
         }
     }
 
-    fn ref_conflict(expected: Option<&str>, actual: Option<&str>) -> Self {
-        Self::RefConflict {
+    fn precondition_failed(expected: Option<&str>, actual: Option<&str>) -> Self {
+        Self::PreconditionFailed {
             expected: expected.map(ToOwned::to_owned),
             actual: actual.map(ToOwned::to_owned),
         }
@@ -2931,21 +3152,50 @@ async fn load_draft_detail(
         updated_at: row.try_get("updated_at")?,
     };
     let operations = load_draft_operations(tx, draft_id).await?;
+    let conflict = load_draft_conflict(tx, draft_id).await?;
+    let conflict_count = i64::from(conflict.is_some());
 
     Ok(DraftDetail {
         draft,
         operations,
         sync_state: DraftSyncState {
-            status: DraftSyncStatus::Synced,
+            status: if conflict.is_some() {
+                DraftSyncStatus::Conflicted
+            } else {
+                DraftSyncStatus::Synced
+            },
             server_cursor: Some(format!(
                 "draft:{}:{}",
                 draft_id,
                 row.try_get::<i64, _>("version")?
             )),
             daemon_installation_id: Some(daemon_installation_id),
-            conflict_count: 0,
+            conflict_count,
         },
+        conflict,
     })
+}
+
+async fn load_draft_conflict(
+    tx: &mut Transaction<'_, Postgres>,
+    draft_id: &str,
+) -> Result<Option<DraftConflict>, ServerError> {
+    let row = sqlx::query(
+        "SELECT base_commit_id, current_commit_id, detected_at
+         FROM draft_conflicts
+         WHERE draft_id = $1",
+    )
+    .bind(draft_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.map(|row| {
+        Ok(DraftConflict {
+            base_commit_id: row.try_get("base_commit_id")?,
+            current_commit_id: row.try_get("current_commit_id")?,
+            detected_at: row.try_get("detected_at")?,
+        })
+    })
+    .transpose()
 }
 
 async fn load_draft_operations(

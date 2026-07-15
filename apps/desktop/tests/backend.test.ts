@@ -3,9 +3,14 @@ import {
   AuthenticationRequiredError,
   createDaemonFetch,
   daemonOperationsForDraft,
+  mapReviewWithConflict,
   syncStateForDaemonDraft,
 } from "../src/backend";
-import type { DaemonApiClient } from "@clumsies/api-client";
+import type {
+  ClumsiesApi,
+  DaemonApiClient,
+  PublicSchema,
+} from "@clumsies/api-client";
 import {
   createBlankDraft,
   createDraftFromResource,
@@ -197,5 +202,106 @@ describe("Desktop backend mapping", () => {
     };
 
     expect(syncStateForDaemonDraft(detail)).toBe("failed");
+  });
+
+  test("hydrates a conflicted review from its base and current commits", async () => {
+    const baseCommitId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const currentCommitId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const detail = {
+      review: {
+        review_id: "rev_conflict",
+        project_id: "prj_test",
+        draft_id: "drf_conflict",
+        author: { user_id: "usr_author", email: "author@example.com", display_name: "Author" },
+        title: "Update conflict handling",
+        description: "",
+        status: "approved",
+        version: 4,
+        created_at: "2026-07-15T00:00:00Z",
+        updated_at: "2026-07-15T00:02:00Z",
+      },
+      draft: {
+        draft_id: "drf_conflict",
+        project_id: "prj_test",
+        base_commit_id: baseCommitId,
+        author: { user_id: "usr_author", email: "author@example.com", display_name: "Author" },
+        title: "Update conflict handling",
+        description: "",
+        resource: {
+          scope: "project",
+          kind: "context",
+          id: "ctx_existing",
+          path: "context/existing.md",
+        },
+        status: "conflicted",
+        version: 3,
+        created_at: "2026-07-15T00:00:00Z",
+        updated_at: "2026-07-15T00:02:00Z",
+      },
+      operations: [{
+        operation_id: "dop_conflict",
+        action: "update",
+        resource: {
+          scope: "project",
+          kind: "context",
+          id: "ctx_existing",
+          path: "context/existing.md",
+        },
+        base_hash: "hash-base",
+        body: "# Draft",
+        new_path: null,
+        created_at: "2026-07-15T00:01:00Z",
+      }],
+      comments: [],
+      conflict: {
+        base_commit_id: baseCommitId,
+        current_commit_id: currentCommitId,
+        detected_at: "2026-07-15T00:02:00Z",
+      },
+    } as PublicSchema<"ReviewDetail">;
+    const api = {
+      commit: async (commitId: string) => ({
+        commit: {
+          commit_id: commitId,
+          scope: "project",
+          org_id: "org_test",
+          project_id: "prj_test",
+          tree_id: `tree_${commitId[0]}`,
+          parent_commit_id: null,
+          version: commitId === baseCommitId ? 1 : 2,
+          created_at: "2026-07-15T00:00:00Z",
+        },
+        tree: {
+          tree_id: `tree_${commitId[0]}`,
+          entries: [{
+            id: "ctx_existing",
+            type: "context",
+            scope: "project",
+            project_id: "prj_test",
+            path: "context/existing.md",
+            blob_id: `blob_${commitId[0]}`,
+            source: "project",
+          }],
+        },
+        blobs: [{
+          blob_id: `blob_${commitId[0]}`,
+          content: commitId === baseCommitId ? "# Base" : "# Current",
+        }],
+        project_org_selection: null,
+      }),
+    } as ClumsiesApi;
+
+    const review = await mapReviewWithConflict(api, detail);
+
+    expect(review.version).toBe(4);
+    expect(review.draftVersion).toBe(3);
+    expect(review.operations?.[0]?.body).toBe("# Draft");
+    expect(review.conflict).toEqual({
+      baseCommitId,
+      currentCommitId,
+      detectedAt: "2026-07-15",
+      baseContent: "# Base",
+      currentContent: "# Current",
+    });
   });
 });

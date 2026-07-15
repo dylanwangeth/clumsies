@@ -12,16 +12,17 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::api::{
     CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
-    CreateReviewCommentRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest,
-    CreateReviewRequest, DraftOperationBatchRequest, DraftOperationInput, OidcAuthorizationRequest,
-    OidcCallbackRequest, OrgRole, PersonalBundleRequest, PersonalBundleUpdateRequest, ProjectRole,
-    ReplaceProjectOrgSelectionRequest, ResourceScope, TokenRequest, UpdateAdminOrgRequest,
-    UpdateDraftRequest, UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
+    CreateReviewCommentRequest, CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest,
+    CreateReviewMergeRequest, CreateReviewRequest, DraftOperationBatchRequest, DraftOperationInput,
+    OidcAuthorizationRequest, OidcCallbackRequest, OrgRole, PersonalBundleRequest,
+    PersonalBundleUpdateRequest, ProjectRole, ReplaceProjectOrgSelectionRequest, ResourceScope,
+    TokenRequest, UpdateAdminOrgRequest, UpdateDraftRequest, UpdateMemberRequest,
+    UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use crate::auth::{AuthError, AuthPrincipal, AuthService};
 use crate::repository::{ServerError, ServerRepository};
 
-const CURRENT_SCHEMA_MIGRATION: i64 = 20260714000100;
+const CURRENT_SCHEMA_MIGRATION: i64 = 20260715000100;
 
 #[derive(Clone)]
 struct AppState {
@@ -151,6 +152,9 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
         post: create_review_comment,
     };
     "/api/v1/reviews/{review_id}/decisions" => { post: create_review_decision };
+    "/api/v1/reviews/{review_id}/conflict-resolutions" => {
+        post: create_review_conflict_resolution,
+    };
     "/api/v1/reviews/{review_id}/merges" => { post: create_review_merge };
     "/api/v1/org/commits" => { get: list_org_commits };
     "/api/v1/org/commit-state" => { get: get_org_commit_state };
@@ -1209,6 +1213,31 @@ async fn create_review_merge(
     ))
 }
 
+async fn create_review_conflict_resolution(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(review_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<CreateReviewConflictResolutionRequest>,
+) -> Result<Json<crate::api::ReviewDetail>, HttpError> {
+    state
+        .repository
+        .ensure_review_member(&principal, &review_id)
+        .await?;
+    let expected_ref = parse_ref_if_match(&headers)?;
+    Ok(Json(
+        state
+            .repository
+            .create_review_conflict_resolution(
+                &review_id,
+                &principal.user_id,
+                expected_ref.as_deref(),
+                request,
+            )
+            .await?,
+    ))
+}
+
 async fn list_project_commits(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
@@ -1366,14 +1395,15 @@ impl From<AuthError> for HttpError {
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match self {
+        let (status, code, message, details) = match self {
             Self::Server(error) => {
                 let status = match &error {
                     ServerError::Forbidden(_) => StatusCode::FORBIDDEN,
                     ServerError::NotFound { .. } => StatusCode::NOT_FOUND,
                     ServerError::AlreadyExists { .. }
                     | ServerError::VersionConflict { .. }
-                    | ServerError::RefConflict { .. } => StatusCode::CONFLICT,
+                    | ServerError::DraftConflict { .. } => StatusCode::CONFLICT,
+                    ServerError::PreconditionFailed { .. } => StatusCode::PRECONDITION_FAILED,
                     ServerError::InvalidTransition { .. } | ServerError::InvalidRequest(_) => {
                         StatusCode::BAD_REQUEST
                     }
@@ -1383,15 +1413,44 @@ impl IntoResponse for HttpError {
                     ServerError::Forbidden(_) => "forbidden",
                     ServerError::NotFound { .. } => "not_found",
                     ServerError::AlreadyExists { .. } => "already_exists",
-                    ServerError::VersionConflict { .. } | ServerError::RefConflict { .. } => {
-                        "version_conflict"
-                    }
+                    ServerError::VersionConflict { .. } => "version_conflict",
+                    ServerError::PreconditionFailed { .. } => "precondition_failed",
+                    ServerError::DraftConflict { .. } => "draft_conflict",
                     ServerError::InvalidTransition { .. } | ServerError::InvalidRequest(_) => {
                         "invalid_request"
                     }
                     ServerError::Sqlx(_) => "internal_error",
                 };
-                (status, code, error.to_string())
+                let details = match &error {
+                    ServerError::VersionConflict {
+                        entity,
+                        expected,
+                        actual,
+                    } => json!({
+                        "entity": entity,
+                        "expected_version": expected,
+                        "actual_version": actual,
+                    }),
+                    ServerError::PreconditionFailed { expected, actual } => json!({
+                        "expected_commit_id": expected,
+                        "current_commit_id": actual,
+                    }),
+                    ServerError::DraftConflict {
+                        review_id,
+                        draft_id,
+                        scope,
+                        base_commit_id,
+                        current_commit_id,
+                    } => json!({
+                        "review_id": review_id,
+                        "draft_id": draft_id,
+                        "scope": scope.as_str(),
+                        "base_commit_id": base_commit_id,
+                        "current_commit_id": current_commit_id,
+                    }),
+                    _ => json!({}),
+                };
+                (status, code, error.to_string(), details)
             }
             Self::Auth(error) => {
                 let status = match &error {
@@ -1407,7 +1466,7 @@ impl IntoResponse for HttpError {
                     }
                     _ => StatusCode::BAD_REQUEST,
                 };
-                (status, error.code(), error.to_string())
+                (status, error.code(), error.to_string(), json!({}))
             }
         };
         let request_id = format!("req_{}", uuid::Uuid::new_v4().simple());
@@ -1417,7 +1476,8 @@ impl IntoResponse for HttpError {
                 "error": {
                     "code": code,
                     "message": message,
-                    "request_id": request_id
+                    "request_id": request_id,
+                    "details": details
                 }
             })),
         )

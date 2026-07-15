@@ -449,10 +449,18 @@ pub struct DraftSyncState {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DraftConflict {
+    pub base_commit_id: Option<String>,
+    pub current_commit_id: Option<String>,
+    pub detected_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftDetail {
     pub draft: Draft,
     pub operations: Vec<DraftOperation>,
     pub sync_state: DraftSyncState,
+    pub conflict: Option<DraftConflict>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -566,6 +574,7 @@ pub struct ReviewDetail {
     pub draft: Draft,
     pub operations: Vec<DraftOperation>,
     pub comments: Vec<ReviewComment>,
+    pub conflict: Option<DraftConflict>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -611,6 +620,13 @@ pub enum ReviewDecision {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateReviewMergeRequest {
     pub expected_review_version: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateReviewConflictResolutionRequest {
+    pub expected_review_version: i64,
+    pub expected_draft_version: i64,
+    pub operations: Vec<DraftOperationInput>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

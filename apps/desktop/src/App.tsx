@@ -7,13 +7,14 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  DaemonBootstrapStatus,
-  DaemonHealth,
-  DaemonMcpStatus,
-  DaemonProjectConfig,
-  DaemonSyncStatus,
-  NativeInvoke,
+import {
+  ClumsiesApiError,
+  type DaemonBootstrapStatus,
+  type DaemonHealth,
+  type DaemonMcpStatus,
+  type DaemonProjectConfig,
+  type DaemonSyncStatus,
+  type NativeInvoke,
 } from "@clumsies/api-client";
 import type { LucideIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -25,6 +26,7 @@ import {
   daemonOperationsForDraft,
   DesktopBackend,
   mapBundle,
+  mapReviewWithConflict,
   mapReviewSummary,
   syncStateForDaemonDraft,
   type DesktopAccount,
@@ -1060,7 +1062,11 @@ export function App() {
             comments: review.comments,
             decisionNote: note,
           };
-        } catch {
+        } catch (error) {
+          setLoadState({
+            status: "failed",
+            message: error instanceof Error ? error.message : "Review decision failed.",
+          });
           return;
         }
       }
@@ -1116,7 +1122,43 @@ export function App() {
             { expected_review_version: review.version },
           );
           mergedCommitId = merge.commit_id;
-        } catch {
+        } catch (error) {
+          if (error instanceof ClumsiesApiError && apiErrorCode(error) === "draft_conflict") {
+            try {
+              const detail = await backend.api.review(reviewId);
+              const conflictedReview = await mapReviewWithConflict(backend.api, detail);
+              setReviews((current) =>
+                current.map((item) => (item.id === reviewId ? conflictedReview : item)),
+              );
+              setDrafts((current) =>
+                current.map((item) =>
+                  item.id === draft.id
+                    ? {
+                        ...item,
+                        serverVersion: detail.draft.version,
+                        status: "in_review",
+                        syncState: "conflict",
+                        conflict: conflictedReview.conflict
+                          ? {
+                              baseCommitId: conflictedReview.conflict.baseCommitId,
+                              currentCommitId: conflictedReview.conflict.currentCommitId,
+                              detectedAt: conflictedReview.conflict.detectedAt,
+                            }
+                          : null,
+                      }
+                    : item,
+                ),
+              );
+              setReviewFilter("approved");
+            } catch {
+              setLoadState({ status: "failed", message: "Conflict details could not be loaded." });
+            }
+          } else {
+            setLoadState({
+              status: "failed",
+              message: error instanceof Error ? error.message : "Review merge failed.",
+            });
+          }
           return;
         }
       }
@@ -1181,6 +1223,145 @@ export function App() {
       setReviewFilter("merged");
     },
     [drafts, removeMemoryWorkspaceTabs, reviews],
+  );
+
+  const resolveReviewConflict = useCallback(
+    async (reviewId: string, resolvedContent: string | null) => {
+      const review = reviews.find((item) => item.id === reviewId);
+      const draft = drafts.find(
+        (item) => item.id === review?.draftId || item.serverId === review?.draftId,
+      );
+      if (
+        !review?.conflict
+        || review.version === undefined
+        || review.draftVersion === undefined
+        || !review.operations?.length
+        || !draft
+      ) {
+        return;
+      }
+
+      const operations = review.operations.map((operation) => ({
+        action: operation.action,
+        resource: operation.resource,
+        base_hash: operation.baseHash,
+        body: operation.body,
+        new_path: operation.newPath,
+      }));
+      if (resolvedContent !== null) {
+        let bodyOperationIndex = -1;
+        for (let index = operations.length - 1; index >= 0; index -= 1) {
+          if (operations[index]?.action === "create" || operations[index]?.action === "update") {
+            bodyOperationIndex = index;
+            break;
+          }
+        }
+        if (bodyOperationIndex < 0) {
+          return;
+        }
+        operations[bodyOperationIndex] = {
+          ...operations[bodyOperationIndex],
+          body: resolvedContent,
+        };
+      }
+
+      const backend = backendRef.current;
+      if (backend?.api) {
+        try {
+          const detail = await backend.api.createReviewConflictResolution(
+            reviewId,
+            refEtag(review.conflict.currentCommitId),
+            {
+              expected_review_version: review.version,
+              expected_draft_version: review.draftVersion,
+              operations,
+            },
+          );
+          const resolvedReview = await mapReviewWithConflict(backend.api, detail);
+          setReviews((current) =>
+            current.map((item) => (item.id === reviewId ? resolvedReview : item)),
+          );
+          setDrafts((current) =>
+            current.map((item) =>
+              item.id === draft.id
+                ? {
+                    ...item,
+                    baseCommitId: review.conflict?.currentCommitId ?? null,
+                    serverVersion: detail.draft.version,
+                    status: "in_review",
+                    syncState: "synced",
+                    conflict: null,
+                    document:
+                      resolvedContent === null
+                        ? item.document
+                        : { ...item.document, body: resolvedContent },
+                  }
+                : item,
+            ),
+          );
+          setReviewFilter("open");
+        } catch (error) {
+          setLoadState({
+            status: "failed",
+            message:
+              error instanceof ClumsiesApiError && error.status === 412
+                ? "The current Ref changed. Refresh the conflict before resolving it."
+                : error instanceof Error
+                  ? error.message
+                  : "Conflict resolution failed.",
+          });
+        }
+        return;
+      }
+
+      setReviews((current) =>
+        current.map((item) =>
+          item.id === reviewId ? { ...item, status: "open", conflict: null } : item,
+        ),
+      );
+      setReviewFilter("open");
+    },
+    [drafts, reviews],
+  );
+
+  const discardReviewConflict = useCallback(
+    async (reviewId: string) => {
+      const review = reviews.find((item) => item.id === reviewId);
+      const draft = drafts.find(
+        (item) => item.id === review?.draftId || item.serverId === review?.draftId,
+      );
+      if (!review?.conflict || review.draftVersion === undefined || !draft) {
+        return;
+      }
+      const backend = backendRef.current;
+      if (backend?.api) {
+        try {
+          await backend.api.discardDraft(review.draftId, review.draftVersion);
+          const detail = await backend.api.review(reviewId);
+          const discardedReview = await mapReviewWithConflict(backend.api, detail);
+          setReviews((current) =>
+            current.map((item) => (item.id === reviewId ? discardedReview : item)),
+          );
+        } catch (error) {
+          setLoadState({
+            status: "failed",
+            message: error instanceof Error ? error.message : "Draft discard failed.",
+          });
+          return;
+        }
+      } else {
+        setReviews((current) =>
+          current.map((item) =>
+            item.id === reviewId
+              ? { ...item, status: "rejected", conflict: null }
+              : item,
+          ),
+        );
+      }
+      setDrafts((current) => current.filter((item) => item.id !== draft.id));
+      setReviewFilter("rejected");
+    },
+    [drafts, reviews],
   );
 
   const addReviewComment = useCallback(async (reviewId: string, body: string) => {
@@ -1905,6 +2086,7 @@ export function App() {
               sourceWidth={sourceWidth}
               tabStrip={contentTabStrip}
               onAddComment={addReviewComment}
+              onDiscardConflict={discardReviewConflict}
               onFilterChange={setReviewFilter}
               onMerge={mergeReview}
               onOpenSearch={() => setSearchOpen(true)}
@@ -1925,6 +2107,7 @@ export function App() {
                 });
               }}
               selectedId={selectedReviewId}
+              onResolveConflict={resolveReviewConflict}
               onSourceWidthChange={setSourceWidth}
               onUpdateStatus={updateReviewStatus}
             />
@@ -3571,11 +3754,13 @@ function ReviewsWorkspace({
   filter,
   filteredReviews,
   onAddComment,
+  onDiscardConflict,
   onFilterChange,
   onMerge,
   onOpenSearch,
   onPin,
   onSelect,
+  onResolveConflict,
   onSourceWidthChange,
   onUpdateStatus,
   resource,
@@ -3589,11 +3774,13 @@ function ReviewsWorkspace({
   filter: ReviewFilter;
   filteredReviews: ReviewRecord[];
   onAddComment: (reviewId: string, body: string) => void;
+  onDiscardConflict: (reviewId: string) => void;
   onFilterChange: (filter: ReviewFilter) => void;
   onMerge: (reviewId: string) => void;
   onOpenSearch: () => void;
   onPin: (id: string) => void;
   onSelect: (id: string) => void;
+  onResolveConflict: (reviewId: string, resolvedContent: string | null) => void;
   onSourceWidthChange: (width: number) => void;
   onUpdateStatus: (reviewId: string, status: ReviewStatus, note: string | null) => void;
   resource: AuthorityResource | null;
@@ -3646,10 +3833,12 @@ function ReviewsWorkspace({
           review={review}
           onAddComment={(body) => onAddComment(review.id, body)}
           onApprove={() => onUpdateStatus(review.id, "approved", "Approved for merge.")}
+          onDiscardConflict={() => onDiscardConflict(review.id)}
           onMerge={() => onMerge(review.id)}
           onReject={() =>
             onUpdateStatus(review.id, "rejected", "Changes requested before resubmission.")
           }
+          onResolveConflict={(content) => onResolveConflict(review.id, content)}
         />
       ) : (
         <EmptyState
@@ -3699,16 +3888,20 @@ function ReviewEditor({
   draft,
   onAddComment,
   onApprove,
+  onDiscardConflict,
   onMerge,
   onReject,
+  onResolveConflict,
   resource,
   review,
 }: {
   draft: DraftRecord;
   onAddComment: (body: string) => void;
   onApprove: () => void;
+  onDiscardConflict: () => void;
   onMerge: () => void;
   onReject: () => void;
+  onResolveConflict: (resolvedContent: string | null) => void;
   resource: AuthorityResource | null;
   review: ReviewRecord;
 }) {
@@ -3722,7 +3915,17 @@ function ReviewEditor({
           <small>Base v{draft.baseVersion ?? 0}</small>
         </div>
         <div className="item-tools">
-          {review.status === "open" ? (
+          {review.conflict ? (
+            <>
+              <IconButton icon={RefreshCw} label="Refresh Conflict" onClick={onMerge} />
+              <IconButton
+                icon={Trash2}
+                label="Discard Conflicted Draft"
+                onClick={onDiscardConflict}
+                tone="danger"
+              />
+            </>
+          ) : review.status === "open" ? (
             <>
               <IconButton icon={Check} label="Approve Review" onClick={onApprove} />
               <IconButton
@@ -3742,22 +3945,30 @@ function ReviewEditor({
           <h1>{review.title}</h1>
           <p>{draft.document.path}</p>
         </header>
-        <pre className="diff-viewer" aria-label="Resource changes">
-          {diff.map((line, index) => (
-            <span
-              className={
-                line.startsWith("+")
-                  ? "diff-add"
-                  : line.startsWith("-")
-                    ? "diff-remove"
-                    : "diff-context"
-              }
-              key={`${index}-${line}`}
-            >
-              {line || " "}
-            </span>
-          ))}
-        </pre>
+        {review.conflict ? (
+          <ReviewConflictResolver
+            draft={draft}
+            onResolve={onResolveConflict}
+            review={review}
+          />
+        ) : (
+          <pre className="diff-viewer" aria-label="Resource changes">
+            {diff.map((line, index) => (
+              <span
+                className={
+                  line.startsWith("+")
+                    ? "diff-add"
+                    : line.startsWith("-")
+                      ? "diff-remove"
+                      : "diff-context"
+                }
+                key={`${index}-${line}`}
+              >
+                {line || " "}
+              </span>
+            ))}
+          </pre>
+        )}
         <section className="comments" aria-label="Review discussion">
           {review.comments.map((entry) => (
             <div className="comment" key={entry.id}>
@@ -3788,6 +3999,113 @@ function ReviewEditor({
           </div>
         </section>
       </div>
+    </section>
+  );
+}
+
+function ReviewConflictResolver({
+  draft,
+  onResolve,
+  review,
+}: {
+  draft: DraftRecord;
+  onResolve: (resolvedContent: string | null) => void;
+  review: ReviewRecord;
+}) {
+  const draftContent = review.operations
+    ?.slice()
+    .reverse()
+    .find((operation) => operation.action === "create" || operation.action === "update")
+    ?.body ?? null;
+  const terminalOperation = review.operations?.[review.operations.length - 1] ?? null;
+  const operationOnlyLabel = terminalOperation?.action === "rename"
+    ? `Rename to ${terminalOperation.newPath ?? draft.document.path}`
+    : terminalOperation?.action === "delete"
+      ? `Delete ${draft.document.path}`
+      : "No editable content";
+  const operationOnlyTone = terminalOperation?.action === "delete" ? " danger" : "";
+  const [resolvedContent, setResolvedContent] = useState(draftContent ?? "");
+
+  useEffect(() => {
+    setResolvedContent(draftContent ?? "");
+  }, [draftContent, review.id, review.draftVersion]);
+
+  if (!review.conflict) {
+    return null;
+  }
+
+  return (
+    <section className="conflict-resolver" aria-label="Draft conflict resolution">
+      <div className="conflict-sources">
+        <ConflictSource
+          commitId={review.conflict.baseCommitId}
+          content={review.conflict.baseContent}
+          label="Base"
+        />
+        <ConflictSource
+          commitId={review.conflict.currentCommitId}
+          content={review.conflict.currentContent}
+          label="Current"
+        />
+        <ConflictSource
+          commitId={null}
+          content={draftContent ?? operationOnlyLabel}
+          label="Draft"
+        />
+      </div>
+      <div className="conflict-result">
+        <header>
+          <span>Resolved</span>
+          <button
+            className="button primary"
+            onClick={() => onResolve(draftContent === null ? null : resolvedContent)}
+            type="button"
+          >
+            <GitPullRequest aria-hidden="true" size={14} />
+            Reopen Review
+          </button>
+        </header>
+        {draftContent === null ? (
+          <div className={`conflict-operation${operationOnlyTone}`}>
+            {terminalOperation?.action === "delete" ? (
+              <Trash2 aria-hidden="true" size={16} />
+            ) : (
+              <FilePenLine aria-hidden="true" size={16} />
+            )}
+            <span>{operationOnlyLabel}</span>
+          </div>
+        ) : (
+          <div className="conflict-resolution-editor">
+            <TextEditor
+              ariaLabel="Resolved draft content"
+              onChange={setResolvedContent}
+              path={draft.document.path}
+              readOnly={false}
+              value={resolvedContent}
+            />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ConflictSource({
+  commitId,
+  content,
+  label,
+}: {
+  commitId: string | null;
+  content: string | null;
+  label: string;
+}) {
+  return (
+    <section className="conflict-source">
+      <header>
+        <span>{label}</span>
+        {commitId ? <code title={commitId}>{commitId.slice(0, 8)}</code> : null}
+      </header>
+      <pre>{content ?? "Not present"}</pre>
     </section>
   );
 }
@@ -4546,6 +4864,24 @@ function findMemoryTabItem(
       (item) => item.selectionId === tab.targetId,
     ) ?? null
   );
+}
+
+function refEtag(commitId: string | null): string {
+  return `"${commitId ?? "ref-none"}"`;
+}
+
+function apiErrorCode(error: ClumsiesApiError): string | null {
+  const envelope = error.details;
+  if (!envelope || typeof envelope !== "object" || !("error" in envelope)) {
+    return null;
+  }
+  const detail = envelope.error;
+  return detail
+    && typeof detail === "object"
+    && "code" in detail
+    && typeof detail.code === "string"
+    ? detail.code
+    : null;
 }
 
 function daemonRows(state: LoadState): [string, string][] {

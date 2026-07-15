@@ -23,6 +23,7 @@ import {
   type MemoryDocument,
   type MemoryKind,
   type PersonalBundle,
+  type ReviewConflict,
   type ReviewRecord,
   type SyncState,
 } from "./model";
@@ -162,7 +163,9 @@ export class DesktopBackend {
         mapDaemonDraft(draft, projects, resources),
       ),
       bundles: bundleDetails.map(mapBundle),
-      reviews: reviewDetails.map(mapReview),
+      reviews: await Promise.all(
+        reviewDetails.map((detail) => mapReviewWithConflict(api, detail)),
+      ),
       runtime: { bootstrap, health, projectConfig, syncStatus, mcpStatus },
     };
   }
@@ -489,8 +492,18 @@ function mapDaemonDraft(
     kind,
     operation,
     origin: draftOrigin(detail),
-    status: summary.status === "submitted" ? "in_review" : "editing",
+    status:
+      summary.status === "submitted" || summary.status === "conflicted"
+        ? "in_review"
+        : "editing",
     syncState: draftSyncState(detail),
+    conflict: summary.conflict
+      ? {
+          baseCommitId: summary.conflict.base_commit_id,
+          currentCommitId: summary.conflict.current_commit_id,
+          detectedAt: formatDate(summary.conflict.detected_at),
+        }
+      : null,
     baseVersion: resource?.version ?? null,
     updatedAt: formatDate(summary.updated_at),
     document,
@@ -524,6 +537,23 @@ export function mapReview(detail: PublicSchema<"ReviewDetail">): ReviewRecord {
       detail.review.author.display_name ?? detail.review.author.email,
     status: detail.review.status,
     version: detail.review.version,
+    draftVersion: detail.draft.version,
+    operations: detail.operations.map((operation) => ({
+      action: operation.action,
+      resource: operation.resource,
+      baseHash: operation.base_hash,
+      body: operation.body ?? null,
+      newPath: operation.new_path ?? null,
+    })),
+    conflict: detail.conflict
+      ? {
+          baseCommitId: detail.conflict.base_commit_id,
+          currentCommitId: detail.conflict.current_commit_id,
+          detectedAt: formatDate(detail.conflict.detected_at),
+          baseContent: null,
+          currentContent: null,
+        }
+      : null,
     createdAt: formatDate(detail.review.created_at),
     decisionNote: null,
     comments: detail.comments.map((comment) => ({
@@ -533,6 +563,52 @@ export function mapReview(detail: PublicSchema<"ReviewDetail">): ReviewRecord {
       createdAt: formatDate(comment.created_at),
     })),
   };
+}
+
+export async function mapReviewWithConflict(
+  api: ClumsiesApi,
+  detail: PublicSchema<"ReviewDetail">,
+): Promise<ReviewRecord> {
+  const review = mapReview(detail);
+  if (!review.conflict) {
+    return review;
+  }
+  const conflict = await hydrateReviewConflict(api, detail, review.conflict);
+  return { ...review, conflict };
+}
+
+async function hydrateReviewConflict(
+  api: ClumsiesApi,
+  detail: PublicSchema<"ReviewDetail">,
+  conflict: ReviewConflict,
+): Promise<ReviewConflict> {
+  const [base, current] = await Promise.all([
+    conflict.baseCommitId ? api.commit(conflict.baseCommitId) : null,
+    conflict.currentCommitId ? api.commit(conflict.currentCommitId) : null,
+  ]);
+  return {
+    ...conflict,
+    baseContent: commitResourceContent(base, detail.draft.resource),
+    currentContent: commitResourceContent(current, detail.draft.resource),
+  };
+}
+
+function commitResourceContent(
+  payload: PublicSchema<"CommitPayload"> | null,
+  resource: PublicSchema<"DraftResourceRef">,
+): string | null {
+  if (!payload) {
+    return null;
+  }
+  const entry = payload.tree.entries.find((candidate) =>
+    resource.id
+      ? candidate.id === resource.id
+      : candidate.path === resource.path && candidate.type === resource.kind,
+  );
+  if (!entry) {
+    return null;
+  }
+  return payload.blobs.find((blob) => blob.blob_id === entry.blob_id)?.content ?? null;
 }
 
 export function mapReviewSummary(
@@ -545,6 +621,7 @@ export function mapReviewSummary(
     author: review.author.display_name ?? review.author.email,
     status: review.status,
     version: review.version,
+    conflict: null,
     createdAt: formatDate(review.created_at),
     decisionNote: null,
     comments: [],

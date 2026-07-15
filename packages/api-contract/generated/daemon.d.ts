@@ -150,6 +150,7 @@ export interface components {
             resource_kind: components["schemas"]["DaemonDraftResourceKind"];
             target_id: string | null;
             path: string | null;
+            conflict: components["schemas"]["DaemonDraftConflict"] | null;
             status: components["schemas"]["DaemonLocalDraftStatus"];
             /** Format: date-time */
             created_at: string;
@@ -157,6 +158,12 @@ export interface components {
             updated_at: string;
             pending_operation_count: number;
             failed_operation_count: number;
+        };
+        DaemonDraftConflict: {
+            base_commit_id: string | null;
+            current_commit_id: string | null;
+            /** Format: date-time */
+            detected_at: string;
         };
         DaemonLocalDraftOperation: {
             local_operation_id: string;
@@ -226,7 +233,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        SyncState: "idle" | "queued" | "syncing" | "degraded" | "failed";
+        SyncState: "idle" | "queued" | "syncing" | "degraded" | "conflicted" | "failed";
         /** @enum {string} */
         DaemonDraftResourceKind: "context" | "rule" | "workflow" | "metaprompt";
         /** @enum {string} */

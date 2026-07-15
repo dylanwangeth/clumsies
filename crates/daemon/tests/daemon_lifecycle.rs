@@ -21,6 +21,9 @@ use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+const COMMIT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const COMMIT_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
 #[tokio::test]
 async fn health_initializes_local_database_and_stable_installation_id() {
     let (root, state, service) = common::test_daemon().await;
@@ -760,6 +763,79 @@ async fn failed_remote_projection_does_not_advance_the_event_cursor() {
         .await
         .unwrap();
     assert_eq!(event_count, 0);
+}
+
+#[tokio::test]
+async fn server_conflict_event_converges_into_local_draft_state() {
+    let conflict_state = FakeConflictProjectionState {
+        resolved: Arc::new(AtomicUsize::new(0)),
+    };
+    let app = Router::new()
+        .route("/api/v1/draft-events", get(fake_conflicted_draft_events))
+        .route("/api/v1/drafts/{draft_id}", get(fake_conflicted_draft))
+        .with_state(conflict_state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_conflict".to_owned());
+    config.project.access_token = Some("test-token".to_owned());
+    let state = DaemonState::initialize(config).await.unwrap();
+    let service = DaemonIpcService::new(state);
+
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+
+    let drafts = service
+        .list_drafts(DaemonDraftListQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(drafts.items.len(), 1);
+    let draft = &drafts.items[0];
+    assert_eq!(draft.status, DaemonLocalDraftStatus::Conflicted);
+    let conflict = draft.conflict.as_ref().unwrap();
+    assert_eq!(conflict.base_commit_id.as_deref(), Some(COMMIT_A));
+    assert_eq!(conflict.current_commit_id.as_deref(), Some(COMMIT_B));
+
+    let sync = service.sync_status().await.unwrap();
+    assert_eq!(sync.conflict_count, 1);
+    assert_eq!(sync.draft_sync.state, SyncState::Conflicted);
+    assert_eq!(sync.failed_operation_count, 0);
+
+    conflict_state.resolved.store(1, Ordering::SeqCst);
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+
+    let resolved = service.get_draft("drf_conflict").await.unwrap();
+    assert_eq!(resolved.draft.status, DaemonLocalDraftStatus::Submitted);
+    assert_eq!(resolved.draft.base_commit_id.as_deref(), Some(COMMIT_B));
+    assert_eq!(resolved.draft.conflict, None);
+    assert_eq!(resolved.operations.len(), 1);
+    assert_eq!(
+        resolved.operations[0]
+            .operation
+            .update
+            .as_ref()
+            .unwrap()
+            .body,
+        "Resolved content"
+    );
+    let sync = service.sync_status().await.unwrap();
+    assert_eq!(sync.conflict_count, 0);
+    assert_eq!(sync.draft_sync.state, SyncState::Idle);
 }
 
 #[tokio::test]
@@ -1577,7 +1653,8 @@ async fn fake_get_draft(
             "server_cursor": "draft:drf_remote:2",
             "daemon_installation_id": "daemon_other",
             "conflict_count": 0
-        }
+        },
+        "conflict": null
     }))
 }
 
@@ -1600,7 +1677,8 @@ async fn fake_stale_draft(
             "created_at": "2026-07-08T00:00:00Z",
             "updated_at": "2026-07-08T00:00:00Z"
         },
-        "operations": []
+        "operations": [],
+        "conflict": null
     }))
 }
 
@@ -1627,6 +1705,11 @@ struct FakeDraftEventQuery {
     after_cursor: Option<String>,
 }
 
+#[derive(Clone)]
+struct FakeConflictProjectionState {
+    resolved: Arc<AtomicUsize>,
+}
+
 async fn fake_list_draft_events(
     axum::extract::Query(query): axum::extract::Query<FakeDraftEventQuery>,
 ) -> Json<serde_json::Value> {
@@ -1651,5 +1734,130 @@ async fn fake_list_draft_events(
         ],
         "next_cursor": "42",
         "has_more": false
+    }))
+}
+
+async fn fake_conflicted_draft_events(
+    axum::extract::State(state): axum::extract::State<FakeConflictProjectionState>,
+    axum::extract::Query(query): axum::extract::Query<FakeDraftEventQuery>,
+) -> Json<serde_json::Value> {
+    if query.after_cursor.as_deref() == Some("conflict:3")
+        && state.resolved.load(Ordering::SeqCst) > 0
+    {
+        return Json(json!({
+            "events": [
+                {
+                    "event_id": "evt_resolved",
+                    "draft_id": "drf_conflict",
+                    "project_id": "prj_conflict",
+                    "event_type": "updated",
+                    "version": 4,
+                    "daemon_installation_id": null,
+                    "created_at": "2026-07-15T00:02:00Z"
+                }
+            ],
+            "next_cursor": "resolved:4",
+            "has_more": false
+        }));
+    }
+    if query.after_cursor.is_some() {
+        return Json(json!({
+            "events": [],
+            "next_cursor": null,
+            "has_more": false
+        }));
+    }
+    Json(json!({
+        "events": [
+            {
+                "event_id": "evt_conflict",
+                "draft_id": "drf_conflict",
+                "project_id": "prj_conflict",
+                "event_type": "conflicted",
+                "version": 3,
+                "daemon_installation_id": null,
+                "created_at": "2026-07-15T00:00:00Z"
+            }
+        ],
+        "next_cursor": "conflict:3",
+        "has_more": false
+    }))
+}
+
+async fn fake_conflicted_draft(
+    axum::extract::State(state): axum::extract::State<FakeConflictProjectionState>,
+    axum::extract::Path(draft_id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    if state.resolved.load(Ordering::SeqCst) > 0 {
+        return Json(json!({
+            "draft": {
+                "draft_id": draft_id,
+                "project_id": "prj_conflict",
+                "base_commit_id": COMMIT_B,
+                "resource": {
+                    "scope": "project",
+                    "kind": "context",
+                    "id": "ctx_conflict",
+                    "path": "docs/conflict.md"
+                },
+                "status": "submitted",
+                "version": 4,
+                "created_at": "2026-07-15T00:00:00Z",
+                "updated_at": "2026-07-15T00:02:00Z"
+            },
+            "operations": [
+                {
+                    "operation_id": "dop_resolved",
+                    "action": "update",
+                    "resource": {
+                        "scope": "project",
+                        "kind": "context",
+                        "id": "ctx_conflict",
+                        "path": "docs/conflict.md"
+                    },
+                    "body": "Resolved content",
+                    "new_path": null,
+                    "created_at": "2026-07-15T00:02:00Z"
+                }
+            ],
+            "conflict": null
+        }));
+    }
+    Json(json!({
+        "draft": {
+            "draft_id": draft_id,
+            "project_id": "prj_conflict",
+            "base_commit_id": COMMIT_A,
+            "resource": {
+                "scope": "project",
+                "kind": "context",
+                "id": "ctx_conflict",
+                "path": "docs/conflict.md"
+            },
+            "status": "conflicted",
+            "version": 3,
+            "created_at": "2026-07-15T00:00:00Z",
+            "updated_at": "2026-07-15T00:01:00Z"
+        },
+        "operations": [
+            {
+                "operation_id": "dop_conflict",
+                "action": "update",
+                "resource": {
+                    "scope": "project",
+                    "kind": "context",
+                    "id": "ctx_conflict",
+                    "path": "docs/conflict.md"
+                },
+                "body": "Draft content",
+                "new_path": null,
+                "created_at": "2026-07-15T00:00:30Z"
+            }
+        ],
+        "conflict": {
+            "base_commit_id": COMMIT_A,
+            "current_commit_id": COMMIT_B,
+            "detected_at": "2026-07-15T00:01:00Z"
+        }
     }))
 }
