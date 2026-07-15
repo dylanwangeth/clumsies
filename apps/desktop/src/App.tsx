@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   ClumsiesApiError,
   type DaemonBootstrapStatus,
@@ -112,6 +113,7 @@ import {
   type MemoryTabSurface,
   type WorkspaceTab,
 } from "./workspace-tabs";
+import { WindowTitleBar } from "./window-title-bar";
 
 type PrimaryView = "Hub" | "Local" | "Bundles" | "Reviews";
 type UtilityView = "Diagnostics" | "Settings";
@@ -218,6 +220,7 @@ const kindIcons: Record<MemoryKind, LucideIcon> = {
 };
 
 const reviewFilters: ReviewFilter[] = ["open", "approved", "rejected", "merged"];
+const DESKTOP_AUTHENTICATED_EVENT = "desktop-authenticated";
 
 const reviewFilterIcons: Record<ReviewFilter, LucideIcon> = {
   open: GitPullRequest,
@@ -382,18 +385,32 @@ export function App() {
         syncStatus: backendState.runtime.syncStatus,
         mcpStatus: backendState.runtime.mcpStatus,
       });
+      await invoke("present_main_window");
     } catch (error) {
       if (error instanceof AuthenticationRequiredError) {
         setAccount(null);
         setLoadState({
           status: "authentication_required",
         });
+        try {
+          await invoke("present_authentication_window");
+        } catch (presentationError) {
+          setLoadState({
+            status: "failed",
+            message:
+              presentationError instanceof Error
+                ? presentationError.message
+                : String(presentationError),
+          });
+          await invoke("present_main_window").catch(() => undefined);
+        }
         return;
       }
       setLoadState({
         status: "failed",
         message: error instanceof Error ? error.message : String(error),
       });
+      await invoke("present_main_window").catch(() => undefined);
     }
   }, []);
 
@@ -453,26 +470,41 @@ export function App() {
     }
   }, [refreshBackend]);
 
-  const authenticateDesktop = useCallback(async () => {
-    const backend = backendRef.current;
-    if (!backend) {
-      return;
-    }
-    setLoadState({ status: "loading" });
-    try {
-      await backend.authenticate();
-      await refreshBackend();
-    } catch (error) {
-      setLoadState({
-        status: "authentication_required",
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }, [refreshBackend]);
-
   useEffect(() => {
     void refreshBackend();
   }, [refreshBackend]);
+
+  useEffect(() => {
+    if (previewMode) {
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen(DESKTOP_AUTHENTICATED_EVENT, () => {
+      void refreshBackend();
+    })
+      .then((dispose) => {
+        if (disposed) {
+          dispose();
+        } else {
+          unlisten = dispose;
+        }
+      })
+      .catch((error) => {
+        if (disposed) {
+          return;
+        }
+        setLoadState({
+          status: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        void invoke("present_main_window").catch(() => undefined);
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [previewMode, refreshBackend]);
 
   useEffect(() => {
     try {
@@ -2041,7 +2073,7 @@ export function App() {
 
   return (
     <main className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
-      <TitleBar />
+      <WindowTitleBar />
       <Sidebar
         account={account}
         collapsed={sidebarCollapsed}
@@ -2075,10 +2107,7 @@ export function App() {
           <section className="content-region">
             <div className="workspace-content">
               {loadState.status === "authentication_required" ? (
-                <AuthenticationView
-                  message={loadState.message}
-                  onAuthenticate={authenticateDesktop}
-                />
+                <ConnectionStateView state="loading" onRetry={refreshBackend} />
               ) : loadState.status === "loading" && !previewMode ? (
                 <ConnectionStateView state="loading" onRetry={refreshBackend} />
               ) : loadState.status === "failed" && selectedView !== "Diagnostics" ? (
@@ -2343,20 +2372,6 @@ export function App() {
         </div>
       ) : null}
     </main>
-  );
-}
-
-function TitleBar() {
-  return (
-    <div className="title-bar" data-tauri-drag-region>
-      {!isTauriRuntime() ? (
-        <div className="preview-traffic-lights" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -4885,33 +4900,6 @@ function updateProgressPercent(progress: DesktopUpdateProgress): number | null {
     return null;
   }
   return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
-}
-
-function AuthenticationView({
-  message,
-  onAuthenticate,
-}: {
-  message?: string;
-  onAuthenticate: () => void;
-}) {
-  return (
-    <section className="session-view" aria-labelledby="sign-in-title">
-      <form
-        className="session-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onAuthenticate();
-        }}
-      >
-        <h1 id="sign-in-title">Sign in</h1>
-        <p>Continue with your organization account.</p>
-        {message ? <p className="session-error" role="alert">{message}</p> : null}
-        <button className="button primary" type="submit">
-          Continue with SSO
-        </button>
-      </form>
-    </section>
-  );
 }
 
 function ConnectionStateView({

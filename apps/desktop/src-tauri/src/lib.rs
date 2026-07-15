@@ -14,6 +14,7 @@ use daemon::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -26,6 +27,7 @@ mod lifecycle;
 const OIDC_CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const OIDC_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CALLBACK_HEADER_BYTES: usize = 16 * 1024;
+const DESKTOP_AUTHENTICATED_EVENT: &str = "desktop-authenticated";
 
 #[tauri::command]
 async fn read_daemon_bootstrap_status() -> Result<DaemonBootstrapStatus, String> {
@@ -183,7 +185,21 @@ async fn authenticate_desktop(app: tauri::AppHandle) -> Result<DaemonProjectConf
     }
     .await;
     let _ = write_loopback_response(&mut stream, result.is_ok()).await;
+    if result.is_ok() {
+        app.emit_to("main", DESKTOP_AUTHENTICATED_EVENT, ())
+            .map_err(|error| format!("failed to notify the Desktop after sign-in: {error}"))?;
+    }
     result
+}
+
+#[tauri::command]
+async fn present_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    lifecycle::present_main_window(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn present_authentication_window(app: tauri::AppHandle) -> Result<(), String> {
+    lifecycle::present_authentication_window(&app).map_err(|error| error.to_string())
 }
 
 #[derive(Serialize)]
@@ -503,7 +519,9 @@ pub fn run() {
             read_daemon_draft,
             store_daemon_draft_operation,
             proxy_server_request,
-            authenticate_desktop
+            authenticate_desktop,
+            present_main_window,
+            present_authentication_window
         ])
         .build(tauri::generate_context!())
         .expect("failed to build clumsies desktop");

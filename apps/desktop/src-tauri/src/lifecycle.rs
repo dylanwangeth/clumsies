@@ -1,8 +1,13 @@
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{App, AppHandle, Manager, RunEvent, Runtime, Window, WindowEvent};
+use tauri::webview::PageLoadEvent;
+use tauri::{
+    App, AppHandle, LogicalPosition, Manager, RunEvent, Runtime, TitleBarStyle, WebviewUrl,
+    WebviewWindowBuilder, Window, WindowEvent,
+};
 
 const MAIN_WINDOW_LABEL: &str = "main";
+const AUTHENTICATION_WINDOW_LABEL: &str = "authentication";
 const TRAY_ICON_ID: &str = "clumsies";
 const TRAY_SHOW_ID: &str = "clumsies.show";
 const TRAY_QUIT_ID: &str = "clumsies.quit";
@@ -48,7 +53,7 @@ pub fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::Men
 }
 
 pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
-    if window.label() != MAIN_WINDOW_LABEL {
+    if !is_managed_window(window.label()) {
         return;
     }
     if let WindowEvent::CloseRequested { api, .. } = event {
@@ -90,20 +95,89 @@ fn tray_action(event: &TrayIconEvent) -> Option<LifecycleAction> {
 fn apply_action<R: Runtime>(app: &AppHandle<R>, action: LifecycleAction) {
     match action {
         LifecycleAction::ShowMainWindow => {
-            let _ = show_main_window(app);
+            let _ = show_primary_window(app);
         }
         LifecycleAction::Quit => app.exit(0),
     }
 }
 
-fn show_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+pub fn present_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(AUTHENTICATION_WINDOW_LABEL) {
+        window.destroy()?;
+    }
+    show_window(app, MAIN_WINDOW_LABEL)
+}
+
+pub fn present_authentication_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        main.hide()?;
+    }
+    if app
+        .get_webview_window(AUTHENTICATION_WINDOW_LABEL)
+        .is_some()
+    {
+        return show_window(app, AUTHENTICATION_WINDOW_LABEL);
+    }
+
+    let builder = WebviewWindowBuilder::new(
+        app,
+        AUTHENTICATION_WINDOW_LABEL,
+        WebviewUrl::App("index.html?surface=authentication".into()),
+    )
+    .title("Clumsies")
+    .inner_size(500.0, 560.0)
+    .min_inner_size(500.0, 560.0)
+    .max_inner_size(500.0, 560.0)
+    .resizable(false)
+    .maximizable(false)
+    .center()
+    .decorations(true)
+    .visible(false)
+    .focused(true)
+    .on_page_load(|window, payload| {
+        if matches!(payload.event(), PageLoadEvent::Finished) {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    });
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(LogicalPosition::new(14.0, 16.0));
+    builder.build()?;
     app.show()?;
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+    Ok(())
+}
+
+fn show_primary_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let label = primary_window_label(
+        app.get_webview_window(AUTHENTICATION_WINDOW_LABEL)
+            .is_some(),
+    );
+    show_window(app, label)
+}
+
+fn show_window<R: Runtime>(app: &AppHandle<R>, label: &str) -> tauri::Result<()> {
+    app.show()?;
+    if let Some(window) = app.get_webview_window(label) {
         window.show()?;
         window.unminimize()?;
         window.set_focus()?;
     }
     Ok(())
+}
+
+fn primary_window_label(authentication_window_exists: bool) -> &'static str {
+    if authentication_window_exists {
+        AUTHENTICATION_WINDOW_LABEL
+    } else {
+        MAIN_WINDOW_LABEL
+    }
+}
+
+fn is_managed_window(label: &str) -> bool {
+    matches!(label, MAIN_WINDOW_LABEL | AUTHENTICATION_WINDOW_LABEL)
 }
 
 #[cfg(test)]
@@ -149,4 +223,18 @@ mod tests {
         );
         assert_eq!(tray_action(&secondary_release), None);
     }
+
+    #[test]
+    fn authentication_window_is_primary_until_session_load_completes() {
+        assert_eq!(primary_window_label(true), AUTHENTICATION_WINDOW_LABEL);
+        assert_eq!(primary_window_label(false), MAIN_WINDOW_LABEL);
+    }
+
+    #[test]
+    fn close_hides_only_managed_desktop_windows() {
+        assert!(is_managed_window(MAIN_WINDOW_LABEL));
+        assert!(is_managed_window(AUTHENTICATION_WINDOW_LABEL));
+        assert!(!is_managed_window("oauth-callback"));
+    }
+
 }

@@ -45,6 +45,13 @@ body,
   overflow: hidden;
 }
 
+html[data-surface="authentication"],
+html[data-surface="authentication"] body,
+html[data-surface="authentication"] #root {
+  min-width: 0;
+  min-height: 0;
+}
+
 body {
   background: var(--bg-app);
 }
@@ -151,6 +158,94 @@ pre {
   grid-row: 1;
   border-bottom: 1px solid var(--border);
   background: var(--bg-pane);
+}
+
+.authentication-shell {
+  --title-bar-height: 30px;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  grid-template-rows: var(--title-bar-height) minmax(0, 1fr);
+  background: #fbfafb;
+}
+
+.authentication-title-bar {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.authentication-content {
+  display: grid;
+  width: 100%;
+  min-height: 0;
+  align-content: center;
+  justify-items: center;
+  gap: 22px;
+  padding: 34px 56px 52px;
+  text-align: center;
+}
+
+.authentication-logo {
+  width: 92px;
+  height: 92px;
+  object-fit: contain;
+}
+
+.authentication-heading {
+  display: grid;
+  gap: 8px;
+}
+
+.authentication-heading h1 {
+  color: var(--text);
+  font-size: 25px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.authentication-heading p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.authentication-form {
+  display: grid;
+  width: min(340px, 100%);
+  gap: 12px;
+}
+
+.authentication-submit {
+  display: inline-flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #ad286c;
+  border-radius: 7px;
+  background: #bd2f75;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1;
+  padding: 8px 14px;
+}
+
+.authentication-submit:hover:not(:disabled) {
+  background: #a92667;
+}
+
+.authentication-feedback,
+.authentication-error {
+  min-height: 34px;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.authentication-error {
+  color: var(--danger);
 }
 
 .preview-traffic-lights {
@@ -2331,31 +2426,10 @@ pre {
   padding: 32px;
 }
 
-.session-form {
-  display: grid;
-  width: min(360px, 100%);
-  gap: 14px;
-}
-
-.session-form h1 {
-  color: var(--text);
-  font-size: 20px;
-  font-weight: 620;
-}
-
-.session-form > p,
 .connection-state > p {
   color: var(--text-secondary);
   font-size: 12.5px;
   line-height: 1.5;
-}
-
-.session-form .button {
-  justify-self: start;
-}
-
-.session-form .session-error {
-  color: var(--danger);
 }
 
 .connection-state {
