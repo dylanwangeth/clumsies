@@ -254,6 +254,16 @@ export function reviewChangeFromDraft(
   };
 }
 
+export function reviewTitleForDraft(draft: DraftRecord): string {
+  const action =
+    draft.operation === "delete"
+      ? "Delete"
+      : draft.baseResourceId === null
+        ? "Create"
+        : "Update";
+  return `${action} ${draft.document.title}`;
+}
+
 export function cloneDocument(document: MemoryDocument): MemoryDocument {
   return {
     ...document,

@@ -102,6 +102,7 @@ import {
   memoryKinds,
   reviewChangeFromDraft,
   reviewDiff,
+  reviewTitleForDraft,
   resourceWorkingState,
   ruleConstraintValidationError,
   workflowStepValidationError,
@@ -1199,6 +1200,7 @@ export function App() {
       if (!item.draft || item.draft.status !== "editing") {
         return;
       }
+      const reviewTitle = reviewTitleForDraft(item.draft);
       const backend = backendRef.current;
       const existingReview = reviews.find(
         (review) =>
@@ -1231,13 +1233,13 @@ export function App() {
             detail = await backend.api.createReviewSubmission(existingReview.id, {
               expected_review_version: existingReviewVersion,
               expected_draft_version: item.draft.serverVersion,
-              title: item.draft.document.title,
+              title: reviewTitle,
             });
           } else {
             detail = await backend.api.createReview({
               draft_id: item.draft.serverId,
               expected_draft_version: item.draft.serverVersion,
-              title: item.draft.document.title,
+              title: reviewTitle,
             });
           }
           review = await mapReviewWithConflict(
@@ -1271,7 +1273,7 @@ export function App() {
         review = existingReview
           ? {
               ...existingReview,
-              title: item.draft.document.title,
+              title: reviewTitle,
               status: "open",
               decisionNote: null,
             }
@@ -1279,7 +1281,7 @@ export function App() {
               id: `review-${Date.now().toString(36)}`,
               draftId: item.draft.id,
               authorId: account?.userId ?? "preview-user",
-              title: item.draft.document.title,
+              title: reviewTitle,
               author: "weiwang",
               status: "open",
               change: reviewChangeFromDraft(item.draft, item.resource),
@@ -2160,10 +2162,8 @@ export function App() {
         );
         return {
           tab,
-          label: draft
-            ? fileNameFromPath(draft.document.path)
-            : review?.title ?? "Missing review",
-          title: draft?.document.path ?? review?.title ?? "Missing review",
+          label: review?.title ?? "Missing review",
+          title: review?.title ?? "Missing review",
           syncState: draft?.syncState,
         };
       }),

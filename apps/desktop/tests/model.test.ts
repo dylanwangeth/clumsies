@@ -17,6 +17,7 @@ import {
   mergeRuleTags,
   resourceWorkingState,
   reviewDiff,
+  reviewTitleForDraft,
   ruleConstraintValidationError,
   workflowStepValidationError,
 } from "../src/model";
@@ -404,5 +405,24 @@ describe("cross-domain discovery and review", () => {
       "- ",
       "- No longer authoritative.",
     ]);
+  });
+
+  test("review titles identify create, update, and delete operations", () => {
+    const created = createBlankDraft(
+      "Project",
+      "Metaprompt",
+      "koal",
+      "Koal",
+    );
+    const updated = createDraftFromResource(initialResources[0]!);
+    const deleted = { ...updated, operation: "delete" as const };
+
+    expect(reviewTitleForDraft(created)).toBe("Create Untitled Metaprompt");
+    expect(reviewTitleForDraft(updated)).toBe(
+      `Update ${updated.document.title}`,
+    );
+    expect(reviewTitleForDraft(deleted)).toBe(
+      `Delete ${deleted.document.title}`,
+    );
   });
 });

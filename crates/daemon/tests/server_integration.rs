@@ -25,6 +25,12 @@ fn context_content(content: &str) -> DaemonDraftContent {
     }
 }
 
+fn metaprompt_content(content: &str) -> DaemonDraftContent {
+    DaemonDraftContent::Metaprompt {
+        content: content.to_owned(),
+    }
+}
+
 async fn approve_and_merge(
     repository: &ServerRepository,
     draft_id: &str,
@@ -566,6 +572,350 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
             .items
             .is_empty()
     );
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn project_metaprompt_is_independent_from_hub_and_converges_through_delete() {
+    let postgres = Postgres::default().start().await.unwrap();
+    let port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    server::db::run_migrations(&pool).await.unwrap();
+    let repository = ServerRepository::new(pool.clone());
+    let bootstrap = repository
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Metaprompt Lifecycle",
+        )
+        .await
+        .unwrap();
+
+    let hub_draft = repository
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_seed_hub_metaprompt".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Create Hub metaprompt".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    kind: DraftResourceKind::Metaprompt,
+                    id: None,
+                    path: Some("META_PROMPT.md".to_owned()),
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Create,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        kind: DraftResourceKind::Metaprompt,
+                        id: None,
+                        path: Some("META_PROMPT.md".to_owned()),
+                    },
+                    content: Some(DraftResourceContent::Metaprompt {
+                        content: "# Hub metaprompt\n\nShared organization behavior.".to_owned(),
+                    }),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let hub_merge = approve_and_merge(
+        &repository,
+        &hub_draft.draft.draft_id,
+        hub_draft.draft.version,
+        None,
+    )
+    .await;
+    assert!(hub_merge.commit_id.is_some());
+    assert_eq!(
+        repository
+            .get_org_metaprompt(&bootstrap.org_id)
+            .await
+            .unwrap()
+            .content,
+        "# Hub metaprompt\n\nShared organization behavior."
+    );
+
+    let access_token = "daemon-metaprompt-lifecycle-access-token";
+    let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
+    sqlx::query(
+        "INSERT INTO auth_sessions (session_id, user_id, org_id)
+         VALUES ('ses_daemon_metaprompt_lifecycle', $1, $2)",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(&bootstrap.org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO access_tokens (
+            token_id, session_id, user_id, kind, token_hash, expires_at
+         ) VALUES (
+            'tok_daemon_metaprompt_lifecycle', 'ses_daemon_metaprompt_lifecycle', $1,
+            'access', $2, now() + interval '30 minutes'
+         )",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(token_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, server::http::router(pool))
+            .await
+            .unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{server_address}");
+    config.project.project_id = Some(bootstrap.project_id.clone());
+    let (state, _) = common::initialize_authenticated_daemon(config, access_token, None).await;
+    let service = DaemonIpcService::new(state);
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Commits,
+        })
+        .await
+        .unwrap();
+    let empty_project_cache = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: bootstrap.project_id.clone(),
+        })
+        .await
+        .unwrap();
+    let empty_project_root = std::path::PathBuf::from(empty_project_cache.root_path.unwrap());
+    assert!(!empty_project_root.join("cache/META_PROMPT.md").exists());
+
+    let create_draft = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Metaprompt,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "META_PROMPT.md".to_owned(),
+                    content: metaprompt_content(
+                        "# Project metaprompt\n\nInitial project behavior.",
+                    ),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let create_projection = service.get_draft(&create_draft.draft_id).await.unwrap();
+    let create_merge = approve_and_merge(
+        &repository,
+        create_projection.draft.server_draft_id.as_deref().unwrap(),
+        create_projection.draft.server_version,
+        None,
+    )
+    .await;
+    let create_commit_id = create_merge.commit_id.unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::All,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .get_draft(&create_draft.draft_id)
+            .await
+            .unwrap()
+            .draft
+            .status,
+        DaemonLocalDraftStatus::Merged
+    );
+    let created_metaprompt = repository
+        .get_project_metaprompt(&bootstrap.project_id)
+        .await
+        .unwrap();
+    let metaprompt_id = created_metaprompt.metaprompt.metaprompt_id.clone();
+    assert_eq!(
+        created_metaprompt.content,
+        "# Project metaprompt\n\nInitial project behavior."
+    );
+    let created_cache = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: bootstrap.project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        created_cache.commit_id.as_deref(),
+        Some(create_commit_id.as_str())
+    );
+    let created_root = std::path::PathBuf::from(created_cache.root_path.unwrap());
+    assert_eq!(
+        std::fs::read_to_string(created_root.join("cache/META_PROMPT.md")).unwrap(),
+        "# Project metaprompt\n\nInitial project behavior."
+    );
+
+    let update_draft = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Metaprompt,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation {
+                    id: metaprompt_id.clone(),
+                    content: metaprompt_content(
+                        "# Project metaprompt\n\nUpdated project behavior.",
+                    ),
+                    description: None,
+                }),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::McpStore),
+        })
+        .await
+        .unwrap();
+    assert_ne!(update_draft.draft_id, create_draft.draft_id);
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let update_projection = service.get_draft(&update_draft.draft_id).await.unwrap();
+    let update_merge = approve_and_merge(
+        &repository,
+        update_projection.draft.server_draft_id.as_deref().unwrap(),
+        update_projection.draft.server_version,
+        Some(&create_commit_id),
+    )
+    .await;
+    let update_commit_id = update_merge.commit_id.unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::All,
+        })
+        .await
+        .unwrap();
+    let updated_cache = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: bootstrap.project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        updated_cache.commit_id.as_deref(),
+        Some(update_commit_id.as_str())
+    );
+    let updated_root = std::path::PathBuf::from(updated_cache.root_path.unwrap());
+    assert_ne!(updated_root, created_root);
+    assert_eq!(
+        std::fs::read_to_string(updated_root.join("cache/META_PROMPT.md")).unwrap(),
+        "# Project metaprompt\n\nUpdated project behavior."
+    );
+    assert_eq!(
+        std::fs::read_to_string(created_root.join("cache/META_PROMPT.md")).unwrap(),
+        "# Project metaprompt\n\nInitial project behavior."
+    );
+
+    let delete_draft = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Metaprompt,
+            op: DaemonDraftOperation {
+                create: None,
+                update: None,
+                rename: None,
+                delete: Some(DaemonDeleteDraftOperation {
+                    id: metaprompt_id,
+                    description: None,
+                }),
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    assert_ne!(delete_draft.draft_id, update_draft.draft_id);
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let delete_projection = service.get_draft(&delete_draft.draft_id).await.unwrap();
+    let delete_merge = approve_and_merge(
+        &repository,
+        delete_projection.draft.server_draft_id.as_deref().unwrap(),
+        delete_projection.draft.server_version,
+        Some(&update_commit_id),
+    )
+    .await;
+    let delete_commit_id = delete_merge.commit_id.unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::All,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .get_draft(&delete_draft.draft_id)
+            .await
+            .unwrap()
+            .draft
+            .status,
+        DaemonLocalDraftStatus::Merged
+    );
+    assert!(matches!(
+        repository
+            .get_project_metaprompt(&bootstrap.project_id)
+            .await,
+        Err(server::repository::ServerError::NotFound {
+            entity: "metaprompt",
+            ..
+        })
+    ));
+    let deleted_cache = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: bootstrap.project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        deleted_cache.commit_id.as_deref(),
+        Some(delete_commit_id.as_str())
+    );
+    let deleted_root = std::path::PathBuf::from(deleted_cache.root_path.unwrap());
+    assert!(!deleted_root.join("cache/META_PROMPT.md").exists());
+    assert!(updated_root.join("cache/META_PROMPT.md").exists());
 
     server_task.abort();
 }
