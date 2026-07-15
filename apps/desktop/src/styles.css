@@ -2284,6 +2284,32 @@ pre {
   background: var(--bg-hover);
 }
 
+.settings-update-control {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-update-error {
+  overflow: hidden;
+  color: var(--danger);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-update-progress {
+  display: grid;
+  width: min(320px, 100%);
+  gap: 7px;
+}
+
+.settings-update-progress progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+}
+
 .session-view {
   display: grid;
   width: 100%;

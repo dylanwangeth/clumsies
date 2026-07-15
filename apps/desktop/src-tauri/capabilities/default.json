@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Default permissions for the clumsies desktop window.",
   "windows": ["main"],
-  "permissions": ["core:default", "opener:default"]
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "process:allow-restart",
+    "updater:default"
+  ]
 }

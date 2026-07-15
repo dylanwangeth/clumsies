@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  cli-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,13 +24,8 @@ jobs:
       - name: Run tests
         run: zig build test
 
-      - name: Extract version from tag
-        id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-
-      - name: Cross-compile all platforms
+      - name: Cross-compile CLI
         run: |
-          TAG=${{ steps.version.outputs.tag }}
           mkdir -p dist
 
           zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos
@@ -54,28 +49,119 @@ jobs:
           sha256sum clumsies-* > checksums.txt
           cat checksums.txt
 
-      - name: Create GitHub Release
+      - name: Stage CLI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clumsies-cli
+          path: dist/
+          if-no-files-found: error
+
+  desktop-release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches Desktop version
+        run: |
+          DESKTOP_VERSION=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
+          test "$GITHUB_REF_NAME" = "v$DESKTOP_VERSION"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate release credentials
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID \
+            KEYCHAIN_PASSWORD \
+            TAURI_SIGNING_PRIVATE_KEY \
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          do
+            test -n "${!name}" || { echo "Missing release secret: $name"; exit 1; }
+          done
+
+      - name: Import Apple Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 \
+            -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            build.keychain
+
+          CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
+          CERT_ID=$(printf '%s' "$CERT_INFO" | awk -F'"' '{print $2}')
+          test -n "$CERT_ID"
+          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+
+      - name: Build, notarize, and stage Desktop release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --target universal-apple-darwin --config src-tauri/tauri.release.conf.json
+          generateReleaseNotes: true
+          prerelease: false
+          projectPath: apps/desktop
+          releaseDraft: true
+          releaseName: ${{ github.ref_name }}
+          retryAttempts: 2
+          tagName: ${{ github.ref_name }}
+          tauriScript: bun run tauri
+          uploadUpdaterJson: true
+
+  publish-release:
+    needs: [cli-release, desktop-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: clumsies-cli
+          path: dist
+
+      - name: Publish complete release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG=${{ steps.version.outputs.tag }}
-          CHECKSUMS=$(cat dist/checksums.txt)
-
-          PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
-
-          NOTES_FLAG=""
-          if [ -n "$PREV_TAG" ]; then
-            NOTES_FLAG="--notes-start-tag $PREV_TAG"
-          fi
-
-          gh release create "$TAG" \
-            dist/clumsies-darwin-arm64 \
-            dist/clumsies-darwin-x86_64 \
-            dist/clumsies-linux-arm64 \
-            dist/clumsies-linux-x86_64 \
-            dist/clumsies-windows-x86_64.exe \
-            dist/checksums.txt \
-            --title "$TAG" \
-            --generate-notes \
-            $NOTES_FLAG \
-            --verify-tag
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false

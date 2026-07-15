@@ -222,11 +222,7 @@ function serverMethod(method: string): "GET" | "POST" | "PUT" | "PATCH" | "DELET
 async function ensureDaemon(
   daemon: DaemonApiClient,
 ): Promise<DaemonBootstrapStatus> {
-  const status = await daemon.bootstrapStatus();
-  if (status.runtime.running) {
-    return status;
-  }
-  return status.runtime.bootstrapped ? daemon.restart() : daemon.start();
+  return daemon.start();
 }
 
 async function waitForDaemonHealth(

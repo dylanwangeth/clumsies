@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "CLUMSIES_SERVER_URL=${CLUMSIES_SERVER_URL:-http://127.0.0.1:18080} tauri dev",
     "dev:web": "bun run prepare:daemon && vite --host 127.0.0.1 --port 1420",
-    "build": "tauri build",
+    "build": "APPLE_SIGNING_IDENTITY=- tauri build",
+    "build:release": "tauri build --config src-tauri/tauri.release.conf.json",
     "build:web": "bun run prepare:daemon:release && tsc -p tsconfig.json --noEmit && vite build",
     "prepare:daemon": "bun scripts/prepare-daemon.ts",
     "prepare:daemon:release": "bun scripts/prepare-daemon.ts --release",
@@ -20,6 +21,8 @@
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-process": "~2",
+    "@tauri-apps/plugin-updater": "~2",
     "codemirror": "^6.0.2",
     "lucide-react": "^1.24.0",
     "react": "^19.2.7",

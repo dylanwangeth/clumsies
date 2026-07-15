@@ -254,6 +254,14 @@ impl LaunchAgentConfig {
         Ok(())
     }
 
+    fn plist_is_current(&self) -> Result<bool, DaemonError> {
+        match std::fs::read_to_string(&self.plist_path) {
+            Ok(contents) => Ok(contents == self.plist_contents()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn ipc_endpoint(&self) -> DaemonIpcEndpoint {
         DaemonIpcEndpoint {
             transport: DaemonIpcTransport::MacosXpcMachService,
@@ -369,6 +377,110 @@ impl LaunchAgentController {
             run_launchctl_success(&self.bootstrap_args())?;
         }
         self.status()
+    }
+
+    pub fn reconcile(&self) -> Result<DaemonBootstrapStatus, DaemonError> {
+        let status = self.status()?;
+        let action = launch_agent_reconcile_action(
+            status.runtime.bootstrapped,
+            status.runtime.running,
+            self.config.plist_is_current()?,
+        );
+        match action {
+            LaunchAgentReconcileAction::Ready => return Ok(status),
+            LaunchAgentReconcileAction::Bootstrap => {
+                self.config.install_plist()?;
+                run_launchctl_success(&self.bootstrap_args())?;
+            }
+            LaunchAgentReconcileAction::Reload => {
+                run_launchctl_success(&self.bootout_args())?;
+                self.config.install_plist()?;
+                run_launchctl_success(&self.bootstrap_args())?;
+            }
+            LaunchAgentReconcileAction::Kickstart => {
+                run_launchctl_success(&self.kickstart_args())?;
+            }
+        }
+        self.status()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LaunchAgentReconcileAction {
+    Ready,
+    Bootstrap,
+    Reload,
+    Kickstart,
+}
+
+fn launch_agent_reconcile_action(
+    bootstrapped: bool,
+    running: bool,
+    plist_current: bool,
+) -> LaunchAgentReconcileAction {
+    if !bootstrapped {
+        LaunchAgentReconcileAction::Bootstrap
+    } else if !plist_current {
+        LaunchAgentReconcileAction::Reload
+    } else if !running {
+        LaunchAgentReconcileAction::Kickstart
+    } else {
+        LaunchAgentReconcileAction::Ready
+    }
+}
+
+#[cfg(test)]
+mod launch_agent_tests {
+    use super::*;
+
+    #[test]
+    fn plist_currency_tracks_the_installed_launch_agent_definition() {
+        let root = tempfile::tempdir().unwrap();
+        let daemon_config = DaemonConfig::for_root(root.path());
+        let launch_agent = LaunchAgentConfig::from_daemon_config(
+            &daemon_config,
+            root.path().join("bin/clumsiesd"),
+        );
+
+        assert!(!launch_agent.plist_is_current().unwrap());
+
+        launch_agent.install_plist().unwrap();
+        assert!(launch_agent.plist_is_current().unwrap());
+
+        std::fs::write(&launch_agent.plist_path, "stale launch agent").unwrap();
+        assert!(!launch_agent.plist_is_current().unwrap());
+    }
+
+    #[test]
+    fn reconcile_bootstraps_an_unloaded_agent() {
+        assert_eq!(
+            launch_agent_reconcile_action(false, false, false),
+            LaunchAgentReconcileAction::Bootstrap
+        );
+    }
+
+    #[test]
+    fn reconcile_reloads_a_stale_agent_definition() {
+        assert_eq!(
+            launch_agent_reconcile_action(true, true, false),
+            LaunchAgentReconcileAction::Reload
+        );
+    }
+
+    #[test]
+    fn reconcile_kickstarts_a_loaded_stopped_agent() {
+        assert_eq!(
+            launch_agent_reconcile_action(true, false, true),
+            LaunchAgentReconcileAction::Kickstart
+        );
+    }
+
+    #[test]
+    fn reconcile_keeps_a_current_running_agent() {
+        assert_eq!(
+            launch_agent_reconcile_action(true, true, true),
+            LaunchAgentReconcileAction::Ready
+        );
     }
 }
 

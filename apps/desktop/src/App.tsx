@@ -34,6 +34,12 @@ import {
   type ProjectOption,
 } from "./backend";
 import {
+  createNativeDesktopUpdater,
+  type DesktopUpdater,
+  type DesktopUpdateMetadata,
+  type DesktopUpdateProgress,
+} from "./desktop-updater";
+import {
   Activity,
   AlertTriangle,
   ArrowDown,
@@ -136,6 +142,18 @@ type ConfirmState = {
 
 type UndoState = { message: string; run: () => void };
 
+type SoftwareUpdateState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "current" }
+  | { status: "available"; update: DesktopUpdateMetadata }
+  | {
+      status: "installing";
+      progress: DesktopUpdateProgress;
+      version: string;
+    }
+  | { status: "failed"; message: string };
+
 type AgentTarget = {
   key: string;
   label: string;
@@ -220,12 +238,16 @@ function isTauriRuntime(): boolean {
 export function App() {
   const previewMode = !isTauriRuntime();
   const backendRef = useRef<DesktopBackend | null>(null);
+  const updaterRef = useRef<DesktopUpdater | null>(null);
   if (!previewMode && backendRef.current === null) {
     const nativeInvoke: NativeInvoke = <T,>(
       command: string,
       args?: Record<string, unknown>,
     ) => invoke<T>(command, args);
     backendRef.current = new DesktopBackend(nativeInvoke);
+  }
+  if (!previewMode && updaterRef.current === null) {
+    updaterRef.current = createNativeDesktopUpdater();
   }
   const [selectedView, setSelectedView] = useState<View>("Local");
   const [projects, setProjects] = useState<ProjectOption[]>(
@@ -2121,6 +2143,7 @@ export function App() {
               ) : selectedView === "Settings" ? (
                 <SettingsView
                   loadState={loadState}
+                  updater={updaterRef.current}
                   projectName={
                     projects.find((project) => project.id === selectedProjectId)?.name ??
                     "Not selected"
@@ -4513,17 +4536,113 @@ function SettingsView({
   loadState,
   onOpenDiagnostics,
   projectName,
+  updater,
 }: {
   loadState: LoadState;
   onOpenDiagnostics: () => void;
   projectName: string;
+  updater: DesktopUpdater | null;
 }) {
+  const [currentVersion, setCurrentVersion] = useState(
+    updater ? "Loading..." : "Preview",
+  );
+  const [updateState, setUpdateState] = useState<SoftwareUpdateState>({
+    status: "idle",
+  });
   const hubUrl =
     loadState.status === "ready"
       ? (loadState.projectConfig?.server_url ?? loadState.health?.server_url ?? "Not configured")
       : "Unavailable";
+
+  useEffect(() => {
+    if (!updater) {
+      return;
+    }
+    let cancelled = false;
+    updater
+      .currentVersion()
+      .then((version) => {
+        if (!cancelled) {
+          setCurrentVersion(version);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setCurrentVersion("Unknown");
+          setUpdateState({
+            status: "failed",
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [updater]);
+
+  const checkForUpdate = async () => {
+    if (!updater) {
+      return;
+    }
+    setUpdateState({ status: "checking" });
+    try {
+      const update = await updater.check();
+      setUpdateState(update ? { status: "available", update } : { status: "current" });
+    } catch (error) {
+      setUpdateState({
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const installUpdate = async (update: DesktopUpdateMetadata) => {
+    if (!updater) {
+      return;
+    }
+    setUpdateState({
+      status: "installing",
+      progress: {
+        phase: "downloading",
+        downloadedBytes: 0,
+        totalBytes: null,
+      },
+      version: update.version,
+    });
+    try {
+      await updater.install((progress) => {
+        setUpdateState({
+          status: "installing",
+          progress,
+          version: update.version,
+        });
+      });
+    } catch (error) {
+      setUpdateState({
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   return (
     <section className="utility-view settings-view" aria-label="Settings">
+      <section className="settings-section">
+        <h2>Application</h2>
+        <div className="settings-row">
+          <span>Version</span>
+          <strong>{currentVersion}</strong>
+        </div>
+        <div className="settings-row">
+          <span>Software update</span>
+          <SoftwareUpdateControl
+            disabled={!updater}
+            onCheck={checkForUpdate}
+            onInstall={installUpdate}
+            state={updateState}
+          />
+        </div>
+      </section>
       <section className="settings-section">
         <h2>Connection</h2>
         <label className="settings-row">
@@ -4556,6 +4675,73 @@ function SettingsView({
       </section>
     </section>
   );
+}
+
+function SoftwareUpdateControl({
+  disabled,
+  onCheck,
+  onInstall,
+  state,
+}: {
+  disabled: boolean;
+  onCheck: () => void;
+  onInstall: (update: DesktopUpdateMetadata) => void;
+  state: SoftwareUpdateState;
+}) {
+  if (state.status === "checking") {
+    return <strong>Checking...</strong>;
+  }
+  if (state.status === "current") {
+    return <strong>Up to date</strong>;
+  }
+  if (state.status === "available") {
+    return (
+      <span className="settings-update-control">
+        <strong>{state.update.version} available</strong>
+        <button
+          className="button"
+          onClick={() => onInstall(state.update)}
+          type="button"
+        >
+          Install and restart
+        </button>
+      </span>
+    );
+  }
+  if (state.status === "installing") {
+    const progress = updateProgressPercent(state.progress);
+    return (
+      <span className="settings-update-progress">
+        <strong>{
+          state.progress.phase === "installing"
+            ? `Installing ${state.version}...`
+            : progress === null
+              ? `Downloading ${state.version}...`
+              : `Downloading ${state.version} (${progress}%)`
+        }</strong>
+        <progress max={100} value={progress ?? undefined} />
+      </span>
+    );
+  }
+  return (
+    <span className="settings-update-control">
+      {state.status === "failed" ? (
+        <span className="settings-update-error" title={state.message}>
+          Update failed
+        </span>
+      ) : null}
+      <button className="button" disabled={disabled} onClick={onCheck} type="button">
+        {state.status === "failed" ? "Retry" : "Check for updates"}
+      </button>
+    </span>
+  );
+}
+
+function updateProgressPercent(progress: DesktopUpdateProgress): number | null {
+  if (!progress.totalBytes || progress.totalBytes <= 0) {
+    return null;
+  }
+  return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
 }
 
 function AuthenticationView({

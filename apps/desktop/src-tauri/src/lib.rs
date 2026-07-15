@@ -21,6 +21,8 @@ use tokio::time::timeout;
 use url::Url;
 use uuid::Uuid;
 
+mod lifecycle;
+
 const OIDC_CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const OIDC_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CALLBACK_HEADER_BYTES: usize = 16 * 1024;
@@ -42,7 +44,7 @@ async fn install_daemon_launch_agent() -> Result<DaemonBootstrapStatus, String> 
 #[tauri::command]
 async fn start_daemon_launch_agent() -> Result<DaemonBootstrapStatus, String> {
     launch_agent_controller()?
-        .bootstrap()
+        .reconcile()
         .map_err(|error| error.to_string())
 }
 
@@ -119,9 +121,7 @@ async fn proxy_server_request(
 }
 
 #[tauri::command]
-async fn authenticate_desktop(
-    app: tauri::AppHandle,
-) -> Result<DaemonProjectConfig, String> {
+async fn authenticate_desktop(app: tauri::AppHandle) -> Result<DaemonProjectConfig, String> {
     let server_url = configured_server_url()?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -477,8 +477,16 @@ fn daemon_program_path() -> Result<PathBuf, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            lifecycle::setup(app)?;
+            Ok(())
+        })
+        .on_menu_event(lifecycle::handle_menu_event)
+        .on_window_event(lifecycle::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             read_daemon_bootstrap_status,
             install_daemon_launch_agent,
@@ -497,8 +505,9 @@ pub fn run() {
             proxy_server_request,
             authenticate_desktop
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run clumsies desktop");
+        .build(tauri::generate_context!())
+        .expect("failed to build clumsies desktop");
+    app.run(|app, event| lifecycle::handle_run_event(app, &event));
 }
 
 #[cfg(test)]
