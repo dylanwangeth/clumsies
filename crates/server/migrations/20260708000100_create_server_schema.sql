@@ -184,11 +184,11 @@ CREATE TABLE metaprompts (
 
 CREATE UNIQUE INDEX metaprompts_org_singleton_idx
     ON metaprompts(org_id)
-    WHERE scope = 'org';
+    WHERE scope = 'org' AND status = 'active';
 
 CREATE UNIQUE INDEX metaprompts_project_singleton_idx
     ON metaprompts(project_id)
-    WHERE scope = 'project';
+    WHERE scope = 'project' AND status = 'active';
 
 CREATE TABLE project_org_selection_states (
     project_id TEXT PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,

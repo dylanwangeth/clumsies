@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use axum::Router;
@@ -19,23 +19,49 @@ use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower::ServiceExt;
 use url::Url;
 
 pub struct TestPostgres {
+    _permit: OwnedSemaphorePermit,
     _container: ContainerAsync<Postgres>,
     pub pool: PgPool,
 }
 
+fn postgres_slots() -> &'static Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(Semaphore::new(4)))
+}
+
 pub async fn migrated_postgres() -> TestPostgres {
+    let permit = postgres_slots().clone().acquire_owned().await.unwrap();
     let container = Postgres::default().start().await.unwrap();
-    let port = container.get_host_port_ipv4(5432).await.unwrap();
+    let mut port = None;
+    let mut last_error = None;
+    for _ in 0..20 {
+        match container.get_host_port_ipv4(5432).await {
+            Ok(value) => {
+                port = Some(value);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let port = port.unwrap_or_else(|| {
+        panic!(
+            "PostgreSQL test container never exposed port 5432: {}",
+            last_error.unwrap()
+        )
+    });
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let pool = PgPool::connect(&url).await.unwrap();
 
     server::db::run_migrations(&pool).await.unwrap();
 
     TestPostgres {
+        _permit: permit,
         _container: container,
         pool,
     }

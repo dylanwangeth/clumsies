@@ -1004,6 +1004,8 @@ impl ServerRepository {
     ) -> Result<(), ServerError> {
         let mut tx = self.pool.begin().await?;
         let org_id = project_org_id(&mut tx, project_id).await?;
+        lock_org_ref_for_project_projection(&mut tx, &org_id).await?;
+        let parent_commit_id = current_project_ref(&mut tx, project_id).await?;
         let exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(
                 SELECT 1
@@ -1035,6 +1037,9 @@ impl ServerRepository {
         .await?;
         validate_project_effective_memory(&mut tx, project_id, &org_id).await?;
         update_project_org_selection_revision(&mut tx, project_id, next_revision).await?;
+        let commit_id =
+            create_project_commit(&mut tx, project_id, parent_commit_id.as_deref()).await?;
+        advance_project_ref(&mut tx, project_id, &commit_id).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1047,6 +1052,7 @@ impl ServerRepository {
     ) -> Result<ProjectOrgSelection, ServerError> {
         let mut tx = self.pool.begin().await?;
         let org_id = project_org_id(&mut tx, project_id).await?;
+        lock_org_ref_for_project_projection(&mut tx, &org_id).await?;
         let parent_commit_id = current_project_ref(&mut tx, project_id).await?;
         let current_revision = current_project_org_selection_revision(&mut tx, project_id).await?;
         if current_revision != expected_revision {
@@ -2166,7 +2172,10 @@ impl ServerRepository {
         let resource_scope = resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
         let current_head = match resource_scope {
             ResourceScope::Org => current_org_ref(&mut tx, &org_id).await?,
-            ResourceScope::Project => current_project_ref(&mut tx, &project_id).await?,
+            ResourceScope::Project => {
+                lock_org_ref_for_project_projection(&mut tx, &org_id).await?;
+                current_project_ref(&mut tx, &project_id).await?
+            }
         };
         if current_head.as_deref() != expected_project_ref {
             return Err(ServerError::precondition_failed(
@@ -2230,6 +2239,12 @@ impl ServerRepository {
 
         let operations = load_draft_operations(&mut tx, &draft_id).await?;
         let materialized_operations = materialize_draft_operations(&operations)?;
+        let org_resource_impact = match resource_scope {
+            ResourceScope::Org => {
+                resolve_org_resource_impact(&mut tx, &org_id, &materialized_operations).await?
+            }
+            ResourceScope::Project => OrgResourceImpact::default(),
+        };
         for operation in &materialized_operations {
             apply_operation(&mut tx, &project_id, resource_scope, operation).await?;
         }
@@ -2239,6 +2254,8 @@ impl ServerRepository {
                 let commit_id =
                     create_org_commit(&mut tx, &org_id, current_head.as_deref()).await?;
                 advance_org_ref(&mut tx, &org_id, &commit_id).await?;
+                refresh_projects_for_org_resource_changes(&mut tx, &org_id, &org_resource_impact)
+                    .await?;
                 commit_id
             }
             ResourceScope::Project => {
@@ -4016,6 +4033,83 @@ fn normalize_tags(tags: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+#[derive(Default)]
+struct OrgResourceImpact {
+    resource_ids: BTreeSet<String>,
+    deleted_resource_ids: BTreeSet<String>,
+}
+
+async fn resolve_org_resource_impact(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    operations: &[DraftOperationInput],
+) -> Result<OrgResourceImpact, ServerError> {
+    let mut impact = OrgResourceImpact::default();
+    for operation in operations {
+        if operation.resource.kind == DraftResourceKind::Metaprompt
+            || operation.action == DraftOperationAction::Create
+        {
+            continue;
+        }
+        let target = load_target_resource(tx, org_id, None, &operation.resource).await?;
+        impact.resource_ids.insert(target.resource_id.clone());
+        if operation.action == DraftOperationAction::Delete {
+            impact.deleted_resource_ids.insert(target.resource_id);
+        }
+    }
+    Ok(impact)
+}
+
+async fn refresh_projects_for_org_resource_changes(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    impact: &OrgResourceImpact,
+) -> Result<(), ServerError> {
+    if impact.resource_ids.is_empty() {
+        return Ok(());
+    }
+
+    let resource_ids = impact.resource_ids.iter().cloned().collect::<Vec<_>>();
+    let rows = sqlx::query(
+        "SELECT DISTINCT s.project_id
+         FROM project_org_resource_selections s
+         JOIN projects p ON p.project_id = s.project_id
+         WHERE p.org_id = $1 AND s.resource_id = ANY($2::text[])
+         ORDER BY s.project_id",
+    )
+    .bind(org_id)
+    .bind(&resource_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    let deleted_resource_ids = impact
+        .deleted_resource_ids
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for row in rows {
+        let project_id: String = row.try_get("project_id")?;
+        let parent_commit_id = current_project_ref(tx, &project_id).await?;
+        if !deleted_resource_ids.is_empty() {
+            let deleted = sqlx::query(
+                "DELETE FROM project_org_resource_selections
+                 WHERE project_id = $1 AND resource_id = ANY($2::text[])",
+            )
+            .bind(&project_id)
+            .bind(&deleted_resource_ids)
+            .execute(&mut **tx)
+            .await?;
+            if deleted.rows_affected() > 0 {
+                let revision = current_project_org_selection_revision(tx, &project_id).await?;
+                update_project_org_selection_revision(tx, &project_id, revision + 1).await?;
+            }
+        }
+        let commit_id = create_project_commit(tx, &project_id, parent_commit_id.as_deref()).await?;
+        advance_project_ref(tx, &project_id, &commit_id).await?;
+    }
+    Ok(())
+}
+
 fn validate_rule_constraint(constraint: &str) -> Result<(), ServerError> {
     if constraint.trim().is_empty() {
         return Err(ServerError::InvalidRequest(
@@ -4346,6 +4440,40 @@ async fn validate_project_effective_memory(
     Ok(())
 }
 
+async fn validate_org_effective_memory(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+) -> Result<(), ServerError> {
+    let missing_rule = sqlx::query(
+        "SELECT w.name, ws.rule_id
+         FROM resources w
+         JOIN workflow_steps ws ON ws.resource_id = w.resource_id
+         WHERE w.scope = 'org' AND w.org_id = $1
+           AND w.resource_kind = 'workflow' AND w.status = 'active'
+           AND ws.rule_id IS NOT NULL
+           AND NOT EXISTS(
+             SELECT 1
+             FROM resources r
+             WHERE r.resource_id = ws.rule_id
+               AND r.scope = 'org' AND r.org_id = $1
+               AND r.resource_kind = 'rule' AND r.status = 'active'
+           )
+         ORDER BY w.resource_id, ws.step_order
+         LIMIT 1",
+    )
+    .bind(org_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(row) = missing_rule {
+        let workflow_name: String = row.try_get("name")?;
+        let rule_id: String = row.try_get("rule_id")?;
+        return Err(ServerError::InvalidRequest(format!(
+            "workflow {workflow_name} references rule {rule_id}, which is not available in organization memory"
+        )));
+    }
+    Ok(())
+}
+
 async fn create_project_commit(
     tx: &mut Transaction<'_, Postgres>,
     project_id: &str,
@@ -4445,6 +4573,7 @@ async fn create_org_commit(
     org_id: &str,
     parent_commit_id: Option<&str>,
 ) -> Result<String, ServerError> {
+    validate_org_effective_memory(tx, org_id).await?;
     let version = sqlx::query_scalar::<_, Option<i64>>(
         "SELECT max(version) FROM commits WHERE scope = 'org' AND org_id = $1",
     )
@@ -5037,6 +5166,23 @@ async fn current_org_ref(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| ServerError::not_found("ref", org_id))
+}
+
+async fn lock_org_ref_for_project_projection(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+) -> Result<(), ServerError> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT ref_id
+         FROM refs
+         WHERE scope = 'org' AND org_id = $1 AND ref_name = 'refs/heads/main'
+         FOR SHARE",
+    )
+    .bind(org_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| ServerError::not_found("ref", org_id))?;
+    Ok(())
 }
 
 async fn advance_org_ref(

@@ -184,10 +184,11 @@ async fn draft_review_merge_produces_project_commit() {
         &format!("/api/v1/projects/{project_id}/commit-state"),
     )
     .await;
-    let initial_commit_id = commit_state
+    let initial_commit = commit_state
         .latest
-        .expect("selection replacement should create a project commit")
-        .commit_id;
+        .expect("selection replacement should create a project commit");
+    let initial_commit_id = initial_commit.commit_id;
+    let initial_commit_version = initial_commit.version;
     assert!(commit_state.update_available);
     assert_eq!(initial_head_etag, format!("\"{initial_commit_id}\""));
 
@@ -583,7 +584,7 @@ async fn draft_review_merge_produces_project_commit() {
         commit.commit.project_id.as_deref(),
         Some(project_id.as_str())
     );
-    assert_eq!(commit.commit.version, 2);
+    assert_eq!(commit.commit.version, initial_commit_version + 1);
     assert_eq!(
         commit.commit.parent_commit_id.as_deref(),
         Some(initial_commit_id.as_str())
@@ -710,6 +711,689 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
     )
     .await;
     assert_eq!(project_state.reference.commit_id, None);
+}
+
+#[tokio::test]
+async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = repo
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Selected Hub Memory",
+        )
+        .await
+        .unwrap();
+    let context_id = repo
+        .create_org_context(
+            &bootstrap.org_id,
+            "context/shared.md",
+            "# Shared\n\nBefore review.",
+        )
+        .await
+        .unwrap();
+    let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
+    let primary_selection_uri = format!("/api/v1/projects/{}/org-selections", bootstrap.project_id);
+    let selected: ProjectOrgSelection = put_json_with_if_match(
+        app.clone(),
+        &primary_selection_uri,
+        0,
+        &ReplaceProjectOrgSelectionRequest {
+            rule_ids: Vec::new(),
+            context_ids: vec![context_id.clone()],
+            workflow_ids: Vec::new(),
+        },
+    )
+    .await;
+    let primary_state_uri = format!("/api/v1/projects/{}/commit-state", bootstrap.project_id);
+    let primary_before: CommitStateResponse = get_json(app.clone(), &primary_state_uri).await;
+    let primary_before_id = primary_before.reference.commit_id.unwrap();
+
+    let secondary: Project = post_json(
+        app.clone(),
+        "/api/v1/projects",
+        &CreateProjectRequest {
+            name: "Unrelated Project".to_owned(),
+            description: None,
+        },
+    )
+    .await;
+    let secondary_selection_uri =
+        format!("/api/v1/projects/{}/org-selections", secondary.project_id);
+    let _: ProjectOrgSelection = put_json_with_if_match(
+        app.clone(),
+        &secondary_selection_uri,
+        0,
+        &ReplaceProjectOrgSelectionRequest {
+            rule_ids: Vec::new(),
+            context_ids: Vec::new(),
+            workflow_ids: Vec::new(),
+        },
+    )
+    .await;
+    let secondary_state_uri = format!("/api/v1/projects/{}/commit-state", secondary.project_id);
+    let secondary_before: CommitStateResponse = get_json(app.clone(), &secondary_state_uri).await;
+
+    let (org_before, org_etag): (CommitStateResponse, String) =
+        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
+    let approved = create_approved_review(
+        app.clone(),
+        CreateDraftRequest {
+            daemon_installation_id: "daemon_hub_context".to_owned(),
+            project_id: bootstrap.project_id.clone(),
+            base_commit_id: org_before.reference.commit_id,
+            title: "Update shared context".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Org,
+                kind: DraftResourceKind::Context,
+                id: Some(context_id.clone()),
+                path: None,
+            },
+            operations: vec![
+                DraftOperationInput {
+                    action: DraftOperationAction::Update,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        kind: DraftResourceKind::Context,
+                        id: Some(context_id.clone()),
+                        path: None,
+                    },
+                    content: context_draft_content("# Shared\n\nAfter review."),
+                    new_path: None,
+                },
+                DraftOperationInput {
+                    action: DraftOperationAction::Rename,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        kind: DraftResourceKind::Context,
+                        id: Some(context_id.clone()),
+                        path: None,
+                    },
+                    content: None,
+                    new_path: Some("context/shared-updated.md".to_owned()),
+                },
+            ],
+        },
+    )
+    .await;
+    let _: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", approved.review_id),
+        &org_etag,
+        &CreateReviewMergeRequest {
+            expected_review_version: approved.version,
+        },
+    )
+    .await;
+
+    let primary_after: CommitStateResponse = get_json(app.clone(), &primary_state_uri).await;
+    let primary_after_id = primary_after.reference.commit_id.unwrap();
+    assert_ne!(primary_after_id, primary_before_id);
+    assert_eq!(
+        primary_after.latest.unwrap().parent_commit_id.as_deref(),
+        Some(primary_before_id.as_str())
+    );
+    let secondary_after: CommitStateResponse = get_json(app.clone(), &secondary_state_uri).await;
+    assert_eq!(
+        secondary_after.reference.commit_id,
+        secondary_before.reference.commit_id
+    );
+    let selection_after_update: ProjectOrgSelection =
+        get_json(app.clone(), &primary_selection_uri).await;
+    assert_eq!(selection_after_update.revision, selected.revision);
+    assert_eq!(selection_after_update.context.len(), 1);
+
+    let old_payload: CommitPayload =
+        get_json(app.clone(), &format!("/api/v1/commits/{primary_before_id}")).await;
+    let old_entry = old_payload
+        .tree
+        .entries
+        .iter()
+        .find(|entry| entry.id == context_id)
+        .unwrap();
+    assert_eq!(old_entry.path.as_deref(), Some("context/shared.md"));
+    assert_eq!(
+        old_payload
+            .blobs
+            .iter()
+            .find(|blob| blob.blob_id == old_entry.blob_id)
+            .unwrap()
+            .content,
+        "# Shared\n\nBefore review."
+    );
+    let updated_payload: CommitPayload =
+        get_json(app.clone(), &format!("/api/v1/commits/{primary_after_id}")).await;
+    let updated_entry = updated_payload
+        .tree
+        .entries
+        .iter()
+        .find(|entry| entry.id == context_id)
+        .unwrap();
+    assert_eq!(
+        updated_entry.path.as_deref(),
+        Some("context/shared-updated.md")
+    );
+    assert_eq!(
+        updated_payload
+            .blobs
+            .iter()
+            .find(|blob| blob.blob_id == updated_entry.blob_id)
+            .unwrap()
+            .content,
+        "# Shared\n\nAfter review."
+    );
+
+    let (org_after_update, org_etag): (CommitStateResponse, String) =
+        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
+    let approved = create_approved_review(
+        app.clone(),
+        CreateDraftRequest {
+            daemon_installation_id: "daemon_hub_context".to_owned(),
+            project_id: bootstrap.project_id.clone(),
+            base_commit_id: org_after_update.reference.commit_id,
+            title: "Delete shared context".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Org,
+                kind: DraftResourceKind::Context,
+                id: Some(context_id.clone()),
+                path: None,
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Delete,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    kind: DraftResourceKind::Context,
+                    id: Some(context_id.clone()),
+                    path: None,
+                },
+                content: None,
+                new_path: None,
+            }],
+        },
+    )
+    .await;
+    let _: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", approved.review_id),
+        &org_etag,
+        &CreateReviewMergeRequest {
+            expected_review_version: approved.version,
+        },
+    )
+    .await;
+
+    let selection_after_delete: ProjectOrgSelection =
+        get_json(app.clone(), &primary_selection_uri).await;
+    assert_eq!(
+        selection_after_delete.revision,
+        selection_after_update.revision + 1
+    );
+    assert!(selection_after_delete.context.is_empty());
+    let primary_after_delete: CommitStateResponse = get_json(app.clone(), &primary_state_uri).await;
+    let primary_after_delete_id = primary_after_delete.reference.commit_id.unwrap();
+    assert_ne!(primary_after_delete_id, primary_after_id);
+    let deleted_payload: CommitPayload = get_json(
+        app.clone(),
+        &format!("/api/v1/commits/{primary_after_delete_id}"),
+    )
+    .await;
+    assert!(
+        deleted_payload
+            .tree
+            .entries
+            .iter()
+            .all(|entry| entry.id != context_id)
+    );
+    let secondary_after_delete: CommitStateResponse = get_json(app, &secondary_state_uri).await;
+    assert_eq!(
+        secondary_after_delete.reference.commit_id,
+        secondary_before.reference.commit_id
+    );
+}
+
+#[tokio::test]
+async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = repo
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Projection Rollback",
+        )
+        .await
+        .unwrap();
+    let context_id = repo
+        .create_org_context(&bootstrap.org_id, "context/shared.md", "# Shared authority")
+        .await
+        .unwrap();
+    repo.replace_project_org_selection(
+        &bootstrap.project_id,
+        0,
+        ReplaceProjectOrgSelectionRequest {
+            rule_ids: Vec::new(),
+            context_ids: vec![context_id.clone()],
+            workflow_ids: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let initial_project_head = repo
+        .get_project_commit_state(&bootstrap.project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+    let project_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_projection_rollback".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: initial_project_head.clone(),
+                title: "Create colliding project context".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Project,
+                    kind: DraftResourceKind::Context,
+                    id: None,
+                    path: Some("context/collision.md".to_owned()),
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Create,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Project,
+                        kind: DraftResourceKind::Context,
+                        id: None,
+                        path: Some("context/collision.md".to_owned()),
+                    },
+                    content: context_draft_content("# Project context"),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let project_review = repo
+        .create_review(CreateReviewRequest {
+            draft_id: project_draft.draft.draft_id,
+            expected_draft_version: project_draft.draft.version,
+            title: None,
+            description: None,
+        })
+        .await
+        .unwrap();
+    let project_review = repo
+        .create_review_decision(
+            &project_review.review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: project_review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    repo.create_review_merge(
+        &project_review.review.review_id,
+        initial_project_head.as_deref(),
+        CreateReviewMergeRequest {
+            expected_review_version: project_review.review.version,
+        },
+    )
+    .await
+    .unwrap();
+
+    let org_head_before = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+    let project_head_before = repo
+        .get_project_commit_state(&bootstrap.project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+    let org_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_projection_rollback".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: org_head_before.clone(),
+                title: "Create an invalid Hub projection".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    kind: DraftResourceKind::Context,
+                    id: Some(context_id.clone()),
+                    path: None,
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Rename,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        kind: DraftResourceKind::Context,
+                        id: Some(context_id.clone()),
+                        path: None,
+                    },
+                    content: None,
+                    new_path: Some("context/collision.md".to_owned()),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let org_review = repo
+        .create_review(CreateReviewRequest {
+            draft_id: org_draft.draft.draft_id,
+            expected_draft_version: org_draft.draft.version,
+            title: None,
+            description: None,
+        })
+        .await
+        .unwrap();
+    let org_review = repo
+        .create_review_decision(
+            &org_review.review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: org_review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    let error = repo
+        .create_review_merge(
+            &org_review.review.review_id,
+            org_head_before.as_deref(),
+            CreateReviewMergeRequest {
+                expected_review_version: org_review.review.version,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        server::repository::ServerError::InvalidRequest(ref message)
+            if message.contains("materializes")
+    ));
+
+    let org_head_after = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+    let project_head_after = repo
+        .get_project_commit_state(&bootstrap.project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+    assert_eq!(org_head_after, org_head_before);
+    assert_eq!(project_head_after, project_head_before);
+    assert_eq!(
+        repo.get_org_context(&bootstrap.org_id, &context_id)
+            .await
+            .unwrap()
+            .context
+            .path,
+        "context/shared.md"
+    );
+    assert_eq!(
+        repo.get_review(&org_review.review.review_id)
+            .await
+            .unwrap()
+            .status,
+        ReviewStatus::Approved
+    );
+}
+
+#[tokio::test]
+async fn org_metaprompt_lifecycle_is_independent_from_project_refs() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = repo
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Metaprompt Isolation",
+        )
+        .await
+        .unwrap();
+    let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
+    let project_state_uri = format!("/api/v1/projects/{}/commit-state", bootstrap.project_id);
+    let project_before: CommitStateResponse = get_json(app.clone(), &project_state_uri).await;
+    let (org_before, org_etag): (CommitStateResponse, String) =
+        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
+
+    let approved = create_approved_review(
+        app.clone(),
+        CreateDraftRequest {
+            daemon_installation_id: "daemon_hub_metaprompt".to_owned(),
+            project_id: bootstrap.project_id.clone(),
+            base_commit_id: org_before.reference.commit_id,
+            title: "Create Hub metaprompt".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Org,
+                kind: DraftResourceKind::Metaprompt,
+                id: None,
+                path: Some("META_PROMPT.md".to_owned()),
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Create,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    kind: DraftResourceKind::Metaprompt,
+                    id: None,
+                    path: Some("META_PROMPT.md".to_owned()),
+                },
+                content: Some(DraftResourceContent::Metaprompt {
+                    content: "# Hub metaprompt\n\nInitial organization behavior.".to_owned(),
+                }),
+                new_path: None,
+            }],
+        },
+    )
+    .await;
+    let created: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", approved.review_id),
+        &org_etag,
+        &CreateReviewMergeRequest {
+            expected_review_version: approved.version,
+        },
+    )
+    .await;
+    let created_commit_id = created.commit_id.unwrap();
+    let created_metaprompt = repo.get_org_metaprompt(&bootstrap.org_id).await.unwrap();
+    let metaprompt_id = created_metaprompt.metaprompt.metaprompt_id.clone();
+    assert_eq!(
+        created_metaprompt.content,
+        "# Hub metaprompt\n\nInitial organization behavior."
+    );
+    let project_after_create: CommitStateResponse = get_json(app.clone(), &project_state_uri).await;
+    assert_eq!(
+        project_after_create.reference.commit_id,
+        project_before.reference.commit_id
+    );
+
+    let (_, org_etag): (CommitStateResponse, String) =
+        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
+    let approved = create_approved_review(
+        app.clone(),
+        CreateDraftRequest {
+            daemon_installation_id: "daemon_hub_metaprompt".to_owned(),
+            project_id: bootstrap.project_id.clone(),
+            base_commit_id: Some(created_commit_id.clone()),
+            title: "Update Hub metaprompt".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Org,
+                kind: DraftResourceKind::Metaprompt,
+                id: Some(metaprompt_id.clone()),
+                path: None,
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Update,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    kind: DraftResourceKind::Metaprompt,
+                    id: Some(metaprompt_id.clone()),
+                    path: None,
+                },
+                content: Some(DraftResourceContent::Metaprompt {
+                    content: "# Hub metaprompt\n\nUpdated organization behavior.".to_owned(),
+                }),
+                new_path: None,
+            }],
+        },
+    )
+    .await;
+    let updated: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", approved.review_id),
+        &org_etag,
+        &CreateReviewMergeRequest {
+            expected_review_version: approved.version,
+        },
+    )
+    .await;
+    let updated_commit_id = updated.commit_id.unwrap();
+    assert_eq!(
+        repo.get_org_metaprompt(&bootstrap.org_id)
+            .await
+            .unwrap()
+            .content,
+        "# Hub metaprompt\n\nUpdated organization behavior."
+    );
+    let created_payload: CommitPayload =
+        get_json(app.clone(), &format!("/api/v1/commits/{created_commit_id}")).await;
+    let created_entry = created_payload
+        .tree
+        .entries
+        .iter()
+        .find(|entry| entry.kind == TreeEntryKind::Metaprompt)
+        .unwrap();
+    assert_eq!(
+        created_payload
+            .blobs
+            .iter()
+            .find(|blob| blob.blob_id == created_entry.blob_id)
+            .unwrap()
+            .content,
+        "# Hub metaprompt\n\nInitial organization behavior."
+    );
+
+    let (_, org_etag): (CommitStateResponse, String) =
+        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
+    let approved = create_approved_review(
+        app.clone(),
+        CreateDraftRequest {
+            daemon_installation_id: "daemon_hub_metaprompt".to_owned(),
+            project_id: bootstrap.project_id.clone(),
+            base_commit_id: Some(updated_commit_id.clone()),
+            title: "Delete Hub metaprompt".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Org,
+                kind: DraftResourceKind::Metaprompt,
+                id: Some(metaprompt_id.clone()),
+                path: None,
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Delete,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    kind: DraftResourceKind::Metaprompt,
+                    id: Some(metaprompt_id.clone()),
+                    path: None,
+                },
+                content: None,
+                new_path: None,
+            }],
+        },
+    )
+    .await;
+    let deleted: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", approved.review_id),
+        &org_etag,
+        &CreateReviewMergeRequest {
+            expected_review_version: approved.version,
+        },
+    )
+    .await;
+    let deleted_commit_id = deleted.commit_id.unwrap();
+    assert!(matches!(
+        repo.get_org_metaprompt(&bootstrap.org_id).await,
+        Err(server::repository::ServerError::NotFound { .. })
+    ));
+
+    let (_, org_etag): (CommitStateResponse, String) =
+        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
+    let approved = create_approved_review(
+        app.clone(),
+        CreateDraftRequest {
+            daemon_installation_id: "daemon_hub_metaprompt".to_owned(),
+            project_id: bootstrap.project_id.clone(),
+            base_commit_id: Some(deleted_commit_id),
+            title: "Recreate Hub metaprompt".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Org,
+                kind: DraftResourceKind::Metaprompt,
+                id: None,
+                path: Some("META_PROMPT.md".to_owned()),
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Create,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    kind: DraftResourceKind::Metaprompt,
+                    id: None,
+                    path: Some("META_PROMPT.md".to_owned()),
+                },
+                content: Some(DraftResourceContent::Metaprompt {
+                    content: "# Hub metaprompt\n\nRecreated organization behavior.".to_owned(),
+                }),
+                new_path: None,
+            }],
+        },
+    )
+    .await;
+    let _: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", approved.review_id),
+        &org_etag,
+        &CreateReviewMergeRequest {
+            expected_review_version: approved.version,
+        },
+    )
+    .await;
+    let recreated = repo.get_org_metaprompt(&bootstrap.org_id).await.unwrap();
+    assert_ne!(recreated.metaprompt.metaprompt_id, metaprompt_id);
+    assert_eq!(
+        recreated.content,
+        "# Hub metaprompt\n\nRecreated organization behavior."
+    );
+    let project_after_recreate: CommitStateResponse = get_json(app, &project_state_uri).await;
+    assert_eq!(
+        project_after_recreate.reference.commit_id,
+        project_before.reference.commit_id
+    );
 }
 
 #[tokio::test]
@@ -1997,6 +2681,32 @@ fn context_draft_content(content: &str) -> Option<DraftResourceContent> {
     })
 }
 
+async fn create_approved_review(app: axum::Router, request: CreateDraftRequest) -> Review {
+    let draft: DraftDetail = post_json(app.clone(), "/api/v1/drafts", &request).await;
+    let review: ReviewDetail = post_json(
+        app.clone(),
+        "/api/v1/reviews",
+        &CreateReviewRequest {
+            draft_id: draft.draft.draft_id,
+            expected_draft_version: draft.draft.version,
+            title: None,
+            description: None,
+        },
+    )
+    .await;
+    let approved: ReviewDetail = post_json(
+        app,
+        &format!("/api/v1/reviews/{}/decisions", review.review.review_id),
+        &CreateReviewDecisionRequest {
+            decision: ReviewDecision::Approved,
+            expected_review_version: review.review.version,
+            body: None,
+        },
+    )
+    .await;
+    approved.review
+}
+
 async fn create_approved_context_review(
     app: axum::Router,
     project_id: &str,
@@ -2078,8 +2788,15 @@ where
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    decode_json(response).await
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "request failed: {}",
+        String::from_utf8_lossy(&body)
+    );
+    serde_json::from_slice(&body).unwrap()
 }
 
 async fn post_response<TRequest>(

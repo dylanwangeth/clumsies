@@ -1,11 +1,50 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use daemon::{
     CredentialStore, CredentialStoreError, DaemonConfig, DaemonIpcService, DaemonState,
     ServerCredentials,
 };
 use tempfile::TempDir;
+use testcontainers::{ContainerAsync, runners::AsyncRunner};
+use testcontainers_modules::postgres::Postgres;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+#[allow(dead_code)]
+pub struct TestPostgres {
+    _permit: OwnedSemaphorePermit,
+    _container: ContainerAsync<Postgres>,
+    pub port: u16,
+}
+
+fn postgres_slots() -> &'static Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(Semaphore::new(4)))
+}
+
+#[allow(dead_code)]
+pub async fn start_postgres() -> TestPostgres {
+    let permit = postgres_slots().clone().acquire_owned().await.unwrap();
+    let container = Postgres::default().start().await.unwrap();
+    let mut last_error = None;
+    for _ in 0..20 {
+        match container.get_host_port_ipv4(5432).await {
+            Ok(port) => {
+                return TestPostgres {
+                    _permit: permit,
+                    _container: container,
+                    port,
+                };
+            }
+            Err(error) => last_error = Some(error),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!(
+        "PostgreSQL test container never exposed port 5432: {}",
+        last_error.unwrap()
+    );
+}
 
 #[derive(Clone, Default)]
 pub struct TestCredentialStore {
