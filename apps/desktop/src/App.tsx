@@ -27,7 +27,6 @@ import {
   daemonOperationsForDraft,
   DesktopBackend,
   mapBundle,
-  mapReview,
   mapReviewWithConflict,
   syncStateForDaemonDraft,
   type DesktopAccount,
@@ -77,7 +76,7 @@ import {
 } from "lucide-react";
 import { TextEditor } from "./text-editor";
 import {
-  applyDraft,
+  applyMemoryChange,
   cloneDocument,
   createBlankDraft,
   createDraftFromResource,
@@ -89,6 +88,7 @@ import {
   initialReviews,
   listResources,
   memoryKinds,
+  reviewChangeFromDraft,
   reviewDiff,
   resourceWorkingState,
   type AuthorityResource,
@@ -100,6 +100,7 @@ import {
   type ResourceListItem,
   type ResourceWorkingState,
   type ReviewRecord,
+  type ReviewChange,
   type ReviewStatus,
   type SearchResult,
   type SyncState,
@@ -109,7 +110,6 @@ import {
   memoryTabKey,
   openWorkspaceTab,
   pinWorkspaceTab,
-  retargetMemoryTabs,
   type MemoryTabSurface,
   type WorkspaceTab,
 } from "./workspace-tabs";
@@ -191,6 +191,7 @@ const previewAccount: DesktopAccount = {
   email: "weiwang@example.com",
   displayName: "Wei Wang",
   avatarUrl: null,
+  capabilities: ["memory:read", "draft:write", "review:write", "review:merge"],
 };
 
 const primaryNavigation: NavigationItem[] = [
@@ -324,7 +325,9 @@ export function App() {
   const bundleSyncTimers = useRef(new Map<string, number>());
   const undoTimer = useRef<number | null>(null);
 
-  const refreshBackend = useCallback(async () => {
+  const refreshBackend = useCallback(async (
+    options: { preserveWorkspace?: boolean } = {},
+  ) => {
     const backend = backendRef.current;
     if (!backend) {
       setLoadState({ status: "preview" });
@@ -341,41 +344,51 @@ export function App() {
       setDrafts(backendState.drafts);
       setBundles(backendState.bundles);
       setReviews(backendState.reviews);
-      setSelectedProjectId(backendState.activeProjectId ?? "");
-      setSelectedBundleId(backendState.bundles[0]?.id ?? "");
-      setSelectedReviewId(backendState.reviews[0]?.id ?? "");
-
-      const firstProjectItem = backendState.resources.find(
-        (resource) =>
-          resource.scope === "Project" &&
-          resource.projectId === backendState.activeProjectId,
-      );
-      const firstDraft = backendState.drafts.find(
-        (draft) => draft.projectId === backendState.activeProjectId,
-      );
-      const initialItem = firstProjectItem ?? firstDraft ?? null;
-      if (initialItem) {
-        const targetId =
-          "baseResourceId" in initialItem
-            ? (initialItem.baseResourceId ?? initialItem.id)
-            : initialItem.id;
-        const tab: WorkspaceTab = {
-          key: memoryTabKey("Local", targetId, "source"),
-          view: "Local",
-          targetId,
-          kind: initialItem.kind,
-          projectId: initialItem.projectId,
-          surface: "source",
-          pinned: true,
-        };
-        setProjectKind(initialItem.kind);
-        setSelectedProjectResourceId(targetId);
-        setWorkspaceTabs([tab]);
-        setActiveTabKey(tab.key);
+      if (options.preserveWorkspace) {
+        setSelectedProjectId((current) =>
+          backendState.projects.some((project) => project.id === current)
+            ? current
+            : (backendState.activeProjectId ?? ""),
+        );
       } else {
-        setSelectedProjectResourceId(null);
-        setWorkspaceTabs([]);
-        setActiveTabKey(null);
+        setSelectedProjectId(backendState.activeProjectId ?? "");
+        setSelectedBundleId(backendState.bundles[0]?.id ?? "");
+        setSelectedReviewId(backendState.reviews[0]?.id ?? "");
+      }
+
+      if (!options.preserveWorkspace) {
+        const firstProjectItem = backendState.resources.find(
+          (resource) =>
+            resource.scope === "Project" &&
+            resource.projectId === backendState.activeProjectId,
+        );
+        const firstDraft = backendState.drafts.find(
+          (draft) => draft.projectId === backendState.activeProjectId,
+        );
+        const initialItem = firstProjectItem ?? firstDraft ?? null;
+        if (initialItem) {
+          const targetId =
+            "baseResourceId" in initialItem
+              ? (initialItem.baseResourceId ?? initialItem.id)
+              : initialItem.id;
+          const tab: WorkspaceTab = {
+            key: memoryTabKey("Local", targetId, "source"),
+            view: "Local",
+            targetId,
+            kind: initialItem.kind,
+            projectId: initialItem.projectId,
+            surface: "source",
+            pinned: true,
+          };
+          setProjectKind(initialItem.kind);
+          setSelectedProjectResourceId(targetId);
+          setWorkspaceTabs([tab]);
+          setActiveTabKey(tab.key);
+        } else {
+          setSelectedProjectResourceId(null);
+          setWorkspaceTabs([]);
+          setActiveTabKey(null);
+        }
       }
       setLoadState({
         status: "ready",
@@ -957,7 +970,12 @@ export function App() {
               title: item.draft.document.title,
             });
           }
-          review = mapReview(detail);
+          review = await mapReviewWithConflict(
+            backend.api,
+            detail,
+            projects,
+            resources,
+          );
         } catch (error) {
           setDrafts((current) =>
             current.map((draft) =>
@@ -990,9 +1008,11 @@ export function App() {
           : {
               id: `review-${Date.now().toString(36)}`,
               draftId: item.draft.id,
+              authorId: account?.userId ?? "preview-user",
               title: item.draft.document.title,
               author: "weiwang",
               status: "open",
+              change: reviewChangeFromDraft(item.draft, item.resource),
               createdAt: "just now",
               decisionNote: null,
               comments: [],
@@ -1038,7 +1058,7 @@ export function App() {
         true,
       );
     },
-    [projects, resources, reviews, showWorkspaceTab],
+    [account?.userId, projects, resources, reviews, showWorkspaceTab],
   );
 
   const openReviewForDraft = useCallback(
@@ -1180,7 +1200,12 @@ export function App() {
             expected_review_version: review.version,
             body: note ?? undefined,
           });
-          saved = mapReview(response);
+          saved = await mapReviewWithConflict(
+            backend.api,
+            response,
+            projects,
+            resources,
+          );
           if (status === "rejected") {
             const draft = drafts.find(
               (item) => item.id === review.draftId || item.serverId === review.draftId,
@@ -1195,8 +1220,6 @@ export function App() {
               } catch (error) {
                 projectionError = error;
               }
-            } else {
-              projectionError = new Error("Rejected Review has no local Draft projection");
             }
           }
         } catch (error) {
@@ -1246,59 +1269,65 @@ export function App() {
   const mergeReview = useCallback(
     async (reviewId: string) => {
       const review = reviews.find((item) => item.id === reviewId);
-      const draft = drafts.find(
+      const localDraft = drafts.find(
         (item) => item.id === review?.draftId || item.serverId === review?.draftId,
       );
-      if (!review || !draft || review.status !== "approved") {
+      if (!review || review.status !== "approved") {
         return;
       }
+      const change = review.change;
       const backend = backendRef.current;
-      let mergedCommitId: string | null = null;
       if (backend) {
         if (!backend.api || review.version === undefined) {
           return;
         }
         try {
-          if (!draft.projectId) {
+          if (!change.projectId) {
             return;
           }
           const commitState =
-            draft.scope === "Hub"
+            change.scope === "Hub"
               ? await backend.api.orgCommitState()
-              : await backend.api.projectCommitState(draft.projectId);
-          const merge = await backend.api.createReviewMerge(
+              : await backend.api.projectCommitState(change.projectId);
+          await backend.api.createReviewMerge(
             reviewId,
             commitState.etag,
             { expected_review_version: review.version },
           );
-          mergedCommitId = merge.commit_id;
         } catch (error) {
           if (error instanceof ClumsiesApiError && apiErrorCode(error) === "draft_conflict") {
             try {
               const detail = await backend.api.review(reviewId);
-              const conflictedReview = await mapReviewWithConflict(backend.api, detail);
+              const conflictedReview = await mapReviewWithConflict(
+                backend.api,
+                detail,
+                projects,
+                resources,
+              );
               setReviews((current) =>
                 current.map((item) => (item.id === reviewId ? conflictedReview : item)),
               );
-              setDrafts((current) =>
-                current.map((item) =>
-                  item.id === draft.id
-                    ? {
-                        ...item,
-                        serverVersion: detail.draft.version,
-                        status: "in_review",
-                        syncState: "conflict",
-                        conflict: conflictedReview.conflict
-                          ? {
-                              baseCommitId: conflictedReview.conflict.baseCommitId,
-                              currentCommitId: conflictedReview.conflict.currentCommitId,
-                              detectedAt: conflictedReview.conflict.detectedAt,
-                            }
-                          : null,
-                      }
-                    : item,
-                ),
-              );
+              if (localDraft) {
+                setDrafts((current) =>
+                  current.map((item) =>
+                    item.id === localDraft.id
+                      ? {
+                          ...item,
+                          serverVersion: detail.draft.version,
+                          status: "in_review",
+                          syncState: "conflict",
+                          conflict: conflictedReview.conflict
+                            ? {
+                                baseCommitId: conflictedReview.conflict.baseCommitId,
+                                currentCommitId: conflictedReview.conflict.currentCommitId,
+                                detectedAt: conflictedReview.conflict.detectedAt,
+                              }
+                            : null,
+                        }
+                      : item,
+                  ),
+                );
+              }
               setReviewFilter("approved");
             } catch {
               setLoadState({ status: "failed", message: "Conflict details could not be loaded." });
@@ -1311,60 +1340,24 @@ export function App() {
           }
           return;
         }
+        await refreshBackend({ preserveWorkspace: true });
+        setSelectedReviewId(reviewId);
+        setReviewFilter("merged");
+        return;
       }
-      setResources((current) => {
-        const applied = applyDraft(current, draft);
-        if (!mergedCommitId) {
-          return applied;
-        }
-        return applied.map((resource) =>
-          resource.scope === draft.scope &&
-          (draft.scope === "Hub" || resource.projectId === draft.projectId)
-            ? { ...resource, refCommitId: mergedCommitId }
-            : resource,
-        );
-      });
-      if (mergedCommitId) {
-        if (draft.scope === "Hub") {
-          setHubRefCommitId(mergedCommitId);
-        } else {
-          setProjects((current) =>
-            current.map((project) =>
-              project.id === draft.projectId
-                ? { ...project, refCommitId: mergedCommitId }
-                : project,
-            ),
-          );
-        }
-      }
-      const memoryView = draft.scope === "Hub" ? "Hub" : "Local";
-      if (draft.operation === "delete" && draft.baseResourceId) {
-        removeMemoryWorkspaceTabs(memoryView, draft.baseResourceId);
-      } else if (!draft.baseResourceId) {
-        const resourceId = `memory-${draft.id}`;
-        setWorkspaceTabs((current) =>
-          retargetMemoryTabs(current, memoryView, draft.id, resourceId),
-        );
-        setActiveTabKey((current) => {
-          if (current === memoryTabKey(memoryView, draft.id, "source")) {
-            return memoryTabKey(memoryView, resourceId, "source");
-          }
-          if (current === memoryTabKey(memoryView, draft.id, "markdown-preview")) {
-            return memoryTabKey(memoryView, resourceId, "markdown-preview");
-          }
-          return current;
-        });
-        if (memoryView === "Hub") {
-          setSelectedHubId(resourceId);
-        } else {
-          setSelectedProjectResourceId(resourceId);
-        }
-      }
-      setDrafts((current) =>
-        current.map((item) =>
-          item.id === draft.id ? { ...item, status: "merged", syncState: "synced" } : item,
-        ),
+      const resourceId = `memory-${review.draftId}`;
+      setResources((current) =>
+        applyMemoryChange(current, change, resourceId),
       );
+      if (localDraft) {
+        setDrafts((current) =>
+          current.map((item) =>
+            item.id === localDraft.id
+              ? { ...item, status: "merged", syncState: "synced" }
+              : item,
+          ),
+        );
+      }
       setReviews((current) =>
         current.map((item) =>
           item.id === reviewId ? { ...item, status: "merged" } : item,
@@ -1372,13 +1365,13 @@ export function App() {
       );
       setReviewFilter("merged");
     },
-    [drafts, removeMemoryWorkspaceTabs, reviews],
+    [drafts, projects, refreshBackend, resources, reviews],
   );
 
   const resolveReviewConflict = useCallback(
     async (reviewId: string, resolvedContent: string | null) => {
       const review = reviews.find((item) => item.id === reviewId);
-      const draft = drafts.find(
+      const localDraft = drafts.find(
         (item) => item.id === review?.draftId || item.serverId === review?.draftId,
       );
       if (
@@ -1386,7 +1379,6 @@ export function App() {
         || review.version === undefined
         || review.draftVersion === undefined
         || !review.operations?.length
-        || !draft
       ) {
         return;
       }
@@ -1427,28 +1419,35 @@ export function App() {
               operations,
             },
           );
-          const resolvedReview = await mapReviewWithConflict(backend.api, detail);
+          const resolvedReview = await mapReviewWithConflict(
+            backend.api,
+            detail,
+            projects,
+            resources,
+          );
           setReviews((current) =>
             current.map((item) => (item.id === reviewId ? resolvedReview : item)),
           );
-          setDrafts((current) =>
-            current.map((item) =>
-              item.id === draft.id
-                ? {
-                    ...item,
-                    baseCommitId: review.conflict?.currentCommitId ?? null,
-                    serverVersion: detail.draft.version,
-                    status: "in_review",
-                    syncState: "synced",
-                    conflict: null,
-                    document:
-                      resolvedContent === null
-                        ? item.document
-                        : { ...item.document, body: resolvedContent },
-                  }
-                : item,
-            ),
-          );
+          if (localDraft) {
+            setDrafts((current) =>
+              current.map((item) =>
+                item.id === localDraft.id
+                  ? {
+                      ...item,
+                      baseCommitId: review.conflict?.currentCommitId ?? null,
+                      serverVersion: detail.draft.version,
+                      status: "in_review",
+                      syncState: "synced",
+                      conflict: null,
+                      document:
+                        resolvedContent === null
+                          ? item.document
+                          : { ...item.document, body: resolvedContent },
+                    }
+                  : item,
+              ),
+            );
+          }
           setReviewFilter("open");
         } catch (error) {
           setLoadState({
@@ -1471,16 +1470,16 @@ export function App() {
       );
       setReviewFilter("open");
     },
-    [drafts, reviews],
+    [drafts, projects, resources, reviews],
   );
 
   const discardReviewConflict = useCallback(
     async (reviewId: string) => {
       const review = reviews.find((item) => item.id === reviewId);
-      const draft = drafts.find(
+      const localDraft = drafts.find(
         (item) => item.id === review?.draftId || item.serverId === review?.draftId,
       );
-      if (!review?.conflict || review.draftVersion === undefined || !draft) {
+      if (!review?.conflict || review.draftVersion === undefined) {
         return;
       }
       const backend = backendRef.current;
@@ -1488,7 +1487,12 @@ export function App() {
         try {
           await backend.api.discardDraft(review.draftId, review.draftVersion);
           const detail = await backend.api.review(reviewId);
-          const discardedReview = await mapReviewWithConflict(backend.api, detail);
+          const discardedReview = await mapReviewWithConflict(
+            backend.api,
+            detail,
+            projects,
+            resources,
+          );
           setReviews((current) =>
             current.map((item) => (item.id === reviewId ? discardedReview : item)),
           );
@@ -1508,10 +1512,12 @@ export function App() {
           ),
         );
       }
-      setDrafts((current) => current.filter((item) => item.id !== draft.id));
+      if (localDraft) {
+        setDrafts((current) => current.filter((item) => item.id !== localDraft.id));
+      }
       setReviewFilter("rejected");
     },
-    [drafts, reviews],
+    [drafts, projects, resources, reviews],
   );
 
   const addReviewComment = useCallback(async (reviewId: string, body: string) => {
@@ -1767,14 +1773,16 @@ export function App() {
     activeWorkspaceTab?.view === "Reviews"
       ? reviews.find((review) => review.id === activeWorkspaceTab.targetId) ?? null
       : null;
-  const currentReviewDraft = currentReview
+  const currentReviewLocalDraft = currentReview
     ? drafts.find(
         (draft) =>
           draft.id === currentReview.draftId || draft.serverId === currentReview.draftId,
       ) ?? null
     : null;
-  const currentReviewResource = currentReviewDraft?.baseResourceId
-    ? resources.find((resource) => resource.id === currentReviewDraft.baseResourceId) ?? null
+  const currentReviewResource = currentReview?.change.baseResourceId
+    ? resources.find(
+        (resource) => resource.id === currentReview.change.baseResourceId,
+      ) ?? null
     : null;
 
   useEffect(() => {
@@ -2224,9 +2232,11 @@ export function App() {
             />
               ) : selectedView === "Reviews" ? (
                 <ReviewsWorkspace
-              draft={currentReviewDraft}
+              canDiscardConflict={currentReview?.authorId === account?.userId}
+              canMerge={account?.capabilities.includes("review:merge") ?? false}
               filter={reviewFilter}
               filteredReviews={filteredReviews}
+              localDraft={currentReviewLocalDraft}
               resource={currentReviewResource}
               review={currentReview}
               reviews={reviews}
@@ -2237,8 +2247,8 @@ export function App() {
               onFilterChange={setReviewFilter}
               onMerge={mergeReview}
               onOpenDraft={() => {
-                if (currentReviewDraft) {
-                  openDraft(currentReviewDraft);
+                if (currentReviewLocalDraft) {
+                  openDraft(currentReviewLocalDraft);
                 }
               }}
               onOpenSearch={() => setSearchOpen(true)}
@@ -3909,9 +3919,11 @@ function BundleEditor({
 }
 
 function ReviewsWorkspace({
-  draft,
+  canDiscardConflict,
+  canMerge,
   filter,
   filteredReviews,
+  localDraft,
   onAddComment,
   onDiscardConflict,
   onFilterChange,
@@ -3930,9 +3942,11 @@ function ReviewsWorkspace({
   sourceWidth,
   tabStrip,
 }: {
-  draft: DraftRecord | null;
+  canDiscardConflict: boolean;
+  canMerge: boolean;
   filter: ReviewFilter;
   filteredReviews: ReviewRecord[];
+  localDraft: DraftRecord | null;
   onAddComment: (reviewId: string, body: string) => void;
   onDiscardConflict: (reviewId: string) => void;
   onFilterChange: (filter: ReviewFilter) => void;
@@ -3987,16 +4001,18 @@ function ReviewsWorkspace({
         </>
       }
     >
-      {review && draft ? (
+      {review ? (
         <ReviewEditor
-          draft={draft}
+          canMerge={canMerge}
+          change={review.change}
+          canDiscardConflict={canDiscardConflict}
           resource={resource}
           review={review}
           onAddComment={(body) => onAddComment(review.id, body)}
           onApprove={() => onUpdateStatus(review.id, "approved", "Approved for merge.")}
           onDiscardConflict={() => onDiscardConflict(review.id)}
           onMerge={() => onMerge(review.id)}
-          onOpenDraft={onOpenDraft}
+          onOpenDraft={localDraft ? onOpenDraft : null}
           onReject={() => onUpdateStatus(review.id, "rejected", null)}
           onResolveConflict={(content) => onResolveConflict(review.id, content)}
         />
@@ -4045,7 +4061,9 @@ function ReviewFilterNavigation({
 }
 
 function ReviewEditor({
-  draft,
+  canDiscardConflict,
+  canMerge,
+  change,
   onAddComment,
   onApprove,
   onDiscardConflict,
@@ -4056,36 +4074,42 @@ function ReviewEditor({
   resource,
   review,
 }: {
-  draft: DraftRecord;
+  canDiscardConflict: boolean;
+  canMerge: boolean;
+  change: ReviewChange;
   onAddComment: (body: string) => void;
   onApprove: () => void;
   onDiscardConflict: () => void;
   onMerge: () => void;
-  onOpenDraft: () => void;
+  onOpenDraft: (() => void) | null;
   onReject: () => void;
   onResolveConflict: (resolvedContent: string | null) => void;
   resource: AuthorityResource | null;
   review: ReviewRecord;
 }) {
   const [comment, setComment] = useState("");
-  const diff = reviewDiff(resource, draft);
+  const diff = reviewDiff(resource, change);
   return (
     <section className="editor-surface">
       <div className="item-toolbar">
         <div className="review-meta">
-          <span>{draft.kind}</span>
-          <small>Base v{draft.baseVersion ?? 0}</small>
+          <span>{change.kind}</span>
+          <small>{shortCommit(change.baseCommitId, change.baseResourceId)}</small>
         </div>
         <div className="item-tools">
           {review.conflict ? (
             <>
-              <IconButton icon={RefreshCw} label="Refresh Conflict" onClick={onMerge} />
-              <IconButton
-                icon={Trash2}
-                label="Discard Conflicted Draft"
-                onClick={onDiscardConflict}
-                tone="danger"
-              />
+              {canMerge ? (
+                <IconButton icon={RefreshCw} label="Refresh Conflict" onClick={onMerge} />
+              ) : null}
+              {canDiscardConflict ? (
+                <IconButton
+                  icon={Trash2}
+                  label="Discard Conflicted Draft"
+                  onClick={onDiscardConflict}
+                  tone="danger"
+                />
+              ) : null}
             </>
           ) : review.status === "open" ? (
             <>
@@ -4097,9 +4121,9 @@ function ReviewEditor({
                 tone="danger"
               />
             </>
-          ) : review.status === "approved" ? (
+          ) : review.status === "approved" && canMerge ? (
             <IconButton icon={GitMerge} label="Merge Review" onClick={onMerge} />
-          ) : review.status === "rejected" ? (
+          ) : review.status === "rejected" && onOpenDraft ? (
             <IconButton icon={FilePenLine} label="Open Draft" onClick={onOpenDraft} />
           ) : null}
         </div>
@@ -4107,14 +4131,14 @@ function ReviewEditor({
       <div className="review-editor">
         <header className="review-heading">
           <h1>{review.title}</h1>
-          <p>{draft.document.path}</p>
+          <p>{change.document.path}</p>
           {review.status === "rejected" && review.decisionNote ? (
             <blockquote className="review-decision">{review.decisionNote}</blockquote>
           ) : null}
         </header>
         {review.conflict ? (
           <ReviewConflictResolver
-            draft={draft}
+            change={change}
             onResolve={onResolveConflict}
             review={review}
           />
@@ -4171,11 +4195,11 @@ function ReviewEditor({
 }
 
 function ReviewConflictResolver({
-  draft,
+  change,
   onResolve,
   review,
 }: {
-  draft: DraftRecord;
+  change: ReviewChange;
   onResolve: (resolvedContent: string | null) => void;
   review: ReviewRecord;
 }) {
@@ -4186,9 +4210,9 @@ function ReviewConflictResolver({
     ?.body ?? null;
   const terminalOperation = review.operations?.[review.operations.length - 1] ?? null;
   const operationOnlyLabel = terminalOperation?.action === "rename"
-    ? `Rename to ${terminalOperation.newPath ?? draft.document.path}`
+    ? `Rename to ${terminalOperation.newPath ?? change.document.path}`
     : terminalOperation?.action === "delete"
-      ? `Delete ${draft.document.path}`
+      ? `Delete ${change.document.path}`
       : "No editable content";
   const operationOnlyTone = terminalOperation?.action === "delete" ? " danger" : "";
   const [resolvedContent, setResolvedContent] = useState(draftContent ?? "");
@@ -4246,7 +4270,7 @@ function ReviewConflictResolver({
             <TextEditor
               ariaLabel="Resolved draft content"
               onChange={setResolvedContent}
-              path={draft.document.path}
+              path={change.document.path}
               readOnly={false}
               value={resolvedContent}
             />
@@ -5154,6 +5178,16 @@ function syncLabel(state: SyncState): string {
 
 function capitalize(value: string): string {
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+}
+
+function shortCommit(
+  commitId: string | null,
+  baseResourceId: string | null,
+): string {
+  if (commitId) {
+    return `Base ${commitId.slice(0, 7)}`;
+  }
+  return baseResourceId ? "Existing resource" : "New resource";
 }
 
 function accountInitials(account: DesktopAccount): string {

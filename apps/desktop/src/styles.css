@@ -452,6 +452,7 @@ pre {
 
 .sidebar.collapsed .primary-nav {
   justify-items: center;
+  overflow: visible;
   padding-right: 0;
   padding-left: 0;
 }

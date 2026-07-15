@@ -23,6 +23,7 @@ import {
   type MemoryDocument,
   type MemoryKind,
   type PersonalBundle,
+  type ReviewChange,
   type ReviewConflict,
   type ReviewRecord,
   type SyncState,
@@ -39,6 +40,7 @@ export type DesktopAccount = {
   email: string;
   displayName: string | null;
   avatarUrl: string | null;
+  capabilities: string[];
 };
 
 export type DesktopOrganization = {
@@ -144,12 +146,27 @@ export class DesktopBackend {
       Promise.all(reviewPage.items.map((review) => api.review(review.review_id))),
     ]);
 
+    const commitRequests = new Map<
+      string,
+      Promise<PublicSchema<"CommitPayload">>
+    >();
+    const loadCommit = (commitId: string) => {
+      const existing = commitRequests.get(commitId);
+      if (existing) {
+        return existing;
+      }
+      const request = api.commit(commitId);
+      commitRequests.set(commitId, request);
+      return request;
+    };
+
     return {
       account: {
         userId: me.user.user_id,
         email: me.user.email,
         displayName: me.user.display_name,
         avatarUrl: me.user.avatar_url,
+        capabilities: me.capabilities,
       },
       organization: {
         id: me.org.org_id,
@@ -164,7 +181,9 @@ export class DesktopBackend {
       ),
       bundles: bundleDetails.map(mapBundle),
       reviews: await Promise.all(
-        reviewDetails.map((detail) => mapReviewWithConflict(api, detail)),
+        reviewDetails.map((detail) =>
+          mapReviewWithConflict(api, detail, projects, resources, loadCommit),
+        ),
       ),
       runtime: { bootstrap, health, projectConfig, syncStatus, mcpStatus },
     };
@@ -536,10 +555,16 @@ export function mapBundle(
   };
 }
 
-export function mapReview(detail: PublicSchema<"ReviewDetail">): ReviewRecord {
+export function mapReview(
+  detail: PublicSchema<"ReviewDetail">,
+  projects: ProjectOption[] = [],
+  resources: AuthorityResource[] = [],
+  baseCommit: PublicSchema<"CommitPayload"> | null = null,
+): ReviewRecord {
   return {
     id: detail.review.review_id,
     draftId: detail.review.draft_id,
+    authorId: detail.review.author.user_id,
     title: detail.review.title,
     author:
       detail.review.author.display_name ?? detail.review.author.email,
@@ -562,6 +587,7 @@ export function mapReview(detail: PublicSchema<"ReviewDetail">): ReviewRecord {
           currentContent: null,
         }
       : null,
+    change: mapReviewChange(detail, projects, resources, baseCommit),
     createdAt: formatDate(detail.review.created_at),
     decisionNote: detail.review.decision_body,
     comments: detail.comments.map((comment) => ({
@@ -576,28 +602,103 @@ export function mapReview(detail: PublicSchema<"ReviewDetail">): ReviewRecord {
 export async function mapReviewWithConflict(
   api: ClumsiesApi,
   detail: PublicSchema<"ReviewDetail">,
+  projects: ProjectOption[] = [],
+  resources: AuthorityResource[] = [],
+  loadCommit: (commitId: string) => Promise<PublicSchema<"CommitPayload">> =
+    (commitId) => api.commit(commitId),
 ): Promise<ReviewRecord> {
-  const review = mapReview(detail);
+  const baseCommitId = detail.draft.base_commit_id;
+  const currentCommitId = detail.conflict?.current_commit_id ?? null;
+  const baseCommitRequest = baseCommitId ? loadCommit(baseCommitId) : null;
+  const currentCommitRequest = !currentCommitId
+    ? null
+    : currentCommitId === baseCommitId
+      ? baseCommitRequest
+      : loadCommit(currentCommitId);
+  const [baseCommit, currentCommit] = await Promise.all([
+    baseCommitRequest,
+    currentCommitRequest,
+  ]);
+  const review = mapReview(detail, projects, resources, baseCommit);
   if (!review.conflict) {
     return review;
   }
-  const conflict = await hydrateReviewConflict(api, detail, review.conflict);
+  const conflict = hydrateReviewConflict(
+    detail,
+    review.conflict,
+    baseCommit,
+    currentCommit,
+  );
   return { ...review, conflict };
 }
 
-async function hydrateReviewConflict(
-  api: ClumsiesApi,
+function hydrateReviewConflict(
   detail: PublicSchema<"ReviewDetail">,
   conflict: ReviewConflict,
-): Promise<ReviewConflict> {
-  const [base, current] = await Promise.all([
-    conflict.baseCommitId ? api.commit(conflict.baseCommitId) : null,
-    conflict.currentCommitId ? api.commit(conflict.currentCommitId) : null,
-  ]);
+  base: PublicSchema<"CommitPayload"> | null,
+  current: PublicSchema<"CommitPayload"> | null,
+): ReviewConflict {
   return {
     ...conflict,
     baseContent: commitResourceContent(base, detail.draft.resource),
     currentContent: commitResourceContent(current, detail.draft.resource),
+  };
+}
+
+function mapReviewChange(
+  detail: PublicSchema<"ReviewDetail">,
+  projects: ProjectOption[],
+  resources: AuthorityResource[],
+  baseCommit: PublicSchema<"CommitPayload"> | null,
+): ReviewChange {
+  const resourceRef = detail.draft.resource;
+  const kind = memoryKind(resourceRef.kind);
+  const baseResource = resourceRef.id
+    ? resources.find((resource) => resource.id === resourceRef.id) ?? null
+    : null;
+  const beforeText = commitResourceContent(baseCommit, resourceRef) ??
+    (baseResource ? documentText(baseResource.kind, baseResource.document) : null);
+  let afterText = beforeText;
+  let path = resourceRef.path ?? baseResource?.document.path ?? defaultPath(kind);
+  let operation: ReviewChange["operation"] = "upsert";
+
+  for (const change of detail.operations) {
+    if (change.action === "create") {
+      afterText = change.body ?? "";
+      path = change.resource.path ?? path;
+    } else if (change.action === "update") {
+      afterText = change.body ?? "";
+    } else if (change.action === "rename") {
+      path = change.new_path ?? path;
+    } else if (change.action === "delete") {
+      operation = "delete";
+      afterText = null;
+    }
+  }
+
+  const document = baseResource
+    ? cloneDocument(baseResource.document)
+    : documentForBody(path, afterText ?? beforeText ?? "");
+  document.path = path;
+  document.title = titleFromPath(path);
+  if (kind !== "Workflows" || !baseResource) {
+    document.body = afterText ?? beforeText ?? "";
+  }
+
+  return {
+    baseCommitId: detail.draft.base_commit_id,
+    baseResourceId: resourceRef.id,
+    scope: resourceRef.scope === "org" ? "Hub" : "Project",
+    projectId: detail.draft.project_id,
+    projectName:
+      baseResource?.projectName ??
+      projects.find((project) => project.id === detail.draft.project_id)?.name ??
+      null,
+    kind,
+    operation,
+    document,
+    beforeText,
+    afterText,
   };
 }
 

@@ -175,4 +175,34 @@ describe("cross-domain discovery and review", () => {
       true,
     );
   });
+
+  test("review diff uses the submitted snapshot without a local draft", () => {
+    const change = {
+      ...initialReviews[0]!.change,
+      beforeText: "# Before\n\nShared context.",
+      afterText: "# After\n\nShared context.",
+    };
+
+    expect(reviewDiff(null, change)).toEqual([
+      "- # Before",
+      "+ # After",
+      "  ",
+      "  Shared context.",
+    ]);
+  });
+
+  test("deletion reviews show the submitted base content", () => {
+    const change = {
+      ...initialReviews[0]!.change,
+      operation: "delete" as const,
+      beforeText: "# Removed\n\nNo longer authoritative.",
+      afterText: null,
+    };
+
+    expect(reviewDiff(null, change)).toEqual([
+      "- # Removed",
+      "- ",
+      "- No longer authoritative.",
+    ]);
+  });
 });

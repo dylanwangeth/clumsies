@@ -786,6 +786,16 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     assert_eq!(submitted.review.decision_body, None);
     assert_eq!(submitted.draft.status, DraftStatus::Submitted);
     assert_eq!(submitted.draft.version, 2);
+    let visible_to_reviewer: ReviewDetail = get_json(
+        member_app.clone(),
+        &format!("/api/v1/reviews/{}", submitted.review.review_id),
+    )
+    .await;
+    assert_eq!(
+        visible_to_reviewer.review.review_id,
+        submitted.review.review_id
+    );
+    assert_eq!(visible_to_reviewer.operations, submitted.operations);
 
     let stale_decision = post_response(
         owner_app.clone(),
@@ -808,7 +818,7 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     assert_eq!(unchanged.draft.version, 2);
 
     let rejected: ReviewDetail = post_json(
-        owner_app.clone(),
+        member_app.clone(),
         &format!("/api/v1/reviews/{}/decisions", submitted.review.review_id),
         &CreateReviewDecisionRequest {
             decision: ReviewDecision::Rejected,

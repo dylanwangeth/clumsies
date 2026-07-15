@@ -36,11 +36,7 @@ export type AuthorityResource = {
   document: MemoryDocument;
 };
 
-export type DraftRecord = {
-  id: string;
-  localId?: string;
-  serverId?: string | null;
-  serverVersion?: number;
+export type MemoryChange = {
   baseCommitId: string | null;
   baseResourceId: string | null;
   scope: MemoryScope;
@@ -48,13 +44,25 @@ export type DraftRecord = {
   projectName: string | null;
   kind: MemoryKind;
   operation: "upsert" | "delete";
+  document: MemoryDocument;
+};
+
+export type ReviewChange = MemoryChange & {
+  beforeText: string | null;
+  afterText: string | null;
+};
+
+export type DraftRecord = MemoryChange & {
+  id: string;
+  localId?: string;
+  serverId?: string | null;
+  serverVersion?: number;
   origin: DraftOrigin;
   status: DraftStatus;
   syncState: SyncState;
   conflict?: DraftConflictRecord | null;
   baseVersion: number | null;
   updatedAt: string;
-  document: MemoryDocument;
 };
 
 export type DraftConflictRecord = {
@@ -91,6 +99,7 @@ export type ReviewComment = {
 export type ReviewRecord = {
   id: string;
   draftId: string;
+  authorId: string;
   title: string;
   author: string;
   status: ReviewStatus;
@@ -98,6 +107,7 @@ export type ReviewRecord = {
   draftVersion?: number;
   operations?: ReviewOperation[];
   conflict?: ReviewConflict | null;
+  change: ReviewChange;
   createdAt: string;
   decisionNote: string | null;
   comments: ReviewComment[];
@@ -193,6 +203,27 @@ export function createDraftFromResource(resource: AuthorityResource): DraftRecor
     baseVersion: resource.version,
     updatedAt: "just now",
     document: cloneDocument(resource.document),
+  };
+}
+
+export function reviewChangeFromDraft(
+  draft: DraftRecord,
+  resource: AuthorityResource | null,
+): ReviewChange {
+  return {
+    baseCommitId: draft.baseCommitId,
+    baseResourceId: draft.baseResourceId,
+    scope: draft.scope,
+    projectId: draft.projectId,
+    projectName: draft.projectName,
+    kind: draft.kind,
+    operation: draft.operation,
+    document: cloneDocument(draft.document),
+    beforeText: resource ? documentText(resource.kind, resource.document) : null,
+    afterText:
+      draft.operation === "delete"
+        ? null
+        : documentText(draft.kind, draft.document),
   };
 }
 
@@ -294,31 +325,39 @@ export function applyDraft(
   resources: AuthorityResource[],
   draft: DraftRecord,
 ): AuthorityResource[] {
-  if (draft.operation === "delete") {
-    return resources.filter((resource) => resource.id !== draft.baseResourceId);
+  return applyMemoryChange(resources, draft, `memory-${draft.id}`);
+}
+
+export function applyMemoryChange(
+  resources: AuthorityResource[],
+  change: MemoryChange,
+  newResourceId: string,
+): AuthorityResource[] {
+  if (change.operation === "delete") {
+    return resources.filter((resource) => resource.id !== change.baseResourceId);
   }
 
-  if (!draft.baseResourceId) {
+  if (!change.baseResourceId) {
     const next: AuthorityResource = {
-      id: `memory-${draft.id}`,
-      scope: draft.scope,
-      projectId: draft.projectId,
-      projectName: draft.projectName,
-      kind: draft.kind,
+      id: newResourceId,
+      scope: change.scope,
+      projectId: change.projectId,
+      projectName: change.projectName,
+      kind: change.kind,
       version: 1,
       updatedAt: "just now",
-      document: cloneDocument(draft.document),
+      document: cloneDocument(change.document),
     };
     return [next, ...resources];
   }
 
   return resources.map((resource) =>
-    resource.id === draft.baseResourceId
+    resource.id === change.baseResourceId
       ? {
           ...resource,
           version: resource.version + 1,
           updatedAt: "just now",
-          document: cloneDocument(draft.document),
+          document: cloneDocument(change.document),
         }
       : resource,
   );
@@ -354,19 +393,29 @@ export function documentText(kind: MemoryKind, document: MemoryDocument): string
 
 export function reviewDiff(
   resource: AuthorityResource | null,
-  draft: DraftRecord,
+  change: MemoryChange | ReviewChange,
 ): string[] {
-  if (draft.operation === "delete") {
-    return ["- Delete this memory after the review is merged."];
+  const beforeText = "beforeText" in change
+    ? change.beforeText
+    : resource
+      ? documentText(resource.kind, resource.document)
+      : null;
+  const afterText = "afterText" in change
+    ? change.afterText
+    : documentText(change.kind, change.document);
+  if (change.operation === "delete") {
+    return beforeText === null
+      ? ["- Delete this memory after the review is merged."]
+      : beforeText.split("\n").map((line) => `- ${line}`);
   }
-  if (!resource) {
-    return documentText(draft.kind, draft.document)
+  if (beforeText === null) {
+    return (afterText ?? "")
       .split("\n")
       .map((line) => `+ ${line}`);
   }
 
-  const before = documentText(resource.kind, resource.document).split("\n");
-  const after = documentText(draft.kind, draft.document).split("\n");
+  const before = beforeText.split("\n");
+  const after = (afterText ?? "").split("\n");
   const lines: string[] = [];
   const length = Math.max(before.length, after.length);
   for (let index = 0; index < length; index += 1) {
@@ -1026,9 +1075,16 @@ export const initialReviews: ReviewRecord[] = [
   {
     id: "review-desktop-shell",
     draftId: "draft-review-desktop-shell",
+    authorId: "preview-user",
     title: "Desktop product architecture",
     author: "weiwang",
     status: "open",
+    change: reviewChangeFromDraft(
+      initialDrafts[1]!,
+      initialResources.find(
+        (resource) => resource.id === initialDrafts[1]!.baseResourceId,
+      ) ?? null,
+    ),
     createdAt: "32m ago",
     decisionNote: null,
     comments: [
@@ -1039,6 +1095,41 @@ export const initialReviews: ReviewRecord[] = [
         createdAt: "18m ago",
       },
     ],
+  },
+  {
+    id: "review-teammate-sync-boundary",
+    draftId: "server-draft-teammate-sync-boundary",
+    authorId: "preview-teammate",
+    title: "Clarify automatic draft synchronization",
+    author: "Dylan",
+    status: "open",
+    change: {
+      baseCommitId: null,
+      baseResourceId: "project-context-production",
+      scope: "Project",
+      projectId: "koal",
+      projectName: "Koal",
+      kind: "Context",
+      operation: "upsert",
+      document: {
+        ...cloneDocument(
+          initialResources.find(
+            (resource) => resource.id === "project-context-production",
+          )!.document,
+        ),
+        body: "# Production architecture\n\nDraft synchronization is automatic across Desktop and MCP. Review is the only path into authoritative memory.",
+      },
+      beforeText: documentText(
+        "Context",
+        initialResources.find(
+          (resource) => resource.id === "project-context-production",
+        )!.document,
+      ),
+      afterText: "# Production architecture\n\nDraft synchronization is automatic across Desktop and MCP. Review is the only path into authoritative memory.",
+    },
+    createdAt: "12m ago",
+    decisionNote: null,
+    comments: [],
   },
 ];
 

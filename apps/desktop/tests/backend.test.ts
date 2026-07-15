@@ -205,6 +205,130 @@ describe("Desktop backend mapping", () => {
     expect(syncStateForDaemonDraft(detail)).toBe("failed");
   });
 
+  test("builds a review change without the review author's local draft", async () => {
+    const baseCommitId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const detail = {
+      review: {
+        review_id: "rev_teammate",
+        project_id: "prj_test",
+        draft_id: "drf_teammate",
+        author: {
+          user_id: "usr_teammate",
+          email: "teammate@example.com",
+          display_name: "Teammate",
+        },
+        title: "Update shared context",
+        description: "",
+        status: "open",
+        version: 2,
+        decision_body: null,
+        created_at: "2026-07-15T00:00:00Z",
+        updated_at: "2026-07-15T00:01:00Z",
+      },
+      draft: {
+        draft_id: "drf_teammate",
+        project_id: "prj_test",
+        base_commit_id: baseCommitId,
+        author: {
+          user_id: "usr_teammate",
+          email: "teammate@example.com",
+          display_name: "Teammate",
+        },
+        title: "Update shared context",
+        description: "",
+        resource: {
+          scope: "project",
+          kind: "context",
+          id: "ctx_existing",
+          path: "context/existing.md",
+        },
+        status: "submitted",
+        version: 3,
+        created_at: "2026-07-15T00:00:00Z",
+        updated_at: "2026-07-15T00:01:00Z",
+      },
+      operations: [
+        {
+          operation_id: "dop_teammate_rename",
+          action: "rename",
+          resource: {
+            scope: "project",
+            kind: "context",
+            id: "ctx_existing",
+            path: "context/existing.md",
+          },
+          base_hash: "hash-base",
+          body: null,
+          new_path: "context/renamed.md",
+          created_at: "2026-07-15T00:00:30Z",
+        },
+        {
+          operation_id: "dop_teammate_update",
+          action: "update",
+          resource: {
+            scope: "project",
+            kind: "context",
+            id: "ctx_existing",
+            path: "context/existing.md",
+          },
+          base_hash: "hash-base",
+          body: "# Shared update",
+          new_path: null,
+          created_at: "2026-07-15T00:01:00Z",
+        },
+      ],
+      comments: [],
+      conflict: null,
+    } as PublicSchema<"ReviewDetail">;
+    const api = {
+      commit: async () => ({
+        commit: {
+          commit_id: baseCommitId,
+          scope: "project",
+          org_id: "org_test",
+          project_id: "prj_test",
+          tree_id: "tree_base",
+          parent_commit_id: null,
+          version: 1,
+          created_at: "2026-07-15T00:00:00Z",
+        },
+        tree: {
+          tree_id: "tree_base",
+          entries: [{
+            id: "ctx_existing",
+            type: "context",
+            scope: "project",
+            project_id: "prj_test",
+            path: "context/existing.md",
+            blob_id: "blob_base",
+            source: "project",
+          }],
+        },
+        blobs: [{ blob_id: "blob_base", content: "# Existing" }],
+        project_org_selection: null,
+      }),
+    } as ClumsiesApi;
+
+    const review = await mapReviewWithConflict(
+      api,
+      detail,
+      [{ id: "prj_test", name: "Test", refCommitId: baseCommitId }],
+      [],
+    );
+
+    expect(review.authorId).toBe("usr_teammate");
+    expect(review.change).toMatchObject({
+      baseCommitId,
+      baseResourceId: "ctx_existing",
+      projectId: "prj_test",
+      projectName: "Test",
+      kind: "Context",
+      beforeText: "# Existing",
+      afterText: "# Shared update",
+      document: { path: "context/renamed.md" },
+    });
+  });
+
   test("hydrates a conflicted review from its base and current commits", async () => {
     const baseCommitId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const currentCommitId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
