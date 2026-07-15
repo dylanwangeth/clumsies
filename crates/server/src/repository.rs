@@ -3265,7 +3265,7 @@ fn review_from_row(row: &sqlx::postgres::PgRow) -> Result<Review, ServerError> {
         review_id: row.try_get("review_id")?,
         project_id: row.try_get("project_id")?,
         draft_id: row.try_get("draft_id")?,
-        author: user_ref_from_row(&row)?,
+        author: user_ref_from_row(row)?,
         title: row.try_get("title")?,
         description: row.try_get("description")?,
         status: review_status(row.try_get::<String, _>("status")?.as_str())?,
